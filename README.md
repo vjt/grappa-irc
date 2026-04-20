@@ -13,6 +13,17 @@ Two components, one monorepo:
 
 The pitch in one sentence: *modern IRC — always-on, consumable from a phone — without making it not-IRC.*
 
+The shorter pitch, for anyone who's been on IRC >10 years: *grappa is the equivalent of irssi inside tmux, made accessible from a browser.*
+
+### Two facades, one store
+
+grappa exposes the same underlying state through **two facades** that share a single scrollback store:
+
+1. **REST + SSE** — the primary surface. Canonical API, consumed by cicchetto. IRC is fully terminated at the server; the web client is IRC-protocol-ignorant end-to-end. This is the design center.
+2. **IRCv3 listener** *(phase 2+)* — a secondary, optional surface that speaks `CAP LS` + SASL + `CHATHISTORY` to existing IRCv3-capable mobile IRC clients (Goguma, Quassel mobile, etc). It is a *view* over the same store the REST surface reads from — never a second source of truth.
+
+The two facades expose the same data. Neither introduces state the other does not. In particular: **no server-side `MARKREAD` / read watermark on either facade.** Read position is client-side, always.
+
 ## Status
 
 Pre-alpha. Not a line of code yet. **This README is the spec.** README-driven development.
@@ -23,28 +34,34 @@ There are good IRC bouncers already. [soju](https://soju.im/) + [gamja](https://
 
 grappa-irc diverges on one deliberate axis: **the web client does not parse IRC**. soju and gamja communicate in IRC-framing-over-WebSocket — the client re-implements IRC protocol state in the browser. That's a principled choice and it buys standards-purity via IRCv3 extensions.
 
-grappa makes the other choice: IRC terminates at the server, the client sees only REST resources (channels, messages, members, networks) and an event stream. The browser stays ignorant of IRC. Everything the client needs — scrollback pagination, channel modes, nick changes, join/part — arrives as typed JSON.
+grappa makes the other choice: IRC terminates at the server, the **web** client sees only REST resources (channels, messages, members, networks) and an event stream. The browser stays ignorant of IRC. Everything the web client needs — scrollback pagination, channel modes, nick changes, join/part — arrives as typed JSON.
 
-This also means grappa works against vanilla IRC servers. IRCv3 extensions are opportunistic bonuses where upstream supports them, not hard requirements. No CHATHISTORY needed: the bouncer owns scrollback.
+This also means grappa works against vanilla IRC servers. **Upstream** IRCv3 extensions are opportunistic bonuses where the upstream ircd supports them, not hard requirements. No upstream `CHATHISTORY` needed: the bouncer owns scrollback.
+
+Separately, grappa can *expose* IRCv3 downstream to mobile IRC clients — that listener is the "two facades" design above. It re-uses the same scrollback store, so for the user it looks identical whether they open cicchetto or point Goguma at grappa.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Browser
+    subgraph Clients["Clients"]
         cicchetto["cicchetto PWA<br/>(irssi-shape UI)"]
+        mobileirc["Mobile IRCv3 client<br/>(Goguma / Quassel / …)<br/><em>phase 2+</em>"]
     end
 
     subgraph VPS["Self-hosted VPS"]
-        grappa["grappa server<br/>(REST + SSE)"]
-        store[("state + scrollback<br/>(sqlite / any KV)")]
-        grappa --- store
+        rest["REST + SSE facade"]
+        irclisten["IRCv3 listener facade<br/><em>phase 2+</em>"]
+        store[("shared scrollback store<br/>(sqlite / any KV)")]
+        rest --- store
+        irclisten --- store
         subgraph tasks["async tasks (one per user)"]
             t1["user A session"]
             t2["user B session"]
             t3["user C session"]
         end
-        grappa --- tasks
+        rest --- tasks
+        irclisten --- tasks
     end
 
     subgraph Upstream["Upstream IRC"]
@@ -53,7 +70,8 @@ flowchart LR
         other["…any ircd<br/>(allowlisted)"]
     end
 
-    cicchetto <-->|"HTTPS REST + SSE"| grappa
+    cicchetto <-->|"HTTPS REST + SSE"| rest
+    mobileirc <-.->|"IRC + SASL + CHATHISTORY"| irclisten
     t1 <-->|"IRC + SASL"| azzurra
     t2 <-->|"IRC + SASL"| libera
     t3 <-->|"IRC + SASL"| other
@@ -66,9 +84,9 @@ flowchart LR
 
 ## Design principles
 
-1. **No IRC parsing in the client. Ever.** REST is the contract. The browser never sees a raw `PRIVMSG`.
-2. **IRCv3 is opportunistic, not required.** Works against any ircd that speaks `CAP LS` + SASL. Fancy extensions are bonuses.
-3. **Scrollback is bouncer-owned.** Paginated API, client asks for more on scroll. No dependency on server-side `CHATHISTORY`.
+1. **No IRC parsing in the web client. Ever.** REST is the contract for cicchetto. The browser never sees a raw `PRIVMSG`. Mobile IRC clients talking to the optional IRCv3 listener are a separate case — they parse IRC by definition, that's what they are.
+2. **Upstream IRCv3 is opportunistic, not required.** grappa works against any ircd that speaks `CAP LS` + SASL. Fancy upstream extensions are bonuses. *Downstream* (toward IRCv3 mobile clients) grappa will speak `CAP` + SASL + `CHATHISTORY` fully, because that's the point of the second facade.
+3. **Scrollback is bouncer-owned.** One store, paginated API for REST, `CHATHISTORY` mapping for the IRCv3 listener. No dependency on upstream server-side `CHATHISTORY`.
 4. **Auth is NickServ.** Login via SASL handshake against upstream. Registration proxied through a dedicated endpoint.
 5. **Self-hostable.** Any VPS. sysadmin-configurable allowlist for upstream IRC servers.
 6. **Irssi-shape on desktop, irssi-shape on mobile too.** Large screens nearly identical to irssi (themes + keybindings). Mobile keeps the same visual grammar but adds touch-ergonomic helpers (channel switcher, tap targets, soft keyboard handling). No chat-app metaphor — it's still IRC.
@@ -169,6 +187,13 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] Scrollback eviction policy
 - [ ] Allowlist configuration for upstream networks
 - [ ] Docs for self-hosters
+
+### Phase 6 — IRCv3 listener facade
+- [ ] Downstream `CAP LS` + SASL, identity bridged to the same session the REST surface uses
+- [ ] Map paginated scrollback to `CHATHISTORY` (`BEFORE`, `AFTER`, `BETWEEN`, `LATEST`)
+- [ ] `server-time`, `message-tags`, `batch`, `labeled-response`
+- [ ] Drop-in compatibility target: [Goguma](https://sr.ht/~emersion/goguma/), [Quassel](https://quassel-irc.org/), [mIRC 7.64+](https://www.mirc.com/) with IRCv3 support
+- [ ] Deliberately **not** exposed: `MARKREAD` / server-tracked read positions
 
 ## Contributing
 
