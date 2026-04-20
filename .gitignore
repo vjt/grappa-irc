@@ -1,0 +1,29 @@
+# Rust
+/target/
+Cargo.lock
+
+# Go
+/bin/
+/vendor/
+
+# Node / PWA
+/node_modules/
+/dist/
+/.vite/
+/.svelte-kit/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local env
+.env
+.env.local
+*.local
