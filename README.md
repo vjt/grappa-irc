@@ -90,8 +90,20 @@ flowchart LR
 4. **Auth is NickServ.** Login via SASL handshake against upstream. Registration proxied through a dedicated endpoint.
 5. **Self-hostable.** Any VPS. sysadmin-configurable allowlist for upstream IRC servers.
 6. **Irssi-shape on desktop, irssi-shape on mobile too.** Large screens nearly identical to irssi (themes + keybindings). Mobile keeps the same visual grammar but adds touch-ergonomic helpers (channel switcher, tap targets, soft keyboard handling). No chat-app metaphor — it's still IRC.
-7. **No images, no voice, no file sharing.** It's IRC. Those problems belong to someone else.
+7. **No images, no voice messages, no file sharing.** It's IRC. Those problems belong to someone else. *Voice I/O on the client* (read-aloud + dictate) is a separate, in-scope accessibility feature — see below. The wire stays text.
 8. **No mobile push infrastructure.** If the browser's PWA push API is available, we use it. Otherwise, no notifications. We don't run notification servers.
+9. **Accessibility is a client concern, not a server feature.** Server stays protocol-clean; the PWA is where screen-reader support, TTS, STT, and touch-ergonomic helpers live. Lift lands in cicchetto, not grappa.
+
+### Client-side voice I/O (cicchetto)
+
+Optional, opt-in, per-channel toggle in cicchetto — **no voice ever touches grappa or the IRC wire**:
+
+- **TTS** — incoming messages read aloud via the browser's `SpeechSynthesis` API. Uses OS voices (Android, iOS, macOS, Windows).
+- **STT** — compose by voice via `SpeechRecognition` (Chrome/Edge native; Firefox partial; Safari supported on modern iOS).
+- **Offline path** — optional drop-in of [Vosk](https://alphacephei.com/vosk/) WASM for STT and [piper](https://github.com/rhasspy/piper) (or equivalent) for TTS, for users who don't want recognition routed through a cloud. Bundle-size cost is paid only if enabled.
+- **Server cost: zero.** Feature is implemented entirely in the PWA.
+
+This unblocks the Android-IRC-with-voice ask that today has no good answer — no existing Android IRC client ships native TTS/STT. The only workarounds are screen readers (TalkBack reading the chat window) or external glue (Tasker intercepting notifications, Termux + weechat-relay wrappers). A PWA with Web Speech is a cleaner shape.
 
 ## REST surface (first draft)
 
@@ -181,6 +193,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] Keyboard-first layout, theme system
 - [ ] Nick list, mode indicators, topic bar
 - [ ] Mobile ergonomics layer (touch helpers, not a different shape)
+- [ ] Client-side voice I/O: per-channel TTS + STT toggle via Web Speech API; optional Vosk/piper WASM offline path
 
 ### Phase 5 — hardening
 - [ ] Reconnect + backoff
