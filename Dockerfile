@@ -9,8 +9,8 @@
 # avoiding the version-skew pain of mixing official elixir + erlang images.
 
 ARG ELIXIR_VERSION=1.19.5
-ARG OTP_VERSION=28.0
-ARG DEBIAN_VERSION=bookworm-20251023-slim
+ARG OTP_VERSION=28.5
+ARG DEBIAN_VERSION=bookworm-20260421-slim
 ARG CONTAINER_UID=1000
 ARG CONTAINER_GID=1000
 

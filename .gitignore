@@ -5,6 +5,8 @@
 /deps/
 /doc/
 /.fetch
+/.hex/
+/.mix/
 erl_crash.dump
 *.ez
 *.beam
