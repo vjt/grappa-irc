@@ -15,9 +15,6 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   /networks/:net/channels/:chan/messages` per
   `docs/plans/2026-04-25-walking-skeleton.md` line 1572. First write
   resource; introduces `Phoenix.PubSub.broadcast/3`.
-- Worktree cleanup: `git worktree remove
-  /home/vjt/code/IRC/grappa-task5` + `git branch -D
-  phase1-task5-messages` once S6 fully closed.
 
 ## High
 
