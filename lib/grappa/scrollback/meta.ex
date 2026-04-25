@@ -1,0 +1,101 @@
+defmodule Grappa.Scrollback.Meta do
+  @moduledoc """
+  Custom `Ecto.Type` for the `Grappa.Scrollback.Message.meta` column.
+
+  ## Why a custom type rather than `:map`
+
+  The column stores event-type-specific structured fields that don't
+  fit `Message.body` (KICK target nick, NICK_CHANGE new-nick, MODE arg
+  list, etc.). The natural shape in Elixir is an atom-keyed map:
+  `%{target: "alice"}`, not `%{"target" => "alice"}`.
+
+  Plain `field :meta, :map` would force string keys throughout because
+  Jason serializes atom keys to strings AND the round-trip via the
+  sqlite TEXT column comes back string-keyed. Producers writing
+  atom-keyed input would get atom-keyed maps via `Repo.insert/2`
+  (in-memory struct, no round-trip) but string-keyed maps via
+  `Repo.all/1` (DB round-trip). Two shapes via two paths — a footgun.
+
+  This type closes the footgun by **always returning atom-keyed maps**
+  to Elixir code, regardless of the access path:
+
+    - `dump/1` (Elixir → DB): converts atom keys to strings for JSON
+      storage. Producers can use atom keys naturally.
+    - `load/1` (DB → Elixir): decodes Jason JSON to a string-keyed
+      map, then re-atomizes any known key via `String.to_existing_atom/1`.
+    - `cast/1` (changeset cast): same atom-key normalization as
+      `load/1` so the in-memory struct returned by `Repo.insert/2`
+      matches the shape of subsequent fetches.
+
+  ## Allowlist (`@known_keys`)
+
+  `String.to_existing_atom/1` is used (not `String.to_atom/1`) so
+  attacker-controlled JSON can't inflate the atom table — atoms are
+  not garbage-collected and unbounded `String.to_atom` from external
+  input is a known DoS vector.
+
+  Per CLAUDE.md "atoms or @type t :: literal | literal — never
+  untyped strings for closed sets," the allowlist enumerates every
+  atom key any IRC event meta payload may carry. Adding a new kind
+  with a new meta field requires extending this list — explicit
+  central registry, not implicit drift.
+
+  Keys outside the allowlist round-trip as strings (defensive: a
+  forgotten producer field becomes a visible string in the map
+  instead of crashing the load with `ArgumentError`). Producers
+  SHOULD use only allowlisted keys; tests catch drift via shape
+  assertions on fetched rows.
+
+  ## Per-kind expected shapes
+
+      :privmsg | :notice | :action | :topic   →  %{}                       (body carries content)
+      :join    | :part                        →  %{}                       (channel + sender suffice)
+      :quit                                   →  %{}                       (body carries optional reason)
+      :nick_change                            →  %{new_nick: String.t()}
+      :mode                                   →  %{modes: String.t(), args: [String.t()]}
+      :kick                                   →  %{target: String.t()}     (body carries reason)
+
+  Phase 1 only writes `:privmsg` rows where `meta = %{}` so Phase 1
+  exercises only the empty-map path. The allowlist + atomization is
+  ready for Phase 5+ presence-event producers.
+  """
+  use Ecto.Type
+
+  @known_keys ~w[target new_nick modes args reason]a
+
+  @impl Ecto.Type
+  def type, do: :map
+
+  @impl Ecto.Type
+  def cast(map) when is_map(map), do: {:ok, atomize_known(map)}
+  def cast(_), do: :error
+
+  @impl Ecto.Type
+  def load(map) when is_map(map), do: {:ok, atomize_known(map)}
+  def load(_), do: :error
+
+  @impl Ecto.Type
+  def dump(map) when is_map(map), do: {:ok, stringify(map)}
+  def dump(_), do: :error
+
+  # Convert any atom or string key to an atom IF it's allowlisted;
+  # otherwise leave it as a string. Values pass through unchanged.
+  defp atomize_known(map) do
+    Map.new(map, fn {k, v} -> {normalize_key(k), v} end)
+  end
+
+  defp normalize_key(k) when is_atom(k) do
+    if k in @known_keys, do: k, else: Atom.to_string(k)
+  end
+
+  defp normalize_key(k) when is_binary(k) do
+    case Enum.find(@known_keys, &(Atom.to_string(&1) == k)) do
+      nil -> k
+      atom -> atom
+    end
+  end
+
+  defp stringify(map) do
+    Map.new(map, fn {k, v} -> {to_string(k), v} end)
+  end
+end

@@ -32,41 +32,26 @@ defmodule Grappa.Scrollback.Message do
   while JOIN with a body is a malformed event. The validation rule
   encodes the domain truth, not an arbitrary preference.
 
-  ## Meta — JSON map for event-specific fields
+  ## Meta — typed atom-keyed map for event-specific fields
 
-  `meta` is a Jason-encoded JSON map column carrying event-type-specific
-  structured fields that don't fit body (KICK target nick, NICK_CHANGE
-  new-nick, MODE arg list, etc.).
+  `meta` is a JSON map column carrying event-type-specific structured
+  fields that don't fit `body` (KICK target nick, NICK_CHANGE
+  new-nick, MODE arg list, etc.). The custom Ecto type
+  `Grappa.Scrollback.Meta` normalizes keys to atoms via a known-key
+  allowlist on `cast/1` and `load/1`, so the shape is the SAME via
+  every access path (Repo.insert return, Repo.all fetch, controller
+  render). See that module's moduledoc for the per-kind shape table
+  and the security rationale for `String.to_existing_atom/1` over
+  `String.to_atom/1`.
 
-  Phase 1 only writes `:privmsg` rows where `meta = %{}` so the typing
-  softness is unobserved. Per CLAUDE.md "atoms not untyped strings for
-  closed sets," the per-kind shape SHOULD be typed via per-kind sum
-  types or a `cast_meta/2` per-kind validator. Phase 1 defers this:
-  no producer of non-PRIVMSG meta exists yet. When Phase 5 starts
-  writing presence events, the disciplined extension is to introduce
-  typed meta per kind. Documenting the gap rather than papering over.
+  Per CLAUDE.md "atoms or @type t :: literal | literal — never
+  untyped strings for closed sets" — atom keys with an explicit
+  allowlist is the disciplined choice over plain `:map` with string
+  keys.
 
-  Expected per-kind `meta` shapes (Phase 5+ producers MUST conform):
-
-      :privmsg | :notice | :action | :topic   →  %{}                         (body carries content)
-      :join    | :part                        →  %{}                         (channel + sender suffice)
-      :quit                                   →  %{}                         (body carries optional reason)
-      :nick_change                            →  %{"new_nick" => String.t()}
-      :mode                                   →  %{"modes" => "+o", "args" => [String.t()]}
-      :kick                                   →  %{"target" => String.t()}   (body carries reason)
-
-  ## String keys are mandatory (no atomization at boundaries)
-
-  All `meta` keys MUST be strings at insert time. JSON serialization via
-  Jason emits string-keyed maps; on fetch the column round-trips back as
-  a string-keyed map. Atom-keyed input (`%{target: "alice"}`) WORKS at
-  insert time because Ecto's `:map` field accepts any term, but the
-  returned struct from `Repo.insert/2` keeps atom keys while a
-  subsequent `Repo.all/1` fetch decodes the JSON column into string
-  keys — producing different shapes via different access paths. The
-  inconsistency is a footgun; the discipline that closes it is "always
-  string keys, never atomize." Phase 1 producers (REST `POST` →
-  `:privmsg` only) never set meta, so the rule is forward-only.
+  Phase 1 only writes `:privmsg` rows where `meta = %{}` so the
+  per-kind machinery is dormant; Phase 5+ presence-event producers
+  light it up.
 
   ## Cross-system identifier (deferred to Phase 6)
 
@@ -156,7 +141,7 @@ defmodule Grappa.Scrollback.Message do
     field :kind, Ecto.Enum, values: @kinds
     field :sender, :string
     field :body, :string
-    field :meta, :map, default: %{}
+    field :meta, Grappa.Scrollback.Meta, default: %{}
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end

@@ -61,20 +61,24 @@ defmodule Grappa.ScrollbackTest do
                })
     end
 
-    test "accepts :kick with body (reason) + meta carrying target nick (string-keyed)" do
-      assert {:ok, %Message{kind: :kick, body: "rude", meta: %{"target" => "alice"}}} =
-               Scrollback.insert(%{
-                 network_id: "azzurra",
-                 channel: "#sniffo",
-                 server_time: 0,
-                 kind: :kick,
-                 sender: "vjt",
-                 body: "rude",
-                 # String keys mandatory — see Message moduledoc on
-                 # "atom-vs-string footgun." Atom-keyed inserts produce
-                 # different shapes via different access paths.
-                 meta: %{"target" => "alice"}
-               })
+    test "accepts :kick with body (reason) + atom-keyed meta carrying target nick" do
+      {:ok, inserted} =
+        Scrollback.insert(%{
+          network_id: "azzurra",
+          channel: "#sniffo",
+          server_time: 0,
+          kind: :kick,
+          sender: "vjt",
+          body: "rude",
+          meta: %{target: "alice"}
+        })
+
+      # In-memory struct from Repo.insert: atom-keyed via custom Ecto.Type cast.
+      assert inserted.meta == %{target: "alice"}
+
+      # Round-trip via fetch: same atom-keyed shape via load (allowlisted).
+      [fetched] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
+      assert fetched.meta == %{target: "alice"}
     end
 
     test "rejects :privmsg without body (per-kind body required for content-bearing kinds)" do
@@ -111,10 +115,10 @@ defmodule Grappa.ScrollbackTest do
         {:join, %{body: nil}},
         {:part, %{body: nil}},
         {:quit, %{body: "Connection reset"}},
-        {:nick_change, %{body: nil, meta: %{"new_nick" => "vjt2"}}},
-        {:mode, %{body: nil, meta: %{"modes" => "+o", "args" => ["alice"]}}},
+        {:nick_change, %{body: nil, meta: %{new_nick: "vjt2"}}},
+        {:mode, %{body: nil, meta: %{modes: "+o", args: ["alice"]}}},
         {:topic, %{body: "new channel topic"}},
-        {:kick, %{body: "rude", meta: %{"target" => "alice"}}}
+        {:kick, %{body: "rude", meta: %{target: "alice"}}}
       ]
 
       for {kind, overrides} <- cases do
@@ -152,7 +156,7 @@ defmodule Grappa.ScrollbackTest do
              }
     end
 
-    test "includes meta payload for non-privmsg kinds (string keys mandatory)" do
+    test "includes atom-keyed meta payload for non-privmsg kinds" do
       {:ok, _} =
         Scrollback.insert(%{
           network_id: "azzurra",
@@ -160,16 +164,16 @@ defmodule Grappa.ScrollbackTest do
           server_time: 0,
           kind: :nick_change,
           sender: "vjt",
-          meta: %{"new_nick" => "vjt2"}
+          meta: %{new_nick: "vjt2"}
         })
 
-      # Fetch from DB to assert the post-Jason-roundtrip shape — what
-      # downstream consumers (REST, PubSub, Channels) actually see.
+      # Fetch from DB to assert the post-load shape — same atom-keyed
+      # via the custom Meta Ecto.Type's allowlisted atomization.
       [fetched] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
       wire = Message.to_wire(fetched)
       assert wire.kind == :nick_change
       assert wire.body == nil
-      assert wire.meta == %{"new_nick" => "vjt2"}
+      assert wire.meta == %{new_nick: "vjt2"}
     end
   end
 
