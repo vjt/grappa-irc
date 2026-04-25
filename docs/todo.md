@@ -10,36 +10,34 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Codebase review DUE (S11→S12 transition + walking-skeleton end +
-  prod live = natural milestone). Recommended for next session with
-  fresh context. Reviews live in `docs/reviews/codebase/`.
+- Codebase review DUE (line-level scan — separate from the CP04 S13
+  architecture review). Recommended for next session with fresh
+  context. Reviews live in `docs/reviews/codebase/`.
 - Fix `scripts/_lib.sh` compose project-name conflict: when prod
   container is up, dev oneshots collide on the vlan IP
   (`Address already in use`). Either set distinct compose project
   names or detect+skip in `in_container_or_oneshot`. Workaround
   during prod-up: stop prod container before running gates.
-- Prune merged worktree `phase1-task8-session` (`git worktree
-  remove ~/code/IRC/grappa-task8 && git branch -D
-  phase1-task8-session`). Already merged to main as `75e29b9`.
 
 ## High
 
-- Phase 1 Tasks 9–10 per the walking-skeleton plan (Task 8 fully
-  done — code + deploy + live in #grappa on azzurra; Tasks 9 = REST
-  writes mapped to `IRC.Client` outbound, Task 10 = Boundary
-  annotations + `mix boundary.spec` in CI).
+- Phase 1 Tasks 9–10 per the walking-skeleton plan. Task 9 = REST
+  writes mapped to `IRC.Client` outbound. Task 10 = `use Boundary`
+  annotations on top-level contexts + `mix boundary.spec` in CI
+  (covers architecture review A11).
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
   ugly `tcp_closed terminating` test-stdout noise.
-- Phase 5 hardening: Bootstrap warning conflates three causes
-  (missing file / malformed TOML / missing field) into the same
-  "no config — running web-only" message. Operator log triage
-  benefits from cause split. Code-review CONSIDER #6 from S11.
+- Phase 5 hardening: Bootstrap warning split (originally A20). S14
+  partially fixed via `Config.format_error/1` + per-tag log lines;
+  remaining work is operator-facing UX polish (e.g. suggest fix on
+  invalid_config errors, point at the failing field name).
 - Phase 5 hardening: lift `signing_salt` (currently `"rotate-me"` in
   `lib/grappa_web/endpoint.ex`) to `runtime.exs` so it reads from an
   env var like `SECRET_KEY_BASE` already does. Same for the
   `verify: :verify_none` TLS posture noted in CLAUDE.md.
+  (Architecture review A21 — must precede Phase 2 auth landing.)
 - Phase 5 hardening: synchronous `IRC.Client.connect` in `init/1`
   blocks supervisor boot for the connect-timeout window. Add
   `{:continue, :connect}` (or move connect into `handle_info` after

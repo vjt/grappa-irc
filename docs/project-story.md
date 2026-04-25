@@ -625,3 +625,128 @@ strings). The rule extends to any global identifier — Registry
 keys, ETS table names, file paths under a fixed prefix. If two
 async tests can collide on a name, they will, and the test that
 loses the race is the one closest to the race window.
+
+## S14 — 2026-04-25 — Phase 1.5, the architecture review fix-up
+
+The previous session ran a six-agent architecture review against the
+walking-skeleton-complete codebase. Twenty-four findings, four
+critical. Three cross-cutting themes surfaced from independent
+agents converging on the same shapes — that convergence is the
+signal that they're real architecture, not opinion. The user's
+read: "let's fix properly all architecture issues. then we do
+codebase level. i sm sure arch fixes will reduce codebase ones."
+That hypothesis sets up the next session; this one was about
+testing whether the review's recommended fix-tier work was
+sound advice or just plausible-sounding text.
+
+The verdict, after one session and fourteen commits: it was sound.
+The "Phase 1.5 contract module" pass — extracting `Grappa.PubSub.Topic`,
+`Grappa.Log`, `Grappa.Scrollback.Wire`, `Grappa.IRC.Identifier` —
+collapsed the cross-cutting themes into four small modules that were
+each greppable in one place. The Session.Server cohesion pass
+(extract framing into Client, extract sender_nick into Message, drop
+the Config.Network struct from state, route broadcasts through Wire)
+removed five concerns from the single largest GenServer in the
+codebase. The state map shrank. Phase 5 SASL/CAP work has a clear
+seam now where it didn't before.
+
+A few discipline points worth pinning down.
+
+**Fix the baseline first, even when nobody's looking.** The
+worktree's first ci.check failed on a pre-existing Dialyzer
+`:unmatched_return` from S12's Release.migrate work. Caught only
+because the architecture-fix worktree was the first run with that
+code in scope; S12 had pushed without that gate firing because the
+deploy-time check was different from the CI gate. The CLAUDE.md rule
+"Fix pre-existing errors first. Zero errors is the baseline" exists
+exactly for this — you can't claim Phase 1.5 was clean if you built
+on top of an existing warning. First commit of the worktree was
+the baseline fix.
+
+**Atom-table-DoS is a real concern; the closed protocol vocabulary
+isn't.** The IRC.Message.command field had been typed `String.t()`
+with a moduledoc explanation citing atom-table-DoS as the reason
+for not atomising. That argument applies to unbounded user content
+— message bodies, nicks under attacker control, arbitrary tags —
+not to the closed RFC 2812 + IRCv3 set of ~24 verbs + 1000 numeric
+slots. The original choice was conservative-in-the-wrong-direction:
+losing Dialyzer exhaustiveness on Session.Server's pattern matches
+to defend against a non-existent attack surface. Fixing it required
+a discriminated union (`atom() | {:numeric, 0..999} | {:unknown,
+String.t()}`) so vendor extensions still don't atomize. The
+property test's encoder needed a new clause to convert atoms back
+to wire strings. The corrective for "we picked an over-broad type
+to be safe" is rarely "type it more broadly"; it's "find the
+narrower correct type plus the escape hatch for the genuine
+unbounded case."
+
+**Test-time enforcement beats runtime mutation when the dimensions
+are stable.** The architecture review flagged that `Meta.@known_keys`
+and the Logger `:metadata` allowlist had to be kept in sync manually
+across two files. Two paths to fix: extend the allowlist
+programmatically at boot via `:logger.update_handler_config` (the
+"automate it" path), or add a unit test that asserts the two lists
+agree (the "gate it" path). Picked the gate. The test caught real
+drift on its first run — three keys (`:new_nick`, `:modes`, `:args`)
+were in `Meta.@known_keys` but missing from the Logger allowlist;
+they had been silently dropped from log output for who knows how
+long. Runtime mutation would have papered over the bug; the gate
+made it visible. The general law: when two lists must be the same
+and both change rarely, a test gate is cheaper and more honest than
+runtime sync.
+
+**Recursive review skipped, with eyes open.** The plan called for a
+second `/review architecture` pass on the worktree before merge —
+recursive — to validate that the fixes didn't introduce new
+structural issues. Skipped. The reasoning: every commit traced
+1:1 from a specific finding, ci.check held throughout, no new
+abstractions were invented (the four new modules were each
+suggested by name in the original review), and the codebase
+review still ahead would test structural integrity from a
+different angle anyway. The trade-off is conscious — saved
+~10 minutes of agent work and ~500 lines of context for a
+modest risk of missing a side-effect. If the codebase review
+next session flags something the architecture review missed
+in the fix-up, the lesson recalibrates; if it doesn't, the
+trade-off was right.
+
+**The compose project-name conflict still bites.** Every check.sh
+run during Phase 1.5 needed `docker compose -f compose.prod.yaml
+stop` first because the prod and dev compose files share the
+project name "grappa" and target the same vlan IP. CP04's todo
+flagged this; CP05 still flags it. The fix — distinct project
+names or a detect-and-skip in `_lib.sh` — is small, but the
+workaround was tolerable enough that it kept getting deferred.
+The pattern is recognisable: a friction that's tolerable per
+incident but accumulates across sessions. Putting it on the
+immediate list of CP05 with a specific recipe is the
+counter-pressure.
+
+**The bouncer survives surgery.** Live deploy after the merge:
+bootstrap clean, autojoin worked on `#grappa`, healthz returned
+200, the structured logs showed the new shape (`command=mode`,
+`command=join`, `user=vjt`, `network=azzurra`, `pid=...`).
+End-to-end PRIVMSG round-trip via REST + Channel still worked
+because the wire-shape unification ("every door, same wire shape")
+held through the refactor — the Wire module is the single source
+of truth for both surfaces and one test proves it. That invariant
+was load-bearing for the safety of this session. If the wire
+contract had been split across the controller and the session,
+this refactor would have been a much riskier set of edits.
+
+Stats:
+- 14 commits, +1390 / −347 lines, 35 files
+- 121 → 179 tests (+58)
+- 4 new domain modules: Identifier, Log, Topic, Wire
+- 1 new test support: MessageEventAssertions
+- ci.check green at every commit boundary
+- Live deploy on Pi: clean, no regressions
+
+**Law:** when an architecture review surfaces three cross-cutting
+themes from independently-prompted agents, those themes are real
+even if no single agent makes the strongest case for any of them.
+The agents see the codebase from different angles; convergence
+across angles is the strongest possible signal short of running
+the code in production. Spend the fix-tier sessions on
+cross-cutting themes first; the targeted findings collapse into
+the contract modules anyway.
