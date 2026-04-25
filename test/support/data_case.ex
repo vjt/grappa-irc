@@ -15,8 +15,7 @@ defmodule Grappa.DataCase do
       alias Grappa.Repo
 
       import Ecto
-      import Ecto.Changeset
-      import Ecto.Query
+      import Ecto.{Changeset, Query}
       import Grappa.DataCase
     end
   end
