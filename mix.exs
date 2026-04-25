@@ -36,14 +36,17 @@ defmodule Grappa.MixProject do
       ],
       docs: [
         main: "Grappa",
-        extras: ["README.md", "docs/DESIGN_NOTES.md"],
+        extras: ["README.md", "docs/DESIGN_NOTES.md", "LICENSE"],
         source_url: "https://github.com/vjt/grappa-irc",
         homepage_url: "https://github.com/vjt/grappa-irc"
       ],
       sobelow: [
         verbose: true,
         exit: "Medium",
-        skip: false
+        skip: false,
+        # Phase 5 (hardening) re-enables HTTPS enforcement.
+        # See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
+        ignore: ["Config.HTTPS"]
       ],
       boundary: [default: [check: [in: true, out: true]]],
       releases: [
@@ -106,10 +109,7 @@ defmodule Grappa.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get", "ecto.setup"],
-      "ecto.setup": ["ecto.create", "ecto.migrate"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      setup: ["deps.get"],
       "ci.check": [
         "format --check-formatted",
         "credo --strict",
@@ -117,7 +117,9 @@ defmodule Grappa.MixProject do
         "hex.audit",
         "sobelow --config --exit Medium",
         "doctor",
-        "test --warnings-as-errors --cover",
+        # Coverage is a CI-only step (mix coveralls.json in the workflow);
+        # local runs would need MIX_ENV=test for excoveralls to load.
+        "test --warnings-as-errors",
         "dialyzer",
         "docs"
       ]

@@ -7,6 +7,8 @@
 /.fetch
 /.hex/
 /.mix/
+/.cache/
+/.sobelow/
 erl_crash.dump
 *.ez
 *.beam

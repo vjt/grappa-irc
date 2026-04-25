@@ -1,0 +1,7 @@
+[
+  verbose: true,
+  exit: "Medium",
+  # Phase 5 (hardening) re-enables HTTPS enforcement on the Phoenix
+  # Endpoint. See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
+  ignore: ["Config.HTTPS"]
+]

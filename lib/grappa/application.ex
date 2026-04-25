@@ -4,7 +4,7 @@ defmodule Grappa.Application do
   use Application
 
   @impl Application
-  def start(_type, _args) do
+  def start(_, _) do
     children = [
       # Grappa.Repo,                                              # Task 2 — Ecto repo
       {Phoenix.PubSub, name: Grappa.PubSub},
@@ -19,7 +19,7 @@ defmodule Grappa.Application do
   end
 
   @impl Application
-  def config_change(_changed, _new, _removed) do
+  def config_change(_, _, _) do
     # GrappaWeb.Endpoint.config_change(changed, removed)            # Task 4 — re-enable
     :ok
   end

@@ -8,7 +8,6 @@ defmodule Grappa do
 
   ## Top-level concepts
 
-  - `Grappa.Application` — supervision tree root.
   - `Grappa.Config` — runtime TOML config loader.
   - `Grappa.Repo` — Ecto repo backed by sqlite.
   - `Grappa.Scrollback` — bouncer-owned scrollback storage with paginated reads.
