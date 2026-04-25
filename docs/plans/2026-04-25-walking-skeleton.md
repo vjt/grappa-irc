@@ -1699,28 +1699,42 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   alias GrappaWeb.UserSocket
 
+  alias Grappa.Scrollback
+  alias GrappaWeb.MessagesJSON
+
   test "joining a network/channel topic delivers PubSub-broadcast events" do
-    {:ok, _, socket} =
+    # Use distinct (network, channel) per test — PubSub topics are
+    # global; sharing names with controller tests races under async.
+    net = "ch_happy_net"
+    chan = "#ch_happy"
+    topic = "grappa:network:#{net}/channel:#{chan}"
+
+    {:ok, _, _} =
       UserSocket
       |> socket("user_socket:vjt", %{user_name: "vjt"})
-      |> subscribe_and_join("grappa:network:azzurra/channel:#sniffo", %{})
+      |> subscribe_and_join(topic, %{})
 
-    assert socket
+    {:ok, message} =
+      Scrollback.insert(%{
+        network_id: net, channel: chan, server_time: 1_700_000_000_000,
+        kind: :privmsg, sender: "<local>", body: "ciao raga"
+      })
 
-    Phoenix.PubSub.broadcast(
-      Grappa.PubSub,
-      "grappa:network:azzurra/channel:#sniffo",
-      {:event, %{kind: :message, body: "hello"}}
-    )
+    payload = %{kind: :message, message: MessagesJSON.data(message)}
+    Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, payload})
 
-    assert_push "event", %{kind: :message, body: "hello"}
+    assert_push "event", ^payload
   end
 
-  test "rejects join on unsupported topic shape" do
+  test "rejects join on malformed network topic" do
+    # NB: a topic that doesn't match any `channel "..."` declaration in
+    # UserSocket (e.g. `"grappa:bogus:lol"`) raises `RuntimeError` from
+    # Phoenix BEFORE reaching the channel — that's a Phoenix internal,
+    # not a Grappa contract. Test the channel-level predicate instead.
     assert {:error, %{reason: "unknown topic"}} =
              UserSocket
              |> socket("user_socket:vjt", %{user_name: "vjt"})
-             |> subscribe_and_join("grappa:bogus:lol", %{})
+             |> subscribe_and_join("grappa:network:azzurra/wrong:foo", %{})
   end
 end
 ```
@@ -1753,42 +1767,57 @@ end
 defmodule GrappaWeb.GrappaChannel do
   use GrappaWeb, :channel
 
-  @impl true
-  def join("grappa:user:" <> _user, _params, socket) do
-    Phoenix.PubSub.subscribe(Grappa.PubSub, socket.topic)
+  @impl Phoenix.Channel
+  def join("grappa:user:" <> user, _, socket) when user != "" do
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, socket.topic)
     {:ok, socket}
   end
 
-  def join("grappa:network:" <> _rest = topic, _params, socket) do
-    if valid_network_topic?(topic) do
-      Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+  def join("grappa:network:" <> rest = topic, _, socket) do
+    if valid_network_topic?(rest) do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
       {:ok, socket}
     else
       {:error, %{reason: "unknown topic"}}
     end
   end
 
-  def join(_topic, _params, _socket), do: {:error, %{reason: "unknown topic"}}
+  # Reachable for empty user (`"grappa:user:"`) — first clause's guard
+  # filters it; the socket router still routed it here.
+  def join(_, _, _), do: {:error, %{reason: "unknown topic"}}
 
-  @impl true
+  @impl Phoenix.Channel
   def handle_info({:event, payload}, socket) do
     push(socket, "event", payload)
     {:noreply, socket}
   end
 
-  defp valid_network_topic?("grappa:network:" <> rest) do
+  # Empty-segment guards are required: without them, `"grappa:network:"`
+  # and `"grappa:network:azzurra/channel:"` route through and join.
+  defp valid_network_topic?(rest) do
     case String.split(rest, "/", parts: 2) do
-      [_net] -> true
-      [_net, "channel:" <> _chan] -> true
+      [net] when net != "" -> true
+      [net, "channel:" <> chan] when net != "" and chan != "" -> true
       _ -> false
     end
   end
 end
 ```
 
-- [ ] **Step 6: Run — PASS**
+- [ ] **Step 6: Mount the socket on the Endpoint**
 
-- [ ] **Step 7: Commit**
+Add to `lib/grappa_web/endpoint.ex` (above the `plug` chain — sockets
+are mounted directly on the Endpoint, outside the plug pipeline):
+
+```elixir
+socket "/socket", GrappaWeb.UserSocket,
+  websocket: true,
+  longpoll: false
+```
+
+- [ ] **Step 7: Run — PASS**
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add lib/grappa_web/channels/ test/support/channel_case.ex test/grappa_web/channels/

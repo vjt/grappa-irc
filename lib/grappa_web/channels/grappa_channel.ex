@@ -25,6 +25,8 @@ defmodule GrappaWeb.GrappaChannel do
 
   @impl Phoenix.Channel
   def join("grappa:user:" <> user, _, socket) when user != "" do
+    # Phase 2: reject when `user != socket.assigns.user_name` once
+    # `connect/3` validates a token rather than hardcoding "vjt".
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, socket.topic)
     {:ok, socket}
   end
@@ -38,6 +40,8 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
+  # Reachable for empty user (`"grappa:user:"`) — first clause's guard
+  # filters it; the socket router still routed it here.
   def join(_, _, _), do: {:error, %{reason: "unknown topic"}}
 
   @impl Phoenix.Channel
