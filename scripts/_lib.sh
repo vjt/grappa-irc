@@ -48,16 +48,29 @@ export COMPOSE_FILE
 # Worktree source overrides. When SRC_ROOT == REPO_ROOT (running from main),
 # this stays empty and `"${WORKTREE_VOLUMES[@]}"` expands to nothing.
 # When SRC_ROOT != REPO_ROOT (running from a worktree), each path is
-# bind-mounted read-only on top of compose.yaml's `./:/app` bind so the
-# container sees worktree code while still benefiting from main's cached
-# `_build`, `deps`, `priv/plts`, `runtime/`, etc.
+# bind-mounted on top of compose.yaml's `./:/app` bind so the container
+# sees worktree code while still benefiting from main's cached `_build`,
+# `deps`, `priv/plts`, `runtime/`, etc.
+#
+# Source directories (lib, test, config, priv/repo) are mounted READ-WRITE
+# because Elixir 1.19's incremental compiler updates source-file mtimes
+# (`File.touch!`) for staleness tracking. RO mounts produce
+# `File.Error: read-only file system` on every recompile cycle that
+# touches a changed source. Container UID matches host UID via
+# CONTAINER_UID in compose.yaml, so writes from the container land as
+# the host user — no privilege escalation surface to defend against.
+#
+# Config files (mix.exs, mix.lock, .formatter.exs, .credo.exs,
+# .sobelow-conf) stay RO because the compiler never touches them, but
+# `mix deps.get` could mutate mix.lock — RO prevents drift between
+# what's checked in and what the worktree sees during a oneshot run.
 declare -ag WORKTREE_VOLUMES=()
 if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
     WORKTREE_VOLUMES=(
-        -v "$SRC_ROOT/lib:/app/lib:ro"
-        -v "$SRC_ROOT/test:/app/test:ro"
-        -v "$SRC_ROOT/config:/app/config:ro"
-        -v "$SRC_ROOT/priv/repo:/app/priv/repo:ro"
+        -v "$SRC_ROOT/lib:/app/lib"
+        -v "$SRC_ROOT/test:/app/test"
+        -v "$SRC_ROOT/config:/app/config"
+        -v "$SRC_ROOT/priv/repo:/app/priv/repo"
         -v "$SRC_ROOT/mix.exs:/app/mix.exs:ro"
         -v "$SRC_ROOT/mix.lock:/app/mix.lock:ro"
         -v "$SRC_ROOT/.formatter.exs:/app/.formatter.exs:ro"
