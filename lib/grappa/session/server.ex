@@ -112,11 +112,11 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info(
-        {:irc, %Message{command: :privmsg, params: [target, body], prefix: prefix}},
+        {:irc, %Message{command: :privmsg, params: [target, body]} = msg},
         state
       )
       when is_binary(body) do
-    sender = nick_of(prefix)
+    sender = Message.sender_nick(msg)
     server_time = System.system_time(:millisecond)
 
     case Scrollback.insert(%{
@@ -147,13 +147,13 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info(
-        {:irc, %Message{command: cmd, prefix: prefix, params: params}},
+        {:irc, %Message{command: cmd, params: params} = msg},
         state
       )
       when cmd in @logged_event_commands do
     Logger.info("irc event",
       command: cmd,
-      sender: nick_of(prefix),
+      sender: Message.sender_nick(msg),
       channel: List.first(params)
     )
 
@@ -161,10 +161,4 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:irc, %Message{}}, state), do: {:noreply, state}
-
-  ## Helpers
-
-  defp nick_of({:nick, nick, _, _}), do: nick
-  defp nick_of({:server, server}), do: server
-  defp nick_of(nil), do: "*"
 end

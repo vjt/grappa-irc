@@ -81,4 +81,19 @@ defmodule Grappa.IRC.Message do
 
   @enforce_keys [:command]
   defstruct tags: %{}, prefix: nil, command: nil, params: []
+
+  @doc """
+  Returns the sender nickname (user-originated lines), the server name
+  (server-originated lines), or `"*"` for prefix-less client-originated
+  lines.
+
+  Centralised here so consumers do not pattern-match on the prefix
+  tuple shape directly — that internal shape stays an implementation
+  detail of this module (architecture review A5).
+  """
+  @spec sender_nick(t() | prefix()) :: String.t()
+  def sender_nick(%__MODULE__{prefix: prefix}), do: sender_nick(prefix)
+  def sender_nick({:nick, nick, _, _}), do: nick
+  def sender_nick({:server, server}), do: server
+  def sender_nick(nil), do: "*"
 end
