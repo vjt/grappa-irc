@@ -76,16 +76,7 @@ defmodule GrappaWeb.MessagesController do
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
   def create(conn, %{"network_id" => network, "channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    attrs = %{
-      network_id: network,
-      channel: channel,
-      server_time: System.system_time(:millisecond),
-      kind: :privmsg,
-      sender: "<local>",
-      body: body
-    }
-
-    {:ok, message} = Scrollback.insert(attrs)
+    {:ok, message} = Scrollback.persist_privmsg(network, channel, "<local>", body)
     broadcast_message(network, channel, message)
 
     conn

@@ -57,6 +57,26 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  Persists a `:privmsg` row with `server_time` defaulted to the
+  current millisecond. The producing-side defaults (kind, server_time)
+  live here so callers — REST controller, IRC.Session, future Phase 6
+  listener — pass only the four domain inputs and stay decoupled from
+  the schema's internal field set.
+  """
+  @spec persist_privmsg(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+  def persist_privmsg(network_id, channel, sender, body) do
+    insert(%{
+      network_id: network_id,
+      channel: channel,
+      server_time: System.system_time(:millisecond),
+      kind: :privmsg,
+      sender: sender,
+      body: body
+    })
+  end
+
+  @doc """
   Fetches up to `limit` messages from `(network_id, channel)`, ordered
   by `server_time` DESC then `id` DESC (stable inside same-ms ties).
 

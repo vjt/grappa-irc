@@ -127,17 +127,7 @@ defmodule Grappa.Session.Server do
         state
       )
       when is_binary(body) do
-    sender = Message.sender_nick(msg)
-    server_time = System.system_time(:millisecond)
-
-    case Scrollback.insert(%{
-           network_id: state.network_id,
-           channel: target,
-           server_time: server_time,
-           kind: :privmsg,
-           sender: sender,
-           body: body
-         }) do
+    case Scrollback.persist_privmsg(state.network_id, target, Message.sender_nick(msg), body) do
       {:ok, message} ->
         :ok =
           Phoenix.PubSub.broadcast(
