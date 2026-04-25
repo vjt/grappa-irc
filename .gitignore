@@ -1,29 +1,57 @@
-# Rust
-/target/
-Cargo.lock
+# ── Elixir / Erlang
+/_build/
+/cover/
+/coverage/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+.elixir_ls/
+/.dialyxir_*
+*.plt
 
-# Go
-/bin/
-/vendor/
+# ── PLT cache (Dialyzer)
+priv/plts/*.plt
+priv/plts/*.plt.hash
 
-# Node / PWA
+# ── Releases
+/grappa-*.tar
+/grappa-*.tar.gz
+/release/
+
+# ── Mix-generated
+*.zip
+
+# ── Local config / state (NEVER commit secrets or live DB)
+/grappa.toml
+/grappa_dev.db
+/grappa_test*.db*
+*.db-shm
+*.db-wal
+*.db-journal
+/runtime/*
+!/runtime/.gitkeep
+
+# ── Docker / env
+.env
+.env.local
+*.local
+
+# ── Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+*.iml
+.vscode-test/
+
+# ── Node / PWA (cicchetto, future)
 /node_modules/
 /dist/
 /.vite/
 /.svelte-kit/
 *.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*~
-
-# Local env
-.env
-.env.local
-*.local
