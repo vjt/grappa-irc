@@ -124,7 +124,7 @@ Severity: CRITICAL (blocks correctness/safety), HIGH (significant maintenance bu
 1. Collect all findings from all agents.
 2. Deduplicate (cross-module agent may overlap with scope agents).
 3. **Trajectory review** (codebase reviews only): read the active
-   checkpoint, `docs/todo.md`, `docs/project-evolution.md`, and
+   checkpoint, `docs/todo.md`, `README.md` "Phases" section, and
    `docs/project-story.md`. Write a `## Trajectory` section answering:
    what did we build recently, does it serve the core mission
    (always-on IRC bouncer + REST/WS surface + downstream IRCv3

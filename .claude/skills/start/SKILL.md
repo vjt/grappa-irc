@@ -82,7 +82,7 @@ from todo + checkpoint pending.
 
 ### 7. Phase awareness
 
-Surface the current Phase from `docs/project-evolution.md`. If we're
-mid-Phase 1, mention which Task in the walking-skeleton plan we're at
-based on the last commit + the test/code state. Don't just pull from
-todo — read the actual code.
+Surface the current Phase from `README.md` "Phases" section. If we're
+mid-Phase, mention which Task in the relevant plan we're at based on
+the last commit + the test/code state. Don't just pull from todo —
+read the actual code.

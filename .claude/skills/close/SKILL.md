@@ -70,8 +70,6 @@ Check whether this session's work affects:
 - `docs/DESIGN_NOTES.md` — every architectural decision MUST land here
   with date + rationale + apply-rule
 - `CLAUDE.md` — new patterns or rules that should outlive the session
-- `docs/project-evolution.md` — header stats, phase status — update
-  EVERY session, not "if significant"
 - `docs/todo.md` — already handled in step 3
 
 Skip docs that weren't affected. Don't touch docs for cosmetic reasons.
@@ -98,9 +96,6 @@ nothing went wrong, write about what went *right* and why.
 
 When writing:
 - Read the last 2-3 episodes for voice and tone
-- Update the header stats in `docs/project-evolution.md` (commits,
-  sessions, test count). This is mandatory every session, not "if
-  significant."
 - Optional: extract a one-line **Law:** if a generalisable principle
   emerged. Laws need the narrative to give them weight; episodes
   without laws are fine, laws without episodes are not.

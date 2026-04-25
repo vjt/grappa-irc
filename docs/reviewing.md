@@ -182,7 +182,7 @@ about the project as a whole, informed by recent checkpoint history.
 After the line-level and architecture agents report back, read:
 - The active checkpoint (recent sessions)
 - `docs/todo.md` (backlog and priorities)
-- `docs/project-evolution.md` (phase plan + intent)
+- `README.md` "Phases" section (phase plan + intent)
 - `docs/project-story.md` (narrative thread across sessions)
 - Recent observation items in todo (are they being evaluated?)
 
