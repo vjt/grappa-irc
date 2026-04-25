@@ -369,3 +369,94 @@ ultimately depend on. Tighten the moduledoc to match the spec, not
 the other way around — unless you're going to add the catch-all
 clause that makes the moduledoc true. Pick one; don't ship the
 mismatch.
+
+## S6 — 2026-04-25 — the first read resource and a reviewer who was right for the wrong reason
+
+Task 5 was supposed to be small: wire `Grappa.Scrollback.fetch/4`
+through to a JSON endpoint. Three tests, one controller, one view,
+one route. The plan was 120 lines and had inline serialization in
+the controller body — a discrepancy with its own Files list, which
+mentioned `messages_json.ex`. The first decision of the session was
+which version of the plan to follow. CLAUDE.md says directions over
+code, but it also says when a plan conflicts with documented patterns
+(here: Phoenix 1.8 `formats: [:json]` is wired precisely so views
+handle rendering), fix the plan. The Files list was the right intent;
+the body was sloppy. View module won.
+
+Code review surfaced two things — one was a bug, one was a wrong
+diagnosis with a right consequence.
+
+The bug: `?limit=banana` silently fell back to the default. Plan
+permitted any int, my impl tightened to "positive int only" via
+guard, but kept the fallback shape. Reviewer flagged it as a CLAUDE.md
+violation ("validate at boundary, reject unknown values"), and they
+were right. Worse, the plan had its own bug — `?limit=0` would parse
+to `0`, which is truthy in Elixir, which would be passed to
+`Scrollback.fetch/4`, which would crash on the `when limit > 0`
+guard, which would 500 the request. So the plan was forgiving for
+typos AND brittle for caller bugs — worst of both. Correct shape:
+distinguish absent (use default) from present-and-unparseable
+(return 400). Helpers became three-way:
+`{:ok, n} | {:ok, default} | {:error, :bad_request}`. Controller
+uses `with`. `FallbackController` got a third clause.
+
+This is the second time a code review caught a *plan* bug rather
+than a *code* bug. Last session it was the FallbackController spec
+narrowing the moduledoc's claim about "all `{:error, _}` shapes."
+This session it was the input-parsing fall-through. The pattern:
+plans inherit bugs at the time of their writing, and the only way
+to surface them is to compare the implementation against CLAUDE.md
+during review, not against the plan. CLAUDE.md is the higher
+authority. The plan is one implementation strategy, not a contract.
+
+The wrong diagnosis: reviewer flagged Jason's atom encoding as a
+"MUST FIX," claiming `:privmsg` would crash because "Jason does NOT
+encode bare atoms by default." That assertion was false. Jason DOES
+encode atoms as strings by default — `:foo` becomes `"foo"`.
+Verified at REPL before changing any code:
+`Jason.encode!(%{kind: :foo}) == ~s|{"kind":"foo"}|`. The actual
+evidence was already in the test output: tests passed, which means
+the JSON pipeline already round-tripped the atom successfully.
+
+But the *related* point was right. The tests didn't actually assert
+the `kind` field in the response body — they only checked `body`.
+So the contract was implicit, propped up by the moduledoc and
+nothing else. If a future change broke the encoding (or if Jason's
+default ever changed), the tests would still pass and the broken
+contract would ship. Added the assertion. Now the contract is
+load-bearing in CI, not in prose.
+
+Two lessons that didn't quite fit on either side: when working with
+a reviewer (human or agent), verify the mechanism before changing
+code. The reviewer can be wrong about why something needs fixing
+and right about whether something needs fixing. The fix often isn't
+what they suggested, but the gap is real. And: tests that don't
+assert the field can't catch a regression in the field. "It returns
+200" isn't a contract; it's a status code.
+
+Cross-channel isolation — the test that says "fetch for `(azzurra,
+#sniffo)` doesn't return rows from `(azzurra, #other)` or
+`(freenode, #sniffo)`" — was added on the same pass. Reviewer
+flagged it as a SHOULD CONSIDER. It's the canonical "if the
+implementation were wrong, would the test catch it?" gap from the
+CLAUDE.md testing standards. If `Scrollback.fetch/4` ever drops its
+`WHERE` clause, this is the test that should fail first.
+
+Two commits: `6ac4456` (the implementation as planned) and
+`01c0a92` (the five review follow-ups). 28 tests on main, ci.check
+still ~17s on the Pi. CP01 was rotated to CP02 at the start of this
+session — 392 lines was 2× the warn threshold, and reading it cost
+context every `/start`. CP02 opened with a frozen-state snapshot at
+`09f65a3` and S6 is now its first session.
+
+**Law (sub-1):** when a code reviewer flags a MUST FIX based on
+assumed behavior, verify the mechanism before changing code. The
+reviewer can be wrong about the cause and right about the gap. The
+fix is rarely what they suggested, but the work is still there.
+
+**Law (sub-2):** plans inherit bugs at the time of their writing.
+CLAUDE.md is the authority, not the plan. When the implementation
+needs to deviate from the plan to satisfy CLAUDE.md, that's the plan
+losing — not Claude going off-script. Document the deviation in the
+checkpoint with the *why*; do not silently re-implement to match
+the plan.

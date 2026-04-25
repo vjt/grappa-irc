@@ -10,17 +10,18 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 4 done (Phoenix Endpoint + Router + /healthz; 21 tests
-  green; ci.check ~17s on the Pi). Next: Task 5 — `GET
+- Phase 1 Task 5 done (`GET /messages` paginated DESC; 28 tests green;
+  ci.check ~17s on the Pi). Next: Task 6 — `POST
   /networks/:net/channels/:chan/messages` per
-  `docs/plans/2026-04-25-walking-skeleton.md` line 1450.
+  `docs/plans/2026-04-25-walking-skeleton.md` line 1572. First write
+  resource; introduces `Phoenix.PubSub.broadcast/3`.
 - Worktree cleanup: `git worktree remove
-  /home/vjt/code/IRC/grappa-task4` + `git branch -D
-  phase1-task4-endpoint` once S5 fully closed.
+  /home/vjt/code/IRC/grappa-task5` + `git branch -D
+  phase1-task5-messages` once S6 fully closed.
 
 ## High
 
-- Phase 1 Tasks 5-10 per the walking-skeleton plan.
+- Phase 1 Tasks 6-10 per the walking-skeleton plan.
 - Live `/healthz` round-trip on the Pi via `scripts/deploy.sh` →
   `scripts/healthcheck.sh` — deferred to Task 8 when Bootstrap wires
   `grappa.toml` into the supervision tree. Until then deploy preflight
