@@ -522,3 +522,106 @@ the wire format that ships to clients, the cost-benefit is wrong.
 Tests can be three characters longer; the wire format ships
 forever. If you'd be embarrassed to document the duplicate field in
 the public API, don't ship it for the test convenience.
+
+---
+
+## S8 — 2026-04-25 — Phase 1 Task 7, the first WebSocket and the global topic seam
+
+The first WebSocket surface lands and proves a quiet rule about
+test isolation: `Phoenix.PubSub` is process-routed but the topic
+namespace is global. When two `async: true` tests subscribe to the
+same topic name, they're competing for a shared resource even
+though they're in different OS processes. The Task 6 controller
+test posts to `azzurra/#sniffo`, which broadcasts on the topic
+`grappa:network:azzurra/channel:#sniffo`. The Task 7 channel test,
+in a different test process, joined the SAME topic — so the
+channel's PubSub subscription was a real subscriber and got the
+broadcast. The sibling-channel scoping assertion (`refute_push`)
+flipped red on a race window of about 50 ms.
+
+The fix is small: each channel test uses its own
+`(network, channel)` pair (`ch_happy_net/#ch_happy`,
+`ch_sibling_net/#ch_joined`). The schema columns are free-form
+strings; nothing special about `azzurra/#sniffo`. But the lesson
+generalizes: whenever a test subscribes to PubSub by topic name,
+that test is depending on no other async test using the same
+name. The schema makes it free to partition, so partition. This is
+the second seam where async test isolation requires a deliberate
+design choice rather than a default — the first was Ecto sandbox
+mode (each test gets its own connection); this one is PubSub
+topic name (each test should pick a unique one).
+
+The reviewer caught three SHOULD-FIX worth recording. The first
+was the same shape of mistake that S6 caught with the Jason
+encoding: the channel test rebuilt the wire shape by hand instead
+of routing through `MessagesJSON.data/1`, the production formatter
+that exists exactly so both doors share one source of truth. The
+test passed because the hand-rolled shape matched what the channel
+pushed — but if a future task adds, removes, or renames a field on
+the formatter, the controller test and the channel test would
+disagree about what the wire shape IS. The fix routes the test
+through `Scrollback.insert/1` + the real formatter. Now the wire
+contract is pinned at both doors by the same code path.
+
+The second was a coverage gap, not a bug. The catch-all
+`def join(_, _, _)` clause looked dead at first glance — the socket
+router only declares `grappa:user:*` and `grappa:network:*`, and
+each prefix has a more specific clause above the catch-all. But
+`"grappa:user:"` (empty user) DOES route through the socket router
+to the channel; the first clause's guard `when user != ""`
+rejects it; the second `"grappa:network:"` prefix doesn't match;
+falls into the catch-all. Reachable. Just untested. Two new
+rejection tests (empty user, empty channel) added — without them,
+deletion of either guard ships green. This is the
+"if-the-implementation-were-wrong-would-this-test-catch-it" bar
+from CLAUDE.md applied to the rejection paths, not just the happy
+ones.
+
+The third was a partial-match in the user-topic test
+(`assert_push("event", %{kind: :motd, body: "welcome"})` matches
+even if the channel adds extra fields). The channel module's
+docstring promises payload-verbatim; the test should pin equality
+with `^payload`, not a shape pattern. Ship the equality assertion
+and any future "let me decorate the payload with X for
+convenience" change flips red immediately.
+
+The plan deviation count keeps climbing per task. Task 1-3 had
+0-1 each; Task 6 had three; Task 7 had seven. The pattern is
+clear: the plan was written before Tasks 4-6 review-driven shape
+changes, so anything in the plan that touched wire shape was
+guaranteed stale by the time Task 7 ran. Two of the seven
+deviations were inherited bugs (the `valid_network_topic?/1`
+predicate had no emptiness guards; the test broadcast used the
+pre-Task-6 shape). The other five were either CLAUDE.md
+conventions (bare `_`, `:ok =` match-or-crash) or coverage
+expansions (added tests for paths the plan didn't cover). The
+plan now has both inherited bugs fixed at source — plan body
+matches the implementation, so the next session that copies from
+this section won't re-inherit the gap.
+
+There's a meta-lesson here too. The fact that the plan deviation
+count is going UP per task is itself a signal: the plan is
+decaying as a contract because each task reshapes things the
+later tasks were planned against. At some point — probably around
+Task 8 (the IRC client + session GenServer, by far the largest)
+— it makes more sense to plan that task fresh against the current
+state of the code than to follow the original plan body. The
+plan's exit criteria still hold; the implementation steps do not.
+
+Stats:
+- 41 tests (+7 from Task 7: 1 happy + 1 sibling-scoping + 1 user
+  + 4 malformed-topic rejections)
+- 810 LOC of Elixir under `lib/` (+78 net)
+- 45 commits on main (+3 from Task 7: abf4e5a, 70d9605, plus this
+  S8 docs commit)
+- ci.check still ~17s on Pi (PLT hot)
+
+**Law:** when an `async: true` test subscribes to a `Phoenix.PubSub`
+topic by name, that test is asserting nothing else in the suite
+publishes to that topic during its window. The PubSub topic
+namespace is a globally shared resource, so partition it
+explicitly per-test (cheap when the schema columns are free-form
+strings). The rule extends to any global identifier — Registry
+keys, ETS table names, file paths under a fixed prefix. If two
+async tests can collide on a name, they will, and the test that
+loses the race is the one closest to the race window.

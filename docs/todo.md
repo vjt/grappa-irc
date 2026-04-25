@@ -10,17 +10,24 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 6 done (`POST /messages` + first `Phoenix.PubSub.broadcast/3`;
-  34 tests green; ci.check ~17s on the Pi). Next: Task 7 — Phoenix
-  Channel for `/socket/websocket` per
-  `docs/plans/2026-04-25-walking-skeleton.md` line 1664. First
-  WebSocket surface; subscribes to PubSub, pushes events through to
-  JS clients. Note: Task 7 plan tests assert the old
-  outer-`body` shape that Task 6 review dropped — pattern descends to
-  `message: %{body: ...}` now.
+- Phase 1 Task 7 done (`/socket/websocket` + `GrappaWeb.UserSocket` +
+  `GrappaWeb.GrappaChannel`; 41 tests green; ci.check ~17s on the
+  Pi). Next: Task 8 — `Grappa.IRC.Client` + `Grappa.Session` GenServer
+  + `Grappa.Bootstrap` per
+  `docs/plans/2026-04-25-walking-skeleton.md` line 1800. Largest
+  task in Phase 1; introduces the IRC parser (binary pattern
+  matching), per-(user,network) session GenServer under
+  `DynamicSupervisor`, and bootstrap module that reads `grappa.toml`
+  and spawns sessions. Live deploy + healthz round-trip on the Pi
+  unblocks here too. Note from S8: the plan-deviation count has been
+  climbing per task (0–1 in early tasks, 7 in Task 7), so consider
+  re-planning Task 8 fresh against current code rather than copying
+  plan body verbatim — exit criteria still hold; implementation
+  steps are stale.
+
 ## High
 
-- Phase 1 Tasks 7-10 per the walking-skeleton plan.
+- Phase 1 Tasks 8-10 per the walking-skeleton plan.
 - Live `/healthz` round-trip on the Pi via `scripts/deploy.sh` →
   `scripts/healthcheck.sh` — deferred to Task 8 when Bootstrap wires
   `grappa.toml` into the supervision tree. Until then deploy preflight
