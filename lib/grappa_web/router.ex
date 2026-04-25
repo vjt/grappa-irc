@@ -6,7 +6,8 @@ defmodule GrappaWeb.Router do
       under any condition (`/healthz`). Skipping `:api` keeps the
       response a plain `text/plain` so it round-trips cleanly through
       load balancers and `curl --fail`.
-    * `/` (`:api`) — JSON resources. Routes land here in Task 5+.
+    * `/` (`:api`) — JSON resources. Phase 1 messages resource;
+      Task 6 adds `POST` to the same nested path.
 
   WebSocket mount (`socket "/socket", GrappaWeb.UserSocket`) lands in
   the Endpoint, not here, when Task 6 wires Phoenix Channels.
@@ -25,6 +26,9 @@ defmodule GrappaWeb.Router do
 
   scope "/", GrappaWeb do
     pipe_through :api
-    # Routes added in Task 5+.
+
+    get "/networks/:network_id/channels/:channel_id/messages",
+        MessagesController,
+        :index
   end
 end
