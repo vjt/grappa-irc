@@ -96,4 +96,81 @@ defmodule GrappaWeb.MessagesControllerTest do
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=banana")
     assert json_response(conn, 400)["error"] == "bad request"
   end
+
+  describe "POST /networks/:network_id/channels/:channel_id/messages" do
+    test "stores, returns 201 with serialized message, broadcasts via PubSub", %{conn: conn} do
+      topic = "grappa:network:azzurra/channel:#sniffo"
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "ciao raga"})
+
+      body = json_response(conn, 201)
+      assert body["body"] == "ciao raga"
+      assert body["channel"] == "#sniffo"
+      assert body["network_id"] == "azzurra"
+      assert body["kind"] == "privmsg"
+      assert body["sender"] == "<local>"
+      assert is_integer(body["server_time"])
+      assert is_integer(body["id"])
+
+      assert_receive {:event, %{kind: :message, body: "ciao raga"}}, 200
+    end
+
+    test "persists — POSTed message visible via subsequent GET", %{conn: conn} do
+      conn1 =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "persisted"})
+
+      assert json_response(conn1, 201)
+
+      conn2 = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
+      body = json_response(conn2, 200)
+      assert length(body) == 1
+      assert Enum.at(body, 0)["body"] == "persisted"
+      assert Enum.at(body, 0)["kind"] == "privmsg"
+    end
+
+    test "broadcast scoped to (network, channel) — does not leak to other channel", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#other")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "wrong-receiver"})
+
+      assert json_response(conn, 201)
+      refute_receive {:event, _}, 100
+    end
+
+    test "empty body returns 400", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => ""})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
+
+    test "missing body field returns 400", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
+
+    test "non-string body returns 400", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => 42})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
+  end
 end
