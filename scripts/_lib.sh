@@ -64,15 +64,25 @@ export COMPOSE_FILE
 # .sobelow-conf) stay RO because the compiler never touches them, but
 # `mix deps.get` could mutate mix.lock — RO prevents drift between
 # what's checked in and what the worktree sees during a oneshot run.
+#
+# Escape hatch: `WRITABLE_LOCK=1 scripts/mix.sh deps.get` flips mix.lock
+# to RW so dep additions in worktrees actually flow back to disk. Use
+# only when intentionally adding/updating deps from a worktree branch
+# (the resulting mix.lock change should be committed on that branch and
+# merged back via the normal worktree workflow).
 declare -ag WORKTREE_VOLUMES=()
 if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
+    lock_mode="ro"
+    if [ "${WRITABLE_LOCK:-}" = "1" ]; then
+        lock_mode="rw"
+    fi
     WORKTREE_VOLUMES=(
         -v "$SRC_ROOT/lib:/app/lib"
         -v "$SRC_ROOT/test:/app/test"
         -v "$SRC_ROOT/config:/app/config"
         -v "$SRC_ROOT/priv/repo:/app/priv/repo"
         -v "$SRC_ROOT/mix.exs:/app/mix.exs:ro"
-        -v "$SRC_ROOT/mix.lock:/app/mix.lock:ro"
+        -v "$SRC_ROOT/mix.lock:/app/mix.lock:$lock_mode"
         -v "$SRC_ROOT/.formatter.exs:/app/.formatter.exs:ro"
         -v "$SRC_ROOT/.credo.exs:/app/.credo.exs:ro"
         -v "$SRC_ROOT/.sobelow-conf:/app/.sobelow-conf:ro"
