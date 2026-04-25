@@ -10,23 +10,26 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- **CI fix**: `mix docs` step in `.github/workflows/ci.yml:81` runs in
-  `MIX_ENV=test` (job-level env line 23) but `ex_doc` is `only: [:dev]`
-  in mix.exs:101. Step will fail on first push. Pick one: (a) move
-  `mix docs` into the `dialyzer` job (already MIX_ENV=dev), or (b) add
-  `:test` to ex_doc's `only:`. Option (a) keeps test deps minimal.
-- Phase 1 Task 3 done (Grappa.Scrollback context — insert/1, fetch/4,
-  max_page_size/0; 19 tests green; 13s ci.check on the Pi). Next:
-  Task 4 — Phoenix Endpoint + /healthz per
-  `docs/plans/2026-04-25-walking-skeleton.md`.
+- Phase 1 Task 4 done (Phoenix Endpoint + Router + /healthz; 21 tests
+  green; ci.check ~17s on the Pi). Next: Task 5 — `GET
+  /networks/:net/channels/:chan/messages` per
+  `docs/plans/2026-04-25-walking-skeleton.md` line 1450.
+- Worktree cleanup: `git worktree remove
+  /home/vjt/code/IRC/grappa-task4` + `git branch -D
+  phase1-task4-endpoint` once S5 fully closed.
 
 ## High
 
-- Phase 1 Tasks 4-10 per the walking-skeleton plan.
-- Once Task 4 (Phoenix endpoint + /healthz) lands: end-to-end smoke
-  via `scripts/deploy.sh` → `scripts/healthcheck.sh`. Until then,
-  deploy step in the dev cycle is N/A — Task 3 landed a context but
-  still no exposed surface, so deploy is still skipped.
+- Phase 1 Tasks 5-10 per the walking-skeleton plan.
+- Live `/healthz` round-trip on the Pi via `scripts/deploy.sh` →
+  `scripts/healthcheck.sh` — deferred to Task 8 when Bootstrap wires
+  `grappa.toml` into the supervision tree. Until then deploy preflight
+  refuses to run without `grappa.toml`, and copying the example would
+  satisfy a gate without exercising anything.
+- Phase 5 hardening: lift `signing_salt` (currently `"rotate-me"` in
+  `lib/grappa_web/endpoint.ex`) to `runtime.exs` so it reads from an
+  env var like `SECRET_KEY_BASE` already does. Same for the
+  `verify: :verify_none` TLS posture noted in CLAUDE.md.
 
 ## Medium
 

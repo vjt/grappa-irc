@@ -273,3 +273,99 @@ over silent clamps. Silent clamping turns caller bugs into "works but
 not how you think," which is the worst class of bug.
 
 ---
+
+## S5 — 2026-04-25 — Phase 1 Task 4, the first HTTP surface
+
+The first port opens. Bandit-backed `Phoenix.Endpoint` joins the
+supervision tree last — after `Repo`, `PubSub`, `Registry`,
+`SessionSupervisor` — so `/healthz` carries actual semantic weight:
+the port answers only when the runtime state it would attest to is
+alive. The other ordering would be a lie ("the port is up but the
+sessions tree isn't, so any feature you'd hit through this port would
+500"), and lying healthchecks are worse than absent ones.
+
+Three deliberate departures from the plan, all small, all worth
+noting because they show how plans erode under contact with reality:
+
+The plan included `socket "/socket", GrappaWeb.UserSocket` in the
+Endpoint. `UserSocket` doesn't exist until Task 6. Phoenix verifies
+modules at `init/1` time, so booting with a non-existent socket
+target would crash the supervision tree before /healthz could
+answer. Removed it; documented the deferred mount in the moduledoc.
+
+The plan included `use GrappaWeb, :verified_routes_off` in
+`ConnCase`. The plan itself called this a hack. There is no such
+macro — it would fail to compile. Phase 1 has no `~p"/..."` callers,
+so plain `Phoenix.ConnTest` covers everything ConnCase needs. The
+plan's instinct (defer verified routes) was right; its execution
+(invent a macro that doesn't exist) was wrong. Removed; documented
+that `Phoenix.VerifiedRoutes` re-enters when the first verified-route
+helper appears.
+
+The plan included `import GrappaWeb.ConnCase` in the using block, to
+re-export future helpers. There are no helpers yet. YAGNI; re-add
+when the first conn helper lands in Task 5.
+
+These are the kind of tiny plan-to-reality deltas that compound if
+you don't surface them. Each one was a 30-second decision; bundled
+together in a checkpoint and a story episode, they make the next
+session's "what did past-Claude actually do?" reading deterministic.
+The plan is a forecast, not a contract.
+
+The code review found five things in five minutes, all polish: a
+`@spec` that lied about what its function accepts, a private helper
+named `traverse/1` that would collide with the recursive-traversal
+pattern CLAUDE.md prescribes for context layers, an Endpoint moduledoc
+that wrong-named what `Plug.Parsers` parses (it parses bodies, not
+cookies — cookies arrive via `Plug.Conn` core), a `signing_salt:
+"rotate-me"` literal that needed an explicit Phase 5 callout, and a
+test pattern-match that would accept `"text/plainfoo"` as
+`"text/plain"`. None of these was load-bearing for Task 4 functioning;
+all five would have rotted if they shipped.
+
+The most interesting one is the `FallbackController` spec. The narrow
+spec `:not_found | Ecto.Changeset.t()` doesn't match the moduledoc
+claim that the controller "centralises {:error, term} → HTTP
+response mapping." Reviewer flagged the dissonance and offered two
+fixes: widen the spec, or add a catch-all clause. Per CLAUDE.md "let
+it crash," adding a catch-all would hide context bugs at the
+boundary — a misspelled error tag would silently 500 with a generic
+message instead of crashing loudly. So the right fix was the third
+option the reviewer didn't list: tighten the moduledoc instead.
+Document that the controller maps the **known** shapes only and
+unknowns surface as 500 via `FunctionClauseError`. The spec stays
+narrow on purpose so the next person to add a context error tag has
+to also touch the spec, which surfaces the new shape in code review.
+
+The other deviation from the plan was operational: deploy is gated on
+`grappa.toml` existing, but Bootstrap (the code path that actually
+reads it) lands in Task 8. Copying `grappa.toml.example` to
+`grappa.toml` would just satisfy a preflight without exercising
+anything — and `grappa.toml` is operator state, not a thing Claude
+should fill in autonomously. Asked vjt how to proceed; vjt chose to
+defer the live deploy until Task 8 wires Bootstrap. The unit test
+covers the request path end-to-end via `Phoenix.ConnTest`, which
+dispatches through the full Endpoint plug pipeline against the real
+router; the only thing the deferred deploy doesn't prove is that
+Bandit binds the port and the Pi network stack works. Both fall out
+of Task 8.
+
+Two commits on this task: `99ce079` (the Endpoint + Router + healthz)
+and `1c5a494` (the five review follow-ups). Fast-forward merged to
+main. Phase 1 is now four tasks deep: parser, schema, context,
+endpoint. The next three (messages controller, channels, bootstrap)
+turn the bouncer into a thing that actually does something at a URL.
+
+**Law (sub-1):** `/healthz` ordering is contract. The port should open
+last in the supervision tree, after every component the probe would
+semantically attest to. A healthz that answers before its dependencies
+are up is worse than no healthz, because it actively misleads the load
+balancer.
+
+**Law (sub-2):** when a moduledoc and a `@spec` disagree about what a
+function accepts, the moduledoc is usually the one telling the
+ambitious lie. The spec is what dialyzer sees and what callers
+ultimately depend on. Tighten the moduledoc to match the spec, not
+the other way around — unless you're going to add the catch-all
+clause that makes the moduledoc true. Pick one; don't ship the
+mismatch.
