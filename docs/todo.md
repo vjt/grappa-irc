@@ -10,44 +10,34 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 8 IN PROGRESS on worktree `phase1-task8-session`
-  (`~/code/IRC/grappa-task8`, HEAD `a840b37`). Fresh plan at
-  `~/.claude/plans/toasty-twirling-creek.md` (supersedes
-  `docs/plans/2026-04-25-walking-skeleton.md` lines 1829-2470).
-  - Sub-task 8a-pre ✅ — schema extension + wire-shape relocation +
-    custom Meta Ecto.Type. 63 tests, 4 commits.
-  - Sub-task 8a ✅ — IRC parser + Message struct (RFC2812 + IRCv3
-    tags + UTF-8/latin1 boundary). 32 unit tests + 5 properties,
-    2 commits (`99a8b1e` pre-existing fix, `3da0090` parser feat).
-  - Sub-task 8b ✅ — IRC.Client GenServer + IRCServer test helper
-    (packet:line + active:once + transport abstraction + TLS warning).
-    8 client tests, 1 commit (`7126389`).
-  - Logger structured-KV baseline ✅ — extended config metadata
-    allowlist with `:command, :reason, :raw, :error, :pid`. Refactored
-    parse-fail Logger.warning back to structured form. 1 commit
-    (`a840b37`). JSON output formatter deferred to Phase 5 with
-    PromEx — call shape identical across formats.
-  - Sub-task 8c NEXT — `Grappa.Session.Server` (per-(user,network)
-    GenServer, NICK+USER no-CAP, autojoin on 001, PING/PONG, PRIVMSG
-    persist + PubSub broadcast via `Message.to_wire/1`, JOIN/PART/etc.
-    Logger.info only — broadcasts deferred to Phase 5 with
-    channel-membership tracking).
-  - Sub-tasks 8d (Bootstrap) / 8e (smoke + Pi deploy) + code review
-    + docs after.
-  - Stats: 103 tests + 5 properties green, all gates clean.
+- Phase 1 Task 8 — code merged to main at `75e29b9`; sub-task 8e
+  (operator smoke + Pi deploy) pending. Plan at
+  `~/.claude/plans/toasty-twirling-creek.md`.
+  - Sub-tasks 8a-pre / 8a / 8b / 8c / 8d ✅ — all merged.
+  - Code review round-trip ✅ — subagent pass: 0 BLOCKING / 4
+    SHOULD-FIX (all addressed) / 3 CONSIDER (deferred) / 4 NIT.
+  - Sub-task 8e — `scripts/deploy.sh` → `scripts/healthcheck.sh` on
+    the Pi. Operator-driven; awaiting confirmation. Unblocks the
+    long-deferred live `/healthz` round-trip. Needs `grappa.toml` at
+    repo root (gitignored — copy `.example` and customize).
+  - Stats: 121 tests + 5 properties green, all gates clean.
+  - Worktree `phase1-task8-session` can be pruned after deploy
+    confirms.
 
 ## High
 
-- Phase 1 Tasks 8-10 per the walking-skeleton plan.
-- Live `/healthz` round-trip on the Pi via `scripts/deploy.sh` →
-  `scripts/healthcheck.sh` — deferred to Task 8 when Bootstrap wires
-  `grappa.toml` into the supervision tree. Until then deploy preflight
-  refuses to run without `grappa.toml`, and copying the example would
-  satisfy a gate without exercising anything.
+- Phase 1 Tasks 9–10 per the walking-skeleton plan (Task 8 done
+  except deploy; Tasks 9 = REST writes mapped to `IRC.Client` outbound,
+  Task 10 = Boundary annotations + `mix boundary.spec` in CI).
 - Phase 5 hardening: lift `signing_salt` (currently `"rotate-me"` in
   `lib/grappa_web/endpoint.ex`) to `runtime.exs` so it reads from an
   env var like `SECRET_KEY_BASE` already does. Same for the
   `verify: :verify_none` TLS posture noted in CLAUDE.md.
+- Phase 5 hardening: synchronous `IRC.Client.connect` in `init/1`
+  blocks supervisor boot for the connect-timeout window. Add
+  `{:continue, :connect}` (or move connect into `handle_info` after
+  `init` returns) so Session start is non-blocking. Code-review
+  CONSIDER #7 from S11.
 
 ## Medium
 
