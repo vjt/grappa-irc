@@ -73,15 +73,17 @@ defmodule GrappaWeb.MessagesController do
   silently 400ing. Bad client input (missing/empty/non-string body)
   matches the second clause and returns `{:error, :bad_request}`.
   """
-  @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
+  @spec create(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request} | {:error, Ecto.Changeset.t()}
   def create(conn, %{"network_id" => network, "channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    {:ok, message} = Scrollback.persist_privmsg(network, channel, "<local>", body)
-    broadcast_message(network, channel, message)
+    with {:ok, message} <- Scrollback.persist_privmsg(network, channel, "<local>", body) do
+      broadcast_message(network, channel, message)
 
-    conn
-    |> put_status(:created)
-    |> render(:show, message: message)
+      conn
+      |> put_status(:created)
+      |> render(:show, message: message)
+    end
   end
 
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}

@@ -149,6 +149,11 @@ defmodule Grappa.IRC.Client do
   def handle_info({:tcp_closed, _}, state), do: {:stop, :tcp_closed, state}
   def handle_info({:ssl_closed, _}, state), do: {:stop, :ssl_closed, state}
 
+  def handle_info(msg, state) do
+    Logger.warning("unexpected mailbox message", unexpected: inspect(msg))
+    {:noreply, state}
+  end
+
   @impl GenServer
   def handle_cast({:send, line}, state) do
     :ok = transport_send(state, line)

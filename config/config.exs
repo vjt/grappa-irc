@@ -29,12 +29,14 @@ config :logger, :console,
     :network,
     :channel,
     # Structured debug context: command being processed, error reason,
-    # raw bytes that triggered a parse failure, supervision-tree pid.
+    # raw bytes that triggered a parse failure, supervision-tree pid,
+    # inspect/1 of an unexpected mailbox message that hit a catch-all.
     :command,
     :reason,
     :raw,
     :error,
     :pid,
+    :unexpected,
     # Bootstrap summary: how many users we processed and how many
     # session starts succeeded vs. failed; the config path that was
     # (or wasn't) read.

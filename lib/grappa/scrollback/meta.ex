@@ -22,17 +22,22 @@ defmodule Grappa.Scrollback.Meta do
     - `dump/1` (Elixir → DB): converts atom keys to strings for JSON
       storage. Producers can use atom keys naturally.
     - `load/1` (DB → Elixir): decodes Jason JSON to a string-keyed
-      map, then re-atomizes any known key via `String.to_existing_atom/1`.
+      map, then re-atomizes any allowlisted key via an `Enum.find`
+      lookup against `@known_keys` (see `normalize_key/1`).
     - `cast/1` (changeset cast): same atom-key normalization as
       `load/1` so the in-memory struct returned by `Repo.insert/2`
       matches the shape of subsequent fetches.
 
   ## Allowlist (`@known_keys`)
 
-  `String.to_existing_atom/1` is used (not `String.to_atom/1`) so
-  attacker-controlled JSON can't inflate the atom table — atoms are
-  not garbage-collected and unbounded `String.to_atom` from external
-  input is a known DoS vector.
+  The lookup is `Enum.find(@known_keys, &(Atom.to_string(&1) == k))`,
+  not `String.to_existing_atom/1` — even safer. `to_existing_atom/1`
+  depends on whether the atom has been seen before (a load-order
+  dependency); the `Enum.find` shape is bounded by the allowlist size
+  and never touches the global atom table at all. Either way, the goal
+  is the same: attacker-controlled JSON can't inflate the atom table.
+  Atoms are not garbage-collected and unbounded `String.to_atom` from
+  external input is a known DoS vector.
 
   Per CLAUDE.md "atoms or @type t :: literal | literal — never
   untyped strings for closed sets," the allowlist enumerates every
