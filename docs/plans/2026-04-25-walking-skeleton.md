@@ -931,22 +931,27 @@ defmodule Grappa.Repo.Migrations.Init do
       timestamps(type: :utc_datetime_usec)
     end
 
+    # Intentional: no FK from messages.network_id to networks.id.
+    # Scrollback is operator-archival — when a network is removed from
+    # grappa.toml, its historical messages stay so the operator can
+    # re-add the network or audit history. Channels FK on (lifecycle
+    # tied to network), messages don't.
     create table(:messages) do
       add :network_id, :string, null: false
       add :channel, :string, null: false
       add :server_time, :integer, null: false   # epoch milliseconds
-      # Stored as text via Ecto.Enum at the schema layer — sqlite has
-      # no native enum type. CHECK constraint enforces the closed set
-      # at the DB boundary so a buggy raw INSERT can't slip a bad kind.
+      # `kind` enforcement lives at the schema layer via Ecto.Enum.
+      # SQLite doesn't support ALTER TABLE ADD CONSTRAINT, and Ecto's
+      # migration DSL doesn't expose inline column CHECK clauses for
+      # the SQLite adapter, so a DB-level guard would need raw
+      # `execute/1` — which trades reversibility + readability for a
+      # backstop against a code path (raw SQL INSERT) that CLAUDE.md
+      # already forbids.
       add :kind, :string, null: false
       add :sender, :string, null: false
       add :body, :text, null: false
       timestamps(type: :utc_datetime_usec, updated_at: false)
     end
-
-    create constraint(:messages, :kind_must_be_known,
-             check: "kind IN ('privmsg', 'notice', 'action')"
-           )
 
     create index(:messages, [:network_id, :channel, :server_time])
   end
@@ -1002,7 +1007,6 @@ defmodule Grappa.Scrollback.Message do
     message
     |> cast(attrs, [:network_id, :channel, :server_time, :kind, :sender, :body])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender, :body])
-    |> check_constraint(:kind, name: :kind_must_be_known)
   end
 end
 ```
