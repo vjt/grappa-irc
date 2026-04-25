@@ -58,16 +58,22 @@ defmodule GrappaWeb.MessagesController do
   `POST /networks/:network_id/channels/:channel_id/messages` —
   inserts a `:privmsg` row with `sender = "<local>"`, returns 201
   with the serialized message, and broadcasts
-  `{:event, %{kind: :message, message: serialized, body: body}}` on
-  the per-channel PubSub topic.
+  `{:event, %{kind: :message, message: serialized}}` on the
+  per-channel PubSub topic.
 
-  The PubSub event carries the already-serialized map (not the
-  `%Message{}` struct) so Channel handlers in Task 7 can `push/3` it
-  verbatim without re-rendering — keeping wire shape single-sourced
-  in `MessagesJSON.data/1`.
+  The event wrapper (`kind` + nested `message`) is what Task 7's
+  Channel handler will `push/3` verbatim — no re-rendering. The
+  serialized message map is single-sourced through
+  `MessagesJSON.data/1` so REST and the WS push surface emit the
+  same wire shape per CLAUDE.md "every door."
+
+  The catch-all clause requires the path params to still be present
+  — a route-config drift that drops `:network_id` or `:channel_id`
+  hits `FunctionClauseError` and surfaces as a loud 500 instead of
+  silently 400ing. Bad client input (missing/empty/non-string body)
+  matches the second clause and returns `{:error, :bad_request}`.
   """
-  @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
+  @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
   def create(conn, %{"network_id" => network, "channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
     attrs = %{
@@ -79,20 +85,19 @@ defmodule GrappaWeb.MessagesController do
       body: body
     }
 
-    with {:ok, message} <- Scrollback.insert(attrs) do
-      broadcast_message(network, channel, message)
+    {:ok, message} = Scrollback.insert(attrs)
+    broadcast_message(network, channel, message)
 
-      conn
-      |> put_status(:created)
-      |> render(:show, message: message)
-    end
+    conn
+    |> put_status(:created)
+    |> render(:show, message: message)
   end
 
-  def create(_, _), do: {:error, :bad_request}
+  def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
 
   defp broadcast_message(network, channel, %Message{} = message) do
     topic = "grappa:network:#{network}/channel:#{channel}"
-    event = %{kind: :message, message: MessagesJSON.data(message), body: message.body}
+    event = %{kind: :message, message: MessagesJSON.data(message)}
     :ok = Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, event})
   end
 

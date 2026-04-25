@@ -116,7 +116,23 @@ defmodule GrappaWeb.MessagesControllerTest do
       assert is_integer(body["server_time"])
       assert is_integer(body["id"])
 
-      assert_receive {:event, %{kind: :message, body: "ciao raga"}}, 200
+      assert_receive {:event,
+                      %{
+                        kind: :message,
+                        message: %{
+                          kind: :privmsg,
+                          body: "ciao raga",
+                          sender: "<local>",
+                          channel: "#sniffo",
+                          network_id: "azzurra",
+                          server_time: server_time,
+                          id: id
+                        }
+                      }},
+                     200
+
+      assert is_integer(server_time)
+      assert is_integer(id)
     end
 
     test "persists — POSTed message visible via subsequent GET", %{conn: conn} do

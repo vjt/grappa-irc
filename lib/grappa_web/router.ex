@@ -10,7 +10,7 @@ defmodule GrappaWeb.Router do
       (`GET` + `POST` on the same nested path).
 
   WebSocket mount (`socket "/socket", GrappaWeb.UserSocket`) lands in
-  the Endpoint, not here, when Task 6 wires Phoenix Channels.
+  the Endpoint, not here, when Task 7 wires Phoenix Channels.
   """
   use GrappaWeb, :router
 
