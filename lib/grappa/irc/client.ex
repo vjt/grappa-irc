@@ -99,6 +99,24 @@ defmodule Grappa.IRC.Client do
   @spec send_quit(pid(), String.t()) :: :ok
   def send_quit(client, reason), do: send_line(client, "QUIT :#{reason}\r\n")
 
+  @doc """
+  Sends the Phase 1 IRC registration handshake — `NICK <nick>` then
+  `USER <nick> 0 * :grappa`. No CAP LS, no SASL; Phase 2 introduces
+  those once per-user credentials land in the encrypted DB.
+
+  All wire-format knowledge stays in this module; Session.Server
+  treats this as one opaque "register the connection" verb.
+  """
+  @spec send_handshake(pid(), String.t()) :: :ok
+  def send_handshake(client, nick) do
+    :ok = send_line(client, "NICK #{nick}\r\n")
+    :ok = send_line(client, "USER #{nick} 0 * :grappa\r\n")
+  end
+
+  @doc "Sends `PONG :<token>\\r\\n` in response to an upstream PING."
+  @spec send_pong(pid(), String.t()) :: :ok
+  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
+
   ## GenServer callbacks
 
   @impl GenServer

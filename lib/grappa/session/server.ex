@@ -91,8 +91,7 @@ defmodule Grappa.Session.Server do
            logger_metadata: Log.session_context(user, net.id)
          }) do
       {:ok, client} ->
-        :ok = Client.send_line(client, "NICK #{net.nick}\r\n")
-        :ok = Client.send_line(client, "USER #{net.nick} 0 * :grappa\r\n")
+        :ok = Client.send_handshake(client, net.nick)
         {:ok, %{user_name: user, network: net, client: client}}
 
       {:error, reason} ->
@@ -107,7 +106,7 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
-    :ok = Client.send_line(state.client, "PONG :#{token}\r\n")
+    :ok = Client.send_pong(state.client, token)
     {:noreply, state}
   end
 
