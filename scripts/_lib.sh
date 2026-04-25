@@ -5,10 +5,12 @@
 #   . "$(dirname "$0")/_lib.sh"
 #
 # Provides:
-#   - REPO_ROOT      absolute path to /srv/grappa (or wherever the repo lives)
-#   - COMPOSE_FILE   compose.yaml unless GRAPPA_PROD=1, then compose.prod.yaml
-#   - in_container() runs args inside the running grappa container
-#   - die()          prints to stderr and exits 1
+#   - REPO_ROOT          absolute path to /srv/grappa (or wherever the repo lives)
+#   - COMPOSE_FILE       compose.yaml unless GRAPPA_PROD=1, then compose.prod.yaml
+#   - in_container()     runs args inside the running grappa container (errors if not up)
+#   - in_oneshot()       runs args in a fresh one-shot container (no live service needed)
+#   - in_container_or_oneshot()  picks live exec when up, oneshot otherwise
+#   - die()              prints to stderr and exits 1
 
 set -euo pipefail
 
@@ -39,4 +41,15 @@ in_container() {
 # Useful for `mix deps.get`, `mix ecto.create`, etc. before first boot.
 in_oneshot() {
     docker compose -f "$COMPOSE_FILE" run --rm --no-deps grappa "$@"
+}
+
+# Prefer exec into the live container; fall back to one-shot if not running.
+# Use for stateless mix tasks (test, credo, dialyzer, format, etc.) so they
+# work whether or not the operator has booted the long-running service.
+in_container_or_oneshot() {
+    if docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null | grep -q .; then
+        docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
+    else
+        in_oneshot "$@"
+    fi
 }

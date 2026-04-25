@@ -12,7 +12,7 @@
 cd "$REPO_ROOT"
 
 if [ $# -eq 0 ]; then
-    in_container mix credo --strict
+    in_container_or_oneshot mix credo --strict
 else
-    in_container mix credo "$@" --strict
+    in_container_or_oneshot mix credo "$@" --strict
 fi

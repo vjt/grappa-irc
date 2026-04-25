@@ -10,7 +10,7 @@
 cd "$REPO_ROOT"
 
 if [ "${1:-}" = "--check" ]; then
-    in_container mix format --check-formatted
+    in_container_or_oneshot mix format --check-formatted
 else
-    in_container mix format "$@"
+    in_container_or_oneshot mix format "$@"
 fi

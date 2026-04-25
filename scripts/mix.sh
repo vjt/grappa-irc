@@ -12,8 +12,4 @@
 
 cd "$REPO_ROOT"
 
-if docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null | grep -q .; then
-    in_container mix "$@"
-else
-    in_oneshot mix "$@"
-fi
+in_container_or_oneshot mix "$@"

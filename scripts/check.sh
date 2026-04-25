@@ -20,4 +20,4 @@
 
 cd "$REPO_ROOT"
 
-in_container mix ci.check
+in_container_or_oneshot mix ci.check

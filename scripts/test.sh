@@ -11,6 +11,7 @@
 
 cd "$REPO_ROOT"
 
-# MIX_ENV=test is the default for `mix test`, but we set it explicitly so
-# this script works whether or not the container is currently in dev mode.
-in_container env MIX_ENV=test mix test --warnings-as-errors "$@"
+# MIX_ENV=test is set explicitly so this script works whether or not the
+# container is currently in dev mode. Uses in_container_or_oneshot so a
+# fresh checkout can run tests without first booting phx.server.
+in_container_or_oneshot env MIX_ENV=test mix test --warnings-as-errors "$@"

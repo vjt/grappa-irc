@@ -12,4 +12,4 @@
 
 cd "$REPO_ROOT"
 
-in_container mix dialyzer --format short "$@"
+in_container_or_oneshot mix dialyzer --format short "$@"
