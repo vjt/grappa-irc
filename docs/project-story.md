@@ -750,3 +750,171 @@ across angles is the strongest possible signal short of running
 the code in production. Spend the fix-tier sessions on
 cross-cutting themes first; the targeted findings collapse into
 the contract modules anyway.
+
+## S20 — 2026-04-25 — Phase 2 design pass, the plan that paid for itself before being written
+
+This was the first session in the project's life that shipped no
+code. One commit, one file, 1316 lines of plan. Three hours of
+conversational design discussion before the plan was even written,
+and the value of those three hours was already locked in by the
+time the plan file got created — the discussion itself was the
+work, the plan was the receipt.
+
+The starting position: Phase 1 walking-skeleton complete + live on
+Pi (S19), Phase 2 looming, no plan written. The user said "go phase
+2." I could have written a plan from the README spec ("auth via
+NickServ + multi-user + session tokens + per-user iso") in twenty
+minutes — three hundred lines, six sub-tasks, ship it. We have prior
+plans to imitate. I almost did. Then I remembered S8's lesson — the
+plan-deviation count climbs because plans inherit bugs from the code
+they were written against, and the right move is to interrogate
+every architectural lever in conversation BEFORE the plan distills
+the answers. Phase 2 has more architectural levers than Phase 1 sub-
+tasks did. So we walked through seven decisions A-G one at a time.
+Each one took its own arc, and three of them got reshaped by user
+pushback in ways the plan wouldn't have caught.
+
+The token-format conversation went five rounds. The user asked the
+right question: "with JWT we'd skip the DB lookup, right?" The easy
+answers were both wrong — capitulating ("yes use JWT") would saddle
+us with revocation theater and key-rotation cascade pain; hand-
+waving ("JWT bad") would have left the actual reasoning unsaid and
+the question unresolved for future sessions. The honest answer
+required walking through what JWT is *for* (microservices fan-out,
+federated identity, edge auth — none of which we are) and what it
+isn't (any pattern that needs cheap revocation or theft mitigation
+ends up with state anyway, at which point the "stateless" win
+evaporates). The user followed the reasoning and ended at "opaque
+session ID, why the fuck do people invented jwt then?!?" — which is
+exactly the right question. The cargo-cult-vs-real-use-case
+distinction got memorialized in DESIGN_NOTES with a table of "where
+JWT is the right answer" vs "where it's not." Future sessions where
+someone reads a Medium tutorial and asks "shouldn't we use JWT?"
+have the receipts ready.
+
+The crypto-layering conversation was the bigger pivot. The user
+pushed back hard on env-key encryption: "key in env on disk is no
+key at all. why not per user encryption using user account passwd?
+log on -> grab cleartext -> store nickserv pwd in ram. change pwd
+re-encrypts. lost pwd zaps." Cryptographically the user was right.
+Architecturally the user hadn't priced in the cost: per-user-key
+encryption means the bouncer can ONLY run upstream IRC connections
+while a user is actively logged in, because the server has zero
+crypto capability without the user's password. Process restart =
+all keys lost = mass re-login cascade. Idle 8d = bouncer
+disconnects from upstream. That kills "always-on bouncer," which is
+the entire product premise — soju does it, ZNC does it, and grappa
+without it is a hosted IRC client, not a bouncer. The honest answer
+required laying the four options on the table — env key, user key,
+opt-in hybrid, master-with-escape-hatch — and naming the threat
+model each one defends against. The user landed at exactly the
+right framing: "for real e2e security, none of this is the answer.
+The answer there is OTR. And cicchetto will support OTR."
+
+That framing crystallized the whole crypto layer. **Server-side
+crypto = encryption-at-rest only. E2e privacy = OTR in the client.
+They are separate concerns at separate layers and trying to
+collapse them into one server-side mechanism just ends up being
+neither.** Saved as a project memory so future sessions where
+someone's tempted to propose "encrypted message bodies at rest"
+have the principle ready: the scrollback `body` column accepts
+opaque bytes, and whether those bytes are plaintext "ciao" or
+`?OTR:AAQDoyB...` is the client's business. Zero server-side work
+for e2e. The server's crypto job is one row in the threat-model
+table, no more.
+
+The third pivot was the upstream auth flow. I had penciled in
+"SASL with NickServ IDENTIFY fallback" as the auth model — sensible
+modern shape, matches Libera/ergo. The user reminded me: "i do NOT
+know if azzurra bahamut has sasl. i do authenticate via ns auth
+in-band." This was the cue to stop guessing. WebSearch + WebFetch
+gave partial answers (Azzurra has a Bahamut fork, no SASL defines
+in config.h). Then the user said "you can grep bahamut sources on
+~/code/IRC/bahamut-azzurra tho" — and one grep changed the whole
+auth state machine. `s_user.c:1273-1278`:
+
+```c
+/* if the I:line doesn't have a password and the user does
+ * send it over to NickServ */
+if(sptr->passwd[0] && (nsptr=find_person(NICKSERV,NULL))!=NULL)
+{
+    sendto_one(nsptr,":%s PRIVMSG %s@%s :SIDENTIFY %s", sptr->name,
+               NICKSERV, SERVICES_NAME, sptr->passwd);
+}
+```
+
+Bahamut runs this at the end of `register_user()`. The legacy PASS
+field, which RFC 1459 originally meant for server-password auth,
+gets handed off to NickServ as `SIDENTIFY` — poor-man's SASL.
+**Auth happens at register time via the server itself doing the
+NickServ handoff.** No race, no post-001 IDENTIFY dance, no
++R-channel join failures. The auth state machine got redesigned in
+real time: per-network `auth_method` enum (`auto | sasl |
+server_pass | nickserv_identify | none`), with `auto` covering both
+SASL-modern AND PASS-handoff-Bahamut shapes in one default. The
+user even kept the door open for "if PASS handoff silently fails,
+fall back to PRIVMSG NickServ IDENTIFY" as a Phase 5 hardening
+item. None of this was in the plan I would have written from the
+README alone.
+
+The schema conversation had its own moment. The user pushed back
+twice — first on `networks.id text` ("integer or uuid"), then on
+the two-task UX ("set network credential and then autojoin? why
+not create network and pass everything?") — and the third nudge was
+the irssi-shape insight: "let's reuse irssi schema here. server
+belongs to chatnet, chatnet has many servers." That last one
+collapsed an oversimplified `networks(host, port, tls)` into the
+right three-table split: `networks` (logical), `network_servers`
+(physical, many per network with priority for failover),
+`network_credentials` (per-user binding). Phase 2 logic uses only
+the first server; Phase 5 will add round-robin failover; the
+schema is ready for it without migration. The "reuse the verbs,
+not the nouns" principle from CLAUDE.md applied: irssi's `chatnet`
+verb (network has many servers, user has many credentials) was
+reusable; the noun (calling them "chatnets" in our code) was not.
+Tables stayed `networks`/`network_servers`/`network_credentials`,
+keeping the operator-facing wire vocabulary stable while the
+internal shape gained the structural correctness.
+
+There was a smaller fourth nudge on G.4 (PubSub topic shape
+including user_id): "why adding user id? it can be inferred from
+session no?" The honest answer was no — Phoenix.PubSub topics are
+global string namespaces, not socket-scoped, so without per-user
+discriminator multi-user instances broadcast user A's events to
+user B's subscribers. Could have been worked around with a custom
+dispatch layer, but that loses Phoenix.PubSub's native ETS-backed
+fanout efficiency, loses Phoenix.Presence, and reinvents the wheel.
+The standard Phoenix-shape solution (topic name encodes
+discriminator) is right. The user accepted the answer once it was
+laid out.
+
+The plan that came out of all this is bigger than Phase 1's was —
+1316 lines vs walking-skeleton's 2742, but Phase 2 covers more
+ground per task — and it distills decisions, doesn't hide them. The
+seven decisions A-G are recapped in the plan header with one-line
+outcomes; the rationale is in DESIGN_NOTES (four new entries) and
+in the CP06 S20 entry. Future sessions executing the plan can re-
+litigate any decision they want, but they have to read the receipts
+first. The plan-deviation pattern from Phase 1 should bend
+downward as a result — deviations come from "the plan said X but
+the code says Y" gaps, and frontloading the design conversation
+with full alignment on Y is how you keep that gap small.
+
+The other thing worth pinning down: this session shipped no code,
+no test changes, no Pi deploy. Just one commit. Old-me would have
+felt like the session "didn't ship anything." But the actual work
+product — the architectural alignment, the four DESIGN_NOTES, the
+crypto-layering memory, the verified-against-source auth state
+machine — is what lets the next 4-6 sessions move at speed without
+re-relitigating these choices. Phase 1's S8 lesson was "plans
+inherit bugs from the code they were written against." The corollary
+is that frontloaded design conversations are a real engineering
+deliverable, even when no code moves. The receipts are the work.
+
+**Law:** when a phase has more than three architectural levers,
+walk through them in conversation one at a time BEFORE writing the
+plan. Each lever gets its own arc — the easy answer, the user's
+pushback, the threat-model honest answer, the receipts captured in
+DESIGN_NOTES. The plan distills the decisions; the discussion makes
+them. A plan written without the discussion is just a longer
+version of the README spec.
