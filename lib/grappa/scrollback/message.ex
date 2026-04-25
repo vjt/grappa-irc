@@ -80,6 +80,8 @@ defmodule Grappa.Scrollback.Message do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Grappa.IRC.Identifier
+
   @kinds [
     :privmsg,
     :notice,
@@ -152,6 +154,9 @@ defmodule Grappa.Scrollback.Message do
     message
     |> cast(attrs, [:network_id, :channel, :server_time, :kind, :sender, :body, :meta])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
+    |> validate_identifier(:network_id, &Identifier.valid_network_id?/1)
+    |> validate_identifier(:channel, &Identifier.valid_channel?/1)
+    |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
   end
 
@@ -161,5 +166,12 @@ defmodule Grappa.Scrollback.Message do
       kind when kind in @body_required_kinds -> validate_required(changeset, [:body])
       _ -> changeset
     end
+  end
+
+  @spec validate_identifier(Ecto.Changeset.t(), atom(), (term() -> boolean())) :: Ecto.Changeset.t()
+  defp validate_identifier(changeset, field, predicate) do
+    validate_change(changeset, field, fn _, value ->
+      if predicate.(value), do: [], else: [{field, "is not a valid IRC identifier"}]
+    end)
   end
 end

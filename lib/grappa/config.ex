@@ -6,6 +6,8 @@ defmodule Grappa.Config do
   Phase 2 will replace this with dynamic per-user database state.
   """
 
+  alias Grappa.IRC.Identifier
+
   defmodule Server do
     @moduledoc "Bouncer's own HTTP listen address (e.g. `127.0.0.1:4000`)."
     @enforce_keys [:listen]
@@ -107,16 +109,20 @@ defmodule Grappa.Config do
   defp build_network(%{"id" => id, "host" => host, "port" => port, "tls" => tls, "nick" => nick} = raw)
        when is_binary(id) and is_binary(host) and is_integer(port) and is_boolean(tls) and
               is_binary(nick) do
-    {:ok,
-     %Network{
-       id: id,
-       host: host,
-       port: port,
-       tls: tls,
-       nick: nick,
-       sasl_password: Map.get(raw, "sasl_password"),
-       autojoin: Map.get(raw, "autojoin", [])
-     }}
+    autojoin = Map.get(raw, "autojoin", [])
+
+    with :ok <- validate_network_fields(id, host, nick, autojoin) do
+      {:ok,
+       %Network{
+         id: id,
+         host: host,
+         port: port,
+         tls: tls,
+         nick: nick,
+         sasl_password: Map.get(raw, "sasl_password"),
+         autojoin: autojoin
+       }}
+    end
   end
 
   defp build_network(raw) do
@@ -127,4 +133,33 @@ defmodule Grappa.Config do
 
     {:error, "[[users.networks]] entry missing required field(s): #{missing}"}
   end
+
+  defp validate_network_fields(id, host, nick, autojoin) do
+    cond do
+      not Identifier.valid_network_id?(id) ->
+        {:error,
+         "[[users.networks]] invalid id #{inspect(id)} (lowercase alphanumeric + dash + underscore, 1-32 chars)"}
+
+      not Identifier.valid_host?(host) ->
+        {:error, "[[users.networks]] invalid host #{inspect(host)} (non-empty, no whitespace or control chars)"}
+
+      not Identifier.valid_nick?(nick) ->
+        {:error, "[[users.networks]] invalid nick #{inspect(nick)} (RFC 2812 nick syntax)"}
+
+      true ->
+        validate_autojoin(autojoin)
+    end
+  end
+
+  defp validate_autojoin(list) when is_list(list) do
+    case Enum.find(list, fn ch -> not Identifier.valid_channel?(ch) end) do
+      nil ->
+        :ok
+
+      bad ->
+        {:error, "[[users.networks]] invalid autojoin channel #{inspect(bad)} (must start with #/&/+/!)"}
+    end
+  end
+
+  defp validate_autojoin(_), do: {:error, "[[users.networks]] autojoin must be a list"}
 end
