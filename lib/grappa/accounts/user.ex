@@ -55,7 +55,7 @@ defmodule Grappa.Accounts.User do
   (`get_user_by_credentials/2`) rather than leaking validation cost
   through it.
   """
-  @spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
+  @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(user, attrs) do
     user
     |> cast(attrs, [:name, :password])

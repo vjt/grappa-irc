@@ -33,6 +33,7 @@ defmodule Mix.Tasks.Grappa.CreateUser do
     # IRC supervision tree. Booting bootstrap would require grappa.toml
     # to be present and would open real upstream connections — neither
     # makes sense for a one-shot account-provisioning command.
+    # See `Grappa.Application.bootstrap_child/0` for the flag's contract.
     Application.put_env(:grappa, :start_bootstrap, false)
     {:ok, _} = Application.ensure_all_started(:grappa)
 

@@ -25,4 +25,20 @@ defmodule Grappa.DataCase do
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
     :ok
   end
+
+  @doc """
+  Renders a changeset's errors as a `%{field => [message, ...]}` map,
+  with `%{var}` interpolations resolved from the per-error opts list.
+
+  Standard Phoenix-flavoured helper — lifted here so every DataCase user
+  shares one copy instead of inlining a private clone per test file.
+  """
+  @spec errors_on(Ecto.Changeset.t()) :: %{atom() => [String.t()]}
+  def errors_on(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+      Regex.replace(~r"%{(\w+)}", message, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+  end
 end
