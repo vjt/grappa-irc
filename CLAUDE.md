@@ -181,6 +181,27 @@ not the surrounding code.**
   arguments create silent degradation paths. Every new function MUST
   require all parameters explicitly. When touching existing code that
   uses defaults, REMOVE them.
+- **Recursive pattern match over `Enum.reduce_while/3` for
+  collect-or-bail traversal.** When mapping a function across a list
+  with success-extends-acc / error-returns-immediately semantics, write
+  the three-clause recursive shape — it's tail-recursive, declarative,
+  and avoids the `{:ok, acc}` wrapper + pipe-to-case afterthought:
+
+  ```elixir
+  defp traverse(list, fun), do: traverse(list, [], fun)
+  defp traverse([], acc, _), do: {:ok, Enum.reverse(acc)}
+  defp traverse([h | t], acc, fun) do
+    case fun.(h) do
+      {:ok, item} -> traverse(t, [item | acc], fun)
+      {:error, _} = err -> err
+    end
+  end
+  ```
+
+  `Enum.reduce_while/3` is still right for genuine fold-with-early-exit
+  (search-with-state, accumulate-until-threshold) where the accumulator
+  carries computed state across iterations. For pure collect-or-bail,
+  it's overkill.
 - **Bite-sized commits**: one logical change. Messages explain WHY.
 
 ### OTP patterns (Elixir-specific)
