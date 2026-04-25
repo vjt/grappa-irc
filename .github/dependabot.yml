@@ -1,0 +1,75 @@
+version: 2
+
+updates:
+  # ── Hex (Elixir deps)
+  - package-ecosystem: mix
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      phoenix:
+        patterns:
+          - "phoenix*"
+          - "bandit"
+          - "plug*"
+      ecto:
+        patterns:
+          - "ecto*"
+      tooling:
+        patterns:
+          - "credo"
+          - "dialyxir"
+          - "sobelow"
+          - "mix_audit"
+          - "doctor"
+          - "ex_doc"
+          - "mix_test_watch"
+          - "boundary"
+      testing:
+        patterns:
+          - "stream_data"
+          - "mox"
+          - "bypass"
+          - "ex_machina"
+          - "excoveralls"
+    labels:
+      - dependencies
+      - hex
+
+  # ── GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - ci
+
+  # ── Docker base images
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+      - docker
