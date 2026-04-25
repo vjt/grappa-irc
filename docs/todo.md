@@ -10,19 +10,26 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 2 done (Grappa.Repo + sqlite migration for
-  networks/channels/messages, Ecto.Enum on `:kind`, DataCase, sandbox.
-  10 tests green, ci.check 14s on the Pi.) Next: Task 3 — Scrollback
-  context (insert + paginated fetch) per
+- **CI fix**: `mix docs` step in `.github/workflows/ci.yml:81` runs in
+  `MIX_ENV=test` (job-level env line 23) but `ex_doc` is `only: [:dev]`
+  in mix.exs:101. Step will fail on first push. Pick one: (a) move
+  `mix docs` into the `dialyzer` job (already MIX_ENV=dev), or (b) add
+  `:test` to ex_doc's `only:`. Option (a) keeps test deps minimal.
+- Phase 1 Task 3 done (Grappa.Scrollback context — insert/1, fetch/4,
+  max_page_size/0; 19 tests green; 13s ci.check on the Pi). Next:
+  Task 4 — Phoenix Endpoint + /healthz per
   `docs/plans/2026-04-25-walking-skeleton.md`.
 
 ## High
 
-- Phase 1 Tasks 3-10 per the walking-skeleton plan.
+- Phase 1 Tasks 4-10 per the walking-skeleton plan.
 - Once Task 4 (Phoenix endpoint + /healthz) lands: end-to-end smoke
   via `scripts/deploy.sh` → `scripts/healthcheck.sh`. Until then,
-  deploy step in the dev cycle is N/A — there's no HTTP service
-  yet. Task 3 lands a context but no exposed surface either.
+  deploy step in the dev cycle is N/A — Task 3 landed a context but
+  still no exposed surface, so deploy is still skipped.
+- Worktree cleanup after S4 close: `git worktree remove
+  /home/vjt/code/IRC/grappa-task3` + `git branch -D
+  phase1-task3-scrollback`.
 
 ## Medium
 

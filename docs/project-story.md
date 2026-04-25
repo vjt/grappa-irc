@@ -211,3 +211,65 @@ Ecto.Enum. Two minutes of review caught it; six months from now it
 would have cost a session of head-scratching.
 
 ---
+
+## S4 — 2026-04-25 — Phase 1 Task 3, the cycle that didn't fight back
+
+The first session that completed the documented dev cycle —
+worktree → failing tests → implementation → gate → review → fixes →
+merge → push — without a single tooling detour. No worktree compose
+duplication, no MIX_ENV-inheritance gotcha, no scaffold collision with
+a Docker tag that doesn't exist. The bills S2 and S3 paid up front for
+the gastone scaffolding pattern and the `cmd env MIX_ENV=test` workaround
+came due in a good way: 13 seconds to a green gate from a worktree on
+the Pi, every time, no thought required.
+
+The session itself was almost boring. Wrote 8 failing tests for
+`Scrollback.insert/1` + `fetch/4`, implemented the context module,
+ci.check passed on the second try (one formatter blank line, one
+Credo nit `_first` → `_`). The interesting part was what the tools
+caught after — the kind of thing you only notice when the tools are
+strict enough.
+
+Code review (the superpowers:code-reviewer agent) flagged two should-fix:
+a `defp sample(i, overrides \\ %{})` test helper that violated CLAUDE.md's
+no-default-arguments rule, and a `@spec ... pos_integer()` that didn't
+match a runtime `max(1, limit)` clamp accepting zero and negatives. The
+spec/runtime mismatch is the more interesting one: silent clamping turns
+a caller bug ("I passed limit=0") into "fetch returns 1 row when I asked
+for none, which I didn't expect," which is the worst class of bug because
+it works but not how you think. Tightened to `when is_integer(limit) and
+limit > 0` — let it crash, per CLAUDE.md OTP rules. The spec stays honest
+because the runtime now enforces it.
+
+Then Dialyzer caught the new `max_page_size/0` helper returning literal
+`500` while its `@spec` said `pos_integer()`. The `:underspecs` flag (set
+deliberately in mix.exs) flagged it as wider-than-actual. CLAUDE.md says
+"Dialyzer warnings are design signals" — the signal here was that a
+constant-returning function shouldn't claim a wider type than it returns.
+Fixed by tightening the spec to `unquote(@max_limit)`. The kind of
+round-trip you want from strict tooling: the review noticed the helper
+was useful, dialyzer noticed the helper's spec was sloppy, both fixed in
+the same commit.
+
+The unrelated catch this session was a CI bug: `mix docs` in
+`.github/workflows/ci.yml` runs in `MIX_ENV=test` (job-level env), but
+`ex_doc` is `only: [:dev]` in mix.exs. Would have failed on first push.
+vjt spotted it by reading the workflow file, not by watching CI burn —
+which is the right way to discover those bugs (the wrong way is the one
+where the build is red for an hour while you debug from log fragments).
+
+Single commit `cd829b4` for Task 3 itself: 88 LOC of context + 108 LOC
+of tests, 19 total tests, 13s gate. Fast-forward merged to main, pushed.
+Phase 1 is now four tasks deep with three more before the first HTTP
+surface (Task 4 = Phoenix endpoint + /healthz).
+
+**Law (sub-1):** the value of `:underspecs` is forcing helpers to be
+honest about what they return. A `pos_integer()`-returning constant
+function is a lie. Either narrow the spec or compute the value.
+
+**Law (sub-2):** "let it crash" applies to spec contracts too. When the
+@spec says `pos_integer()`, the runtime must enforce — guard clauses
+over silent clamps. Silent clamping turns caller bugs into "works but
+not how you think," which is the worst class of bug.
+
+---
