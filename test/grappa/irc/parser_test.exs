@@ -18,7 +18,7 @@ defmodule Grappa.IRC.ParserTest do
               %Message{
                 tags: %{},
                 prefix: {:nick, "vjt", "~vjt", "host"},
-                command: "PRIVMSG",
+                command: :privmsg,
                 params: ["#sniffo", "ciao raga"]
               }} = Parser.parse(":vjt!~vjt@host PRIVMSG #sniffo :ciao raga")
     end
@@ -27,18 +27,18 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok,
               %Message{
                 prefix: {:server, "irc.azzurra.chat"},
-                command: "376",
+                command: {:numeric, 376},
                 params: ["vjt", "End of MOTD"]
               }} = Parser.parse(":irc.azzurra.chat 376 vjt :End of MOTD")
     end
 
     test "001 welcome with multi-word trailing" do
-      assert {:ok, %Message{command: "001", params: ["vjt", "Welcome to Azzurra IRC"]}} =
+      assert {:ok, %Message{command: {:numeric, 1}, params: ["vjt", "Welcome to Azzurra IRC"]}} =
                Parser.parse(":server 001 vjt :Welcome to Azzurra IRC")
     end
 
     test "PING with no prefix and trailing token" do
-      assert {:ok, %Message{prefix: nil, command: "PING", params: ["foo.bar"]}} =
+      assert {:ok, %Message{prefix: nil, command: :ping, params: ["foo.bar"]}} =
                Parser.parse("PING :foo.bar")
     end
 
@@ -46,7 +46,7 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok,
               %Message{
                 prefix: {:nick, "vjt", "~vjt", "host"},
-                command: "JOIN",
+                command: :join,
                 params: ["#sniffo"]
               }} = Parser.parse(":vjt!~vjt@host JOIN #sniffo")
     end
@@ -54,7 +54,7 @@ defmodule Grappa.IRC.ParserTest do
     test "MODE with multiple middle params and no trailing" do
       assert {:ok,
               %Message{
-                command: "MODE",
+                command: :mode,
                 params: ["#sniffo", "+o", "alice"]
               }} = Parser.parse(":vjt!~vjt@host MODE #sniffo +o alice")
     end
@@ -63,7 +63,7 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok,
               %Message{
                 prefix: {:nick, "vjt", "~vjt", "host"},
-                command: "QUIT",
+                command: :quit,
                 params: ["Connection reset"]
               }} = Parser.parse(":vjt!~vjt@host QUIT :Connection reset")
     end
@@ -72,46 +72,60 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok,
               %Message{
                 prefix: {:server, "irc.azzurra.chat"},
-                command: "CAP",
+                command: :cap,
                 params: ["*", "LS", "sasl message-tags server-time"]
               }} =
                Parser.parse(":irc.azzurra.chat CAP * LS :sasl message-tags server-time")
     end
 
     test "trailing CRLF is stripped" do
-      assert {:ok, %Message{command: "PING", params: ["x"]}} = Parser.parse("PING :x\r\n")
+      assert {:ok, %Message{command: :ping, params: ["x"]}} = Parser.parse("PING :x\r\n")
     end
 
     test "trailing LF only (line-mode socket already strips \\n but be defensive)" do
-      assert {:ok, %Message{command: "PING", params: ["x"]}} = Parser.parse("PING :x\n")
+      assert {:ok, %Message{command: :ping, params: ["x"]}} = Parser.parse("PING :x\n")
+    end
+
+    test "lowercase command is normalised to atom (RFC 2812 case-insensitivity)" do
+      assert {:ok, %Message{command: :privmsg, params: ["#x", "hi"]}} =
+               Parser.parse(":a privmsg #x :hi")
+    end
+
+    test "unknown vendor command becomes {:unknown, uppercased}" do
+      assert {:ok, %Message{command: {:unknown, "FOOBAR"}, params: ["#x"]}} =
+               Parser.parse(":a FOOBAR #x")
+    end
+
+    test "numeric 000 is parsed as {:numeric, 0}" do
+      assert {:ok, %Message{command: {:numeric, 0}, params: []}} = Parser.parse("000")
     end
   end
 
   describe "parse/1 — prefix variants" do
     test "nick-only prefix (no ! or @): classified as :nick when no dot" do
-      assert {:ok, %Message{prefix: {:nick, "alice", nil, nil}, command: "JOIN"}} =
+      assert {:ok, %Message{prefix: {:nick, "alice", nil, nil}, command: :join}} =
                Parser.parse(":alice JOIN #x")
     end
 
     test "host-only prefix (with dot): classified as :server" do
-      assert {:ok, %Message{prefix: {:server, "irc.example.org"}, command: "NOTICE"}} =
+      assert {:ok, %Message{prefix: {:server, "irc.example.org"}, command: :notice}} =
                Parser.parse(":irc.example.org NOTICE * :hi")
     end
 
     test "nick!user with no @host: user present, host nil" do
-      assert {:ok, %Message{prefix: {:nick, "vjt", "~vjt", nil}, command: "JOIN"}} =
+      assert {:ok, %Message{prefix: {:nick, "vjt", "~vjt", nil}, command: :join}} =
                Parser.parse(":vjt!~vjt JOIN #x")
     end
 
     test "nick@host with no !user: user nil, host present" do
-      assert {:ok, %Message{prefix: {:nick, "vjt", nil, "host"}, command: "JOIN"}} =
+      assert {:ok, %Message{prefix: {:nick, "vjt", nil, "host"}, command: :join}} =
                Parser.parse(":vjt@host JOIN #x")
     end
   end
 
   describe "parse/1 — IRCv3 message-tags" do
     test "single key=value tag" do
-      assert {:ok, %Message{tags: %{"account" => "vjt"}, command: "PRIVMSG"}} =
+      assert {:ok, %Message{tags: %{"account" => "vjt"}, command: :privmsg}} =
                Parser.parse("@account=vjt :vjt!~vjt@host PRIVMSG #sniffo :hi")
     end
 
@@ -119,7 +133,7 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok,
               %Message{
                 tags: %{"time" => "2026-04-25T12:00:00.000Z", "account" => "vjt"},
-                command: "PRIVMSG"
+                command: :privmsg
               }} =
                Parser.parse("@time=2026-04-25T12:00:00.000Z;account=vjt :vjt!~vjt@host PRIVMSG #x :hi")
     end
@@ -143,7 +157,7 @@ defmodule Grappa.IRC.ParserTest do
     end
 
     test "tag with no prefix (just tags + command)" do
-      assert {:ok, %Message{tags: %{"foo" => "bar"}, prefix: nil, command: "PING"}} =
+      assert {:ok, %Message{tags: %{"foo" => "bar"}, prefix: nil, command: :ping}} =
                Parser.parse("@foo=bar PING :x")
     end
   end
@@ -179,7 +193,7 @@ defmodule Grappa.IRC.ParserTest do
     test "VERSION CTCP request in NOTICE preserves framing" do
       raw = ":vjt!~vjt@host NOTICE alice :\x01VERSION\x01"
 
-      assert {:ok, %Message{command: "NOTICE", params: ["alice", "\x01VERSION\x01"]}} =
+      assert {:ok, %Message{command: :notice, params: ["alice", "\x01VERSION\x01"]}} =
                Parser.parse(raw)
     end
   end

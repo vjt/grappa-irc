@@ -85,7 +85,7 @@ defmodule Grappa.IRC.ClientTest do
       assert_receive {:irc,
                       %Message{
                         prefix: {:nick, "alice", "~a", "host"},
-                        command: "PRIVMSG",
+                        command: :privmsg,
                         params: ["#sniffo", "hello"]
                       }},
                      1_000
@@ -104,7 +104,7 @@ defmodule Grappa.IRC.ClientTest do
       for i <- 1..50 do
         expected = "msg #{i}"
 
-        assert_receive {:irc, %Message{command: "PRIVMSG", params: ["#x", ^expected]}},
+        assert_receive {:irc, %Message{command: :privmsg, params: ["#x", ^expected]}},
                        2_000
       end
     end
@@ -118,7 +118,7 @@ defmodule Grappa.IRC.ClientTest do
       Process.sleep(50)
       IRCServer.feed(server, "o\r\n")
 
-      assert_receive {:irc, %Message{command: "PING", params: ["foo"]}}, 1_000
+      assert_receive {:irc, %Message{command: :ping, params: ["foo"]}}, 1_000
     end
 
     test "malformed inbound line: parse error is logged, client stays alive" do

@@ -37,7 +37,7 @@ defmodule Grappa.IRC.Parser.PropertyTest do
             ) do
         msg = %Message{
           prefix: {:nick, nick, user, host},
-          command: "PRIVMSG",
+          command: :privmsg,
           params: [channel, body]
         }
 
@@ -73,7 +73,7 @@ defmodule Grappa.IRC.Parser.PropertyTest do
             ) do
         msg = %Message{
           prefix: {:nick, nick, user, host},
-          command: "MODE",
+          command: :mode,
           params: [channel, modes, target_nick]
         }
 
@@ -138,15 +138,28 @@ defmodule Grappa.IRC.Parser.PropertyTest do
     end
   end
 
-  # Command: a Phase-1-relevant verb. Numerics tested separately.
+  # Command: a Phase-1-relevant verb (post-atomization). Numerics tested separately.
   defp command_gen do
-    StreamData.member_of(~w[PRIVMSG NOTICE JOIN PART QUIT PING PONG NICK USER MODE TOPIC KICK])
+    StreamData.member_of([
+      :privmsg,
+      :notice,
+      :join,
+      :part,
+      :quit,
+      :ping,
+      :pong,
+      :nick,
+      :user,
+      :mode,
+      :topic,
+      :kick
+    ])
   end
 
-  # Numeric reply: 3-digit string.
+  # Numeric reply: tagged tuple in 0..999 range.
   defp numeric_gen do
-    gen all(n <- StreamData.integer(1..999)) do
-      n |> Integer.to_string() |> String.pad_leading(3, "0")
+    gen all(n <- StreamData.integer(0..999)) do
+      {:numeric, n}
     end
   end
 
@@ -196,12 +209,16 @@ defmodule Grappa.IRC.Parser.PropertyTest do
     [
       encode_tags(tags),
       encode_prefix(prefix),
-      command,
+      encode_command(command),
       encode_params(params)
     ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join(" ")
   end
+
+  defp encode_command({:numeric, n}), do: n |> Integer.to_string() |> String.pad_leading(3, "0")
+  defp encode_command({:unknown, raw}), do: raw
+  defp encode_command(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()
 
   defp encode_tags(tags) when map_size(tags) == 0, do: ""
 

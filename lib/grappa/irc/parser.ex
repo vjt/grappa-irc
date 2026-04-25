@@ -41,11 +41,55 @@ defmodule Grappa.IRC.Parser do
   parser — is "contains a dot → server, else → nickname." Modern IRC
   servers self-identify with dotted FQDNs (`irc.azzurra.chat`) so this
   heuristic is reliable in practice.
+
+  ## Command atomization (closed-set boundary)
+
+  Commands are normalized at parse time:
+
+    * RFC numerics (`"001"`, `"376"` — three ASCII digits) become
+      `{:numeric, 0..999}`.
+    * Recognised RFC 2812 / IRCv3 verbs become atoms (`"PRIVMSG"` →
+      `:privmsg`). The match is case-insensitive — RFC 2812 §2.3
+      defines commands as case-insensitive, even though servers send
+      uppercase by convention.
+    * Anything else becomes `{:unknown, "UPPERCASED"}` so consumers can
+      pattern-match on the tagged shape without atom-table-DoS risk.
+
+  The allowlist is closed (~24 verbs) and lives in this module's
+  `@known_commands` attribute; expanding it for a new RFC verb is a
+  one-line edit.
   """
 
   alias Grappa.IRC.Message
 
   @type parse_error :: :empty | :no_command
+
+  @known_commands %{
+    "PRIVMSG" => :privmsg,
+    "NOTICE" => :notice,
+    "JOIN" => :join,
+    "PART" => :part,
+    "QUIT" => :quit,
+    "NICK" => :nick,
+    "USER" => :user,
+    "MODE" => :mode,
+    "TOPIC" => :topic,
+    "KICK" => :kick,
+    "PING" => :ping,
+    "PONG" => :pong,
+    "CAP" => :cap,
+    "ERROR" => :error,
+    "PASS" => :pass,
+    "WALLOPS" => :wallops,
+    "INVITE" => :invite,
+    "WHO" => :who,
+    "WHOIS" => :whois,
+    "WHOWAS" => :whowas,
+    "KILL" => :kill,
+    "OPER" => :oper,
+    "AWAY" => :away,
+    "ISON" => :ison
+  }
 
   @doc """
   Parses one line of IRC into `Grappa.IRC.Message`.
@@ -80,10 +124,30 @@ defmodule Grappa.IRC.Parser do
 
     case parse_command_and_params(after_prefix) do
       {:ok, {command, params}} ->
-        {:ok, %Message{tags: tags, prefix: prefix, command: command, params: params}}
+        {:ok,
+         %Message{
+           tags: tags,
+           prefix: prefix,
+           command: normalize_command(command),
+           params: params
+         }}
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  @spec normalize_command(String.t()) :: Message.command()
+  defp normalize_command(<<a, b, c>>) when a in ?0..?9 and b in ?0..?9 and c in ?0..?9 do
+    {:numeric, (a - ?0) * 100 + (b - ?0) * 10 + (c - ?0)}
+  end
+
+  defp normalize_command(raw) do
+    upper = String.upcase(raw)
+
+    case Map.fetch(@known_commands, upper) do
+      {:ok, atom} -> atom
+      :error -> {:unknown, upper}
     end
   end
 

@@ -20,17 +20,21 @@ defmodule Grappa.IRC.Message do
     numerics + notices. `{:nick, nick, user_or_nil, host_or_nil}` for
     user-originated traffic — `user`/`host` are nullable because some
     networks omit one or both fields.
-  - `:command` — verb upper-case for letters (`"PRIVMSG"`), or numeric
-    string for replies (`"001"`, `"376"`). The parser does NOT atomize
-    — too many vendor numerics, atom-table-DoS surface.
+  - `:command` — typed command. Atoms for the closed RFC 2812 / IRCv3
+    set (`:privmsg`, `:join`, `:cap`, ...); `{:numeric, 1..999}` for
+    server replies (`001`, `376`); `{:unknown, "STRING"}` for vendor
+    extensions outside the recognised set. Atomization happens at the
+    parser boundary against an explicit allowlist (no atom-table-DoS
+    risk — the closed set is bounded).
   - `:params` — middle params + trailing param flattened into one list
     in arrival order. The trailing `:`-prefixed param is the final
     element when present and may contain spaces; middle params do not.
 
   Per CLAUDE.md "Atoms or `@type t :: literal | literal` — never
   untyped strings for closed sets" — `prefix` uses tagged tuples
-  (`:server` / `:nick`) instead of an unstructured map so pattern
-  matching at the consumer (Session.Server) is exhaustive.
+  (`:server` / `:nick`) and `command` uses atom enum + tagged numeric
+  tuple so pattern matching at the consumer (Session.Server) is
+  exhaustive and Dialyzer-checkable.
   """
 
   @type prefix ::
@@ -38,14 +42,43 @@ defmodule Grappa.IRC.Message do
           | {:server, String.t()}
           | nil
 
+  @type command ::
+          :privmsg
+          | :notice
+          | :join
+          | :part
+          | :quit
+          | :nick
+          | :user
+          | :mode
+          | :topic
+          | :kick
+          | :ping
+          | :pong
+          | :cap
+          | :error
+          | :pass
+          | :wallops
+          | :invite
+          | :who
+          | :whois
+          | :whowas
+          | :kill
+          | :oper
+          | :away
+          | :ison
+          | {:numeric, 0..999}
+          | {:unknown, String.t()}
+
   @type tags :: %{optional(String.t()) => String.t() | true}
 
   @type t :: %__MODULE__{
           tags: tags(),
           prefix: prefix(),
-          command: String.t(),
+          command: command(),
           params: [String.t()]
         }
 
-  defstruct tags: %{}, prefix: nil, command: "", params: []
+  @enforce_keys [:command]
+  defstruct tags: %{}, prefix: nil, command: nil, params: []
 end

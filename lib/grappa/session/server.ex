@@ -61,7 +61,7 @@ defmodule Grappa.Session.Server do
           client: pid()
         }
 
-  @logged_event_commands ~w[JOIN PART QUIT NICK MODE TOPIC KICK]
+  @logged_event_commands [:join, :part, :quit, :nick, :mode, :topic, :kick]
 
   ## API
 
@@ -100,18 +100,18 @@ defmodule Grappa.Session.Server do
   end
 
   @impl GenServer
-  def handle_info({:irc, %Message{command: "001"}}, state) do
+  def handle_info({:irc, %Message{command: {:numeric, 1}}}, state) do
     Enum.each(state.network.autojoin, &Client.send_join(state.client, &1))
     {:noreply, state}
   end
 
-  def handle_info({:irc, %Message{command: "PING", params: [token | _]}}, state) do
+  def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
     :ok = Client.send_line(state.client, "PONG :#{token}\r\n")
     {:noreply, state}
   end
 
   def handle_info(
-        {:irc, %Message{command: "PRIVMSG", params: [target, body], prefix: prefix}},
+        {:irc, %Message{command: :privmsg, params: [target, body], prefix: prefix}},
         state
       )
       when is_binary(body) do
@@ -138,7 +138,7 @@ defmodule Grappa.Session.Server do
 
       {:error, changeset} ->
         Logger.error("scrollback insert failed",
-          command: "PRIVMSG",
+          command: :privmsg,
           channel: target,
           error: inspect(changeset.errors)
         )
