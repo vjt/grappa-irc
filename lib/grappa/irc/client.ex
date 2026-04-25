@@ -158,7 +158,7 @@ defmodule Grappa.IRC.Client do
         send(state.dispatch_to, {:irc, msg})
 
       {:error, reason} ->
-        Logger.warning("irc parse failed: #{inspect(reason)} raw=#{inspect(line)}")
+        Logger.warning("irc parse failed", reason: reason, raw: inspect(line))
     end
 
     :ok = transport_setopts(state, active: :once)

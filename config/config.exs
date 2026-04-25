@@ -22,6 +22,19 @@ config :phoenix, :json_library, Jason
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id, :user, :network, :channel]
+  metadata: [
+    # Identity / location: who, where in the IRC topology, what HTTP request.
+    :request_id,
+    :user,
+    :network,
+    :channel,
+    # Structured debug context: command being processed, error reason,
+    # raw bytes that triggered a parse failure, supervision-tree pid.
+    :command,
+    :reason,
+    :raw,
+    :error,
+    :pid
+  ]
 
 import_config "#{config_env()}.exs"
