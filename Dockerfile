@@ -3,7 +3,11 @@
 # Multi-stage build:
 #   build   — full Elixir toolchain, mix tasks, deps, compiled artifacts.
 #             Used directly as the dev image (bind-mounted source).
-#   runtime — minimal Debian + OTP release. Used for prod deploys.
+#   release — extends build; runs `mix release` to produce the OTP release
+#             tarball at /app/_build/prod/rel/grappa. Only executed when
+#             prod targets cascade through it.
+#   runtime — minimal Debian + the prebuilt OTP release copied from the
+#             release stage. Used for prod deploys.
 #
 # Base image: hexpm/elixir keeps Erlang/Elixir/Debian versions in sync,
 # avoiding the version-skew pain of mixing official elixir + erlang images.
@@ -59,6 +63,22 @@ EXPOSE 4000
 CMD ["mix", "phx.server"]
 
 
+# ─── Release stage ────────────────────────────────────────────────────────────
+# Runs `mix release` against the build stage. Lives outside the build stage
+# so dev image rebuilds (`docker build --target build`) skip the prod
+# release work entirely.
+FROM build AS release
+
+USER grappa
+WORKDIR /app
+
+ENV MIX_ENV=prod
+
+RUN mix deps.get --only prod && \
+    mix deps.compile && \
+    mix release --overwrite
+
+
 # ─── Runtime stage ────────────────────────────────────────────────────────────
 FROM debian:${DEBIAN_VERSION} AS runtime
 
@@ -78,16 +98,10 @@ RUN groupadd -g ${CONTAINER_GID} grappa && \
 
 WORKDIR /app
 
-# Build the release in the build stage with prod env. Override the build
-# stage's CMD by re-running mix release here so the base build stage stays
-# usable for dev workflows.
 USER grappa
-COPY --from=build --chown=grappa:grappa /app /src
-RUN cd /src && \
-    MIX_ENV=prod mix deps.get --only prod && \
-    MIX_ENV=prod mix release --overwrite && \
-    cp -r _build/prod/rel/grappa/* /app/ && \
-    rm -rf /src
+
+# Copy the prebuilt OTP release from the release stage. No mix at runtime.
+COPY --from=release --chown=grappa:grappa /app/_build/prod/rel/grappa/ /app/
 
 EXPOSE 4000
 

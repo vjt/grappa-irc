@@ -29,6 +29,24 @@ docker compose -f compose.prod.yaml build
 # Restart container with new image
 docker compose -f compose.prod.yaml up -d --force-recreate
 
+# Run pending migrations against the prod Repo. Must happen AFTER the
+# container is up (the release binary needs its slim runtime present)
+# but BEFORE Bootstrap-spawned sessions try to insert scrollback rows.
+# Bootstrap fires asynchronously from supervision tree start, so we race
+# the first PRIVMSG insert vs. this command — a tight loop with retry
+# handles the case where the release boot is still completing.
+echo "Running migrations..."
+for i in $(seq 1 15); do
+    if docker compose -f compose.prod.yaml exec -T grappa bin/grappa eval 'Grappa.Release.migrate()' >/dev/null 2>&1; then
+        echo "✓ migrations applied"
+        break
+    fi
+    sleep 2
+    if [ "$i" = "15" ]; then
+        die "migrations did not apply within 30s. Check: scripts/monitor.sh"
+    fi
+done
+
 # Wait for healthcheck to go green
 echo "Waiting for /healthz..."
 for i in $(seq 1 30); do
