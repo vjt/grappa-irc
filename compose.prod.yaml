@@ -1,0 +1,53 @@
+# grappa — prod compose (standalone, NOT an override of compose.yaml)
+#
+# Build + run:  docker compose -f compose.prod.yaml up -d --build
+# Tail logs:    docker compose -f compose.prod.yaml logs -f
+#
+# Differences vs dev:
+#   - target: runtime (mix release, no mix tools, no source bind-mount)
+#   - SECRET_KEY_BASE required (no dev fallback)
+#   - DATABASE_PATH points at /app/runtime/grappa_prod.db
+#   - grappa.toml bind-mounted read-only
+
+services:
+  grappa:
+    build:
+      context: .
+      target: runtime
+      args:
+        CONTAINER_UID: ${CONTAINER_UID:-1000}
+        CONTAINER_GID: ${CONTAINER_GID:-1000}
+    image: grappa:prod
+    pull_policy: never
+    container_name: grappa
+    hostname: grappa
+    restart: unless-stopped
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    networks:
+      vlan53:
+        ipv4_address: 192.168.53.11
+    volumes:
+      - ./runtime:/app/runtime
+      - ./grappa.toml:/app/grappa.toml:ro
+    environment:
+      MIX_ENV: prod
+      GRAPPA_CONFIG: /app/grappa.toml
+      DATABASE_PATH: /app/runtime/grappa_prod.db
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?missing SECRET_KEY_BASE — generate with scripts/mix.sh phx.gen.secret}
+      PORT: "4000"
+      RELEASE_COOKIE: ${RELEASE_COOKIE:?missing RELEASE_COOKIE — random hex string for distributed Erlang}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  vlan53:
+    external: true

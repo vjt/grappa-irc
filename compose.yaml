@@ -1,0 +1,69 @@
+# grappa — dev compose
+#
+# Run dev:           docker compose up
+# Run dev detached:  docker compose up -d
+# Run mix tasks:     scripts/mix.sh test
+# Run iex shell:     scripts/iex.sh
+# Tail logs:         scripts/monitor.sh
+#
+# vlan53 gives the container a direct LAN IP (192.168.53.11). Phoenix listens
+# on port 4000 inside the container; reachable on the LAN as 192.168.53.11:4000.
+#
+# For prod: see compose.prod.yaml (separate file, not an override).
+
+services:
+  grappa:
+    build:
+      context: .
+      target: build
+      args:
+        CONTAINER_UID: ${CONTAINER_UID:-1000}
+        CONTAINER_GID: ${CONTAINER_GID:-1000}
+    image: grappa:dev
+    pull_policy: never
+    container_name: grappa
+    hostname: grappa
+    restart: unless-stopped
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    networks:
+      vlan53:
+        ipv4_address: 192.168.53.11
+    volumes:
+      # Bind-mount the whole project for live-reload dev workflow.
+      - ./:/app
+      # Hide host /app/deps and /app/_build with named volumes so the
+      # container-arch compiled artifacts don't clash with anything on the host.
+      - grappa_deps:/app/deps
+      - grappa_build:/app/_build
+      - grappa_mix:/app/.mix
+      - grappa_hex:/app/.hex
+      # Per-env state lives in runtime/ (sqlite, logs, plt cache).
+      - ./runtime:/app/runtime
+    environment:
+      MIX_ENV: ${MIX_ENV:-dev}
+      GRAPPA_CONFIG: /app/grappa.toml
+      DATABASE_PATH: /app/runtime/grappa_dev.db
+      ELIXIR_ERL_OPTIONS: "+fnu"  # filename UTF-8 mode (avoids Erlang locale warnings)
+    command: ["mix", "phx.server"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+networks:
+  vlan53:
+    external: true
+
+volumes:
+  grappa_deps:
+  grappa_build:
+  grappa_mix:
+  grappa_hex:

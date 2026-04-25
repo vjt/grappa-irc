@@ -1,0 +1,42 @@
+# shellcheck shell=bash
+# Shared shell helpers for grappa scripts.
+#
+# Source this from every script:
+#   . "$(dirname "$0")/_lib.sh"
+#
+# Provides:
+#   - REPO_ROOT      absolute path to /srv/grappa (or wherever the repo lives)
+#   - COMPOSE_FILE   compose.yaml unless GRAPPA_PROD=1, then compose.prod.yaml
+#   - in_container() runs args inside the running grappa container
+#   - die()          prints to stderr and exits 1
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export REPO_ROOT
+
+COMPOSE_FILE="compose.yaml"
+if [ "${GRAPPA_PROD:-}" = "1" ]; then
+    COMPOSE_FILE="compose.prod.yaml"
+fi
+export COMPOSE_FILE
+
+die() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+in_container() {
+    local cid
+    cid="$(docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null || true)"
+    if [ -z "$cid" ]; then
+        die "grappa container is not running. Start it with: docker compose up -d"
+    fi
+    docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
+}
+
+# Run a one-shot mix task without requiring the long-running container.
+# Useful for `mix deps.get`, `mix ecto.create`, etc. before first boot.
+in_oneshot() {
+    docker compose -f "$COMPOSE_FILE" run --rm --no-deps grappa "$@"
+}

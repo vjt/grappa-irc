@@ -1,0 +1,31 @@
+# Keep the build context lean. The Dockerfile bind-mounts source in dev, so
+# this only matters for image builds (prod target + initial dev build).
+
+.git/
+.github/
+.claude/
+.elixir_ls/
+.dialyxir_*
+
+_build/
+deps/
+cover/
+doc/
+
+runtime/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.swp
+*~
+
+docs/
+node_modules/
+dist/
