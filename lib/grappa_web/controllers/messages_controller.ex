@@ -28,6 +28,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
+  alias Grappa.PubSub.Topic
   alias Grappa.Scrollback
   alias Grappa.Scrollback.Message
 
@@ -95,9 +96,8 @@ defmodule GrappaWeb.MessagesController do
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
 
   defp broadcast_message(network, channel, %Message{} = message) do
-    topic = "grappa:network:#{network}/channel:#{channel}"
     event = %{kind: :message, message: Message.to_wire(message)}
-    :ok = Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, event})
+    :ok = Phoenix.PubSub.broadcast(Grappa.PubSub, Topic.channel(network, channel), {:event, event})
   end
 
   defp parse_cursor(nil), do: {:ok, nil}

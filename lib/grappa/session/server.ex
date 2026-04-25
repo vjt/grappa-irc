@@ -37,14 +37,15 @@ defmodule Grappa.Session.Server do
 
   PRIVMSG broadcasts emit `{:event, %{kind: :message, message:
   Grappa.Scrollback.Message.to_wire(msg)}}` on the per-channel topic
-  `grappa:network:\#{net_id}/channel:\#{channel}`. This matches the
-  wire shape produced by `GrappaWeb.MessagesController.create/2:99`
-  exactly — every door, same wire shape per CLAUDE.md.
+  built via `Grappa.PubSub.Topic.channel/2`. This matches the wire
+  shape produced by `GrappaWeb.MessagesController.create/2` exactly —
+  every door, same wire shape per CLAUDE.md.
   """
   use GenServer, restart: :transient
 
   alias Grappa.Config.Network
   alias Grappa.IRC.{Client, Message}
+  alias Grappa.PubSub.Topic
   alias Grappa.Scrollback
 
   require Logger
@@ -126,9 +127,14 @@ defmodule Grappa.Session.Server do
            body: body
          }) do
       {:ok, message} ->
-        topic = "grappa:network:#{state.network.id}/channel:#{target}"
         event = %{kind: :message, message: Grappa.Scrollback.Message.to_wire(message)}
-        :ok = Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, event})
+
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.channel(state.network.id, target),
+            {:event, event}
+          )
 
       {:error, changeset} ->
         Logger.error("scrollback insert failed",

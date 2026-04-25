@@ -2,60 +2,49 @@ defmodule GrappaWeb.GrappaChannel do
   @moduledoc """
   Single channel module for all Grappa real-time topics.
 
-  Behavior is uniform: on join, validate the topic shape and
-  subscribe to the same topic on `Grappa.PubSub`; on `{:event,
-  payload}` from PubSub, push it to the connected socket as an
-  `"event"` push verbatim.
+  Behavior is uniform: on join, validate the topic shape via
+  `Grappa.PubSub.Topic.parse/1` and subscribe to the same topic on
+  `Grappa.PubSub`; on `{:event, payload}` from PubSub, push it to the
+  connected socket as an `"event"` push verbatim.
 
-  Accepted topic shapes:
+  Accepted topic shapes (single source of truth in `Grappa.PubSub.Topic`):
 
     - `"grappa:user:{user}"`
     - `"grappa:network:{net}"`
     - `"grappa:network:{net}/channel:{chan}"`
 
   Any other shape returns `{:error, %{reason: "unknown topic"}}`.
-  Topic discrimination lives here (not the socket router) so the
-  set of valid topics is one grep away.
+  Topic discrimination lives in `Grappa.PubSub.Topic`; this module is
+  just the Phoenix-side glue.
 
   The push payload shape is whatever the broadcaster sent — this
   module does NOT reshape events. The wire-shape contract lives at
-  the broadcasting boundary (`MessagesController.create/2` today).
+  the broadcasting boundary (`MessagesController.create/2` +
+  `Grappa.Session.Server`).
+
+  Phase 2 will reject when a `:user` topic's user_name does not match
+  `socket.assigns.user_name` once `connect/3` validates a token rather
+  than hardcoding `"vjt"`.
   """
   use GrappaWeb, :channel
 
-  @impl Phoenix.Channel
-  def join("grappa:user:" <> user, _, socket) when user != "" do
-    # Phase 2: reject when `user != socket.assigns.user_name` once
-    # `connect/3` validates a token rather than hardcoding "vjt".
-    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, socket.topic)
-    {:ok, socket}
-  end
+  alias Grappa.PubSub.Topic
 
-  def join("grappa:network:" <> rest = topic, _, socket) do
-    if valid_network_topic?(rest) do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
-      {:ok, socket}
-    else
-      {:error, %{reason: "unknown topic"}}
+  @impl Phoenix.Channel
+  def join(topic, _, socket) do
+    case Topic.parse(topic) do
+      {:ok, _} ->
+        :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+        {:ok, socket}
+
+      :error ->
+        {:error, %{reason: "unknown topic"}}
     end
   end
-
-  # Reachable for empty user (`"grappa:user:"`) — first clause's guard
-  # filters it; the socket router still routed it here.
-  def join(_, _, _), do: {:error, %{reason: "unknown topic"}}
 
   @impl Phoenix.Channel
   def handle_info({:event, payload}, socket) do
     push(socket, "event", payload)
     {:noreply, socket}
-  end
-
-  @spec valid_network_topic?(String.t()) :: boolean()
-  defp valid_network_topic?(rest) do
-    case String.split(rest, "/", parts: 2) do
-      [net] when net != "" -> true
-      [net, "channel:" <> chan] when net != "" and chan != "" -> true
-      _ -> false
-    end
   end
 end
