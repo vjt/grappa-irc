@@ -10,14 +10,12 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Codebase review DUE (line-level scan — separate from the CP04 S13
-  architecture review). Recommended for next session with fresh
-  context. Reviews live in `docs/reviews/codebase/`.
 - Fix `scripts/_lib.sh` compose project-name conflict: when prod
   container is up, dev oneshots collide on the vlan IP
   (`Address already in use`). Either set distinct compose project
   names or detect+skip in `in_container_or_oneshot`. Workaround
   during prod-up: stop prod container before running gates.
+  **Hit again S16 — third session. Promoting to immediate.**
 
 ## High
 
