@@ -10,7 +10,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   Network/channel happy-path test builds the inner message map by
   inserting through `Grappa.Scrollback` and formatting via
-  `Grappa.Scrollback.Message.to_wire/1` — same code path the
+  `Grappa.Scrollback.Wire.message_event/1` — same code path the
   controller uses when broadcasting. That way the wire-shape contract
   is pinned end-to-end: a regression in either side (channel reshapes,
   or domain wire helper changes shape) shows up here, not just in the
@@ -25,7 +25,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   use GrappaWeb.ChannelCase, async: true
 
   alias Grappa.Scrollback
-  alias Grappa.Scrollback.Message
+  alias Grappa.Scrollback.Wire
   alias GrappaWeb.UserSocket
 
   describe "join grappa:network:{net}/channel:{chan}" do
@@ -49,9 +49,9 @@ defmodule GrappaWeb.GrappaChannelTest do
           body: "ciao raga"
         })
 
-      payload = %{kind: :message, message: Message.to_wire(message)}
+      {:event, payload} = event = Wire.message_event(message)
 
-      Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, payload})
+      Phoenix.PubSub.broadcast(Grappa.PubSub, topic, event)
 
       assert_push("event", ^payload)
     end

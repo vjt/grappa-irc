@@ -71,15 +71,11 @@ defmodule Grappa.Scrollback.Message do
 
   ## Wire shape
 
-  `to_wire/1` is the single source of truth for the public JSON
-  contract emitted by every "door" — REST controller, PubSub
-  broadcasts, Phoenix Channel pushes — per CLAUDE.md "every door,
-  same logic, three access methods." `GrappaWeb.MessagesJSON` (the
-  Phoenix view layer) delegates its `index/1` and `show/1` render
-  functions here; the controller's per-channel broadcast emits the
-  same map; `Grappa.Session.Server`'s PRIVMSG handler (Task 8) does
-  too. Field set is the public contract — adding fields is additive,
-  removing or renaming is breaking.
+  Wire-shape rendering lives in `Grappa.Scrollback.Wire` (separated
+  from this schema module per architecture review A7 — schemas
+  describe data, formatters convert between formats). Every "door"
+  (REST, PubSub, Channel push, Phase 6 listener) goes through that
+  module; field set is the public contract.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -123,17 +119,6 @@ defmodule Grappa.Scrollback.Message do
           inserted_at: DateTime.t() | nil
         }
 
-  @type wire :: %{
-          id: integer() | nil,
-          network_id: String.t(),
-          channel: String.t(),
-          server_time: integer(),
-          kind: kind() | nil,
-          sender: String.t(),
-          body: String.t() | nil,
-          meta: map()
-        }
-
   schema "messages" do
     field :network_id, :string
     field :channel, :string
@@ -168,25 +153,6 @@ defmodule Grappa.Scrollback.Message do
     |> cast(attrs, [:network_id, :channel, :server_time, :kind, :sender, :body, :meta])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> validate_body_for_kind()
-  end
-
-  @doc """
-  Renders this row to its public JSON-shape map — single source of
-  truth for REST, PubSub, and Phoenix Channel surfaces. Per CLAUDE.md
-  "every door, same wire shape."
-  """
-  @spec to_wire(t()) :: wire()
-  def to_wire(%__MODULE__{} = m) do
-    %{
-      id: m.id,
-      network_id: m.network_id,
-      channel: m.channel,
-      server_time: m.server_time,
-      kind: m.kind,
-      sender: m.sender,
-      body: m.body,
-      meta: m.meta
-    }
   end
 
   @spec validate_body_for_kind(Ecto.Changeset.t()) :: Ecto.Changeset.t()

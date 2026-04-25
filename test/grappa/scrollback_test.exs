@@ -140,43 +140,6 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  describe "Message.to_wire/1 (single-source wire shape for REST + PubSub + Channels)" do
-    test "renders a privmsg row to the canonical JSON-shape map" do
-      {:ok, msg} = Scrollback.insert(sample(42))
-
-      assert Message.to_wire(msg) == %{
-               id: msg.id,
-               network_id: "azzurra",
-               channel: "#sniffo",
-               server_time: 42,
-               kind: :privmsg,
-               sender: "vjt",
-               body: "msg 42",
-               meta: %{}
-             }
-    end
-
-    test "includes atom-keyed meta payload for non-privmsg kinds" do
-      {:ok, _} =
-        Scrollback.insert(%{
-          network_id: "azzurra",
-          channel: "#sniffo",
-          server_time: 0,
-          kind: :nick_change,
-          sender: "vjt",
-          meta: %{new_nick: "vjt2"}
-        })
-
-      # Fetch from DB to assert the post-load shape — same atom-keyed
-      # via the custom Meta Ecto.Type's allowlisted atomization.
-      [fetched] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
-      wire = Message.to_wire(fetched)
-      assert wire.kind == :nick_change
-      assert wire.body == nil
-      assert wire.meta == %{new_nick: "vjt2"}
-    end
-  end
-
   describe "fetch/4" do
     test "returns the latest page in descending server_time order" do
       for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(i))

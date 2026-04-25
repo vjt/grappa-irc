@@ -30,7 +30,7 @@ defmodule GrappaWeb.MessagesController do
 
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback
-  alias Grappa.Scrollback.Message
+  alias Grappa.Scrollback.{Message, Wire}
 
   @default_limit 50
 
@@ -64,7 +64,7 @@ defmodule GrappaWeb.MessagesController do
   The event wrapper (`kind` + nested `message`) is what Task 7's
   Channel handler will `push/3` verbatim — no re-rendering. The
   serialized message map is single-sourced through
-  `Grappa.Scrollback.Message.to_wire/1` so REST and the WS push
+  `Grappa.Scrollback.Wire.message_event/1` so REST and the WS push
   surface emit the same wire shape per CLAUDE.md "every door."
 
   The catch-all clause requires the path params to still be present
@@ -96,8 +96,12 @@ defmodule GrappaWeb.MessagesController do
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
 
   defp broadcast_message(network, channel, %Message{} = message) do
-    event = %{kind: :message, message: Message.to_wire(message)}
-    :ok = Phoenix.PubSub.broadcast(Grappa.PubSub, Topic.channel(network, channel), {:event, event})
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.channel(network, channel),
+        Wire.message_event(message)
+      )
   end
 
   defp parse_cursor(nil), do: {:ok, nil}
