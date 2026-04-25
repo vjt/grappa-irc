@@ -655,17 +655,34 @@ defmodule Grappa.ConfigTest do
     assert net.autojoin == []
   end
 
-  test "rejects missing required fields with a useful error" do
+  test "rejects a [[users]] entry missing the name field" do
     path =
       write_toml("""
       [server]
       listen = "127.0.0.1:4000"
 
       [[users]]
+      nickname = "wrong-key"
       """)
 
     assert {:error, msg} = Config.load(path)
     assert msg =~ "name"
+  end
+
+  # NOTE: must be a non-empty `[[users]]` block with a wrong key
+  # (here `nickname`), NOT an empty `[[users]]`. The TOML parser
+  # decodes empty `[[users]]` as `users: []` (zero entries), which
+  # never reaches `build_user/1`. Empty-array case is the next test.
+
+  test "rejects an empty users array" do
+    path =
+      write_toml("""
+      [server]
+      listen = "127.0.0.1:4000"
+      """)
+
+    assert {:error, msg} = Config.load(path)
+    assert msg =~ "users"
   end
 
   test "supports autojoin + sasl_password optional fields" do
@@ -764,8 +781,12 @@ defmodule Grappa.Config do
          {:ok, users} <- build_users(parsed) do
       {:ok, %__MODULE__{server: server, users: users}}
     else
-      {:error, %File.Error{reason: reason}} -> {:error, "cannot read #{path}: #{reason}"}
-      {:error, {:invalid_toml, reason, _line}} -> {:error, "invalid toml: #{reason}"}
+      # `File.read/1` returns `{:error, posix()}` (an atom), NOT
+      # `{:error, %File.Error{}}`. Dialyzer enforces this — confirmed
+      # 2026-04-25 (S2). `Toml.decode/1` returns the 2-tuple
+      # `{:error, {:invalid_toml, binary}}`, NOT a 3-tuple with line.
+      {:error, reason} when is_atom(reason) -> {:error, "cannot read #{path}: #{reason}"}
+      {:error, {:invalid_toml, reason}} -> {:error, "invalid toml: #{reason}"}
       {:error, msg} when is_binary(msg) -> {:error, msg}
     end
   end
@@ -775,19 +796,10 @@ defmodule Grappa.Config do
 
   defp build_server(_), do: {:error, "[server] table missing required field: listen"}
 
-  defp build_users(%{"users" => list}) when is_list(list) do
-    Enum.reduce_while(list, {:ok, []}, fn raw, {:ok, acc} ->
-      case build_user(raw) do
-        {:ok, user} -> {:cont, {:ok, [user | acc]}}
-        {:error, msg} -> {:halt, {:error, msg}}
-      end
-    end)
-    |> case do
-      {:ok, list} -> {:ok, Enum.reverse(list)}
-      err -> err
-    end
-  end
-
+  # `[_ | _]` head pattern catches the empty-array case at the head clause
+  # — toml decodes empty `[[users]]` as `users: []`, which falls through
+  # to `build_users(_)` instead of silently returning {:ok, []}.
+  defp build_users(%{"users" => [_ | _] = list}), do: traverse(list, &build_user/1)
   defp build_users(_), do: {:error, "no [[users]] entries found"}
 
   defp build_user(%{"name" => name} = raw) when is_binary(name) do
@@ -800,16 +812,24 @@ defmodule Grappa.Config do
 
   defp build_user(_), do: {:error, "[[users]] entry missing required field: name"}
 
-  defp build_networks(list) when is_list(list) do
-    Enum.reduce_while(list, {:ok, []}, fn raw, {:ok, acc} ->
-      case build_network(raw) do
-        {:ok, net} -> {:cont, {:ok, [net | acc]}}
-        {:error, msg} -> {:halt, {:error, msg}}
-      end
-    end)
-    |> case do
-      {:ok, list} -> {:ok, Enum.reverse(list)}
-      err -> err
+  defp build_networks(list) when is_list(list), do: traverse(list, &build_network/1)
+
+  # Maps `fun` across `list`, collecting successful results.
+  # Returns the first `{:error, _}` encountered without visiting the rest.
+  # Tail-recursive; replaces an earlier reduce_while + pipe-to-case shape
+  # that Credo flagged. See CLAUDE.md "Recursive pattern match over
+  # `Enum.reduce_while/3` for collect-or-bail traversal".
+  @spec traverse([raw], (raw -> {:ok, item} | {:error, String.t()})) ::
+          {:ok, [item]} | {:error, String.t()}
+        when raw: term(), item: term()
+  defp traverse(list, fun), do: traverse(list, [], fun)
+
+  defp traverse([], acc, _), do: {:ok, Enum.reverse(acc)}
+
+  defp traverse([head | tail], acc, fun) do
+    case fun.(head) do
+      {:ok, item} -> traverse(tail, [item | acc], fun)
+      {:error, _} = err -> err
     end
   end
 
@@ -844,7 +864,7 @@ end
 mix test test/grappa/config_test.exs
 ```
 
-Expected: PASS (3 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 5: Verify Credo + Dialyzer clean**
 
@@ -915,11 +935,18 @@ defmodule Grappa.Repo.Migrations.Init do
       add :network_id, :string, null: false
       add :channel, :string, null: false
       add :server_time, :integer, null: false   # epoch milliseconds
+      # Stored as text via Ecto.Enum at the schema layer — sqlite has
+      # no native enum type. CHECK constraint enforces the closed set
+      # at the DB boundary so a buggy raw INSERT can't slip a bad kind.
       add :kind, :string, null: false
       add :sender, :string, null: false
       add :body, :text, null: false
       timestamps(type: :utc_datetime_usec, updated_at: false)
     end
+
+    create constraint(:messages, :kind_must_be_known,
+             check: "kind IN ('privmsg', 'notice', 'action')"
+           )
 
     create index(:messages, [:network_id, :channel, :server_time])
   end
@@ -930,40 +957,52 @@ end
 
 ```elixir
 defmodule Grappa.Scrollback.Message do
-  @moduledoc false
+  @moduledoc """
+  One row of IRC scrollback.
+
+  `kind` is stored as a closed-set atom via `Ecto.Enum` — never an
+  untyped string. See CLAUDE.md "Atoms or `@type t :: literal | literal`
+  — never untyped strings for closed sets."
+  """
   use Ecto.Schema
   import Ecto.Changeset
 
-  @kinds ~w[privmsg notice action]
+  @kinds [:privmsg, :notice, :action]
+
+  @type kind :: :privmsg | :notice | :action
 
   @type t :: %__MODULE__{
           id: integer() | nil,
           network_id: String.t(),
           channel: String.t(),
           server_time: integer(),
-          kind: String.t(),
+          kind: kind() | nil,
           sender: String.t(),
-          body: String.t()
+          body: String.t(),
+          inserted_at: DateTime.t() | nil
         }
 
   schema "messages" do
     field :network_id, :string
     field :channel, :string
     field :server_time, :integer
-    field :kind, :string
+    field :kind, Ecto.Enum, values: @kinds
     field :sender, :string
     field :body, :string
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
-  @doc false
+  @doc """
+  Builds an insert changeset. All fields required; `:kind` validated
+  against the `Ecto.Enum` value set at cast time.
+  """
   @spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
   def changeset(message, attrs) do
     message
     |> cast(attrs, [:network_id, :channel, :server_time, :kind, :sender, :body])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender, :body])
-    |> validate_inclusion(:kind, @kinds)
+    |> check_constraint(:kind, name: :kind_must_be_known)
   end
 end
 ```
