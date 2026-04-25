@@ -10,14 +10,19 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Fix `scripts/_lib.sh` compose project-name conflict: when prod
-  container is up, dev oneshots collide on the vlan IP
-  (`Address already in use`). Either set distinct compose project
-  names or detect+skip in `in_container_or_oneshot`. Workaround
-  during prod-up: stop prod container before running gates.
-  **Hit again S16 — third session. Promoting to immediate.**
+(none — compose oneshot fix landed S17 via `compose.oneshot.yaml`
+override.)
 
 ## High
+
+- Investigate flake in
+  `test/grappa_web/channels/grappa_channel_test.exs:76` — `assert_receive
+  %Phoenix.Socket.Message{}` intermittently times out with
+  `{:event, ...}` bare tuple in the mailbox. Race between channel join
+  and PubSub subscribe before broadcast lands. ~1-in-5 hit rate under
+  `mix ci.check` parallelism. Likely fix: re-examine the channel's join
+  handshake — does the broadcast get sent before the subscriber is
+  fully attached? Hit S17.
 
 - Phase 1 Tasks 9–10 per the walking-skeleton plan. Task 9 = REST
   writes mapped to `IRC.Client` outbound. Task 10 = `use Boundary`
