@@ -15,8 +15,10 @@ defmodule GrappaWeb.Endpoint do
   runtime config alongside `secret_key_base` so it is rotatable
   without a recompile.
 
-  No `socket "/socket"` declaration yet — Phase 1 Task 6 wires
-  `GrappaWeb.UserSocket` and the live channels.
+  WebSocket transport at `/socket/websocket` is the only streaming
+  surface. No longpoll fallback — Phase 1 clients are evergreen
+  browsers, and the Phase 6 IRCv3 listener facade will need full
+  WS framing anyway.
   """
   use Phoenix.Endpoint, otp_app: :grappa
 
@@ -26,6 +28,10 @@ defmodule GrappaWeb.Endpoint do
     signing_salt: "rotate-me",
     same_site: "Lax"
   ]
+
+  socket "/socket", GrappaWeb.UserSocket,
+    websocket: true,
+    longpoll: false
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
