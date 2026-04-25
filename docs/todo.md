@@ -10,15 +10,21 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 5 done (`GET /messages` paginated DESC; 28 tests green;
-  ci.check ~17s on the Pi). Next: Task 6 — `POST
-  /networks/:net/channels/:chan/messages` per
-  `docs/plans/2026-04-25-walking-skeleton.md` line 1572. First write
-  resource; introduces `Phoenix.PubSub.broadcast/3`.
+- Phase 1 Task 6 done (`POST /messages` + first `Phoenix.PubSub.broadcast/3`;
+  34 tests green; ci.check ~17s on the Pi). Next: Task 7 — Phoenix
+  Channel for `/socket/websocket` per
+  `docs/plans/2026-04-25-walking-skeleton.md` line 1664. First
+  WebSocket surface; subscribes to PubSub, pushes events through to
+  JS clients. Note: Task 7 plan tests assert the old
+  outer-`body` shape that Task 6 review dropped — pattern descends to
+  `message: %{body: ...}` now.
+- Worktree cleanup: `git worktree remove
+  /home/vjt/code/IRC/grappa-task6` and `git branch -d
+  phase1-task6-post-messages` once S7 fully closed.
 
 ## High
 
-- Phase 1 Tasks 6-10 per the walking-skeleton plan.
+- Phase 1 Tasks 7-10 per the walking-skeleton plan.
 - Live `/healthz` round-trip on the Pi via `scripts/deploy.sh` →
   `scripts/healthcheck.sh` — deferred to Task 8 when Bootstrap wires
   `grappa.toml` into the supervision tree. Until then deploy preflight

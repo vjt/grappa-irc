@@ -460,3 +460,65 @@ needs to deviate from the plan to satisfy CLAUDE.md, that's the plan
 losing — not Claude going off-script. Document the deviation in the
 checkpoint with the *why*; do not silently re-implement to match
 the plan.
+
+---
+
+## S7 — 2026-04-25 — Phase 1 Task 6, the first write resource
+
+`POST /networks/:net/channels/:chan/messages` lands. First write
+resource on the surface, first `Phoenix.PubSub.broadcast/3` in
+production code, first time a REST request and a streaming surface
+share a payload shape. The path is short (~60 lines of controller),
+but each of those firsts is a small architectural decision.
+
+The plan-vs-CLAUDE.md tension showed up immediately. The plan said
+`kind: "privmsg"` (string); CLAUDE.md says atoms for closed sets.
+The plan inlined a `serialize/1` helper in the controller; Task 5
+had already established `MessagesJSON` as the wire-shape door. The
+plan ignored the return type of `Phoenix.PubSub.broadcast/3`;
+Dialyzer caught the `:ok | {:error, _}` and wanted it matched. Three
+deviations, all in the same direction — toward the rules in
+CLAUDE.md, away from the plan as written. This is the second session
+in a row where the plan loses to the rules; we keep finding the same
+failure mode (plan inherited a pattern from a prior session that
+predates the current standard) and keep documenting it the same way.
+The pattern is institutional now; the plan should probably get a
+lint pass before we draft Phase 2.
+
+The "every door" principle ran into a real test today. The PubSub
+broadcast and the REST 201 response should describe the same domain
+event in the same wire shape — that's the whole reason the rule
+exists. The mechanical answer is to make `MessagesJSON.data/1`
+public so both doors call it. The first version of that change came
+with an ergonomic shortcut: the broadcast event carried a duplicated
+outer `body` field next to the nested `message` map, so test
+assertions could pattern-match on `%{kind: :message, body: "x"}`
+without descending into the nested map. The reviewer flagged it
+correctly: that ergonomic shortcut shipped to every cicchetto WS
+client forever as a duplicate field with no documented canonical
+source. Cost ships, benefit lives in tests. Dropped the outer
+`body`; tests now descend into the nested map. Three extra
+characters of test code, no wire-shape pollution.
+
+The reviewer's other catch was subtler. The catch-all
+`def create(_, _), do: {:error, :bad_request}` swallowed two
+different failure modes: bad client body (correctly 400) AND
+router-config drift where someone renamed `:network_id` → `:net`
+and silently broke every POST. CLAUDE.md "let it crash" wants the
+second case loud — `FunctionClauseError` → 500 → operator sees it.
+The fix is to require the path params in the catch-all pattern:
+`def create(_, %{"network_id" => _, "channel_id" => _})`. Same
+blast radius for legit bad input, loud crash for config drift.
+
+Stats:
+- 34 tests (+6 from Task 6: 1 happy + 1 persistence + 1 scoping +
+  3 boundary-rejection)
+- ~810 LOC of Elixir under `lib/` (+60)
+- 26 commits on main (+2 from Task 6: e8a10bc, b0e2771)
+- ci.check still ~17s on Pi (PLT hot)
+
+**Law:** when an ergonomic shortcut in test code adds a field to
+the wire format that ships to clients, the cost-benefit is wrong.
+Tests can be three characters longer; the wire format ships
+forever. If you'd be embarrassed to document the duplicate field in
+the public API, don't ship it for the test convenience.
