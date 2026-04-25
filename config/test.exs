@@ -25,3 +25,13 @@ config :logger, level: :warning
 config :grappa, :start_bootstrap, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
+
+# Cloak vault key — non-secret, test-only. Distinct from dev so a key
+# leak in one env doesn't decrypt the other env's data. The test sqlite
+# is wiped per-run via Sandbox.
+config :grappa, Grappa.Vault,
+  ciphers: [
+    default:
+      {Cloak.Ciphers.AES.GCM,
+       tag: "AES.GCM.V1", key: Base.decode64!("Ot80AYbRqJG9htfEztMBqz6Eo9ALMWgu9Ze6w0CbbPg="), iv_length: 12}
+  ]

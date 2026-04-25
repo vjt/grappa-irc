@@ -3,7 +3,7 @@ defmodule Grappa.Application do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Bootstrap, Grappa.PubSub, Grappa.Repo, GrappaWeb]
+    deps: [Grappa.Bootstrap, Grappa.PubSub, Grappa.Repo, Grappa.Vault, GrappaWeb]
 
   use Application
 
@@ -14,10 +14,16 @@ defmodule Grappa.Application do
     # reorder is a deliberate choice.
     children =
       [
-        # Must come first: every context that touches the DB depends on
-        # Repo being up. Sessions write Scrollback rows, Bootstrap reads
-        # config (no DB today, but Phase 2 moves SASL creds to encrypted
-        # storage and the order will then matter).
+        # Vault before Repo: Cloak's Ecto types (Grappa.EncryptedBinary)
+        # reach into the Vault GenServer at schema dump/load time. If
+        # Repo loaded a schema with an encrypted field before Vault was
+        # up, the type callback would crash with `:noproc`.
+        Grappa.Vault,
+
+        # Must come first (after Vault): every context that touches the
+        # DB depends on Repo being up. Sessions write Scrollback rows;
+        # Phase 2 schemas (network_credentials) carry encrypted columns
+        # that need Vault — hence Vault first.
         Grappa.Repo,
 
         # PubSub before Endpoint — Endpoint's compile-time config names

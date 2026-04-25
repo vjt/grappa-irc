@@ -87,6 +87,8 @@ defmodule Grappa.MixProject do
       {:toml, "~> 0.7"},
       {:req, "~> 0.5"},
       {:argon2_elixir, "~> 4.1"},
+      {:cloak, "~> 1.1"},
+      {:cloak_ecto, "~> 1.3"},
       {:telemetry, "~> 1.3"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
