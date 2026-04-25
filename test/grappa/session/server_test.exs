@@ -21,6 +21,7 @@ defmodule Grappa.Session.ServerTest do
   use Grappa.DataCase, async: false
 
   import ExUnit.CaptureLog
+  import Grappa.MessageEventAssertions
 
   alias Grappa.{IRCServer, Scrollback, Session}
 
@@ -160,24 +161,18 @@ defmodule Grappa.Session.ServerTest do
       :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
-      assert_receive {:event,
-                      %{
-                        kind: :message,
-                        message: %{
-                          kind: :privmsg,
-                          body: "hello",
-                          sender: "alice",
-                          channel: "#sniffo",
-                          network_id: "test",
-                          meta: %{},
-                          server_time: server_time,
-                          id: id
-                        }
-                      }},
-                     1_000
+      msg =
+        assert_message_event(
+          kind: :privmsg,
+          body: "hello",
+          sender: "alice",
+          channel: "#sniffo",
+          network_id: "test",
+          meta: %{}
+        )
 
-      assert is_integer(server_time)
-      assert is_integer(id)
+      assert is_integer(msg.server_time)
+      assert is_integer(msg.id)
 
       [row] = Scrollback.fetch("test", "#sniffo", nil, 10)
       assert row.body == "hello"

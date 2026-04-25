@@ -1,6 +1,8 @@
 defmodule GrappaWeb.MessagesControllerTest do
   use GrappaWeb.ConnCase, async: true
 
+  import Grappa.MessageEventAssertions
+
   alias Grappa.Scrollback
 
   defp seed do
@@ -116,24 +118,21 @@ defmodule GrappaWeb.MessagesControllerTest do
       assert is_integer(body["server_time"])
       assert is_integer(body["id"])
 
-      assert_receive {:event,
-                      %{
-                        kind: :message,
-                        message: %{
-                          kind: :privmsg,
-                          body: "ciao raga",
-                          sender: "<local>",
-                          channel: "#sniffo",
-                          network_id: "azzurra",
-                          server_time: server_time,
-                          id: id,
-                          meta: %{}
-                        }
-                      }},
-                     200
+      msg =
+        assert_message_event(
+          [
+            kind: :privmsg,
+            body: "ciao raga",
+            sender: "<local>",
+            channel: "#sniffo",
+            network_id: "azzurra",
+            meta: %{}
+          ],
+          200
+        )
 
-      assert is_integer(server_time)
-      assert is_integer(id)
+      assert is_integer(msg.server_time)
+      assert is_integer(msg.id)
     end
 
     test "persists — POSTed message visible via subsequent GET", %{conn: conn} do
