@@ -10,8 +10,8 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-(none — compose oneshot fix landed S17 via `compose.oneshot.yaml`
-override.)
+(none — Phase 1 walking-skeleton complete S19 with Task 10 Boundary
+annotations. Phase 2 auth opens next.)
 
 ## High
 
@@ -24,10 +24,6 @@ override.)
   handshake — does the broadcast get sent before the subscriber is
   fully attached? Hit S17.
 
-- Phase 1 Task 10 — `use Boundary` annotations on top-level contexts
-  + `mix boundary.spec` in CI (covers architecture review A11). Last
-  Phase 1 walking-skeleton task before Phase 2 auth opens. (Task 9
-  outbound landed S18.)
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
@@ -63,8 +59,17 @@ override.)
 - Investigate `mix release` size on Debian-slim runtime image. If it's
   obnoxiously big, evaluate Alpine + musl rebuild of `ecto_sqlite3`
   NIFs.
-- Consider Boundary `mix boundary.spec` integration in CI to enforce
-  inter-context call rules from Phase 1 Task 10.
+- `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
+  wire it into `/healthz` JSON response (one-line change in
+  `HealthController`) or drop the function. Surfaced by S19 Task 10
+  code review as L4. Empty `Grappa` boundary annotation is
+  independently justified.
+- Sqlite "Database busy" intermittent test flake — hit once during S19
+  ci.check on a re-run. 3 tests (`Repo` / `Scrollback` / `Wire`)
+  simultaneously failed inserts with `Exqlite.Error: Database busy`.
+  Likely contention between `async: true` Repo writes and the live Pi
+  container also writing to `runtime/grappa_dev.db`. Distinct from the
+  channel test flake at `grappa_channel_test.exs:76`.
 - Telemetry → Prometheus exporter (PromEx). Phase 5 hardening.
 - Reconnect/backoff policy when upstream IRC drops. Phase 5.
 - Scrollback eviction policy — by row count, by age, or both. Phase 5.
