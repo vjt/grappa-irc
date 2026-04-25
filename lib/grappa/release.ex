@@ -46,5 +46,10 @@ defmodule Grappa.Release do
 
   defp repos, do: Application.fetch_env!(@app, :ecto_repos)
 
-  defp load_app, do: Application.load(@app)
+  defp load_app do
+    case Application.load(@app) do
+      :ok -> :ok
+      {:error, {:already_loaded, @app}} -> :ok
+    end
+  end
 end
