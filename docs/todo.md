@@ -10,25 +10,32 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 8 — code merged to main at `75e29b9`; sub-task 8e
-  (operator smoke + Pi deploy) pending. Plan at
-  `~/.claude/plans/toasty-twirling-creek.md`.
-  - Sub-tasks 8a-pre / 8a / 8b / 8c / 8d ✅ — all merged.
-  - Code review round-trip ✅ — subagent pass: 0 BLOCKING / 4
-    SHOULD-FIX (all addressed) / 3 CONSIDER (deferred) / 4 NIT.
-  - Sub-task 8e — `scripts/deploy.sh` → `scripts/healthcheck.sh` on
-    the Pi. Operator-driven; awaiting confirmation. Unblocks the
-    long-deferred live `/healthz` round-trip. Needs `grappa.toml` at
-    repo root (gitignored — copy `.example` and customize).
-  - Stats: 121 tests + 5 properties green, all gates clean.
-  - Worktree `phase1-task8-session` can be pruned after deploy
-    confirms.
+- Codebase review DUE (S11→S12 transition + walking-skeleton end +
+  prod live = natural milestone). Recommended for next session with
+  fresh context. Reviews live in `docs/reviews/codebase/`.
+- Fix `scripts/_lib.sh` compose project-name conflict: when prod
+  container is up, dev oneshots collide on the vlan IP
+  (`Address already in use`). Either set distinct compose project
+  names or detect+skip in `in_container_or_oneshot`. Workaround
+  during prod-up: stop prod container before running gates.
+- Prune merged worktree `phase1-task8-session` (`git worktree
+  remove ~/code/IRC/grappa-task8 && git branch -D
+  phase1-task8-session`). Already merged to main as `75e29b9`.
 
 ## High
 
-- Phase 1 Tasks 9–10 per the walking-skeleton plan (Task 8 done
-  except deploy; Tasks 9 = REST writes mapped to `IRC.Client` outbound,
-  Task 10 = Boundary annotations + `mix boundary.spec` in CI).
+- Phase 1 Tasks 9–10 per the walking-skeleton plan (Task 8 fully
+  done — code + deploy + live in #grappa on azzurra; Tasks 9 = REST
+  writes mapped to `IRC.Client` outbound, Task 10 = Boundary
+  annotations + `mix boundary.spec` in CI).
+- Phase 5 hardening: Session.Server should `terminate/2` cleanly —
+  send QUIT to upstream + close socket. Currently :normal exit kills
+  IRC.Client via link, which silently dies; OK for prod but emits
+  ugly `tcp_closed terminating` test-stdout noise.
+- Phase 5 hardening: Bootstrap warning conflates three causes
+  (missing file / malformed TOML / missing field) into the same
+  "no config — running web-only" message. Operator log triage
+  benefits from cause split. Code-review CONSIDER #6 from S11.
 - Phase 5 hardening: lift `signing_salt` (currently `"rotate-me"` in
   `lib/grappa_web/endpoint.ex`) to `runtime.exs` so it reads from an
   env var like `SECRET_KEY_BASE` already does. Same for the
