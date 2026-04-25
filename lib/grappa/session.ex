@@ -34,6 +34,8 @@ defmodule Grappa.Session do
 
   require Logger
 
+  @placeholder_user "vjt"
+
   @type start_opts :: %{
           required(:user_name) => String.t(),
           required(:network_id) => String.t(),
@@ -87,6 +89,15 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  The Phase 1 hardcoded `user_name` used by the REST surface to look
+  up the session for the request. Phase 2 auth replaces all callers
+  with `conn.assigns.current_user.name` from the authenticated client
+  identity. Centralized here so the eventual sweep is one grep.
+  """
+  @spec placeholder_user() :: String.t()
+  def placeholder_user, do: @placeholder_user
+
+  @doc """
   Returns the pid of the session for `(user_name, network_id)`, or
   `nil` if no such session is registered.
   """
@@ -118,24 +129,39 @@ defmodule Grappa.Session do
     call_session(user_name, network_id, {:send_privmsg, target, body})
   end
 
-  @doc "Sends a JOIN upstream through the session. `{:error, :no_session}` if not registered."
+  @doc """
+  Queues a JOIN upstream through the session. Cast — returns `:ok` as
+  soon as the message is in the Session.Server mailbox; the actual
+  socket write happens asynchronously. The REST surface returns 202
+  Accepted to mirror this. `{:error, :no_session}` if not registered.
+  """
   @spec send_join(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
   def send_join(user_name, network_id, channel)
       when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
-    call_session(user_name, network_id, {:send_join, channel})
+    cast_session(user_name, network_id, {:send_join, channel})
   end
 
-  @doc "Sends a PART upstream through the session. `{:error, :no_session}` if not registered."
+  @doc """
+  Queues a PART upstream through the session. Cast (see `send_join/3`
+  for the rationale). `{:error, :no_session}` if not registered.
+  """
   @spec send_part(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
   def send_part(user_name, network_id, channel)
       when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
-    call_session(user_name, network_id, {:send_part, channel})
+    cast_session(user_name, network_id, {:send_part, channel})
   end
 
   defp call_session(user_name, network_id, request) do
     case whereis(user_name, network_id) do
       nil -> {:error, :no_session}
       pid -> GenServer.call(pid, request)
+    end
+  end
+
+  defp cast_session(user_name, network_id, request) do
+    case whereis(user_name, network_id) do
+      nil -> {:error, :no_session}
+      pid -> GenServer.cast(pid, request)
     end
   end
 end

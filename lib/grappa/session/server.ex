@@ -125,6 +125,18 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Persist-then-send is intentional Phase 1. Rationale: if the persist
+  # fails (validation), we surface the changeset error to the caller
+  # without ever touching the wire — clean rollback. If the persist
+  # succeeds and the upstream send subsequently fails, the linked
+  # Client crashes, kills this Session via the link, the
+  # DynamicSupervisor (`:transient`) restarts a fresh Session — but
+  # the row is already in scrollback so the sender's view is
+  # consistent (they see what they typed). Reversing the order would
+  # give worse UX: message visible to other users on the channel but
+  # absent from the sender's own scrollback after refresh. Phase 5
+  # reconnect/backoff inside Client may revisit this when send
+  # gains an error return.
   @impl GenServer
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
@@ -138,14 +150,15 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  def handle_call({:send_join, channel}, _, state) when is_binary(channel) do
+  @impl GenServer
+  def handle_cast({:send_join, channel}, state) when is_binary(channel) do
     :ok = Client.send_join(state.client, channel)
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
-  def handle_call({:send_part, channel}, _, state) when is_binary(channel) do
+  def handle_cast({:send_part, channel}, state) when is_binary(channel) do
     :ok = Client.send_part(state.client, channel)
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   @impl GenServer
@@ -165,8 +178,15 @@ defmodule Grappa.Session.Server do
       )
       when is_binary(body) do
     case persist_and_broadcast(state, target, Message.sender_nick(msg), body) do
-      {:ok, _} -> :ok
-      {:error, _} -> :ok
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("scrollback insert failed",
+          command: :privmsg,
+          channel: target,
+          error: inspect(changeset.errors)
+        )
     end
 
     {:noreply, state}
@@ -188,6 +208,10 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:irc, %Message{}}, state), do: {:noreply, state}
 
+  # Helper does not log — caller decides. Inbound `handle_info`
+  # logs because nothing else surfaces the failure; outbound
+  # `handle_call` returns the error tuple so the controller (via
+  # `FallbackController`) renders the HTTP error.
   @spec persist_and_broadcast(state(), String.t(), String.t(), String.t()) ::
           {:ok, Scrollback.Message.t()} | {:error, Ecto.Changeset.t()}
   defp persist_and_broadcast(state, target, sender, body) do
@@ -202,13 +226,7 @@ defmodule Grappa.Session.Server do
 
         ok
 
-      {:error, changeset} = err ->
-        Logger.error("scrollback insert failed",
-          command: :privmsg,
-          channel: target,
-          error: inspect(changeset.errors)
-        )
-
+      {:error, _} = err ->
         err
     end
   end

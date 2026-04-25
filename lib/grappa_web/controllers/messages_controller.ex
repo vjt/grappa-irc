@@ -31,7 +31,6 @@ defmodule GrappaWeb.MessagesController do
   alias Grappa.{Scrollback, Session}
 
   @default_limit 50
-  @user "vjt"
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
@@ -69,7 +68,7 @@ defmodule GrappaWeb.MessagesController do
           | {:error, Ecto.Changeset.t()}
   def create(conn, %{"network_id" => network, "channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    with {:ok, message} <- Session.send_privmsg(@user, network, channel, body) do
+    with {:ok, message} <- Session.send_privmsg(Session.placeholder_user(), network, channel, body) do
       conn
       |> put_status(:created)
       |> render(:show, message: message)

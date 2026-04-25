@@ -16,17 +16,16 @@ defmodule GrappaWeb.ChannelsController do
 
   alias Grappa.Session
 
-  @user "vjt"
-
   @doc """
   `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
-  Sends `JOIN <name>` upstream. Returns 202 + `{"ok": true}`.
+  Casts `JOIN <name>` upstream through the session. Returns 202 +
+  `{"ok": true}`.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session}
   def create(conn, %{"network_id" => network, "name" => name})
       when is_binary(name) and name != "" do
-    with :ok <- Session.send_join(@user, network, name) do
+    with :ok <- Session.send_join(Session.placeholder_user(), network, name) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -36,12 +35,12 @@ defmodule GrappaWeb.ChannelsController do
   def create(_, %{"network_id" => _}), do: {:error, :bad_request}
 
   @doc """
-  `DELETE /networks/:network_id/channels/:channel_id` — sends
+  `DELETE /networks/:network_id/channels/:channel_id` — casts
   `PART <channel_id>` upstream. Returns 202 + `{"ok": true}`.
   """
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :no_session}
   def delete(conn, %{"network_id" => network, "channel_id" => channel}) do
-    with :ok <- Session.send_part(@user, network, channel) do
+    with :ok <- Session.send_part(Session.placeholder_user(), network, channel) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
