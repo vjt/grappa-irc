@@ -59,8 +59,17 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
 
 ### How to run scripts — THE ONLY WAY
 
-**Always use relative paths from `/srv/grappa`.** Never `cd /srv/grappa &&`,
-never `/srv/grappa/scripts/foo.sh`. Run from CWD `/srv/grappa`:
+**Always use relative paths from the repo root** (`/srv/grappa` for main,
+or the worktree dir like `~/code/IRC/grappa-task2/`). Never `cd /srv/grappa &&`,
+never absolute `/srv/grappa/scripts/foo.sh`. The scripts are worktree-aware:
+they detect the worktree, cd to the MAIN repo for docker compose (so the
+project name + image + named volumes — deps, _build, hex, mix, PLT — are
+shared across all worktrees) and bind-mount the worktree's source files
+(lib, test, config, priv/repo, mix.exs, etc.) on top via `-v` overrides.
+The live container always has main's source mounted; from a worktree,
+`scripts/*` always uses oneshot runs so the worktree code wins. Anything
+not overridden (priv/plts cache, runtime/sqlite db, grappa.toml) comes
+from the main repo so PLT cache and operator state stay single-source.
 
 ```
 scripts/mix.sh <task>        # mix task in container
