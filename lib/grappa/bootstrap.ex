@@ -57,13 +57,36 @@ defmodule Grappa.Bootstrap do
         :ok
 
       {:error, reason} ->
-        Logger.warning("bootstrap: no config — running web-only",
-          path: path,
-          reason: reason
-        )
-
+        log_load_failure(reason, path)
         :ok
     end
+  end
+
+  defp log_load_failure({:file_not_found, _} = err, path) do
+    Logger.warning("bootstrap: " <> Config.format_error(err) <> " — running web-only",
+      path: path
+    )
+  end
+
+  defp log_load_failure({:io_error, posix, _} = err, path) do
+    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
+      path: path,
+      reason: posix
+    )
+  end
+
+  defp log_load_failure({:invalid_toml, msg} = err, path) do
+    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
+      path: path,
+      reason: msg
+    )
+  end
+
+  defp log_load_failure({:invalid_config, msg} = err, path) do
+    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
+      path: path,
+      reason: msg
+    )
   end
 
   @spec spawn_all([Config.User.t()]) :: :ok

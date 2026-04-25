@@ -51,7 +51,7 @@ defmodule Grappa.ConfigTest do
       nickname = "wrong-key"
       """)
 
-    assert {:error, msg} = Config.load(path)
+    assert {:error, {:invalid_config, msg}} = Config.load(path)
     assert msg =~ "name"
   end
 
@@ -62,7 +62,7 @@ defmodule Grappa.ConfigTest do
       listen = "127.0.0.1:4000"
       """)
 
-    assert {:error, msg} = Config.load(path)
+    assert {:error, {:invalid_config, msg}} = Config.load(path)
     assert msg =~ "users"
   end
 
