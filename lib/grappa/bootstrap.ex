@@ -28,7 +28,7 @@ defmodule Grappa.Bootstrap do
   """
   use Task, restart: :transient
 
-  alias Grappa.{Config, Log, Session}
+  alias Grappa.{Config, Session}
 
   require Logger
 
@@ -91,34 +91,20 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_all([Config.User.t()]) :: :ok
   defp spawn_all(users) do
-    counts =
-      Enum.reduce(users, %{started: 0, failed: 0}, fn user, acc ->
-        Enum.reduce(user.networks, acc, &spawn_one(&1, user.name, &2))
+    opts_list =
+      Enum.flat_map(users, fn user ->
+        Enum.map(user.networks, &session_opts(user.name, &1))
       end)
+
+    stats = Session.spawn_batch(opts_list)
 
     Logger.info("bootstrap done",
       users: length(users),
-      started: counts.started,
-      failed: counts.failed
+      started: stats.started,
+      failed: stats.failed
     )
 
     :ok
-  end
-
-  @spec spawn_one(Config.Network.t(), String.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
-          %{started: non_neg_integer(), failed: non_neg_integer()}
-  defp spawn_one(network, user_name, acc) do
-    context = Log.session_context(user_name, network.id)
-
-    case Session.start_session(session_opts(user_name, network)) do
-      {:ok, _} ->
-        Logger.info("bootstrap session started", context)
-        %{acc | started: acc.started + 1}
-
-      {:error, reason} ->
-        Logger.error("bootstrap session failed", Keyword.put(context, :error, inspect(reason)))
-        %{acc | failed: acc.failed + 1}
-    end
   end
 
   @spec session_opts(String.t(), Config.Network.t()) :: Grappa.Session.start_opts()

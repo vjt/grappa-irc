@@ -30,7 +30,9 @@ defmodule Grappa.Session do
   on the context module; schemas internal."
   """
 
-  alias Grappa.Session.Server
+  alias Grappa.{Log, Session.Server}
+
+  require Logger
 
   @type start_opts :: %{
           required(:user_name) => String.t(),
@@ -55,6 +57,33 @@ defmodule Grappa.Session do
   def start_session(%{user_name: u, network_id: n} = opts)
       when is_binary(u) and is_binary(n) do
     DynamicSupervisor.start_child(Grappa.SessionSupervisor, {Server, opts})
+  end
+
+  @doc """
+  Spawns a list of sessions sequentially, logging one line per result
+  with the canonical `Grappa.Log.session_context/2` metadata. Returns
+  `%{started:, failed:}` counts so the caller can render a summary.
+
+  Use from any session-batch producer: Bootstrap reads the operator
+  TOML, Phase 2 REST `add network` endpoints will wrap a single-element
+  list, etc. Failures are non-fatal — every entry in the list is
+  attempted.
+  """
+  @spec spawn_batch([start_opts()]) :: %{started: non_neg_integer(), failed: non_neg_integer()}
+  def spawn_batch(list) when is_list(list) do
+    Enum.reduce(list, %{started: 0, failed: 0}, fn opts, acc ->
+      context = Log.session_context(opts.user_name, opts.network_id)
+
+      case start_session(opts) do
+        {:ok, _} ->
+          Logger.info("session started", context)
+          %{acc | started: acc.started + 1}
+
+        {:error, reason} ->
+          Logger.error("session start failed", Keyword.put(context, :error, inspect(reason)))
+          %{acc | failed: acc.failed + 1}
+      end
+    end)
   end
 
   @doc """
