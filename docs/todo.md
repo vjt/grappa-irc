@@ -18,10 +18,6 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   JS clients. Note: Task 7 plan tests assert the old
   outer-`body` shape that Task 6 review dropped — pattern descends to
   `message: %{body: ...}` now.
-- Worktree cleanup: `git worktree remove
-  /home/vjt/code/IRC/grappa-task6` and `git branch -d
-  phase1-task6-post-messages` once S7 fully closed.
-
 ## High
 
 - Phase 1 Tasks 7-10 per the walking-skeleton plan.
