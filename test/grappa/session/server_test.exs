@@ -55,6 +55,14 @@ defmodule Grappa.Session.ServerTest do
     pid
   end
 
+  # Synchronizes on the USER handshake line — every Session.init/1 sends
+  # NICK + USER, so this is a deterministic "session is fully booted past
+  # connect" signal. Use this instead of `Process.sleep` before `feed/2`.
+  defp await_handshake(server) do
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    :ok
+  end
+
   describe "registration" do
     test "registers via {:session, user, net_id} in Grappa.SessionRegistry" do
       {_, port} = start_server()
@@ -108,7 +116,7 @@ defmodule Grappa.Session.ServerTest do
           network: %{autojoin: ["#sniffo", "#other"]}
         })
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
@@ -125,7 +133,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session(port, %{network: %{autojoin: []}})
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       Process.sleep(100)
 
@@ -139,7 +147,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, "PING :irc.test.org\r\n")
 
       assert {:ok, "PONG :irc.test.org\r\n"} =
@@ -157,7 +165,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       assert_receive {:event,
@@ -195,7 +203,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       refute_receive {:event, _}, 200
@@ -209,7 +217,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org PRIVMSG #sniffo :system message\r\n")
 
       assert_receive {:event, %{message: %{sender: "irc.test.org", body: "system message"}}},
@@ -232,7 +240,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
 
       log =
         capture_log(fn ->
@@ -255,7 +263,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       pid = start_session(port)
 
-      Process.sleep(50)
+      :ok = await_handshake(server)
 
       log =
         capture_log(fn ->

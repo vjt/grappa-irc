@@ -34,9 +34,19 @@ defmodule Grappa.Bootstrap do
 
   @type opts :: [config_path: Path.t()]
 
+  @doc """
+  Production entry point — wraps `run/1` in `Task.start_link/3` so
+  Bootstrap can sit in the application supervision tree.
+  """
   @spec start_link(opts()) :: {:ok, pid()}
   def start_link(opts), do: Task.start_link(__MODULE__, :run, [opts])
 
+  @doc """
+  Reads the TOML config at `opts[:config_path]` and spawns one session
+  per `(user, network)` entry. Returns `:ok` whether all sessions
+  start, some fail, or the config is missing/malformed (best-effort —
+  a broken config does not block the rest of the supervision tree).
+  """
   @spec run(opts()) :: :ok
   def run(opts) do
     path = Keyword.fetch!(opts, :config_path)

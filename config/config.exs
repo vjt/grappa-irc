@@ -41,7 +41,12 @@ config :logger, :console,
     :path,
     :users,
     :started,
-    :failed
+    :failed,
+    # Per-IRC-event context: who/what an event refers to (KICK target,
+    # NICK_CHANGE new-nick, MODE arg, etc. — mirrors the Meta.@known_keys
+    # allowlist so the same shape that hits the DB also hits the log line).
+    :sender,
+    :target
   ]
 
 import_config "#{config_env()}.exs"

@@ -104,8 +104,7 @@ defmodule Grappa.Session.Server do
     {:noreply, state}
   end
 
-  def handle_info({:irc, %Message{command: "PING", params: params}}, state) do
-    token = List.last(params) || ""
+  def handle_info({:irc, %Message{command: "PING", params: [token | _]}}, state) do
     :ok = Client.send_line(state.client, "PONG :#{token}\r\n")
     {:noreply, state}
   end
@@ -142,8 +141,17 @@ defmodule Grappa.Session.Server do
     {:noreply, state}
   end
 
-  def handle_info({:irc, %Message{command: cmd}}, state) when cmd in @logged_event_commands do
-    Logger.info("irc event", command: cmd)
+  def handle_info(
+        {:irc, %Message{command: cmd, prefix: prefix, params: params}},
+        state
+      )
+      when cmd in @logged_event_commands do
+    Logger.info("irc event",
+      command: cmd,
+      sender: nick_of(prefix),
+      channel: List.first(params)
+    )
+
     {:noreply, state}
   end
 
