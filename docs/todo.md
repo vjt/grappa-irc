@@ -10,18 +10,22 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 0 done (project bootstrapped). Next: Task 1 — TOML config
-  parser (`Grappa.Config`). See `docs/plans/2026-04-25-walking-skeleton.md`.
+- Phase 1 Task 1 done (`Grappa.Config` TOML loader, 4 tests, all gates
+  green). Next: Task 2 — Ecto Repo + sqlite schema + migrations. See
+  `docs/plans/2026-04-25-walking-skeleton.md`.
 
 ## High
 
-- Phase 1 Tasks 1-10 per the walking-skeleton plan.
+- Phase 1 Tasks 2-10 per the walking-skeleton plan.
 - Smoke-test the docker compose flow end-to-end on the Pi: `docker
   compose build && docker compose up -d && curl
   http://192.168.53.11:4000/healthz`. Will only pass after Task 4
   (Phoenix endpoint) lands.
-- Generate `SECRET_KEY_BASE` and `RELEASE_COOKIE` for prod, store in
-  `.env` (gitignored). Document in deploy.sh output if missing.
+- Update `docs/plans/2026-04-25-walking-skeleton.md` Task 1 section
+  with the three deviations folded into commit b9620e8: dialyzer-driven
+  error pattern fixes, recursive `traverse/2` over `reduce_while`, and
+  the empty-users guard. Plan currently says reduce_while + 3-tuple
+  Toml error.
 
 ## Medium
 
