@@ -6,7 +6,7 @@ defmodule Grappa.Application do
   @impl Application
   def start(_, _) do
     children = [
-      # Grappa.Repo,                                              # Task 2 — Ecto repo
+      Grappa.Repo,
       {Phoenix.PubSub, name: Grappa.PubSub},
       {Registry, keys: :unique, name: Grappa.SessionRegistry},
       {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one}

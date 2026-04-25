@@ -10,6 +10,11 @@ defmodule Grappa.MixProject do
       version: @version,
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
+      # Elixir 1.19 introduced explicit test discovery filters. Without
+      # these, ExUnit warns on every non-`_test.exs` file under `test/`
+      # (test/support/data_case.ex etc.).
+      test_load_filters: [&String.ends_with?(&1, "_test.exs")],
+      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
@@ -109,7 +114,10 @@ defmodule Grappa.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get"],
+      setup: ["deps.get", "ecto.setup"],
+      "ecto.setup": ["ecto.create --quiet", "ecto.migrate --quiet"],
+      "ecto.reset": ["ecto.drop --quiet", "ecto.setup"],
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "ci.check": [
         "format --check-formatted",
         "credo --strict",
@@ -119,7 +127,12 @@ defmodule Grappa.MixProject do
         "doctor",
         # Coverage is a CI-only step (mix coveralls.json in the workflow);
         # local runs would need MIX_ENV=test for excoveralls to load.
-        "test --warnings-as-errors",
+        # `cmd MIX_ENV=test mix test ...` shells out so MIX_ENV is set
+        # for the test run — `mix test` from inside an alias inherits
+        # the parent's env (here :dev from ci.check), and then Repo
+        # picks up the dev pool instead of Sandbox. Spawning a fresh
+        # mix process is the canonical workaround for this Mix quirk.
+        "cmd env MIX_ENV=test mix test --warnings-as-errors",
         "dialyzer",
         "docs"
       ]
