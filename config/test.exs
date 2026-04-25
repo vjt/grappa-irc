@@ -18,5 +18,10 @@ config :grappa, GrappaWeb.Endpoint,
   server: false
 
 config :logger, level: :warning
+
+# Test runs invoke Grappa.Bootstrap explicitly via Bootstrap.run/1; we
+# don't want the application start to autoload grappa.toml and try to
+# connect to real upstream IRC servers during `mix test`.
+config :grappa, :start_bootstrap, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason

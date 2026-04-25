@@ -34,7 +34,14 @@ config :logger, :console,
     :reason,
     :raw,
     :error,
-    :pid
+    :pid,
+    # Bootstrap summary: how many users we processed and how many
+    # session starts succeeded vs. failed; the config path that was
+    # (or wasn't) read.
+    :path,
+    :users,
+    :started,
+    :failed
   ]
 
 import_config "#{config_env()}.exs"
