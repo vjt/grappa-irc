@@ -24,10 +24,10 @@ override.)
   handshake — does the broadcast get sent before the subscriber is
   fully attached? Hit S17.
 
-- Phase 1 Tasks 9–10 per the walking-skeleton plan. Task 9 = REST
-  writes mapped to `IRC.Client` outbound. Task 10 = `use Boundary`
-  annotations on top-level contexts + `mix boundary.spec` in CI
-  (covers architecture review A11).
+- Phase 1 Task 10 — `use Boundary` annotations on top-level contexts
+  + `mix boundary.spec` in CI (covers architecture review A11). Last
+  Phase 1 walking-skeleton task before Phase 2 auth opens. (Task 9
+  outbound landed S18.)
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
