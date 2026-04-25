@@ -99,8 +99,19 @@ in_container() {
 # Run a one-shot mix task without requiring the long-running container.
 # Useful for `mix deps.get`, `mix ecto.create`, etc. before first boot.
 # Layers worktree source overrides if invoked from a worktree.
+#
+# `compose.oneshot.yaml` is layered ON TOP of $COMPOSE_FILE so the run
+# container drops the static vlan53 IP + fixed container_name. Without
+# this, a oneshot started while ANY long-lived container (dev or prod)
+# holds 192.168.53.11 bombs with "Address already in use".
+#
+# The override path is absolute via $SRC_ROOT so the file resolves to
+# the worktree copy (when running from a worktree) — the scripts cd to
+# REPO_ROOT first, but oneshot config should track the worktree, same
+# as the source mounts in WORKTREE_VOLUMES.
 in_oneshot() {
-    docker compose -f "$COMPOSE_FILE" run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
+    docker compose -f "$COMPOSE_FILE" -f "$SRC_ROOT/compose.oneshot.yaml" \
+        run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
 }
 
 # Prefer exec into the live container when on main and it's up; otherwise

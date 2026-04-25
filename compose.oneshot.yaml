@@ -1,0 +1,33 @@
+# grappa — oneshot override (layered AFTER compose.yaml or compose.prod.yaml).
+#
+# Used by `scripts/_lib.sh` `in_oneshot()` for ephemeral mix tasks (test,
+# credo, dialyzer, format, deps.get, ecto.migrate, etc.) so they coexist
+# with a running long-lived container.
+#
+# Without this override, oneshots inherit the service's static vlan53 IP
+# (192.168.53.11) and fail with "Address already in use" whenever a live
+# container — dev OR prod — is bound to that IP. Same goes for
+# `container_name: grappa` (one-name-one-container in Docker).
+#
+# Strategy:
+#   - networks: !reset moves oneshots off vlan53 onto compose's default
+#     bridge network. Oneshots never need LAN reachability — they run
+#     mix tasks against named volumes + host bind mounts, talk to
+#     localhost in-process fakes (Grappa.IRCServer test helper), and
+#     exit. Tests boot Phoenix on port 4002 bound to localhost inside
+#     the container; nothing external connects in.
+#   - container_name: !reset null lets compose generate a unique name
+#     per run (e.g. grappa-grappa-run-abc123) so multiple oneshots can
+#     run concurrently and never collide with the long-lived container.
+#   - healthcheck.disable: true skips the curl /healthz probe; oneshots
+#     don't run phx.server, the probe would always fail.
+#   - restart: "no" — oneshots are fire-and-forget; never auto-restart.
+
+services:
+  grappa:
+    networks: !reset
+      - default
+    container_name: !reset null
+    healthcheck:
+      disable: true
+    restart: "no"
