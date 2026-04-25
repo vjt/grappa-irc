@@ -45,8 +45,8 @@ defmodule Grappa.Session.Server do
 
   alias Grappa.Config.Network
   alias Grappa.IRC.{Client, Message}
+  alias Grappa.{Log, Scrollback}
   alias Grappa.PubSub.Topic
-  alias Grappa.Scrollback
 
   require Logger
 
@@ -80,14 +80,14 @@ defmodule Grappa.Session.Server do
 
   @impl GenServer
   def init(%{user_name: user, network: %Network{} = net}) do
-    Logger.metadata(user: user, network: net.id)
+    :ok = Log.set_session_context(user, net.id)
 
     case Client.start_link(%{
            host: net.host,
            port: net.port,
            tls: net.tls,
            dispatch_to: self(),
-           logger_metadata: [user: user, network: net.id]
+           logger_metadata: Log.session_context(user, net.id)
          }) do
       {:ok, client} ->
         :ok = Client.send_line(client, "NICK #{net.nick}\r\n")

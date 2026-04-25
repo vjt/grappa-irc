@@ -28,7 +28,7 @@ defmodule Grappa.Bootstrap do
   """
   use Task, restart: :transient
 
-  alias Grappa.{Config, Session}
+  alias Grappa.{Config, Log, Session}
 
   require Logger
 
@@ -85,18 +85,15 @@ defmodule Grappa.Bootstrap do
   @spec spawn_one(Config.Network.t(), String.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
           %{started: non_neg_integer(), failed: non_neg_integer()}
   defp spawn_one(network, user_name, acc) do
+    context = Log.session_context(user_name, network.id)
+
     case Session.start_session(%{user_name: user_name, network: network}) do
       {:ok, _} ->
-        Logger.info("bootstrap session started", user: user_name, network: network.id)
+        Logger.info("bootstrap session started", context)
         %{acc | started: acc.started + 1}
 
       {:error, reason} ->
-        Logger.error("bootstrap session failed",
-          user: user_name,
-          network: network.id,
-          error: inspect(reason)
-        )
-
+        Logger.error("bootstrap session failed", Keyword.put(context, :error, inspect(reason)))
         %{acc | failed: acc.failed + 1}
     end
   end
