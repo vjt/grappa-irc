@@ -77,9 +77,6 @@ jobs:
           files: ./cover/excoveralls.json
           fail_ci_if_error: false
 
-      - name: Build docs (no warnings)
-        run: mix docs
-
   dialyzer:
     name: dialyzer
     runs-on: ubuntu-latest
@@ -117,3 +114,10 @@ jobs:
 
       - name: Run Dialyzer
         run: mix dialyzer --format short
+
+      # Docs build lives in this job because ex_doc is `only: [:dev]` in
+      # mix.exs (we don't want it pulled into the test runner). The
+      # dialyzer job already runs in MIX_ENV=dev with deps+_build cached,
+      # so adding a docs step here costs nothing extra.
+      - name: Build docs (no warnings)
+        run: mix docs
