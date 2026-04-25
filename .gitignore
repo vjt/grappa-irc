@@ -43,6 +43,9 @@ priv/plts/*.plt.hash
 .env.local
 *.local
 
+# ── Claude Code session state (locks, scratch, output)
+.claude/
+
 # ── Editors / OS
 .DS_Store
 Thumbs.db
