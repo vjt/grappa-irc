@@ -63,6 +63,16 @@ defmodule Grappa.Scrollback.Meta do
 
   @known_keys ~w[target new_nick modes args reason]a
 
+  @doc """
+  The atom-key allowlist. Exposed so the test suite can assert that
+  every key here is also present in the Logger `:metadata` allowlist
+  (`config/config.exs`) — those two lists must stay in sync per
+  architecture review A18, and a unit test catches drift at test time
+  without runtime mutation of Logger config.
+  """
+  @spec known_keys() :: [:target | :new_nick | :modes | :args | :reason, ...]
+  def known_keys, do: @known_keys
+
   @impl Ecto.Type
   def type, do: :map
 
@@ -80,10 +90,12 @@ defmodule Grappa.Scrollback.Meta do
 
   # Convert any atom or string key to an atom IF it's allowlisted;
   # otherwise leave it as a string. Values pass through unchanged.
+  @spec atomize_known(map()) :: map()
   defp atomize_known(map) do
     Map.new(map, fn {k, v} -> {normalize_key(k), v} end)
   end
 
+  @spec normalize_key(atom() | String.t()) :: atom() | String.t()
   defp normalize_key(k) when is_atom(k) do
     if k in @known_keys, do: k, else: Atom.to_string(k)
   end
@@ -95,6 +107,7 @@ defmodule Grappa.Scrollback.Meta do
     end
   end
 
+  @spec stringify(map()) :: %{optional(String.t()) => term()}
   defp stringify(map) do
     Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end

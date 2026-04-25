@@ -44,9 +44,14 @@ config :logger, :console,
     :failed,
     # Per-IRC-event context: who/what an event refers to (KICK target,
     # NICK_CHANGE new-nick, MODE arg, etc. — mirrors the Meta.@known_keys
-    # allowlist so the same shape that hits the DB also hits the log line).
+    # allowlist so the same shape that hits the DB also hits the log line.
+    # Drift caught at test time by Grappa.Scrollback.MetaTest "known_keys
+    # ↔ Logger metadata allowlist").
     :sender,
-    :target
+    :target,
+    :new_nick,
+    :modes,
+    :args
   ]
 
 import_config "#{config_env()}.exs"
