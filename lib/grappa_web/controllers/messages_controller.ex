@@ -1,14 +1,18 @@
 defmodule GrappaWeb.MessagesController do
   @moduledoc """
-  Read+write surface for `Grappa.Scrollback` messages.
+  Read surface for `Grappa.Scrollback` messages. Phase 1 Task 5 lands
+  `index/2` only; Task 6 adds `create/2` to the same nested path.
 
-  Phase 1 Task 5 lands `index/2` only (paginated DESC fetch); Task 6
-  adds `create/2`. Pagination params (`?before=`, `?limit=`) parse
-  silently — bad input falls back to defaults rather than 422 because
-  this is a read-only resource whose cursor shape will be revisited in
-  Phase 6 (IRCv3 CHATHISTORY). The `Scrollback` context owns the hard
-  cap on page size; the controller's `@default_limit` is the
-  unconfigured-client default, not a security boundary.
+  Pagination params (`?before=`, `?limit=`) are validated at the
+  boundary per CLAUDE.md: absent params fall back to defaults, but a
+  param that is *present and unparseable* (e.g. `?limit=banana`)
+  returns `{:error, :bad_request}` via `FallbackController`. Forgiving
+  the typo would mask client bugs; that bar is set by the read-only
+  nature of this endpoint, not relaxed by it.
+
+  The `Scrollback` context owns the hard cap on page size; the
+  controller's `@default_limit` is the unconfigured-client default,
+  not a security boundary.
   """
   use GrappaWeb, :controller
 
@@ -22,34 +26,35 @@ defmodule GrappaWeb.MessagesController do
 
   Optional query params:
     * `before` — `server_time` cursor; only rows strictly less than it
-      are returned. Omit for the latest page.
+      are returned. Absent: latest page. Unparseable: 400.
     * `limit` — page size (default `#{@default_limit}`, hard cap in
-      `Grappa.Scrollback.fetch/4`). Non-positive or non-integer values
-      fall back to the default.
+      `Grappa.Scrollback.fetch/4`). Must be a positive integer when
+      present. Absent: default. Non-positive or non-integer: 400.
   """
-  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
   def index(conn, %{"network_id" => network, "channel_id" => channel} = params) do
-    before = parse_cursor(params["before"])
-    limit = parse_limit(params["limit"])
-    messages = Scrollback.fetch(network, channel, before, limit)
-    render(conn, :index, messages: messages)
-  end
-
-  defp parse_cursor(nil), do: nil
-
-  defp parse_cursor(s) when is_binary(s) do
-    case Integer.parse(s) do
-      {n, ""} -> n
-      _ -> nil
+    with {:ok, cursor} <- parse_cursor(params["before"]),
+         {:ok, limit} <- parse_limit(params["limit"]) do
+      messages = Scrollback.fetch(network, channel, cursor, limit)
+      render(conn, :index, messages: messages)
     end
   end
 
-  defp parse_limit(nil), do: @default_limit
+  defp parse_cursor(nil), do: {:ok, nil}
+
+  defp parse_cursor(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  defp parse_limit(nil), do: {:ok, @default_limit}
 
   defp parse_limit(s) when is_binary(s) do
     case Integer.parse(s) do
-      {n, ""} when n > 0 -> n
-      _ -> @default_limit
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> {:error, :bad_request}
     end
   end
 end

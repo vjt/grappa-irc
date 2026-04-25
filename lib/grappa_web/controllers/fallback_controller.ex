@@ -12,7 +12,14 @@ defmodule GrappaWeb.FallbackController do
   """
   use GrappaWeb, :controller
 
-  @spec call(Plug.Conn.t(), {:error, :not_found | Ecto.Changeset.t()}) :: Plug.Conn.t()
+  @spec call(Plug.Conn.t(), {:error, :bad_request | :not_found | Ecto.Changeset.t()}) ::
+          Plug.Conn.t()
+  def call(conn, {:error, :bad_request}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "bad request"})
+  end
+
   def call(conn, {:error, :not_found}) do
     conn
     |> put_status(:not_found)

@@ -2,9 +2,16 @@ defmodule GrappaWeb.MessagesJSON do
   @moduledoc """
   Renders `Grappa.Scrollback.Message` rows for the JSON surface.
 
-  `kind` round-trips as a string in JSON (`:privmsg` → `"privmsg"`)
-  via Jason's atom encoding; the schema's atom shape stays inside the
-  BEAM. Field set is the public contract — adding fields is additive,
+  `kind` round-trips as a string (`:privmsg` → `"privmsg"`) via Jason's
+  default atom-to-string encoding; the schema's atom shape stays inside
+  the BEAM.
+
+  `server_time` is serialized as the raw epoch-millisecond integer the
+  schema stores. Clients (cicchetto, the Phase 6 IRCv3 listener facade)
+  convert to their preferred wire format — the public contract is
+  "monotonic milliseconds since epoch."
+
+  Field set is the public contract — adding fields is additive,
   removing or renaming is a breaking change for any client.
   """
 
