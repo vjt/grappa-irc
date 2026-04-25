@@ -11,21 +11,30 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 ## Immediate
 
 - Phase 1 Task 8 IN PROGRESS on worktree `phase1-task8-session`
-  (`~/code/IRC/grappa-task8`). Fresh plan at
+  (`~/code/IRC/grappa-task8`, HEAD `a840b37`). Fresh plan at
   `~/.claude/plans/toasty-twirling-creek.md` (supersedes
-  `docs/plans/2026-04-25-walking-skeleton.md` lines 1829-2470 which
-  had 14 deviations from current conventions + missing schema
-  forward-compat for non-PRIVMSG IRC events).
-  - Sub-task 8a-pre ✅ — schema extension (10-kind enum, nullable
-    body, typed `meta` Ecto.Type via allowlist), wire shape moved to
-    domain (`Grappa.Scrollback.Message.to_wire/1`), 2 prep fixes
-    (sqlite `busy_timeout` flake, worktree mount `:ro` → RW for
-    Elixir compiler touch). 63 tests green, all gates clean. 4
-    commits on worktree branch.
-  - Sub-task 8a NEXT — IRC parser (`Grappa.IRC.Parser` +
-    `Grappa.IRC.Message`, RFC2812 + IRCv3 message-tags + UTF-8/latin1
-    boundary + StreamData property tests).
-  - Sub-tasks 8b/8c/8d/8e + code review + docs after.
+  `docs/plans/2026-04-25-walking-skeleton.md` lines 1829-2470).
+  - Sub-task 8a-pre ✅ — schema extension + wire-shape relocation +
+    custom Meta Ecto.Type. 63 tests, 4 commits.
+  - Sub-task 8a ✅ — IRC parser + Message struct (RFC2812 + IRCv3
+    tags + UTF-8/latin1 boundary). 32 unit tests + 5 properties,
+    2 commits (`99a8b1e` pre-existing fix, `3da0090` parser feat).
+  - Sub-task 8b ✅ — IRC.Client GenServer + IRCServer test helper
+    (packet:line + active:once + transport abstraction + TLS warning).
+    8 client tests, 1 commit (`7126389`).
+  - Logger structured-KV baseline ✅ — extended config metadata
+    allowlist with `:command, :reason, :raw, :error, :pid`. Refactored
+    parse-fail Logger.warning back to structured form. 1 commit
+    (`a840b37`). JSON output formatter deferred to Phase 5 with
+    PromEx — call shape identical across formats.
+  - Sub-task 8c NEXT — `Grappa.Session.Server` (per-(user,network)
+    GenServer, NICK+USER no-CAP, autojoin on 001, PING/PONG, PRIVMSG
+    persist + PubSub broadcast via `Message.to_wire/1`, JOIN/PART/etc.
+    Logger.info only — broadcasts deferred to Phase 5 with
+    channel-membership tracking).
+  - Sub-tasks 8d (Bootstrap) / 8e (smoke + Pi deploy) + code review
+    + docs after.
+  - Stats: 103 tests + 5 properties green, all gates clean.
 
 ## High
 
