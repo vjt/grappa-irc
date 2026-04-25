@@ -22,7 +22,6 @@ defmodule Grappa.Session.ServerTest do
 
   import ExUnit.CaptureLog
 
-  alias Grappa.Config.Network
   alias Grappa.{IRCServer, Scrollback, Session}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -32,9 +31,10 @@ defmodule Grappa.Session.ServerTest do
     {server, IRCServer.port(server)}
   end
 
-  defp network(port, overrides) do
-    base = %Network{
-      id: "test",
+  defp session_opts(port, overrides) do
+    base = %{
+      user_name: "vjt",
+      network_id: "test",
       host: "127.0.0.1",
       port: port,
       tls: false,
@@ -45,13 +45,8 @@ defmodule Grappa.Session.ServerTest do
     Map.merge(base, overrides)
   end
 
-  defp start_session(port, opts \\ %{}) do
-    {:ok, pid} =
-      Session.start_session(%{
-        user_name: Map.get(opts, :user_name, "vjt"),
-        network: network(port, Map.get(opts, :network, %{}))
-      })
-
+  defp start_session(port, overrides \\ %{}) do
+    {:ok, pid} = Session.start_session(session_opts(port, overrides))
     pid
   end
 
@@ -111,10 +106,7 @@ defmodule Grappa.Session.ServerTest do
     test "sends JOIN for each configured channel after server welcome" do
       {server, port} = start_server()
 
-      pid =
-        start_session(port, %{
-          network: %{autojoin: ["#sniffo", "#other"]}
-        })
+      pid = start_session(port, %{autojoin: ["#sniffo", "#other"]})
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
@@ -131,7 +123,7 @@ defmodule Grappa.Session.ServerTest do
     test "no JOIN sent when autojoin list is empty" do
       {server, port} = start_server()
 
-      pid = start_session(port, %{network: %{autojoin: []}})
+      pid = start_session(port, %{autojoin: []})
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")

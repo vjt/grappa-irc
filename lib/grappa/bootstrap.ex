@@ -87,7 +87,7 @@ defmodule Grappa.Bootstrap do
   defp spawn_one(network, user_name, acc) do
     context = Log.session_context(user_name, network.id)
 
-    case Session.start_session(%{user_name: user_name, network: network}) do
+    case Session.start_session(session_opts(user_name, network)) do
       {:ok, _} ->
         Logger.info("bootstrap session started", context)
         %{acc | started: acc.started + 1}
@@ -96,5 +96,18 @@ defmodule Grappa.Bootstrap do
         Logger.error("bootstrap session failed", Keyword.put(context, :error, inspect(reason)))
         %{acc | failed: acc.failed + 1}
     end
+  end
+
+  @spec session_opts(String.t(), Config.Network.t()) :: Grappa.Session.start_opts()
+  defp session_opts(user_name, %Config.Network{} = net) do
+    %{
+      user_name: user_name,
+      network_id: net.id,
+      host: net.host,
+      port: net.port,
+      tls: net.tls,
+      nick: net.nick,
+      autojoin: net.autojoin
+    }
   end
 end

@@ -18,6 +18,14 @@ defmodule Grappa.Session do
        `Grappa.Bootstrap` and from any future REST/WS surface that
        wants to inspect or terminate a session.
 
+  ## Opts shape (architecture review A6)
+
+  `start_session/1` accepts a flat map of primitive fields rather than
+  a `Grappa.Config.Network` struct. The Session module is decoupled
+  from the operator-config schema so Phase 2's DB-backed network
+  records can construct the same opts shape without Config knowing
+  about Session or vice-versa.
+
   Per CLAUDE.md "Contexts at `lib/grappa/<context>.ex`. ... Public API
   on the context module; schemas internal."
   """
@@ -26,7 +34,12 @@ defmodule Grappa.Session do
 
   @type start_opts :: %{
           required(:user_name) => String.t(),
-          required(:network) => Grappa.Config.Network.t()
+          required(:network_id) => String.t(),
+          required(:host) => String.t(),
+          required(:port) => 1..65_535,
+          required(:tls) => boolean(),
+          required(:nick) => String.t(),
+          optional(:autojoin) => [String.t()]
         }
 
   @doc """
@@ -39,8 +52,8 @@ defmodule Grappa.Session do
   refused).
   """
   @spec start_session(start_opts()) :: DynamicSupervisor.on_start_child()
-  def start_session(%{user_name: u, network: %Grappa.Config.Network{}} = opts)
-      when is_binary(u) do
+  def start_session(%{user_name: u, network_id: n} = opts)
+      when is_binary(u) and is_binary(n) do
     DynamicSupervisor.start_child(Grappa.SessionSupervisor, {Server, opts})
   end
 

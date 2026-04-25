@@ -5,7 +5,7 @@ defmodule Grappa.Session.Server do
   Supervises one `Grappa.IRC.Client` (linked via `start_link`) which owns
   the TCP/TLS socket. Inbound parsed `Grappa.IRC.Message` structs arrive
   in this GenServer's mailbox as `{:irc, msg}` tuples; outbound
-  protocol-level work (NICK/USER on init, PONG on PING, JOIN on autojoin)
+  protocol-level work (handshake on init, PONG on PING, JOIN on autojoin)
   is performed via the high-level `Grappa.IRC.Client` helpers.
 
   Registered under `{:via, Registry, {Grappa.SessionRegistry, {:session,
@@ -16,9 +16,9 @@ defmodule Grappa.Session.Server do
 
   This is the walking-skeleton implementation:
 
-    * Handshake is `NICK <nick>` + `USER <nick> 0 * :grappa` — no CAP
-      LS dance, no SASL. Phase 2 introduces CAP + SASL when per-user
-      credentials land in the encrypted DB.
+    * Handshake via `Grappa.IRC.Client.send_handshake/2` (NICK + USER).
+      Phase 2 introduces CAP + SASL when per-user credentials land in
+      the encrypted DB.
     * Autojoin fires on `001 RPL_WELCOME`. Phase 5 hardens this to also
       handle `376 RPL_ENDOFMOTD` / `422 ERR_NOMOTD` and a watchdog
       timeout in case neither arrives.
@@ -40,10 +40,17 @@ defmodule Grappa.Session.Server do
   Every broadcaster (this module + `GrappaWeb.MessagesController`)
   routes through the same helper — every door, same wire shape per
   CLAUDE.md.
+
+  ## State shape (architecture review A6)
+
+  The GenServer keeps only what subsequent callbacks need: the
+  registered identifiers (for log metadata + topic construction), the
+  autojoin list (consumed on `001`), and the linked Client pid.
+  Connection params (host/port/tls/nick) are consumed by `init/1` and
+  not retained — Session does not reach into a `Config.Network` struct.
   """
   use GenServer, restart: :transient
 
-  alias Grappa.Config.Network
   alias Grappa.IRC.{Client, Message}
   alias Grappa.{Log, Scrollback}
   alias Grappa.PubSub.Topic
@@ -51,14 +58,12 @@ defmodule Grappa.Session.Server do
 
   require Logger
 
-  @type opts :: %{
-          required(:user_name) => String.t(),
-          required(:network) => Network.t()
-        }
+  @type opts :: Grappa.Session.start_opts()
 
   @type state :: %{
           user_name: String.t(),
-          network: Network.t(),
+          network_id: String.t(),
+          autojoin: [String.t()],
           client: pid()
         }
 
@@ -67,8 +72,8 @@ defmodule Grappa.Session.Server do
   ## API
 
   @spec start_link(opts()) :: GenServer.on_start()
-  def start_link(%{user_name: u, network: %Network{} = n} = opts) do
-    GenServer.start_link(__MODULE__, opts, name: via(u, n.id))
+  def start_link(%{user_name: u, network_id: n} = opts) do
+    GenServer.start_link(__MODULE__, opts, name: via(u, n))
   end
 
   @doc "Returns the via-tuple for the session registered for `(user_name, network_id)`."
@@ -80,19 +85,26 @@ defmodule Grappa.Session.Server do
   ## GenServer callbacks
 
   @impl GenServer
-  def init(%{user_name: user, network: %Network{} = net}) do
-    :ok = Log.set_session_context(user, net.id)
+  def init(%{user_name: user, network_id: network_id} = opts) do
+    :ok = Log.set_session_context(user, network_id)
 
     case Client.start_link(%{
-           host: net.host,
-           port: net.port,
-           tls: net.tls,
+           host: opts.host,
+           port: opts.port,
+           tls: opts.tls,
            dispatch_to: self(),
-           logger_metadata: Log.session_context(user, net.id)
+           logger_metadata: Log.session_context(user, network_id)
          }) do
       {:ok, client} ->
-        :ok = Client.send_handshake(client, net.nick)
-        {:ok, %{user_name: user, network: net, client: client}}
+        :ok = Client.send_handshake(client, opts.nick)
+
+        {:ok,
+         %{
+           user_name: user,
+           network_id: network_id,
+           autojoin: Map.get(opts, :autojoin, []),
+           client: client
+         }}
 
       {:error, reason} ->
         {:stop, {:client_start_failed, reason}}
@@ -101,7 +113,7 @@ defmodule Grappa.Session.Server do
 
   @impl GenServer
   def handle_info({:irc, %Message{command: {:numeric, 1}}}, state) do
-    Enum.each(state.network.autojoin, &Client.send_join(state.client, &1))
+    Enum.each(state.autojoin, &Client.send_join(state.client, &1))
     {:noreply, state}
   end
 
@@ -119,7 +131,7 @@ defmodule Grappa.Session.Server do
     server_time = System.system_time(:millisecond)
 
     case Scrollback.insert(%{
-           network_id: state.network.id,
+           network_id: state.network_id,
            channel: target,
            server_time: server_time,
            kind: :privmsg,
@@ -130,7 +142,7 @@ defmodule Grappa.Session.Server do
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.network.id, target),
+            Topic.channel(state.network_id, target),
             Wire.message_event(message)
           )
 
