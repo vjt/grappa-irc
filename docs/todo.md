@@ -27,9 +27,6 @@ Priority tiers: **Immediate** (this session), **High** (this week),
   via `scripts/deploy.sh` → `scripts/healthcheck.sh`. Until then,
   deploy step in the dev cycle is N/A — Task 3 landed a context but
   still no exposed surface, so deploy is still skipped.
-- Worktree cleanup after S4 close: `git worktree remove
-  /home/vjt/code/IRC/grappa-task3` + `git branch -D
-  phase1-task3-scrollback`.
 
 ## Medium
 
