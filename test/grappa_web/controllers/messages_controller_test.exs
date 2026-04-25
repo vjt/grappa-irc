@@ -126,7 +126,8 @@ defmodule GrappaWeb.MessagesControllerTest do
                           channel: "#sniffo",
                           network_id: "azzurra",
                           server_time: server_time,
-                          id: id
+                          id: id,
+                          meta: %{}
                         }
                       }},
                      200

@@ -35,7 +35,7 @@ defmodule Grappa.ScrollbackTest do
       assert "is invalid" in errors_on(cs).kind
     end
 
-    test "rejects missing required fields" do
+    test "rejects missing required fields (universal: network_id/channel/server_time/kind/sender)" do
       assert {:error, %Ecto.Changeset{} = cs} =
                Scrollback.insert(%{network_id: "azzurra", channel: "#x"})
 
@@ -43,7 +43,133 @@ defmodule Grappa.ScrollbackTest do
       assert "can't be blank" in errors.server_time
       assert "can't be blank" in errors.kind
       assert "can't be blank" in errors.sender
-      assert "can't be blank" in errors.body
+      # `body` validation is per-kind, not universal — see "extended kinds"
+      # describe block. With kind absent, body validation is skipped.
+      refute Map.has_key?(errors, :body)
+    end
+  end
+
+  describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do
+    test "accepts :join with nil body and default meta map" do
+      assert {:ok, %Message{kind: :join, body: nil, meta: %{}}} =
+               Scrollback.insert(%{
+                 network_id: "azzurra",
+                 channel: "#sniffo",
+                 server_time: 0,
+                 kind: :join,
+                 sender: "alice"
+               })
+    end
+
+    test "accepts :kick with body (reason) + meta carrying target nick (string-keyed)" do
+      assert {:ok, %Message{kind: :kick, body: "rude", meta: %{"target" => "alice"}}} =
+               Scrollback.insert(%{
+                 network_id: "azzurra",
+                 channel: "#sniffo",
+                 server_time: 0,
+                 kind: :kick,
+                 sender: "vjt",
+                 body: "rude",
+                 # String keys mandatory — see Message moduledoc on
+                 # "atom-vs-string footgun." Atom-keyed inserts produce
+                 # different shapes via different access paths.
+                 meta: %{"target" => "alice"}
+               })
+    end
+
+    test "rejects :privmsg without body (per-kind body required for content-bearing kinds)" do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Scrollback.insert(%{
+                 network_id: "azzurra",
+                 channel: "#sniffo",
+                 server_time: 0,
+                 kind: :privmsg,
+                 sender: "vjt"
+               })
+
+      assert "can't be blank" in errors_on(cs).body
+    end
+
+    test "rejects :topic without body (per-kind body required)" do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Scrollback.insert(%{
+                 network_id: "azzurra",
+                 channel: "#sniffo",
+                 server_time: 0,
+                 kind: :topic,
+                 sender: "ChanServ"
+               })
+
+      assert "can't be blank" in errors_on(cs).body
+    end
+
+    test "accepts all 10 extended kinds with appropriate body/meta shape" do
+      cases = [
+        {:privmsg, %{body: "hi"}},
+        {:notice, %{body: "system notice"}},
+        {:action, %{body: "slaps trout"}},
+        {:join, %{body: nil}},
+        {:part, %{body: nil}},
+        {:quit, %{body: "Connection reset"}},
+        {:nick_change, %{body: nil, meta: %{"new_nick" => "vjt2"}}},
+        {:mode, %{body: nil, meta: %{"modes" => "+o", "args" => ["alice"]}}},
+        {:topic, %{body: "new channel topic"}},
+        {:kick, %{body: "rude", meta: %{"target" => "alice"}}}
+      ]
+
+      for {kind, overrides} <- cases do
+        attrs =
+          Map.merge(
+            %{
+              network_id: "azzurra",
+              channel: "#sniffo",
+              server_time: 0,
+              kind: kind,
+              sender: "vjt"
+            },
+            overrides
+          )
+
+        assert {:ok, %Message{kind: ^kind}} = Scrollback.insert(attrs),
+               "kind #{inspect(kind)} should be accepted"
+      end
+    end
+  end
+
+  describe "Message.to_wire/1 (single-source wire shape for REST + PubSub + Channels)" do
+    test "renders a privmsg row to the canonical JSON-shape map" do
+      {:ok, msg} = Scrollback.insert(sample(42))
+
+      assert Message.to_wire(msg) == %{
+               id: msg.id,
+               network_id: "azzurra",
+               channel: "#sniffo",
+               server_time: 42,
+               kind: :privmsg,
+               sender: "vjt",
+               body: "msg 42",
+               meta: %{}
+             }
+    end
+
+    test "includes meta payload for non-privmsg kinds (string keys mandatory)" do
+      {:ok, _} =
+        Scrollback.insert(%{
+          network_id: "azzurra",
+          channel: "#sniffo",
+          server_time: 0,
+          kind: :nick_change,
+          sender: "vjt",
+          meta: %{"new_nick" => "vjt2"}
+        })
+
+      # Fetch from DB to assert the post-Jason-roundtrip shape — what
+      # downstream consumers (REST, PubSub, Channels) actually see.
+      [fetched] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
+      wire = Message.to_wire(fetched)
+      assert wire.kind == :nick_change
+      assert wire.body == nil
+      assert wire.meta == %{"new_nick" => "vjt2"}
     end
   end
 
