@@ -9,8 +9,8 @@ defmodule Grappa.Application do
       Grappa.Repo,
       {Phoenix.PubSub, name: Grappa.PubSub},
       {Registry, keys: :unique, name: Grappa.SessionRegistry},
-      {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one}
-      # GrappaWeb.Endpoint,                                       # Task 4 — Phoenix HTTP+WS
+      {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one},
+      GrappaWeb.Endpoint
       # Grappa.Bootstrap                                          # Task 8 — spawn sessions from config
     ]
 
@@ -19,8 +19,8 @@ defmodule Grappa.Application do
   end
 
   @impl Application
-  def config_change(_, _, _) do
-    # GrappaWeb.Endpoint.config_change(changed, removed)            # Task 4 — re-enable
+  def config_change(changed, _, removed) do
+    GrappaWeb.Endpoint.config_change(changed, removed)
     :ok
   end
 end
