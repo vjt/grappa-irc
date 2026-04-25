@@ -8,7 +8,7 @@
 
 Two components, one monorepo:
 
-- **grappa** — the server. Persistent bouncer, one async task per user, terminates IRC at the server boundary, exposes a clean REST API (plus SSE or WebSocket for event push). SASL bridging to upstream NickServ. Self-hostable on any VPS.
+- **grappa** — the server. Persistent bouncer, one supervised OTP process per user (Elixir/Erlang), terminates IRC at the server boundary, exposes a clean REST API plus a multiplexed WebSocket channel (Phoenix Channels) for real-time event push. SASL bridging to upstream NickServ. Self-hostable on any VPS.
 - **cicchetto** — the client. A PWA that speaks pure REST. Never parses IRC. Installable on mobile home screens. Visually irssi; mobile ergonomics added on top, not instead.
 
 The pitch in one sentence: *modern IRC — always-on, consumable from a phone — without making it not-IRC.*
@@ -19,7 +19,7 @@ The shorter pitch, for anyone who's been on IRC >10 years: *grappa is the equiva
 
 grappa exposes the same underlying state through **two facades** that share a single scrollback store:
 
-1. **REST + SSE** — the primary surface. Canonical API, consumed by cicchetto. IRC is fully terminated at the server; the web client is IRC-protocol-ignorant end-to-end. This is the design center.
+1. **REST + WebSocket (Phoenix Channels)** — the primary surface. REST for resources, multiplexed WebSocket Channels for real-time event push. Consumed by cicchetto. IRC is fully terminated at the server; the web client is IRC-protocol-ignorant end-to-end. This is the design center.
 2. **IRCv3 listener** *(phase 2+)* — a secondary, optional surface that speaks `CAP LS` + SASL + `CHATHISTORY` to existing IRCv3-capable mobile IRC clients (Goguma, Quassel mobile, etc). It is a *view* over the same store the REST surface reads from — never a second source of truth.
 
 The two facades expose the same data. Neither introduces state the other does not. In particular: **no server-side `MARKREAD` / read watermark on either facade.** Read position is client-side, always.
@@ -50,12 +50,12 @@ flowchart LR
     end
 
     subgraph VPS["Self-hosted VPS"]
-        rest["REST + SSE facade"]
-        irclisten["IRCv3 listener facade<br/><em>phase 2+</em>"]
-        store[("shared scrollback store<br/>(sqlite / any KV)")]
+        rest["REST + WebSocket Channels facade<br/>(Phoenix.Endpoint)"]
+        irclisten["IRCv3 listener facade<br/><em>phase 6</em>"]
+        store[("shared scrollback store<br/>(sqlite via Ecto)")]
         rest --- store
         irclisten --- store
-        subgraph tasks["async tasks (one per user)"]
+        subgraph tasks["Grappa.Session GenServers (one per user, supervised)"]
             t1["user A session"]
             t2["user B session"]
             t3["user C session"]
@@ -70,17 +70,17 @@ flowchart LR
         other["…any ircd<br/>(allowlisted)"]
     end
 
-    cicchetto <-->|"HTTPS REST + SSE"| rest
+    cicchetto <-->|"HTTPS REST + WebSocket"| rest
     mobileirc <-.->|"IRC + SASL + CHATHISTORY"| irclisten
     t1 <-->|"IRC + SASL"| azzurra
     t2 <-->|"IRC + SASL"| libera
     t3 <-->|"IRC + SASL"| other
 ```
 
-- Each connected user has one persistent server-side task that owns their upstream IRC connection(s).
-- The task streams IRC events into a per-user ring-buffer of scrollback (bounded, paginated).
+- Each connected user has one persistent server-side OTP process (a supervised GenServer named `Grappa.Session`) that owns their upstream IRC connection(s). Crashes are isolated to that user; the supervisor restarts with a fresh state and the scrollback in sqlite survives.
+- The process streams IRC events into a per-user paginated scrollback (sqlite-backed via Ecto, bounded by retention policy).
 - The REST surface is a thin read/write layer over that state. Writes (send message, join, part) translate to upstream IRC commands; reads return typed JSON.
-- New events push to connected clients over SSE (or WebSocket if negotiated). Disconnected clients catch up on next connect via the paginated scrollback endpoints.
+- New events push to connected clients over a multiplexed WebSocket connection (Phoenix Channels) — one socket per browser tab, many topic subscriptions per socket (`grappa:network:{net}/channel:{chan}`). Disconnected clients reconnect transparently via `phoenix.js` and catch up on missed messages via paginated scrollback endpoints.
 
 ## Design principles
 
@@ -125,9 +125,17 @@ All endpoints are authenticated except `POST /auth/login` and `POST /auth/regist
 | `POST` | `/networks/:net/channels/:chan/messages` | Send |
 | `GET`  | `/networks/:net/channels/:chan/members` | Nicks + modes |
 | `POST` | `/networks/:net/raw` | Escape hatch: send a raw IRC line |
-| `GET`  | `/events` | SSE stream of new events (one endpoint, multiplexed) |
+| `WS`   | `/socket/websocket` | Phoenix Channels endpoint (multiplexed pub/sub) |
 
-Events on `/events` are typed JSON — `message`, `join`, `part`, `quit`, `nick`, `mode`, `topic`, `notice`, etc. The client updates its local state from these; it does not need to reason about IRC framing.
+Real-time events arrive over a Phoenix Channel joined per-topic:
+
+| Topic | Events |
+|-------|--------|
+| `grappa:user:{user}` | session-wide: network connect/disconnect, global notices |
+| `grappa:network:{net}` | per-network: motd, server notices, nick changes |
+| `grappa:network:{net}/channel:{chan}` | per-channel: message, join, part, mode, topic, notice |
+
+Events are typed JSON — `message`, `join`, `part`, `quit`, `nick`, `mode`, `topic`, `notice`, etc. The client updates its local state from these; it does not need to reason about IRC framing. Reconnect, replay-on-resubscribe, and presence are handled by the `phoenix.js` client library.
 
 ## Scope
 
@@ -167,15 +175,17 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 
 ### Phase 0 — spec (you are here)
 - [x] README
+- [x] Server language: **Elixir/OTP + Phoenix** (decided 2026-04-25 — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md))
 - [ ] OpenAPI schema for the REST surface
-- [ ] Pick a server language (Rust vs Go — decision pending)
 - [ ] Pick a client framework (Svelte vs SolidJS vs plain lit-html)
 
 ### Phase 1 — server walking skeleton
 - [ ] Single-user bouncer, single upstream network, hardcoded credentials
-- [ ] Basic REST: `/networks`, `/channels`, `/messages` (paginated), `/events` (SSE)
-- [ ] sqlite-backed scrollback
+- [ ] Basic REST: `/networks`, `/channels`, `/messages` (paginated)
+- [ ] Phoenix Channel for `grappa:network:{net}/channel:{chan}` event push
+- [ ] sqlite-backed scrollback (Ecto + ecto_sqlite3)
 - [ ] Send + receive `PRIVMSG` round-trip
+- [ ] OTP supervision tree: one `Grappa.Session` GenServer per user under `DynamicSupervisor`
 
 ### Phase 2 — auth + multi-user
 - [ ] SASL bridge for login
