@@ -8,6 +8,11 @@ defmodule GrappaWeb do
   / `Phoenix.Channel` plumbing.
   """
 
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.PubSub, Grappa.Scrollback, Grappa.Session],
+    exports: [Endpoint]
+
   @doc "Imports for `use GrappaWeb, :controller` — Phoenix.Controller + Plug.Conn + the JSON fallback."
   @spec controller() :: Macro.t()
   def controller do

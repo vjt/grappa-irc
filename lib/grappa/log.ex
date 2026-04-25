@@ -36,6 +36,8 @@ defmodule Grappa.Log do
   `:request_id` correlation field.
   """
 
+  use Boundary, top_level?: true, deps: []
+
   require Logger
 
   @type session_metadata :: [user: String.t(), network: String.t()]

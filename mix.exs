@@ -10,6 +10,7 @@ defmodule Grappa.MixProject do
       version: @version,
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
+      compilers: [:boundary] ++ Mix.compilers(),
       # Elixir 1.19 introduced explicit test discovery filters. Without
       # this, ExUnit warns on every non-`_test.exs` file under `test/`
       # (test/support/data_case.ex etc.).
@@ -118,6 +119,13 @@ defmodule Grappa.MixProject do
       "ecto.reset": ["ecto.drop --quiet", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "ci.check": [
+        # Compile first with warnings-as-errors so the Boundary compiler
+        # (added to `compilers/0`) fails the build on cross-boundary
+        # violations rather than printing them as advisory warnings.
+        # `cmd mix compile ...` shells out to a fresh mix process —
+        # running `compile --warnings-as-errors` inline corrupts the
+        # archive table for subsequent hex.* tasks in the alias chain.
+        "cmd mix compile --warnings-as-errors",
         "format --check-formatted",
         "credo --strict",
         "deps.audit",

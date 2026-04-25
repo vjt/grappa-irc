@@ -18,6 +18,8 @@ defmodule Grappa.Release do
   Ecto.Migration so `schema_migrations` stays in sync."
   """
 
+  use Boundary, top_level?: true, deps: [Grappa.Repo]
+
   @app :grappa
 
   @doc """

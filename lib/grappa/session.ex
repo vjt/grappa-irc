@@ -30,6 +30,11 @@ defmodule Grappa.Session do
   on the context module; schemas internal."
   """
 
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
+    exports: [Server]
+
   alias Grappa.{Log, Session.Server}
 
   require Logger

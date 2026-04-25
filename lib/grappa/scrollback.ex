@@ -22,6 +22,8 @@ defmodule Grappa.Scrollback do
   needed.
   """
 
+  use Boundary, top_level?: true, deps: [Grappa.IRC, Grappa.Repo], exports: [Message, Wire]
+
   import Ecto.Query
 
   alias Grappa.Repo

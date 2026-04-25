@@ -26,6 +26,9 @@ defmodule Grappa.Bootstrap do
   directly to assert effects synchronously without race-prone
   `Task.await` dances.
   """
+
+  use Boundary, top_level?: true, deps: [Grappa.Config, Grappa.Session]
+
   use Task, restart: :transient
 
   alias Grappa.{Config, Session}

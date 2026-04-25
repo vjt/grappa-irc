@@ -1,6 +1,10 @@
 defmodule Grappa.Application do
   @moduledoc false
 
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Bootstrap, Grappa.PubSub, Grappa.Repo, GrappaWeb]
+
   use Application
 
   @impl Application

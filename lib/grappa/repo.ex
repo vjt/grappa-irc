@@ -8,6 +8,9 @@ defmodule Grappa.Repo do
   `docs/DESIGN_NOTES.md` (2026-04-25 single-sqlite sub-decision) for
   the full reasoning. Resist the urge to introduce dynamic Repos.
   """
+
+  use Boundary, top_level?: true, deps: []
+
   use Ecto.Repo,
     otp_app: :grappa,
     adapter: Ecto.Adapters.SQLite3

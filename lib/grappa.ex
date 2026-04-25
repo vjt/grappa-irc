@@ -16,6 +16,13 @@ defmodule Grappa do
   - `GrappaWeb.Endpoint` — Phoenix HTTP + WebSocket Channels surface.
   """
 
+  # `Grappa` is the namespace anchor + a tiny `version/0` helper. Each
+  # sub-namespace under `Grappa.*` declares its own boundary with
+  # `top_level?: true`, making them flat siblings rather than children
+  # of this module's boundary — see Boundary's README "modules are
+  # determined automatically from the boundary name."
+  use Boundary, deps: [], exports: []
+
   @doc "Returns the current grappa version (compile-time, from `mix.exs`)."
   @spec version() :: String.t()
   def version do

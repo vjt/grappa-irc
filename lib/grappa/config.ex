@@ -6,6 +6,8 @@ defmodule Grappa.Config do
   Phase 2 will replace this with dynamic per-user database state.
   """
 
+  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Network, Server, User]
+
   alias Grappa.IRC.Identifier
 
   defmodule Server do
