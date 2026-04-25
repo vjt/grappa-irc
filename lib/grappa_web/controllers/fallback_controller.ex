@@ -12,8 +12,10 @@ defmodule GrappaWeb.FallbackController do
   """
   use GrappaWeb, :controller
 
-  @spec call(Plug.Conn.t(), {:error, :bad_request | :not_found | Ecto.Changeset.t()}) ::
-          Plug.Conn.t()
+  @spec call(
+          Plug.Conn.t(),
+          {:error, :bad_request | :not_found | :no_session | Ecto.Changeset.t()}
+        ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do
     conn
     |> put_status(:bad_request)
@@ -24,6 +26,12 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not found"})
+  end
+
+  def call(conn, {:error, :no_session}) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "no session"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

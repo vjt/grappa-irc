@@ -97,4 +97,45 @@ defmodule Grappa.Session do
       [] -> nil
     end
   end
+
+  @doc """
+  Sends a PRIVMSG upstream through the session for `(user_name,
+  network_id)`. Persists a `Grappa.Scrollback.Message` row with
+  `sender = session.nick`, broadcasts on the per-channel PubSub topic,
+  AND writes to the upstream socket — atomic from the caller's view.
+
+  Returns `{:ok, message}` with the persisted row on success,
+  `{:error, :no_session}` if no session is registered, or
+  `{:error, Ecto.Changeset.t()}` on validation failure.
+  """
+  @spec send_privmsg(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, Grappa.Scrollback.Message.t()}
+          | {:error, :no_session}
+          | {:error, Ecto.Changeset.t()}
+  def send_privmsg(user_name, network_id, target, body)
+      when is_binary(user_name) and is_binary(network_id) and is_binary(target) and
+             is_binary(body) do
+    call_session(user_name, network_id, {:send_privmsg, target, body})
+  end
+
+  @doc "Sends a JOIN upstream through the session. `{:error, :no_session}` if not registered."
+  @spec send_join(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
+  def send_join(user_name, network_id, channel)
+      when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
+    call_session(user_name, network_id, {:send_join, channel})
+  end
+
+  @doc "Sends a PART upstream through the session. `{:error, :no_session}` if not registered."
+  @spec send_part(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
+  def send_part(user_name, network_id, channel)
+      when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
+    call_session(user_name, network_id, {:send_part, channel})
+  end
+
+  defp call_session(user_name, network_id, request) do
+    case whereis(user_name, network_id) do
+      nil -> {:error, :no_session}
+      pid -> GenServer.call(pid, request)
+    end
+  end
 end

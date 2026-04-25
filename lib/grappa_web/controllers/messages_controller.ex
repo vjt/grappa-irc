@@ -3,11 +3,11 @@ defmodule GrappaWeb.MessagesController do
   Read + write surface for `Grappa.Scrollback` messages.
 
   `index/2` paginates DESC by `(network_id, channel, server_time)`.
-  `create/2` (Task 6) inserts a row, returns 201 with the serialized
-  message, and broadcasts the new event over `Phoenix.PubSub` on
-  `grappa:network:{net}/channel:{chan}` so subscribed Phoenix Channel
-  clients (Task 7) and the Phase 6 IRCv3 listener facade see the same
-  domain event the REST caller just produced.
+  `create/2` routes through `Grappa.Session.send_privmsg/4`, which
+  persists the row, broadcasts on the per-channel PubSub topic, AND
+  sends the PRIVMSG upstream — single source for both the scrollback
+  row and the wire event. Without an active session for the network,
+  `:no_session` surfaces as a 404 via `FallbackController`.
 
   Pagination params (`?before=`, `?limit=`) are validated at the
   boundary per CLAUDE.md: absent params fall back to defaults, but a
@@ -18,9 +18,9 @@ defmodule GrappaWeb.MessagesController do
 
   POST body must contain a non-empty string `"body"`. Anything else
   (missing key, empty string, non-string) falls through to the
-  catch-all `create/2` clause and returns 400. `sender` is hardcoded
-  to `"<local>"` until Task 9 wires the upstream IRC session;
-  authenticated client identity lands in Phase 2.
+  catch-all `create/2` clause and returns 400. The session's `nick`
+  is the persisted sender; Phase 1 hardcodes the user lookup key to
+  `"vjt"`, replaced by the authenticated client identity in Phase 2.
 
   The `Scrollback` context owns the hard cap on page size; the
   controller's `@default_limit` is the unconfigured-client default,
@@ -28,11 +28,10 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.PubSub.Topic
-  alias Grappa.Scrollback
-  alias Grappa.Scrollback.{Message, Wire}
+  alias Grappa.{Scrollback, Session}
 
   @default_limit 50
+  @user "vjt"
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
@@ -56,30 +55,21 @@ defmodule GrappaWeb.MessagesController do
 
   @doc """
   `POST /networks/:network_id/channels/:channel_id/messages` —
-  inserts a `:privmsg` row with `sender = "<local>"`, returns 201
-  with the serialized message, and broadcasts
-  `{:event, %{kind: :message, message: serialized}}` on the
-  per-channel PubSub topic.
-
-  The event wrapper (`kind` + nested `message`) is what Task 7's
-  Channel handler will `push/3` verbatim — no re-rendering. The
-  serialized message map is single-sourced through
-  `Grappa.Scrollback.Wire.message_event/1` so REST and the WS push
-  surface emit the same wire shape per CLAUDE.md "every door."
-
-  The catch-all clause requires the path params to still be present
-  — a route-config drift that drops `:network_id` or `:channel_id`
-  hits `FunctionClauseError` and surfaces as a loud 500 instead of
-  silently 400ing. Bad client input (missing/empty/non-string body)
-  matches the second clause and returns `{:error, :bad_request}`.
+  delegates to `Grappa.Session.send_privmsg/4` for the active session
+  registered as `("vjt", network)`. The session persists the row with
+  `sender = session.nick`, broadcasts the canonical wire event on
+  `grappa:network:{net}/channel:{chan}`, and writes the PRIVMSG to the
+  upstream socket. Returns 201 with the serialized message on success;
+  404 if no session is registered for the network; 400 for malformed
+  input.
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request} | {:error, Ecto.Changeset.t()}
+          Plug.Conn.t()
+          | {:error, :bad_request | :no_session}
+          | {:error, Ecto.Changeset.t()}
   def create(conn, %{"network_id" => network, "channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    with {:ok, message} <- Scrollback.persist_privmsg(network, channel, "<local>", body) do
-      broadcast_message(network, channel, message)
-
+    with {:ok, message} <- Session.send_privmsg(@user, network, channel, body) do
       conn
       |> put_status(:created)
       |> render(:show, message: message)
@@ -87,15 +77,6 @@ defmodule GrappaWeb.MessagesController do
   end
 
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
-
-  defp broadcast_message(network, channel, %Message{} = message) do
-    :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
-        Topic.channel(network, channel),
-        Wire.message_event(message)
-      )
-  end
 
   defp parse_cursor(nil), do: {:ok, nil}
 

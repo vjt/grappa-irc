@@ -1,7 +1,12 @@
 defmodule GrappaWeb.MessagesControllerTest do
+  @moduledoc """
+  GET (read) + POST input-validation paths. The POST success path
+  needs an active `Grappa.Session.Server` so it lives in
+  `messages_controller_outbound_test.exs` (`async: false`). The input
+  validators here short-circuit BEFORE the session lookup, so they
+  remain `async: true`.
+  """
   use GrappaWeb.ConnCase, async: true
-
-  import Grappa.MessageEventAssertions
 
   alias Grappa.Scrollback
 
@@ -99,67 +104,14 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad request"
   end
 
-  describe "POST /networks/:network_id/channels/:channel_id/messages" do
-    test "stores, returns 201 with serialized message, broadcasts via PubSub", %{conn: conn} do
-      topic = "grappa:network:azzurra/channel:#sniffo"
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
-
+  describe "POST /networks/:network_id/channels/:channel_id/messages — input validation" do
+    test "no session for (vjt, network) returns 404", %{conn: conn} do
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "ciao raga"})
+        |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      body = json_response(conn, 201)
-      assert body["body"] == "ciao raga"
-      assert body["channel"] == "#sniffo"
-      assert body["network_id"] == "azzurra"
-      assert body["kind"] == "privmsg"
-      assert body["sender"] == "<local>"
-      assert is_integer(body["server_time"])
-      assert is_integer(body["id"])
-
-      msg =
-        assert_message_event(
-          [
-            kind: :privmsg,
-            body: "ciao raga",
-            sender: "<local>",
-            channel: "#sniffo",
-            network_id: "azzurra",
-            meta: %{}
-          ],
-          200
-        )
-
-      assert is_integer(msg.server_time)
-      assert is_integer(msg.id)
-    end
-
-    test "persists — POSTed message visible via subsequent GET", %{conn: conn} do
-      conn1 =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "persisted"})
-
-      assert json_response(conn1, 201)
-
-      conn2 = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
-      body = json_response(conn2, 200)
-      assert length(body) == 1
-      assert Enum.at(body, 0)["body"] == "persisted"
-      assert Enum.at(body, 0)["kind"] == "privmsg"
-    end
-
-    test "broadcast scoped to (network, channel) — does not leak to other channel", %{conn: conn} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#other")
-
-      conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "wrong-receiver"})
-
-      assert json_response(conn, 201)
-      refute_receive {:event, _}, 100
+      assert json_response(conn, 404)["error"] == "no session"
     end
 
     test "empty body returns 400", %{conn: conn} do

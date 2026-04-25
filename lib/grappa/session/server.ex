@@ -43,11 +43,23 @@ defmodule Grappa.Session.Server do
 
   ## State shape (architecture review A6)
 
-  The GenServer keeps only what subsequent callbacks need: the
-  registered identifiers (for log metadata + topic construction), the
-  autojoin list (consumed on `001`), and the linked Client pid.
-  Connection params (host/port/tls/nick) are consumed by `init/1` and
-  not retained — Session does not reach into a `Config.Network` struct.
+  The GenServer keeps the registered identifiers (for log metadata +
+  topic construction), the connection nick (sender for outbound
+  PRIVMSG persistence), the autojoin list (consumed on `001`), and the
+  linked Client pid. Connection params (host/port/tls) are consumed by
+  `init/1` and not retained — Session does not reach into a
+  `Config.Network` struct.
+
+  ## Outbound API (Task 9)
+
+  `handle_call({:send_privmsg, target, body}, _, state)` persists a
+  scrollback row with `sender = state.nick`, broadcasts on the
+  per-channel PubSub topic, AND sends the PRIVMSG upstream — atomic
+  from the caller's view, single source for the row + wire event.
+  `{:send_join, ch}` / `{:send_part, ch}` are upstream-only
+  (channel-membership tracking lands in Phase 5 alongside JOIN/PART
+  persistence). Public callers go through `Grappa.Session.send_*`,
+  which resolves the pid from the registry.
   """
   use GenServer, restart: :transient
 
@@ -63,6 +75,7 @@ defmodule Grappa.Session.Server do
   @type state :: %{
           user_name: String.t(),
           network_id: String.t(),
+          nick: String.t(),
           autojoin: [String.t()],
           client: pid()
         }
@@ -102,6 +115,7 @@ defmodule Grappa.Session.Server do
          %{
            user_name: user,
            network_id: network_id,
+           nick: opts.nick,
            autojoin: Map.get(opts, :autojoin, []),
            client: client
          }}
@@ -109,6 +123,29 @@ defmodule Grappa.Session.Server do
       {:error, reason} ->
         {:stop, {:client_start_failed, reason}}
     end
+  end
+
+  @impl GenServer
+  def handle_call({:send_privmsg, target, body}, _, state)
+      when is_binary(target) and is_binary(body) do
+    case persist_and_broadcast(state, target, state.nick, body) do
+      {:ok, message} ->
+        :ok = Client.send_privmsg(state.client, target, body)
+        {:reply, {:ok, message}, state}
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  def handle_call({:send_join, channel}, _, state) when is_binary(channel) do
+    :ok = Client.send_join(state.client, channel)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:send_part, channel}, _, state) when is_binary(channel) do
+    :ok = Client.send_part(state.client, channel)
+    {:reply, :ok, state}
   end
 
   @impl GenServer
@@ -127,21 +164,9 @@ defmodule Grappa.Session.Server do
         state
       )
       when is_binary(body) do
-    case Scrollback.persist_privmsg(state.network_id, target, Message.sender_nick(msg), body) do
-      {:ok, message} ->
-        :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
-            Topic.channel(state.network_id, target),
-            Wire.message_event(message)
-          )
-
-      {:error, changeset} ->
-        Logger.error("scrollback insert failed",
-          command: :privmsg,
-          channel: target,
-          error: inspect(changeset.errors)
-        )
+    case persist_and_broadcast(state, target, Message.sender_nick(msg), body) do
+      {:ok, _} -> :ok
+      {:error, _} -> :ok
     end
 
     {:noreply, state}
@@ -162,4 +187,29 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:irc, %Message{}}, state), do: {:noreply, state}
+
+  @spec persist_and_broadcast(state(), String.t(), String.t(), String.t()) ::
+          {:ok, Scrollback.Message.t()} | {:error, Ecto.Changeset.t()}
+  defp persist_and_broadcast(state, target, sender, body) do
+    case Scrollback.persist_privmsg(state.network_id, target, sender, body) do
+      {:ok, message} = ok ->
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.channel(state.network_id, target),
+            Wire.message_event(message)
+          )
+
+        ok
+
+      {:error, changeset} = err ->
+        Logger.error("scrollback insert failed",
+          command: :privmsg,
+          channel: target,
+          error: inspect(changeset.errors)
+        )
+
+        err
+    end
+  end
 end

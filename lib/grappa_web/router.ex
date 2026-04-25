@@ -7,7 +7,8 @@ defmodule GrappaWeb.Router do
       response a plain `text/plain` so it round-trips cleanly through
       load balancers and `curl --fail`.
     * `/` (`:api`) — JSON resources. Phase 1 messages resource
-      (`GET` + `POST` on the same nested path).
+      (`GET` + `POST` on the same nested path) plus the channel
+      JOIN/PART surface (Task 9).
 
   WebSocket mount (`socket "/socket", GrappaWeb.UserSocket`) lands in
   the Endpoint, not here, when Task 7 wires Phoenix Channels.
@@ -34,5 +35,8 @@ defmodule GrappaWeb.Router do
     post "/networks/:network_id/channels/:channel_id/messages",
          MessagesController,
          :create
+
+    post "/networks/:network_id/channels", ChannelsController, :create
+    delete "/networks/:network_id/channels/:channel_id", ChannelsController, :delete
   end
 end
