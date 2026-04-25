@@ -10,22 +10,19 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-- Phase 1 Task 1 done (`Grappa.Config` TOML loader, 4 tests, all gates
-  green). Next: Task 2 — Ecto Repo + sqlite schema + migrations. See
+- Phase 1 Task 2 done (Grappa.Repo + sqlite migration for
+  networks/channels/messages, Ecto.Enum on `:kind`, DataCase, sandbox.
+  10 tests green, ci.check 14s on the Pi.) Next: Task 3 — Scrollback
+  context (insert + paginated fetch) per
   `docs/plans/2026-04-25-walking-skeleton.md`.
 
 ## High
 
-- Phase 1 Tasks 2-10 per the walking-skeleton plan.
-- Smoke-test the docker compose flow end-to-end on the Pi: `docker
-  compose build && docker compose up -d && curl
-  http://192.168.53.11:4000/healthz`. Will only pass after Task 4
-  (Phoenix endpoint) lands.
-- Update `docs/plans/2026-04-25-walking-skeleton.md` Task 1 section
-  with the three deviations folded into commit b9620e8: dialyzer-driven
-  error pattern fixes, recursive `traverse/2` over `reduce_while`, and
-  the empty-users guard. Plan currently says reduce_while + 3-tuple
-  Toml error.
+- Phase 1 Tasks 3-10 per the walking-skeleton plan.
+- Once Task 4 (Phoenix endpoint + /healthz) lands: end-to-end smoke
+  via `scripts/deploy.sh` → `scripts/healthcheck.sh`. Until then,
+  deploy step in the dev cycle is N/A — there's no HTTP service
+  yet. Task 3 lands a context but no exposed surface either.
 
 ## Medium
 
