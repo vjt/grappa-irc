@@ -19,6 +19,13 @@ defmodule Grappa.Scrollback.Message do
   `body` is canonical UTF-8 (the IRC parser converts incoming bytes
   at the boundary; CTCP `\\x01` framing is preserved verbatim per
   CLAUDE.md "wire-format rule").
+
+  Phase 6 will add a nullable `msgid` column for the IRCv3
+  `message-tags` cap (CHATHISTORY uses `BEFORE/AFTER msgid=...`
+  cursors). Today's monotonic auto-increment `id` covers Phase 1's
+  pagination needs but isn't the cross-system identifier the listener
+  facade will need; that migration is mechanical and intentionally
+  deferred.
   """
   use Ecto.Schema
   import Ecto.Changeset

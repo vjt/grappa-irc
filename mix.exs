@@ -11,10 +11,9 @@ defmodule Grappa.MixProject do
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       # Elixir 1.19 introduced explicit test discovery filters. Without
-      # these, ExUnit warns on every non-`_test.exs` file under `test/`
+      # this, ExUnit warns on every non-`_test.exs` file under `test/`
       # (test/support/data_case.ex etc.).
       test_load_filters: [&String.ends_with?(&1, "_test.exs")],
-      test_ignore_filters: [&String.starts_with?(&1, "test/support/")],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),

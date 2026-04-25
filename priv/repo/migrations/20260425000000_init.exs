@@ -19,6 +19,11 @@ defmodule Grappa.Repo.Migrations.Init do
       timestamps(type: :utc_datetime_usec)
     end
 
+    # Intentional: no FK from messages.network_id to networks.id.
+    # Scrollback is operator-archival — when a network is removed from
+    # grappa.toml, its historical messages stay so the operator can
+    # re-add the network or audit history. Channels FK on (lifecycle
+    # tied to network), messages don't.
     create table(:messages) do
       add :network_id, :string, null: false
       add :channel, :string, null: false

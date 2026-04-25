@@ -33,9 +33,9 @@ defmodule Grappa.Scrollback.MessageTest do
       assert {"is invalid", _} = cs.errors[:kind]
     end
 
-    test "rejects a string kind (only atoms accepted)" do
+    test "accepts a string matching a known kind name (Ecto.Enum casts to atom)" do
       cs = Message.changeset(%Message{}, %{@valid_attrs | kind: "privmsg"})
-      assert cs.valid?, "Ecto.Enum casts strings matching the value name to the atom"
+      assert cs.valid?
       assert cs.changes.kind == :privmsg
     end
 

@@ -8,7 +8,7 @@ defmodule Grappa.RepoSmokeTest do
   """
   use Grappa.DataCase, async: true
 
-  alias Grappa.Repo
+  # `Grappa.Repo` aliased by Grappa.DataCase.using/1.
   alias Grappa.Scrollback.Message
 
   test "Repo round-trips a Message through the sandbox" do
