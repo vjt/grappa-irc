@@ -44,7 +44,11 @@ priv/plts/*.plt.hash
 *.local
 
 # ── Claude Code session state (locks, scratch, output)
-.claude/
+# Skills + settings.json are repo-shared content; everything else
+# (locks, scratch, settings.local.json) stays local.
+.claude/*
+!.claude/skills/
+!.claude/settings.json
 
 # ── Editors / OS
 .DS_Store
