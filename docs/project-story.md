@@ -59,3 +59,67 @@ actually weigh. The first answer is usually the loudest, not the truest.
 Pressure-test against the spec's named priorities before committing.
 
 ---
+
+## S2 — 2026-04-25 — Phase 1 Task 1, and what the plan didn't know
+
+The first session that actually wrote Elixir. The plan said: TOML
+loader, four tests, `reduce_while` over a list of users. Looked
+copy-paste straightforward.
+
+Then we tried to build the container and the scaffold collapsed. The
+Dockerfile from S1 had been written without checking that the image
+tags actually existed — `hexpm/elixir:1.19.5-erlang-28.0-*` was never
+published (28.5 was the GA), and `bookworm-20251023-slim` was a date
+that never made it to Docker Hub. Ten minutes later, with corrected
+tags and a one-shot bootstrap of `mix.lock`, the build was clean.
+Lesson: scaffolds written without smoke-testing are speculation.
+
+Then ci.check turned up four orthogonal tooling drift bugs at once.
+The `test` alias eagerly ran `ecto.create+migrate` with no `Repo`
+module to point at. `mix test --cover` blew up because aliases run in
+the invoking env (dev) and excoveralls is `:test`-only. Sobelow
+hard-stopped on `Config.HTTPS` even though Phase 5 is when HTTPS lands
+per the project plan. ExDoc warned about a missing LICENSE link
+because the file existed but wasn't in `extras`. None of these are
+the "real" task — they're the cost of a scaffold meeting reality for
+the first time. The fix was a single commit titled `ci: stabilize
+ci.check on the Phase 1 codebase` that listed all five and explained
+each.
+
+Task 1 itself almost shipped wrong. The plan's `load/1` `else` clause
+pattern-matched `%File.Error{}` and a 3-tuple `{:invalid_toml, _, _}`
+— and Dialyzer killed both. `File.read/1` returns `{:error, posix()}`
+(an atom). `Toml.decode/1` returns a 2-tuple. The plan was authored
+without consulting the actual return types. CLAUDE.md says "Dialyzer
+warnings are design signals" and that turned out to be the rule of the
+day: the warnings weren't pedantry, they were the plan being wrong
+about reality.
+
+The "rejects missing required fields" test had its own bug. The author
+wrote `[[users]]` with no body, expecting a user-without-name. The
+TOML library decodes that as `users: []` — empty list — so the
+validation path under test was never reached. The test passed for the
+wrong reason. Rewriting it to `[[users]]\nnickname="x"` actually
+exercised the missing-name path, and a separate test caught the
+empty-array case (also a malformed Phase-1 config). Two tests now,
+each testing what its name promises.
+
+The third deviation is the one worth keeping. The plan used
+`Enum.reduce_while` with a `{:ok, acc}` accumulator and a pipe-to-case
+unwrap at the end — the kind of code that compiles but smells. Credo
+flagged the pipe-to-case. Rewritten as a three-clause recursive
+`traverse/2,3`: tail-recursive, no accumulator wrapping, reusable for
+both `build_users` and `build_networks`. The user (vjt) caught the
+pattern and asked for a CLAUDE.md rule: prefer recursive pattern match
+over `reduce_while` for collect-or-bail traversal. Rule landed in the
+same commit as the loader.
+
+Five commits on main, all gates green, prod secrets in `.env`. The
+shape of the codebase is starting to exist.
+
+**Law:** plans don't survive contact with the type system. Every
+spec-shaped function signature should be re-validated against the real
+return types of the callees before being copy-pasted into code. The
+plan is a hypothesis; Dialyzer is the experiment.
+
+---
