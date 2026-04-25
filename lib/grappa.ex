@@ -8,12 +8,21 @@ defmodule Grappa do
 
   ## Top-level concepts
 
-  - `Grappa.Config` — runtime TOML config loader.
+  Each is its own `Boundary` (see `mix boundary.spec`):
+
+  - `Grappa.Bootstrap` — boot-time loader, reads `grappa.toml` and spawns sessions.
+  - `Grappa.Config` — TOML config loader + struct definitions.
+  - `Grappa.IRC` — own IRC client (parser + identifier validators + GenServer-owned socket).
+  - `Grappa.Log` — canonical Logger metadata schema.
+  - `Grappa.PubSub` — `Phoenix.PubSub` topic shape helpers.
   - `Grappa.Repo` — Ecto repo backed by sqlite.
-  - `Grappa.Scrollback` — bouncer-owned scrollback storage with paginated reads.
-  - `Grappa.IRC` — own IRC client implementation (parser + GenServer-owned socket).
+  - `Grappa.Scrollback` — bouncer-owned scrollback storage with paginated reads + wire shape.
   - `Grappa.Session` — one supervised GenServer per `(user, network)` pair.
   - `GrappaWeb.Endpoint` — Phoenix HTTP + WebSocket Channels surface.
+
+  Plus two internal-only boundaries — `Grappa.Application` (OTP
+  callback module + supervision tree wiring) and `Grappa.Release`
+  (release-shell migration tasks) — both `@moduledoc false`.
   """
 
   # `Grappa` is the namespace anchor + a tiny `version/0` helper. Each

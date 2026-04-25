@@ -6,7 +6,10 @@ defmodule Grappa.Config do
   Phase 2 will replace this with dynamic per-user database state.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Network, Server, User]
+  # `Server` is intentionally NOT exported — no caller outside this
+  # context references the struct. Adding the first real consumer is
+  # the moment to extend the export list.
+  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Network, User]
 
   alias Grappa.IRC.Identifier
 

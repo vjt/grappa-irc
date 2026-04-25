@@ -30,6 +30,10 @@ defmodule Grappa.Session do
   on the context module; schemas internal."
   """
 
+  # `Server` is exported for the test path only — `server_test.exs`
+  # tweaks per-module log level via `Logger.put_module_level/2`.
+  # Runtime callers go through this facade (`start_session/1`,
+  # `send_*`, `whereis/2`).
   use Boundary,
     top_level?: true,
     deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],

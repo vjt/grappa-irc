@@ -29,10 +29,13 @@ defmodule Grappa.Log do
 
   ## Why a helper
 
-  Three modules (`Grappa.Session.Server`, `Grappa.IRC.Client`,
-  `Grappa.Bootstrap`) used to build the same `[user: ..., network: ...]`
-  keyword list inline. Centralising in one helper makes the schema
-  greppable, and is the place to extend if Phase 5 adds e.g. a
+  Today `Grappa.Session.Server` is the only caller — it installs the
+  context once in `init/1` so every subsequent `Logger.info/2` etc. in
+  that process inherits `user=...` and `network=...` automatically. The
+  linked `Grappa.IRC.Client` is started with `logger_metadata:
+  Log.session_context(...)` injected as a start_link opt, so it picks
+  up the same KV at boot. Centralising the KV shape here keeps the
+  schema greppable and is the place to extend when Phase 5 adds e.g. a
   `:request_id` correlation field.
   """
 
