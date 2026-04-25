@@ -7,6 +7,9 @@ defmodule GrappaWeb.Router do
       response a plain `text/plain` so it round-trips cleanly through
       load balancers and `curl --fail`.
     * `/` (`:api`) — JSON resources. Routes land here in Task 5+.
+
+  WebSocket mount (`socket "/socket", GrappaWeb.UserSocket`) lands in
+  the Endpoint, not here, when Task 6 wires Phoenix Channels.
   """
   use GrappaWeb, :router
 

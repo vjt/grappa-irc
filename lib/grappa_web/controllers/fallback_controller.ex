@@ -1,8 +1,14 @@
 defmodule GrappaWeb.FallbackController do
   @moduledoc """
-  `action_fallback` target. Centralises the `{:error, term}` → HTTP
-  response mapping so each action can return idiomatic tagged tuples
-  instead of touching `conn` on the unhappy path.
+  `action_fallback` target. Maps the **known** `{:error, _}` shapes
+  returned by context functions to JSON HTTP responses so each action
+  can stay on the happy path. Unknown error shapes intentionally raise
+  `FunctionClauseError` and surface as a Phoenix 500 — adding a
+  catch-all would hide context bugs that should be loud at boundary.
+
+  Add a new clause whenever a context introduces a new tagged error
+  (e.g. `{:error, :network_unknown}` in Task 5+) and update the spec
+  in lockstep.
   """
   use GrappaWeb, :controller
 
@@ -16,10 +22,10 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     conn
     |> put_status(:unprocessable_entity)
-    |> json(%{errors: traverse(changeset)})
+    |> json(%{errors: format_changeset_errors(changeset)})
   end
 
-  defp traverse(changeset) do
+  defp format_changeset_errors(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
       Enum.reduce(opts, msg, fn {k, v}, acc ->
         String.replace(acc, "%{#{k}}", to_string(v))

@@ -6,8 +6,9 @@ defmodule GrappaWeb.HealthzTest do
     assert response(conn, 200) == "ok"
   end
 
-  test "GET /healthz uses text/plain", %{conn: conn} do
+  test "GET /healthz responds as text/plain (skips JSON content negotiation)", %{conn: conn} do
     conn = get(conn, "/healthz")
-    assert ["text/plain" <> _] = get_resp_header(conn, "content-type")
+    assert [content_type] = get_resp_header(conn, "content-type")
+    assert String.starts_with?(content_type, "text/plain")
   end
 end
