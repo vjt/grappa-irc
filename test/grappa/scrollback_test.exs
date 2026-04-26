@@ -211,6 +211,27 @@ defmodule Grappa.ScrollbackTest do
       assert Scrollback.fetch(user.id, net.id, "#empty", nil, 10) == []
     end
 
+    # A26: every row is returned with `:network` preloaded so callers
+    # can hand the result straight to `Scrollback.Wire.to_json/1`
+    # (which pattern-matches on `%Network{slug: _}` and crashes on
+    # unloaded assoc). Mirrors the same wire-shape-ready contract that
+    # `persist_privmsg/5` carries (A4); previously the controller had
+    # to do its own `preload_networks/2` post-fetch.
+    test "returns rows with :network preloaded so callers can render to wire shape",
+         %{user: user, network: net} do
+      for i <- 0..2, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
+
+      page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 10)
+
+      assert length(page) == 3
+
+      for row <- page do
+        assert %Network{id: id, slug: slug} = row.network
+        assert id == net.id
+        assert slug == net.slug
+      end
+    end
+
     test "clamps limit to max_page_size/0", %{user: user, network: net} do
       cap = Scrollback.max_page_size()
 

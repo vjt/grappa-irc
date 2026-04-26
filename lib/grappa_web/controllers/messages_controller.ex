@@ -61,10 +61,12 @@ defmodule GrappaWeb.MessagesController do
     with {:ok, cursor} <- parse_cursor(params["before"]),
          {:ok, limit} <- parse_limit(params["limit"]),
          {:ok, network} <- Networks.get_network_by_slug(slug) do
-      messages =
-        user_id
-        |> Scrollback.fetch(network.id, channel, cursor, limit)
-        |> preload_networks(network)
+      # `:network` is preloaded by `Scrollback.fetch/5` itself —
+      # the boundary contract returns wire-shape-ready rows. No
+      # post-fetch preload helper here; A26 collapsed the
+      # controller's `preload_networks/2` into the Scrollback
+      # boundary so the contract is single-sourced.
+      messages = Scrollback.fetch(user_id, network.id, channel, cursor, limit)
 
       render(conn, :index, messages: messages)
     end
@@ -108,12 +110,6 @@ defmodule GrappaWeb.MessagesController do
 
   defp validate_channel_name(name) do
     if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
-  end
-
-  # Single-network fetch — the network struct is known; preload
-  # in-place rather than issuing N+1 SELECTs through Repo.preload.
-  defp preload_networks(messages, network) do
-    Enum.map(messages, &%{&1 | network: network})
   end
 
   defp parse_cursor(nil), do: {:ok, nil}

@@ -122,6 +122,12 @@ defmodule Grappa.Scrollback do
   `FunctionClauseError` (caller bug, let it crash per CLAUDE.md OTP
   rules). Values above `max_page_size/0` are silently clamped to the
   max as an anti-DoS guard for the REST surface.
+
+  Returned rows have `:network` preloaded so callers can hand the
+  result straight to `Scrollback.Wire.to_json/1` (which pattern-matches
+  on `%Network{slug: _}` and crashes on unloaded assoc). Single
+  network query per page (Ecto deduplicates the `IN (...)` lookup);
+  identical wire-shape contract as `persist_privmsg/5` (A4 + A26).
   """
   @spec fetch(Ecto.UUID.t(), integer(), String.t(), integer() | nil, pos_integer()) ::
           [Message.t()]
@@ -137,6 +143,7 @@ defmodule Grappa.Scrollback do
     |> maybe_before(before)
     |> order_by([m], desc: m.server_time, desc: m.id)
     |> limit(^capped)
+    |> preload(:network)
     |> Repo.all()
   end
 
