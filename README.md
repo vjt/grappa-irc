@@ -76,21 +76,23 @@ shapes:
 ### Add an operator account + bind a network
 
 The prod container runs a mix release; mix tasks aren't directly
-invocable inside it. Use `bin/grappa eval` against the live release
-node, calling the context functions directly:
+invocable inside it. Use `bin/grappa rpc` against the live release
+node — `rpc` runs in the context of the running supervision tree
+(Repo, Vault, etc. all up), unlike `eval` which loads modules into a
+fresh node where `Repo` would not be started.
 
 ```sh
 # 1. Create the user account (REST + WS bearer-token identity).
-docker compose -f compose.prod.yaml exec grappa bin/grappa eval '
+docker compose -f compose.prod.yaml exec grappa bin/grappa rpc '
   case Grappa.Accounts.create_user(%{name: "vjt", password: "correct horse battery staple"}) do
-    {:ok, u}    -> IO.puts("created user #{u.name} (#{u.id})")
+    {:ok, u}    -> IO.puts("created user " <> u.name <> " (" <> u.id <> ")")
     {:error, c} -> IO.puts(:stderr, inspect(c.errors)); System.halt(1)
   end
 '
 
 # 2. Bind a network. auth_method picks the upstream auth method:
 #    :auto | :sasl | :server_pass | :nickserv_identify | :none
-docker compose -f compose.prod.yaml exec grappa bin/grappa eval '
+docker compose -f compose.prod.yaml exec grappa bin/grappa rpc '
   user = Grappa.Accounts.get_user_by_name!("vjt")
   {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
   {:ok, _}   = Grappa.Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697, tls: true})
@@ -100,14 +102,19 @@ docker compose -f compose.prod.yaml exec grappa bin/grappa eval '
     auth_method: :nickserv_identify,
     autojoin_channels: ["#italia", "#hacking"]
   })
-  IO.puts("bound vjt → azzurra")
+  IO.puts("bound vjt -> azzurra")
 '
 
 # 3. Re-run scripts/deploy.sh so Bootstrap re-enumerates and spawns
 #    the session (the script does --force-recreate, which restarts
-#    the container against the same image).
+#    the container against the same image). Or — if the session is
+#    already running and you want it to pick up the new binding
+#    without a full restart — use Session.send_join/3 etc. via rpc.
 scripts/deploy.sh
 ```
+
+`bin/grappa rpc` requires `RELEASE_COOKIE` set (it's in `.env.example`)
+since it talks to the running node over distributed Erlang.
 
 The mix tasks under `lib/mix/tasks/grappa.*.ex` (`add_server`,
 `bind_network`, `create_user`, `gen_encryption_key`, `remove_server`,
