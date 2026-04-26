@@ -19,12 +19,11 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Mix.Tasks.Grappa.OptionParsing]
+    deps: [Grappa.Accounts, Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
-  alias Grappa.{Accounts, Networks, Repo}
-  alias Grappa.Networks.Network
+  alias Grappa.{Accounts, Networks}
   alias Mix.Tasks.Grappa.OptionParsing
 
   @switches [
@@ -49,7 +48,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
     {:ok, _} = Application.ensure_all_started(:grappa)
 
     user = Accounts.get_user_by_name!(user_name)
-    network = Repo.get_by!(Network, slug: slug)
+    network = Networks.get_network_by_slug!(slug)
 
     attrs =
       opts

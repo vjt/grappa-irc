@@ -13,12 +13,11 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
   Idempotent: unbinding a non-existent binding still exits 0 with a
   no-op message.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo]
+  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks]
 
   use Mix.Task
 
-  alias Grappa.{Accounts, Networks, Repo}
-  alias Grappa.Networks.Network
+  alias Grappa.{Accounts, Networks}
 
   @impl Mix.Task
   def run(args) do
@@ -31,12 +30,12 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
 
     user = Accounts.get_user_by_name!(user_name)
 
-    case Repo.get_by(Network, slug: slug) do
-      %Network{} = network ->
+    case Networks.get_network_by_slug(slug) do
+      {:ok, network} ->
         :ok = Networks.unbind_credential(user, network)
         IO.puts("unbound #{user.name} from #{slug}")
 
-      nil ->
+      {:error, :not_found} ->
         IO.puts("network #{slug} not found; nothing to unbind")
     end
   end
