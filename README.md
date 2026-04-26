@@ -26,7 +26,70 @@ The two facades expose the same data. Neither introduces state the other does no
 
 ## Status
 
-Pre-alpha. Not a line of code yet. **This README is the spec.** README-driven development.
+Pre-alpha — the server walking skeleton (Phase 1) and most of multi-user
+auth (Phase 2) have landed. Deployable on a single host via Docker Compose;
+not yet feature-complete. The Roadmap section below tracks per-phase progress.
+
+## Operator quickstart
+
+grappa runs as a single container against a sqlite DB. The operator
+surface for adding users + binding networks is a set of mix tasks
+invoked through `scripts/mix.sh` against the live container. There
+is no config file — every `(user, network)` binding lives in the
+DB and is read by `Grappa.Bootstrap` at boot.
+
+### First deploy
+
+1. **Clone + cd**:
+   ```sh
+   git clone https://github.com/vjt/grappa-irc /srv/grappa && cd /srv/grappa
+   ```
+
+2. **Generate the three required secrets** and paste them into `.env`:
+   ```sh
+   cp .env.example .env
+   scripts/mix.sh phx.gen.secret              # → SECRET_KEY_BASE
+   openssl rand -hex 32                       # → RELEASE_COOKIE
+   scripts/mix.sh grappa.gen_encryption_key   # → GRAPPA_ENCRYPTION_KEY
+   ```
+   `GRAPPA_ENCRYPTION_KEY` encrypts upstream credentials at rest via
+   Cloak AES-GCM. **Back it up separately — losing it means losing
+   every stored upstream password.**
+
+3. **Build + start**:
+   ```sh
+   scripts/deploy.sh
+   ```
+   On a fresh DB, Bootstrap logs `bootstrap: no credentials bound —
+   running web-only` and Phoenix answers `/healthz`. The container
+   stays up; no IRC sessions are spawned.
+
+### Add an operator account + bind a network
+
+```sh
+# 1. Create the user account (REST + WS bearer-token identity).
+scripts/mix.sh grappa.create_user --name vjt --password 'correct horse battery staple'
+
+# 2. Bind a network. --auth picks the upstream auth method:
+#    :auto | :sasl | :server_pass | :nickserv_identify | :none
+#    --autojoin is comma-separated.
+scripts/mix.sh grappa.bind_network \
+  --user vjt \
+  --network azzurra \
+  --server irc.azzurra.chat:6697 --tls \
+  --nick vjt \
+  --password 'NICKSERV_PASS' \
+  --auth nickserv_identify \
+  --autojoin '#italia,#hacking'
+
+# 3. Restart so Bootstrap re-enumerates and spawns the session.
+docker compose -f compose.prod.yaml restart grappa
+```
+
+The full mix-task surface lives under `lib/mix/tasks/grappa.*.ex`:
+`add_server`, `bind_network`, `create_user`, `gen_encryption_key`,
+`remove_server`, `unbind_network`, `update_network_credential`. Each
+prints `--help`-style usage when invoked without args.
 
 ## Why this exists
 
