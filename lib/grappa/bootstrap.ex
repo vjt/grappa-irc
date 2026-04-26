@@ -1,189 +1,124 @@
 defmodule Grappa.Bootstrap do
   @moduledoc """
-  Boot-time loader that reads `grappa.toml` and spawns one session per
-  `(user, network)` entry under `Grappa.SessionSupervisor`.
+  Boot-time loader that enumerates every bound `(user, network)`
+  credential and spawns one `Grappa.Session.Server` per row under
+  `Grappa.SessionSupervisor`.
 
   Lives in the application supervision tree as a `Task` with
   `restart: :transient` — runs once, exits `:normal` on completion (does
-  not restart). If `run/1` itself crashes (i.e. an unhandled exception
+  not restart). If `run/0` itself crashes (an unhandled exception
   inside the spawn loop), `:transient` brings it back exactly once.
 
-  ## Sub-task 2g — TOML names the spawn list, DB owns the configuration
+  ## Sub-task 2j — DB IS the bootstrap source of truth
 
-  TOML still drives WHICH `(user, network)` pairs to spawn at boot.
-  Everything else — host / port / TLS / nick / password / auth_method
-  / autojoin — comes from the bound `Grappa.Networks.Credential` +
-  `Grappa.Networks.Server` rows. The TOML's per-network credential
-  fields are read-but-ignored (full TOML deletion is sub-task 2j).
+  Pre-2j Bootstrap parsed `grappa.toml` to learn which `(user_name,
+  network_slug)` pairs to spawn. The TOML file is gone; the DB-driven
+  shape is `Networks.list_credentials_for_all_users/0` returning every
+  `Credential` with `:network` preloaded so the spawn loop can call
+  `Session.start_session(credential.user_id, credential.network_id)`
+  without a second query per row.
 
-  Resolution at boot:
-
-    * TOML `name` → `Accounts.get_user_by_name/1` → user UUID. Missing
-      user logs `"bootstrap: user not in DB, skipping"` and contributes
-      `length(networks)` to the `skipped` counter.
-    * TOML network `id` (slug) → `Networks.find_or_create_network/1` →
-      integer FK. The find-or-create is race-safe (sub-task 2e).
-    * `Session.start_session(user_id, network_id)` resolves the rest
-      from DB (`Networks.get_credential!/2` + `Networks.get_network!/1
-      |> Repo.preload(:servers)`). Missing credential / no enabled
-      server raises inside `Session.Server.init/1` and bubbles out as
-      `{:error, _}` which lands on the `failed` counter.
+  Operator door for adding a binding: `mix grappa.create_user` then
+  `mix grappa.bind_network --auth ...`. Bootstrap re-reads the DB
+  every boot, so the next deploy picks up new bindings without any
+  config edit.
 
   ## Failure modes — boot web-only, never crash the app
 
-  Bootstrap is "best-effort." A missing or malformed config file logs a
-  warning and returns `:ok` — the rest of the supervision tree
-  (Endpoint, Repo, PubSub, Registry, SessionSupervisor) is already up
-  and the bouncer continues running with zero sessions. Per-session
-  start failures (upstream connection refused, missing DB credential,
-  etc.) increment the `failed` counter and continue with the next
-  session; one bad network does not block the others.
+  Bootstrap is "best-effort." A fresh deploy with no credentials yet
+  bound logs a warning and returns `:ok` — the rest of the supervision
+  tree (Endpoint, Repo, PubSub, Registry, SessionSupervisor) is up and
+  the bouncer continues running with zero sessions, ready for the
+  operator to bind the first credential and reboot. Per-session start
+  failures (upstream connection refused, no enabled server, SASL auth
+  failure, etc.) increment the `failed` counter and continue with the
+  next session; one bad network does not block the others.
 
-  Three counters, three operationally-distinct conditions:
+  Two counters, two operationally-distinct conditions:
 
     * `started` — `Session.start_session/2` returned `{:ok, pid}`.
-    * `failed`  — `{:error, _}`; transient infra issue OR missing DB
-      bind. Operator action: investigate the network or
-      `mix grappa.bind_network`.
-    * `skipped` — TOML user has no DB row; operator config drift.
-      Operator action: `mix grappa.create_user`.
+    * `failed`  — `{:error, _}`; transient infra issue or auth failure.
+      Operator action: investigate the upstream or
+      `mix grappa.update_network_credential`.
+
+  Pre-2j carried a third `skipped` counter for "TOML user has no DB
+  row." With the DB as the only source of truth, every Credential row
+  references a real User by FK — the scenario is unrepresentable.
 
   ## Test surface
 
-  `run/1` is the synchronous, testable function. Production wires
-  `start_link/1` (which spawns `run/1` under a `Task.start_link/3`) so
-  Bootstrap participates in the supervision tree. Tests invoke `run/1`
+  `run/0` is the synchronous, testable function. Production wires
+  `start_link/0` (which spawns `run/0` under a `Task.start_link/3`) so
+  Bootstrap participates in the supervision tree. Tests invoke `run/0`
   directly to assert effects synchronously without race-prone
   `Task.await` dances.
   """
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Config, Grappa.Networks, Grappa.Session]
+    deps: [Grappa.Networks, Grappa.Session]
 
   use Task, restart: :transient
 
-  alias Grappa.{Accounts, Config, Networks, Session}
-  alias Grappa.Accounts.User
-  alias Grappa.Networks.Network
+  alias Grappa.{Networks, Session}
+  alias Grappa.Networks.{Credential, Network}
 
   require Logger
 
-  @type opts :: [config_path: Path.t()]
+  @doc """
+  Production entry point — wraps `run/0` in `Task.start_link/3` so
+  Bootstrap can sit in the application supervision tree. The arg is
+  whatever the supervisor child spec passes through (`use Task`'s
+  generated `child_spec/1` forwards it); Bootstrap reads its work
+  from the DB so the arg is always ignored.
+  """
+  @spec start_link(term()) :: {:ok, pid()}
+  def start_link(_), do: Task.start_link(__MODULE__, :run, [])
 
   @doc """
-  Production entry point — wraps `run/1` in `Task.start_link/3` so
-  Bootstrap can sit in the application supervision tree.
+  Enumerates every bound credential and spawns one session per row.
+  Returns `:ok` whether all sessions start, some fail, or there are no
+  bindings at all (best-effort — a fresh deploy without operator-bound
+  credentials does not block the rest of the supervision tree).
   """
-  @spec start_link(opts()) :: {:ok, pid()}
-  def start_link(opts), do: Task.start_link(__MODULE__, :run, [opts])
-
-  @doc """
-  Reads the TOML config at `opts[:config_path]` and spawns one session
-  per `(user, network)` entry. Returns `:ok` whether all sessions
-  start, some fail, or the config is missing/malformed (best-effort —
-  a broken config does not block the rest of the supervision tree).
-  """
-  @spec run(opts()) :: :ok
-  def run(opts) do
-    path = Keyword.fetch!(opts, :config_path)
-
-    case Config.load(path) do
-      {:ok, %Config{users: users}} ->
-        spawn_all(users)
+  @spec run() :: :ok
+  def run do
+    case Networks.list_credentials_for_all_users() do
+      [] ->
+        Logger.warning("bootstrap: no credentials bound — running web-only")
         :ok
 
-      {:error, reason} ->
-        log_load_failure(reason, path)
+      credentials ->
+        spawn_all(credentials)
         :ok
     end
   end
 
-  defp log_load_failure({:file_not_found, _} = err, path) do
-    Logger.warning("bootstrap: " <> Config.format_error(err) <> " — running web-only",
-      path: path
-    )
-  end
-
-  defp log_load_failure({:io_error, posix, _} = err, path) do
-    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
-      path: path,
-      reason: posix
-    )
-  end
-
-  defp log_load_failure({:invalid_toml, msg} = err, path) do
-    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
-      path: path,
-      reason: msg
-    )
-  end
-
-  defp log_load_failure({:invalid_config, msg} = err, path) do
-    Logger.error("bootstrap: " <> Config.format_error(err) <> " — running web-only",
-      path: path,
-      reason: msg
-    )
-  end
-
-  @spec spawn_all([Config.User.t()]) :: :ok
-  defp spawn_all(users) do
-    {pairs, skipped} = resolve_pairs(users)
-    stats = Enum.reduce(pairs, %{started: 0, failed: 0}, &spawn_one/2)
+  @spec spawn_all([Credential.t()]) :: :ok
+  defp spawn_all(credentials) do
+    stats = Enum.reduce(credentials, %{started: 0, failed: 0}, &spawn_one/2)
 
     Logger.info("bootstrap done",
-      users: length(users),
+      credentials: length(credentials),
       started: stats.started,
-      failed: stats.failed,
-      skipped: skipped
+      failed: stats.failed
     )
 
     :ok
   end
 
-  # Resolve every TOML user name to its DB `Accounts.User` row. Phase 2
-  # made user identity DB-backed (the `users` table backs the FK on
-  # `messages.user_id`); a TOML user that has no matching DB row gets
-  # logged + counted toward `skipped`. The operator must
-  # `mix grappa.create_user` before grappa.toml-driven Bootstrap can
-  # spawn that user's sessions. Returns the list of `{User.t(),
-  # network_slug}` pairs ready for the find-or-create + spawn loop.
-  @spec resolve_pairs([Config.User.t()]) :: {[{User.t(), String.t()}], non_neg_integer()}
-  defp resolve_pairs(users) do
-    Enum.reduce(users, {[], 0}, &resolve_user/2)
-  end
-
-  @spec resolve_user(Config.User.t(), {[{User.t(), String.t()}], non_neg_integer()}) ::
-          {[{User.t(), String.t()}], non_neg_integer()}
-  defp resolve_user(user, {acc, skipped}) do
-    case Accounts.get_user_by_name(user.name) do
-      {:ok, %User{} = db_user} ->
-        pairs = Enum.map(user.networks, fn net -> {db_user, net.id} end)
-        {acc ++ pairs, skipped}
-
-      {:error, :not_found} ->
-        Logger.warning("bootstrap: user not in DB, skipping",
-          user: user.name,
-          networks: length(user.networks)
-        )
-
-        {acc, skipped + length(user.networks)}
-    end
-  end
-
-  @spec spawn_one({User.t(), String.t()}, %{started: non_neg_integer(), failed: non_neg_integer()}) ::
+  @spec spawn_one(Credential.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
           %{started: non_neg_integer(), failed: non_neg_integer()}
-  defp spawn_one({%User{} = user, network_slug}, acc) do
-    with {:ok, %Network{id: network_id}} <-
-           Networks.find_or_create_network(%{slug: network_slug}),
-         {:ok, _} <- Session.start_session(user.id, network_id) do
-      Logger.info("session started", user: user.name, network: network_slug)
-      %{acc | started: acc.started + 1}
-    else
+  defp spawn_one(%Credential{user_id: user_id, network_id: network_id, network: %Network{slug: slug}}, acc) do
+    case Session.start_session(user_id, network_id) do
+      {:ok, _} ->
+        Logger.info("session started", user: user_id, network: slug)
+        %{acc | started: acc.started + 1}
+
       {:error, reason} ->
         Logger.error("session start failed",
-          user: user.name,
-          network: network_slug,
+          user: user_id,
+          network: slug,
           error: inspect(reason)
         )
 

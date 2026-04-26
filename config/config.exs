@@ -37,11 +37,14 @@ config :logger, :console,
     :error,
     :pid,
     :unexpected,
-    # Bootstrap summary: how many users we processed and how many
-    # session starts succeeded vs. failed; the config path that was
-    # (or wasn't) read.
+    # Bootstrap summary: how many credentials we enumerated and how
+    # many session starts succeeded vs. failed. Sub-task 2j swapped
+    # the boot path from TOML reading to DB enumeration; `:credentials`
+    # is the post-2j count, `:users` + `:path` rode the old
+    # "bootstrap done users=N path=..." line shape.
     :path,
     :users,
+    :credentials,
     :started,
     :failed,
     # Per-IRC-event context: who/what an event refers to (KICK target,

@@ -52,11 +52,11 @@ defmodule Grappa.Application do
 
   # Bootstrap is opt-in via the `:start_bootstrap` flag (true in dev/prod,
   # false in test) so the test suite doesn't try to spawn live IRC sessions
-  # against the operator's real grappa.toml when running `mix test`.
-  @spec bootstrap_child() :: [] | [{Grappa.Bootstrap, [config_path: String.t()]}]
+  # against the operator's bound DB credentials when running `mix test`.
+  @spec bootstrap_child() :: [] | [Grappa.Bootstrap]
   defp bootstrap_child do
     if Application.get_env(:grappa, :start_bootstrap, true) do
-      [{Grappa.Bootstrap, config_path: Application.fetch_env!(:grappa, :config_path)}]
+      [Grappa.Bootstrap]
     else
       []
     end
