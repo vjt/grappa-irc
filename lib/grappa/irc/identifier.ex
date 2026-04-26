@@ -21,9 +21,15 @@ defmodule Grappa.IRC.Identifier do
   may be `nil` or another type.
   """
 
-  # RFC 2812 §2.3.1 plus modern-IRC permissiveness on length: first
-  # char letter or special; rest letter / digit / special; total ≤ 31.
-  @nick_regex ~r/^[A-Za-z\[\]\\`_^{|}\-][\w\[\]\\`_^{|}\-]{0,30}$/
+  # RFC 2812 §2.3.1 — `nickname = ( letter / special ) *8( letter /
+  # digit / special / "-" )`. Dash is tail-only; first char is
+  # letter-or-special. Total length ≤ 31 (modern-IRC permissiveness;
+  # RFC's 9 is widely violated). Pre-fix the leading-`-` in the
+  # first-char class let `mix grappa.bind_network --nick -foo` clear
+  # both Credential validate and Identifier validate, only to land
+  # `:nick_rejected` (432 ERR_ERRONEUSNICKNAME) at the upstream and
+  # restart-loop the supervised Session.
+  @nick_regex ~r/^[A-Za-z\[\]\\`_^{|}][\w\[\]\\`_^{|}\-]{0,30}$/
 
   # RFC 2812 §2.3.1: channels start with #, &, +, or ! and exclude
   # space, comma, BELL (0x07). At least one body char; length ≤ 50

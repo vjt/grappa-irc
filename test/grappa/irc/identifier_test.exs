@@ -1,5 +1,6 @@
 defmodule Grappa.IRC.IdentifierTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Grappa.IRC.Identifier
 
@@ -15,6 +16,31 @@ defmodule Grappa.IRC.IdentifierTest do
 
     test "rejects nicks starting with a digit" do
       refute Identifier.valid_nick?("1abc")
+    end
+
+    test "rejects nicks starting with a dash (RFC 2812 §2.3.1: dash is tail-only)" do
+      # F2 (S29 carryover): pre-fix the leading-`-` first-char class
+      # would round-trip `-foo` through Identifier validate but the
+      # upstream rejects it (432 ERR_ERRONEUSNICKNAME) and the Session
+      # restart-loops. Pin the rule here so it can't drift back.
+      refute Identifier.valid_nick?("-foo")
+      refute Identifier.valid_nick?("-")
+      refute Identifier.valid_nick?("--double")
+    end
+
+    property "rejects any nick with a leading dash, regardless of tail" do
+      check all(tail <- StreamData.string(:ascii, max_length: 30)) do
+        refute Identifier.valid_nick?("-" <> tail)
+      end
+    end
+
+    property "accepts a one-char nick for every legal first-char" do
+      first_chars =
+        Enum.concat([?A..?Z, ?a..?z, [?[, ?], ?\\, ?`, ?_, ?^, ?{, ?|, ?}]])
+
+      check all(c <- StreamData.member_of(first_chars)) do
+        assert Identifier.valid_nick?(<<c>>)
+      end
     end
 
     test "rejects whitespace" do

@@ -221,21 +221,17 @@ defmodule Grappa.NetworksTest do
     end
 
     # A8: nick validation is sourced from `Identifier.valid_nick?/1`.
-    # The Credential changeset previously carried its own regex + length
-    # rule that drifted slightly (the local regex disallowed leading
-    # hyphens; Identifier permits them per RFC 2812 §2.3.1 + the
-    # modern-IRC permissiveness documented in Identifier's moduledoc).
-    # These two parity tests lock the contract — if Credential's nick
-    # rule and Identifier.valid_nick? ever diverge again, one of these
-    # fires. Asserted at the changeset layer (no DB round-trip) since
-    # the contract is pure validation; Repo.insert is exercised by the
-    # surrounding tests.
+    # These two parity tests lock the Credential ↔ Identifier contract
+    # — if Credential's nick rule and Identifier.valid_nick? ever
+    # diverge again, one of these fires. Asserted at the changeset
+    # layer (no DB round-trip) since the contract is pure validation;
+    # Repo.insert is exercised by the surrounding tests.
     test "accepts every nick Identifier.valid_nick?/1 accepts", %{user: user, network: net} do
       # Sample of edge cases Identifier explicitly permits:
-      # leading hyphen, leading bracket, full 31-char length, embedded
-      # IRC special chars. All of these used to be rejected by the
-      # local Credential regex.
-      for nick <- ["-vjt", "[bot]", "v|t", "v_jt", String.duplicate("a", 31)] do
+      # leading bracket, full 31-char length, embedded IRC special
+      # chars. RFC 2812 §2.3.1 forbids leading dash (tail-only) — see
+      # the rejection test below.
+      for nick <- ["[bot]", "v|t", "v_jt", "v-jt", String.duplicate("a", 31)] do
         assert Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should accept #{inspect(nick)}"
 
@@ -258,7 +254,7 @@ defmodule Grappa.NetworksTest do
       # leading digit, control byte, over 31 chars. Empty string is
       # tested separately via `validate_required` below — here we want
       # nicks that pass `validate_required` but fail the syntax rule.
-      for nick <- ["has space", "9leading", "ctl\x01char", String.duplicate("a", 32)] do
+      for nick <- ["has space", "9leading", "-leading-dash", "ctl\x01char", String.duplicate("a", 32)] do
         refute Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should reject #{inspect(nick)}"
 
