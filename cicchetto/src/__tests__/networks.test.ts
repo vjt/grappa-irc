@@ -19,6 +19,7 @@ vi.mock("../lib/api", () => ({
   me: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
+  setOn401Handler: vi.fn(),
 }));
 
 vi.mock("../lib/socket", () => ({

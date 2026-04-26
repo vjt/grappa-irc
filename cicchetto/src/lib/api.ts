@@ -78,7 +78,33 @@ export class ApiError extends Error {
   }
 }
 
+// 401-handler registry. `auth.ts` registers a callback at module-load
+// that clears the bearer + localStorage when ANY request comes back
+// 401. This makes the api module the single chokepoint for "the
+// server says this token is dead" — without it, `Plugs.Authn` 401s
+// surface as `ApiError(401, "unauthorized")` to the calling component
+// while the bearer stays in localStorage; the UI looks logged-in but
+// every call fails silently. The dead-token detect propagates via the
+// `token` signal: setToken(null) → socket.ts createEffect disconnects
+// the WS, RequireAuth bounces to /login.
+//
+// Decoupled via a callback (not a direct `import { setToken } from
+// "./auth"`) to avoid the auth ↔ api circular dependency. The handler
+// is fire-and-forget; api never awaits it. Cleared back to null in
+// tests via `setOn401Handler(null)` between cases.
+//
+// Login's own 401 ("invalid_credentials") triggers this too — but the
+// pre-login token is null, so setToken(null) is a no-op. Logout's
+// 401 already gets caught by `auth.logout`'s try/catch; the handler
+// firing first just clears the same state twice. Both benign.
+let on401Handler: (() => void) | null = null;
+
+export function setOn401Handler(fn: (() => void) | null): void {
+  on401Handler = fn;
+}
+
 async function readError(res: Response): Promise<ApiError> {
+  if (res.status === 401 && on401Handler !== null) on401Handler();
   // The grappa server uses `%{error: "<token>"}` for tagged errors and
   // `%{errors: {detail: ...}}` for Phoenix's default 404/500 fallback —
   // try both before giving up. A non-JSON body collapses to the HTTP

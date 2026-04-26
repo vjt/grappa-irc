@@ -10,6 +10,7 @@ vi.mock("../lib/api", () => ({
   login: vi.fn(),
   me: vi.fn(),
   logout: vi.fn(),
+  setOn401Handler: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -71,5 +72,31 @@ describe("auth signal store", () => {
     expect(api.logout).toHaveBeenCalledWith("tok-abc");
     expect(auth.token()).toBeNull();
     expect(localStorage.getItem("grappa-token")).toBeNull();
+  });
+
+  it("registers an api 401 handler at module load that clears the token", async () => {
+    // We mock the api module's setOn401Handler to capture whatever
+    // auth.ts hands it. Then we invoke that captured handler and assert
+    // it clears the token state. This proves the dead-token-detect
+    // wiring without relying on a real fetch — the api unit test
+    // covers the readError → handler-invoke side; this covers the
+    // handler-clears-token side.
+    let captured: (() => void) | null = null;
+    vi.doMock("../lib/api", () => ({
+      login: vi.fn(),
+      me: vi.fn(),
+      logout: vi.fn(),
+      setOn401Handler: vi.fn().mockImplementation((fn: () => void) => {
+        captured = fn;
+      }),
+    }));
+    localStorage.setItem("grappa-token", "tok-stale");
+    const auth = await import("../lib/auth");
+    expect(auth.token()).toBe("tok-stale");
+    expect(captured).not.toBeNull();
+    if (captured !== null) (captured as () => void)();
+    expect(auth.token()).toBeNull();
+    expect(localStorage.getItem("grappa-token")).toBeNull();
+    vi.doUnmock("../lib/api");
   });
 });

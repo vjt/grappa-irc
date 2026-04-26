@@ -40,6 +40,15 @@ export function setToken(value: string | null): void {
   setTokenSignal(value);
 }
 
+// Wire the api module's 401 handler to clear our token. Without this,
+// a server-side revoke or token expiry surfaces only as ApiError(401)
+// at each call site — the bearer stays in localStorage, the UI looks
+// logged-in, the WS keeps reconnect-looping with the dead token, every
+// REST call 401s. Centralizing the clear here means: one server 401
+// → setToken(null) → token signal goes null → socket.ts createEffect
+// disconnects the WS, RequireAuth bounces to /login.
+api.setOn401Handler(() => setToken(null));
+
 export function isAuthenticated(): boolean {
   return tokenSignal() !== null;
 }
