@@ -1,0 +1,8 @@
+# Bun config for cicchetto.
+#
+# `cache = true` keeps the install cache shared via the host bind-mount
+# in scripts/bun.sh (see BUN_INSTALL_CACHE_DIR=/cache override).
+
+[install]
+cache = true
+exact = false

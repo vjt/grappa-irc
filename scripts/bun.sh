@@ -1,0 +1,42 @@
+#!/bin/bash
+# Run a bun command inside an oven/bun:1 container against cicchetto/.
+#
+# Usage:
+#   scripts/bun.sh install
+#   scripts/bun.sh add phoenix
+#   scripts/bun.sh run build
+#   scripts/bun.sh run check
+#
+# cicchetto/ (the SolidJS PWA) is the working directory inside the
+# container at /app. The grappa Elixir container is unaffected — bun
+# is build-only (output is static dist/ served by nginx in prod), so
+# there is no long-running bun container, only oneshot runs.
+#
+# Worktree-aware: cicchetto/ is bind-mounted from SRC_ROOT, so each
+# worktree builds from its own source. The bun install cache is a host
+# bind-mount at REPO_ROOT/runtime/bun-cache — shared across all
+# worktrees (REPO_ROOT is always main, regardless of caller worktree),
+# so `bun install` is fast after the first run. Host bind-mount (not
+# named volume) so the cache dir inherits host vjt:vjt ownership and
+# the --user override below can write to it.
+#
+# Files written from the container land as the host user via --user.
+# /tmp is a tmpfs so bun's tempdir writes succeed under the dropped
+# UID (the image's default /tmp is root-owned).
+
+. "$(dirname "$0")/_lib.sh"
+
+CICCHETTO_DIR="$SRC_ROOT/cicchetto"
+BUN_CACHE_DIR="$REPO_ROOT/runtime/bun-cache"
+mkdir -p "$CICCHETTO_DIR" "$BUN_CACHE_DIR"
+
+docker run --rm -i \
+    --user "$(id -u):$(id -g)" \
+    -v "$CICCHETTO_DIR:/app" \
+    -v "$BUN_CACHE_DIR:/cache" \
+    --tmpfs "/tmp:exec,uid=$(id -u),gid=$(id -g)" \
+    -e HOME=/tmp \
+    -e BUN_INSTALL_CACHE_DIR=/cache \
+    -w /app \
+    oven/bun:1 \
+    bun "$@"

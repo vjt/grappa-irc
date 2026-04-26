@@ -1,0 +1,53 @@
+/*
+ * Default theme — barebones-mono.
+ *
+ * All visual rules read these CSS variables. Future themes (irssi,
+ * mIRC, xchat) drop a sibling file under src/themes/ that overrides
+ * the same variables. The component layer never references concrete
+ * colors / fonts directly — only var(--*).
+ */
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #e0e0e0;
+  --accent: #5fafd7;
+  --muted: #707070;
+  --border: #1f1f1f;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-size: 14px;
+  --line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.shell {
+  padding: 1rem;
+}
+
+.shell h1 {
+  font-size: 1.2rem;
+  font-weight: normal;
+  color: var(--accent);
+  margin: 0 0 0.5rem;
+}
+
+.muted {
+  color: var(--muted);
+}
