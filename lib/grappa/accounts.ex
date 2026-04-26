@@ -145,14 +145,40 @@ defmodule Grappa.Accounts do
     now = DateTime.utc_now()
 
     %Session{}
-    |> Ecto.Changeset.change(%{
+    |> Session.changeset(%{
       user_id: user_id,
       created_at: now,
       last_seen_at: now,
       ip: ip,
       user_agent: user_agent
     })
+    |> validate_user_exists()
     |> Repo.insert()
+  end
+
+  # `Session.changeset/2` carries `assoc_constraint(:user)` for engines
+  # that surface FK violations by name (PostgreSQL etc.), but
+  # `ecto_sqlite3` returns the constraint name as `nil` so the
+  # built-in handling cannot match — the FK violation would surface
+  # as a raw `Ecto.ConstraintError` exception. Pre-flight existence
+  # check converts the miss to a clean changeset error before the
+  # insert. Race window between check and insert is narrow + benign
+  # — a concurrently-deleted user would still trip the DB FK as a
+  # backstop.
+  defp validate_user_exists(changeset) do
+    case Ecto.Changeset.get_change(changeset, :user_id) do
+      nil ->
+        changeset
+
+      user_id ->
+        query = from(u in User, where: u.id == ^user_id)
+
+        if Repo.exists?(query) do
+          changeset
+        else
+          Ecto.Changeset.add_error(changeset, :user, "does not exist")
+        end
+    end
   end
 
   @doc """

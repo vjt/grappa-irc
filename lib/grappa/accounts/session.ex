@@ -35,6 +35,8 @@ defmodule Grappa.Accounts.Session do
   """
   use Ecto.Schema
 
+  import Ecto.Changeset
+
   alias Grappa.Accounts.User
 
   @type t :: %__MODULE__{
@@ -57,5 +59,31 @@ defmodule Grappa.Accounts.Session do
     field :revoked_at, :utc_datetime_usec
     field :user_agent, :string
     field :ip, :string
+  end
+
+  @cast_fields [:user_id, :created_at, :last_seen_at, :ip, :user_agent]
+  @required_fields [:user_id, :created_at, :last_seen_at]
+
+  @doc """
+  Changeset for inserting a new session row.
+
+  Validates that `user_id`, `created_at`, and `last_seen_at` are
+  present (the other fields — `ip`, `user_agent` — are optional;
+  mix-task callers have neither). The `assoc_constraint(:user)`
+  call translates a stale-FK insert attempt into a clean changeset
+  error (`:user — "does not exist"`) so callers can pattern-match
+  rather than rescue `Ecto.ConstraintError`.
+
+  S29 H4: prior to this changeset, `Accounts.create_session/3` used
+  `Ecto.Changeset.change/2` (no validation) and let the DB layer
+  catch FK violations as raw exceptions, contradicting the function's
+  `@spec :: ... | {:error, Ecto.Changeset.t()}`.
+  """
+  @spec changeset(t(), map()) :: Ecto.Changeset.t()
+  def changeset(session, attrs) do
+    session
+    |> cast(attrs, @cast_fields)
+    |> validate_required(@required_fields)
+    |> assoc_constraint(:user)
   end
 end

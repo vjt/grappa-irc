@@ -40,6 +40,24 @@ defmodule Grappa.Accounts.SessionsTest do
       assert {:ok, %Session{ip: nil, user_agent: nil}} =
                Accounts.create_session(user.id, nil, nil)
     end
+
+    # S29 H4: Session was the only schema in the project without a
+    # changeset. create_session/3 used `Ecto.Changeset.change/2` (no
+    # validation), so a stale user_id (deleted user, never-existed
+    # UUID) raised a raw `Ecto.ConstraintError` instead of the
+    # `{:error, %Ecto.Changeset{}}` the @spec promised. The
+    # `assoc_constraint(:user)` clause in the new
+    # `Session.changeset/2` translates the FK violation into a
+    # standard validation error so callers can pattern-match.
+    test "returns {:error, %Ecto.Changeset{}} for a stale user_id (FK miss)" do
+      stale_uuid = Ecto.UUID.generate()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Accounts.create_session(stale_uuid, "127.0.0.1", "test-ua")
+
+      refute cs.valid?
+      assert {"does not exist", _} = cs.errors[:user]
+    end
   end
 
   describe "authenticate/1" do
