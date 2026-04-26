@@ -1,0 +1,131 @@
+defmodule Mix.Tasks.Grappa.BindNetwork do
+  @shortdoc "Binds a user to an IRC network: --user --network --server host:port [--tls] --nick [--password] [--auth] [--autojoin]"
+
+  @moduledoc """
+  Operator-side network binding. Idempotently creates the network +
+  one server + per-user credential in a single shell call so the
+  end-to-end deploy walkthrough (README + sub-task 2k) is one
+  invocation per network.
+
+  ## Usage
+
+      scripts/mix.sh grappa.bind_network \\
+        --user vjt --network azzurra \\
+        --server irc.azzurra.chat:6697 --tls \\
+        --nick vjt-grappa \\
+        --password '<NickServ password>' \\
+        --auth auto \\
+        --autojoin '#grappa,#italy'
+
+  Required: `--user`, `--network`, `--server`, `--nick`. Everything
+  else is optional. `--auth` defaults to `auto`; valid values are
+  `auto | sasl | server_pass | nickserv_identify | none`. `--autojoin`
+  is a comma-separated list of channel names.
+
+  Adding the same `(network, host, port)` server twice is a no-op
+  (the duplicate is silently skipped); rebinding an existing
+  `(user, network)` credential reports a changeset error — use
+  `grappa.update_network_credential` to mutate.
+  """
+  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks]
+
+  use Mix.Task
+
+  alias Grappa.{Accounts, Networks}
+
+  @switches [
+    user: :string,
+    network: :string,
+    server: :string,
+    tls: :boolean,
+    nick: :string,
+    password: :string,
+    auth: :string,
+    autojoin: :string,
+    realname: :string,
+    sasl_user: :string
+  ]
+
+  @impl Mix.Task
+  def run(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: @switches)
+
+    user_name = Keyword.fetch!(opts, :user)
+    slug = Keyword.fetch!(opts, :network)
+    server = Keyword.fetch!(opts, :server)
+    nick = Keyword.fetch!(opts, :nick)
+
+    Application.put_env(:grappa, :start_bootstrap, false)
+    {:ok, _} = Application.ensure_all_started(:grappa)
+
+    user = Accounts.get_user_by_name!(user_name)
+
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+    {host, port} = parse_server(server)
+
+    case Networks.add_server(network, %{
+           host: host,
+           port: port,
+           tls: Keyword.get(opts, :tls, true)
+         }) do
+      {:ok, _} -> :ok
+      {:error, :already_exists} -> :ok
+      {:error, cs} -> halt_changeset("server", cs)
+    end
+
+    cred_attrs = %{
+      nick: nick,
+      password: Keyword.get(opts, :password),
+      auth_method: parse_auth(Keyword.get(opts, :auth, "auto")),
+      autojoin_channels: parse_autojoin(Keyword.get(opts, :autojoin)),
+      realname: Keyword.get(opts, :realname),
+      sasl_user: Keyword.get(opts, :sasl_user)
+    }
+
+    case Networks.bind_credential(user, network, cred_attrs) do
+      {:ok, _} ->
+        IO.puts("bound #{user.name} to #{network.slug} (server #{host}:#{port})")
+
+      {:error, cs} ->
+        halt_changeset("credential", cs)
+    end
+  end
+
+  defp parse_server(spec) do
+    case String.split(spec, ":") do
+      [host, port_str] ->
+        {port, ""} = Integer.parse(port_str)
+        {host, port}
+
+      _ ->
+        Mix.raise("--server must be host:port (got #{inspect(spec)})")
+    end
+  end
+
+  defp parse_auth(str) do
+    case str do
+      "auto" -> :auto
+      "sasl" -> :sasl
+      "server_pass" -> :server_pass
+      "nickserv_identify" -> :nickserv_identify
+      "none" -> :none
+      other -> Mix.raise("--auth must be auto|sasl|server_pass|nickserv_identify|none (got #{inspect(other)})")
+    end
+  end
+
+  defp parse_autojoin(nil), do: []
+  defp parse_autojoin(""), do: []
+
+  defp parse_autojoin(str) do
+    str
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+  end
+
+  @spec halt_changeset(String.t(), Ecto.Changeset.t()) :: no_return()
+  defp halt_changeset(label, cs) do
+    IO.puts(:stderr, "error binding #{label}: #{inspect(cs.errors)}")
+    System.halt(1)
+  end
+end

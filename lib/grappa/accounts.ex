@@ -108,6 +108,15 @@ defmodule Grappa.Accounts do
   def get_user!(id), do: Repo.get!(User, id)
 
   @doc """
+  Fetches a user by `name`. Raises `Ecto.NoResultsError` on miss.
+
+  Used by the operator-side mix tasks where a typo in `--user`
+  should fail loudly with a stack trace, not silently no-op.
+  """
+  @spec get_user_by_name!(String.t()) :: User.t()
+  def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
+
+  @doc """
   Creates a new bearer-token session for `user_id`.
 
   `ip` and `user_agent` are recorded for audit; both may be `nil`
