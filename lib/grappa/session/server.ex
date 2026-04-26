@@ -291,7 +291,7 @@ defmodule Grappa.Session.Server do
   # and sasl_user goes through `Credential.effective_*` so the `||
   # nick` pattern stays in one place — the 2f code review (I1) flagged
   # inline `||` as a violation of CLAUDE.md "no defaults via \\\\".
-  @spec client_opts(Networks.Server.t(), Credential.t(), String.t(), String.t()) :: map()
+  @spec client_opts(Networks.Server.t(), Credential.t(), String.t(), String.t()) :: Client.opts()
   defp client_opts(server, credential, user_name, network_slug) do
     %{
       host: server.host,
