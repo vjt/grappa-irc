@@ -16,12 +16,12 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
+    deps: [Grappa.Networks, Mix.Tasks.Grappa.Boot, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
   alias Grappa.Networks
-  alias Mix.Tasks.Grappa.OptionParsing
+  alias Mix.Tasks.Grappa.{Boot, OptionParsing}
 
   @impl Mix.Task
   def run(args) do
@@ -29,8 +29,7 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
     slug = Keyword.fetch!(opts, :network)
     server = Keyword.fetch!(opts, :server)
 
-    Application.put_env(:grappa, :start_bootstrap, false)
-    {:ok, _} = Application.ensure_all_started(:grappa)
+    Boot.start_app_silent()
 
     network = Networks.get_network_by_slug!(slug)
     {host, port} = OptionParsing.parse_server(server)

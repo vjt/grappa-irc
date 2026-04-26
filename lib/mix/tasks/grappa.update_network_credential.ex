@@ -19,12 +19,18 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
+    deps: [
+      Grappa.Accounts,
+      Grappa.Networks,
+      Mix.Tasks.Grappa.Boot,
+      Mix.Tasks.Grappa.OptionParsing,
+      Mix.Tasks.Grappa.Output
+    ]
 
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
-  alias Mix.Tasks.Grappa.OptionParsing
+  alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [
     user: :string,
@@ -44,8 +50,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
     user_name = Keyword.fetch!(opts, :user)
     slug = Keyword.fetch!(opts, :network)
 
-    Application.put_env(:grappa, :start_bootstrap, false)
-    {:ok, _} = Application.ensure_all_started(:grappa)
+    Boot.start_app_silent()
 
     user = Accounts.get_user_by_name!(user_name)
     network = Networks.get_network_by_slug!(slug)
@@ -58,12 +63,8 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
       |> maybe_put_autojoin(opts)
 
     case Networks.update_credential(user, network, attrs) do
-      {:ok, _} ->
-        IO.puts("updated credential for #{user.name} on #{slug}")
-
-      {:error, cs} ->
-        IO.puts(:stderr, "error updating credential: #{inspect(cs.errors)}")
-        System.halt(1)
+      {:ok, _} -> IO.puts("updated credential for #{user.name} on #{slug}")
+      {:error, cs} -> Output.halt_changeset("updating credential", cs)
     end
   end
 

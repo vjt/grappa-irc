@@ -32,12 +32,18 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
+    deps: [
+      Grappa.Accounts,
+      Grappa.Networks,
+      Mix.Tasks.Grappa.Boot,
+      Mix.Tasks.Grappa.OptionParsing,
+      Mix.Tasks.Grappa.Output
+    ]
 
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
-  alias Mix.Tasks.Grappa.OptionParsing
+  alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [
     user: :string,
@@ -62,8 +68,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     nick = Keyword.fetch!(opts, :nick)
     auth = Keyword.fetch!(opts, :auth)
 
-    Application.put_env(:grappa, :start_bootstrap, false)
-    {:ok, _} = Application.ensure_all_started(:grappa)
+    Boot.start_app_silent()
 
     user = Accounts.get_user_by_name!(user_name)
 
@@ -78,7 +83,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
          }) do
       {:ok, _} -> :ok
       {:error, :already_exists} -> :ok
-      {:error, cs} -> halt_changeset("server", cs)
+      {:error, cs} -> Output.halt_changeset("binding server", cs)
     end
 
     cred_attrs = %{
@@ -91,17 +96,8 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     }
 
     case Networks.bind_credential(user, network, cred_attrs) do
-      {:ok, _} ->
-        IO.puts("bound #{user.name} to #{network.slug} (server #{host}:#{port})")
-
-      {:error, cs} ->
-        halt_changeset("credential", cs)
+      {:ok, _} -> IO.puts("bound #{user.name} to #{network.slug} (server #{host}:#{port})")
+      {:error, cs} -> Output.halt_changeset("binding credential", cs)
     end
-  end
-
-  @spec halt_changeset(String.t(), Ecto.Changeset.t()) :: no_return()
-  defp halt_changeset(label, cs) do
-    IO.puts(:stderr, "error binding #{label}: #{inspect(cs.errors)}")
-    System.halt(1)
   end
 end

@@ -19,9 +19,13 @@ defmodule Mix.Tasks.Grappa.CreateUser do
   shell-driven CLI surface, not a runtime caller of anything else.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Accounts]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Accounts, Mix.Tasks.Grappa.Boot, Mix.Tasks.Grappa.Output]
 
   use Mix.Task
+
+  alias Mix.Tasks.Grappa.{Boot, Output}
 
   @impl Mix.Task
   def run(args) do
@@ -29,21 +33,11 @@ defmodule Mix.Tasks.Grappa.CreateUser do
     name = Keyword.fetch!(opts, :name)
     password = Keyword.fetch!(opts, :password)
 
-    # Skip bootstrap: this CLI task only needs Repo + Argon2, never the
-    # IRC supervision tree. Booting bootstrap would open real upstream
-    # connections to every bound network, which makes no sense for a
-    # one-shot account-provisioning command.
-    # See `Grappa.Application.bootstrap_child/0` for the flag's contract.
-    Application.put_env(:grappa, :start_bootstrap, false)
-    {:ok, _} = Application.ensure_all_started(:grappa)
+    Boot.start_app_silent()
 
     case Grappa.Accounts.create_user(%{name: name, password: password}) do
-      {:ok, user} ->
-        IO.puts("created user #{user.name} (#{user.id})")
-
-      {:error, changeset} ->
-        IO.puts(:stderr, "error creating user: #{inspect(changeset.errors)}")
-        System.halt(1)
+      {:ok, user} -> IO.puts("created user #{user.name} (#{user.id})")
+      {:error, changeset} -> Output.halt_changeset("creating user", changeset)
     end
   end
 end

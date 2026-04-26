@@ -19,12 +19,17 @@ defmodule Mix.Tasks.Grappa.AddServer do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
+    deps: [
+      Grappa.Networks,
+      Mix.Tasks.Grappa.Boot,
+      Mix.Tasks.Grappa.OptionParsing,
+      Mix.Tasks.Grappa.Output
+    ]
 
   use Mix.Task
 
   alias Grappa.Networks
-  alias Mix.Tasks.Grappa.OptionParsing
+  alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [network: :string, server: :string, tls: :boolean, priority: :integer]
 
@@ -34,8 +39,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
     slug = Keyword.fetch!(opts, :network)
     server = Keyword.fetch!(opts, :server)
 
-    Application.put_env(:grappa, :start_bootstrap, false)
-    {:ok, _} = Application.ensure_all_started(:grappa)
+    Boot.start_app_silent()
 
     network = Networks.get_network_by_slug!(slug)
     {host, port} = OptionParsing.parse_server(server)
@@ -48,15 +52,9 @@ defmodule Mix.Tasks.Grappa.AddServer do
     }
 
     case Networks.add_server(network, attrs) do
-      {:ok, _} ->
-        IO.puts("added server #{host}:#{port} to #{slug}")
-
-      {:error, :already_exists} ->
-        IO.puts("server #{host}:#{port} already on #{slug}; no-op")
-
-      {:error, cs} ->
-        IO.puts(:stderr, "error adding server: #{inspect(cs.errors)}")
-        System.halt(1)
+      {:ok, _} -> IO.puts("added server #{host}:#{port} to #{slug}")
+      {:error, :already_exists} -> IO.puts("server #{host}:#{port} already on #{slug}; no-op")
+      {:error, cs} -> Output.halt_changeset("adding server", cs)
     end
   end
 end
