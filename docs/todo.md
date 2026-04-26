@@ -16,16 +16,57 @@ IDENTIFY accepted. All 12 plan sub-tasks done; 35 commits pushed
 to `origin/main` from `phase2-auth`. Active checkpoint rotated
 CP07 → CP08.
 
-**Phase 3 prep — client walking skeleton (cicchetto PWA):**
-- Pick PWA framework (Svelte vs SolidJS vs lit-html). Bundle
-  budget ≤200 KB gzip. Decision belongs in DESIGN_NOTES before
-  Phase 3 sub-task 1.
-- Bootstrap `cicchetto` repository (separate repo per "two
-  facades, one store" decision). Mirrors grappa's container/
-  worktree/scripts model where it makes sense.
-- Phase 3 Roadmap items: PWA shell + manifest + service worker;
-  login flow → token → connect `/socket/websocket`; channel list +
-  scrollback fetch; send message.
+**Phase 3 walking skeleton (cicchetto PWA) — sub-tasks 1-7 LANDED on
+`phase3-cicchetto-walking-skeleton`:**
+- [x] REST gaps: `GET /networks` + `GET /networks/:nid/channels` (523dc20)
+- [x] cicchetto/ scaffold + day-1 PWA shell (1333e66) — SolidJS + TS +
+      Vite + Bun + Biome stack picked, see DESIGN_NOTES 2026-04-26
+- [x] Login + token store + protected route (ac92bcc)
+- [x] Channel list + Phoenix Channels client (69eea69)
+- [x] Scrollback fetch on select + compose + send (ccdc367)
+- [x] compose + nginx + DNS plumbing (29ec512) —
+      `compose.prod.yaml` restructured: grappa drops `vlan53` →
+      `grappa_internal` Docker bridge; nginx joins `vlan53` `.53.11` +
+      bridge with `infra/nginx.conf` (SPA `try_files` + reverse-proxy
+      `/auth /me /networks /healthz /socket` to `grappa:4000` with WS
+      upgrade headers + HTTP/1.1); `cicchetto-build` oneshot
+      `oven/bun:1` produces `dist/` into named volume `cicchetto_dist`;
+      `scripts/deploy.sh` extended (`--no-deps` refresh of dist +
+      healthcheck via nginx :80/healthz); `scripts/healthcheck.sh`
+      switches port on `GRAPPA_PROD`; `scripts/register-dns.sh` new
+      (idempotent Technitium API call reading `/srv/dns/.env`, NOT
+      auto-run from `deploy.sh`).
+- [x] Docs (this commit): DESIGN_NOTES SolidJS-stack entry +
+      README cicchetto-stack note + Phase 3 roadmap tick.
+
+**Phase 3 sub-task 8 (deploy + iPhone round-trip) — PENDING:**
+- [ ] `scripts/check.sh` + cicchetto `bun run check` (post-doc gates).
+- [ ] superpowers:code-reviewer agent on full `phase3-cicchetto-walking-skeleton`
+      branch (not just last commit); fix any findings.
+- [ ] Rebase onto main from worktree → ff-merge to main.
+- [ ] `scripts/deploy.sh` from `/srv/grappa` (refuses non-main; builds
+      grappa prod image + runs `cicchetto-build` oneshot + brings up
+      `grappa+nginx --no-deps` + runs migrations + waits `/healthz`
+      via nginx).
+- [ ] `scripts/register-dns.sh` (operator-run; reads `/srv/dns/.env`
+      `TECHNITIUM_API_TOKEN`; idempotent; default registers
+      `grappa.bad.ass A 192.168.53.11 TTL 300`).
+- [ ] Verify nginx + DNS:
+      `dig @ns1.bad.ass grappa.bad.ass A` → `192.168.53.11`;
+      `curl -fsS http://192.168.53.11/healthz` → 200;
+      `curl -fsS http://grappa.bad.ass/healthz` → 200 (LAN-side).
+- [ ] iPhone PWA install round-trip: open `http://grappa.bad.ass` on
+      iPhone Safari (same LAN OR home VPN — vlan53 is not WAN); Share
+      → "Add to Home Screen"; launch installed PWA; log in; see
+      `#grappa` in channel list; live PRIVMSG arrives in scrollback
+      when sent from another connected IRC client (azzurra); send a
+      PRIVMSG from PWA, round-trip visible in the other client.
+- [ ] `git push origin main` + worktree cleanup
+      (`git worktree remove ~/code/IRC/grappa-phase3-cicchetto` +
+      `git branch -d phase3-cicchetto-walking-skeleton`).
+- [ ] CP09 S3 entry: Phase 3 wrap (all 7 commits, gates, deploy
+      timestamp, iPhone round-trip evidence, what works + what's
+      deferred to Phase 4).
 
 **Worktree cleanup:** `phase2-auth` worktree at
 `/home/vjt/code/IRC/grappa-phase2` is dead weight post-merge;

@@ -9,7 +9,7 @@
 Two components, one monorepo:
 
 - **grappa** — the server. Persistent bouncer, one supervised OTP process per user (Elixir/Erlang), terminates IRC at the server boundary, exposes a clean REST API plus a multiplexed WebSocket channel (Phoenix Channels) for real-time event push. SASL bridging to upstream NickServ. Self-hostable on any VPS.
-- **cicchetto** — the client. A PWA that speaks pure REST. Never parses IRC. Installable on mobile home screens. Visually irssi; mobile ergonomics added on top, not instead.
+- **cicchetto** — the client. A PWA that speaks pure REST. Never parses IRC. Installable on mobile home screens. Visually irssi; mobile ergonomics added on top, not instead. Built on **SolidJS + TypeScript + Vite + Bun + Biome** plus `phoenix.js` for the Channels client (decided 2026-04-26 — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)).
 
 The pitch in one sentence: *modern IRC — always-on, consumable from a phone — without making it not-IRC.*
 
@@ -272,7 +272,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [x] README
 - [x] Server language: **Elixir/OTP + Phoenix** (decided 2026-04-25 — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md))
 - [ ] OpenAPI schema for the REST surface
-- [ ] Pick a client framework (Svelte vs SolidJS vs plain lit-html)
+- [x] Client framework: **SolidJS + TypeScript + Vite + Bun + Biome** (decided 2026-04-26 — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md))
 
 ### Phase 1 — server walking skeleton ✓
 - [x] Single-user bouncer, single upstream network, hardcoded credentials
@@ -288,11 +288,12 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [x] Session tokens (Argon2-hashed password → bearer-token sessions, sliding 7-day idle)
 - [x] Per-user isolation (cross-user join authz at the channel layer)
 
-### Phase 3 — client walking skeleton
-- [ ] PWA shell, manifest, service worker
-- [ ] Login flow → token → connect `/events`
-- [ ] Channel list + scrollback fetch on select
-- [ ] Send message
+### Phase 3 — client walking skeleton (in flight)
+- [x] PWA shell, manifest, service worker
+- [x] Login flow → token → connect `/socket/websocket`
+- [x] Channel list + scrollback fetch on select
+- [x] Send message
+- [ ] Production deploy (nginx + DNS register + iPhone PWA install round-trip)
 
 ### Phase 4 — irssi-shape UI
 - [ ] Keyboard-first layout, theme system

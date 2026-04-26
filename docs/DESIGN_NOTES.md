@@ -484,6 +484,44 @@ A raise from `init/1` propagates the same way to the supervisor (`:transient` tr
 
 **Phase 5 mitigation:** the cleaner answer is for Networks to refuse to expose `bind_credential/3` until at least one Server is bound to the network — invariant at the API surface, not at the runtime. Queued for Phase 5 hardening when the rest of the operator-error class gets the same treatment.
 
+### 2026-04-26 — Phase 3 cicchetto stack: SolidJS + TypeScript + Vite + Bun + Biome
+
+Phase 3 walking skeleton needed a frontend stack. Phase 0 roadmap left the choice open (Svelte vs SolidJS vs plain lit-html); pressure-tested before committing the cicchetto subtree. The choice is load-bearing — re-platforming a PWA after Phase 4 starts cementing themes + keybindings would cost weeks.
+
+**Chosen:** **SolidJS 1.9** + **TypeScript 6** + **Vite 8** + **Bun 1.3** + **Biome 2.4**, plus **`phoenix.js` 1.8** for the Channels client (framework-agnostic, ~3 KB).
+
+**Why SolidJS, decisively for THIS shape of UI:**
+
+1. **Fine-grained reactivity matches the workload.** grappa's primary client behavior is high-frequency WebSocket push: every IRC `PRIVMSG`, join, part, mode, topic change arrives as a separate Channel event. On a busy channel (`#it-opers` peak: hundreds of events/sec sustained), a virtual-DOM diff per event would thrash. Solid's signals re-render only the changed DOM node — no diff, no reconciliation. The irssi-shape UI with thousands of scrollback rows visible is exactly the workload Solid was designed for.
+2. **TypeScript mirrors the bouncer's typed JSON contracts.** `Grappa.IRC.Parser` is the single source of truth for IRC framing on the server (CLAUDE.md invariant); the parsed events become typed JSON on the wire. TypeScript on the client extends that single source of truth across the boundary — no untyped JS divergence between server-side `%Grappa.Scrollback.Message{}` and client-side message shape. One contract, two languages, same field names, compile-time-checked.
+3. **Vite is the canonical SolidJS bundler.** `vite-plugin-solid` is first-party (maintained by the SolidJS core team). HMR, dev server, build all work out of the box; no webpack/rollup plumbing.
+4. **Bun replaces npm + node entirely.** Single static binary, no Node version juggling, ~10x faster `install` than npm, faster test runner than vitest-on-node. `oven/bun:1` Docker image gives reproducible CI matching `scripts/bun.sh` oneshot pattern (host bind-mount `runtime/bun-cache`, tmpfs `/tmp`, `--user 1000:1000`) — same wrapper discipline the Elixir side already enforces via `scripts/mix.sh`.
+5. **Biome replaces ESLint + Prettier.** One tool, Rust-fast (lint + format in one pass over the same AST), single config file `biome.json`. Mirrors the `mix format` + `mix credo` single-source-of-truth principle on the server side. ESLint's plugin sprawl + Prettier's separate config + their interop friction were exactly the kind of accidental complexity CLAUDE.md's "Lightweight over heavyweight" rule rejects.
+
+**Alternatives considered, rejected with reasons:**
+
+- **React.** Virtual-DOM cost is wrong for the workload. A 500-row scrollback with 50 events/sec arriving = 25k diff operations/sec for changes that touch a single DOM node. Solid drops that to 50 targeted updates/sec. Ecosystem advantage (more libs, more LLM training corpus) doesn't outweigh the runtime cost on the device that matters most (an iPhone in a pocket on cellular).
+- **Svelte.** Mature framework, similar fine-grained reactivity story. Rejected because Svelte's WebSocket ecosystem is thinner than Solid's; `phoenix.js` integrates more cleanly with Solid's signals than with Svelte's stores (Solid signals ARE Phoenix Channels' natural sink — assign incoming event into a signal, the affected row re-renders; Svelte stores require a wrapper layer).
+- **Plain lit-html.** Considered for "no framework" minimalism. Rejected because the irssi-shape UI needs enough state machinery (channel switcher, scroll position per channel, unread counts, theme application) that we'd end up reinventing 80% of Solid in vanilla. Solid is already the minimalist choice; lit-html is *too* minimalist for this scope.
+- **htmx + server-side rendering.** Tempting for "no JS framework" purity. Rejected because grappa is a PWA — installable, offline-capable, uses a service worker for asset caching + iOS home-screen install. Server-rendered htmx loses the offline story (every interaction is a server roundtrip), loses the PWA install path (Add to Home Screen wants a real `manifest.json` + service worker), and loses the WebSocket-push model that makes the irssi UX feel live.
+- **lit-html + Web Components.** Same "too minimalist for this scope" verdict as plain lit-html, plus Web Components' shadow-DOM CSS isolation actively fights the irssi-shape goal of one global theme applied uniformly across every component.
+
+**Tradeoffs accepted, named honestly:**
+
+- **Smaller LLM training corpus than React.** Claude generates ~10-20% less idiomatic SolidJS than React on first pass (named honestly, same gap acknowledged for Elixir vs Rust on the server side). Mitigated by the same playbook: rigid CI gates (Biome lint + Biome format + tsc strict + vitest) + concise SolidJS pattern notes in this codebase as they accumulate.
+- **Bun is younger than Node.** v1.0 shipped September 2023; some npm packages still rely on Node-specific APIs. Mitigated by sticking to Bun-first or framework-agnostic packages (Solid, phoenix.js, Vite all work natively in Bun); flagged as a Phase 5 hardening item if a needed dep ever forces Node-only.
+- **Biome's plugin ecosystem is thinner than ESLint's.** Rejected as a real problem because the rule set Biome ships covers ~95% of what ESLint+typescript-eslint cover, and the missing 5% (plugin-specific rules for, say, React Hooks) doesn't apply to a SolidJS codebase. The simpler tool wins here.
+
+**Apply:**
+
+- The cicchetto subtree (`cicchetto/` in this monorepo, NOT a separate repo — see CP09 correction 2026-04-26) ships SolidJS 1.9 + TypeScript 6 + Vite 8 + Bun 1.3 + Biome 2.4 + `phoenix.js` 1.8.
+- Build wrapper: `scripts/bun.sh` oneshot oven/bun:1 image, mirrors `scripts/mix.sh` discipline. NEVER raw `bun` on the host. NEVER raw `npm`/`node`.
+- CI gates for cicchetto: Biome (lint + format) + tsc strict + vitest. Same "every gate is mandatory, none advisory" rule as the server side.
+- Future client work that's tempted to "modernize" (swap Solid for Next.js, add Tailwind, migrate to pnpm, etc.) MUST re-litigate against this entry's tradeoffs. The rejected alternatives are rejected for reasons that don't expire.
+- Production build pipeline: `cicchetto-build` oneshot service in `compose.prod.yaml` runs `bun run build` to produce `dist/` into the named volume `cicchetto_dist`; nginx serves it with SPA `try_files` + reverse-proxies `/auth /me /networks /healthz /socket` to `grappa:4000`. The bouncer container does NOT bundle the frontend.
+
+---
+
 ### 2026-04-26 — Phase 2 close: `password_encrypted` redact:true is post-load symmetry
 
 `Grappa.Networks.Credential.password_encrypted` is a `Grappa.EncryptedBinary` (Cloak Ecto type) with `redact: true`. The virtual `:password` field also has `redact: true`. Both flags are load-bearing; dropping either one leaks plaintext in different ways.
@@ -520,7 +558,7 @@ Roll-up of the decisions above as a pre-merge checklist:
 
 Tracked here until resolved in the README or an issue.
 
-- **Client framework:** Svelte vs SolidJS vs plain lit-html. Decision deferred to Phase 3 (client walking skeleton). Criteria: PWA shell ergonomics, service-worker story, bundle size budget (≤200 KB gzip target before optional Vosk/piper drop-ins). Note: any choice integrates with `phoenix.js` (3KB, framework-agnostic) for the Channels client.
+- ~~**Client framework:** Svelte vs SolidJS vs plain lit-html. Decision deferred to Phase 3 (client walking skeleton). Criteria: PWA shell ergonomics, service-worker story, bundle size budget (≤200 KB gzip target before optional Vosk/piper drop-ins). Note: any choice integrates with `phoenix.js` (3KB, framework-agnostic) for the Channels client.~~ **Resolved 2026-04-26:** SolidJS 1.9 + TypeScript 6 + Vite 8 + Bun 1.3 + Biome 2.4 + `phoenix.js` 1.8. See dedicated DESIGN_NOTES entry above.
 - **KV vs sqlite for scrollback:** sqlite via `ecto_sqlite3` is the chosen default. The pagination-heavy access pattern + per-user row counts + the need for indexed lookup by (channel, server-time) all favour SQL. Revisit only if the sqlite file turns out to be the bottleneck.
 - ~~**Session token format:** `Phoenix.Token` short-lived access + long-lived refresh, or single long-lived + revocation list. Phase 2 concern.~~ **Resolved 2026-04-25:** opaque UUID session ID + sliding 7d idle expiry + revocation table. See dedicated DESIGN_NOTES entry above.
 - **How to expose multi-network per user in the UI** without descending into tree-view hell. Phase 3 concern.
