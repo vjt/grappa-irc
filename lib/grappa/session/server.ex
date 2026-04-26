@@ -16,9 +16,13 @@ defmodule Grappa.Session.Server do
 
   This is the walking-skeleton implementation:
 
-    * Handshake via `Grappa.IRC.Client.send_handshake/2` (NICK + USER).
-      Phase 2 introduces CAP + SASL when per-user credentials land in
-      the encrypted DB.
+    * Upstream registration handshake (PASS, CAP LS, NICK, USER,
+      AUTHENTICATE, CAP END) is owned by `Grappa.IRC.Client` —
+      `init/1` drives the state machine per `:auth_method`. Sub-task
+      2f added the SASL + PASS + NickServ-IDENTIFY branches; this
+      module pre-2g passes `auth_method: :none` so the path collapses
+      to NICK + USER. Sub-task 2g sources `auth_method` + credential
+      fields from the per-(user, network) row.
     * Autojoin fires on `001 RPL_WELCOME`. Phase 5 hardens this to also
       handle `376 RPL_ENDOFMOTD` / `422 ERR_NOMOTD` and a watchdog
       timeout in case neither arrives.
@@ -116,16 +120,22 @@ defmodule Grappa.Session.Server do
     # unique-index violation).
     {:ok, network} = Networks.find_or_create_network(%{slug: network_slug})
 
+    # Sub-task 2f: Client now drives the full upstream handshake
+    # (PASS, CAP LS, NICK, USER, AUTHENTICATE, CAP END) per
+    # `:auth_method`. Sub-task 2g will source `auth_method` + `password`
+    # + `sasl_user` + `realname` from the per-(user, network) credential
+    # row; for now the Phase 1 path stays unauthenticated (`:none`)
+    # which collapses to `NICK + USER`.
     case Client.start_link(%{
            host: opts.host,
            port: opts.port,
            tls: opts.tls,
            dispatch_to: self(),
-           logger_metadata: Log.session_context(user, network_slug)
+           logger_metadata: Log.session_context(user, network_slug),
+           nick: opts.nick,
+           auth_method: :none
          }) do
       {:ok, client} ->
-        :ok = Client.send_handshake(client, opts.nick)
-
         {:ok,
          %{
            user_id: user_id,

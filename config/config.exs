@@ -68,7 +68,11 @@ config :logger, :console,
     # ("create the user" vs "investigate the network") doesn't have
     # to grep warning lines to disambiguate.
     :networks,
-    :skipped
+    :skipped,
+    # IRC client (Phase 2 sub-task 2f): SASL handshake numerics
+    # (904 / 905 failures, etc.) ride this key so operator log search
+    # can grep "sasl" + numeric in a single pass.
+    :numeric
   ]
 
 import_config "#{config_env()}.exs"

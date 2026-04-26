@@ -78,6 +78,7 @@ defmodule Grappa.IRC.Parser do
     "PING" => :ping,
     "PONG" => :pong,
     "CAP" => :cap,
+    "AUTHENTICATE" => :authenticate,
     "ERROR" => :error,
     "PASS" => :pass,
     "WALLOPS" => :wallops,

@@ -56,6 +56,7 @@ defmodule Grappa.IRC.Message do
           | :ping
           | :pong
           | :cap
+          | :authenticate
           | :error
           | :pass
           | :wallops

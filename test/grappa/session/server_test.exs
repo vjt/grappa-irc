@@ -105,7 +105,11 @@ defmodule Grappa.Session.ServerTest do
       assert {:ok, "NICK grappa-test\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK"))
 
-      assert {:ok, "USER grappa-test 0 * :grappa\r\n"} =
+      # Sub-task 2f: realname defaults to the nick when no `:realname`
+      # is supplied — matches the per-credential default in
+      # `Grappa.Networks.Credential` (and what `Grappa.IRC.Client`
+      # falls back to).
+      assert {:ok, "USER grappa-test 0 * :grappa-test\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
 
       :ok = GenServer.stop(pid, :normal, 1_000)

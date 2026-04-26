@@ -6,6 +6,15 @@ defmodule Grappa.IRC.ClientTest do
   CLAUDE.md "Mock at boundaries (Mox), real dependencies inside.
   ... `Grappa.IRCServer` test helper is an in-process fake IRC server
   for session tests — use it, don't mock `:gen_tcp` directly."
+
+  ## Sub-task 2f: auth state machine
+
+  `Client.init/1` now drives the full upstream handshake (PASS, CAP LS,
+  NICK, USER, AUTHENTICATE, CAP END) per the per-credential
+  `auth_method` ∈ `:auto | :sasl | :server_pass | :nickserv_identify |
+  :none`. The 8 auth-path tests below cover each branch + the
+  Bahamut/Azzurra PASS-handoff case (CAP unsupported on legacy ircd) +
+  the very-old-ircd case where `001` arrives before any CAP reply.
   """
   use ExUnit.Case, async: true
 
@@ -31,13 +40,72 @@ defmodule Grappa.IRC.ClientTest do
           port: port,
           tls: false,
           dispatch_to: self(),
-          logger_metadata: []
+          logger_metadata: [],
+          nick: "grappa-test",
+          auth_method: :none
         },
         overrides
       )
 
     {:ok, client} = Client.start_link(opts)
     client
+  end
+
+  # Handler that replies CAP * LS :sasl=PLAIN to a CAP LS, ACKs the
+  # CAP REQ :sasl, prompts AUTHENTICATE PLAIN with `+`, and answers
+  # the base64 payload with the configured numeric (903 by default).
+  defp sasl_handler(numeric \\ "903 grappa-test :SASL ok") do
+    fn state, line ->
+      cond do
+        String.starts_with?(line, "CAP LS") ->
+          {:reply, ":server CAP * LS :sasl=PLAIN\r\n", state}
+
+        String.starts_with?(line, "CAP REQ") ->
+          {:reply, ":server CAP * ACK :sasl\r\n", state}
+
+        line == "AUTHENTICATE PLAIN\r\n" ->
+          {:reply, "AUTHENTICATE +\r\n", state}
+
+        String.starts_with?(line, "AUTHENTICATE ") ->
+          {:reply, ":server #{numeric}\r\n", state}
+
+        String.starts_with?(line, "CAP END") ->
+          # Pretend registration completes after CAP END.
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+
+        true ->
+          {:reply, nil, state}
+      end
+    end
+  end
+
+  # Bahamut/Azzurra: legacy ircd that doesn't grok CAP. Server replies
+  # 421 and proceeds to register the client (PASS already consumed at
+  # registration time triggers server-side NickServ IDENTIFY).
+  defp bahamut_handler do
+    fn state, line ->
+      cond do
+        String.starts_with?(line, "CAP LS") ->
+          {:reply, ":server 421 * CAP :Unknown command\r\n", state}
+
+        String.starts_with?(line, "USER ") ->
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+
+        true ->
+          {:reply, nil, state}
+      end
+    end
+  end
+
+  # Plain RFC 2812 server: no CAP, fires 001 once USER arrives.
+  defp rfc_handler do
+    fn state, line ->
+      if String.starts_with?(line, "USER ") do
+        {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+      else
+        {:reply, nil, state}
+      end
+    end
   end
 
   describe "outbound: client → server" do
@@ -157,7 +225,9 @@ defmodule Grappa.IRC.ClientTest do
               port: port,
               tls: true,
               dispatch_to: self(),
-              logger_metadata: []
+              logger_metadata: [],
+              nick: "grappa-test",
+              auth_method: :none
             })
           end)
 
@@ -165,6 +235,219 @@ defmodule Grappa.IRC.ClientTest do
         end)
 
       assert log =~ "verify_none"
+    end
+  end
+
+  describe "auth_method: :none" do
+    test "sends only NICK + USER; no PASS, no CAP, no IDENTIFY" do
+      {server, port} = start_server(rfc_handler())
+      _ = start_client(port, %{auth_method: :none})
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+
+      lines = IRCServer.sent_lines(server)
+      refute Enum.any?(lines, &String.starts_with?(&1, "PASS"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "CAP"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "AUTHENTICATE"))
+    end
+  end
+
+  describe "auth_method: :server_pass" do
+    test "sends PASS BEFORE NICK + USER; no CAP" do
+      {server, port} = start_server(rfc_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :server_pass,
+          password: "swordfish"
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+
+      lines = IRCServer.sent_lines(server)
+      pass_idx = Enum.find_index(lines, &String.starts_with?(&1, "PASS"))
+      nick_idx = Enum.find_index(lines, &String.starts_with?(&1, "NICK"))
+      user_idx = Enum.find_index(lines, &String.starts_with?(&1, "USER"))
+
+      assert pass_idx != nil
+      assert pass_idx < nick_idx
+      assert nick_idx < user_idx
+      assert Enum.at(lines, pass_idx) == "PASS swordfish\r\n"
+      refute Enum.any?(lines, &String.starts_with?(&1, "CAP"))
+    end
+  end
+
+  describe "auth_method: :nickserv_identify" do
+    test "sends NICK + USER with no CAP; on 001 sends PRIVMSG NickServ :IDENTIFY pwd" do
+      {server, port} = start_server(rfc_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :nickserv_identify,
+          password: "swordfish"
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(&1 == "PRIVMSG NickServ :IDENTIFY swordfish\r\n")
+               )
+
+      lines = IRCServer.sent_lines(server)
+      refute Enum.any?(lines, &String.starts_with?(&1, "PASS"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "CAP"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "AUTHENTICATE"))
+    end
+  end
+
+  describe "auth_method: :sasl" do
+    test "sasl-supported: CAP REQ :sasl + AUTHENTICATE PLAIN + base64 payload + CAP END on 903" do
+      {server, port} = start_server(sasl_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :sasl,
+          password: "swordfish",
+          sasl_user: "vjt"
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+
+      lines = IRCServer.sent_lines(server)
+
+      # Order: CAP LS → NICK → USER → CAP REQ → AUTHENTICATE PLAIN →
+      # AUTHENTICATE <base64> → CAP END. NICK/USER may interleave with
+      # CAP REQ; we assert relative ordering of the SASL chain.
+      cap_ls = Enum.find_index(lines, &String.starts_with?(&1, "CAP LS"))
+      cap_req = Enum.find_index(lines, &String.starts_with?(&1, "CAP REQ"))
+
+      auth_plain =
+        Enum.find_index(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
+
+      auth_payload =
+        Enum.find_index(
+          lines,
+          fn line ->
+            String.starts_with?(line, "AUTHENTICATE ") and
+              line != "AUTHENTICATE PLAIN\r\n"
+          end
+        )
+
+      cap_end = Enum.find_index(lines, &(&1 == "CAP END\r\n"))
+
+      assert cap_ls != nil
+      assert cap_ls < cap_req
+      assert cap_req < auth_plain
+      assert auth_plain < auth_payload
+      assert auth_payload < cap_end
+
+      payload_line = Enum.at(lines, auth_payload)
+      "AUTHENTICATE " <> b64 = String.trim_trailing(payload_line, "\r\n")
+      decoded = Base.decode64!(b64)
+      # PLAIN: \0authzid\0authcid\0password — we use authzid=authcid=sasl_user
+      assert decoded == <<0, "vjt", 0, "vjt", 0, "swordfish">>
+    end
+
+    test "sasl-failed: 904 from server crashes the client (let it crash)" do
+      {server, port} =
+        start_server(sasl_handler("904 grappa-test :SASL auth failed"))
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, client} =
+        Client.start_link(%{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          dispatch_to: self(),
+          logger_metadata: [],
+          nick: "grappa-test",
+          sasl_user: "vjt",
+          password: "wrong",
+          auth_method: :sasl
+        })
+
+      assert_receive {:EXIT, ^client, {:sasl_failed, 904}}, 1_000
+
+      lines = IRCServer.sent_lines(server)
+      assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
+      assert Enum.any?(lines, &String.starts_with?(&1, "AUTHENTICATE "))
+    end
+  end
+
+  describe "auth_method: :auto" do
+    test "sasl-supported: behaves identically to :sasl on a SASL-capable server" do
+      {server, port} = start_server(sasl_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :auto,
+          password: "swordfish",
+          sasl_user: "vjt"
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+
+      lines = IRCServer.sent_lines(server)
+      assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
+    end
+
+    test "sasl-not-supported (Bahamut/Azzurra sim): PASS+CAP LS+NICK/USER, server 421s the CAP, registration proceeds" do
+      {server, port} = start_server(bahamut_handler())
+
+      # auto + password sends PASS at register-time; server processes
+      # PASS and triggers NickServ IDENTIFY internally (the Bahamut
+      # PASS-handoff convention). 421 :Unknown command CAP from the
+      # server doesn't stall the client.
+      _ =
+        start_client(port, %{
+          auth_method: :auto,
+          password: "swordfish"
+        })
+
+      # Client should have sent: PASS, CAP LS, NICK, USER. Then on 421,
+      # no further action. No PRIVMSG NickServ from the client side
+      # (server-side handoff handles it).
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+
+      # Wait briefly for the 421 reply to settle, then snapshot.
+      Process.sleep(100)
+      lines = IRCServer.sent_lines(server)
+      assert "PASS swordfish\r\n" in lines
+      assert Enum.any?(lines, &String.starts_with?(&1, "CAP LS"))
+      assert Enum.any?(lines, &String.starts_with?(&1, "NICK "))
+      assert Enum.any?(lines, &String.starts_with?(&1, "USER "))
+      refute Enum.any?(lines, &String.starts_with?(&1, "PRIVMSG NickServ"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "AUTHENTICATE"))
+    end
+
+    test "very-old-ircd: 001 arrives before any CAP reply, client does not stall" do
+      # Server fires 001 immediately on USER (rfc_handler) and IGNORES
+      # CAP LS entirely. Without the registered-state transition on 001,
+      # the client would sit forever waiting for a CAP LS reply.
+      {server, port} = start_server(rfc_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :auto,
+          password: "swordfish"
+        })
+
+      # The client signals it reached :registered by no longer being
+      # blocked on CAP — we observe this indirectly via `001` having
+      # been delivered (dispatch_to receives `{:irc, %Message{command:
+      # {:numeric, 1}}}` only after the state machine handled it).
+      assert_receive {:irc, %Message{command: {:numeric, 1}}}, 1_000
+
+      lines = IRCServer.sent_lines(server)
+      assert "PASS swordfish\r\n" in lines
+      assert Enum.any?(lines, &String.starts_with?(&1, "CAP LS"))
+      assert Enum.any?(lines, &String.starts_with?(&1, "USER "))
     end
   end
 end
