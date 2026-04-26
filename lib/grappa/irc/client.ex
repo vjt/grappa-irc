@@ -418,12 +418,24 @@ defmodule Grappa.IRC.Client do
   # ircd advertising >8 caps would land "sasl" in the second line and
   # the first line's mismatch would already have triggered
   # cap_unavailable.
-  defp handle_cap([_, "LS", "*", chunk], state) do
-    {:cont, %{state | caps_buffer: state.caps_buffer ++ parse_(chunk)}}
+  #
+  # Phase guard: a stray CAP LS post-registration (CAP NEW spam, buggy
+  # upstream emitting `:server CAP nick LS * :junk` repeatedly) MUST
+  # NOT mutate caps_buffer — without the guard the buffer grows
+  # unbounded until OOM. `finalize_cap_ls/2` already gates on
+  # `:awaiting_cap_ls`; the continuation clauses must do the same so
+  # the strays are absorbed by the catch-all below.
+  #
+  # The list arg is `parse_(chunk) ++ buffer` (chunk on the LEFT) so
+  # `++` cost stays O(chunk_size) — appending the buffer to the chunk
+  # would be O(buffer_size) and turn an N-line CAP LS into O(N²) work.
+  # `"sasl" in caps` doesn't care about order.
+  defp handle_cap([_, "LS", "*", chunk], %{phase: :awaiting_cap_ls} = state) do
+    {:cont, %{state | caps_buffer: parse_(chunk) ++ state.caps_buffer}}
   end
 
-  defp handle_cap([_, "LS", chunk], state) do
-    caps = state.caps_buffer ++ parse_(chunk)
+  defp handle_cap([_, "LS", chunk], %{phase: :awaiting_cap_ls} = state) do
+    caps = parse_(chunk) ++ state.caps_buffer
     state = %{state | caps_buffer: []}
     finalize_cap_ls(caps, state)
   end
@@ -448,11 +460,10 @@ defmodule Grappa.IRC.Client do
 
   defp handle_cap(_, state), do: {:cont, state}
 
-  # `state.phase == :awaiting_cap_ls` guard: a CAP LS reply landing
-  # post-registration (CAP NEW or buggy server) MUST NOT re-enter the
-  # SASL chain; the auth_method check alone isn't enough because the
-  # phase is already :registered by then.
-  defp finalize_cap_ls(caps, %{phase: :awaiting_cap_ls} = state) do
+  # Phase guard lives in the `handle_cap` LS clauses above: a stray
+  # post-registration CAP LS never reaches here. Caller invariant:
+  # `state.phase == :awaiting_cap_ls`.
+  defp finalize_cap_ls(caps, state) do
     if "sasl" in caps and state.auth_method in [:auto, :sasl] do
       :ok = transport_send(state, "CAP REQ :sasl\r\n")
       {:cont, %{state | phase: :awaiting_cap_ack}}
@@ -460,8 +471,6 @@ defmodule Grappa.IRC.Client do
       cap_unavailable(state)
     end
   end
-
-  defp finalize_cap_ls(_, state), do: {:cont, state}
 
   # SASL not on offer (or NAK'd). Mandatory SASL (`:sasl`) crashes;
   # `:auto` falls back to the PASS-handoff path (PASS already sent at

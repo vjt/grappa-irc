@@ -553,6 +553,64 @@ defmodule Grappa.IRC.ClientTest do
       assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
     end
 
+    test "stray CAP LS post-registration is absorbed and does not grow caps_buffer" do
+      # F1 (S29 carryover): a buggy/hostile upstream emitting
+      # `:server CAP nick LS * :junk` AFTER 001 must NOT mutate
+      # caps_buffer — without the phase guard on the LS continuation
+      # clauses the buffer grows unbounded until OOM. `finalize_cap_ls`
+      # already gated on `:awaiting_cap_ls`; the LS clauses must too,
+      # so the stray is absorbed by handle_cap's catch-all.
+      registered_then_spam = fn state, line ->
+        cond do
+          String.starts_with?(line, "CAP LS") ->
+            {:reply, ":server CAP * LS :sasl=PLAIN\r\n", state}
+
+          String.starts_with?(line, "CAP REQ") ->
+            {:reply, ":server CAP * ACK :sasl\r\n", state}
+
+          line == "AUTHENTICATE PLAIN\r\n" ->
+            {:reply, "AUTHENTICATE +\r\n", state}
+
+          String.starts_with?(line, "AUTHENTICATE ") ->
+            {:reply, ":server 903 grappa-test :SASL ok\r\n", state}
+
+          String.starts_with?(line, "CAP END") ->
+            {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+
+          true ->
+            {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(registered_then_spam)
+
+      client =
+        start_client(port, %{
+          auth_method: :sasl,
+          password: "swordfish",
+          sasl_user: "vjt"
+        })
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+      # Wait for 001 to be processed by tailing into the registered phase.
+      Process.sleep(50)
+      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+
+      # Now spam stray CAP LS continuations — would have grown the
+      # buffer unbounded prior to the F1 phase guard.
+      for _ <- 1..50 do
+        IRCServer.feed(
+          server,
+          ":server CAP grappa-test LS * :stray-cap-1 stray-cap-2 stray-cap-3\r\n"
+        )
+      end
+
+      IRCServer.feed(server, ":server CAP grappa-test LS :tail-cap\r\n")
+      Process.sleep(50)
+
+      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+    end
+
     test "433 ERR_NICKNAMEINUSE during registration crashes {:nick_rejected, 433, nick}" do
       nick_clash_handler = fn state, line ->
         if String.starts_with?(line, "USER ") do
