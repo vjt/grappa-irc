@@ -32,7 +32,9 @@ defmodule Grappa.IRC.Identifier do
 
   # Grappa-internal: lowercase alphanum + dash + underscore, 1-32 chars.
   # Used as URL path segment, PubSub topic component, log key value.
-  @network_id_regex ~r/^[a-z0-9_\-]{1,32}$/
+  # The cap is 32 (not 64 like the legacy `Network` schema's
+  # `validate_length`) — A18 unified the rule here.
+  @network_slug_regex ~r/^[a-z0-9_\-]{1,32}$/
 
   # Host: non-empty, no whitespace, no control chars. DNS-level rules
   # checked at connect time — this rejects only obviously-malformed
@@ -55,14 +57,19 @@ defmodule Grappa.IRC.Identifier do
   def valid_channel?(_), do: false
 
   @doc """
-  True iff the input is a valid Grappa network identifier (lowercase
+  True iff the input is a valid Grappa network slug (lowercase
   alphanumeric + dash + underscore, 1-32 chars). Tighter than IRC
   proper because it doubles as a URL path segment and PubSub topic
   component.
+
+  This is the single source of truth — `Grappa.Networks.Network`'s
+  changeset delegates here (A18). Renaming this function or the
+  underlying regex requires updating both that callsite and the
+  Identifier test.
   """
-  @spec valid_network_id?(term()) :: boolean()
-  def valid_network_id?(s) when is_binary(s), do: Regex.match?(@network_id_regex, s)
-  def valid_network_id?(_), do: false
+  @spec valid_network_slug?(term()) :: boolean()
+  def valid_network_slug?(s) when is_binary(s), do: Regex.match?(@network_slug_regex, s)
+  def valid_network_slug?(_), do: false
 
   @doc """
   True iff the input is a non-empty hostname-or-IP-shaped string. DNS

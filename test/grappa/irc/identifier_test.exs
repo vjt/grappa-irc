@@ -61,36 +61,36 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
-  describe "valid_network_id?/1" do
+  describe "valid_network_slug?/1" do
     test "accepts lowercase alphanum + dash + underscore" do
-      assert Identifier.valid_network_id?("azzurra")
-      assert Identifier.valid_network_id?("net_1")
-      assert Identifier.valid_network_id?("foo-bar")
-      assert Identifier.valid_network_id?("a")
+      assert Identifier.valid_network_slug?("azzurra")
+      assert Identifier.valid_network_slug?("net_1")
+      assert Identifier.valid_network_slug?("foo-bar")
+      assert Identifier.valid_network_slug?("a")
     end
 
     test "rejects uppercase" do
-      refute Identifier.valid_network_id?("Azzurra")
+      refute Identifier.valid_network_slug?("Azzurra")
     end
 
     test "rejects path separators (would corrupt PubSub topics)" do
-      refute Identifier.valid_network_id?("foo/bar")
+      refute Identifier.valid_network_slug?("foo/bar")
     end
 
     test "rejects whitespace + special chars" do
-      refute Identifier.valid_network_id?("foo bar")
-      refute Identifier.valid_network_id?("foo:bar")
-      refute Identifier.valid_network_id?("foo.bar")
+      refute Identifier.valid_network_slug?("foo bar")
+      refute Identifier.valid_network_slug?("foo:bar")
+      refute Identifier.valid_network_slug?("foo.bar")
     end
 
     test "rejects empty / nil" do
-      refute Identifier.valid_network_id?("")
-      refute Identifier.valid_network_id?(nil)
+      refute Identifier.valid_network_slug?("")
+      refute Identifier.valid_network_slug?(nil)
     end
 
     test "rejects > 32 chars" do
-      refute Identifier.valid_network_id?(String.duplicate("a", 33))
-      assert Identifier.valid_network_id?(String.duplicate("a", 32))
+      refute Identifier.valid_network_slug?(String.duplicate("a", 33))
+      assert Identifier.valid_network_slug?(String.duplicate("a", 32))
     end
   end
 

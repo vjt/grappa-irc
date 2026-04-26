@@ -16,6 +16,7 @@ defmodule Grappa.Networks.Network do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Server}
 
   @type t :: %__MODULE__{
@@ -36,20 +37,30 @@ defmodule Grappa.Networks.Network do
     timestamps(type: :utc_datetime_usec)
   end
 
-  @slug_format ~r/^[a-z0-9_\-]+$/
-
   @doc """
   Builds a create-or-update changeset. `slug` is required and must
   match the URL/topic-safe format; uniqueness is enforced both at the
   changeset and DB layers (`networks_slug_index`).
+
+  Slug syntax + length is the same `Identifier.valid_network_slug?/1`
+  rule applied everywhere else the slug appears (URL paths, PubSub
+  topics, log keys). A18 unified the rule: the previous local
+  `@slug_format` regex + `validate_length(min: 1, max: 64)` pair
+  drifted from Identifier (cap 32) — picking 32 here closes the gap
+  per DESIGN_NOTES 2026-04-26.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(network, attrs) do
     network
     |> cast(attrs, [:slug])
     |> validate_required([:slug])
-    |> validate_length(:slug, min: 1, max: 64)
-    |> validate_format(:slug, @slug_format, message: "must be lowercase alphanumeric with _ or -")
+    |> validate_change(:slug, &validate_slug/2)
     |> unique_constraint(:slug)
+  end
+
+  defp validate_slug(field, value) when is_binary(value) do
+    if Identifier.valid_network_slug?(value),
+      do: [],
+      else: [{field, "must be lowercase alphanumeric with _ or -, 1-32 chars"}]
   end
 end

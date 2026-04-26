@@ -24,6 +24,7 @@ defmodule Grappa.NetworksTest do
   use Grappa.DataCase, async: false
 
   alias Grappa.{Accounts, Networks, Repo}
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Network, Server}
 
   defp user_fixture(name \\ nil) do
@@ -57,6 +58,40 @@ defmodule Grappa.NetworksTest do
                Networks.find_or_create_network(%{slug: "Bad Slug!"})
 
       assert errors_on(cs)[:slug] != nil
+    end
+
+    # A18: slug validation is sourced from
+    # `Identifier.valid_network_slug?/1`. The Network
+    # changeset previously carried its own `@slug_format` regex +
+    # `validate_length(min: 1, max: 64)` pair that drifted from
+    # Identifier (cap 32). These two parity tests lock the contract
+    # — if Network's slug rule and Identifier.valid_network_slug? ever
+    # diverge again, one of these fires. Asserted at the changeset
+    # layer (no DB round-trip) since the contract is pure validation.
+    test "accepts every slug Identifier.valid_network_slug?/1 accepts" do
+      for slug <- ["azzurra", "net_1", "foo-bar", "a", String.duplicate("a", 32)] do
+        assert Identifier.valid_network_slug?(slug),
+               "test fixture invariant: Identifier should accept #{inspect(slug)}"
+
+        cs = Network.changeset(%Network{}, %{slug: slug})
+
+        refute Map.has_key?(errors_on(cs), :slug),
+               "Network rejected #{inspect(slug)} that Identifier accepts"
+      end
+    end
+
+    test "rejects every slug Identifier.valid_network_slug?/1 rejects" do
+      # Empty string is tested via `validate_required` — here we want
+      # slugs that pass `validate_required` but fail the syntax rule.
+      for slug <- ["Azzurra", "foo/bar", "foo bar", "foo.bar", String.duplicate("a", 33)] do
+        refute Identifier.valid_network_slug?(slug),
+               "test fixture invariant: Identifier should reject #{inspect(slug)}"
+
+        cs = Network.changeset(%Network{}, %{slug: slug})
+
+        assert errors_on(cs)[:slug] != nil,
+               "Network accepted #{inspect(slug)} that Identifier rejects"
+      end
     end
   end
 
@@ -185,7 +220,7 @@ defmodule Grappa.NetworksTest do
       assert errors_on(cs)[:nick] != nil
     end
 
-    # A8: nick validation is sourced from `Grappa.IRC.Identifier.valid_nick?/1`.
+    # A8: nick validation is sourced from `Identifier.valid_nick?/1`.
     # The Credential changeset previously carried its own regex + length
     # rule that drifted slightly (the local regex disallowed leading
     # hyphens; Identifier permits them per RFC 2812 §2.3.1 + the
@@ -201,11 +236,11 @@ defmodule Grappa.NetworksTest do
       # IRC special chars. All of these used to be rejected by the
       # local Credential regex.
       for nick <- ["-vjt", "[bot]", "v|t", "v_jt", String.duplicate("a", 31)] do
-        assert Grappa.IRC.Identifier.valid_nick?(nick),
+        assert Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should accept #{inspect(nick)}"
 
         cs =
-          Grappa.Networks.Credential.changeset(%Grappa.Networks.Credential{}, %{
+          Credential.changeset(%Credential{}, %{
             user_id: user.id,
             network_id: net.id,
             nick: nick,
@@ -224,11 +259,11 @@ defmodule Grappa.NetworksTest do
       # tested separately via `validate_required` below — here we want
       # nicks that pass `validate_required` but fail the syntax rule.
       for nick <- ["has space", "9leading", "ctl\x01char", String.duplicate("a", 32)] do
-        refute Grappa.IRC.Identifier.valid_nick?(nick),
+        refute Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should reject #{inspect(nick)}"
 
         cs =
-          Grappa.Networks.Credential.changeset(%Grappa.Networks.Credential{}, %{
+          Credential.changeset(%Credential{}, %{
             user_id: user.id,
             network_id: net.id,
             nick: nick,
