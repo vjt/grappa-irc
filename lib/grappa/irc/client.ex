@@ -104,13 +104,18 @@ defmodule Grappa.IRC.Client do
           required(:dispatch_to) => pid(),
           required(:logger_metadata) => keyword(),
           required(:nick) => String.t(),
+          required(:realname) => String.t(),
+          required(:sasl_user) => String.t(),
           required(:auth_method) => auth_method(),
-          optional(:realname) => String.t() | nil,
-          optional(:sasl_user) => String.t() | nil,
           optional(:password) => String.t() | nil
         }
 
-  @type phase :: :pre_register | :awaiting_cap_ls | :sasl_pending | :registered
+  @type phase ::
+          :pre_register
+          | :awaiting_cap_ls
+          | :awaiting_cap_ack
+          | :sasl_pending
+          | :registered
 
   @type t :: %__MODULE__{
           socket: :gen_tcp.socket() | :ssl.sslsocket(),
@@ -121,7 +126,8 @@ defmodule Grappa.IRC.Client do
           sasl_user: String.t(),
           password: String.t() | nil,
           auth_method: auth_method(),
-          phase: phase()
+          phase: phase(),
+          caps_buffer: [String.t()]
         }
 
   @enforce_keys [
@@ -134,6 +140,10 @@ defmodule Grappa.IRC.Client do
     :auth_method,
     :phase
   ]
+  # `:password` is the only secret on the struct — `@derive Inspect` excludes
+  # it so SASL-report dumps + IEx `:sys.get_state/1` introspection never leak
+  # plaintext. CLAUDE.md "Credentials ... never logged."
+  @derive {Inspect, except: [:password]}
   defstruct [
     :socket,
     :transport,
@@ -143,7 +153,8 @@ defmodule Grappa.IRC.Client do
     :sasl_user,
     :password,
     :auth_method,
-    :phase
+    :phase,
+    caps_buffer: []
   ]
 
   ## API
@@ -192,6 +203,27 @@ defmodule Grappa.IRC.Client do
   def init(%{auth_method: m} = opts) when m in @auth_methods do
     Logger.metadata(Keyword.new(opts.logger_metadata))
 
+    # Boundary contract: `:none` is the only auth_method that doesn't
+    # need a password. The Credential schema validates the same
+    # invariant on the write side (`Networks.Credential.validate_password_for_auth_method/1`)
+    # — pinning it here too means any caller (Bootstrap, REPL,
+    # tests) that hands Client a half-built opts map crashes at boot
+    # rather than mid-SASL with a `<< nil :: binary >>` ArgumentError.
+    case validate_password_present(opts) do
+      :ok -> do_init(opts)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp validate_password_present(%{auth_method: :none}), do: :ok
+
+  defp validate_password_present(%{password: pw}) when is_binary(pw) and pw != "",
+    do: :ok
+
+  defp validate_password_present(%{auth_method: m}),
+    do: {:error, {:missing_password, m}}
+
+  defp do_init(opts) do
     if opts.tls do
       Logger.warning("phase 1 TLS posture: verify_none — no certificate chain validation. Phase 5 hardens this.")
     end
@@ -207,11 +239,12 @@ defmodule Grappa.IRC.Client do
           transport: transport,
           dispatch_to: opts.dispatch_to,
           nick: opts.nick,
-          realname: Map.get(opts, :realname) || opts.nick,
-          sasl_user: Map.get(opts, :sasl_user) || opts.nick,
+          realname: opts.realname,
+          sasl_user: opts.sasl_user,
           password: Map.get(opts, :password),
           auth_method: opts.auth_method,
-          phase: :pre_register
+          phase: :pre_register,
+          caps_buffer: []
         }
 
         {:ok, perform_initial_handshake(state)}
@@ -329,8 +362,20 @@ defmodule Grappa.IRC.Client do
   end
 
   defp handle_irc(%Message{command: {:numeric, code}}, state) when code in [904, 905] do
-    Logger.error("sasl auth failed", numeric: code)
+    Logger.error("sasl auth failed", numeric: code, sasl_user: state.sasl_user)
     {:stop, {:sasl_failed, code}, state}
+  end
+
+  # 432 ERR_ERRONEUSNICKNAME / 433 ERR_NICKNAMEINUSE during registration.
+  # Without an explicit handler the Client would sit in `:pre_register` /
+  # `:awaiting_cap_*` forever; surface as a structured stop reason so
+  # the supervised Session restart fails again identically (correct —
+  # the credential nick is wrong, an operator must intervene).
+  # Phase 5 may add nick-mangling fallback (append "_") here.
+  defp handle_irc(%Message{command: {:numeric, code}}, state)
+       when code in [432, 433] do
+    Logger.error("upstream rejected nick", numeric: code, nick: state.nick)
+    {:stop, {:nick_rejected, code, state.nick}, state}
   end
 
   defp handle_irc(%Message{command: {:numeric, 1}}, state) do
@@ -339,9 +384,30 @@ defmodule Grappa.IRC.Client do
 
   defp handle_irc(_, state), do: {:cont, state}
 
-  defp handle_cap([_, "LS", caps_blob | _], state) do
-    if "sasl" in parse_caps(caps_blob) and state.auth_method in [:auto, :sasl] do
-      :ok = transport_send(state, "CAP REQ :sasl\r\n")
+  # CAP LS continuation: 4th param == "*" marks "more lines coming."
+  # IRCv3.2 splits long cap lists; accumulate in state.caps_buffer
+  # until a non-* LS line finalizes the set. Without this, modern
+  # ircd advertising >8 caps would land "sasl" in the second line and
+  # the first line's mismatch would already have triggered
+  # cap_unavailable.
+  defp handle_cap([_, "LS", "*", chunk], state) do
+    {:cont, %{state | caps_buffer: state.caps_buffer ++ parse_(chunk)}}
+  end
+
+  defp handle_cap([_, "LS", chunk], state) do
+    caps = state.caps_buffer ++ parse_(chunk)
+    state = %{state | caps_buffer: []}
+    finalize_cap_ls(caps, state)
+  end
+
+  # CAP ACK for a previously-REQ'd cap. The IRCv3 SASL flow REQUIRES
+  # AUTHENTICATE PLAIN to land AFTER the server has ACK'd the cap —
+  # back-to-back CAP REQ + AUTHENTICATE works on lenient ircd but
+  # strict implementations (Solanum, Ergo) reject the AUTHENTICATE
+  # against an un-ACK'd cap. Phase guard makes this a no-op outside
+  # the SASL chain (defensive against stray ACKs post-registration).
+  defp handle_cap([_, "ACK", caps_blob | _], %{phase: :awaiting_cap_ack} = state) do
+    if "sasl" in parse_(caps_blob) do
       :ok = transport_send(state, "AUTHENTICATE PLAIN\r\n")
       {:cont, %{state | phase: :sasl_pending}}
     else
@@ -349,16 +415,32 @@ defmodule Grappa.IRC.Client do
     end
   end
 
-  defp handle_cap([_, "NAK", _ | _], state), do: cap_unavailable(state)
+  defp handle_cap([_, "NAK", _ | _], %{phase: :awaiting_cap_ack} = state),
+    do: cap_unavailable(state)
 
   defp handle_cap(_, state), do: {:cont, state}
+
+  # `state.phase == :awaiting_cap_ls` guard: a CAP LS reply landing
+  # post-registration (CAP NEW or buggy server) MUST NOT re-enter the
+  # SASL chain; the auth_method check alone isn't enough because the
+  # phase is already :registered by then.
+  defp finalize_cap_ls(caps, %{phase: :awaiting_cap_ls} = state) do
+    if "sasl" in caps and state.auth_method in [:auto, :sasl] do
+      :ok = transport_send(state, "CAP REQ :sasl\r\n")
+      {:cont, %{state | phase: :awaiting_cap_ack}}
+    else
+      cap_unavailable(state)
+    end
+  end
+
+  defp finalize_cap_ls(_, state), do: {:cont, state}
 
   # SASL not on offer (or NAK'd). Mandatory SASL (`:sasl`) crashes;
   # `:auto` falls back to the PASS-handoff path (PASS already sent at
   # init for legacy ircd) and ends CAP negotiation cleanly.
   defp cap_unavailable(%{auth_method: :sasl} = state) do
-    Logger.error("sasl required but not advertised by server")
-    maybe_send_cap_end(state)
+    Logger.error("sasl required but not advertised by server", sasl_user: state.sasl_user)
+    state = maybe_send_cap_end(state)
     {:stop, :sasl_unavailable, state}
   end
 
@@ -367,12 +449,8 @@ defmodule Grappa.IRC.Client do
     {:cont, state}
   end
 
-  defp maybe_send_cap_end(%{phase: :awaiting_cap_ls} = state) do
-    :ok = transport_send(state, "CAP END\r\n")
-    %{state | phase: :pre_register}
-  end
-
-  defp maybe_send_cap_end(%{phase: :sasl_pending} = state) do
+  defp maybe_send_cap_end(%{phase: phase} = state)
+       when phase in [:awaiting_cap_ls, :awaiting_cap_ack, :sasl_pending] do
     :ok = transport_send(state, "CAP END\r\n")
     %{state | phase: :pre_register}
   end
@@ -395,7 +473,7 @@ defmodule Grappa.IRC.Client do
     Base.encode64(<<0, state.sasl_user::binary, 0, state.sasl_user::binary, 0, state.password::binary>>)
   end
 
-  defp parse_caps(blob) do
+  defp parse_(blob) do
     blob
     |> String.split(" ", trim: true)
     |> Enum.map(fn cap -> cap |> String.split("=", parts: 2) |> List.first() end)

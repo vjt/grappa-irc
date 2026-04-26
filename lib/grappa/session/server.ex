@@ -133,6 +133,8 @@ defmodule Grappa.Session.Server do
            dispatch_to: self(),
            logger_metadata: Log.session_context(user, network_slug),
            nick: opts.nick,
+           realname: opts.nick,
+           sasl_user: opts.nick,
            auth_method: :none
          }) do
       {:ok, client} ->

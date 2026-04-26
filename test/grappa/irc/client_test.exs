@@ -42,6 +42,8 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          realname: "grappa-test",
+          sasl_user: "grappa-test",
           auth_method: :none
         },
         overrides
@@ -49,6 +51,15 @@ defmodule Grappa.IRC.ClientTest do
 
     {:ok, client} = Client.start_link(opts)
     client
+  end
+
+  # Synchronisation helper: blocks until the Client has finished its
+  # initial handshake (NICK/USER guaranteed to be the last lines of
+  # the always-sent prefix). Eliminates the `Process.sleep(20)` pattern
+  # that races on the IRCServer's accept-loop sock assignment.
+  defp await_handshake(server) do
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+    :ok
   end
 
   # Handler that replies CAP * LS :sasl=PLAIN to a CAP LS, ACKs the
@@ -144,10 +155,8 @@ defmodule Grappa.IRC.ClientTest do
     test "single PRIVMSG line dispatched as parsed Message struct" do
       {server, port} = start_server()
       _ = start_client(port)
+      :ok = await_handshake(server)
 
-      # Wait for the client to be connected before feeding (handshake race
-      # safety — `feed` is a no-op on nil socket).
-      Process.sleep(20)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       assert_receive {:irc,
@@ -162,8 +171,7 @@ defmodule Grappa.IRC.ClientTest do
     test "burst of 50 server lines dispatched in order with no loss (active:once re-arm)" do
       {server, port} = start_server()
       _ = start_client(port)
-
-      Process.sleep(20)
+      :ok = await_handshake(server)
 
       Enum.each(1..50, fn i ->
         IRCServer.feed(server, ":a!~a@h PRIVMSG #x :msg #{i}\r\n")
@@ -180,9 +188,13 @@ defmodule Grappa.IRC.ClientTest do
     test "mid-line server write coalesced via OS-level packet:line buffering" do
       {server, port} = start_server()
       _ = start_client(port)
+      :ok = await_handshake(server)
 
-      Process.sleep(20)
       IRCServer.feed(server, "PING :fo")
+      # Intentional sleep: half a line in, force the OS-level packet:line
+      # buffer to coalesce across two TCP segments. Replacing this would
+      # defeat the point of the test (the framing race we're checking is
+      # specifically time-separated bytes on the same logical line).
       Process.sleep(50)
       IRCServer.feed(server, "o\r\n")
 
@@ -192,8 +204,7 @@ defmodule Grappa.IRC.ClientTest do
     test "malformed inbound line: parse error is logged, client stays alive" do
       {server, port} = start_server()
       client = start_client(port)
-
-      Process.sleep(20)
+      :ok = await_handshake(server)
 
       log =
         capture_log(fn ->
@@ -365,6 +376,7 @@ defmodule Grappa.IRC.ClientTest do
           dispatch_to: self(),
           logger_metadata: [],
           nick: "grappa-test",
+          realname: "grappa-test",
           sasl_user: "vjt",
           password: "wrong",
           auth_method: :sasl
@@ -412,11 +424,12 @@ defmodule Grappa.IRC.ClientTest do
       # Client should have sent: PASS, CAP LS, NICK, USER. Then on 421,
       # no further action. No PRIVMSG NickServ from the client side
       # (server-side handoff handles it).
-      assert {:ok, _} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+      :ok = await_handshake(server)
 
-      # Wait briefly for the 421 reply to settle, then snapshot.
-      Process.sleep(100)
+      # 421 :Unknown command CAP arrives in the dispatch_to mailbox AFTER
+      # the client has parsed it — deterministic synchronisation point.
+      assert_receive {:irc, %Message{command: {:numeric, 421}}}, 1_000
+
       lines = IRCServer.sent_lines(server)
       assert "PASS swordfish\r\n" in lines
       assert Enum.any?(lines, &String.starts_with?(&1, "CAP LS"))
@@ -448,6 +461,174 @@ defmodule Grappa.IRC.ClientTest do
       assert "PASS swordfish\r\n" in lines
       assert Enum.any?(lines, &String.starts_with?(&1, "CAP LS"))
       assert Enum.any?(lines, &String.starts_with?(&1, "USER "))
+    end
+  end
+
+  describe "CAP NAK + IRCv3.2 multi-line CAP LS + 432/433 NICK rejection" do
+    test "CAP NAK :sasl with auth_method=:sasl crashes :sasl_unavailable" do
+      # Strict ircd that advertises sasl in LS but NAKs the REQ — the
+      # SASL contract under :sasl is "must succeed or die". The CAP
+      # ACK/NAK round-trip is the IRCv3-spec-correct gate (cf. C1):
+      # AUTHENTICATE PLAIN must NOT have been sent yet at NAK time.
+      naking_handler = fn state, line ->
+        cond do
+          String.starts_with?(line, "CAP LS") ->
+            {:reply, ":server CAP * LS :sasl=PLAIN\r\n", state}
+
+          String.starts_with?(line, "CAP REQ") ->
+            {:reply, ":server CAP * NAK :sasl\r\n", state}
+
+          true ->
+            {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(naking_handler)
+      Process.flag(:trap_exit, true)
+
+      {:ok, client} =
+        Client.start_link(%{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          dispatch_to: self(),
+          logger_metadata: [],
+          nick: "grappa-test",
+          realname: "grappa-test",
+          sasl_user: "vjt",
+          password: "swordfish",
+          auth_method: :sasl
+        })
+
+      assert_receive {:EXIT, ^client, :sasl_unavailable}, 1_000
+
+      lines = IRCServer.sent_lines(server)
+      assert Enum.any?(lines, &String.starts_with?(&1, "CAP REQ"))
+      refute Enum.any?(lines, &String.starts_with?(&1, "AUTHENTICATE"))
+    end
+
+    test "multi-line CAP LS continuation: sasl on the SECOND line is recognised" do
+      # IRCv3.2 splits long cap lists with `*` as the second-to-last
+      # param. Without C2's accumulator, the first line's mismatch
+      # (no sasl) would already fall through to cap_unavailable and
+      # crash :sasl. This test pins the accumulator behavior.
+      multi_line_handler = fn state, line ->
+        cond do
+          String.starts_with?(line, "CAP LS") ->
+            # Reply with TWO lines: continuation marker + final.
+            {:reply,
+             ":server CAP * LS * :multi-prefix away-notify chghost\r\n" <>
+               ":server CAP * LS :extended-join sasl=PLAIN\r\n", state}
+
+          String.starts_with?(line, "CAP REQ") ->
+            {:reply, ":server CAP * ACK :sasl\r\n", state}
+
+          line == "AUTHENTICATE PLAIN\r\n" ->
+            {:reply, "AUTHENTICATE +\r\n", state}
+
+          String.starts_with?(line, "AUTHENTICATE ") ->
+            {:reply, ":server 903 grappa-test :SASL ok\r\n", state}
+
+          String.starts_with?(line, "CAP END") ->
+            {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+
+          true ->
+            {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(multi_line_handler)
+
+      _ =
+        start_client(port, %{
+          auth_method: :sasl,
+          password: "swordfish",
+          sasl_user: "vjt"
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+
+      lines = IRCServer.sent_lines(server)
+      assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
+    end
+
+    test "433 ERR_NICKNAMEINUSE during registration crashes {:nick_rejected, 433, nick}" do
+      nick_clash_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 433 * grappa-test :Nickname is already in use\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {_, port} = start_server(nick_clash_handler)
+      Process.flag(:trap_exit, true)
+
+      {:ok, client} =
+        Client.start_link(%{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          dispatch_to: self(),
+          logger_metadata: [],
+          nick: "grappa-test",
+          realname: "grappa-test",
+          sasl_user: "grappa-test",
+          auth_method: :none
+        })
+
+      assert_receive {:EXIT, ^client, {:nick_rejected, 433, "grappa-test"}}, 1_000
+    end
+  end
+
+  describe "init/1 contract enforcement" do
+    test ":sasl without password returns {:error, {:missing_password, :sasl}} via :stop" do
+      {_, port} = start_server()
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:missing_password, :sasl}} =
+               Client.start_link(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 dispatch_to: self(),
+                 logger_metadata: [],
+                 nick: "grappa-test",
+                 realname: "grappa-test",
+                 sasl_user: "grappa-test",
+                 auth_method: :sasl
+               })
+    end
+
+    test ":nickserv_identify without password is rejected at boot, NOT mid-001" do
+      {_, port} = start_server()
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:missing_password, :nickserv_identify}} =
+               Client.start_link(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 dispatch_to: self(),
+                 logger_metadata: [],
+                 nick: "grappa-test",
+                 realname: "grappa-test",
+                 sasl_user: "grappa-test",
+                 auth_method: :nickserv_identify
+               })
+    end
+
+    test ":none with no password is allowed (the only no-secret branch)" do
+      {server, port} = start_server(rfc_handler())
+
+      _ =
+        start_client(port, %{
+          auth_method: :none
+        })
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
     end
   end
 end

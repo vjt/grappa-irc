@@ -71,8 +71,13 @@ config :logger, :console,
     :skipped,
     # IRC client (Phase 2 sub-task 2f): SASL handshake numerics
     # (904 / 905 failures, etc.) ride this key so operator log search
-    # can grep "sasl" + numeric in a single pass.
-    :numeric
+    # can grep "sasl" + numeric in a single pass. `:sasl_user` is the
+    # SASL identity the failed exchange used (NOT the password — the
+    # struct redacts that). `:nick` rides nick-rejection (432/433)
+    # log lines to surface the rejected nick directly.
+    :numeric,
+    :sasl_user,
+    :nick
   ]
 
 import_config "#{config_env()}.exs"
