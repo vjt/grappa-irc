@@ -127,18 +127,18 @@ defmodule GrappaWeb.GrappaChannelTest do
   describe "join rejects malformed topics" do
     test "rejects Phase 1 grappa:network: shape (regression check)" do
       # Sub-task 2h removed the Phase 1 `grappa:network:*` channel
-      # route from UserSocket. A stale client subscribing on the old
-      # prefix gets rejected by Phoenix's route matcher (in-process
-      # tests raise `NoRouteError`; over the wire the transport replies
-      # with `unmatched topic`). Either way, the old shape can no longer
-      # reach a channel — regression-pinned.
-      assert_raise RuntimeError,
-                   ~r/no channel/i,
-                   fn ->
-                     "vjt"
-                     |> build_socket()
-                     |> subscribe_and_join("grappa:network:azzurra/channel:#sniffo", %{})
-                   end
+      # route from UserSocket. Pin the contract at the router lookup
+      # layer (UserSocket.__channel__/1) — that's the actual mechanism
+      # rejecting old-shape joins; depending on Phoenix's
+      # subscribe_and_join error wording would couple the test to
+      # framework internals.
+      assert UserSocket.__channel__("grappa:network:azzurra/channel:#sniffo") == nil
+
+      # Sanity check the new shape DOES route to GrappaChannel —
+      # otherwise the assertion above is satisfied trivially by
+      # everything failing.
+      assert {GrappaWeb.GrappaChannel, _} =
+               UserSocket.__channel__("grappa:user:vjt/network:azzurra/channel:#sniffo")
     end
 
     test "rejects malformed network suffix" do
