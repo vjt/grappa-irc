@@ -13,8 +13,12 @@ defmodule Grappa.Bootstrap do
 
   `Networks.list_credentials_for_all_users/0` returns every
   `Credential` with `:network` preloaded; the spawn loop calls
-  `Session.start_session(credential.user_id, credential.network_id)`
-  per row.
+  `Networks.session_plan/1` per row to flatten the credential +
+  picked server into the primitive `Session.start_opts/0` map and
+  hands the result to `Session.start_session/3`. Pre-Cluster-2 the
+  Session itself reached back into Networks/Accounts/Repo from
+  `init/1`; the inversion (A2) makes Bootstrap the sole producer of
+  the resolved opts.
 
   Operator door for adding a binding: `mix grappa.create_user` then
   `mix grappa.bind_network --auth ...`. Bootstrap re-reads the DB
@@ -34,10 +38,13 @@ defmodule Grappa.Bootstrap do
 
   Two counters, two operationally-distinct conditions:
 
-    * `started` — `Session.start_session/2` returned `{:ok, pid}`.
-    * `failed`  — `{:error, _}`; transient infra issue or auth failure.
+    * `started` — `Session.start_session/3` returned `{:ok, pid}`.
+    * `failed`  — `{:error, _}` from `Networks.session_plan/1`
+      (`:no_server`, `:user_not_found`) OR from
+      `Session.start_session/3` (upstream connection refused, etc.).
       Operator action: investigate the upstream or
-      `mix grappa.update_network_credential`.
+      `mix grappa.update_network_credential` /
+      `mix grappa.add_server`.
 
   ## Test surface
 
@@ -106,12 +113,16 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_one(Credential.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
           %{started: non_neg_integer(), failed: non_neg_integer()}
-  defp spawn_one(%Credential{user_id: user_id, network_id: network_id, network: %Network{slug: slug}}, acc) do
-    case Session.start_session(user_id, network_id) do
-      {:ok, _} ->
-        Logger.info("session started", user: user_id, network: slug)
-        %{acc | started: acc.started + 1}
-
+  defp spawn_one(
+         %Credential{user_id: user_id, network_id: network_id, network: %Network{slug: slug}} =
+           credential,
+         acc
+       ) do
+    with {:ok, plan} <- Networks.session_plan(credential),
+         {:ok, _} <- Session.start_session(user_id, network_id, plan) do
+      Logger.info("session started", user: user_id, network: slug)
+      %{acc | started: acc.started + 1}
+    else
       {:error, reason} ->
         Logger.error("session start failed",
           user: user_id,

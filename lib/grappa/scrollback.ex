@@ -34,7 +34,18 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Networks, Grappa.Repo],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo],
+    # `Networks.Network` is referenced by `Scrollback.Message` (the
+    # `belongs_to :network` association) and `Scrollback.Wire` (the
+    # `%Network{slug: _}` pattern that A1+A26 made the wire-shape
+    # contract). Declaring those refs as dirty xrefs lets the
+    # Cluster 2 cycle inversion (Networks → Session) land without a
+    # transitive `Scrollback → Networks → Session → Scrollback`
+    # cycle. The struct-only nature of the dep means we lose
+    # boundary checks on a use case Boundary couldn't help with
+    # anyway (struct field access doesn't go through any function
+    # call we'd want to gate); the cost is intentional.
+    dirty_xrefs: [Grappa.Networks.Network],
     exports: [Message, Wire]
 
   import Ecto.Query
@@ -151,4 +162,30 @@ defmodule Grappa.Scrollback do
 
   defp maybe_before(query, before) when is_integer(before),
     do: where(query, [m], m.server_time < ^before)
+
+  @doc """
+  Returns `true` if at least one row exists for `network_id`.
+
+  Sole consumer is `Grappa.Networks.unbind_credential/2`'s
+  cascade-on-empty path: if the last user unbinds and any archival
+  scrollback still references the network, the cascade rolls back
+  with `{:error, :scrollback_present}` so the operator must
+  explicitly delete the messages first (Phase 5
+  `mix grappa.delete_scrollback`).
+
+  Pre-A22 the same query was inlined in `Networks` as a raw
+  `from(m in "messages", ...)` to dodge the Networks↔Scrollback
+  Boundary cycle — cycle still exists structurally (Scrollback
+  schemas reference `Networks.Network` via `belongs_to`), but
+  exposing the query through this boundary keeps schema knowledge
+  in one place even when `Networks` opts out of taking the
+  Boundary dep.
+
+  `Repo.exists?/1` with `limit: 1` is O(index lookup), not a count.
+  """
+  @spec has_messages_for_network?(integer()) :: boolean()
+  def has_messages_for_network?(network_id) when is_integer(network_id) do
+    query = from(m in Message, where: m.network_id == ^network_id, select: 1, limit: 1)
+    Repo.exists?(query)
+  end
 end

@@ -22,7 +22,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
+  alias Grappa.{IRCServer, PubSub.Topic, Scrollback}
 
   setup %{conn: conn} do
     # The bearer-token session must be for the SAME user the Session
@@ -46,11 +46,6 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     {network, _} = network_with_server(port: port, slug: slug)
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
     network
-  end
-
-  defp start_session_for(vjt, network) do
-    {:ok, pid} = Session.start_session(vjt.id, network.id)
-    pid
   end
 
   defp await_handshake(server) do

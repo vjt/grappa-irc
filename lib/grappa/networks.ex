@@ -42,13 +42,22 @@ defmodule Grappa.Networks do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.EncryptedBinary, Grappa.IRC, Grappa.Repo, Grappa.Vault],
-    exports: [Network, Server, Credential, Wire]
+    deps: [
+      Grappa.Accounts,
+      Grappa.EncryptedBinary,
+      Grappa.IRC,
+      Grappa.Repo,
+      Grappa.Scrollback,
+      Grappa.Session,
+      Grappa.Vault
+    ],
+    exports: [Network, NoServerError, Server, Credential, Wire]
 
   import Ecto.Query
 
+  alias Grappa.{Accounts, Scrollback, Session}
   alias Grappa.Accounts.User
-  alias Grappa.Networks.{Credential, Network, Server}
+  alias Grappa.Networks.{Credential, Network, NoServerError, Server}
   alias Grappa.Repo
 
   @doc """
@@ -103,12 +112,28 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Like `get_network_by_slug/1` but raises `Ecto.NoResultsError` when
+  the slug isn't bound. The operator-side mix tasks
+  (`grappa.add_server`, `grappa.remove_server`,
+  `grappa.unbind_network`, `grappa.update_network_credential`) want
+  loud failure on a typo; this function lets them go through the
+  Networks boundary instead of `Repo.get_by!(Network, slug: ...)` —
+  Networks owns slug lookup semantics so future evolutions
+  (case-insensitive, soft-delete filter, telemetry) stay
+  single-sourced.
+  """
+  @spec get_network_by_slug!(String.t()) :: Network.t()
+  def get_network_by_slug!(slug) when is_binary(slug),
+    do: Repo.get_by!(Network, slug: slug)
+
+  @doc """
   Fetches a network by integer id. Raises `Ecto.NoResultsError` on miss.
 
-  Used by `Grappa.Session.Server` at boot to materialize the network
-  struct from the integer FK threaded through `Grappa.Session.start_session/2`
-  — registry key resolution has already proven the id is valid, so a
-  miss here is an invariant violation worth crashing on.
+  Used by callers that already hold a network id (from URL params,
+  Bootstrap loops, etc.) and want to crash loudly on a stale FK.
+  `Grappa.Networks.session_plan/1` doesn't go through this — it
+  preloads servers off the credential's `:network` association
+  directly.
   """
   @spec get_network!(integer()) :: Network.t()
   def get_network!(id) when is_integer(id), do: Repo.get!(Network, id)
@@ -164,6 +189,28 @@ defmodule Grappa.Networks do
       )
 
     Repo.all(query)
+  end
+
+  @doc """
+  Picks the lowest-priority enabled server for a `network` whose
+  `:servers` association is preloaded. Tie-broken by row id
+  (insertion order) to match `list_servers/1`. Raises
+  `Grappa.Networks.NoServerError` when every server is disabled OR
+  the network has none — operator misconfiguration is loud, never
+  silent.
+
+  Pre-A2/A10 this lived in `Grappa.Session.Server`; the cycle
+  inversion lifts the policy where it belongs (Networks owns
+  server-list semantics, Session just consumes the picked endpoint).
+  Phase 5 fail-over across the rest of the list is the natural
+  evolution from here.
+  """
+  @spec pick_server!(Network.t()) :: Server.t()
+  def pick_server!(%Network{servers: servers, id: nid, slug: slug}) when is_list(servers) do
+    case servers |> Enum.filter(& &1.enabled) |> Enum.sort_by(&{&1.priority, &1.id}) do
+      [server | _] -> server
+      [] -> raise NoServerError, network_id: nid, network_slug: slug
+    end
   end
 
   @doc """
@@ -255,13 +302,14 @@ defmodule Grappa.Networks do
     # loops forever (init re-reads the now-absent credential).
     # Idempotent — :ok if no session was running for the key.
     #
-    # Inlined here (not via Grappa.Session.stop_session/2) to avoid
-    # the Networks ↔ Session boundary cycle: Session.Server.init
-    # calls into Networks for credential/network resolution. Future
-    # cleanup: invert that dep so Session takes credential data via
-    # opts at start_session/2 time, then this helper folds back into
-    # Session.stop_session/2.
-    :ok = stop_session_for_unbind(user_id, network_id)
+    # A2 cycle inversion (Cluster 2): pre-inversion this called an
+    # inlined `stop_session_for_unbind/2` that replicated the
+    # registry-key tuple to dodge the Networks↔Session Boundary
+    # cycle. Now that `Session.Server.init/1` is a pure data
+    # consumer, Session no longer deps Networks → the
+    # `Networks → Session` edge is legal and we go through the
+    # canonical facade.
+    :ok = Session.stop_session(user_id, network_id)
 
     # Wrap in a transaction so the credential delete + the
     # last-binding check + the network delete are atomic. Without it,
@@ -295,44 +343,11 @@ defmodule Grappa.Networks do
   # would leave a "ghost network" the operator can't even unbind
   # cleanly afterwards.
   defp maybe_cascade_network(network_id) do
-    if scrollback_present?(network_id) do
+    if Scrollback.has_messages_for_network?(network_id) do
       Repo.rollback(:scrollback_present)
     else
       net_query = from(n in Network, where: n.id == ^network_id)
       Repo.delete_all(net_query)
-    end
-  end
-
-  # Raw-table query against `messages` — Networks must NOT depend on
-  # the Scrollback boundary (cycle: Scrollback already deps Networks
-  # for the `belongs_to :network` assoc). The table name is the only
-  # leak; the schema module stays encapsulated. Repo.exists?/1 with
-  # `limit: 1` is O(index lookup), not a full count.
-  defp scrollback_present?(network_id) do
-    query = from(m in "messages", where: m.network_id == ^network_id, select: 1, limit: 1)
-    Repo.exists?(query)
-  end
-
-  # Mirrors `Grappa.Session.stop_session/2` — see that function for
-  # the canonical semantics. Inlined here (with the registry-key
-  # tuple replicated) to avoid the Networks ↔ Session boundary
-  # cycle: Session.Server.init reaches into Networks for credential
-  # resolution, so Networks cannot depend on Session — even for the
-  # pure `Server.registry_key/2` helper. The duplication is
-  # documented architectural debt; the dep-inversion that lifts it
-  # (Session takes credential data via opts at start_session/2 time)
-  # is queued for the post-Phase-2 cleanup cluster.
-  #
-  # If the registry key shape ever changes, BOTH this helper AND
-  # `Grappa.Session.Server.registry_key/2` must move in lockstep.
-  defp stop_session_for_unbind(user_id, network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, {:session, user_id, network_id}) do
-      [{pid, _}] ->
-        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
-        :ok
-
-      [] ->
-        :ok
     end
   end
 
@@ -389,5 +404,68 @@ defmodule Grappa.Networks do
       )
 
     Repo.all(query)
+  end
+
+  @doc """
+  Resolves a credential into the fully-flat opts map that
+  `Grappa.Session.start_session/3` consumes. The map carries only
+  primitive fields (no `Credential` / `Network` / `Server` / `User`
+  struct refs) so the Session boundary stays Networks-independent —
+  the whole point of the A2 cycle inversion.
+
+  Reads from `Accounts` for the user name, picks the lowest-priority
+  enabled server via `pick_server!/1`, and copies the
+  Cloak-decrypted upstream password into the plan. The result is
+  whatever `Session.Server.init/1` needs to start an `IRC.Client`
+  without any further DB lookup.
+
+  Errors surface as tagged tuples instead of exceptions because
+  Bootstrap's spawn loop reports per-credential failures (the
+  `failed` counter) and continues; raising would abort the entire
+  boot. The currently-tagged errors:
+
+    * `{:error, :no_server}` — `pick_server!/1` raised; the network
+      has zero enabled endpoints.
+    * `{:error, :user_not_found}` — `Accounts.get_user!/1` raised;
+      the FK from `network_credentials.user_id` to `users.id` makes
+      this unrepresentable in normal operation, but the catch
+      survives a hand-edited DB.
+
+  Both raises are translated here so callers (Bootstrap, the future
+  operator REST surface) deal with a uniform `{:ok, plan} | {:error,
+  reason}` shape.
+  """
+  @spec session_plan(Credential.t()) :: {:ok, Session.start_opts()} | {:error, atom()}
+  def session_plan(%Credential{} = credential) do
+    # Caller may pass a credential straight from
+    # `list_credentials_for_all_users/0` (network preloaded already)
+    # or one fresh from `get_credential!/2` (assoc not loaded). Both
+    # paths are valid — `Repo.preload` is a no-op on already-loaded
+    # assocs, so no extra query for the Bootstrap path.
+    credential = Repo.preload(credential, network: :servers)
+    user = Accounts.get_user!(credential.user_id)
+    server = pick_server!(credential.network)
+
+    {:ok, build_plan(user, credential.network, credential, server)}
+  rescue
+    NoServerError -> {:error, :no_server}
+    Ecto.NoResultsError -> {:error, :user_not_found}
+  end
+
+  @spec build_plan(User.t(), Network.t(), Credential.t(), Server.t()) :: Session.start_opts()
+  defp build_plan(%User{} = user, %Network{} = network, %Credential{} = cred, %Server{} = server) do
+    %{
+      user_name: user.name,
+      network_slug: network.slug,
+      nick: cred.nick,
+      realname: Credential.effective_realname(cred),
+      sasl_user: Credential.effective_sasl_user(cred),
+      auth_method: cred.auth_method,
+      password: Credential.upstream_password(cred),
+      autojoin_channels: cred.autojoin_channels,
+      host: server.host,
+      port: server.port,
+      tls: server.tls
+    }
   end
 end

@@ -2,7 +2,7 @@ defmodule Grappa.Session do
   @moduledoc """
   Public facade for the per-(user, network) IRC session GenServer
   (`Grappa.Session.Server`). Callers spawn sessions via
-  `start_session/2` and look them up by `(user_id, network_id)` via
+  `start_session/3` and look them up by `(user_id, network_id)` via
   `whereis/2`.
 
   Sessions are registered in `Grappa.SessionRegistry` (a `:unique`
@@ -22,55 +22,86 @@ defmodule Grappa.Session do
        `Grappa.Bootstrap` and from any future REST/WS surface that
        wants to inspect or terminate a session.
 
-  ## Sub-task 2g — DB-backed configuration
+  ## Cluster 2 — A2 cycle inversion
 
-  `start_session/2` now takes `(user_id, network_id)` and the
-  Server's `init/1` resolves the host / port / TLS / nick / password
-  / auth_method / autojoin from the bound `Grappa.Networks.Credential`
-  + `Grappa.Networks.Server` rows. The flat opts map (Phase 1 +
-  pre-2g) is gone — the DB is the single source of truth so the same
-  spawn shape works from Bootstrap, the operator REST surface, and
-  future re-bind paths without each one re-deriving a Config-shape
-  bridge.
+  `start_session/3` takes `(user_id, network_id, opts)` where `opts`
+  is the fully-resolved primitive plan — no `Credential` / `Network`
+  / `Server` struct refs cross the Session boundary. `Networks.session_plan/1`
+  is the canonical producer of that plan; `Bootstrap` threads the
+  resolved opts in. The Server's `init/1` is therefore a pure data
+  consumer (no `Repo`, no `Networks`, no `Accounts` reads), which
+  shrinks the Session boundary deps from 7 → 4 (`Grappa.IRC`,
+  `Grappa.Log`, `Grappa.PubSub`, `Grappa.Scrollback`) and makes the
+  reverse `Networks → Session` edge legal — `Networks.unbind_credential/2`
+  now calls `Session.stop_session/2` directly instead of the inlined
+  registry-tuple workaround.
+
+  Trade-off: on a `:transient` restart the Server replays the same
+  cached opts (the supervisor child spec captures them at first
+  start). A live credential change in the DB does NOT propagate to
+  the running Server until the operator runs
+  `mix grappa.unbind_network` + `bind_network` (which forces a
+  fresh `start_session/3`) or the next deploy reboots Bootstrap.
+  This is acceptable for Phase 2 — the operator workflow is
+  modify-then-redeploy. Phase 5 hot-reload of credentials gets a
+  dedicated `Session.refresh/2` if needed.
   """
 
   # `Server` is exported for the test path only — `server_test.exs`
   # tweaks per-module log level via `Logger.put_module_level/2`.
-  # Runtime callers go through this facade (`start_session/2`,
+  # Runtime callers go through this facade (`start_session/3`,
   # `send_*`, `whereis/2`).
   use Boundary,
     top_level?: true,
-    deps: [
-      Grappa.Accounts,
-      Grappa.IRC,
-      Grappa.Log,
-      Grappa.Networks,
-      Grappa.PubSub,
-      Grappa.Repo,
-      Grappa.Scrollback
-    ],
+    deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
     exports: [Server]
 
-  alias Grappa.IRC.Identifier
+  alias Grappa.IRC.{Client, Identifier}
   alias Grappa.Session.Server
 
   require Logger
 
+  @typedoc """
+  Pre-resolved primitive opts consumed by `start_session/3` and
+  `Grappa.Session.Server`'s `init/1` callback. Produced canonically by
+  `Grappa.Networks.session_plan/1`; the field set is the single
+  source of truth for what the Session boundary needs to start an
+  upstream IRC connection — adding a field requires extending this
+  type AND `session_plan/1`'s `build_plan/4` AND the Server state
+  struct in lockstep.
+  """
+  @type start_opts :: %{
+          required(:user_name) => String.t(),
+          required(:network_slug) => String.t(),
+          required(:nick) => String.t(),
+          required(:realname) => String.t(),
+          required(:sasl_user) => String.t(),
+          required(:auth_method) => Client.auth_method(),
+          required(:password) => String.t() | nil,
+          required(:autojoin_channels) => [String.t()],
+          required(:host) => String.t(),
+          required(:port) => :inet.port_number(),
+          required(:tls) => boolean()
+        }
+
   @doc """
   Spawns a `Grappa.Session.Server` under `Grappa.SessionSupervisor`
-  for `(user_id, network_id)`.
+  for `(user_id, network_id)` with the pre-resolved `opts` plan.
 
   Returns whatever `DynamicSupervisor.start_child/2` returns —
   `{:ok, pid}` on success, `{:error, {:already_started, pid}}` if a
   session for the same key is already registered, or `{:error,
-  reason}` on init failure (missing credential row, no enabled server,
-  upstream connection refused, etc.).
+  reason}` on init failure (upstream connection refused, etc.).
   """
-  @spec start_session(Ecto.UUID.t(), integer()) :: DynamicSupervisor.on_start_child()
-  def start_session(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+  @spec start_session(Ecto.UUID.t(), integer(), start_opts()) ::
+          DynamicSupervisor.on_start_child()
+  def start_session(user_id, network_id, opts)
+      when is_binary(user_id) and is_integer(network_id) and is_map(opts) do
+    full_opts = Map.merge(opts, %{user_id: user_id, network_id: network_id})
+
     DynamicSupervisor.start_child(
       Grappa.SessionSupervisor,
-      {Server, %{user_id: user_id, network_id: network_id}}
+      {Server, full_opts}
     )
   end
 

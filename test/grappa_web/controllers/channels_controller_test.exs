@@ -17,7 +17,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Session}
+  alias Grappa.IRCServer
 
   setup %{conn: conn} do
     # Pre-bind "vjt" + "azzurra" credential so Session.Server.init can
@@ -38,11 +38,6 @@ defmodule GrappaWeb.ChannelsControllerTest do
     {network, _} = network_with_server(port: port, slug: slug)
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
     network
-  end
-
-  defp start_session_for(vjt, network) do
-    {:ok, pid} = Session.start_session(vjt.id, network.id)
-    pid
   end
 
   defp await_handshake(server) do

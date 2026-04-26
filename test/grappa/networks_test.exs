@@ -649,4 +649,141 @@ defmodule Grappa.NetworksTest do
       assert Repo.get(Network, net.id) == nil
     end
   end
+
+  describe "get_network_by_slug!/1" do
+    test "returns the row on a known slug" do
+      net = network_fixture("known-slug-#{System.unique_integer([:positive])}")
+      assert %Network{id: id} = Networks.get_network_by_slug!(net.slug)
+      assert id == net.id
+    end
+
+    test "raises Ecto.NoResultsError on an unknown slug — operator typo is loud" do
+      assert_raise Ecto.NoResultsError, fn ->
+        Networks.get_network_by_slug!("definitely-not-a-network-#{System.unique_integer([:positive])}")
+      end
+    end
+  end
+
+  describe "pick_server!/1 (A2/A10 — lifted from Session.Server)" do
+    test "returns the lowest-priority enabled server, ties broken by id" do
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "h1", port: 6667, priority: 5})
+      {:ok, _} = Networks.add_server(net, %{host: "h2", port: 6667, priority: 1})
+      {:ok, _} = Networks.add_server(net, %{host: "h3", port: 6667, priority: 1})
+
+      preloaded = Repo.preload(net, :servers)
+      assert %Server{host: "h2"} = Networks.pick_server!(preloaded)
+    end
+
+    test "skips disabled servers even when priority would prefer them" do
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "disabled", port: 6667, priority: 0, enabled: false})
+      {:ok, _} = Networks.add_server(net, %{host: "enabled", port: 6667, priority: 5})
+
+      preloaded = Repo.preload(net, :servers)
+      assert %Server{host: "enabled"} = Networks.pick_server!(preloaded)
+    end
+
+    test "raises NoServerError when every server is disabled" do
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "off", port: 6667, enabled: false})
+      preloaded = Repo.preload(net, :servers)
+
+      assert_raise Networks.NoServerError, fn -> Networks.pick_server!(preloaded) end
+    end
+
+    test "raises NoServerError when the network has zero servers" do
+      net = network_fixture()
+      preloaded = Repo.preload(net, :servers)
+      assert_raise Networks.NoServerError, fn -> Networks.pick_server!(preloaded) end
+    end
+  end
+
+  # Cluster 2 (A2): the data resolver that flattens a Credential +
+  # picked Server + User into the primitive `Session.start_opts/0`
+  # plan. Session.Server.init/1 is now a pure consumer of this map;
+  # the failure-mode tests previously lived on server_test.exs and
+  # moved here when the resolution moved into Networks.
+  describe "session_plan/1" do
+    test "returns the resolved primitive opts for a bound credential" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "irc.example", port: 6697, tls: true, priority: 0})
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt-grappa",
+          auth_method: :sasl,
+          password: "loadbearing",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      cred = Networks.get_credential!(user, net)
+      assert {:ok, plan} = Networks.session_plan(cred)
+
+      assert plan.user_name == user.name
+      assert plan.network_slug == net.slug
+      assert plan.nick == "vjt-grappa"
+      # effective_realname / effective_sasl_user fall back to nick
+      # — the build_plan helper in Networks owns the fallback.
+      assert plan.realname == "vjt-grappa"
+      assert plan.sasl_user == "vjt-grappa"
+      assert plan.auth_method == :sasl
+      assert plan.password == "loadbearing"
+      assert plan.autojoin_channels == ["#sniffo"]
+      assert plan.host == "irc.example"
+      assert plan.port == 6697
+      assert plan.tls == true
+    end
+
+    test "returns {:error, :no_server} when the network has zero enabled servers" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "off", port: 6667, enabled: false})
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred = Networks.get_credential!(user, net)
+      assert {:error, :no_server} = Networks.session_plan(cred)
+    end
+
+    test "returns {:error, :no_server} when the network has no servers at all" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred = Networks.get_credential!(user, net)
+      assert {:error, :no_server} = Networks.session_plan(cred)
+    end
+
+    test "is a no-op preload when the credential already has :network preloaded (Bootstrap path)" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, _} = Networks.add_server(net, %{host: "h", port: 6667})
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      # `list_credentials_for_all_users/0` is the canonical
+      # preloaded-:network producer.
+      [cred] = Networks.list_credentials_for_all_users()
+      assert {:ok, plan} = Networks.session_plan(cred)
+      assert plan.host == "h"
+    end
+  end
 end

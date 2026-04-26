@@ -5,16 +5,16 @@ defmodule Grappa.Session.ServerTest do
   mocking `:gen_tcp` per CLAUDE.md "Mock at boundaries (Mox), real
   dependencies inside."
 
-  ## Sub-task 2g
+  ## Cluster 2 — A2 cycle inversion
 
-  Session.Server.init/1 now takes only `%{user_id, network_id}` and
-  loads the network + servers + credential from the DB. The host /
-  port / nick / password / auth_method / autojoin all come from the
-  bound `Grappa.Networks.Credential` row + `Grappa.Networks.Server`
-  endpoint — no more flat opts map. Tests build the DB rows via
-  `network_with_server/1` + `credential_fixture/3` (in
-  `Grappa.AuthFixtures`) and call `Session.start_session(user.id,
-  network.id)` with the new `(Ecto.UUID.t, integer)` signature.
+  `Session.Server.init/1` is a pure data consumer: it takes the
+  fully-resolved `Grappa.Session.start_opts/0` plan (host / port /
+  tls / nick / realname / sasl_user / password / auth_method /
+  autojoin_channels / user_name / network_slug). `Networks.session_plan/1`
+  is the canonical producer; tests build the DB rows via
+  `network_with_server/1` + `credential_fixture/3` then go through
+  `start_session_for/2` (in `Grappa.AuthFixtures`) which mirrors
+  Bootstrap's production resolve-then-spawn shape.
 
   `async: false` because `Grappa.SessionRegistry`,
   `Grappa.SessionSupervisor`, and `Grappa.PubSub` are singletons —
@@ -46,11 +46,6 @@ defmodule Grappa.Session.ServerTest do
 
     credential = credential_fixture(user, network, cred_attrs)
     {user, network, credential}
-  end
-
-  defp start_session_for(user, network) do
-    {:ok, pid} = Session.start_session(user.id, network.id)
-    pid
   end
 
   defp await_handshake(server) do
@@ -89,33 +84,14 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "missing credential row crashes init (start_child returns error tuple)" do
-      {_, port} = start_server()
-      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-      {network, _} =
-        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
-
-      # No credential bound — init must fail because Networks.get_credential!/2 raises.
-      capture_log(fn ->
-        assert {:error, _} = Session.start_session(user.id, network.id)
-      end)
-    end
-
-    test "missing servers crashes init (operator must add at least one)" do
-      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-      {:ok, network} =
-        Networks.find_or_create_network(%{
-          slug: "no-servers-#{System.unique_integer([:positive])}"
-        })
-
-      _ = credential_fixture(user, network, %{nick: "x"})
-
-      capture_log(fn ->
-        assert {:error, _} = Session.start_session(user.id, network.id)
-      end)
-    end
+    # Cluster 2 (A2): the "missing credential / missing servers"
+    # failure modes moved out of `Session.Server.init/1` and into
+    # `Networks.session_plan/1` (the data resolver). The equivalent
+    # invariants now live in `Grappa.NetworksTest` —
+    # `session_plan/1 returns {:error, :no_server}` and friends.
+    # Server boot can still fail at `Client.start_link` (port
+    # refused) — covered by the `bootstrap_test.exs` partial-failure
+    # path which exercises a refused upstream port end-to-end.
   end
 
   describe "registration" do

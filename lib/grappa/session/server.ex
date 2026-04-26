@@ -13,26 +13,24 @@ defmodule Grappa.Session.Server do
   facade can resolve a pid from the internal identifiers (UUID +
   integer FK) that every authn'd request handler already has.
 
-  ## Sub-task 2g — DB-backed configuration
+  ## Cluster 2 — A2 cycle inversion
 
-  `init/1` takes only `%{user_id, network_id}` and resolves everything
-  else from the DB:
+  `init/1` is a pure data consumer: it takes the fully-resolved
+  `t:Grappa.Session.start_opts/0` map (host / port / tls / nick /
+  realname / sasl_user / password / auth_method / autojoin_channels
+  / user_name / network_slug, plus user_id + network_id merged in
+  by `Grappa.Session.start_session/3`) and does NO DB reads — no
+  `Grappa.Accounts`, no `Grappa.Networks`, no `Grappa.Repo`. The
+  server-pick policy + credential resolution live on
+  `Grappa.Networks.session_plan/1` (Networks owns the data, Session
+  owns the connection).
 
-    * `Grappa.Accounts.get_user!/1` for the operator-facing user name
-      (logger metadata + topic discriminator).
-    * `Grappa.Networks.get_network!/1 |> Repo.preload(:servers)` for
-      the slug + the list of server endpoints.
-    * `Grappa.Networks.get_credential!/2` for the per-(user, network)
-      nick / realname / sasl_user / encrypted password / auth_method
-      / autojoin list.
-
-  The first enabled server (sorted by `:priority asc`) becomes the
-  upstream connect target — fail-over policy across the rest of the
-  list is deferred to Phase 5 reconnect/backoff. Empty enabled-server
-  list raises `Grappa.Session.Server.NoServerError`; missing credential
-  row raises `Ecto.NoResultsError`. Both crash init → DynamicSupervisor
-  `:transient` → restart → same wall — operator must intervene
-  (`mix grappa.add_server` / `mix grappa.bind_network`).
+  Trade-off: a `:transient` restart replays the SAME cached opts
+  the supervisor child spec captured at first start — credential
+  changes in the DB don't propagate until the operator forces a
+  re-spawn (`mix grappa.unbind_network` + `bind_network`) or the
+  next deploy. Documented on `Grappa.Session` moduledoc; Phase 5
+  may add `Session.refresh/2` if hot-reload is needed.
 
   ## Phase 1 protocol scope
 
@@ -77,15 +75,34 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.{Accounts, Log, Networks, Repo, Scrollback}
   alias Grappa.IRC.{Client, Message}
-  alias Grappa.Networks.Credential
+  alias Grappa.{Log, Scrollback}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
 
   require Logger
 
-  @type opts :: %{required(:user_id) => Ecto.UUID.t(), required(:network_id) => integer()}
+  @typedoc """
+  Internal init arg — `t:Grappa.Session.start_opts/0` plus the
+  `(user_id, network_id)` keys `Grappa.Session.start_session/3`
+  merges in. Kept as a separate type from `start_opts/0` because
+  the public start contract takes the two ids positionally.
+  """
+  @type init_opts :: %{
+          required(:user_id) => Ecto.UUID.t(),
+          required(:network_id) => integer(),
+          required(:user_name) => String.t(),
+          required(:network_slug) => String.t(),
+          required(:nick) => String.t(),
+          required(:realname) => String.t(),
+          required(:sasl_user) => String.t(),
+          required(:auth_method) => Client.auth_method(),
+          required(:password) => String.t() | nil,
+          required(:autojoin_channels) => [String.t()],
+          required(:host) => String.t(),
+          required(:port) => :inet.port_number(),
+          required(:tls) => boolean()
+        }
 
   @type state :: %{
           user_id: Ecto.UUID.t(),
@@ -99,23 +116,9 @@ defmodule Grappa.Session.Server do
 
   @logged_event_commands [:join, :part, :quit, :nick, :mode, :topic, :kick]
 
-  defmodule NoServerError do
-    @moduledoc """
-    Raised at `Grappa.Session.Server` boot when the network resolves to
-    zero enabled server endpoints. The operator must add at least one
-    via `mix grappa.add_server` before the session can boot.
-    """
-    defexception [:network_id, :network_slug]
-
-    @impl Exception
-    def message(%{network_id: id, network_slug: slug}) do
-      "network ##{id} (#{slug}) has no enabled server endpoints"
-    end
-  end
-
   ## API
 
-  @spec start_link(opts()) :: GenServer.on_start()
+  @spec start_link(init_opts()) :: GenServer.on_start()
   def start_link(%{user_id: user_id, network_id: network_id} = opts)
       when is_binary(user_id) and is_integer(network_id) do
     GenServer.start_link(__MODULE__, opts, name: via(user_id, network_id))
@@ -143,24 +146,19 @@ defmodule Grappa.Session.Server do
   ## GenServer callbacks
 
   @impl GenServer
-  def init(%{user_id: user_id, network_id: network_id}) do
-    user = Accounts.get_user!(user_id)
-    network = network_id |> Networks.get_network!() |> Repo.preload(:servers)
-    credential = Networks.get_credential!(user, network)
-    server = pick_server(network)
+  def init(opts) do
+    :ok = Log.set_session_context(opts.user_name, opts.network_slug)
 
-    :ok = Log.set_session_context(user.name, network.slug)
-
-    case Client.start_link(client_opts(server, credential, user.name, network.slug)) do
+    case Client.start_link(client_opts(opts)) do
       {:ok, client} ->
         {:ok,
          %{
-           user_id: user_id,
-           user_name: user.name,
-           network_id: network_id,
-           network_slug: network.slug,
-           nick: credential.nick,
-           autojoin: credential.autojoin_channels,
+           user_id: opts.user_id,
+           user_name: opts.user_name,
+           network_id: opts.network_id,
+           network_slug: opts.network_slug,
+           nick: opts.nick,
+           autojoin: opts.autojoin_channels,
            client: client
          }}
 
@@ -286,38 +284,25 @@ defmodule Grappa.Session.Server do
 
   ## Internals
 
-  # Build the IRC.Client opts map from credential + chosen server + the
-  # operator-facing names for log metadata. Nick-fallback for realname
-  # and sasl_user goes through `Credential.effective_*` so the `||
-  # nick` pattern stays in one place — the 2f code review (I1) flagged
-  # inline `||` as a violation of CLAUDE.md "no defaults via \\\\".
-  @spec client_opts(Networks.Server.t(), Credential.t(), String.t(), String.t()) :: Client.opts()
-  defp client_opts(server, credential, user_name, network_slug) do
+  # Build the IRC.Client opts map from the pre-resolved primitive
+  # plan. Nick-fallback + Cloak password decryption already happened
+  # in `Grappa.Networks.session_plan/1`'s `build_plan/4` — the
+  # Server is a pass-through here. Same `Client.opts()` shape
+  # contract carried in via A23.
+  @spec client_opts(init_opts()) :: Client.opts()
+  defp client_opts(opts) do
     %{
-      host: server.host,
-      port: server.port,
-      tls: server.tls,
+      host: opts.host,
+      port: opts.port,
+      tls: opts.tls,
       dispatch_to: self(),
-      logger_metadata: Log.session_context(user_name, network_slug),
-      nick: credential.nick,
-      realname: Credential.effective_realname(credential),
-      sasl_user: Credential.effective_sasl_user(credential),
-      auth_method: credential.auth_method,
-      password: Credential.upstream_password(credential)
+      logger_metadata: Log.session_context(opts.user_name, opts.network_slug),
+      nick: opts.nick,
+      realname: opts.realname,
+      sasl_user: opts.sasl_user,
+      auth_method: opts.auth_method,
+      password: opts.password
     }
-  end
-
-  # Lowest-priority enabled server wins. Tie-broken by row id (insertion
-  # order) — `Networks.list_servers/1` orders the same way; this filter
-  # exists to enforce `:enabled` because the preload doesn't filter.
-  # Raises if every server is disabled OR the network has none — the
-  # operator misconfiguration should be loud, not silent.
-  @spec pick_server(Networks.Network.t()) :: Networks.Server.t()
-  defp pick_server(%Networks.Network{servers: servers, id: nid, slug: slug}) do
-    case servers |> Enum.filter(& &1.enabled) |> Enum.sort_by(&{&1.priority, &1.id}) do
-      [server | _] -> server
-      [] -> raise NoServerError, network_id: nid, network_slug: slug
-    end
   end
 
   # Helper does not log — caller decides. Inbound `handle_info`

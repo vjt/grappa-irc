@@ -15,7 +15,9 @@ defmodule Grappa.AuthFixtures do
   bearer token IS `session.id`. `put_bearer/2` is the conn helper that
   attaches the `Authorization: Bearer <token>` header.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session]
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
   alias Grappa.Networks.{Credential, Network, Server}
@@ -125,5 +127,25 @@ defmodule Grappa.AuthFixtures do
 
     {:ok, credential} = Networks.bind_credential(user, network, Map.merge(base, attrs))
     credential
+  end
+
+  @doc """
+  Test convenience: resolve `(user, network)` into the
+  `Session.start_opts/0` plan via `Networks.session_plan/1` and
+  spawn a `Session.Server` under the singleton supervisor. Mirrors
+  `Bootstrap`'s production spawn path so the test surface stays
+  honest about what `Session.start_session/3` actually consumes —
+  no test-only convenience that bypasses the plan resolution.
+
+  Returns the spawned pid on success; raises with a useful tag if
+  `session_plan/1` fails (`:no_server` / `:user_not_found` are
+  test-setup bugs the test should fix, not silently absorb).
+  """
+  @spec start_session_for(User.t(), Network.t()) :: pid()
+  def start_session_for(%User{} = user, %Network{} = network) do
+    credential = Networks.get_credential!(user, network)
+    {:ok, plan} = Networks.session_plan(credential)
+    {:ok, pid} = Grappa.Session.start_session(user.id, network.id, plan)
+    pid
   end
 end
