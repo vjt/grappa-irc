@@ -44,7 +44,7 @@ defmodule Grappa.Accounts do
   cost negligible, `last_seen_at` is bumped at most once every 60 s
   (`@last_seen_bump_threshold_seconds`).
   """
-  use Boundary, top_level?: true, deps: [Grappa.Repo], exports: [User, Session]
+  use Boundary, top_level?: true, deps: [Grappa.Repo], exports: [User, Session, Wire]
 
   import Ecto.Query
 

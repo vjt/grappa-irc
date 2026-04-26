@@ -1,17 +1,13 @@
 defmodule GrappaWeb.MeJSON do
   @moduledoc """
-  Phoenix view layer for `GrappaWeb.MeController`.
-
-  `show/1` returns `{id, name, inserted_at}`. `password_hash` and the
-  virtual `password` field are explicitly omitted — never serialise
-  credential material on the wire. `inserted_at` is an ISO8601 string;
-  Phoenix's default Jason encoder formats `DateTime` that way.
+  Phoenix view layer for `GrappaWeb.MeController`. Delegates the
+  user → JSON shape to `Grappa.Accounts.Wire.user_to_json/1` so the
+  serializer rules (allowlist excluding `:password_hash` + virtual
+  `:password`) live in one module — see that module's moduledoc.
   """
-  alias Grappa.Accounts.User
+  alias Grappa.Accounts.{User, Wire}
 
-  @doc "Renders the `:show` action — `{id, name, inserted_at}`."
-  @spec show(%{user: User.t()}) :: %{id: String.t(), name: String.t(), inserted_at: DateTime.t()}
-  def show(%{user: %User{} = user}) do
-    %{id: user.id, name: user.name, inserted_at: user.inserted_at}
-  end
+  @doc "Renders the `:show` action — full profile shape from `Accounts.Wire`."
+  @spec show(%{user: User.t()}) :: Wire.user_json()
+  def show(%{user: %User{} = user}), do: Wire.user_to_json(user)
 end
