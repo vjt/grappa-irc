@@ -19,7 +19,7 @@ defmodule GrappaWeb.ChannelsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Networks, Session}
+  alias Grappa.{IRC.Identifier, Networks, Session}
 
   @doc """
   `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
@@ -32,7 +32,14 @@ defmodule GrappaWeb.ChannelsController do
       when is_binary(name) and name != "" do
     user_id = conn.assigns.current_user_id
 
-    with {:ok, network} <- Networks.get_network_by_slug(slug),
+    # Belt-and-braces against S29 C1: Session.send_join would also
+    # reject CRLF via Identifier.safe_line_token?, but a malformed
+    # channel name (missing #/&/+/!, embedded space, control byte) is
+    # operator-input-shape wrong, not wire-injection wrong — surface
+    # it as :bad_request rather than :invalid_line so client error
+    # UX can branch correctly.
+    with :ok <- validate_channel_name(name),
+         {:ok, network} <- Networks.get_network_by_slug(slug),
          :ok <- Session.send_join(user_id, network.id, name) do
       conn
       |> put_status(:accepted)
@@ -51,11 +58,16 @@ defmodule GrappaWeb.ChannelsController do
   def delete(conn, %{"network_id" => slug, "channel_id" => channel}) do
     user_id = conn.assigns.current_user_id
 
-    with {:ok, network} <- Networks.get_network_by_slug(slug),
+    with :ok <- validate_channel_name(channel),
+         {:ok, network} <- Networks.get_network_by_slug(slug),
          :ok <- Session.send_part(user_id, network.id, channel) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
     end
+  end
+
+  defp validate_channel_name(name) do
+    if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
   end
 end

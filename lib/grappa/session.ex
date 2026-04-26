@@ -51,6 +51,7 @@ defmodule Grappa.Session do
     ],
     exports: [Server]
 
+  alias Grappa.IRC.Identifier
   alias Grappa.Session.Server
 
   require Logger
@@ -97,12 +98,20 @@ defmodule Grappa.Session do
   """
   @spec send_privmsg(Ecto.UUID.t(), integer(), String.t(), String.t()) ::
           {:ok, Grappa.Scrollback.Message.t()}
-          | {:error, :no_session}
+          | {:error, :no_session | :invalid_line}
           | {:error, Ecto.Changeset.t()}
   def send_privmsg(user_id, network_id, target, body)
       when is_binary(user_id) and is_integer(network_id) and is_binary(target) and
              is_binary(body) do
-    call_session(user_id, network_id, {:send_privmsg, target, body})
+    # CRLF/NUL check fires BEFORE the registry lookup so an injection
+    # attempt against a non-existent session still surfaces as
+    # :invalid_line — input-shape error beats not-found. The Scrollback
+    # row is never persisted on rejection (the call_session never runs).
+    if Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
+      call_session(user_id, network_id, {:send_privmsg, target, body})
+    else
+      {:error, :invalid_line}
+    end
   end
 
   @doc """
@@ -111,20 +120,30 @@ defmodule Grappa.Session do
   socket write happens asynchronously. The REST surface returns 202
   Accepted to mirror this. `{:error, :no_session}` if not registered.
   """
-  @spec send_join(Ecto.UUID.t(), integer(), String.t()) :: :ok | {:error, :no_session}
+  @spec send_join(Ecto.UUID.t(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
   def send_join(user_id, network_id, channel)
       when is_binary(user_id) and is_integer(network_id) and is_binary(channel) do
-    cast_session(user_id, network_id, {:send_join, channel})
+    if Identifier.safe_line_token?(channel) do
+      cast_session(user_id, network_id, {:send_join, channel})
+    else
+      {:error, :invalid_line}
+    end
   end
 
   @doc """
   Queues a PART upstream through the session. Cast (see `send_join/3`
   for the rationale). `{:error, :no_session}` if not registered.
   """
-  @spec send_part(Ecto.UUID.t(), integer(), String.t()) :: :ok | {:error, :no_session}
+  @spec send_part(Ecto.UUID.t(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
   def send_part(user_id, network_id, channel)
       when is_binary(user_id) and is_integer(network_id) and is_binary(channel) do
-    cast_session(user_id, network_id, {:send_part, channel})
+    if Identifier.safe_line_token?(channel) do
+      cast_session(user_id, network_id, {:send_part, channel})
+    else
+      {:error, :invalid_line}
+    end
   end
 
   defp call_session(user_id, network_id, request) do

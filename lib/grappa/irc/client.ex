@@ -89,7 +89,7 @@ defmodule Grappa.IRC.Client do
   """
   use GenServer
 
-  alias Grappa.IRC.{Message, Parser}
+  alias Grappa.IRC.{Identifier, Message, Parser}
 
   require Logger
 
@@ -176,26 +176,54 @@ defmodule Grappa.IRC.Client do
   @spec send_line(pid(), iodata()) :: :ok
   def send_line(client, line), do: GenServer.cast(client, {:send, line})
 
-  @doc "Sends `PRIVMSG <target> :<body>\\r\\n`."
-  @spec send_privmsg(pid(), String.t(), String.t()) :: :ok
-  def send_privmsg(client, target, body),
-    do: send_line(client, "PRIVMSG #{target} :#{body}\r\n")
+  @doc """
+  Sends `PRIVMSG <target> :<body>\\r\\n`. Rejects CR/LF/NUL in either
+  field with `{:error, :invalid_line}` — see
+  `Grappa.IRC.Identifier.safe_line_token?/1` for the rationale.
+  """
+  @spec send_privmsg(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_privmsg(client, target, body) do
+    if Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
+      send_line(client, "PRIVMSG #{target} :#{body}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
 
-  @doc "Sends `JOIN <channel>\\r\\n`."
-  @spec send_join(pid(), String.t()) :: :ok
-  def send_join(client, channel), do: send_line(client, "JOIN #{channel}\r\n")
+  @doc "Sends `JOIN <channel>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
+  @spec send_join(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_join(client, channel) do
+    if Identifier.safe_line_token?(channel),
+      do: send_line(client, "JOIN #{channel}\r\n"),
+      else: {:error, :invalid_line}
+  end
 
-  @doc "Sends `PART <channel>\\r\\n`."
-  @spec send_part(pid(), String.t()) :: :ok
-  def send_part(client, channel), do: send_line(client, "PART #{channel}\r\n")
+  @doc "Sends `PART <channel>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
+  @spec send_part(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_part(client, channel) do
+    if Identifier.safe_line_token?(channel),
+      do: send_line(client, "PART #{channel}\r\n"),
+      else: {:error, :invalid_line}
+  end
 
-  @doc "Sends `QUIT :<reason>\\r\\n`."
-  @spec send_quit(pid(), String.t()) :: :ok
-  def send_quit(client, reason), do: send_line(client, "QUIT :#{reason}\r\n")
+  @doc "Sends `QUIT :<reason>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
+  @spec send_quit(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_quit(client, reason) do
+    if Identifier.safe_line_token?(reason),
+      do: send_line(client, "QUIT :#{reason}\r\n"),
+      else: {:error, :invalid_line}
+  end
 
-  @doc "Sends `PONG :<token>\\r\\n` in response to an upstream PING."
-  @spec send_pong(pid(), String.t()) :: :ok
-  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
+  @doc """
+  Sends `PONG :<token>\\r\\n` in response to an upstream PING. Rejects
+  CR/LF/NUL with `{:error, :invalid_line}`.
+  """
+  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_pong(client, token) do
+    if Identifier.safe_line_token?(token),
+      do: send_line(client, "PONG :#{token}\r\n"),
+      else: {:error, :invalid_line}
+  end
 
   ## GenServer callbacks
 

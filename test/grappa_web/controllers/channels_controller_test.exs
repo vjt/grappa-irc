@@ -126,6 +126,29 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       assert json_response(conn, 400)["error"] == "bad request"
     end
+
+    # S29 C1: a channel name carrying an embedded \r or \n would smuggle a
+    # second IRC command onto the wire if it reached Client.send_join.
+    # Reject at the controller via Identifier.valid_channel?/1 — the
+    # regex already excludes whitespace + control bytes — so the body
+    # never reaches the Session.
+    test "channel name with embedded CRLF returns 400", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{"name" => "#chan\r\nQUIT :pwn"})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
+
+    test "channel name failing IRC syntax (missing prefix) returns 400", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{"name" => "no-prefix"})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
   end
 
   describe "DELETE /networks/:network_id/channels/:channel_id" do
@@ -159,6 +182,14 @@ defmodule GrappaWeb.ChannelsControllerTest do
     test "without Bearer returns 401" do
       conn = delete(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo")
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    # S29 C1: URL-encoded CRLF in :channel_id smuggles a second IRC
+    # command into PART. Same controller-level rejection.
+    test "channel_id with URL-encoded CRLF returns 400", %{conn: conn} do
+      # %0A = LF, %0D = CR. "#chan%0AQUIT" decodes to "#chan\nQUIT".
+      conn = delete(conn, "/networks/azzurra/channels/%23chan%0AQUIT")
+      assert json_response(conn, 400)["error"] == "bad request"
     end
   end
 end

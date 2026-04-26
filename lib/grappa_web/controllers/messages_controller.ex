@@ -36,7 +36,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Networks, Repo, Scrollback, Session}
+  alias Grappa.{IRC.Identifier, Networks, Repo, Scrollback, Session}
 
   @default_limit 50
 
@@ -88,7 +88,11 @@ defmodule GrappaWeb.MessagesController do
       when is_binary(body) and body != "" do
     user_id = conn.assigns.current_user_id
 
-    with {:ok, network} <- Networks.get_network_by_slug(slug),
+    # Channel-name shape check is :bad_request; the body's CRLF/NUL
+    # check happens inside Session.send_privmsg and surfaces as
+    # :invalid_line. Two distinct error tags so client UX can branch.
+    with :ok <- validate_channel_name(channel),
+         {:ok, network} <- Networks.get_network_by_slug(slug),
          {:ok, message} <- Session.send_privmsg(user_id, network.id, channel, body) do
       conn
       |> put_status(:created)
@@ -97,6 +101,10 @@ defmodule GrappaWeb.MessagesController do
   end
 
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
+
+  defp validate_channel_name(name) do
+    if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
+  end
 
   # Single-network fetch — the network struct is known; preload
   # in-place rather than issuing N+1 SELECTs through Repo.preload.

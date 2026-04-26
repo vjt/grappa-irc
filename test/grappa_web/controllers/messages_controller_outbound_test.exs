@@ -239,4 +239,47 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
   end
+
+  describe "POST CRLF guard (S29 C1)" do
+    # Body validation happens at the Session facade (and Client too),
+    # surfacing as `{:error, :invalid_line}` → 400 invalid_line via
+    # FallbackController. The session need not be running — the
+    # validator runs BEFORE whereis/2, so the error wins over
+    # :no_session and :not_found alike.
+    test "body with embedded \\r\\n returns 400 invalid_line", %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{
+          "body" => "hi\r\nQUIT :pwn"
+        })
+
+      assert json_response(conn, 400)["error"] == "invalid_line"
+    end
+
+    test "body with NUL byte returns 400 invalid_line", %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hi\x00bye"})
+
+      assert json_response(conn, 400)["error"] == "invalid_line"
+    end
+
+    test "URL-encoded CRLF in :channel_id returns 400 (channel-syntax check)",
+         %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23chan%0AQUIT/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 400)["error"] == "bad request"
+    end
+  end
 end

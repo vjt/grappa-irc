@@ -14,12 +14,28 @@ defmodule GrappaWeb.FallbackController do
 
   @spec call(
           Plug.Conn.t(),
-          {:error, :bad_request | :not_found | :no_session | :invalid_credentials | Ecto.Changeset.t()}
+          {:error,
+           :bad_request
+           | :not_found
+           | :no_session
+           | :invalid_credentials
+           | :invalid_line
+           | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do
     conn
     |> put_status(:bad_request)
     |> json(%{error: "bad request"})
+  end
+
+  # CRLF / NUL byte in an IRC-bound field. Distinct from :bad_request
+  # so client-side error handling can tell "you sent a malformed
+  # request" apart from "your input would have smuggled an extra IRC
+  # command onto the upstream wire."
+  def call(conn, {:error, :invalid_line}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "invalid_line"})
   end
 
   def call(conn, {:error, :not_found}) do

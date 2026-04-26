@@ -582,6 +582,67 @@ defmodule Grappa.IRC.ClientTest do
     end
   end
 
+  describe "outbound CRLF guard (S29 C1)" do
+    # The IRC framing is one command per CRLF-terminated line. A caller
+    # that injects an embedded \r or \n into the target or body smuggles
+    # an arbitrary IRC command onto the wire (PRIVMSG #chan :hi\r\nQUIT
+    # :pwn → the server sees both PRIVMSG and QUIT). The public send_*
+    # helpers reject control bytes early with {:error, :invalid_line};
+    # only the raw send_line/2 escape hatch is unguarded by design (it
+    # is the SASL chain's bytes-in/bytes-out contract).
+    setup do
+      {server, port} = start_server()
+      client = start_client(port)
+      {:ok, server: server, client: client}
+    end
+
+    test "send_privmsg/3 rejects \\r\\n in body", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\r\nQUIT :pwn")
+    end
+
+    test "send_privmsg/3 rejects \\r\\n in target", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan\r\nQUIT", "hi")
+    end
+
+    test "send_privmsg/3 rejects bare \\n in body", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\nQUIT")
+    end
+
+    test "send_privmsg/3 rejects NUL byte in body", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\x00bye")
+    end
+
+    test "send_join/2 rejects \\r\\n in channel", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "#chan\r\nQUIT")
+    end
+
+    test "send_part/2 rejects \\r\\n in channel", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_part(client, "#chan\r\nQUIT")
+    end
+
+    test "send_quit/2 rejects \\r\\n in reason", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_quit(client, "bye\r\nNICK pwn")
+    end
+
+    test "send_pong/2 rejects \\r\\n in token", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_pong(client, "tok\r\n")
+    end
+
+    test "rejected lines never reach the server socket", %{server: server, client: client} do
+      :ok = await_handshake(server)
+      lines_before = IRCServer.sent_lines(server)
+
+      _ = Client.send_privmsg(client, "#chan", "hi\r\nQUIT :pwn")
+      _ = Client.send_join(client, "#chan\r\nQUIT")
+
+      # No new line lands; if the guard leaks the bytes through, the
+      # server would see PRIVMSG / QUIT / JOIN with embedded CR/LF.
+      Process.sleep(50)
+      lines_after = IRCServer.sent_lines(server)
+      assert lines_after == lines_before
+    end
+  end
+
   describe "init/1 contract enforcement" do
     test ":sasl without password returns {:error, {:missing_password, :sasl}} via :stop" do
       {_, port} = start_server()

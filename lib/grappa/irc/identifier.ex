@@ -87,4 +87,22 @@ defmodule Grappa.IRC.Identifier do
   end
 
   def valid_sender?(_), do: false
+
+  @doc """
+  True iff the input is safe to place on an IRC line — no embedded CR
+  (`\\r`), LF (`\\n`), or NUL (`\\x00`). RFC 2812 §2.3 forbids all
+  three; an attacker that smuggles any of them into a target or body
+  field would terminate the current line and append an arbitrary
+  follow-up command (CRLF injection).
+
+  Used by `Grappa.IRC.Client.send_*` and the `Grappa.Session` facade
+  to gate every public outbound helper. The raw `Client.send_line/2`
+  escape hatch is intentionally NOT guarded — it is the SASL chain's
+  bytes-in/bytes-out contract.
+  """
+  @spec safe_line_token?(term()) :: boolean()
+  def safe_line_token?(s) when is_binary(s),
+    do: not String.contains?(s, ["\r", "\n", "\x00"])
+
+  def safe_line_token?(_), do: false
 end
