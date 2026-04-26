@@ -32,11 +32,18 @@ not yet feature-complete. The Roadmap section below tracks per-phase progress.
 
 ## Operator quickstart
 
-grappa runs as a single container against a sqlite DB. The operator
-surface for adding users + binding networks is a set of mix tasks
-invoked through `scripts/mix.sh` against the live container. There
-is no config file — every `(user, network)` binding lives in the
-DB and is read by `Grappa.Bootstrap` at boot.
+grappa runs as a single container against a sqlite DB. There is no
+config file — every `(user, network)` binding lives in the DB and is
+read by `Grappa.Bootstrap` at boot. The operator surface comes in two
+shapes:
+
+* **Dev / pre-deploy**: a set of mix tasks invoked through
+  `scripts/mix.sh` against the dev container's DB
+  (`runtime/grappa_dev.db`).
+* **Prod (running release)**: `bin/grappa eval` against the running
+  prod container, calling the same context functions the mix tasks
+  wrap. Verbose-but-correct; a thin operator CLI is queued for Phase 5
+  hardening.
 
 ### First deploy
 
@@ -45,7 +52,9 @@ DB and is read by `Grappa.Bootstrap` at boot.
    git clone https://github.com/vjt/grappa-irc /srv/grappa && cd /srv/grappa
    ```
 
-2. **Generate the three required secrets** and paste them into `.env`:
+2. **Generate the three required secrets**. The first `scripts/mix.sh`
+   call builds the dev image (~5–10 min, one-time); subsequent calls
+   reuse it. Paste each output into `.env`:
    ```sh
    cp .env.example .env
    scripts/mix.sh phx.gen.secret              # → SECRET_KEY_BASE
@@ -56,7 +65,7 @@ DB and is read by `Grappa.Bootstrap` at boot.
    Cloak AES-GCM. **Back it up separately — losing it means losing
    every stored upstream password.**
 
-3. **Build + start**:
+3. **Build the prod release + start the container**:
    ```sh
    scripts/deploy.sh
    ```
@@ -66,30 +75,46 @@ DB and is read by `Grappa.Bootstrap` at boot.
 
 ### Add an operator account + bind a network
 
+The prod container runs a mix release; mix tasks aren't directly
+invocable inside it. Use `bin/grappa eval` against the live release
+node, calling the context functions directly:
+
 ```sh
 # 1. Create the user account (REST + WS bearer-token identity).
-scripts/mix.sh grappa.create_user --name vjt --password 'correct horse battery staple'
+docker compose -f compose.prod.yaml exec grappa bin/grappa eval '
+  case Grappa.Accounts.create_user(%{name: "vjt", password: "correct horse battery staple"}) do
+    {:ok, u}    -> IO.puts("created user #{u.name} (#{u.id})")
+    {:error, c} -> IO.puts(:stderr, inspect(c.errors)); System.halt(1)
+  end
+'
 
-# 2. Bind a network. --auth picks the upstream auth method:
+# 2. Bind a network. auth_method picks the upstream auth method:
 #    :auto | :sasl | :server_pass | :nickserv_identify | :none
-#    --autojoin is comma-separated.
-scripts/mix.sh grappa.bind_network \
-  --user vjt \
-  --network azzurra \
-  --server irc.azzurra.chat:6697 --tls \
-  --nick vjt \
-  --password 'NICKSERV_PASS' \
-  --auth nickserv_identify \
-  --autojoin '#italia,#hacking'
+docker compose -f compose.prod.yaml exec grappa bin/grappa eval '
+  user = Grappa.Accounts.get_user_by_name!("vjt")
+  {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
+  {:ok, _}   = Grappa.Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697, tls: true})
+  {:ok, _}   = Grappa.Networks.bind_credential(user, net, %{
+    nick: "vjt",
+    password: "NICKSERV_PASS",
+    auth_method: :nickserv_identify,
+    autojoin_channels: ["#italia", "#hacking"]
+  })
+  IO.puts("bound vjt → azzurra")
+'
 
-# 3. Restart so Bootstrap re-enumerates and spawns the session.
-docker compose -f compose.prod.yaml restart grappa
+# 3. Re-run scripts/deploy.sh so Bootstrap re-enumerates and spawns
+#    the session (the script does --force-recreate, which restarts
+#    the container against the same image).
+scripts/deploy.sh
 ```
 
-The full mix-task surface lives under `lib/mix/tasks/grappa.*.ex`:
-`add_server`, `bind_network`, `create_user`, `gen_encryption_key`,
-`remove_server`, `unbind_network`, `update_network_credential`. Each
-prints `--help`-style usage when invoked without args.
+The mix tasks under `lib/mix/tasks/grappa.*.ex` (`add_server`,
+`bind_network`, `create_user`, `gen_encryption_key`, `remove_server`,
+`unbind_network`, `update_network_credential`) work against the dev
+container via `scripts/mix.sh grappa.<task> --flag value` for testing
+the operator surface before production deploys. Each prints
+`--help`-style usage when invoked without args.
 
 ## Why this exists
 
@@ -236,25 +261,25 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 
 ## Roadmap
 
-### Phase 0 — spec (you are here)
+### Phase 0 — spec
 - [x] README
 - [x] Server language: **Elixir/OTP + Phoenix** (decided 2026-04-25 — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md))
 - [ ] OpenAPI schema for the REST surface
 - [ ] Pick a client framework (Svelte vs SolidJS vs plain lit-html)
 
-### Phase 1 — server walking skeleton
-- [ ] Single-user bouncer, single upstream network, hardcoded credentials
-- [ ] Basic REST: `/networks`, `/channels`, `/messages` (paginated)
-- [ ] Phoenix Channel for `grappa:network:{net}/channel:{chan}` event push
-- [ ] sqlite-backed scrollback (Ecto + ecto_sqlite3)
-- [ ] Send + receive `PRIVMSG` round-trip
-- [ ] OTP supervision tree: one `Grappa.Session` GenServer per user under `DynamicSupervisor`
+### Phase 1 — server walking skeleton ✓
+- [x] Single-user bouncer, single upstream network, hardcoded credentials
+- [x] Basic REST: `/networks`, `/channels`, `/messages` (paginated)
+- [x] Phoenix Channel for `grappa:network:{net}/channel:{chan}` event push
+- [x] sqlite-backed scrollback (Ecto + ecto_sqlite3)
+- [x] Send + receive `PRIVMSG` round-trip
+- [x] OTP supervision tree: one `Grappa.Session` GenServer per user under `DynamicSupervisor`
 
-### Phase 2 — auth + multi-user
-- [ ] SASL bridge for login
+### Phase 2 — auth + multi-user (in flight)
+- [x] SASL bridge for login (Cloak-encrypted upstream creds, `:auto | :sasl | :server_pass | :nickserv_identify | :none`)
 - [ ] NickServ `REGISTER` proxy
-- [ ] Session tokens (short-lived + refresh)
-- [ ] Per-user isolation
+- [x] Session tokens (Argon2-hashed password → bearer-token sessions, sliding 7-day idle)
+- [x] Per-user isolation (cross-user join authz at the channel layer)
 
 ### Phase 3 — client walking skeleton
 - [ ] PWA shell, manifest, service worker
@@ -283,7 +308,9 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 
 ## Contributing
 
-Pre-alpha. Issues welcome for design feedback on this spec; code PRs are deferred until Phase 1 lands.
+Pre-alpha. Issues welcome for design feedback; code PRs welcome once
+Phase 2 multi-user auth closes (the multi-user surface is still
+moving and PR review against a moving target wastes both sides).
 
 ## Why this exists (the longer story)
 
