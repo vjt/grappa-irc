@@ -7,7 +7,8 @@ defmodule Grappa.Networks.Network do
   The slug format (`^[a-z0-9_-]+$`) is intentionally narrower than IRC's
   network name conventions: it has to round-trip cleanly through URL
   paths (`/networks/:slug/...`) and PubSub topic segments
-  (`grappa:network:{slug}`) without escaping.
+  (the `network:` segment of `grappa:user:{user}/network:{slug}/...`,
+  see `Grappa.PubSub.Topic`) without escaping.
 
   Primary key is an autoincrement INTEGER — networks are an internal
   identifier; the slug is the public handle.

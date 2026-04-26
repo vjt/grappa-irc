@@ -23,7 +23,7 @@ defmodule Grappa.Session.ServerTest do
   import ExUnit.CaptureLog
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, Networks, Scrollback, Session}
+  alias Grappa.{IRCServer, Networks, PubSub.Topic, Scrollback, Session}
 
   setup do
     # Phase 2 (sub-task 2e): Session.Server's persist path writes via
@@ -163,8 +163,14 @@ defmodule Grappa.Session.ServerTest do
     test "persists row and broadcasts canonical wire-shape event on PRIVMSG",
          %{vjt: vjt, network: network} do
       {server, port} = start_server()
-      topic = "grappa:network:test/channel:#sniffo"
+      topic = Topic.channel("vjt", "test", "#sniffo")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      # Sub-task 2h regression: Phase 1 broadcast topic shape (no user
+      # discriminator) must NOT receive anything anymore. If a future
+      # change accidentally reverts to the old shape, this subscriber
+      # would catch the leak.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:test/channel:#sniffo")
 
       pid = start_session(port, vjt)
 
@@ -184,6 +190,9 @@ defmodule Grappa.Session.ServerTest do
       assert is_integer(msg.server_time)
       assert is_integer(msg.id)
 
+      # Phase 1 shape gets nothing — proves new routing iso.
+      refute_received {:event, _}
+
       [row] = Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10)
       assert row.body == "hello"
       assert row.sender == "alice"
@@ -194,9 +203,39 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "broadcast is scoped per channel — does not leak across channels", %{vjt: vjt} do
+    test "broadcast scoped per (user, network, channel) — does not leak across channels",
+         %{vjt: vjt} do
       {server, port} = start_server()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:test/channel:#other")
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel("vjt", "test", "#other")
+        )
+
+      pid = start_session(port, vjt)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
+
+      refute_receive {:event, _}, 200
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "PER-USER ROUTING ISO: alice's subscribe on the same (network, channel) gets nothing",
+         %{vjt: vjt} do
+      # This is the load-bearing 2h test: even if alice subscribes to
+      # the SAME network + channel pair as vjt, the user-discriminator
+      # in the topic string keeps her PubSub mailbox empty. Without 2h
+      # this would have leaked because Phase 1's topic was
+      # `grappa:network:{net}/channel:{chan}` (shared across users).
+      {server, port} = start_server()
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel("alice", "test", "#sniffo")
+        )
 
       pid = start_session(port, vjt)
 
@@ -209,7 +248,7 @@ defmodule Grappa.Session.ServerTest do
 
     test "server-prefixed PRIVMSG (rare but valid) records server name as sender", %{vjt: vjt} do
       {server, port} = start_server()
-      topic = "grappa:network:test/channel:#sniffo"
+      topic = Topic.channel("vjt", "test", "#sniffo")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session(port, vjt)
@@ -228,7 +267,12 @@ defmodule Grappa.Session.ServerTest do
     test "JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK are logged but not persisted or broadcast",
          %{vjt: vjt, network: network} do
       {server, port} = start_server()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:test/channel:#sniffo")
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel("vjt", "test", "#sniffo")
+        )
 
       Logger.put_module_level(Grappa.Session.Server, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Session.Server) end)

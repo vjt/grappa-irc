@@ -36,10 +36,14 @@ defmodule Grappa.Session.Server do
   ## Wire shape (broadcast contract)
 
   PRIVMSG broadcasts emit `Grappa.Scrollback.Wire.message_event/1` on
-  the per-channel topic built via `Grappa.PubSub.Topic.channel/2`.
-  Every broadcaster (this module + `GrappaWeb.MessagesController`)
-  routes through the same helper — every door, same wire shape per
-  CLAUDE.md.
+  the per-(user, network, channel) topic built via
+  `Grappa.PubSub.Topic.channel/3`. The `state.user_name` is the first
+  segment (sub-task 2h) so multi-user instances cannot leak broadcasts
+  across users — payload-level iso (decision G3 dropped `user_id` from
+  the wire) needed routing-level iso to actually keep alice and vjt's
+  PubSub mailboxes separate. Every broadcaster (this module +
+  `GrappaWeb.MessagesController` via `Session.send_privmsg/4`) routes
+  through the same helper — every door, same wire shape per CLAUDE.md.
 
   ## State shape (architecture review A6)
 
@@ -234,15 +238,16 @@ defmodule Grappa.Session.Server do
         # building the broadcast event. Single-row preload, cheap.
         preloaded = Repo.preload(message, :network)
 
-        # Topic shape is `(network_slug, channel)` — no per-user
-        # discriminator yet. Sub-task 2h adds the user partition to
-        # the topic so multi-user instances stop cross-delivering
-        # broadcasts (the WIRE payload already drops user_id per
-        # decision G3, but DELIVERY routing still leaks until 2h).
+        # Topic shape is `(user_name, network_slug, channel)` —
+        # sub-task 2h roots every Grappa topic in the user
+        # discriminator so two users on the same (network, channel)
+        # land in different topic strings + different PubSub mailboxes.
+        # The wire PAYLOAD already drops user_id per decision G3; this
+        # change closes the DELIVERY ROUTE leak.
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.network_slug, target),
+            Topic.channel(state.user_name, state.network_slug, target),
             Wire.message_event(preloaded)
           )
 

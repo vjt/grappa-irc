@@ -5,44 +5,47 @@ defmodule GrappaWeb.GrappaChannelTest do
   The channel is a thin pass-through: it subscribes to the joined
   topic on `Grappa.PubSub` and pushes any `{:event, payload}` it
   receives to the connected socket verbatim. Tests verify the join
-  shape (which topics are accepted, which are rejected) and the
+  shape (which topics are accepted, which are rejected), the authz
+  check that rejects topics belonging to a different user, and the
   broadcast → push contract.
 
-  Network/channel happy-path test builds the inner message map by
-  inserting through `Grappa.Scrollback` and formatting via
-  `Grappa.Scrollback.Wire.message_event/1` — same code path the
-  controller uses when broadcasting. That way the wire-shape contract
-  is pinned end-to-end: a regression in either side (channel reshapes,
-  or domain wire helper changes shape) shows up here, not just in the
-  controller test.
+  Sub-task 2h shifts every Grappa topic to be rooted in the user
+  discriminator (`grappa:user:{name}/...`) so multi-user instances
+  cannot cross-deliver broadcasts. The authz check on join enforces
+  that no socket can subscribe to another user's topic, even if the
+  string is well-formed.
 
   `Phoenix.PubSub` is process-routed but topics are global, so two
   `async: true` tests that share a topic name will see each other's
-  broadcasts. Each test below uses a distinct `(network, channel)`
-  pair so the topic namespace is partitioned per-test. The schema's
-  free-form string columns make this trivial.
+  broadcasts. Each test below uses a distinct identifier so the topic
+  namespace is partitioned per-test.
   """
   use GrappaWeb.ChannelCase, async: false
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Networks, Repo, Scrollback}
+  alias Grappa.{Networks, PubSub.Topic, Repo, Scrollback}
   alias Grappa.Scrollback.Wire
   alias GrappaWeb.UserSocket
 
-  describe "join grappa:network:{net}/channel:{chan}" do
-    test "delivers PubSub-broadcast events verbatim" do
-      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+  defp build_socket(user_name) do
+    socket(UserSocket, "user_socket:#{user_name}", %{user_name: user_name})
+  end
+
+  describe "join grappa:user:{user}/network:{net}/channel:{chan}" do
+    test "delivers PubSub-broadcast events verbatim when authz passes" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
 
       {:ok, network} =
         Networks.find_or_create_network(%{slug: "ch-happy-#{System.unique_integer([:positive])}"})
 
       chan = "#ch_happy"
-      topic = "grappa:network:#{network.slug}/channel:#{chan}"
+      topic = Topic.channel(user_name, network.slug, chan)
 
       {:ok, _, _} =
-        UserSocket
-        |> socket("user_socket:vjt", %{user_name: "vjt"})
+        user_name
+        |> build_socket()
         |> subscribe_and_join(topic, %{})
 
       {:ok, message} =
@@ -65,13 +68,14 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "broadcasts on a sibling channel topic do NOT reach this socket" do
-      net = "ch_sibling_net"
-      joined = "grappa:network:#{net}/channel:#ch_joined"
-      other = "grappa:network:#{net}/channel:#ch_other"
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      net = "ch_sibling_net-#{System.unique_integer([:positive])}"
+      joined = Topic.channel(user_name, net, "#ch_joined")
+      other = Topic.channel(user_name, net, "#ch_other")
 
       {:ok, _, _} =
-        UserSocket
-        |> socket("user_socket:vjt", %{user_name: "vjt"})
+        user_name
+        |> build_socket()
         |> subscribe_and_join(joined, %{})
 
       Phoenix.PubSub.broadcast(Grappa.PubSub, other, {:event, %{kind: :message}})
@@ -81,12 +85,13 @@ defmodule GrappaWeb.GrappaChannelTest do
   end
 
   describe "join grappa:user:{user}" do
-    test "subscribes to the user topic and pushes events verbatim" do
-      topic = "grappa:user:ch_user_test"
+    test "subscribes to the user-level topic and pushes events verbatim" do
+      user_name = "ch_user_test-#{System.unique_integer([:positive])}"
+      topic = Topic.user(user_name)
 
       {:ok, _, _} =
-        UserSocket
-        |> socket("user_socket:vjt", %{user_name: "vjt"})
+        user_name
+        |> build_socket()
         |> subscribe_and_join(topic, %{})
 
       payload = %{kind: :motd, body: "welcome"}
@@ -96,32 +101,71 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  describe "join authz — cross-user topics are forbidden" do
+    test "user-level topic of a different user returns forbidden" do
+      assert {:error, %{reason: "forbidden"}} =
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join(Topic.user("alice"), %{})
+    end
+
+    test "network-level topic of a different user returns forbidden" do
+      assert {:error, %{reason: "forbidden"}} =
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join(Topic.network("alice", "azzurra"), %{})
+    end
+
+    test "channel-level topic of a different user returns forbidden" do
+      assert {:error, %{reason: "forbidden"}} =
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join(Topic.channel("alice", "azzurra", "#sniffo"), %{})
+    end
+  end
+
   describe "join rejects malformed topics" do
-    test "rejects malformed network topic (suffix is not channel:{chan})" do
-      assert {:error, %{reason: "unknown topic"}} =
-               UserSocket
-               |> socket("user_socket:vjt", %{user_name: "vjt"})
-               |> subscribe_and_join("grappa:network:ch_reject_net/wrong:foo", %{})
+    test "rejects Phase 1 grappa:network: shape (regression check)" do
+      # Sub-task 2h removed the Phase 1 `grappa:network:*` channel
+      # route from UserSocket. A stale client subscribing on the old
+      # prefix gets rejected by Phoenix's route matcher (in-process
+      # tests raise `NoRouteError`; over the wire the transport replies
+      # with `unmatched topic`). Either way, the old shape can no longer
+      # reach a channel — regression-pinned.
+      assert_raise RuntimeError,
+                   ~r/no channel/i,
+                   fn ->
+                     "vjt"
+                     |> build_socket()
+                     |> subscribe_and_join("grappa:network:azzurra/channel:#sniffo", %{})
+                   end
     end
 
-    test "rejects empty network segment" do
+    test "rejects malformed network suffix" do
       assert {:error, %{reason: "unknown topic"}} =
-               UserSocket
-               |> socket("user_socket:vjt", %{user_name: "vjt"})
-               |> subscribe_and_join("grappa:network:", %{})
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join("grappa:user:vjt/network:azzurra/wrong:foo", %{})
     end
 
-    test "rejects empty channel segment after channel: prefix" do
+    test "rejects empty network slug after network: prefix" do
       assert {:error, %{reason: "unknown topic"}} =
-               UserSocket
-               |> socket("user_socket:vjt", %{user_name: "vjt"})
-               |> subscribe_and_join("grappa:network:ch_reject_net/channel:", %{})
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join("grappa:user:vjt/network:", %{})
+    end
+
+    test "rejects empty channel name after channel: prefix" do
+      assert {:error, %{reason: "unknown topic"}} =
+               "vjt"
+               |> build_socket()
+               |> subscribe_and_join("grappa:user:vjt/network:azzurra/channel:", %{})
     end
 
     test "rejects empty user segment" do
       assert {:error, %{reason: "unknown topic"}} =
-               UserSocket
-               |> socket("user_socket:vjt", %{user_name: "vjt"})
+               "vjt"
+               |> build_socket()
                |> subscribe_and_join("grappa:user:", %{})
     end
   end

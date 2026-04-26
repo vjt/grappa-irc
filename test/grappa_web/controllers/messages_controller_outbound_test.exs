@@ -16,7 +16,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, Scrollback, Session}
+  alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
 
   setup %{conn: conn} do
     # Phase 2 (sub-task 2e): Session.Server writes scrollback rows
@@ -60,7 +60,17 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     test "sends PRIVMSG upstream, persists row, broadcasts, returns 201",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#sniffo")
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel("vjt", "azzurra", "#sniffo")
+        )
+
+      # Sub-task 2h regression: Phase 1 topic shape gets nothing now.
+      :ok =
+        Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#sniffo")
+
       pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
@@ -97,6 +107,9 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert is_integer(msg.server_time)
       assert is_integer(msg.id)
       refute Map.has_key?(msg, :user_id)
+
+      # Phase 1 shape subscriber sees nothing — routing iso holds.
+      refute_received {:event, _}
 
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
@@ -169,9 +182,15 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "broadcast scoped to (network, channel) — does not leak", %{conn: conn, vjt: vjt} do
+    test "broadcast scoped to (user, network, channel) — does not leak", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#other")
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel("vjt", "azzurra", "#other")
+        )
+
       pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
