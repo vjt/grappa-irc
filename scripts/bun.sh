@@ -30,6 +30,15 @@ CICCHETTO_DIR="$SRC_ROOT/cicchetto"
 BUN_CACHE_DIR="$REPO_ROOT/runtime/bun-cache"
 mkdir -p "$CICCHETTO_DIR" "$BUN_CACHE_DIR"
 
+# Vite dev/preview server binds 0.0.0.0:5173 inside the container. Expose
+# the port to the host (and thus to the LAN, for iPhone PWA install
+# testing) only for `run dev` / `run preview` — `bun add`, `run check`,
+# `run test`, `run build` are short-lived and never serve traffic.
+PORT_ARGS=()
+if [ "${1:-}" = "run" ] && { [ "${2:-}" = "dev" ] || [ "${2:-}" = "preview" ]; }; then
+    PORT_ARGS=(-p 5173:5173)
+fi
+
 docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     -v "$CICCHETTO_DIR:/app" \
@@ -38,5 +47,6 @@ docker run --rm -i \
     -e HOME=/tmp \
     -e BUN_INSTALL_CACHE_DIR=/cache \
     -w /app \
+    "${PORT_ARGS[@]}" \
     oven/bun:1 \
     bun "$@"

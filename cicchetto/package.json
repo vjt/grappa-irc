@@ -20,6 +20,9 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
     "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@types/jsdom": "^28.0.1",
+    "jsdom": "^29.0.2",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
     "vite-plugin-solid": "^2.11.12",
