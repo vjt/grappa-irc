@@ -38,12 +38,7 @@ config :logger, :console,
     :pid,
     :unexpected,
     # Bootstrap summary: how many credentials we enumerated and how
-    # many session starts succeeded vs. failed. Sub-task 2j swapped
-    # the boot path from TOML reading to DB enumeration; `:credentials`
-    # is the post-2j count, `:users` + `:path` rode the old
-    # "bootstrap done users=N path=..." line shape.
-    :path,
-    :users,
+    # many session starts succeeded vs. failed.
     :credentials,
     :started,
     :failed,
@@ -63,15 +58,6 @@ config :logger, :console,
     :session_id,
     :affected,
     :authn_failure,
-    # Bootstrap (Phase 2): per-user-skipped count when a TOML user
-    # has no DB row — the operator must `mix grappa.create_user`
-    # before grappa.toml-driven Bootstrap can spawn that user's
-    # sessions. `:skipped` rides the structured "bootstrap done"
-    # summary line, separate from `:failed` so operator response
-    # ("create the user" vs "investigate the network") doesn't have
-    # to grep warning lines to disambiguate.
-    :networks,
-    :skipped,
     # IRC client (Phase 2 sub-task 2f): SASL handshake numerics
     # (904 / 905 failures, etc.) ride this key so operator log search
     # can grep "sasl" + numeric in a single pass. `:sasl_user` is the

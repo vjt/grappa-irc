@@ -10,10 +10,11 @@ defmodule Grappa do
 
   Each is its own `Boundary` (see `mix boundary.spec`):
 
-  - `Grappa.Bootstrap` — boot-time loader, reads `grappa.toml` and spawns sessions.
-  - `Grappa.Config` — TOML config loader + struct definitions.
+  - `Grappa.Accounts` — user identity + bearer-token sessions.
+  - `Grappa.Bootstrap` — boot-time loader, enumerates DB-bound credentials and spawns sessions.
   - `Grappa.IRC` — own IRC client (parser + identifier validators + GenServer-owned socket).
   - `Grappa.Log` — canonical Logger metadata schema.
+  - `Grappa.Networks` — operator-managed networks + per-(user, network) credentials with Cloak-encrypted upstream password.
   - `Grappa.PubSub` — `Phoenix.PubSub` topic shape helpers.
   - `Grappa.Repo` — Ecto repo backed by sqlite.
   - `Grappa.Scrollback` — bouncer-owned scrollback storage with paginated reads + wire shape.

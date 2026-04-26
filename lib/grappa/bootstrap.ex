@@ -9,14 +9,12 @@ defmodule Grappa.Bootstrap do
   not restart). If `run/0` itself crashes (an unhandled exception
   inside the spawn loop), `:transient` brings it back exactly once.
 
-  ## Sub-task 2j — DB IS the bootstrap source of truth
+  ## DB is the source of truth
 
-  Pre-2j Bootstrap parsed `grappa.toml` to learn which `(user_name,
-  network_slug)` pairs to spawn. The TOML file is gone; the DB-driven
-  shape is `Networks.list_credentials_for_all_users/0` returning every
-  `Credential` with `:network` preloaded so the spawn loop can call
+  `Networks.list_credentials_for_all_users/0` returns every
+  `Credential` with `:network` preloaded; the spawn loop calls
   `Session.start_session(credential.user_id, credential.network_id)`
-  without a second query per row.
+  per row.
 
   Operator door for adding a binding: `mix grappa.create_user` then
   `mix grappa.bind_network --auth ...`. Bootstrap re-reads the DB
@@ -40,10 +38,6 @@ defmodule Grappa.Bootstrap do
     * `failed`  — `{:error, _}`; transient infra issue or auth failure.
       Operator action: investigate the upstream or
       `mix grappa.update_network_credential`.
-
-  Pre-2j carried a third `skipped` counter for "TOML user has no DB
-  row." With the DB as the only source of truth, every Credential row
-  references a real User by FK — the scenario is unrepresentable.
 
   ## Test surface
 

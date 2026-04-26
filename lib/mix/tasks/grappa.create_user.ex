@@ -30,9 +30,9 @@ defmodule Mix.Tasks.Grappa.CreateUser do
     password = Keyword.fetch!(opts, :password)
 
     # Skip bootstrap: this CLI task only needs Repo + Argon2, never the
-    # IRC supervision tree. Booting bootstrap would require grappa.toml
-    # to be present and would open real upstream connections — neither
-    # makes sense for a one-shot account-provisioning command.
+    # IRC supervision tree. Booting bootstrap would open real upstream
+    # connections to every bound network, which makes no sense for a
+    # one-shot account-provisioning command.
     # See `Grappa.Application.bootstrap_child/0` for the flag's contract.
     Application.put_env(:grappa, :start_bootstrap, false)
     {:ok, _} = Application.ensure_all_started(:grappa)

@@ -9,19 +9,12 @@ defmodule Grappa.BootstrapTest do
   supervision-tree placement; the testable surface is the synchronous
   `run/0`.
 
-  ## Sub-task 2j — DB IS the bootstrap source of truth
-
-  Pre-2j, Bootstrap parsed `grappa.toml` for the `(user_name,
-  network_slug)` spawn list and looked the user up in the DB. The
-  TOML file is gone — the DB-driven shape is `Networks.bind_credential/3`
-  + `Networks.add_server/2` is the operator's only door, and Bootstrap
-  enumerates the resulting credentials via
-  `Networks.list_credentials_for_all_users/0`.
-
-  Side-effect: the pre-2j `skipped` counter ("TOML user has no DB
-  row") is gone. With FK from `network_credentials.user_id` to
-  `users.id`, every credential row IS a user that exists by
-  construction. Two counters: `started` + `failed`.
+  Operator door for binding a `(user, network)`: `mix grappa.create_user`
+  + `mix grappa.bind_network --auth ...`. Bootstrap re-enumerates
+  credentials on every boot via `Networks.list_credentials_for_all_users/0`.
+  Two counters: `started` + `failed` — the FK from
+  `network_credentials.user_id` to `users.id` makes a "user not in DB"
+  scenario unrepresentable.
 
   `async: false` because `Grappa.SessionSupervisor` and the singleton
   `Grappa.SessionRegistry` are shared across tests; concurrent runs

@@ -29,9 +29,6 @@ if config_env() == :prod do
     secret_key_base: secret_key_base,
     server: true
 
-  # TOML config path — read by Grappa.Config at startup.
-  config :grappa, :config_path, System.get_env("GRAPPA_CONFIG") || "/app/grappa.toml"
-
   # Cloak vault key — base64-encoded 32 bytes. Generate once with
   # `scripts/mix.sh grappa.gen_encryption_key` and back up separately.
   # Losing the key means losing all stored upstream credentials.
@@ -50,8 +47,4 @@ if config_env() == :prod do
     ]
 
   config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL") || "info")
-end
-
-if config_env() in [:dev, :test] do
-  config :grappa, :config_path, System.get_env("GRAPPA_CONFIG") || "grappa.toml"
 end
