@@ -14,7 +14,7 @@
 #   - SECRET_KEY_BASE required (no dev fallback)
 #   - DATABASE_PATH points at /app/runtime/grappa_prod.db
 #   - grappa is NOT on vlan53 — it's only reachable through nginx
-#   - cicchetto-build (oneshot) populates the cicchetto_dist named volume
+#   - cicchetto-build (oneshot) populates ./runtime/cicchetto-dist on host
 #   - nginx serves dist + proxies /auth /me /networks /healthz /socket
 
 services:
@@ -55,12 +55,23 @@ services:
         max-size: "10m"
         max-file: "5"
 
-  # Oneshot service — builds cicchetto's static SPA into the
-  # cicchetto_dist named volume. scripts/deploy.sh runs this explicitly
-  # via `compose run --rm` before bringing up nginx, so dist/ is always
-  # fresh on every deploy. The depends_on below is the safety net for
-  # a manual `compose up` (compose will run the dep to completion before
-  # starting nginx).
+  # Oneshot service — builds cicchetto's static SPA into
+  # ./runtime/cicchetto-dist on the host. scripts/deploy.sh runs this
+  # explicitly via `compose run --rm` before bringing up nginx, so dist/
+  # is always fresh on every deploy. The depends_on below is the safety
+  # net for a manual `compose up` (compose will run the dep to completion
+  # before starting nginx).
+  #
+  # Why a host bind-mount instead of a named volume: a fresh Docker named
+  # volume is root:root, but the container drops to UID 1000 (so node_modules
+  # + bun.lock writes to the bind-mounted ./cicchetto/ don't land as root
+  # on the host filesystem). Container-as-1000 + named-volume-as-root
+  # collides on Vite's prepare-out-dir step (EACCES on copyfile to
+  # /app/dist/). Host bind-mount with deploy.sh's `mkdir -p` (default
+  # ownership inherits from the operator's UID, which IS 1000 on the
+  # canonical deployment) sidesteps the collision and makes dist/
+  # inspectable from the host (`ls runtime/cicchetto-dist/` to confirm
+  # the build output without docker exec).
   #
   # Cache layout matches scripts/bun.sh: bun install cache at
   # ./runtime/bun-cache (host bind-mount, shared across worktrees), tmpfs
@@ -73,7 +84,7 @@ services:
     volumes:
       - ./cicchetto:/app
       - ./runtime/bun-cache:/cache
-      - cicchetto_dist:/app/dist
+      - ./runtime/cicchetto-dist:/app/dist
     tmpfs:
       - /tmp:exec,uid=1000,gid=1000
     environment:
@@ -92,7 +103,7 @@ services:
       grappa_internal:
     volumes:
       - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
-      - cicchetto_dist:/usr/share/nginx/html:ro
+      - ./runtime/cicchetto-dist:/usr/share/nginx/html:ro
     depends_on:
       grappa:
         condition: service_started
@@ -115,6 +126,3 @@ networks:
     external: true
   grappa_internal:
     driver: bridge
-
-volumes:
-  cicchetto_dist:

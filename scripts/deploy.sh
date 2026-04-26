@@ -3,8 +3,8 @@
 #
 # Refuses to run on a non-main branch. Builds compose.prod.yaml's grappa
 # image, runs the cicchetto-build oneshot to refresh the SPA dist into
-# the cicchetto_dist named volume, then brings up grappa + nginx.
-# Verifies /healthz via nginx.
+# ./runtime/cicchetto-dist, then brings up grappa + nginx. Verifies
+# /healthz via nginx.
 #
 # Usage:
 #   scripts/deploy.sh
@@ -25,9 +25,16 @@ fi
 # 1. Build grappa prod image
 docker compose -f compose.prod.yaml build grappa
 
-# 2. Refresh cicchetto SPA dist into the cicchetto_dist named volume.
+# 2. Refresh cicchetto SPA dist into ./runtime/cicchetto-dist.
 #    Always run on every deploy — bun install cache + Vite incremental
 #    build keep this fast (~few seconds after the first cold run).
+#    Host bind-mount instead of a named volume so the container (UID
+#    1000) can write into a directory that already exists with the
+#    right ownership; a fresh named volume is root:root and fails
+#    Vite's prepare-out-dir step. mkdir -p inherits the operator's UID
+#    — on the canonical deployment that's UID 1000 = vjt = container
+#    user.
+mkdir -p runtime/cicchetto-dist
 echo "Building cicchetto dist..."
 docker compose -f compose.prod.yaml run --rm cicchetto-build
 
