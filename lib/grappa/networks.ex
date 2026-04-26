@@ -351,6 +351,30 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Returns every credential across every user, with `:network` preloaded.
+
+  Used by `Grappa.Bootstrap` to spawn one `Grappa.Session.Server` per
+  bound (user, network) at boot. Sub-task 2j swapped the boot path
+  from a TOML-driven config into this DB-driven query so that
+  operators using `mix grappa.bind_network` can take effect on the
+  next deploy without editing a file.
+
+  Ordered by `(inserted_at, user_id, network_id)` so the per-credential
+  log lines from Bootstrap are deterministic across reboots — handy
+  when triaging "this network failed to start, how far did boot get".
+  """
+  @spec list_credentials_for_all_users() :: [Credential.t()]
+  def list_credentials_for_all_users do
+    query =
+      from(c in Credential,
+        order_by: [asc: c.inserted_at, asc: c.user_id, asc: c.network_id],
+        preload: [:network]
+      )
+
+    Repo.all(query)
+  end
+
+  @doc """
   Returns the user_ids that currently have a credential on `network`.
   Used by `unbind_credential/2` to decide whether to cascade-delete
   the parent network row when the last binding is removed.

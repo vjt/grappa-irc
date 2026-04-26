@@ -346,6 +346,63 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "list_credentials_for_all_users/0" do
+    test "returns [] when no credentials exist" do
+      assert Networks.list_credentials_for_all_users() == []
+    end
+
+    test "returns every credential across users + networks with :network preloaded" do
+      u1 = user_fixture("alice-#{System.unique_integer([:positive])}")
+      u2 = user_fixture("bob-#{System.unique_integer([:positive])}")
+      net_a = network_fixture("net-a-#{System.unique_integer([:positive])}")
+      net_b = network_fixture("net-b-#{System.unique_integer([:positive])}")
+
+      {:ok, _} =
+        Networks.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
+
+      {:ok, _} =
+        Networks.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
+
+      {:ok, _} =
+        Networks.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
+
+      creds = Networks.list_credentials_for_all_users()
+      assert length(creds) == 3
+      assert Enum.all?(creds, &match?(%Credential{}, &1))
+      assert Enum.all?(creds, &match?(%Network{}, &1.network))
+
+      pairs = Enum.map(creds, &{&1.user_id, &1.network_id})
+      assert {u1.id, net_a.id} in pairs
+      assert {u1.id, net_b.id} in pairs
+      assert {u2.id, net_a.id} in pairs
+    end
+
+    test "orders by inserted_at ascending so Bootstrap output is deterministic" do
+      u1 = user_fixture("alice-#{System.unique_integer([:positive])}")
+      u2 = user_fixture("bob-#{System.unique_integer([:positive])}")
+      net_a = network_fixture("net-a-#{System.unique_integer([:positive])}")
+      net_b = network_fixture("net-b-#{System.unique_integer([:positive])}")
+
+      {:ok, c1} =
+        Networks.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
+
+      {:ok, c2} =
+        Networks.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
+
+      {:ok, c3} =
+        Networks.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
+
+      ts =
+        Enum.map(Networks.list_credentials_for_all_users(), &{&1.user_id, &1.network_id, &1.inserted_at})
+
+      # Strictly non-decreasing inserted_at — ties broken by composite key.
+      assert ts == Enum.sort_by(ts, fn {u, n, t} -> {t, u, n} end)
+      assert {c1.user_id, c1.network_id, c1.inserted_at} in ts
+      assert {c2.user_id, c2.network_id, c2.inserted_at} in ts
+      assert {c3.user_id, c3.network_id, c3.inserted_at} in ts
+    end
+  end
+
   describe "get_credential!/2" do
     test "returns the credential with the password decrypted (Cloak roundtrip)" do
       user = user_fixture()
