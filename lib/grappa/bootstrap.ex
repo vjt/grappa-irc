@@ -42,10 +42,13 @@ defmodule Grappa.Bootstrap do
   ## Test surface
 
   `run/0` is the synchronous, testable function. Production wires
-  `start_link/0` (which spawns `run/0` under a `Task.start_link/3`) so
-  Bootstrap participates in the supervision tree. Tests invoke `run/0`
-  directly to assert effects synchronously without race-prone
-  `Task.await` dances.
+  `start_link/1` (which spawns `run/0` under a `Task.start_link/3`) so
+  Bootstrap participates in the supervision tree. The arg is whatever
+  the supervisor child spec passes through (always `[]` from the
+  bare-module `[Grappa.Bootstrap]` child entry); Bootstrap reads its
+  work from the DB so the arg is unused. Tests invoke `run/0` directly
+  to assert effects synchronously without race-prone `Task.await`
+  dances.
   """
 
   use Boundary,

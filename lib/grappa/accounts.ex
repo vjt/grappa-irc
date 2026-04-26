@@ -5,7 +5,7 @@ defmodule Grappa.Accounts do
   Public surface:
 
     * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`,
-      `get_user_by_name!/1`, `get_user_by_name/1`
+      `get_user_by_name!/1`
     * sessions: `create_session/3`, `authenticate/1`, `revoke_session/1`
 
   Both `User` and `Session` schemas are exported so downstream callers
@@ -116,21 +116,6 @@ defmodule Grappa.Accounts do
   """
   @spec get_user_by_name!(String.t()) :: User.t()
   def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
-
-  @doc """
-  Fetches a user by `name`, returns `{:error, :not_found}` on miss.
-
-  Used by `Grappa.Bootstrap`, where a TOML user with no DB row should
-  be logged + skipped (best-effort boot per Bootstrap's "running
-  web-only" doctrine), not crash the supervision tree.
-  """
-  @spec get_user_by_name(String.t()) :: {:ok, User.t()} | {:error, :not_found}
-  def get_user_by_name(name) when is_binary(name) do
-    case Repo.get_by(User, name: name) do
-      %User{} = user -> {:ok, user}
-      nil -> {:error, :not_found}
-    end
-  end
 
   @doc """
   Creates a new bearer-token session for `user_id`.

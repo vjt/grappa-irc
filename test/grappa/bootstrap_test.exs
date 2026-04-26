@@ -5,7 +5,7 @@ defmodule Grappa.BootstrapTest do
   `Grappa.Session.Server` per row under `Grappa.SessionSupervisor`.
 
   Tests invoke `Bootstrap.run/0` synchronously rather than going
-  through `start_link/0` — the production wrapper exists only for
+  through `start_link/1` — the production wrapper exists only for
   supervision-tree placement; the testable surface is the synchronous
   `run/0`.
 

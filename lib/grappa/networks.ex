@@ -6,11 +6,12 @@ defmodule Grappa.Networks do
   many users bind it). Credentials are per-(user, network) and carry
   the Cloak-encrypted upstream password. Public surface:
 
-    * networks: `find_or_create_network/1`, `list_users_for_network/1`
-    * servers: `add_server/2`, `list_servers/1`
+    * networks: `find_or_create_network/1`, `get_network_by_slug/1`,
+      `get_network!/1`, `list_users_for_network/1`
+    * servers: `add_server/2`, `list_servers/1`, `remove_server/3`
     * credentials: `bind_credential/3`, `update_credential/3`,
       `get_credential!/2`, `unbind_credential/2`,
-      `list_credentials_for_user/1`
+      `list_credentials_for_user/1`, `list_credentials_for_all_users/0`
 
   ## Cascade-on-empty
 
