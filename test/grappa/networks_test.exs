@@ -185,6 +185,62 @@ defmodule Grappa.NetworksTest do
       assert errors_on(cs)[:nick] != nil
     end
 
+    # A8: nick validation is sourced from `Grappa.IRC.Identifier.valid_nick?/1`.
+    # The Credential changeset previously carried its own regex + length
+    # rule that drifted slightly (the local regex disallowed leading
+    # hyphens; Identifier permits them per RFC 2812 §2.3.1 + the
+    # modern-IRC permissiveness documented in Identifier's moduledoc).
+    # These two parity tests lock the contract — if Credential's nick
+    # rule and Identifier.valid_nick? ever diverge again, one of these
+    # fires. Asserted at the changeset layer (no DB round-trip) since
+    # the contract is pure validation; Repo.insert is exercised by the
+    # surrounding tests.
+    test "accepts every nick Identifier.valid_nick?/1 accepts", %{user: user, network: net} do
+      # Sample of edge cases Identifier explicitly permits:
+      # leading hyphen, leading bracket, full 31-char length, embedded
+      # IRC special chars. All of these used to be rejected by the
+      # local Credential regex.
+      for nick <- ["-vjt", "[bot]", "v|t", "v_jt", String.duplicate("a", 31)] do
+        assert Grappa.IRC.Identifier.valid_nick?(nick),
+               "test fixture invariant: Identifier should accept #{inspect(nick)}"
+
+        cs =
+          Grappa.Networks.Credential.changeset(%Grappa.Networks.Credential{}, %{
+            user_id: user.id,
+            network_id: net.id,
+            nick: nick,
+            auth_method: :none,
+            autojoin_channels: []
+          })
+
+        refute Map.has_key?(errors_on(cs), :nick),
+               "Credential rejected #{inspect(nick)} that Identifier accepts"
+      end
+    end
+
+    test "rejects every nick Identifier.valid_nick?/1 rejects", %{user: user, network: net} do
+      # Sample of inputs Identifier explicitly rejects: contains space,
+      # leading digit, control byte, over 31 chars. Empty string is
+      # tested separately via `validate_required` below — here we want
+      # nicks that pass `validate_required` but fail the syntax rule.
+      for nick <- ["has space", "9leading", "ctl\x01char", String.duplicate("a", 32)] do
+        refute Grappa.IRC.Identifier.valid_nick?(nick),
+               "test fixture invariant: Identifier should reject #{inspect(nick)}"
+
+        cs =
+          Grappa.Networks.Credential.changeset(%Grappa.Networks.Credential{}, %{
+            user_id: user.id,
+            network_id: net.id,
+            nick: nick,
+            auth_method: :none,
+            autojoin_channels: []
+          })
+
+        assert errors_on(cs)[:nick] != nil,
+               "Credential accepted #{inspect(nick)} that Identifier rejects"
+      end
+    end
+
     # S29 C1 review-fix #1: every text field that ends up interpolated
     # into a wire line at handshake time (PASS, NICK, USER, PRIVMSG
     # NickServ) must be CRLF/NUL-free at the changeset boundary. The

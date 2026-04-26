@@ -88,11 +88,6 @@ defmodule Grappa.Networks.Credential do
     timestamps(type: :utc_datetime_usec)
   end
 
-  # IRC RFC 2812 nickname grammar (with the typical relaxations clients
-  # already tolerate — leading digit allowed because some networks
-  # do, length capped to a sane 30 instead of the legacy 9).
-  @nick_format ~r/^[a-zA-Z\[\]\\`_^{|}][a-zA-Z0-9\[\]\\`_^{|}\-]*$/
-
   @doc """
   Builds a create/update changeset. The plaintext `:password` (when
   given) is copied into `:password_encrypted` only when the changeset
@@ -117,8 +112,13 @@ defmodule Grappa.Networks.Credential do
       :autojoin_channels
     ])
     |> validate_required([:user_id, :network_id, :nick, :auth_method])
-    |> validate_length(:nick, min: 1, max: 30)
-    |> validate_format(:nick, @nick_format, message: "must be a valid IRC nickname (no spaces, no leading digit-only)")
+    # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
+    # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
+    # parser already use — single regex, single source. The local
+    # `@nick_format` + `validate_length(:nick, ...)` pair drifted
+    # slightly from Identifier (disallowed leading hyphens; cap 30 vs
+    # Identifier's RFC-aligned 31).
+    |> validate_change(:nick, &validate_nick/2)
     |> validate_password_for_auth_method()
     # S29 C1 review-fix #1: every text field that ends up interpolated
     # into a wire line — PASS, NICK, USER, PRIVMSG NickServ — must be
@@ -134,6 +134,12 @@ defmodule Grappa.Networks.Credential do
     |> validate_change(:auth_command_template, &validate_safe_line_token/2)
     |> validate_change(:autojoin_channels, &validate_autojoin_channels/2)
     |> put_encrypted_password()
+  end
+
+  defp validate_nick(field, value) when is_binary(value) do
+    if Identifier.valid_nick?(value),
+      do: [],
+      else: [{field, "must be a valid IRC nickname"}]
   end
 
   defp validate_safe_line_token(field, value) when is_binary(value) do
