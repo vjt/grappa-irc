@@ -393,6 +393,13 @@ defmodule Grappa.NetworksTest do
       assert %Credential{} = Networks.get_credential!(user, net)
     end
 
+    # S29 H5: see Grappa.Session.ServerTest "unbind_credential tears
+    # down a running session" for the integration test that proves
+    # `Networks.unbind_credential/2` calls `Grappa.Session.stop_session/2`
+    # before deleting the row. Lives there because that file already
+    # carries the IRCServer + sandbox-shared scaffolding for live
+    # sessions.
+
     test "still cascades when last user has NO scrollback (the happy path remains)" do
       user = user_fixture()
       net = network_fixture("azzurra-cleancascade")

@@ -87,6 +87,35 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Stops the running `Grappa.Session.Server` for `(user_id, network_id)`,
+  if any. Idempotent: returns `:ok` whether or not a session was
+  registered for the key.
+
+  Used by `Grappa.Networks.unbind_credential/2` to tear down the
+  GenServer BEFORE the credential row is deleted (S29 H5). Without
+  this, a unbind would leave the GenServer running with cached
+  `state.network_id` pointing at a deleted FK; the next outbound
+  PRIVMSG crashes the server, the `:transient` policy restarts it,
+  init fails to load the credential row, and the cycle repeats every
+  retry until something else clears the registry.
+  """
+  @spec stop_session(Ecto.UUID.t(), integer()) :: :ok
+  def stop_session(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+    case whereis(user_id, network_id) do
+      nil ->
+        :ok
+
+      pid ->
+        # `terminate_child` returns `{:error, :not_found}` on a race
+        # where the child died between whereis and terminate; treat
+        # both branches as success since the post-condition (no
+        # session for the key) is what we promise.
+        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+        :ok
+    end
+  end
+
+  @doc """
   Sends a PRIVMSG upstream through the session for `(user_id,
   network_id)`. Persists a `Grappa.Scrollback.Message` row with
   `sender = session.nick`, broadcasts on the per-channel PubSub topic,

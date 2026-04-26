@@ -247,6 +247,21 @@ defmodule Grappa.Networks do
   """
   @spec unbind_credential(User.t(), Network.t()) :: :ok | {:error, :scrollback_present}
   def unbind_credential(%User{id: user_id}, %Network{id: network_id}) do
+    # S29 H5: tear down the running Session.Server BEFORE the DB
+    # transaction commits. Otherwise the GenServer's cached
+    # `state.network_id` outlives the FK row; the next outbound
+    # PRIVMSG crashes the call handler and the `:transient` restart
+    # loops forever (init re-reads the now-absent credential).
+    # Idempotent — :ok if no session was running for the key.
+    #
+    # Inlined here (not via Grappa.Session.stop_session/2) to avoid
+    # the Networks ↔ Session boundary cycle: Session.Server.init
+    # calls into Networks for credential/network resolution. Future
+    # cleanup: invert that dep so Session takes credential data via
+    # opts at start_session/2 time, then this helper folds back into
+    # Session.stop_session/2.
+    :ok = stop_session_for_unbind(user_id, network_id)
+
     # Wrap in a transaction so the credential delete + the
     # last-binding check + the network delete are atomic. Without it,
     # a concurrent `bind_credential/3` between the check and the
@@ -295,6 +310,25 @@ defmodule Grappa.Networks do
   defp scrollback_present?(network_id) do
     query = from(m in "messages", where: m.network_id == ^network_id, select: 1, limit: 1)
     Repo.exists?(query)
+  end
+
+  # Mirrors `Grappa.Session.stop_session/2` — see that function for
+  # the canonical semantics. Inlined here to avoid the boundary
+  # cycle: Session.Server.init calls into Networks for credential
+  # resolution, so Networks cannot depend on Session. The
+  # registry-key shape `{:session, user_id, network_id}` is owned
+  # by `Grappa.Session.Server.via/2`; this duplication is documented
+  # architectural debt — future cleanup inverts the dep so Session
+  # takes credential data via opts at start_session/2 time.
+  defp stop_session_for_unbind(user_id, network_id) do
+    case Registry.lookup(Grappa.SessionRegistry, {:session, user_id, network_id}) do
+      [{pid, _}] ->
+        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+        :ok
+
+      [] ->
+        :ok
+    end
   end
 
   @doc """
