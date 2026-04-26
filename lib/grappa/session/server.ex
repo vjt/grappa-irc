@@ -75,8 +75,8 @@ defmodule Grappa.Session.Server do
   @type state :: %{
           user_id: Ecto.UUID.t(),
           user_name: String.t(),
-          network_id: String.t(),
-          network_db_id: integer(),
+          network_id: integer(),
+          network_slug: String.t(),
           nick: String.t(),
           autojoin: [String.t()],
           client: pid()
@@ -100,21 +100,24 @@ defmodule Grappa.Session.Server do
   ## GenServer callbacks
 
   @impl GenServer
-  def init(%{user_id: user_id, user_name: user, network_id: network_id} = opts) do
-    :ok = Log.set_session_context(user, network_id)
+  def init(%{user_id: user_id, user_name: user, network_id: network_slug} = opts) do
+    :ok = Log.set_session_context(user, network_slug)
 
-    # Resolve the network slug (string) to its FK integer once at boot
-    # — the Scrollback FK uses the integer; the PubSub topic + log
-    # context use the slug. find_or_create keeps Bootstrap idempotent
-    # against an empty Phase 2 networks table during the transition.
-    {:ok, network} = Networks.find_or_create_network(%{slug: network_id})
+    # Resolve the network slug (string, operator-facing) to its FK
+    # integer (DB-internal) once at boot. State stores both: the
+    # integer drives Scrollback FK inserts, the slug drives PubSub
+    # topic naming + log context. find_or_create_network is
+    # race-safe (it retries the read on changeset error so two
+    # concurrent restarts of the same Session don't lose to the
+    # unique-index violation).
+    {:ok, network} = Networks.find_or_create_network(%{slug: network_slug})
 
     case Client.start_link(%{
            host: opts.host,
            port: opts.port,
            tls: opts.tls,
            dispatch_to: self(),
-           logger_metadata: Log.session_context(user, network_id)
+           logger_metadata: Log.session_context(user, network_slug)
          }) do
       {:ok, client} ->
         :ok = Client.send_handshake(client, opts.nick)
@@ -123,8 +126,8 @@ defmodule Grappa.Session.Server do
          %{
            user_id: user_id,
            user_name: user,
-           network_id: network_id,
-           network_db_id: network.id,
+           network_id: network.id,
+           network_slug: network_slug,
            nick: opts.nick,
            autojoin: Map.get(opts, :autojoin, []),
            client: client
@@ -225,16 +228,21 @@ defmodule Grappa.Session.Server do
   @spec persist_and_broadcast(state(), String.t(), String.t(), String.t()) ::
           {:ok, Scrollback.Message.t()} | {:error, Ecto.Changeset.t()}
   defp persist_and_broadcast(state, target, sender, body) do
-    case Scrollback.persist_privmsg(state.user_id, state.network_db_id, target, sender, body) do
+    case Scrollback.persist_privmsg(state.user_id, state.network_id, target, sender, body) do
       {:ok, message} ->
         # Wire requires the :network assoc loaded — preload before
         # building the broadcast event. Single-row preload, cheap.
         preloaded = Repo.preload(message, :network)
 
+        # Topic shape is `(network_slug, channel)` — no per-user
+        # discriminator yet. Sub-task 2h adds the user partition to
+        # the topic so multi-user instances stop cross-delivering
+        # broadcasts (the WIRE payload already drops user_id per
+        # decision G3, but DELIVERY routing still leaks until 2h).
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.network_id, target),
+            Topic.channel(state.network_slug, target),
             Wire.message_event(preloaded)
           )
 

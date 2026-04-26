@@ -25,8 +25,11 @@ defmodule GrappaWeb.MessagesController do
   POST body must contain a non-empty string `"body"`. Anything else
   (missing key, empty string, non-string) falls through to the
   catch-all `create/2` clause and returns 400. The session's `nick`
-  is the persisted sender; Phase 1 hardcodes the user lookup key to
-  `"vjt"`, replaced by the authenticated client identity in Phase 2.
+  is the persisted sender. The session lookup currently uses
+  `Session.placeholder_user/0` (hardcoded `"vjt"`); 2e wired the GET
+  surface to `current_user_id` but the POST → Session.send_privmsg
+  routing still hardcodes — sub-task 2g rewrites Session to be
+  keyed by `(user_id, network_id)` end-to-end.
 
   The `Scrollback` context owns the hard cap on page size; the
   controller's `@default_limit` is the unconfigured-client default,

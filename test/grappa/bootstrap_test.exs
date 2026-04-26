@@ -157,6 +157,63 @@ defmodule Grappa.BootstrapTest do
     end
   end
 
+  describe "run/1 with TOML user not in DB" do
+    test "skips that user's networks, logs skipped count, does NOT count as failed" do
+      # Phase 2 (sub-task 2e): TOML names a user with no DB row.
+      # Bootstrap logs `skipped=N` separately from `failed=N` so the
+      # operator can tell "I forgot to seed a user" apart from
+      # "the IRC network is down."
+      {_, port} = start_server()
+
+      ghost_name = "ghost-#{System.unique_integer([:positive])}"
+
+      toml = """
+      [server]
+      listen = "127.0.0.1:4000"
+
+      [[users]]
+      name = "vjt"
+
+      [[users.networks]]
+      id = "good_net"
+      host = "127.0.0.1"
+      port = #{port}
+      tls = false
+      nick = "vjt"
+
+      [[users]]
+      name = "#{ghost_name}"
+
+      [[users.networks]]
+      id = "ghost_net_a"
+      host = "127.0.0.1"
+      port = #{port}
+      tls = false
+      nick = "ghost"
+
+      [[users.networks]]
+      id = "ghost_net_b"
+      host = "127.0.0.1"
+      port = #{port}
+      tls = false
+      nick = "ghost"
+      """
+
+      path = write_config(toml)
+      on_exit(fn -> stop_session("vjt", "good_net") end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert :ok = Bootstrap.run(config_path: path) end)
+
+      assert log =~ "started=1"
+      assert log =~ "failed=0"
+      assert log =~ "skipped=2"
+      assert log =~ "user not in DB, skipping"
+    end
+  end
+
   describe "run/1 partial failure" do
     test "some sessions start, some fail — summary reflects both" do
       {_, port_ok} = start_server()

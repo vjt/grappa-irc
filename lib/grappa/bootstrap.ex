@@ -95,14 +95,22 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_all([Config.User.t()]) :: :ok
   defp spawn_all(users) do
-    {opts_list, missing} = build_opts_list(users)
+    {opts_list, skipped} = build_opts_list(users)
 
     stats = Session.spawn_batch(opts_list)
 
+    # Three counters, three operationally-distinct conditions:
+    #   started — Session.start_session returned {:ok, pid}.
+    #   failed  — Session.start_session returned {:error, _}; transient
+    #             infra issue (connection refused, upstream down).
+    #             Operator action: investigate the network.
+    #   skipped — TOML user has no DB row; operator config drift.
+    #             Operator action: `mix grappa.create_user`.
     Logger.info("bootstrap done",
       users: length(users),
       started: stats.started,
-      failed: stats.failed + missing
+      failed: stats.failed,
+      skipped: skipped
     )
 
     :ok
@@ -115,11 +123,11 @@ defmodule Grappa.Bootstrap do
   # `mix grappa.create_user` before grappa.toml-driven Bootstrap can
   # spawn that user's sessions.
   defp build_opts_list(users) do
-    Enum.reduce(users, {[], 0}, fn user, {acc, missing} ->
+    Enum.reduce(users, {[], 0}, fn user, {acc, skipped} ->
       case Accounts.get_user_by_name(user.name) do
         {:ok, %User{} = db_user} ->
           opts = Enum.map(user.networks, &session_opts(db_user, &1))
-          {acc ++ opts, missing}
+          {acc ++ opts, skipped}
 
         {:error, :not_found} ->
           Logger.warning("bootstrap: user not in DB, skipping",
@@ -127,7 +135,7 @@ defmodule Grappa.Bootstrap do
             networks: length(user.networks)
           )
 
-          {acc, missing + length(user.networks)}
+          {acc, skipped + length(user.networks)}
       end
     end)
   end

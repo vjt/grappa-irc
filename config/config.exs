@@ -63,8 +63,12 @@ config :logger, :console,
     # Bootstrap (Phase 2): per-user-skipped count when a TOML user
     # has no DB row — the operator must `mix grappa.create_user`
     # before grappa.toml-driven Bootstrap can spawn that user's
-    # sessions.
-    :networks
+    # sessions. `:skipped` rides the structured "bootstrap done"
+    # summary line, separate from `:failed` so operator response
+    # ("create the user" vs "investigate the network") doesn't have
+    # to grep warning lines to disambiguate.
+    :networks,
+    :skipped
   ]
 
 import_config "#{config_env()}.exs"

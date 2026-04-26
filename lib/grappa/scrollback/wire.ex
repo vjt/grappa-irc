@@ -35,11 +35,11 @@ defmodule Grappa.Scrollback.Wire do
   alias Grappa.Scrollback.Message
 
   @type t :: %{
-          id: integer() | nil,
+          id: integer(),
           network: String.t(),
           channel: String.t(),
           server_time: integer(),
-          kind: Message.kind() | nil,
+          kind: Message.kind(),
           sender: String.t(),
           body: String.t() | nil,
           meta: map()

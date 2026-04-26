@@ -42,22 +42,37 @@ defmodule Grappa.Networks do
 
   @doc """
   Idempotently fetches-or-creates a network by slug. Concurrent
-  callers race on the unique index — the loser surfaces a normal
-  changeset error, NOT `:already_exists`, because the changeset
-  validation could also fail (bad slug) and callers should treat both
-  uniformly.
+  callers race on the unique index — the loser retries the
+  `Repo.get_by/2` once and returns the just-inserted row. Genuine
+  validation failures (bad slug) still return `{:error, changeset}`.
+
+  The retry lives here, not at every call site, so callers can do the
+  one-armed `{:ok, network} = ...` match without each one re-deriving
+  the race-handling rule.
   """
   @spec find_or_create_network(%{required(:slug) => String.t()}) ::
           {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
   def find_or_create_network(%{slug: slug} = attrs) when is_binary(slug) do
     case Repo.get_by(Network, slug: slug) do
-      %Network{} = net ->
+      %Network{} = net -> {:ok, net}
+      nil -> insert_or_recover(attrs, slug)
+    end
+  end
+
+  # Insert; on changeset error, look once more — if the row is now
+  # there, we lost the race and the unique-index violation isn't a
+  # validation failure. If it still isn't there, the changeset really
+  # is invalid (bad slug, etc.) — surface it.
+  defp insert_or_recover(attrs, slug) do
+    case %Network{} |> Network.changeset(attrs) |> Repo.insert() do
+      {:ok, net} ->
         {:ok, net}
 
-      nil ->
-        %Network{}
-        |> Network.changeset(attrs)
-        |> Repo.insert()
+      {:error, %Ecto.Changeset{} = cs} ->
+        case Repo.get_by(Network, slug: slug) do
+          %Network{} = net -> {:ok, net}
+          nil -> {:error, cs}
+        end
     end
   end
 
