@@ -8,7 +8,7 @@
 # record is deleted and re-added — `add` alone would silently no-op
 # on conflict and leave the wrong IP in place.
 #
-# Reads TECHNITIUM_API_TOKEN from /srv/dns/.env on this host (override
+# Reads TECHNITIUM_TOKEN from /srv/dns/.env on this host (override
 # with TECHNITIUM_ENV_FILE). Other knobs available via env vars:
 #   GRAPPA_DOMAIN         default grappa.bad.ass
 #   GRAPPA_ZONE           default bad.ass
@@ -39,8 +39,8 @@ fi
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 
-if [ -z "${TECHNITIUM_API_TOKEN:-}" ]; then
-    echo "register-dns.sh: TECHNITIUM_API_TOKEN missing from '$ENV_FILE'" >&2
+if [ -z "${TECHNITIUM_TOKEN:-}" ]; then
+    echo "register-dns.sh: TECHNITIUM_TOKEN missing from '$ENV_FILE'" >&2
     exit 1
 fi
 
@@ -54,7 +54,7 @@ api_call() {
     shift
     local response status errmsg
     response="$(curl -sk -X POST \
-        --data-urlencode "token=$TECHNITIUM_API_TOKEN" \
+        --data-urlencode "token=$TECHNITIUM_TOKEN" \
         "$@" \
         "$TECHNITIUM_BASE_URL/$endpoint")"
     status="$(printf '%s' "$response" | sed -nE 's/.*"status"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
