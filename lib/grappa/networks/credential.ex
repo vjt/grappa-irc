@@ -73,7 +73,14 @@ defmodule Grappa.Networks.Credential do
     # `@derive {Inspect, except: [:password]}` from sub-task 2f I3.
     field :password_encrypted, EncryptedBinary, redact: true
     field :password, :string, virtual: true, redact: true
-    field :auth_method, Ecto.Enum, values: @auth_methods, default: :auto
+    # No default: operators MUST pick the auth method explicitly. S29
+    # H10: defaulting to `:auto` was a footgun — half-built attrs (in
+    # tests, REPL, future REST attrs) without a password passed the
+    # enum check then crashed mid-handshake on the SASL bitstring
+    # builder with :badarg. validate_required([:auth_method]) below
+    # is the boundary check; the absence of a default means a missing
+    # field surfaces as `can't be blank` instead of `:auto-then-crash`.
+    field :auth_method, Ecto.Enum, values: @auth_methods
     field :auth_command_template, :string
     field :autojoin_channels, {:array, :string}, default: []
 

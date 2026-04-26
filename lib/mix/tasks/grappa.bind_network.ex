@@ -17,10 +17,13 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
         --auth auto \\
         --autojoin '#grappa,#italy'
 
-  Required: `--user`, `--network`, `--server`, `--nick`. Everything
-  else is optional. `--auth` defaults to `auto`; valid values are
-  `auto | sasl | server_pass | nickserv_identify | none`. `--autojoin`
-  is a comma-separated list of channel names.
+  Required: `--user`, `--network`, `--server`, `--nick`, `--auth`.
+  Valid `--auth` values: `auto | sasl | server_pass | nickserv_identify
+  | none`. S29 H10: `--auth` lost its silent `auto` default — operator
+  must pick the upstream auth shape explicitly because the legacy ircd
+  PASS-handoff (`auto`/`server_pass`) and the modern SASL chain
+  (`sasl`) target different on-the-wire surfaces. `--autojoin` is a
+  comma-separated list of channel names.
 
   Adding the same `(network, host, port)` server twice is a no-op
   (the duplicate is silently skipped); rebinding an existing
@@ -57,6 +60,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     slug = Keyword.fetch!(opts, :network)
     server = Keyword.fetch!(opts, :server)
     nick = Keyword.fetch!(opts, :nick)
+    auth = Keyword.fetch!(opts, :auth)
 
     Application.put_env(:grappa, :start_bootstrap, false)
     {:ok, _} = Application.ensure_all_started(:grappa)
@@ -80,7 +84,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     cred_attrs = %{
       nick: nick,
       password: Keyword.get(opts, :password),
-      auth_method: OptionParsing.parse_auth(Keyword.get(opts, :auth, "auto")),
+      auth_method: OptionParsing.parse_auth(auth),
       autojoin_channels: OptionParsing.parse_autojoin(Keyword.get(opts, :autojoin)),
       realname: Keyword.get(opts, :realname),
       sasl_user: Keyword.get(opts, :sasl_user)

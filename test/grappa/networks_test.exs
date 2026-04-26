@@ -184,6 +184,25 @@ defmodule Grappa.NetworksTest do
 
       assert errors_on(cs)[:nick] != nil
     end
+
+    # S29 H10: dropping the `default: :auto` on Credential.auth_method.
+    # Operators must pick the auth method explicitly — :auto is still
+    # a valid choice (modern + legacy ircd combo) but it should not
+    # be the silent default. Half-built attrs (test, REPL, future
+    # REST attrs) defaulting to :auto without a password used to pass
+    # the schema enum check, then crash mid-handshake in
+    # IRC.Client.sasl_plain_payload with `<< nil :: binary >>` :badarg.
+    # With no default + validate_required([:auth_method]), the
+    # missing-method case fails loudly at the changeset boundary.
+    test "rejects bind_credential when auth_method is missing", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 autojoin_channels: []
+               })
+
+      assert errors_on(cs)[:auth_method] != nil
+    end
   end
 
   describe "update_credential/3" do

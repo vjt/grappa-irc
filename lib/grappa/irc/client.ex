@@ -497,8 +497,16 @@ defmodule Grappa.IRC.Client do
   # `sasl_user` for both authzid and authcid — they only differ when the
   # operator wants to authenticate as one identity but appear as another,
   # which Grappa doesn't expose in the credential schema.
-  defp sasl_plain_payload(state) do
-    Base.encode64(<<0, state.sasl_user::binary, 0, state.sasl_user::binary, 0, state.password::binary>>)
+  #
+  # S29 H10: explicit `is_binary(pw)` guard so a contract violation
+  # (state.password somehow nil at the AUTHENTICATE + step) crashes
+  # with `FunctionClauseError` naming this clause instead of an
+  # opaque `<<nil::binary>>` :badarg from the bitstring builder.
+  # `init/1`'s `validate_password_present/1` is the primary gate;
+  # this guard is defense-in-depth for any future code path that
+  # mutates `state.password` after init.
+  defp sasl_plain_payload(%{sasl_user: u, password: pw}) when is_binary(u) and is_binary(pw) do
+    Base.encode64(<<0, u::binary, 0, u::binary, 0, pw::binary>>)
   end
 
   defp parse_(blob) do
