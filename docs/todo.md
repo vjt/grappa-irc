@@ -48,10 +48,6 @@ Branch state: `phase2-auth` 19 ahead of unpushed local main. Merge
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
   ugly `tcp_closed terminating` test-stdout noise.
-- Phase 5 hardening: Bootstrap warning split (originally A20). S14
-  partially fixed via `Config.format_error/1` + per-tag log lines;
-  remaining work is operator-facing UX polish (e.g. suggest fix on
-  invalid_config errors, point at the failing field name).
   **Note:** `Grappa.Config` is DELETED in Phase 2 sub-task 2j; this
   item moves into Phase 2 Bootstrap rewrite scope (operator-facing
   warning shape on invalid DB state).
