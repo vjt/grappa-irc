@@ -36,7 +36,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{IRC.Identifier, Networks, Repo, Scrollback, Session}
+  alias Grappa.{IRC.Identifier, Networks, Scrollback, Session}
 
   @default_limit 50
 
@@ -94,9 +94,13 @@ defmodule GrappaWeb.MessagesController do
     with :ok <- validate_channel_name(channel),
          {:ok, network} <- Networks.get_network_by_slug(slug),
          {:ok, message} <- Session.send_privmsg(user_id, network.id, channel, body) do
+      # `:network` is preloaded by `Scrollback.persist_privmsg/5` —
+      # the Session contract returns a wire-shape-ready row. Don't
+      # re-preload here; reaching across to Repo from the controller
+      # would re-introduce the cross-boundary dep that A4 closed.
       conn
       |> put_status(:created)
-      |> render(:show, message: Repo.preload(message, :network))
+      |> render(:show, message: message)
     end
   end
 

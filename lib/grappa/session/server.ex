@@ -329,22 +329,20 @@ defmodule Grappa.Session.Server do
   defp persist_and_broadcast(state, target, sender, body) do
     case Scrollback.persist_privmsg(state.user_id, state.network_id, target, sender, body) do
       {:ok, message} ->
-        # Wire requires the :network assoc loaded — preload before
-        # building the broadcast event. Single-row preload, cheap.
-        preloaded = Repo.preload(message, :network)
-
         # Topic shape is `(user_name, network_slug, channel)` —
         # sub-task 2h roots every Grappa topic in the user
         # discriminator so two users on the same (network, channel)
         # land in different topic strings + different PubSub mailboxes.
+        # `:network` is preloaded by `Scrollback.persist_privmsg/5`
+        # itself — Wire.message_event pattern-matches on it.
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
             Topic.channel(state.user_name, state.network_slug, target),
-            Wire.message_event(preloaded)
+            Wire.message_event(message)
           )
 
-        {:ok, preloaded}
+        {:ok, message}
 
       {:error, _} = err ->
         err

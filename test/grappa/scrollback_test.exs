@@ -72,6 +72,26 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  describe "persist_privmsg/5" do
+    test "returns the row with :network preloaded so Wire.to_json/1 doesn't need to",
+         %{user: user, network: net} do
+      # Wire.to_json/1 pattern-matches on `%Network{slug: slug}` and
+      # crashes on unloaded assoc. Both callers (Session.Server's
+      # persist_and_broadcast → Wire.message_event, and the REST POST
+      # controller → Scrollback.Wire.to_json) used to re-issue a
+      # `Repo.preload(message, :network)` after the boundary returned.
+      # Pushing the preload into the Scrollback boundary collapses the
+      # two parallel preload sites into one — the contract is now "the
+      # row I hand back is wire-shape-ready".
+      assert {:ok, %Message{} = m} =
+               Scrollback.persist_privmsg(user.id, net.id, "#sniffo", "vjt", "ciao")
+
+      assert %Network{id: id, slug: slug} = m.network
+      assert id == net.id
+      assert slug == net.slug
+    end
+  end
+
   describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do
     test "accepts :join with nil body and default meta map", %{user: user, network: net} do
       assert {:ok, %Message{kind: :join, body: nil, meta: %{}}} =

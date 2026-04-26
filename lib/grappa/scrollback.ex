@@ -82,20 +82,31 @@ defmodule Grappa.Scrollback do
   live here so callers — REST controller, IRC.Session, future Phase 6
   listener — pass only the domain inputs and stay decoupled from the
   schema's internal field set.
+
+  The returned row has `:network` preloaded so callers can hand it
+  straight to `Scrollback.Wire.to_json/1` / `Wire.message_event/1`
+  (both pattern-match on `%Network{slug: _}` and crash on unloaded
+  assoc). Folding the preload into the boundary collapses what used
+  to be two parallel `Repo.preload(message, :network)` sites
+  (Session.Server's broadcast path + the REST POST controller's
+  render path) into one — single source for the wire-shape contract.
   """
   @spec persist_privmsg(Ecto.UUID.t(), integer(), String.t(), String.t(), String.t()) ::
           {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
   def persist_privmsg(user_id, network_id, channel, sender, body)
       when is_binary(user_id) and is_integer(network_id) do
-    insert(%{
-      user_id: user_id,
-      network_id: network_id,
-      channel: channel,
-      server_time: System.system_time(:millisecond),
-      kind: :privmsg,
-      sender: sender,
-      body: body
-    })
+    case insert(%{
+           user_id: user_id,
+           network_id: network_id,
+           channel: channel,
+           server_time: System.system_time(:millisecond),
+           kind: :privmsg,
+           sender: sender,
+           body: body
+         }) do
+      {:ok, message} -> {:ok, Repo.preload(message, :network)}
+      {:error, _} = err -> err
+    end
   end
 
   @doc """
