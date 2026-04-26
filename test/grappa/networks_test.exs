@@ -355,5 +355,59 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
       assert :ok = Networks.unbind_credential(user, net)
     end
+
+    # S29 C2: messages.network_id FK is :restrict (NOT :delete_all) so
+    # archival messages are NEVER silently nuked when the last user
+    # unbinds a network. The cascade-on-empty path detects scrollback
+    # presence BEFORE the delete attempt and rolls back with a typed
+    # error so the operator can run `mix grappa.delete_scrollback`
+    # (Phase 5) explicitly if they want the messages gone.
+    test "returns {:error, :scrollback_present} when last user has scrollback on the network" do
+      user = user_fixture()
+      net = network_fixture("azzurra-archived")
+      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      # One scrollback row blocks the cascade.
+      {:ok, _} =
+        Grappa.Scrollback.insert(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "#sniffo",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "msg keep me"
+        })
+
+      assert {:error, :scrollback_present} = Networks.unbind_credential(user, net)
+
+      # Transaction rolled back — credential AND network still present.
+      assert %Network{} = Repo.get(Network, net.id)
+      assert %Credential{} = Networks.get_credential!(user, net)
+    end
+
+    test "still cascades when last user has NO scrollback (the happy path remains)" do
+      user = user_fixture()
+      net = network_fixture("azzurra-cleancascade")
+      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      # No messages → cascade proceeds.
+      assert :ok = Networks.unbind_credential(user, net)
+      assert Repo.get(Network, net.id) == nil
+    end
   end
 end
