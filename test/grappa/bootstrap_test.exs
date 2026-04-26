@@ -107,6 +107,37 @@ defmodule Grappa.BootstrapTest do
     end
   end
 
+  describe "run/0 idempotency on Bootstrap restart" do
+    test "second run finds existing sessions and counts them as started, not failed" do
+      # F3 (S29 carryover): Bootstrap is `restart: :transient`. On the
+      # one allowed restart every previously-spawned session is still
+      # alive under the same Registry key, so `Session.start_session/3`
+      # returns `{:error, {:already_started, pid}}`. Pre-fix this fell
+      # into the catch-all `{:error, reason}` branch and bumped the
+      # `failed` counter — operator on call would chase a non-issue
+      # every time Bootstrap restarted. Now the `:already_started`
+      # case is recognized as idempotent success.
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      net = bind_db(vjt, "idem-#{System.unique_integer([:positive])}", port)
+
+      on_exit(fn -> stop_session(vjt.id, net.id) end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      assert :ok = Bootstrap.run()
+      pid_after_first = Session.whereis(vjt.id, net.id)
+      assert is_pid(pid_after_first)
+
+      log = capture_log(fn -> assert :ok = Bootstrap.run() end)
+
+      assert log =~ "started=1"
+      assert log =~ "failed=0"
+      assert Session.whereis(vjt.id, net.id) == pid_after_first
+    end
+  end
+
   describe "run/0 partial failure" do
     test "some sessions start, some fail — summary reflects both" do
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")

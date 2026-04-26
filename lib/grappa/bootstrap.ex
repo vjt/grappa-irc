@@ -38,7 +38,10 @@ defmodule Grappa.Bootstrap do
 
   Two counters, two operationally-distinct conditions:
 
-    * `started` — `Session.start_session/3` returned `{:ok, pid}`.
+    * `started` — `Session.start_session/3` returned `{:ok, pid}` OR
+      `{:error, {:already_started, pid}}` (idempotent success — the
+      session is up under the same Registry key, which is what
+      Bootstrap restarts find on every previously-spawned row).
     * `failed`  — `{:error, _}` from `Networks.session_plan/1`
       (`:no_server`, `:user_not_found`) OR from
       `Session.start_session/3` (upstream connection refused, etc.).
@@ -123,6 +126,20 @@ defmodule Grappa.Bootstrap do
       Logger.info("session started", user: user_id, network: slug)
       %{acc | started: acc.started + 1}
     else
+      {:error, {:already_started, _pid}} ->
+        # Bootstrap is `restart: :transient` — on the (single) restart
+        # every previously-spawned session is still alive under the
+        # same `{:via, Registry, ...}` key and `start_session/3`
+        # returns `{:error, {:already_started, pid}}`. That is the
+        # idempotent success case, NOT a start failure: the session
+        # is up; nothing for the operator to investigate. Counting it
+        # under `failed` (the previous behaviour) misdirected operator
+        # action on every Bootstrap restart. Logged at `:debug` so
+        # the success path stays quiet but a noisy boot is still
+        # diagnosable.
+        Logger.debug("session already started", user: user_id, network: slug)
+        %{acc | started: acc.started + 1}
+
       {:error, reason} ->
         Logger.error("session start failed",
           user: user_id,
