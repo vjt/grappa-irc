@@ -42,7 +42,6 @@ services:
       - ./runtime:/app/runtime
     environment:
       MIX_ENV: ${MIX_ENV:-dev}
-      GRAPPA_CONFIG: /app/grappa.toml
       DATABASE_PATH: /app/runtime/grappa_dev.db
       ELIXIR_ERL_OPTIONS: "+fnu"  # filename UTF-8 mode (avoids Erlang locale warnings)
     command: ["mix", "phx.server"]

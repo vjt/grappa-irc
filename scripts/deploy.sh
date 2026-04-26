@@ -17,10 +17,7 @@ if [ "$branch" != "main" ] && [ "${ALLOW_DEPLOY_FROM_BRANCH:-}" != "1" ]; then
 fi
 
 if [ ! -f .env ]; then
-    die "no .env file. Copy .env.example and fill in SECRET_KEY_BASE + RELEASE_COOKIE."
-fi
-if [ ! -f grappa.toml ]; then
-    die "no grappa.toml. Copy grappa.toml.example and fill in your IRC networks."
+    die "no .env file. Copy .env.example and fill in SECRET_KEY_BASE + RELEASE_COOKIE + GRAPPA_ENCRYPTION_KEY."
 fi
 
 # Build prod image

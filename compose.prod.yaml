@@ -7,7 +7,6 @@
 #   - target: runtime (mix release, no mix tools, no source bind-mount)
 #   - SECRET_KEY_BASE required (no dev fallback)
 #   - DATABASE_PATH points at /app/runtime/grappa_prod.db
-#   - grappa.toml bind-mounted read-only
 
 services:
   grappa:
@@ -28,10 +27,8 @@ services:
         ipv4_address: 192.168.53.11
     volumes:
       - ./runtime:/app/runtime
-      - ./grappa.toml:/app/grappa.toml:ro
     environment:
       MIX_ENV: prod
-      GRAPPA_CONFIG: /app/grappa.toml
       DATABASE_PATH: /app/runtime/grappa_prod.db
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?missing SECRET_KEY_BASE — generate with scripts/mix.sh phx.gen.secret}
       PORT: "4000"
