@@ -89,7 +89,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "missing credential row crashes init (transient supervisor would retry)" do
+    test "missing credential row crashes init (start_child returns error tuple)" do
       {_, port} = start_server()
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
@@ -309,7 +309,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "PER-USER ROUTING ISO: alice's subscribe on the same (network, channel) gets nothing" do
+    test "topic discriminator scopes by user_name — bare-slug subscriber gets nothing" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 

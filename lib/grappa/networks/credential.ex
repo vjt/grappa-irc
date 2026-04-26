@@ -63,7 +63,15 @@ defmodule Grappa.Networks.Credential do
     field :nick, :string
     field :realname, :string
     field :sasl_user, :string
-    field :password_encrypted, EncryptedBinary
+    # `redact: true` on `password_encrypted` is load-bearing: Cloak's
+    # `:load` callback decrypts on read so the field IN MEMORY carries
+    # the plaintext upstream password, not the AES-GCM ciphertext. The
+    # virtual `:password` field below is also redacted (input-only),
+    # but after `Repo.one!` it's `nil` while `password_encrypted` IS
+    # the cleartext — so `inspect/1` over a fetched credential would
+    # leak it without this. Symmetric with `Grappa.IRC.Client`'s
+    # `@derive {Inspect, except: [:password]}` from sub-task 2f I3.
+    field :password_encrypted, EncryptedBinary, redact: true
     field :password, :string, virtual: true, redact: true
     field :auth_method, Ecto.Enum, values: @auth_methods, default: :auto
     field :auth_command_template, :string
