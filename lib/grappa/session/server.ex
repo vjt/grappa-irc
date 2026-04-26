@@ -303,7 +303,7 @@ defmodule Grappa.Session.Server do
       realname: Credential.effective_realname(credential),
       sasl_user: Credential.effective_sasl_user(credential),
       auth_method: credential.auth_method,
-      password: credential.password_encrypted
+      password: Credential.upstream_password(credential)
     }
   end
 

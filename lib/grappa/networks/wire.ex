@@ -1,0 +1,90 @@
+defmodule Grappa.Networks.Wire do
+  @moduledoc """
+  Single source of truth for the public JSON wire shape of
+  `Grappa.Networks.Credential` and `Grappa.Networks.Network` rows.
+
+  ## Why this module exists (CRITICAL — read before adding fields)
+
+  `Credential.password_encrypted` is a `Grappa.EncryptedBinary` Cloak
+  column whose `:load` callback decrypts the AES-GCM ciphertext on
+  read. After `Repo.one!`, the field IN MEMORY carries the **plaintext
+  upstream IRC password** — the field name describes the on-disk
+  representation, not the post-load value. The `redact: true` on the
+  schema field protects `inspect/1` and Logger output, but NOT
+  `Jason.encode!/1`, which walks struct fields directly.
+
+  Without an explicit allowlist serializer, the first naive Phase 3
+  controller that does `json(conn, credential)` leaks the upstream
+  NickServ password to the world. This module is the only sanctioned
+  door from `Networks.Credential` / `Networks.Network` rows to JSON.
+  Adding a field to the wire = one edit here. Removing one = a
+  breaking change visible at this single site.
+
+  See `Grappa.Scrollback.Wire` for the analogous shape on the
+  scrollback side; the two share the convention of crashing loudly
+  when a required association isn't preloaded.
+  """
+
+  alias Grappa.Networks.{Credential, Network}
+
+  @type credential_json :: %{
+          network: String.t(),
+          nick: String.t(),
+          realname: String.t() | nil,
+          sasl_user: String.t() | nil,
+          auth_method: Credential.auth_method(),
+          auth_command_template: String.t() | nil,
+          autojoin_channels: [String.t()],
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
+
+  @type network_json :: %{
+          id: integer(),
+          slug: String.t(),
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
+
+  @doc """
+  Renders a `Networks.Credential` row to its public JSON shape. The
+  `:network` association MUST be preloaded — pattern match fails
+  loudly otherwise (same convention as `Scrollback.Wire.to_json/1`).
+
+  Excludes `:password_encrypted` (the post-Cloak-load plaintext
+  upstream secret) and the virtual `:password` field — both must
+  NEVER appear on the wire. If you're tempted to add either, stop
+  and re-read the moduledoc.
+  """
+  @spec credential_to_json(Credential.t()) :: credential_json()
+  def credential_to_json(%Credential{network: %Network{slug: slug}} = c) do
+    %{
+      network: slug,
+      nick: c.nick,
+      realname: c.realname,
+      sasl_user: c.sasl_user,
+      auth_method: c.auth_method,
+      auth_command_template: c.auth_command_template,
+      autojoin_channels: c.autojoin_channels,
+      inserted_at: c.inserted_at,
+      updated_at: c.updated_at
+    }
+  end
+
+  @doc """
+  Renders a `Networks.Network` row to its public JSON shape. The
+  `:servers` and `:credentials` associations are intentionally
+  excluded — separate endpoints surface those (and the credentials
+  list would otherwise risk per-row password leakage even though
+  this module's other function refuses to render it).
+  """
+  @spec network_to_json(Network.t()) :: network_json()
+  def network_to_json(%Network{} = n) do
+    %{
+      id: n.id,
+      slug: n.slug,
+      inserted_at: n.inserted_at,
+      updated_at: n.updated_at
+    }
+  end
+end

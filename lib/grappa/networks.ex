@@ -43,7 +43,7 @@ defmodule Grappa.Networks do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.EncryptedBinary, Grappa.IRC, Grappa.Repo, Grappa.Vault],
-    exports: [Network, Server, Credential]
+    exports: [Network, Server, Credential, Wire]
 
   import Ecto.Query
 

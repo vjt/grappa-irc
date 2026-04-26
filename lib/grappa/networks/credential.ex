@@ -198,6 +198,29 @@ defmodule Grappa.Networks.Credential do
   defp put_encrypted_password(cs), do: cs
 
   @doc """
+  Returns the post-Cloak-load plaintext upstream IRC password.
+
+  After `Repo.one!`, the `:password_encrypted` field carries the
+  decrypted plaintext (the field name describes the on-disk
+  representation, not the in-memory value — see schema comment).
+  Callers that need the plaintext (currently the IRC handshake
+  builder in `Grappa.Session.Server`) MUST go through this accessor
+  rather than reading `.password_encrypted` directly: keeping the
+  access centralised prevents the misleading field name from being
+  mistaken for an opaque ciphertext at the call site.
+
+  Returns `nil` when no upstream secret is bound (e.g.
+  `auth_method: :none`).
+
+  This is the in-memory accessor only. The JSON wire shape
+  (`Grappa.Networks.Wire.credential_to_json/1`) deliberately
+  excludes the password — read that module's moduledoc before
+  exposing the plaintext anywhere outside the IRC handshake path.
+  """
+  @spec upstream_password(t()) :: binary() | nil
+  def upstream_password(%__MODULE__{password_encrypted: pw}), do: pw
+
+  @doc """
   Returns `:realname` if set, otherwise `:nick`. The nil-fallback is
   encoded once here so callers (Session.Server.init, IRC.Client opts
   builder) never have to write `credential.realname || credential.nick`
