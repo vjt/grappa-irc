@@ -5,12 +5,14 @@ config :grappa, Grappa.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2,
   # SQLite has a single writer; with `async: true` tests + `max_cases: 8`,
-  # write-heavy tests (e.g. ScrollbackTest's 505-row insertion loop) can
-  # hit `Database busy` if a sibling test holds the writer when our turn
-  # arrives. `busy_timeout` makes the second writer wait up to N ms for
-  # the lock instead of erroring immediately. 5s comfortably covers any
-  # realistic test-suite contention without masking actual deadlocks.
-  busy_timeout: 5_000
+  # write-heavy tests (ScrollbackTest's 505-row insert loop) plus the
+  # ~100 ms Argon2 hash inside Accounts test setup can stack the writer
+  # queue deep enough to trip the busy timeout. The original 5_000 ms
+  # value started cascading "Database busy" failures once Phase 2's
+  # Sessions + Authn tests added more concurrent inserts; 30_000 ms
+  # gives the queue enough headroom that legitimate contention waits
+  # instead of erroring, while still surfacing a real deadlock loudly.
+  busy_timeout: 30_000
 
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
