@@ -27,7 +27,7 @@ defmodule Grappa.Accounts.User do
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
-          name: String.t(),
+          name: String.t() | nil,
           password_hash: String.t() | nil,
           password: String.t() | nil,
           inserted_at: DateTime.t() | nil,

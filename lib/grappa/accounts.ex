@@ -1,11 +1,15 @@
 defmodule Grappa.Accounts do
   @moduledoc """
-  Operator-managed user accounts.
+  Operator-managed user accounts + bearer-token auth sessions.
 
-  Public surface: `create_user/1`, `get_user_by_credentials/2`,
-  `get_user!/1`. The `User` schema is exported so `Sessions` (sub-task
-  2b) and downstream Plug pipelines can pattern-match on `%User{}` —
-  internal field shape is intentionally part of the contract.
+  Public surface:
+
+    * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`
+    * sessions: `create_session/3`, `authenticate/1`, `revoke_session/1`
+
+  Both `User` and `Session` schemas are exported so downstream callers
+  (controllers, channels, plugs) can pattern-match on the structs —
+  the field shape is intentionally part of the boundary contract.
 
   ## Authentication oracle posture
 
@@ -23,11 +27,31 @@ defmodule Grappa.Accounts do
   tune `:argon2_elixir` config if the per-login cost is unacceptable;
   Phase 2 sticks with the library default so an operator's first
   install matches every other Argon2-using BEAM service in the wild.
-  """
-  use Boundary, top_level?: true, deps: [Grappa.Repo], exports: [User]
 
-  alias Grappa.Accounts.User
+  ## Session lifecycle
+
+  Bearer tokens ARE the session row's UUID PK — no separate token /
+  hash column. Rationale: the operator-personal deployment posture
+  means a DB compromise already exposes scrollback + encrypted creds,
+  so a token-hash adds little marginal protection. See
+  `Grappa.Accounts.Session` moduledoc + `docs/plans/2026-04-25-phase2-auth.md`
+  Decision A for the trade-off.
+
+  Sliding 7-day idle expiry: a session lives forever as long as the
+  client keeps using it; 8 days of silence and the next `authenticate/1`
+  call returns `{:error, :expired}`. To keep the per-request DB-write
+  cost negligible, `last_seen_at` is bumped at most once every 60 s
+  (`@last_seen_bump_threshold_seconds`).
+  """
+  use Boundary, top_level?: true, deps: [Grappa.Repo], exports: [User, Session]
+
+  import Ecto.Query
+
+  alias Grappa.Accounts.{Session, User}
   alias Grappa.Repo
+
+  @idle_timeout_seconds 7 * 24 * 3600
+  @last_seen_bump_threshold_seconds 60
 
   @doc """
   Creates a user from `name` + plaintext `password`.
@@ -80,4 +104,94 @@ defmodule Grappa.Accounts do
   """
   @spec get_user!(Ecto.UUID.t()) :: User.t()
   def get_user!(id), do: Repo.get!(User, id)
+
+  @doc """
+  Creates a new bearer-token session for `user_id`.
+
+  `ip` and `user_agent` are recorded for audit; both may be `nil`
+  (mix tasks bypass the HTTP surface and have neither). The returned
+  `Session.t().id` IS the bearer token to hand back to the client.
+  """
+  @spec create_session(Ecto.UUID.t(), String.t() | nil, String.t() | nil) ::
+          {:ok, Session.t()} | {:error, Ecto.Changeset.t()}
+  def create_session(user_id, ip, user_agent) when is_binary(user_id) do
+    now = DateTime.utc_now()
+
+    %Session{}
+    |> Ecto.Changeset.change(%{
+      user_id: user_id,
+      created_at: now,
+      last_seen_at: now,
+      ip: ip,
+      user_agent: user_agent
+    })
+    |> Repo.insert()
+  end
+
+  @doc """
+  Verifies a bearer token and returns the live `Session` on success.
+
+  Failure modes:
+
+    * `:invalid_token` — `token` isn't a well-formed UUID. Cheap reject
+      before any DB lookup.
+    * `:not_found`    — UUID is well-formed but no row matches.
+    * `:revoked`      — row exists but `revoked_at` is set.
+    * `:expired`      — `last_seen_at` is older than the 7-day idle
+      window. The row is left in place (audit + housekeeping cron).
+
+  On success, `last_seen_at` is bumped to `now` if the previous bump
+  was more than 60 s ago — otherwise the row is returned untouched
+  to spare the DB write under sustained per-request traffic.
+  """
+  @spec authenticate(String.t()) ::
+          {:ok, Session.t()}
+          | {:error, :invalid_token | :not_found | :revoked | :expired}
+  def authenticate(token) when is_binary(token) do
+    with {:ok, _} <- Ecto.UUID.cast(token),
+         %Session{revoked_at: nil} = session <- Repo.get(Session, token) do
+      check_idle(session)
+    else
+      :error -> {:error, :invalid_token}
+      nil -> {:error, :not_found}
+      %Session{} -> {:error, :revoked}
+    end
+  end
+
+  @doc """
+  Marks the session row's `revoked_at` to now. Idempotent and safe to
+  call with an unknown id — both paths return `:ok` (no-op for the
+  unknown id) so callers don't need to branch on existence.
+  """
+  @spec revoke_session(Ecto.UUID.t()) :: :ok
+  def revoke_session(id) when is_binary(id) do
+    query = from(s in Session, where: s.id == ^id)
+    {_, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+    :ok
+  end
+
+  defp check_idle(session) do
+    now = DateTime.utc_now()
+    idle = DateTime.diff(now, session.last_seen_at, :second)
+
+    cond do
+      idle > @idle_timeout_seconds ->
+        {:error, :expired}
+
+      idle > @last_seen_bump_threshold_seconds ->
+        {:ok, touch_session(session, now)}
+
+      true ->
+        {:ok, session}
+    end
+  end
+
+  defp touch_session(session, now) do
+    {:ok, updated} =
+      session
+      |> Ecto.Changeset.change(last_seen_at: now)
+      |> Repo.update()
+
+    updated
+  end
 end
