@@ -1,6 +1,6 @@
 defmodule Grappa.Session.Server do
   @moduledoc """
-  GenServer that owns one `(user_name, network)` upstream IRC session.
+  GenServer that owns one `(user_id, network_id)` upstream IRC session.
 
   Supervises one `Grappa.IRC.Client` (linked via `start_link`) which owns
   the TCP/TLS socket. Inbound parsed `Grappa.IRC.Message` structs arrive
@@ -9,8 +9,30 @@ defmodule Grappa.Session.Server do
   is performed via the high-level `Grappa.IRC.Client` helpers.
 
   Registered under `{:via, Registry, {Grappa.SessionRegistry, {:session,
-  user_name, network_id}}}` so the public `Grappa.Session.whereis/2`
-  facade can resolve a pid from the operator-visible identifiers.
+  user_id, network_id}}}` so the public `Grappa.Session.whereis/2`
+  facade can resolve a pid from the internal identifiers (UUID +
+  integer FK) that every authn'd request handler already has.
+
+  ## Sub-task 2g — DB-backed configuration
+
+  `init/1` takes only `%{user_id, network_id}` and resolves everything
+  else from the DB:
+
+    * `Grappa.Accounts.get_user!/1` for the operator-facing user name
+      (logger metadata + topic discriminator).
+    * `Grappa.Networks.get_network!/1 |> Repo.preload(:servers)` for
+      the slug + the list of server endpoints.
+    * `Grappa.Networks.get_credential!/2` for the per-(user, network)
+      nick / realname / sasl_user / encrypted password / auth_method
+      / autojoin list.
+
+  The first enabled server (sorted by `:priority asc`) becomes the
+  upstream connect target — fail-over policy across the rest of the
+  list is deferred to Phase 5 reconnect/backoff. Empty enabled-server
+  list raises `Grappa.Session.Server.NoServerError`; missing credential
+  row raises `Ecto.NoResultsError`. Both crash init → DynamicSupervisor
+  `:transient` → restart → same wall — operator must intervene
+  (`mix grappa.add_server` / `mix grappa.bind_network`).
 
   ## Phase 1 protocol scope
 
@@ -18,11 +40,7 @@ defmodule Grappa.Session.Server do
 
     * Upstream registration handshake (PASS, CAP LS, NICK, USER,
       AUTHENTICATE, CAP END) is owned by `Grappa.IRC.Client` —
-      `init/1` drives the state machine per `:auth_method`. Sub-task
-      2f added the SASL + PASS + NickServ-IDENTIFY branches; this
-      module pre-2g passes `auth_method: :none` so the path collapses
-      to NICK + USER. Sub-task 2g sources `auth_method` + credential
-      fields from the per-(user, network) row.
+      `init/1` drives the state machine per `:auth_method`.
     * Autojoin fires on `001 RPL_WELCOME`. Phase 5 hardens this to also
       handle `376 RPL_ENDOFMOTD` / `422 ERR_NOMOTD` and a watchdog
       timeout in case neither arrives.
@@ -41,22 +59,11 @@ defmodule Grappa.Session.Server do
 
   PRIVMSG broadcasts emit `Grappa.Scrollback.Wire.message_event/1` on
   the per-(user, network, channel) topic built via
-  `Grappa.PubSub.Topic.channel/3`. The `state.user_name` is the first
+  `Grappa.PubSub.Topic.channel/3`. `state.user_name` is the first
   segment (sub-task 2h) so multi-user instances cannot leak broadcasts
   across users — payload-level iso (decision G3 dropped `user_id` from
   the wire) needed routing-level iso to actually keep alice and vjt's
-  PubSub mailboxes separate. Every broadcaster (this module +
-  `GrappaWeb.MessagesController` via `Session.send_privmsg/4`) routes
-  through the same helper — every door, same wire shape per CLAUDE.md.
-
-  ## State shape (architecture review A6)
-
-  The GenServer keeps the registered identifiers (for log metadata +
-  topic construction), the connection nick (sender for outbound
-  PRIVMSG persistence), the autojoin list (consumed on `001`), and the
-  linked Client pid. Connection params (host/port/tls) are consumed by
-  `init/1` and not retained — Session does not reach into a
-  `Config.Network` struct.
+  PubSub mailboxes separate.
 
   ## Outbound API (Task 9)
 
@@ -66,19 +73,19 @@ defmodule Grappa.Session.Server do
   from the caller's view, single source for the row + wire event.
   `{:send_join, ch}` / `{:send_part, ch}` are upstream-only
   (channel-membership tracking lands in Phase 5 alongside JOIN/PART
-  persistence). Public callers go through `Grappa.Session.send_*`,
-  which resolves the pid from the registry.
+  persistence).
   """
   use GenServer, restart: :transient
 
+  alias Grappa.{Accounts, Log, Networks, Repo, Scrollback}
   alias Grappa.IRC.{Client, Message}
-  alias Grappa.{Log, Networks, Repo, Scrollback}
+  alias Grappa.Networks.Credential
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
 
   require Logger
 
-  @type opts :: Grappa.Session.start_opts()
+  @type opts :: %{required(:user_id) => Ecto.UUID.t(), required(:network_id) => integer()}
 
   @type state :: %{
           user_id: Ecto.UUID.t(),
@@ -92,60 +99,56 @@ defmodule Grappa.Session.Server do
 
   @logged_event_commands [:join, :part, :quit, :nick, :mode, :topic, :kick]
 
+  defmodule NoServerError do
+    @moduledoc """
+    Raised at `Grappa.Session.Server` boot when the network resolves to
+    zero enabled server endpoints. The operator must add at least one
+    via `mix grappa.add_server` before the session can boot.
+    """
+    defexception [:network_id, :network_slug]
+
+    @impl Exception
+    def message(%{network_id: id, network_slug: slug}) do
+      "network ##{id} (#{slug}) has no enabled server endpoints"
+    end
+  end
+
   ## API
 
   @spec start_link(opts()) :: GenServer.on_start()
-  def start_link(%{user_name: u, network_id: n} = opts) do
-    GenServer.start_link(__MODULE__, opts, name: via(u, n))
+  def start_link(%{user_id: user_id, network_id: network_id} = opts)
+      when is_binary(user_id) and is_integer(network_id) do
+    GenServer.start_link(__MODULE__, opts, name: via(user_id, network_id))
   end
 
-  @doc "Returns the via-tuple for the session registered for `(user_name, network_id)`."
-  @spec via(String.t(), String.t()) :: {:via, Registry, {atom(), {:session, String.t(), String.t()}}}
-  def via(user_name, network_id) do
-    {:via, Registry, {Grappa.SessionRegistry, {:session, user_name, network_id}}}
+  @doc "Returns the via-tuple for the session registered for `(user_id, network_id)`."
+  @spec via(Ecto.UUID.t(), integer()) ::
+          {:via, Registry, {atom(), {:session, Ecto.UUID.t(), integer()}}}
+  def via(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+    {:via, Registry, {Grappa.SessionRegistry, {:session, user_id, network_id}}}
   end
 
   ## GenServer callbacks
 
   @impl GenServer
-  def init(%{user_id: user_id, user_name: user, network_id: network_slug} = opts) do
-    :ok = Log.set_session_context(user, network_slug)
+  def init(%{user_id: user_id, network_id: network_id}) do
+    user = Accounts.get_user!(user_id)
+    network = network_id |> Networks.get_network!() |> Repo.preload(:servers)
+    credential = Networks.get_credential!(user, network)
+    server = pick_server(network)
 
-    # Resolve the network slug (string, operator-facing) to its FK
-    # integer (DB-internal) once at boot. State stores both: the
-    # integer drives Scrollback FK inserts, the slug drives PubSub
-    # topic naming + log context. find_or_create_network is
-    # race-safe (it retries the read on changeset error so two
-    # concurrent restarts of the same Session don't lose to the
-    # unique-index violation).
-    {:ok, network} = Networks.find_or_create_network(%{slug: network_slug})
+    :ok = Log.set_session_context(user.name, network.slug)
 
-    # Sub-task 2f: Client now drives the full upstream handshake
-    # (PASS, CAP LS, NICK, USER, AUTHENTICATE, CAP END) per
-    # `:auth_method`. Sub-task 2g will source `auth_method` + `password`
-    # + `sasl_user` + `realname` from the per-(user, network) credential
-    # row; for now the Phase 1 path stays unauthenticated (`:none`)
-    # which collapses to `NICK + USER`.
-    case Client.start_link(%{
-           host: opts.host,
-           port: opts.port,
-           tls: opts.tls,
-           dispatch_to: self(),
-           logger_metadata: Log.session_context(user, network_slug),
-           nick: opts.nick,
-           realname: opts.nick,
-           sasl_user: opts.nick,
-           auth_method: :none
-         }) do
+    case Client.start_link(client_opts(server, credential, user.name, network.slug)) do
       {:ok, client} ->
         {:ok,
          %{
            user_id: user_id,
-           user_name: user,
-           network_id: network.id,
-           network_slug: network_slug,
-           nick: opts.nick,
-           autojoin: Map.get(opts, :autojoin, []),
+           user_name: user.name,
+           network_id: network_id,
+           network_slug: network.slug,
+           nick: credential.nick,
+           autojoin: credential.autojoin_channels,
            client: client
          }}
 
@@ -237,6 +240,42 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:irc, %Message{}}, state), do: {:noreply, state}
 
+  ## Internals
+
+  # Build the IRC.Client opts map from credential + chosen server + the
+  # operator-facing names for log metadata. Nick-fallback for realname
+  # and sasl_user goes through `Credential.effective_*` so the `||
+  # nick` pattern stays in one place — the 2f code review (I1) flagged
+  # inline `||` as a violation of CLAUDE.md "no defaults via \\\\".
+  @spec client_opts(Networks.Server.t(), Credential.t(), String.t(), String.t()) :: map()
+  defp client_opts(server, credential, user_name, network_slug) do
+    %{
+      host: server.host,
+      port: server.port,
+      tls: server.tls,
+      dispatch_to: self(),
+      logger_metadata: Log.session_context(user_name, network_slug),
+      nick: credential.nick,
+      realname: Credential.effective_realname(credential),
+      sasl_user: Credential.effective_sasl_user(credential),
+      auth_method: credential.auth_method,
+      password: credential.password_encrypted
+    }
+  end
+
+  # Lowest-priority enabled server wins. Tie-broken by row id (insertion
+  # order) — `Networks.list_servers/1` orders the same way; this filter
+  # exists to enforce `:enabled` because the preload doesn't filter.
+  # Raises if every server is disabled OR the network has none — the
+  # operator misconfiguration should be loud, not silent.
+  @spec pick_server(Networks.Network.t()) :: Networks.Server.t()
+  defp pick_server(%Networks.Network{servers: servers, id: nid, slug: slug}) do
+    case servers |> Enum.filter(& &1.enabled) |> Enum.sort_by(&{&1.priority, &1.id}) do
+      [server | _] -> server
+      [] -> raise NoServerError, network_id: nid, network_slug: slug
+    end
+  end
+
   # Helper does not log — caller decides. Inbound `handle_info`
   # logs because nothing else surfaces the failure; outbound
   # `handle_call` returns the error tuple so the controller (via
@@ -254,8 +293,6 @@ defmodule Grappa.Session.Server do
         # sub-task 2h roots every Grappa topic in the user
         # discriminator so two users on the same (network, channel)
         # land in different topic strings + different PubSub mailboxes.
-        # The wire PAYLOAD already drops user_id per decision G3; this
-        # change closes the DELIVERY ROUTE leak.
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,

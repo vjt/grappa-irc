@@ -151,13 +151,17 @@ defmodule GrappaWeb.MessagesControllerTest do
   end
 
   describe "POST /networks/:network_id/channels/:channel_id/messages — input validation" do
-    test "no session for (vjt, network) returns 404", %{conn: conn} do
+    test "unknown network slug returns 404 not found", %{conn: conn} do
+      # Sub-task 2g: slug → integer FK resolution short-circuits with
+      # "not found" before reaching the Session lookup. A known slug
+      # without a session is the separate :no_session path tested in
+      # `MessagesControllerOutboundTest`.
       conn =
         conn
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 404)["error"] == "no session"
+      assert json_response(conn, 404)["error"] == "not found"
     end
 
     test "empty body returns 400", %{conn: conn} do

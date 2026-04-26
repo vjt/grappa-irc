@@ -92,6 +92,17 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Fetches a network by integer id. Raises `Ecto.NoResultsError` on miss.
+
+  Used by `Grappa.Session.Server` at boot to materialize the network
+  struct from the integer FK threaded through `Grappa.Session.start_session/2`
+  — registry key resolution has already proven the id is valid, so a
+  miss here is an invariant violation worth crashing on.
+  """
+  @spec get_network!(integer()) :: Network.t()
+  def get_network!(id) when is_integer(id), do: Repo.get!(Network, id)
+
+  @doc """
   Adds a server endpoint to `network`. Returns `{:error, :already_exists}`
   on the unique-index conflict (same `(network_id, host, port)`); other
   validation errors come back as a changeset.

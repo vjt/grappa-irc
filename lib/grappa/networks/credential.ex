@@ -151,4 +151,23 @@ defmodule Grappa.Networks.Credential do
   end
 
   defp put_encrypted_password(cs), do: cs
+
+  @doc """
+  Returns `:realname` if set, otherwise `:nick`. The nil-fallback is
+  encoded once here so callers (Session.Server.init, IRC.Client opts
+  builder) never have to write `credential.realname || credential.nick`
+  inline — that pattern was flagged in the 2f code review (I1) for
+  silently masking the contract that `realname` defaults to `nick`.
+  """
+  @spec effective_realname(t()) :: String.t()
+  def effective_realname(%__MODULE__{realname: nil, nick: nick}) when is_binary(nick), do: nick
+  def effective_realname(%__MODULE__{realname: r}) when is_binary(r), do: r
+
+  @doc """
+  Returns `:sasl_user` if set, otherwise `:nick`. Same rationale as
+  `effective_realname/1`.
+  """
+  @spec effective_sasl_user(t()) :: String.t()
+  def effective_sasl_user(%__MODULE__{sasl_user: nil, nick: nick}) when is_binary(nick), do: nick
+  def effective_sasl_user(%__MODULE__{sasl_user: s}) when is_binary(s), do: s
 end

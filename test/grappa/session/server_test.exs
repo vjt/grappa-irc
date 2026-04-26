@@ -5,18 +5,24 @@ defmodule Grappa.Session.ServerTest do
   mocking `:gen_tcp` per CLAUDE.md "Mock at boundaries (Mox), real
   dependencies inside."
 
-  `async: false` because:
-    1. `Grappa.SessionRegistry` is a singleton (`name: Grappa.SessionRegistry`
-       in `application.ex`); concurrent tests would collide on
-       `{:session, user, net_id}` keys.
-    2. `Grappa.SessionSupervisor` (DynamicSupervisor) is also a singleton.
-    3. `Grappa.PubSub` is a singleton; topic subscriptions across async
-       tests would cross-deliver.
-  `Grappa.DataCase` switches to shared sandbox mode automatically when
-  `async: false` (`shared: not tags[:async]` line 24 of data_case.ex), so
-  the Session GenServer (spawned under the application's
-  DynamicSupervisor, outside the test PID) can still see the sandboxed
-  Repo.
+  ## Sub-task 2g
+
+  Session.Server.init/1 now takes only `%{user_id, network_id}` and
+  loads the network + servers + credential from the DB. The host /
+  port / nick / password / auth_method / autojoin all come from the
+  bound `Grappa.Networks.Credential` row + `Grappa.Networks.Server`
+  endpoint — no more flat opts map. Tests build the DB rows via
+  `network_with_server/1` + `credential_fixture/3` (in
+  `Grappa.AuthFixtures`) and call `Session.start_session(user.id,
+  network.id)` with the new `(Ecto.UUID.t, integer)` signature.
+
+  `async: false` because `Grappa.SessionRegistry`,
+  `Grappa.SessionSupervisor`, and `Grappa.PubSub` are singletons —
+  concurrent tests would collide on `{:session, user_id, network_id}`
+  keys. `Grappa.DataCase` switches to shared sandbox mode automatically
+  when `async: false` so the Session GenServer (spawned under the
+  application's DynamicSupervisor, outside the test PID) can still see
+  the sandboxed Repo.
   """
   use Grappa.DataCase, async: false
 
@@ -25,17 +31,6 @@ defmodule Grappa.Session.ServerTest do
 
   alias Grappa.{IRCServer, Networks, PubSub.Topic, Scrollback, Session}
 
-  setup do
-    # Phase 2 (sub-task 2e): Session.Server's persist path writes via
-    # Scrollback's user_id FK. Pre-insert the users this file's tests
-    # spawn sessions for, plus the network row Session.Server resolves
-    # from the slug at init.
-    vjt = user_fixture(name: "vjt")
-    alice = user_fixture(name: "alice")
-    {:ok, network} = Networks.find_or_create_network(%{slug: "test"})
-    %{vjt: vjt, alice: alice, network: network}
-  end
-
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
   defp start_server(handler \\ passthrough_handler()) do
@@ -43,23 +38,18 @@ defmodule Grappa.Session.ServerTest do
     {server, IRCServer.port(server)}
   end
 
-  defp session_opts(port, user, overrides) do
-    base = %{
-      user_id: user.id,
-      user_name: user.name,
-      network_id: "test",
-      host: "127.0.0.1",
-      port: port,
-      tls: false,
-      nick: "grappa-test",
-      autojoin: ["#sniffo"]
-    }
+  defp setup_user_and_network(port, cred_attrs \\ %{}) do
+    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
-    Map.merge(base, overrides)
+    {network, _} =
+      network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+    credential = credential_fixture(user, network, cred_attrs)
+    {user, network, credential}
   end
 
-  defp start_session(port, user, overrides \\ %{}) do
-    {:ok, pid} = Session.start_session(session_opts(port, user, overrides))
+  defp start_session_for(user, network) do
+    {:ok, pid} = Session.start_session(user.id, network.id)
     pid
   end
 
@@ -68,48 +58,133 @@ defmodule Grappa.Session.ServerTest do
     :ok
   end
 
-  describe "registration" do
-    test "registers via {:session, user, net_id} in Grappa.SessionRegistry", %{vjt: vjt} do
-      {_, port} = start_server()
-      pid = start_session(port, vjt)
+  describe "DB-driven init (sub-task 2g)" do
+    test "threads credential password + auth_method to IRC.Client (server_pass branch)" do
+      {server, port} = start_server()
 
-      assert Session.whereis("vjt", "test") == pid
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: port, slug: "azzurra-#{System.unique_integer([:positive])}")
+
+      _ =
+        credential_fixture(user, network, %{
+          nick: "vjt-grappa",
+          auth_method: :server_pass,
+          password: "loadbearing-secret",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      pid = start_session_for(user, network)
+
+      # PASS line proves the credential password reached IRC.Client
+      # decrypted by Cloak — without DB-driven init this would be `nil`.
+      assert {:ok, "PASS loadbearing-secret\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PASS"))
+
+      assert {:ok, "NICK vjt-grappa\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK"))
+
+      assert {:ok, "USER vjt-grappa 0 * :vjt-grappa\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "two sessions with different (user, network) keys coexist", %{vjt: vjt, alice: alice} do
+    test "missing credential row crashes init (transient supervisor would retry)" do
+      {_, port} = start_server()
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+
+      {network, _} =
+        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+      # No credential bound — init must fail because Networks.get_credential!/2 raises.
+      capture_log(fn ->
+        assert {:error, _} = Session.start_session(user.id, network.id)
+      end)
+    end
+
+    test "missing servers crashes init (operator must add at least one)" do
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{
+          slug: "no-servers-#{System.unique_integer([:positive])}"
+        })
+
+      _ = credential_fixture(user, network, %{nick: "x"})
+
+      capture_log(fn ->
+        assert {:error, _} = Session.start_session(user.id, network.id)
+      end)
+    end
+  end
+
+  describe "registration" do
+    test "registers via {user_id, network_id} in Grappa.SessionRegistry" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      assert Session.whereis(user.id, network.id) == pid
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "two sessions with different (user, network) keys coexist" do
       {_, port1} = start_server()
       {_, port2} = start_server()
 
-      pid1 = start_session(port1, vjt)
-      pid2 = start_session(port2, alice)
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
+
+      {net1, _} =
+        network_with_server(port: port1, slug: "n1-#{System.unique_integer([:positive])}")
+
+      {net2, _} =
+        network_with_server(port: port2, slug: "n2-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(vjt, net1)
+      _ = credential_fixture(alice, net2)
+
+      pid1 = start_session_for(vjt, net1)
+      pid2 = start_session_for(alice, net2)
 
       assert pid1 != pid2
-      assert Session.whereis("vjt", "test") == pid1
-      assert Session.whereis("alice", "test") == pid2
+      assert Session.whereis(vjt.id, net1.id) == pid1
+      assert Session.whereis(alice.id, net2.id) == pid2
 
       :ok = GenServer.stop(pid1, :normal, 1_000)
       :ok = GenServer.stop(pid2, :normal, 1_000)
     end
 
     test "whereis/2 returns nil for unknown keys" do
-      assert Session.whereis("nobody", "nowhere") == nil
+      assert Session.whereis(Ecto.UUID.generate(), 999_999_999) == nil
     end
   end
 
   describe "handshake" do
-    test "sends NICK + USER on init", %{vjt: vjt} do
+    test "sends NICK + USER on init (auth_method :none, no realname override)" do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
 
       assert {:ok, "NICK grappa-test\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK"))
 
-      # Sub-task 2f: realname defaults to the nick when no `:realname`
-      # is supplied — matches the per-credential default in
-      # `Grappa.Networks.Credential` (and what `Grappa.IRC.Client`
-      # falls back to).
+      # Credential.effective_realname/1 returns nick when realname nil.
       assert {:ok, "USER grappa-test 0 * :grappa-test\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "credential :realname overrides nick-based default in USER line" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{nick: "vjt-grappa", realname: "Marcello Barnaba"})
+
+      pid = start_session_for(user, network)
+
+      assert {:ok, "USER vjt-grappa 0 * :Marcello Barnaba\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -117,10 +192,13 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "autojoin on 001" do
-    test "sends JOIN for each configured channel after server welcome", %{vjt: vjt} do
+    test "sends JOIN for each configured channel after server welcome" do
       {server, port} = start_server()
 
-      pid = start_session(port, vjt, %{autojoin: ["#sniffo", "#other"]})
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#sniffo", "#other"]})
+
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
@@ -134,10 +212,12 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "no JOIN sent when autojoin list is empty", %{vjt: vjt} do
+    test "no JOIN sent when credential autojoin_channels empty" do
       {server, port} = start_server()
 
-      pid = start_session(port, vjt, %{autojoin: []})
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
+
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
@@ -149,9 +229,10 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "PING/PONG" do
-    test "responds to server PING with matching PONG", %{vjt: vjt} do
+    test "responds to server PING with matching PONG" do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, "PING :irc.test.org\r\n")
@@ -164,19 +245,22 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "PRIVMSG persistence + broadcast" do
-    test "persists row and broadcasts canonical wire-shape event on PRIVMSG",
-         %{vjt: vjt, network: network} do
+    test "persists row and broadcasts canonical wire-shape event on PRIVMSG" do
       {server, port} = start_server()
-      topic = Topic.channel("vjt", "test", "#sniffo")
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       # Sub-task 2h regression: Phase 1 broadcast topic shape (no user
-      # discriminator) must NOT receive anything anymore. If a future
-      # change accidentally reverts to the old shape, this subscriber
-      # would catch the leak.
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:test/channel:#sniffo")
+      # discriminator) must NOT receive anything.
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          "grappa:network:#{network.slug}/channel:#sniffo"
+        )
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
@@ -187,17 +271,16 @@ defmodule Grappa.Session.ServerTest do
           body: "hello",
           sender: "alice",
           channel: "#sniffo",
-          network: "test",
+          network: network.slug,
           meta: %{}
         )
 
       assert is_integer(msg.server_time)
       assert is_integer(msg.id)
 
-      # Phase 1 shape gets nothing — proves new routing iso.
       refute_received {:event, _}
 
-      [row] = Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
       assert row.body == "hello"
       assert row.sender == "alice"
       assert row.kind == :privmsg
@@ -207,17 +290,17 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "broadcast scoped per (user, network, channel) — does not leak across channels",
-         %{vjt: vjt} do
+    test "broadcast scoped per (user, network, channel) — does not leak across channels" do
       {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
 
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", "test", "#other")
+          Topic.channel(user.name, network.slug, "#other")
         )
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
@@ -226,22 +309,17 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "PER-USER ROUTING ISO: alice's subscribe on the same (network, channel) gets nothing",
-         %{vjt: vjt} do
-      # This is the load-bearing 2h test: even if alice subscribes to
-      # the SAME network + channel pair as vjt, the user-discriminator
-      # in the topic string keeps her PubSub mailbox empty. Without 2h
-      # this would have leaked because Phase 1's topic was
-      # `grappa:network:{net}/channel:{chan}` (shared across users).
+    test "PER-USER ROUTING ISO: alice's subscribe on the same (network, channel) gets nothing" do
       {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
 
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("alice", "test", "#sniffo")
+          Topic.channel("alice-other", network.slug, "#sniffo")
         )
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
@@ -250,12 +328,14 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "server-prefixed PRIVMSG (rare but valid) records server name as sender", %{vjt: vjt} do
+    test "server-prefixed PRIVMSG (rare but valid) records server name as sender" do
       {server, port} = start_server()
-      topic = Topic.channel("vjt", "test", "#sniffo")
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org PRIVMSG #sniffo :system message\r\n")
@@ -268,20 +348,20 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "non-PRIVMSG events" do
-    test "JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK are logged but not persisted or broadcast",
-         %{vjt: vjt, network: network} do
+    test "JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK are logged but not persisted or broadcast" do
       {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
 
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", "test", "#sniffo")
+          Topic.channel(user.name, network.slug, "#sniffo")
         )
 
       Logger.put_module_level(Grappa.Session.Server, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Session.Server) end)
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
 
@@ -295,16 +375,17 @@ defmodule Grappa.Session.ServerTest do
       assert log =~ "irc event"
 
       refute_receive {:event, _}, 100
-      assert Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10) == []
+      assert Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10) == []
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
 
   describe "malformed inbound" do
-    test "parse error logged, session stays alive", %{vjt: vjt} do
+    test "parse error logged, session stays alive" do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
 

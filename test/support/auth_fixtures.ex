@@ -15,9 +15,10 @@ defmodule Grappa.AuthFixtures do
   bearer token IS `session.id`. `put_bearer/2` is the conn helper that
   attaches the `Authorization: Bearer <token>` header.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Repo]
+  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo]
 
-  alias Grappa.{Accounts, Accounts.Session, Accounts.User, Repo}
+  alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
+  alias Grappa.Networks.{Credential, Network, Server}
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -90,4 +91,39 @@ defmodule Grappa.AuthFixtures do
   """
   @spec session_count() :: non_neg_integer()
   def session_count, do: Repo.aggregate(Session, :count, :id)
+
+  @doc """
+  Builds a network row with one server endpoint. `slug` defaults to a
+  unique generated value; `host` / `port` / `tls` describe the server
+  the test's IRC fake is listening on.
+  """
+  @spec network_with_server(keyword()) :: {Network.t(), Server.t()}
+  def network_with_server(attrs \\ []) do
+    slug = Keyword.get(attrs, :slug, "test-#{System.unique_integer([:positive])}")
+    host = Keyword.get(attrs, :host, "127.0.0.1")
+    port = Keyword.fetch!(attrs, :port)
+    tls = Keyword.get(attrs, :tls, false)
+
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+    {:ok, server} = Networks.add_server(network, %{host: host, port: port, tls: tls})
+    {network, server}
+  end
+
+  @doc """
+  Binds `user` to `network` with sensible defaults (auth_method `:none`,
+  no password, autojoin `["#sniffo"]`). Override any field via `attrs`.
+  Returns the credential with `password_encrypted` already round-tripped
+  through Cloak.
+  """
+  @spec credential_fixture(User.t(), Network.t(), map()) :: Credential.t()
+  def credential_fixture(%User{} = user, %Network{} = network, attrs \\ %{}) do
+    base = %{
+      nick: "grappa-test",
+      auth_method: :none,
+      autojoin_channels: ["#sniffo"]
+    }
+
+    {:ok, credential} = Networks.bind_credential(user, network, Map.merge(base, attrs))
+    credential
+  end
 end

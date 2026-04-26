@@ -3,18 +3,23 @@ defmodule GrappaWeb.ChannelsController do
   Upstream JOIN / PART surface. Routes through the per-(user, network)
   `Grappa.Session.Server` to send the IRC command on the live socket.
 
-  Phase 1 hardcodes the user to `"vjt"`. Phase 2 replaces the lookup
-  with the authenticated client identity.
+  Sub-task 2g: lookup is keyed by `(conn.assigns.current_user_id,
+  network.id)` end-to-end. The URL `:network_id` is a slug; this
+  controller resolves it to the integer FK via
+  `Networks.get_network_by_slug/1` so the session lookup matches the
+  internal registry shape.
 
   Both endpoints require an active session for the network — without
   one, `Grappa.Session.send_*` returns `{:error, :no_session}` which
   the `FallbackController` maps to a 404 with `error: "no session"`.
-  Channel-membership tracking + persistence of JOIN/PART events lands
-  in Phase 5; for now these are pure upstream-fire-and-confirm.
+  Unknown network slug returns `{:error, :not_found}` → 404 with
+  `error: "not found"`. Channel-membership tracking + persistence of
+  JOIN/PART events lands in Phase 5; for now these are pure
+  upstream-fire-and-confirm.
   """
   use GrappaWeb, :controller
 
-  alias Grappa.Session
+  alias Grappa.{Networks, Session}
 
   @doc """
   `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
@@ -22,10 +27,13 @@ defmodule GrappaWeb.ChannelsController do
   `{"ok": true}`.
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | :no_session}
-  def create(conn, %{"network_id" => network, "name" => name})
+          Plug.Conn.t() | {:error, :bad_request | :not_found | :no_session}
+  def create(conn, %{"network_id" => slug, "name" => name})
       when is_binary(name) and name != "" do
-    with :ok <- Session.send_join(Session.placeholder_user(), network, name) do
+    user_id = conn.assigns.current_user_id
+
+    with {:ok, network} <- Networks.get_network_by_slug(slug),
+         :ok <- Session.send_join(user_id, network.id, name) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -38,9 +46,13 @@ defmodule GrappaWeb.ChannelsController do
   `DELETE /networks/:network_id/channels/:channel_id` — casts
   `PART <channel_id>` upstream. Returns 202 + `{"ok": true}`.
   """
-  @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :no_session}
-  def delete(conn, %{"network_id" => network, "channel_id" => channel}) do
-    with :ok <- Session.send_part(Session.placeholder_user(), network, channel) do
+  @spec delete(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :no_session}
+  def delete(conn, %{"network_id" => slug, "channel_id" => channel}) do
+    user_id = conn.assigns.current_user_id
+
+    with {:ok, network} <- Networks.get_network_by_slug(slug),
+         :ok <- Session.send_part(user_id, network.id, channel) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})

@@ -3,8 +3,11 @@ defmodule GrappaWeb.ChannelsControllerTest do
   POST /networks/:network_id/channels (JOIN) and
   DELETE /networks/:network_id/channels/:channel_id (PART) route through
   the per-(user, network) `Grappa.Session.Server` to send IRC commands
-  upstream. Without an active session for the hardcoded "vjt" user the
-  endpoints return 404 (operator must wire the session).
+  upstream.
+
+  Sub-task 2g: the URL `:network_id` slug is resolved to its integer FK
+  before the session lookup. Unknown slug → 404 `:not_found`; known
+  slug but no session → 404 `:no_session`. Both via `FallbackController`.
 
   `async: false` because `Grappa.SessionRegistry`,
   `Grappa.SessionSupervisor`, and `Grappa.PubSub` are singletons —
@@ -17,12 +20,11 @@ defmodule GrappaWeb.ChannelsControllerTest do
   alias Grappa.{IRCServer, Session}
 
   setup %{conn: conn} do
-    # Phase 2 (sub-task 2e): Session.Server.init looks up the user by
-    # name + resolves the network slug to its DB row. Pre-insert
-    # "vjt" — Session.send_join/3 routes via Session.placeholder_user.
+    # Pre-bind "vjt" + "azzurra" credential so Session.Server.init can
+    # resolve the row at boot. The bearer-token session attaches the
+    # same vjt to conn.assigns.current_user_id.
     vjt = user_fixture(name: "vjt")
-    {_, session} = user_and_session()
-    {:ok, conn: put_bearer(conn, session.id), session: session, vjt: vjt}
+    {:ok, conn: put_bearer(conn, session_fixture(vjt).id), vjt: vjt}
   end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -32,19 +34,14 @@ defmodule GrappaWeb.ChannelsControllerTest do
     {server, IRCServer.port(server)}
   end
 
-  defp start_session(port, vjt, overrides \\ %{}) do
-    base = %{
-      user_id: vjt.id,
-      user_name: "vjt",
-      network_id: "azzurra",
-      host: "127.0.0.1",
-      port: port,
-      tls: false,
-      nick: "grappa-test",
-      autojoin: []
-    }
+  defp setup_network(vjt, port, slug \\ "azzurra") do
+    {network, _} = network_with_server(port: port, slug: slug)
+    _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+    network
+  end
 
-    {:ok, pid} = Session.start_session(Map.merge(base, overrides))
+  defp start_session_for(vjt, network) do
+    {:ok, pid} = Session.start_session(vjt.id, network.id)
     pid
   end
 
@@ -56,13 +53,14 @@ defmodule GrappaWeb.ChannelsControllerTest do
   describe "POST /networks/:network_id/channels" do
     test "with active session sends JOIN upstream and returns 202", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels", %{"name" => "#sniffo"})
+        |> post("/networks/#{network.slug}/channels", %{"name" => "#sniffo"})
 
       assert json_response(conn, 202) == %{"ok" => true}
 
@@ -72,11 +70,23 @@ defmodule GrappaWeb.ChannelsControllerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "without session returns 404", %{conn: conn} do
+    test "unknown network slug returns 404 not found", %{conn: conn} do
       conn =
         conn
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels", %{"name" => "#sniffo"})
+
+      assert json_response(conn, 404)["error"] == "not found"
+    end
+
+    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+      # No session started — Session.send_join returns :no_session.
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{"name" => "#sniffo"})
 
       assert json_response(conn, 404)["error"] == "no session"
     end
@@ -121,10 +131,11 @@ defmodule GrappaWeb.ChannelsControllerTest do
   describe "DELETE /networks/:network_id/channels/:channel_id" do
     test "with active session sends PART upstream and returns 202", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
-      conn = delete(conn, "/networks/azzurra/channels/%23sniffo")
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo")
 
       assert json_response(conn, 202) == %{"ok" => true}
 
@@ -134,9 +145,14 @@ defmodule GrappaWeb.ChannelsControllerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "without session returns 404", %{conn: conn} do
+    test "unknown network slug returns 404 not found", %{conn: conn} do
       conn = delete(conn, "/networks/no-such-net/channels/%23sniffo")
+      assert json_response(conn, 404)["error"] == "not found"
+    end
 
+    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+      conn = delete(conn, "/networks/azzurra/channels/%23sniffo")
       assert json_response(conn, 404)["error"] == "no session"
     end
 

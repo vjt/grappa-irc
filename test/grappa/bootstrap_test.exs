@@ -7,6 +7,15 @@ defmodule Grappa.BootstrapTest do
   `start_link/1` — the production wrapper exists only for supervision-
   tree placement; the testable surface is the synchronous `run/1`.
 
+  ## Sub-task 2g — TOML-as-spawn-list, DB-as-source-of-truth
+
+  Bootstrap reads TOML for the `(user_name, network_slug)` pairs to
+  spawn at boot. Everything else (host / port / nick / password /
+  auth_method / autojoin) lives in the DB — `Networks.bind_credential/3`
+  + `Networks.add_server/2` must have run before Bootstrap can boot a
+  session for a given pair. Tests pre-bind those rows in setup; the
+  TOML's per-network credential fields are read-but-ignored.
+
   `async: false` because `Grappa.SessionSupervisor` and the singleton
   `Grappa.SessionRegistry` are shared across tests; concurrent runs
   would collide on session keys.
@@ -16,15 +25,15 @@ defmodule Grappa.BootstrapTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Bootstrap, IRCServer, Session}
+  alias Grappa.{Bootstrap, IRCServer, Networks, Session}
 
   setup do
     # Bootstrap reads TOML user "vjt"; Phase 2 made user identity
     # DB-backed (FK on messages.user_id). Pre-insert the row so
     # Bootstrap finds it instead of logging "user not in DB" and
     # skipping every network.
-    user_fixture(name: "vjt")
-    :ok
+    vjt = user_fixture(name: "vjt")
+    %{vjt: vjt}
   end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -35,23 +44,45 @@ defmodule Grappa.BootstrapTest do
   end
 
   defp write_config(toml) do
-    path = Path.join(System.tmp_dir!(), "grappa_bootstrap_test_#{System.unique_integer([:positive])}.toml")
+    path =
+      Path.join(System.tmp_dir!(), "grappa_bootstrap_test_#{System.unique_integer([:positive])}.toml")
+
     :ok = File.write!(path, toml)
     on_exit(fn -> File.rm(path) end)
     path
   end
 
-  defp stop_session(user, network) do
-    case Session.whereis(user, network) do
+  # Bind a DB credential + server for `(user, slug)` so Session.Server.init
+  # can resolve them at boot. `port` is the IRCServer fake's listening port.
+  defp bind_db(user, slug, port) do
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+    {:ok, _} = Networks.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
+
+    {:ok, _} =
+      Networks.bind_credential(user, network, %{
+        nick: "vjt",
+        auth_method: :none,
+        autojoin_channels: []
+      })
+
+    network
+  end
+
+  defp stop_session(user_id, network_id) when is_integer(network_id) do
+    case Session.whereis(user_id, network_id) do
       nil -> :ok
       pid -> DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end
   end
 
   describe "run/1 with valid config" do
-    test "spawns one session per (user, network) entry" do
+    test "spawns one session per (user, network) entry", %{vjt: vjt} do
       {_, port_a} = start_server()
       {_, port_b} = start_server()
+
+      net_a = bind_db(vjt, "neta", port_a)
+      net_b = bind_db(vjt, "netb", port_b)
 
       toml = """
       [server]
@@ -76,17 +107,18 @@ defmodule Grappa.BootstrapTest do
       """
 
       path = write_config(toml)
-      on_exit(fn -> stop_session("vjt", "neta") end)
-      on_exit(fn -> stop_session("vjt", "netb") end)
+      on_exit(fn -> stop_session(vjt.id, net_a.id) end)
+      on_exit(fn -> stop_session(vjt.id, net_b.id) end)
 
       assert :ok = Bootstrap.run(config_path: path)
 
-      assert is_pid(Session.whereis("vjt", "neta"))
-      assert is_pid(Session.whereis("vjt", "netb"))
+      assert is_pid(Session.whereis(vjt.id, net_a.id))
+      assert is_pid(Session.whereis(vjt.id, net_b.id))
     end
 
-    test "logs structured summary line with started/failed counts" do
+    test "logs structured summary line with started/failed counts", %{vjt: vjt} do
       {_, port} = start_server()
+      net = bind_db(vjt, "summary_net", port)
 
       toml = """
       [server]
@@ -104,7 +136,7 @@ defmodule Grappa.BootstrapTest do
       """
 
       path = write_config(toml)
-      on_exit(fn -> stop_session("vjt", "summary_net") end)
+      on_exit(fn -> stop_session(vjt.id, net.id) end)
 
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
@@ -119,7 +151,8 @@ defmodule Grappa.BootstrapTest do
 
   describe "run/1 failure modes (boot web-only)" do
     test "missing config file: returns :ok, logs warning, no sessions started" do
-      missing_path = Path.join(System.tmp_dir!(), "definitely_not_here_#{System.unique_integer([:positive])}.toml")
+      missing_path =
+        Path.join(System.tmp_dir!(), "definitely_not_here_#{System.unique_integer([:positive])}.toml")
 
       log = capture_log(fn -> assert :ok = Bootstrap.run(config_path: missing_path) end)
 
@@ -158,12 +191,12 @@ defmodule Grappa.BootstrapTest do
   end
 
   describe "run/1 with TOML user not in DB" do
-    test "skips that user's networks, logs skipped count, does NOT count as failed" do
-      # Phase 2 (sub-task 2e): TOML names a user with no DB row.
-      # Bootstrap logs `skipped=N` separately from `failed=N` so the
-      # operator can tell "I forgot to seed a user" apart from
-      # "the IRC network is down."
+    test "skips that user's networks, logs skipped count, does NOT count as failed", %{vjt: vjt} do
+      # TOML names a user with no DB row. Bootstrap logs `skipped=N`
+      # separately from `failed=N` so the operator can tell "I forgot
+      # to seed a user" apart from "the IRC network is down."
       {_, port} = start_server()
+      good_net = bind_db(vjt, "good_net", port)
 
       ghost_name = "ghost-#{System.unique_integer([:positive])}"
 
@@ -200,7 +233,7 @@ defmodule Grappa.BootstrapTest do
       """
 
       path = write_config(toml)
-      on_exit(fn -> stop_session("vjt", "good_net") end)
+      on_exit(fn -> stop_session(vjt.id, good_net.id) end)
 
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
@@ -215,10 +248,13 @@ defmodule Grappa.BootstrapTest do
   end
 
   describe "run/1 partial failure" do
-    test "some sessions start, some fail — summary reflects both" do
+    test "some sessions start, some fail — summary reflects both", %{vjt: vjt} do
       {_, port_ok} = start_server()
       # 1 is a privileged port; connect from container as non-root will fail.
       port_bad = 1
+
+      ok_net = bind_db(vjt, "ok_net", port_ok)
+      bad_net = bind_db(vjt, "bad_net", port_bad)
 
       toml = """
       [server]
@@ -243,8 +279,8 @@ defmodule Grappa.BootstrapTest do
       """
 
       path = write_config(toml)
-      on_exit(fn -> stop_session("vjt", "ok_net") end)
-      on_exit(fn -> stop_session("vjt", "bad_net") end)
+      on_exit(fn -> stop_session(vjt.id, ok_net.id) end)
+      on_exit(fn -> stop_session(vjt.id, bad_net.id) end)
 
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
@@ -253,8 +289,45 @@ defmodule Grappa.BootstrapTest do
 
       assert log =~ "started=1"
       assert log =~ "failed=1"
-      assert is_pid(Session.whereis("vjt", "ok_net"))
-      assert Session.whereis("vjt", "bad_net") == nil
+      assert is_pid(Session.whereis(vjt.id, ok_net.id))
+      assert Session.whereis(vjt.id, bad_net.id) == nil
+    end
+
+    test "missing DB credential: counted as failed (no implicit bind)", %{vjt: _vjt} do
+      # Sub-task 2g contract: TOML names a (user, network) pair but the
+      # DB has no Credential row for it. Session.Server.init crashes,
+      # the start_session call returns {:error, _}, and Bootstrap
+      # counts this on the `failed` counter — operator action is
+      # `mix grappa.bind_network`, distinct from "DB user missing"
+      # (which counts as `skipped`).
+      {_, port} = start_server()
+
+      toml = """
+      [server]
+      listen = "127.0.0.1:4000"
+
+      [[users]]
+      name = "vjt"
+
+      [[users.networks]]
+      id = "unbound_net"
+      host = "127.0.0.1"
+      port = #{port}
+      tls = false
+      nick = "vjt"
+      """
+
+      path = write_config(toml)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert :ok = Bootstrap.run(config_path: path) end)
+
+      assert log =~ "started=0"
+      assert log =~ "failed=1"
+      assert log =~ "skipped=0"
+      assert log =~ "session start failed"
     end
   end
 end

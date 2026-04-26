@@ -1,14 +1,18 @@
 defmodule Grappa.Session do
   @moduledoc """
   Public facade for the per-(user, network) IRC session GenServer
-  (`Grappa.Session.Server`). Callers spawn sessions via `start_session/1`
-  and look them up by `(user_name, network_id)` via `whereis/2`.
+  (`Grappa.Session.Server`). Callers spawn sessions via
+  `start_session/2` and look them up by `(user_id, network_id)` via
+  `whereis/2`.
 
-  Sessions are registered in `Grappa.SessionRegistry` (a `:unique` Registry
-  declared in the application supervision tree) under the key
-  `{:session, user_name, network_id}`. They run as `:transient` children of
-  `Grappa.SessionSupervisor` (a `DynamicSupervisor`), so abnormal exits
-  trigger a restart while clean shutdowns do not.
+  Sessions are registered in `Grappa.SessionRegistry` (a `:unique`
+  Registry declared in the application supervision tree) under the key
+  `{:session, user_id, network_id}` — both halves of the key are
+  internal identifiers (`Ecto.UUID.t` + `integer`) that every authn'd
+  request handler already has on `conn.assigns`. They run as
+  `:transient` children of `Grappa.SessionSupervisor` (a
+  `DynamicSupervisor`), so abnormal exits trigger a restart while clean
+  shutdowns do not.
 
   This module is intentionally thin — no business logic. It exists to:
 
@@ -18,21 +22,21 @@ defmodule Grappa.Session do
        `Grappa.Bootstrap` and from any future REST/WS surface that
        wants to inspect or terminate a session.
 
-  ## Opts shape (architecture review A6)
+  ## Sub-task 2g — DB-backed configuration
 
-  `start_session/1` accepts a flat map of primitive fields rather than
-  a `Grappa.Config.Network` struct. The Session module is decoupled
-  from the operator-config schema so Phase 2's DB-backed network
-  records can construct the same opts shape without Config knowing
-  about Session or vice-versa.
-
-  Per CLAUDE.md "Contexts at `lib/grappa/<context>.ex`. ... Public API
-  on the context module; schemas internal."
+  `start_session/2` now takes `(user_id, network_id)` and the
+  Server's `init/1` resolves the host / port / TLS / nick / password
+  / auth_method / autojoin from the bound `Grappa.Networks.Credential`
+  + `Grappa.Networks.Server` rows. The flat opts map (Phase 1 +
+  pre-2g) is gone — the DB is the single source of truth so the same
+  spawn shape works from Bootstrap, the operator REST surface, and
+  future re-bind paths without each one re-deriving a Config-shape
+  bridge.
   """
 
   # `Server` is exported for the test path only — `server_test.exs`
   # tweaks per-module log level via `Logger.put_module_level/2`.
-  # Runtime callers go through this facade (`start_session/1`,
+  # Runtime callers go through this facade (`start_session/2`,
   # `send_*`, `whereis/2`).
   use Boundary,
     top_level?: true,
@@ -47,88 +51,42 @@ defmodule Grappa.Session do
     ],
     exports: [Server]
 
-  alias Grappa.{Log, Session.Server}
+  alias Grappa.Session.Server
 
   require Logger
 
-  @placeholder_user "vjt"
-
-  @type start_opts :: %{
-          required(:user_id) => Ecto.UUID.t(),
-          required(:user_name) => String.t(),
-          required(:network_id) => String.t(),
-          required(:host) => String.t(),
-          required(:port) => 1..65_535,
-          required(:tls) => boolean(),
-          required(:nick) => String.t(),
-          optional(:autojoin) => [String.t()]
-        }
-
   @doc """
-  Spawns a `Grappa.Session.Server` under `Grappa.SessionSupervisor`.
+  Spawns a `Grappa.Session.Server` under `Grappa.SessionSupervisor`
+  for `(user_id, network_id)`.
 
   Returns whatever `DynamicSupervisor.start_child/2` returns —
   `{:ok, pid}` on success, `{:error, {:already_started, pid}}` if a
-  session for the same `(user_name, network_id)` is already registered,
-  or `{:error, reason}` on init failure (e.g. upstream connection
-  refused).
+  session for the same key is already registered, or `{:error,
+  reason}` on init failure (missing credential row, no enabled server,
+  upstream connection refused, etc.).
   """
-  @spec start_session(start_opts()) :: DynamicSupervisor.on_start_child()
-  def start_session(%{user_id: uid, user_name: u, network_id: n} = opts)
-      when is_binary(uid) and is_binary(u) and is_binary(n) do
-    DynamicSupervisor.start_child(Grappa.SessionSupervisor, {Server, opts})
+  @spec start_session(Ecto.UUID.t(), integer()) :: DynamicSupervisor.on_start_child()
+  def start_session(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+    DynamicSupervisor.start_child(
+      Grappa.SessionSupervisor,
+      {Server, %{user_id: user_id, network_id: network_id}}
+    )
   end
 
   @doc """
-  Spawns a list of sessions sequentially, logging one line per result
-  with the canonical `Grappa.Log.session_context/2` metadata. Returns
-  `%{started:, failed:}` counts so the caller can render a summary.
-
-  Use from any session-batch producer: Bootstrap reads the operator
-  TOML, Phase 2 REST `add network` endpoints will wrap a single-element
-  list, etc. Failures are non-fatal — every entry in the list is
-  attempted.
-  """
-  @spec spawn_batch([start_opts()]) :: %{started: non_neg_integer(), failed: non_neg_integer()}
-  def spawn_batch(list) when is_list(list) do
-    Enum.reduce(list, %{started: 0, failed: 0}, fn opts, acc ->
-      context = Log.session_context(opts.user_name, opts.network_id)
-
-      case start_session(opts) do
-        {:ok, _} ->
-          Logger.info("session started", context)
-          %{acc | started: acc.started + 1}
-
-        {:error, reason} ->
-          Logger.error("session start failed", Keyword.put(context, :error, inspect(reason)))
-          %{acc | failed: acc.failed + 1}
-      end
-    end)
-  end
-
-  @doc """
-  The Phase 1 hardcoded `user_name` used by the REST surface to look
-  up the session for the request. Phase 2 auth replaces all callers
-  with `conn.assigns.current_user.name` from the authenticated client
-  identity. Centralized here so the eventual sweep is one grep.
-  """
-  @spec placeholder_user() :: String.t()
-  def placeholder_user, do: @placeholder_user
-
-  @doc """
-  Returns the pid of the session for `(user_name, network_id)`, or
+  Returns the pid of the session for `(user_id, network_id)`, or
   `nil` if no such session is registered.
   """
-  @spec whereis(String.t(), String.t()) :: pid() | nil
-  def whereis(user_name, network_id) when is_binary(user_name) and is_binary(network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, {:session, user_name, network_id}) do
+  @spec whereis(Ecto.UUID.t(), integer()) :: pid() | nil
+  def whereis(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+    case Registry.lookup(Grappa.SessionRegistry, {:session, user_id, network_id}) do
       [{pid, _}] -> pid
       [] -> nil
     end
   end
 
   @doc """
-  Sends a PRIVMSG upstream through the session for `(user_name,
+  Sends a PRIVMSG upstream through the session for `(user_id,
   network_id)`. Persists a `Grappa.Scrollback.Message` row with
   `sender = session.nick`, broadcasts on the per-channel PubSub topic,
   AND writes to the upstream socket — atomic from the caller's view.
@@ -137,14 +95,14 @@ defmodule Grappa.Session do
   `{:error, :no_session}` if no session is registered, or
   `{:error, Ecto.Changeset.t()}` on validation failure.
   """
-  @spec send_privmsg(String.t(), String.t(), String.t(), String.t()) ::
+  @spec send_privmsg(Ecto.UUID.t(), integer(), String.t(), String.t()) ::
           {:ok, Grappa.Scrollback.Message.t()}
           | {:error, :no_session}
           | {:error, Ecto.Changeset.t()}
-  def send_privmsg(user_name, network_id, target, body)
-      when is_binary(user_name) and is_binary(network_id) and is_binary(target) and
+  def send_privmsg(user_id, network_id, target, body)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(target) and
              is_binary(body) do
-    call_session(user_name, network_id, {:send_privmsg, target, body})
+    call_session(user_id, network_id, {:send_privmsg, target, body})
   end
 
   @doc """
@@ -153,31 +111,31 @@ defmodule Grappa.Session do
   socket write happens asynchronously. The REST surface returns 202
   Accepted to mirror this. `{:error, :no_session}` if not registered.
   """
-  @spec send_join(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
-  def send_join(user_name, network_id, channel)
-      when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
-    cast_session(user_name, network_id, {:send_join, channel})
+  @spec send_join(Ecto.UUID.t(), integer(), String.t()) :: :ok | {:error, :no_session}
+  def send_join(user_id, network_id, channel)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(channel) do
+    cast_session(user_id, network_id, {:send_join, channel})
   end
 
   @doc """
   Queues a PART upstream through the session. Cast (see `send_join/3`
   for the rationale). `{:error, :no_session}` if not registered.
   """
-  @spec send_part(String.t(), String.t(), String.t()) :: :ok | {:error, :no_session}
-  def send_part(user_name, network_id, channel)
-      when is_binary(user_name) and is_binary(network_id) and is_binary(channel) do
-    cast_session(user_name, network_id, {:send_part, channel})
+  @spec send_part(Ecto.UUID.t(), integer(), String.t()) :: :ok | {:error, :no_session}
+  def send_part(user_id, network_id, channel)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(channel) do
+    cast_session(user_id, network_id, {:send_part, channel})
   end
 
-  defp call_session(user_name, network_id, request) do
-    case whereis(user_name, network_id) do
+  defp call_session(user_id, network_id, request) do
+    case whereis(user_id, network_id) do
       nil -> {:error, :no_session}
       pid -> GenServer.call(pid, request)
     end
   end
 
-  defp cast_session(user_name, network_id, request) do
-    case whereis(user_name, network_id) do
+  defp cast_session(user_id, network_id, request) do
+    case whereis(user_id, network_id) do
       nil -> {:error, :no_session}
       pid -> GenServer.cast(pid, request)
     end

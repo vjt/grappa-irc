@@ -6,6 +6,12 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   sender, broadcast on the per-channel topic, and return 201 with the
   serialized message.
 
+  Sub-task 2g: the URL `:net` slug is resolved to its integer FK before
+  the session lookup; the session is keyed by
+  `(conn.assigns.current_user_id, network.id)`. The bearer-token
+  session in `setup` MUST be for the same `vjt` user that the
+  Session.Server was spawned for, otherwise the lookup misses.
+
   Tests use an in-process `Grappa.IRCServer` fake to assert the
   PRIVMSG bytes hit the wire.
 
@@ -19,12 +25,13 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
 
   setup %{conn: conn} do
-    # Phase 2 (sub-task 2e): Session.Server writes scrollback rows
-    # using user_id as the per-user iso FK. The send-PRIVMSG path
-    # routes via Session.placeholder_user ("vjt") — that user MUST
-    # exist in DB for Session.Server.init to find it.
+    # The bearer-token session must be for the SAME user the Session
+    # is spawned for (post-2g routes via conn.assigns.current_user_id
+    # end-to-end). Pre-2g this used a different user's session because
+    # Session.send_privmsg routed via Session.placeholder_user — that
+    # mismatch is now a contract violation that would 404 every POST.
     vjt = user_fixture(name: "vjt")
-    {_, session} = user_and_session()
+    session = session_fixture(vjt)
     {:ok, conn: put_bearer(conn, session.id), vjt: vjt}
   end
 
@@ -35,19 +42,14 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     {server, IRCServer.port(server)}
   end
 
-  defp start_session(port, vjt, overrides \\ %{}) do
-    base = %{
-      user_id: vjt.id,
-      user_name: "vjt",
-      network_id: "azzurra",
-      host: "127.0.0.1",
-      port: port,
-      tls: false,
-      nick: "grappa-test",
-      autojoin: []
-    }
+  defp setup_network(vjt, port, slug \\ "azzurra") do
+    {network, _} = network_with_server(port: port, slug: slug)
+    _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+    network
+  end
 
-    {:ok, pid} = Session.start_session(Map.merge(base, overrides))
+  defp start_session_for(vjt, network) do
+    {:ok, pid} = Session.start_session(vjt.id, network.id)
     pid
   end
 
@@ -60,29 +62,33 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     test "sends PRIVMSG upstream, persists row, broadcasts, returns 201",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
+      network = setup_network(vjt, port)
 
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", "azzurra", "#sniffo")
+          Topic.channel("vjt", network.slug, "#sniffo")
         )
 
       # Sub-task 2h regression: Phase 1 topic shape gets nothing now.
       :ok =
-        Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#sniffo")
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          "grappa:network:#{network.slug}/channel:#sniffo"
+        )
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "ciao raga"})
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "ciao raga"})
 
       body = json_response(conn, 201)
       assert body["body"] == "ciao raga"
       assert body["channel"] == "#sniffo"
-      assert body["network"] == "azzurra"
+      assert body["network"] == network.slug
       assert body["kind"] == "privmsg"
       assert body["sender"] == "grappa-test"
       assert is_integer(body["server_time"])
@@ -98,7 +104,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
             body: "ciao raga",
             sender: "grappa-test",
             channel: "#sniffo",
-            network: "azzurra",
+            network: network.slug,
             meta: %{}
           ],
           1_000
@@ -114,7 +120,6 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
 
-      {:ok, network} = Grappa.Networks.get_network_by_slug("azzurra")
       [row] = Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10)
       assert row.body == "ciao raga"
       assert row.sender == "grappa-test"
@@ -127,25 +132,22 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     test "POST then GET roundtrip — vjt's POST visible via vjt's subsequent GET",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
       conn1 =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "persisted"})
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "persisted"})
 
       assert json_response(conn1, 201)
 
-      # Per-user iso: the GET must be authenticated AS the user that
-      # the row was written for (vjt). A different user's GET would
-      # see [] — that's a separate test below.
-      vjt_session = session_fixture(vjt)
-
+      # Per-user iso: GET as vjt — the conn already has vjt's bearer.
       conn2 =
         Phoenix.ConnTest.build_conn()
-        |> put_bearer(vjt_session.id)
-        |> get("/networks/azzurra/channels/%23sniffo/messages")
+        |> put_bearer(session_fixture(vjt).id)
+        |> get("/networks/#{network.slug}/channels/%23sniffo/messages")
 
       body = json_response(conn2, 200)
       assert length(body) == 1
@@ -158,24 +160,24 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     test "PER-USER ISO: alice's GET on the same channel does NOT see vjt's POSTed message",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port, vjt)
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
       conn1 =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "vjt-secret"})
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "vjt-secret"})
 
       assert json_response(conn1, 201)
 
       # Different user — auth as alice, fetch the same channel.
       alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
-      alice_session = session_fixture(alice)
 
       conn2 =
         Phoenix.ConnTest.build_conn()
-        |> put_bearer(alice_session.id)
-        |> get("/networks/azzurra/channels/%23sniffo/messages")
+        |> put_bearer(session_fixture(alice).id)
+        |> get("/networks/#{network.slug}/channels/%23sniffo/messages")
 
       assert json_response(conn2, 200) == []
 
@@ -184,20 +186,21 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
     test "broadcast scoped to (user, network, channel) — does not leak", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
+      network = setup_network(vjt, port)
 
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", "azzurra", "#other")
+          Topic.channel("vjt", network.slug, "#other")
         )
 
-      pid = start_session(port, vjt)
+      pid = start_session_for(vjt, network)
       :ok = await_handshake(server)
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "wrong-receiver"})
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "wrong-receiver"})
 
       assert json_response(conn, 201)
       refute_receive {:event, _}, 100
@@ -207,11 +210,22 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   end
 
   describe "POST without session" do
-    test "returns 404", %{conn: conn} do
+    test "unknown network slug returns 404 not found", %{conn: conn} do
       conn =
         conn
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 404)["error"] == "not found"
+    end
+
+    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hello"})
 
       assert json_response(conn, 404)["error"] == "no session"
     end
