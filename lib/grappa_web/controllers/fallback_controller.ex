@@ -14,7 +14,7 @@ defmodule GrappaWeb.FallbackController do
 
   @spec call(
           Plug.Conn.t(),
-          {:error, :bad_request | :not_found | :no_session | Ecto.Changeset.t()}
+          {:error, :bad_request | :not_found | :no_session | :invalid_credentials | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do
     conn
@@ -32,6 +32,18 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "no session"})
+  end
+
+  # Login failure — uniform shape regardless of which credential
+  # half was wrong (mirrors `Accounts.get_user_by_credentials/2`'s
+  # oracle posture). The 401 wire body matches `Plugs.Authn`'s
+  # `{"error":"unauthorized"}` shape closely so client UX collapses
+  # both authn failure paths to the same "drop credentials, send to
+  # login" branch.
+  def call(conn, {:error, :invalid_credentials}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "invalid_credentials"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

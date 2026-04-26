@@ -12,7 +12,14 @@ defmodule GrappaWeb.ChannelsControllerTest do
   """
   use GrappaWeb.ConnCase, async: false
 
+  import Grappa.AuthFixtures
+
   alias Grappa.{IRCServer, Session}
+
+  setup %{conn: conn} do
+    {_, session} = user_and_session()
+    {:ok, conn: put_bearer(conn, session.id), session: session}
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -69,6 +76,15 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 404)["error"] == "no session"
     end
 
+    test "without Bearer returns 401" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{"name" => "#sniffo"})
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
     test "missing name returns 400", %{conn: conn} do
       conn =
         conn
@@ -117,6 +133,11 @@ defmodule GrappaWeb.ChannelsControllerTest do
       conn = delete(conn, "/networks/no-such-net/channels/%23sniffo")
 
       assert json_response(conn, 404)["error"] == "no session"
+    end
+
+    test "without Bearer returns 401" do
+      conn = delete(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
   end
 end

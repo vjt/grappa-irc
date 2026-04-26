@@ -8,7 +8,14 @@ defmodule GrappaWeb.MessagesControllerTest do
   """
   use GrappaWeb.ConnCase, async: true
 
+  import Grappa.AuthFixtures
+
   alias Grappa.Scrollback
+
+  setup %{conn: conn} do
+    {_, session} = user_and_session()
+    {:ok, conn: put_bearer(conn, session.id)}
+  end
 
   defp seed do
     for i <- 0..4 do
@@ -104,6 +111,11 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad request"
   end
 
+  test "GET without Bearer returns 401" do
+    conn = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
+    assert json_response(conn, 401) == %{"error" => "unauthorized"}
+  end
+
   describe "POST /networks/:network_id/channels/:channel_id/messages — input validation" do
     test "no session for (vjt, network) returns 404", %{conn: conn} do
       conn =
@@ -139,6 +151,15 @@ defmodule GrappaWeb.MessagesControllerTest do
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => 42})
 
       assert json_response(conn, 400)["error"] == "bad request"
+    end
+
+    test "POST without Bearer returns 401" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
   end
 end

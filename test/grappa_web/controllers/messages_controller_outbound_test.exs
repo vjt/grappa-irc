@@ -14,9 +14,14 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   """
   use GrappaWeb.ConnCase, async: false
 
-  import Grappa.MessageEventAssertions
+  import Grappa.{AuthFixtures, MessageEventAssertions}
 
   alias Grappa.{IRCServer, Scrollback, Session}
+
+  setup %{conn: conn} do
+    {_, session} = user_and_session()
+    {:ok, conn: put_bearer(conn, session.id)}
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -105,7 +110,13 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       assert json_response(conn1, 201)
 
-      conn2 = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
+      {_, s2} = user_and_session()
+
+      conn2 =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(s2.id)
+        |> get("/networks/azzurra/channels/%23sniffo/messages")
+
       body = json_response(conn2, 200)
       assert length(body) == 1
       assert Enum.at(body, 0)["body"] == "persisted"
@@ -140,6 +151,15 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
 
       assert json_response(conn, 404)["error"] == "no session"
+    end
+
+    test "without Bearer returns 401" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
   end
 end
