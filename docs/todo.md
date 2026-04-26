@@ -39,10 +39,13 @@ CP07 → CP08.
 - [x] Docs (this commit): DESIGN_NOTES SolidJS-stack entry +
       README cicchetto-stack note + Phase 3 roadmap tick.
 
-**Phase 3 sub-task 8 (deploy + iPhone round-trip) — PENDING:**
-- [ ] `scripts/check.sh` + cicchetto `bun run check` (post-doc gates).
-- [ ] superpowers:code-reviewer agent on full `phase3-cicchetto-walking-skeleton`
-      branch (not just last commit); fix any findings.
+**Phase 3 sub-task 8 (deploy + iPhone round-trip) — IN PROGRESS:**
+- [x] `scripts/check.sh` + cicchetto `bun run check` + cicchetto `bun run test`
+      (post-doc gates) — all green (server 424/0; cicchetto 44/44).
+- [x] superpowers:code-reviewer agent on full `phase3-cicchetto-walking-skeleton`
+      branch — returned 2 BLOCKERS + 6 SHOULD-FIX + 6 CONSIDER. BLOCKERS +
+      SHOULD-FIX landed as additional commits 8a-8f on the branch. CONSIDER
+      items logged below.
 - [ ] Rebase onto main from worktree → ff-merge to main.
 - [ ] `scripts/deploy.sh` from `/srv/grappa` (refuses non-main; builds
       grappa prod image + runs `cicchetto-build` oneshot + brings up
@@ -136,6 +139,42 @@ Phase 3 surfaces invocation.
   Cloak.Vault supports custom key sources (yubico-hsm, TPM, AWS
   KMS, etc.) — configurable swap, no code change in Grappa.
   Document operator's hardening path in README.
+- Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C1):
+  service worker requires a "secure context" (HTTPS or localhost).
+  `http://grappa.bad.ass` is neither — iOS Safari silently fails SW
+  registration; the catch in `cicchetto/src/main.tsx:44` logs to
+  console. Add-to-Home-Screen still works (manifest-driven), but the
+  offline shell cache won't function until Phase 5 TLS rollout. Be
+  honest about this in the operator runbook.
+- Phase 5 hardening (NEW from S22 Phase 3 review BONUS, B2 followup):
+  move bearer token off the WS query string. Currently rides
+  `?token=…` on the upgrade URL because Phoenix.Socket transports
+  `params` as a query string. Phase 3 fix redacts via Phoenix
+  `:filter_parameters` + nginx `access_log off` on `/socket`, but the
+  bearer is still visible to anyone who can see the URL pre-redaction
+  (browser devtools, on-path observers, BURP-like proxies during
+  pen-test). Move to either `Sec-WebSocket-Protocol` or a post-connect
+  `phx_join` payload — needs a phoenix.js + UserSocket protocol
+  change, bigger than walking-skeleton scope.
+- Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C5):
+  `loadMore` in `cicchetto/src/lib/networks.ts` has no concurrency
+  guard. A scroll-up that fires `loadMore` twice before the first
+  response lands sends two REST requests with the same `before=`
+  cursor. Dedupe-by-id keeps the result correct, but it's wasteful.
+  A per-key in-flight Set + early-return on hit is a few lines.
+- Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C6): no
+  accessibility pass yet. Buttons are buttons + ARIA `role="alert"`
+  on errors is reasonable baseline, but the channel sidebar uses
+  raw `<ul><li><button>` with no tree semantics — on iOS VoiceOver
+  the network → channel hierarchy doesn't read as a tree. Phase 5
+  accessibility audit covers this + tap-target sizing + focus-state
+  contrast (web.dev a11y guidelines).
+- Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C4 — also
+  closed by 8a but worth a tracking item): when adding new WS
+  subprotocols or alternate Channel transports, inherit the
+  `check_origin` allowlist; if a future feature needs a different
+  host, it lands as a separate Phoenix.Endpoint, not as a relaxation
+  in `runtime.exs`.
 
 ## Medium
 
@@ -147,6 +186,12 @@ Phase 3 surfaces invocation.
   IRCv3 specs we'll need (`CAP LS 302`, `CHATHISTORY`, `server-time`,
   `batch`, `labeled-response`, SASL mechanisms). Reuse parser from
   Phase 1.
+- Supply-chain hardening (NEW from S22 Phase 3 review CONSIDER C2):
+  `oven/bun:1` and `nginx:alpine` (used by `scripts/bun.sh` and
+  `compose.prod.yaml`) are moving major tags. Pin to digests
+  (`oven/bun:1@sha256:…`) for reproducible builds. CLAUDE.md
+  doesn't currently mandate this — log here for the next time supply-
+  chain hygiene comes up across the repo.
 
 ## Low / Observation
 
@@ -167,6 +212,13 @@ Phase 3 surfaces invocation.
 - Telemetry → Prometheus exporter (PromEx). Phase 5 hardening.
 - Reconnect/backoff policy when upstream IRC drops. Phase 5.
 - Scrollback eviction policy — by row count, by age, or both. Phase 5.
+- Perf nit (NEW from S22 Phase 3 review CONSIDER C3): nginx upstream
+  `keepalive 32` in `infra/nginx.conf` is dead weight without
+  `proxy_set_header Connection "";` on the API allowlist `location`
+  block. Without clearing the Connection header on the upstream side,
+  nginx forwards the client's `Connection: close` and the keepalive
+  pool never warms. Pure perf — measurable only under sustained load,
+  which Phase 3 doesn't have.
 
 ---
 
