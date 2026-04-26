@@ -275,12 +275,29 @@ defmodule Grappa.Networks do
   """
   @spec get_credential!(User.t(), Network.t()) :: Credential.t()
   def get_credential!(%User{id: user_id}, %Network{id: network_id}) do
-    query =
-      from(c in Credential,
-        where: c.user_id == ^user_id and c.network_id == ^network_id
-      )
+    Repo.one!(credential_query(user_id, network_id))
+  end
 
-    Repo.one!(query)
+  @doc """
+  Tagged-tuple sibling of `get_credential!/2` for the REST surface.
+  Returns `{:error, :not_found}` when the (user, network) binding
+  doesn't exist — used by Phase 3 cicchetto endpoints where a missing
+  credential is a per-user iso check (the user is asking about a
+  network they don't have access to), not an operator typo.
+  """
+  @spec get_credential(User.t(), Network.t()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def get_credential(%User{id: user_id}, %Network{id: network_id}) do
+    case Repo.one(credential_query(user_id, network_id)) do
+      %Credential{} = c -> {:ok, c}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp credential_query(user_id, network_id) do
+    from(c in Credential,
+      where: c.user_id == ^user_id and c.network_id == ^network_id
+    )
   end
 
   @doc """

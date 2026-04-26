@@ -54,6 +54,9 @@ defmodule GrappaWeb.Router do
     delete "/auth/logout", AuthController, :logout
     get "/me", MeController, :show
 
+    get "/networks", NetworksController, :index
+    get "/networks/:network_id/channels", ChannelsController, :index
+
     get "/networks/:network_id/channels/:channel_id/messages",
         MessagesController,
         :index

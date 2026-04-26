@@ -46,6 +46,14 @@ defmodule Grappa.Networks.Wire do
           updated_at: DateTime.t()
         }
 
+  @typedoc """
+  Per-channel wire shape returned by the Phase 3 channel-listing
+  endpoint. Object-shaped (not a bare string) so Phase 5
+  channel-membership tracking can extend with `:joined`, `:topic`,
+  `:unread_count`, etc. without breaking existing clients.
+  """
+  @type channel_json :: %{name: String.t()}
+
   @doc """
   Renders a `Networks.Credential` row to its public JSON shape. The
   `:network` association MUST be preloaded — pattern match fails
@@ -87,4 +95,12 @@ defmodule Grappa.Networks.Wire do
       updated_at: n.updated_at
     }
   end
+
+  @doc """
+  Renders a single channel name to its public JSON shape. Caller
+  passes the IRC channel string (e.g. `"#sniffo"`). Object envelope
+  is the extension point for Phase 5 (joined/topic/unread).
+  """
+  @spec channel_to_json(String.t()) :: channel_json()
+  def channel_to_json(name) when is_binary(name), do: %{name: name}
 end

@@ -187,4 +187,54 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
+
+  # Walking-skeleton (Phase 3) source-of-truth for "channels for this
+  # network" is `credential.autojoin_channels` — the persistent shape
+  # the bouncer auto-joins on connect. POST /channels mutations against
+  # a live session are NOT yet reflected here; session-tracked
+  # membership lands in Phase 5.
+  describe "GET /networks/:network_id/channels" do
+    test "returns the credential's autojoin_channels as channel objects", %{conn: conn, vjt: vjt} do
+      {network, _} = network_with_server(port: 7000, slug: "azzurra-idx-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#sniffo", "#elixir"]})
+
+      conn = get(conn, "/networks/#{network.slug}/channels")
+
+      body = json_response(conn, 200)
+      assert body == [%{"name" => "#sniffo"}, %{"name" => "#elixir"}]
+    end
+
+    test "returns empty list when credential has no autojoin", %{conn: conn, vjt: vjt} do
+      {network, _} = network_with_server(port: 7001, slug: "azzurra-empty-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: []})
+
+      conn = get(conn, "/networks/#{network.slug}/channels")
+      assert json_response(conn, 200) == []
+    end
+
+    test "unknown network slug returns 404", %{conn: conn} do
+      conn = get(conn, "/networks/no-such-net/channels")
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    # Per-user iso: known network exists but the authenticated user has
+    # no credential on it → 404. Same wire shape as "unknown slug" so
+    # we don't leak network existence to a probing user.
+    test "known slug but user has no credential returns 404", %{conn: conn} do
+      alice = user_fixture(name: "alice-#{u()}")
+      {network, _} = network_with_server(port: 7002, slug: "alice-only-#{u()}")
+      _ = credential_fixture(alice, network)
+      # `conn` is bound to vjt (setup); vjt has no credential here.
+
+      conn = get(conn, "/networks/#{network.slug}/channels")
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    test "without Bearer returns 401" do
+      conn = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  defp u, do: System.unique_integer([:positive])
 end

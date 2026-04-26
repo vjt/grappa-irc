@@ -1,7 +1,7 @@
 defmodule GrappaWeb.ChannelsController do
   @moduledoc """
-  Upstream JOIN / PART surface. Routes through the per-(user, network)
-  `Grappa.Session.Server` to send the IRC command on the live socket.
+  Channel-tree read surface (`index/2`) + upstream JOIN / PART
+  (`create/2` + `delete/2`) for the per-(user, network) session.
 
   Sub-task 2g: lookup is keyed by `(conn.assigns.current_user_id,
   network.id)` end-to-end. The URL `:network_id` is a slug; this
@@ -9,17 +9,43 @@ defmodule GrappaWeb.ChannelsController do
   `Networks.get_network_by_slug/1` so the session lookup matches the
   internal registry shape.
 
-  Both endpoints require an active session for the network — without
-  one, `Grappa.Session.send_*` returns `{:error, :no_session}` which
-  the `FallbackController` maps to a 404 with `error: "no_session"`.
+  ## index
+
+  `GET /networks/:network_id/channels` returns the credential's
+  `:autojoin_channels` (Phase 3 walking-skeleton source-of-truth).
+  Per-user iso: a missing credential for `(current_user, network)`
+  surfaces as `{:error, :not_found}` so probing users cannot
+  distinguish "wrong slug" from "someone else's network."
+  Session-tracked membership (so JOIN-via-REST mutations show up
+  here too) lands in Phase 5.
+
+  ## create / delete
+
+  Both require an active session for the network — without one,
+  `Grappa.Session.send_*` returns `{:error, :no_session}` which the
+  `FallbackController` maps to a 404 with `error: "no_session"`.
   Unknown network slug returns `{:error, :not_found}` → 404 with
-  `error: "not_found"`. Channel-membership tracking + persistence of
-  JOIN/PART events lands in Phase 5; for now these are pure
-  upstream-fire-and-confirm.
+  `error: "not_found"`. Persistence of JOIN/PART events into
+  scrollback lands in Phase 5.
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{IRC.Identifier, Networks, Session}
+  alias Grappa.{Accounts, IRC.Identifier, Networks, Session}
+
+  @doc """
+  `GET /networks/:network_id/channels` — lists the user's channels for
+  the network. Returns the credential's `:autojoin_channels` rendered
+  via `Networks.Wire.channel_to_json/1`.
+  """
+  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
+  def index(conn, %{"network_id" => slug}) do
+    user = Accounts.get_user!(conn.assigns.current_user_id)
+
+    with {:ok, network} <- Networks.get_network_by_slug(slug),
+         {:ok, credential} <- Networks.get_credential(user, network) do
+      render(conn, :index, channels: credential.autojoin_channels)
+    end
+  end
 
   @doc """
   `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
