@@ -537,6 +537,26 @@ If only the virtual `:password` had `redact: true`, `IO.inspect(credential)` aft
 
 ---
 
+### 2026-04-26 — Phase 3 wrap: WS `check_origin` is the defense-in-depth on bearer-in-querystring
+
+The Phoenix Channels WS connect carries the bearer token as a query-string parameter (`?token=…`) — that's the auth. But on its own, that's not enough: a malicious site the user visits while logged in could open a WebSocket to `grappa.bad.ass/socket/websocket?token=…` if it could read the token. It can't read the token (token sits in localStorage, isolated per-origin), but the second-line-of-defense is `check_origin`: Phoenix validates the WS handshake's `Origin` header against an allowlist before bearer auth even runs.
+
+Phoenix's default behavior when `check_origin` is unset is "match the endpoint URL host." The Phase 3 walking skeleton shipped without overriding either, so prod defaulted to `Origin == localhost` — and **every real WebSocket connect from `http://grappa.bad.ass` was rejected** until the fix landed (`config/runtime.exs` prod block now reads `PHX_HOST` and sets both `url:` and `check_origin:`).
+
+**Two layers, both load-bearing:**
+
+1. **Bearer in WS query string** is the authn. `Plugs.Authn`-equivalent runs in `UserSocket.connect/3` and rejects unknown/expired/revoked tokens. Without this layer, anyone who can frame a WS connect gets in.
+2. **`check_origin`** is the authz-on-handshake. It rejects connects from origins that aren't this app, before the bearer is even read. Without this layer, a logged-in user visiting `evil.example.com` could be made to connect on their own behalf — the bearer is in their localStorage, not the malicious page's, but a more sophisticated attack (XSS chain that exfils the bearer first) would still be helped by this gap. Defense-in-depth.
+
+**Apply:**
+
+- Any future deployment under a new hostname MUST set `PHX_HOST` in `.env`. The `runtime.exs` default (`grappa.bad.ass`) is a convenience for the canonical deployment; non-default hosts get rejected if the operator forgets to override.
+- Phase 5 TLS migration must update the `check_origin` allowlist to include the https variant (the `//host` scheme-relative form already covers both http+https — keep the form).
+- New WS subprotocols, alternate channel transports, etc. all inherit this `check_origin`; if a future feature needs a different host (e.g. a public-status endpoint that shouldn't require login), it lands as a separate Phoenix.Endpoint, not as a relaxation here.
+- `filter_parameters` includes `token` so the bearer doesn't surface in Phoenix's `[info] CONNECTED TO ...` log line. nginx's `access_log` is suppressed for `/socket` for the same reason. Both are mandatory; either alone leaves the bearer in a different log file.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

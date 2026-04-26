@@ -42,6 +42,7 @@ services:
       PORT: "4000"
       RELEASE_COOKIE: ${RELEASE_COOKIE:?missing RELEASE_COOKIE — random hex string for distributed Erlang}
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:?missing GRAPPA_ENCRYPTION_KEY — generate with scripts/mix.sh grappa.gen_encryption_key}
+      PHX_HOST: ${PHX_HOST:-grappa.bad.ass}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 30s

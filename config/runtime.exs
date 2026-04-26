@@ -24,8 +24,22 @@ if config_env() == :prod do
 
   port = String.to_integer(System.get_env("PORT") || "4000")
 
+  # Public hostname the bouncer is reached at via nginx (e.g. grappa.bad.ass).
+  # Two roles, both load-bearing in prod:
+  #   * `url:` — Phoenix URL helpers generate links rooted at this host.
+  #   * `check_origin:` — WebSocket handshake validates the browser's
+  #     `Origin` header against this allowlist. Phoenix's default is to
+  #     require Origin == endpoint URL host; without an explicit allow
+  #     listing the public hostname, every Channels connect is rejected
+  #     in prod (origin == http://grappa.bad.ass, endpoint URL host ==
+  #     localhost). The `//` prefix matches both http and https so the
+  #     Phase 5 TLS upgrade does not silently break Channels.
+  phx_host = System.get_env("PHX_HOST") || "grappa.bad.ass"
+
   config :grappa, GrappaWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],
+    url: [host: phx_host, port: 80],
+    check_origin: ["//#{phx_host}"],
     secret_key_base: secret_key_base,
     server: true
 
