@@ -14,8 +14,18 @@ defmodule Grappa.BootstrapTest do
   use Grappa.DataCase, async: false
 
   import ExUnit.CaptureLog
+  import Grappa.AuthFixtures
 
   alias Grappa.{Bootstrap, IRCServer, Session}
+
+  setup do
+    # Bootstrap reads TOML user "vjt"; Phase 2 made user identity
+    # DB-backed (FK on messages.user_id). Pre-insert the row so
+    # Bootstrap finds it instead of logging "user not in DB" and
+    # skipping every network.
+    user_fixture(name: "vjt")
+    :ok
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 

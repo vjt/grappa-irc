@@ -1,18 +1,39 @@
 defmodule Grappa.ScrollbackTest do
-  use Grappa.DataCase, async: true
+  @moduledoc """
+  Per-user iso (Phase 2 sub-task 2e): every `messages` row carries a
+  `user_id` FK + integer `network_id` FK. `fetch/5` filters on both;
+  `Wire.to_json/1` emits the network slug (NOT the integer id) and
+  does NOT carry the user_id (it's a topic discriminator only, not a
+  payload field — clients learn their own user from `/me`).
 
-  alias Grappa.Scrollback
-  alias Grappa.Scrollback.Message
+  `async: false` because every test inserts a user + network row and
+  the credential-less write path is still the heaviest in this file —
+  collisions with the Phase 2 write-heavy suite under max_cases:2 are
+  cheaper to dodge by serializing this file than by bumping
+  busy_timeout further (already 30s).
+  """
+  use Grappa.DataCase, async: false
 
-  defp sample(i), do: sample(i, %{})
+  alias Grappa.{Accounts, Networks, Repo, Scrollback}
+  alias Grappa.Networks.Network
+  alias Grappa.Scrollback.{Message, Wire}
 
-  defp sample(i, overrides) do
+  setup do
+    {:ok, user} = Accounts.create_user(%{name: "vjt-#{uniq()}", password: "correct horse battery"})
+    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra-#{uniq()}"})
+    %{user: user, network: network}
+  end
+
+  defp uniq, do: System.unique_integer([:positive])
+
+  defp sample(user, network, i, overrides \\ %{}) do
     Map.merge(
       %{
-        network_id: "azzurra",
+        user_id: user.id,
+        network_id: network.id,
         channel: "#sniffo",
         server_time: i,
-        kind: "privmsg",
+        kind: :privmsg,
         sender: "vjt",
         body: "msg #{i}"
       },
@@ -21,93 +42,77 @@ defmodule Grappa.ScrollbackTest do
   end
 
   describe "insert/1" do
-    test "persists a valid message and returns the schema struct" do
-      assert {:ok, %Message{} = m} = Scrollback.insert(sample(0))
+    test "persists a valid message and returns the schema struct", %{user: user, network: net} do
+      assert {:ok, %Message{} = m} = Scrollback.insert(sample(user, net, 0))
       assert m.body == "msg 0"
       assert m.kind == :privmsg
+      assert m.user_id == user.id
+      assert m.network_id == net.id
       assert is_integer(m.id)
     end
 
-    test "rejects invalid kind via Ecto.Enum cast" do
+    test "rejects invalid kind via Ecto.Enum cast", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(sample(0, %{kind: "bogus"}))
+               Scrollback.insert(sample(user, net, 0, %{kind: "bogus"}))
 
       assert "is invalid" in errors_on(cs).kind
     end
 
-    test "rejects missing required fields (universal: network_id/channel/server_time/kind/sender)" do
+    test "rejects missing required fields (user_id/network_id/channel/server_time/kind/sender)" do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(%{network_id: "azzurra", channel: "#x"})
+               Scrollback.insert(%{channel: "#x"})
 
       errors = errors_on(cs)
+      assert "can't be blank" in errors.user_id
+      assert "can't be blank" in errors.network_id
       assert "can't be blank" in errors.server_time
       assert "can't be blank" in errors.kind
       assert "can't be blank" in errors.sender
-      # `body` validation is per-kind, not universal — see "extended kinds"
-      # describe block. With kind absent, body validation is skipped.
       refute Map.has_key?(errors, :body)
     end
   end
 
   describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do
-    test "accepts :join with nil body and default meta map" do
+    test "accepts :join with nil body and default meta map", %{user: user, network: net} do
       assert {:ok, %Message{kind: :join, body: nil, meta: %{}}} =
-               Scrollback.insert(%{
-                 network_id: "azzurra",
-                 channel: "#sniffo",
-                 server_time: 0,
-                 kind: :join,
-                 sender: "alice"
-               })
+               Scrollback.insert(sample(user, net, 0, %{kind: :join, sender: "alice", body: nil}))
     end
 
-    test "accepts :kick with body (reason) + atom-keyed meta carrying target nick" do
+    test "accepts :kick with body (reason) + atom-keyed meta carrying target nick",
+         %{user: user, network: net} do
       {:ok, inserted} =
-        Scrollback.insert(%{
-          network_id: "azzurra",
-          channel: "#sniffo",
-          server_time: 0,
-          kind: :kick,
-          sender: "vjt",
-          body: "rude",
-          meta: %{target: "alice"}
-        })
+        Scrollback.insert(
+          sample(user, net, 0, %{
+            kind: :kick,
+            sender: "vjt",
+            body: "rude",
+            meta: %{target: "alice"}
+          })
+        )
 
-      # In-memory struct from Repo.insert: atom-keyed via custom Ecto.Type cast.
       assert inserted.meta == %{target: "alice"}
 
-      # Round-trip via fetch: same atom-keyed shape via load (allowlisted).
-      [fetched] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
+      [fetched] = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 10)
       assert fetched.meta == %{target: "alice"}
     end
 
-    test "rejects :privmsg without body (per-kind body required for content-bearing kinds)" do
+    test "rejects :privmsg without body (per-kind body required for content-bearing kinds)",
+         %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(%{
-                 network_id: "azzurra",
-                 channel: "#sniffo",
-                 server_time: 0,
-                 kind: :privmsg,
-                 sender: "vjt"
-               })
+               Scrollback.insert(sample(user, net, 0, %{kind: :privmsg, sender: "vjt", body: nil}))
 
       assert "can't be blank" in errors_on(cs).body
     end
 
-    test "rejects :topic without body (per-kind body required)" do
+    test "rejects :topic without body (per-kind body required)", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(%{
-                 network_id: "azzurra",
-                 channel: "#sniffo",
-                 server_time: 0,
-                 kind: :topic,
-                 sender: "ChanServ"
-               })
+               Scrollback.insert(sample(user, net, 0, %{kind: :topic, sender: "ChanServ", body: nil}))
 
       assert "can't be blank" in errors_on(cs).body
     end
 
-    test "accepts all 10 extended kinds with appropriate body/meta shape" do
+    test "accepts all 10 extended kinds with appropriate body/meta shape",
+         %{user: user, network: net} do
       cases = [
         {:privmsg, %{body: "hi"}},
         {:notice, %{body: "system notice"}},
@@ -122,17 +127,7 @@ defmodule Grappa.ScrollbackTest do
       ]
 
       for {kind, overrides} <- cases do
-        attrs =
-          Map.merge(
-            %{
-              network_id: "azzurra",
-              channel: "#sniffo",
-              server_time: 0,
-              kind: kind,
-              sender: "vjt"
-            },
-            overrides
-          )
+        attrs = sample(user, net, 0, Map.merge(%{kind: kind, sender: "vjt"}, overrides))
 
         assert {:ok, %Message{kind: ^kind}} = Scrollback.insert(attrs),
                "kind #{inspect(kind)} should be accepted"
@@ -140,54 +135,123 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  describe "fetch/4" do
-    test "returns the latest page in descending server_time order" do
-      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(i))
+  describe "fetch/5" do
+    test "returns the latest page in descending server_time order",
+         %{user: user, network: net} do
+      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
 
-      page = Scrollback.fetch("azzurra", "#sniffo", nil, 3)
+      page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 3)
 
       assert length(page) == 3
       assert Enum.map(page, & &1.body) == ["msg 4", "msg 3", "msg 2"]
     end
 
-    test "paginates by `before` cursor (strict less-than on server_time)" do
-      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(i))
+    test "paginates by `before` cursor (strict less-than on server_time)",
+         %{user: user, network: net} do
+      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
 
-      [_, last_of_first_page] = Scrollback.fetch("azzurra", "#sniffo", nil, 2)
-      next_page = Scrollback.fetch("azzurra", "#sniffo", last_of_first_page.server_time, 2)
+      [_, last_of_first_page] = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 2)
+      next_page = Scrollback.fetch(user.id, net.id, "#sniffo", last_of_first_page.server_time, 2)
 
       assert Enum.map(next_page, & &1.body) == ["msg 2", "msg 1"]
     end
 
-    test "isolates rows by (network_id, channel)" do
-      {:ok, _} = Scrollback.insert(sample(0, %{channel: "#a"}))
-      {:ok, _} = Scrollback.insert(sample(1, %{channel: "#b"}))
-      {:ok, _} = Scrollback.insert(sample(2, %{network_id: "freenode"}))
+    test "isolates rows by (network_id, channel)", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
 
-      page = Scrollback.fetch("azzurra", "#a", nil, 10)
+      {:ok, _} = Scrollback.insert(sample(user, net, 0, %{channel: "#a"}))
+      {:ok, _} = Scrollback.insert(sample(user, net, 1, %{channel: "#b"}))
+      {:ok, _} = Scrollback.insert(sample(user, other_net, 2, %{channel: "#a"}))
+
+      page = Scrollback.fetch(user.id, net.id, "#a", nil, 10)
       assert length(page) == 1
       assert hd(page).channel == "#a"
     end
 
-    test "returns [] when nothing matches" do
-      assert Scrollback.fetch("azzurra", "#empty", nil, 10) == []
+    test "PER-USER ISO: alice's rows are NOT visible when fetching as vjt (the central 2e invariant)",
+         %{user: vjt, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      # Both users write to the SAME (network, channel). The DB row stream is
+      # one (one row per user write); the fetch surface MUST partition.
+      {:ok, _} = Scrollback.insert(sample(vjt, net, 0, %{sender: "vjt", body: "vjt-msg"}))
+      {:ok, _} = Scrollback.insert(sample(alice, net, 1, %{sender: "alice", body: "alice-msg"}))
+
+      vjt_page = Scrollback.fetch(vjt.id, net.id, "#sniffo", nil, 10)
+      assert length(vjt_page) == 1
+      assert hd(vjt_page).body == "vjt-msg"
+
+      alice_page = Scrollback.fetch(alice.id, net.id, "#sniffo", nil, 10)
+      assert length(alice_page) == 1
+      assert hd(alice_page).body == "alice-msg"
     end
 
-    test "clamps limit to max_page_size/0 (anti-DoS, proves the cap actually fires)" do
+    test "returns [] when nothing matches", %{user: user, network: net} do
+      assert Scrollback.fetch(user.id, net.id, "#empty", nil, 10) == []
+    end
+
+    test "clamps limit to max_page_size/0", %{user: user, network: net} do
       cap = Scrollback.max_page_size()
 
-      # Insert cap+5 rows so the cap MUST clip the result. A weaker test
-      # (fewer rows than cap) would pass even if the clamp were removed.
-      for i <- 0..(cap + 4), do: {:ok, _} = Scrollback.insert(sample(i))
+      for i <- 0..(cap + 4), do: {:ok, _} = Scrollback.insert(sample(user, net, i))
 
-      page = Scrollback.fetch("azzurra", "#sniffo", nil, cap + 1_000)
+      page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, cap + 1_000)
       assert length(page) == cap
     end
 
-    test "raises FunctionClauseError on non-positive limit (let it crash)" do
+    test "raises FunctionClauseError on non-positive limit", %{user: user, network: net} do
       assert_raise FunctionClauseError, fn ->
-        Scrollback.fetch("azzurra", "#sniffo", nil, 0)
+        Scrollback.fetch(user.id, net.id, "#sniffo", nil, 0)
       end
+    end
+  end
+
+  describe "Wire.to_json/1 (per-user iso wire-shape contract)" do
+    test "emits network slug, NOT the integer network_id", %{user: user, network: net} do
+      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      preloaded = Repo.preload(message, :network)
+
+      wire = Wire.to_json(preloaded)
+      assert wire.network == net.slug
+      refute Map.has_key?(wire, :network_id)
+    end
+
+    test "does NOT expose user_id (it's a topic discriminator, not a payload field per decision G3)",
+         %{user: user, network: net} do
+      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      preloaded = Repo.preload(message, :network)
+
+      wire = Wire.to_json(preloaded)
+      refute Map.has_key?(wire, :user_id)
+    end
+
+    test "carries id, channel, server_time, kind, sender, body, meta — the rest of the wire",
+         %{user: user, network: net} do
+      {:ok, message} = Scrollback.insert(sample(user, net, 42, %{body: "hello", sender: "vjt"}))
+      preloaded = Repo.preload(message, :network)
+
+      wire = Wire.to_json(preloaded)
+      assert wire.id == message.id
+      assert wire.channel == "#sniffo"
+      assert wire.server_time == 42
+      assert wire.kind == :privmsg
+      assert wire.sender == "vjt"
+      assert wire.body == "hello"
+      assert wire.meta == %{}
+    end
+  end
+
+  describe "Network struct shape (sanity)" do
+    # Belt-and-braces: the wire path depends on Repo.preload(:network)
+    # working, which depends on the schema's `belongs_to :network` being
+    # there. This catches a typo'd schema before the controller does.
+    test "Message.belongs_to(:network) is wired (preload returns Network struct)",
+         %{user: user, network: net} do
+      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      preloaded = Repo.preload(message, :network)
+      assert %Network{slug: slug} = preloaded.network
+      assert slug == net.slug
     end
   end
 end

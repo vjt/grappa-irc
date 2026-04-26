@@ -59,7 +59,12 @@ config :logger, :console,
     # revoke audit log so a typo'd-id revoke is greppable.
     :session_id,
     :affected,
-    :authn_failure
+    :authn_failure,
+    # Bootstrap (Phase 2): per-user-skipped count when a TOML user
+    # has no DB row — the operator must `mix grappa.create_user`
+    # before grappa.toml-driven Bootstrap can spawn that user's
+    # sessions.
+    :networks
   ]
 
 import_config "#{config_env()}.exs"

@@ -17,8 +17,12 @@ defmodule GrappaWeb.ChannelsControllerTest do
   alias Grappa.{IRCServer, Session}
 
   setup %{conn: conn} do
+    # Phase 2 (sub-task 2e): Session.Server.init looks up the user by
+    # name + resolves the network slug to its DB row. Pre-insert
+    # "vjt" — Session.send_join/3 routes via Session.placeholder_user.
+    vjt = user_fixture(name: "vjt")
     {_, session} = user_and_session()
-    {:ok, conn: put_bearer(conn, session.id), session: session}
+    {:ok, conn: put_bearer(conn, session.id), session: session, vjt: vjt}
   end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -28,8 +32,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
     {server, IRCServer.port(server)}
   end
 
-  defp start_session(port, overrides \\ %{}) do
+  defp start_session(port, vjt, overrides \\ %{}) do
     base = %{
+      user_id: vjt.id,
       user_name: "vjt",
       network_id: "azzurra",
       host: "127.0.0.1",
@@ -49,9 +54,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
   end
 
   describe "POST /networks/:network_id/channels" do
-    test "with active session sends JOIN upstream and returns 202", %{conn: conn} do
+    test "with active session sends JOIN upstream and returns 202", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port)
+      pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
       conn =
@@ -114,9 +119,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
   end
 
   describe "DELETE /networks/:network_id/channels/:channel_id" do
-    test "with active session sends PART upstream and returns 202", %{conn: conn} do
+    test "with active session sends PART upstream and returns 202", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port)
+      pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
       conn = delete(conn, "/networks/azzurra/channels/%23sniffo")

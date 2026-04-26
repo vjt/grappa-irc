@@ -62,6 +62,21 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Fetches a network by slug or returns `{:error, :not_found}`. The
+  REST surface uses this to translate the URL `:network_id` slug into
+  the integer FK that Scrollback rows are keyed on; the operator-side
+  mix tasks use `Repo.get_by!/2` directly because a typo there should
+  fail loudly.
+  """
+  @spec get_network_by_slug(String.t()) :: {:ok, Network.t()} | {:error, :not_found}
+  def get_network_by_slug(slug) when is_binary(slug) do
+    case Repo.get_by(Network, slug: slug) do
+      %Network{} = net -> {:ok, net}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Adds a server endpoint to `network`. Returns `{:error, :already_exists}`
   on the unique-index conflict (same `(network_id, host, port)`); other
   validation errors come back as a changeset.

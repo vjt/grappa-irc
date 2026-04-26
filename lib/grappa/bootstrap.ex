@@ -27,11 +27,12 @@ defmodule Grappa.Bootstrap do
   `Task.await` dances.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Config, Grappa.Session]
+  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Config, Grappa.Session]
 
   use Task, restart: :transient
 
-  alias Grappa.{Config, Session}
+  alias Grappa.{Accounts, Config, Session}
+  alias Grappa.Accounts.User
 
   require Logger
 
@@ -94,25 +95,47 @@ defmodule Grappa.Bootstrap do
 
   @spec spawn_all([Config.User.t()]) :: :ok
   defp spawn_all(users) do
-    opts_list =
-      Enum.flat_map(users, fn user ->
-        Enum.map(user.networks, &session_opts(user.name, &1))
-      end)
+    {opts_list, missing} = build_opts_list(users)
 
     stats = Session.spawn_batch(opts_list)
 
     Logger.info("bootstrap done",
       users: length(users),
       started: stats.started,
-      failed: stats.failed
+      failed: stats.failed + missing
     )
 
     :ok
   end
 
-  @spec session_opts(String.t(), Config.Network.t()) :: Grappa.Session.start_opts()
-  defp session_opts(user_name, %Config.Network{} = net) do
+  # Resolve every TOML user name to its DB `Accounts.User` row. Phase 2
+  # made user identity DB-backed (the `users` table backs the FK on
+  # `messages.user_id`); a TOML user that has no matching DB row gets
+  # logged + skipped, counted as a `failed` start. The operator must
+  # `mix grappa.create_user` before grappa.toml-driven Bootstrap can
+  # spawn that user's sessions.
+  defp build_opts_list(users) do
+    Enum.reduce(users, {[], 0}, fn user, {acc, missing} ->
+      case Accounts.get_user_by_name(user.name) do
+        {:ok, %User{} = db_user} ->
+          opts = Enum.map(user.networks, &session_opts(db_user, &1))
+          {acc ++ opts, missing}
+
+        {:error, :not_found} ->
+          Logger.warning("bootstrap: user not in DB, skipping",
+            user: user.name,
+            networks: length(user.networks)
+          )
+
+          {acc, missing + length(user.networks)}
+      end
+    end)
+  end
+
+  @spec session_opts(User.t(), Config.Network.t()) :: Grappa.Session.start_opts()
+  defp session_opts(%User{id: user_id, name: user_name}, %Config.Network{} = net) do
     %{
+      user_id: user_id,
       user_name: user_name,
       network_id: net.id,
       host: net.host,

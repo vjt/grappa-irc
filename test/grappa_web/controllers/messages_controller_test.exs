@@ -2,27 +2,33 @@ defmodule GrappaWeb.MessagesControllerTest do
   @moduledoc """
   GET (read) + POST input-validation paths. The POST success path
   needs an active `Grappa.Session.Server` so it lives in
-  `messages_controller_outbound_test.exs` (`async: false`). The input
-  validators here short-circuit BEFORE the session lookup, so they
-  remain `async: true`.
+  `messages_controller_outbound_test.exs` (`async: false`).
+
+  `async: false` because the per-test setup writes `users` +
+  `networks` rows; with the slug "azzurra" reused across tests, the
+  unique-index race under sandbox txs would flake under
+  `max_cases: 2`. Cheaper to serialize than to bump busy_timeout
+  (already 30s) further.
   """
-  use GrappaWeb.ConnCase, async: true
+  use GrappaWeb.ConnCase, async: false
 
   import Grappa.AuthFixtures
 
-  alias Grappa.Scrollback
+  alias Grappa.{Networks, Scrollback}
 
   setup %{conn: conn} do
-    {_, session} = user_and_session()
-    {:ok, conn: put_bearer(conn, session.id)}
+    {user, session} = user_and_session()
+    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+    {:ok, conn: put_bearer(conn, session.id), user: user, network: network}
   end
 
-  defp seed do
+  defp seed(user, network, channel \\ "#sniffo") do
     for i <- 0..4 do
       {:ok, _} =
         Scrollback.insert(%{
-          network_id: "azzurra",
-          channel: "#sniffo",
+          user_id: user.id,
+          network_id: network.id,
+          channel: channel,
           server_time: i,
           kind: :privmsg,
           sender: "vjt",
@@ -31,20 +37,23 @@ defmodule GrappaWeb.MessagesControllerTest do
     end
   end
 
-  test "GET ?limit=3 returns latest page descending with kind round-trip", %{conn: conn} do
-    seed()
+  test "GET ?limit=3 returns latest page descending with kind round-trip",
+       %{conn: conn, user: user, network: network} do
+    seed(user, network)
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=3")
     body = json_response(conn, 200)
     assert length(body) == 3
     assert Enum.at(body, 0)["body"] == "m4"
     assert Enum.at(body, 0)["kind"] == "privmsg"
     assert Enum.at(body, 0)["channel"] == "#sniffo"
-    assert Enum.at(body, 0)["network_id"] == "azzurra"
+    assert Enum.at(body, 0)["network"] == "azzurra"
+    refute Map.has_key?(Enum.at(body, 0), "user_id")
     assert Enum.at(body, 2)["body"] == "m2"
   end
 
-  test "GET ?before=3&limit=2 paginates correctly", %{conn: conn} do
-    seed()
+  test "GET ?before=3&limit=2 paginates correctly",
+       %{conn: conn, user: user, network: network} do
+    seed(user, network)
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=3&limit=2")
     body = json_response(conn, 200)
     assert length(body) == 2
@@ -52,17 +61,23 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert Enum.at(body, 1)["body"] == "m1"
   end
 
-  test "limit defaults to 50 when omitted", %{conn: conn} do
-    seed()
+  test "limit defaults to 50 when omitted",
+       %{conn: conn, user: user, network: network} do
+    seed(user, network)
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
     body = json_response(conn, 200)
     assert length(body) == 5
   end
 
-  test "filters by (network_id, channel) — no leakage across channels or networks", %{conn: conn} do
+  test "filters by (user_id, network_id, channel) — no leakage across channels, networks, or users",
+       %{conn: conn, user: user, network: network} do
+    {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode"})
+    other_user = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
+
     {:ok, _} =
       Scrollback.insert(%{
-        network_id: "azzurra",
+        user_id: user.id,
+        network_id: network.id,
         channel: "#sniffo",
         server_time: 1,
         kind: :privmsg,
@@ -72,7 +87,8 @@ defmodule GrappaWeb.MessagesControllerTest do
 
     {:ok, _} =
       Scrollback.insert(%{
-        network_id: "azzurra",
+        user_id: user.id,
+        network_id: network.id,
         channel: "#other",
         server_time: 2,
         kind: :privmsg,
@@ -82,7 +98,8 @@ defmodule GrappaWeb.MessagesControllerTest do
 
     {:ok, _} =
       Scrollback.insert(%{
-        network_id: "freenode",
+        user_id: user.id,
+        network_id: other_net.id,
         channel: "#sniffo",
         server_time: 3,
         kind: :privmsg,
@@ -90,10 +107,27 @@ defmodule GrappaWeb.MessagesControllerTest do
         body: "wrong-network"
       })
 
+    # Per-user iso check: same channel + network, different user.
+    {:ok, _} =
+      Scrollback.insert(%{
+        user_id: other_user.id,
+        network_id: network.id,
+        channel: "#sniffo",
+        server_time: 4,
+        kind: :privmsg,
+        sender: "alice",
+        body: "wrong-user"
+      })
+
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
     body = json_response(conn, 200)
     assert length(body) == 1
     assert Enum.at(body, 0)["body"] == "target"
+  end
+
+  test "GET on unknown network slug returns 404", %{conn: conn} do
+    conn = get(conn, "/networks/no-such-net/channels/%23sniffo/messages")
+    assert json_response(conn, 404)["error"] == "not found"
   end
 
   test "?limit=banana returns 400", %{conn: conn} do

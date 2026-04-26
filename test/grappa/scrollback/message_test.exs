@@ -3,8 +3,13 @@ defmodule Grappa.Scrollback.MessageTest do
 
   alias Grappa.Scrollback.Message
 
+  # Phase 2 (sub-task 2e): user_id is binary_id (UUID), network_id is
+  # an integer FK. assoc_constraint on both is DB-level so it doesn't
+  # fire here — these tests stay sandbox-free and exercise only the
+  # `cast/3` + `validate_required/2` shape.
   @valid_attrs %{
-    network_id: "azzurra",
+    user_id: Ecto.UUID.generate(),
+    network_id: 1,
     channel: "#sniffo",
     server_time: 1_777_804_800_000,
     kind: :privmsg,
@@ -40,7 +45,7 @@ defmodule Grappa.Scrollback.MessageTest do
     end
 
     test "rejects missing required fields" do
-      for field <- [:network_id, :channel, :server_time, :kind, :sender, :body] do
+      for field <- [:user_id, :network_id, :channel, :server_time, :kind, :sender, :body] do
         attrs = Map.delete(@valid_attrs, field)
         cs = Message.changeset(%Message{}, attrs)
         refute cs.valid?, "expected missing #{field} to invalidate the changeset"

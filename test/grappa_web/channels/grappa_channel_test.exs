@@ -22,17 +22,23 @@ defmodule GrappaWeb.GrappaChannelTest do
   pair so the topic namespace is partitioned per-test. The schema's
   free-form string columns make this trivial.
   """
-  use GrappaWeb.ChannelCase, async: true
+  use GrappaWeb.ChannelCase, async: false
 
-  alias Grappa.Scrollback
+  import Grappa.AuthFixtures
+
+  alias Grappa.{Networks, Repo, Scrollback}
   alias Grappa.Scrollback.Wire
   alias GrappaWeb.UserSocket
 
   describe "join grappa:network:{net}/channel:{chan}" do
     test "delivers PubSub-broadcast events verbatim" do
-      net = "ch_happy_net"
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "ch-happy-#{System.unique_integer([:positive])}"})
+
       chan = "#ch_happy"
-      topic = "grappa:network:#{net}/channel:#{chan}"
+      topic = "grappa:network:#{network.slug}/channel:#{chan}"
 
       {:ok, _, _} =
         UserSocket
@@ -41,7 +47,8 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       {:ok, message} =
         Scrollback.insert(%{
-          network_id: net,
+          user_id: user.id,
+          network_id: network.id,
           channel: chan,
           server_time: 1_700_000_000_000,
           kind: :privmsg,
@@ -49,7 +56,8 @@ defmodule GrappaWeb.GrappaChannelTest do
           body: "ciao raga"
         })
 
-      {:event, payload} = event = Wire.message_event(message)
+      preloaded = Repo.preload(message, :network)
+      {:event, payload} = event = Wire.message_event(preloaded)
 
       Phoenix.PubSub.broadcast(Grappa.PubSub, topic, event)
 

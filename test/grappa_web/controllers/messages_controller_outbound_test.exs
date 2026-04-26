@@ -19,8 +19,13 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   alias Grappa.{IRCServer, Scrollback, Session}
 
   setup %{conn: conn} do
+    # Phase 2 (sub-task 2e): Session.Server writes scrollback rows
+    # using user_id as the per-user iso FK. The send-PRIVMSG path
+    # routes via Session.placeholder_user ("vjt") — that user MUST
+    # exist in DB for Session.Server.init to find it.
+    vjt = user_fixture(name: "vjt")
     {_, session} = user_and_session()
-    {:ok, conn: put_bearer(conn, session.id)}
+    {:ok, conn: put_bearer(conn, session.id), vjt: vjt}
   end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -30,8 +35,9 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     {server, IRCServer.port(server)}
   end
 
-  defp start_session(port, overrides \\ %{}) do
+  defp start_session(port, vjt, overrides \\ %{}) do
     base = %{
+      user_id: vjt.id,
       user_name: "vjt",
       network_id: "azzurra",
       host: "127.0.0.1",
@@ -51,10 +57,11 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   end
 
   describe "POST with active session" do
-    test "sends PRIVMSG upstream, persists row, broadcasts, returns 201", %{conn: conn} do
+    test "sends PRIVMSG upstream, persists row, broadcasts, returns 201",
+         %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#sniffo")
-      pid = start_session(port)
+      pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
       conn =
@@ -65,11 +72,14 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       body = json_response(conn, 201)
       assert body["body"] == "ciao raga"
       assert body["channel"] == "#sniffo"
-      assert body["network_id"] == "azzurra"
+      assert body["network"] == "azzurra"
       assert body["kind"] == "privmsg"
       assert body["sender"] == "grappa-test"
       assert is_integer(body["server_time"])
       assert is_integer(body["id"])
+      # Per decision G3 the wire MUST NOT carry user_id — it's a topic
+      # discriminator, not a payload field.
+      refute Map.has_key?(body, "user_id")
 
       msg =
         assert_message_event(
@@ -78,7 +88,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
             body: "ciao raga",
             sender: "grappa-test",
             channel: "#sniffo",
-            network_id: "azzurra",
+            network: "azzurra",
             meta: %{}
           ],
           1_000
@@ -86,21 +96,25 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       assert is_integer(msg.server_time)
       assert is_integer(msg.id)
+      refute Map.has_key?(msg, :user_id)
 
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
 
-      [row] = Scrollback.fetch("azzurra", "#sniffo", nil, 10)
+      {:ok, network} = Grappa.Networks.get_network_by_slug("azzurra")
+      [row] = Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10)
       assert row.body == "ciao raga"
       assert row.sender == "grappa-test"
       assert row.kind == :privmsg
+      assert row.user_id == vjt.id
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "POST then GET roundtrip — message visible via subsequent fetch", %{conn: conn} do
+    test "POST then GET roundtrip — vjt's POST visible via vjt's subsequent GET",
+         %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
-      pid = start_session(port)
+      pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
       conn1 =
@@ -110,11 +124,14 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       assert json_response(conn1, 201)
 
-      {_, s2} = user_and_session()
+      # Per-user iso: the GET must be authenticated AS the user that
+      # the row was written for (vjt). A different user's GET would
+      # see [] — that's a separate test below.
+      vjt_session = session_fixture(vjt)
 
       conn2 =
         Phoenix.ConnTest.build_conn()
-        |> put_bearer(s2.id)
+        |> put_bearer(vjt_session.id)
         |> get("/networks/azzurra/channels/%23sniffo/messages")
 
       body = json_response(conn2, 200)
@@ -125,10 +142,37 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "broadcast scoped to (network, channel) — does not leak", %{conn: conn} do
+    test "PER-USER ISO: alice's GET on the same channel does NOT see vjt's POSTed message",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      pid = start_session(port, vjt)
+      :ok = await_handshake(server)
+
+      conn1 =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "vjt-secret"})
+
+      assert json_response(conn1, 201)
+
+      # Different user — auth as alice, fetch the same channel.
+      alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
+      alice_session = session_fixture(alice)
+
+      conn2 =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(alice_session.id)
+        |> get("/networks/azzurra/channels/%23sniffo/messages")
+
+      assert json_response(conn2, 200) == []
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "broadcast scoped to (network, channel) — does not leak", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, "grappa:network:azzurra/channel:#other")
-      pid = start_session(port)
+      pid = start_session(port, vjt)
       :ok = await_handshake(server)
 
       conn =

@@ -6,14 +6,24 @@ defmodule Grappa.RepoSmokeTest do
   passes, Task 2's infra (Repo, DataCase, sandbox, migration, schema)
   is functional. Domain-level scrollback queries land in Task 3.
   """
-  use Grappa.DataCase, async: true
+  use Grappa.DataCase, async: false
 
-  # `Grappa.Repo` aliased by Grappa.DataCase.using/1.
+  alias Grappa.{Accounts, Networks}
   alias Grappa.Scrollback.Message
 
   test "Repo round-trips a Message through the sandbox" do
+    {:ok, user} =
+      Accounts.create_user(%{
+        name: "vjt-#{System.unique_integer([:positive])}",
+        password: "correct horse battery"
+      })
+
+    {:ok, network} =
+      Networks.find_or_create_network(%{slug: "azzurra-#{System.unique_integer([:positive])}"})
+
     attrs = %{
-      network_id: "azzurra",
+      user_id: user.id,
+      network_id: network.id,
       channel: "#sniffo",
       server_time: 1_777_804_800_000,
       kind: :privmsg,

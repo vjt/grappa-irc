@@ -36,7 +36,15 @@ defmodule Grappa.Session do
   # `send_*`, `whereis/2`).
   use Boundary,
     top_level?: true,
-    deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
+    deps: [
+      Grappa.Accounts,
+      Grappa.IRC,
+      Grappa.Log,
+      Grappa.Networks,
+      Grappa.PubSub,
+      Grappa.Repo,
+      Grappa.Scrollback
+    ],
     exports: [Server]
 
   alias Grappa.{Log, Session.Server}
@@ -46,6 +54,7 @@ defmodule Grappa.Session do
   @placeholder_user "vjt"
 
   @type start_opts :: %{
+          required(:user_id) => Ecto.UUID.t(),
           required(:user_name) => String.t(),
           required(:network_id) => String.t(),
           required(:host) => String.t(),
@@ -65,8 +74,8 @@ defmodule Grappa.Session do
   refused).
   """
   @spec start_session(start_opts()) :: DynamicSupervisor.on_start_child()
-  def start_session(%{user_name: u, network_id: n} = opts)
-      when is_binary(u) and is_binary(n) do
+  def start_session(%{user_id: uid, user_name: u, network_id: n} = opts)
+      when is_binary(uid) and is_binary(u) and is_binary(n) do
     DynamicSupervisor.start_child(Grappa.SessionSupervisor, {Server, opts})
   end
 

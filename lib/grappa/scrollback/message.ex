@@ -80,7 +80,9 @@ defmodule Grappa.Scrollback.Message do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Grappa.Accounts.User
   alias Grappa.IRC.Identifier
+  alias Grappa.Networks.Network
 
   @kinds [
     :privmsg,
@@ -111,7 +113,10 @@ defmodule Grappa.Scrollback.Message do
 
   @type t :: %__MODULE__{
           id: integer() | nil,
-          network_id: String.t(),
+          user_id: Ecto.UUID.t() | nil,
+          user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+          network_id: integer() | nil,
+          network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
           channel: String.t(),
           server_time: integer(),
           kind: kind() | nil,
@@ -122,7 +127,8 @@ defmodule Grappa.Scrollback.Message do
         }
 
   schema "messages" do
-    field :network_id, :string
+    belongs_to :user, User, type: :binary_id
+    belongs_to :network, Network
     field :channel, :string
     field :server_time, :integer
     field :kind, Ecto.Enum, values: @kinds
@@ -136,9 +142,9 @@ defmodule Grappa.Scrollback.Message do
   @doc """
   Builds an insert changeset.
 
-  Universally required: `:network_id`, `:channel`, `:server_time`,
-  `:kind`, `:sender`. The `:kind` field is validated against the
-  `Ecto.Enum` value set at cast time.
+  Universally required: `:user_id`, `:network_id`, `:channel`,
+  `:server_time`, `:kind`, `:sender`. The `:kind` field is validated
+  against the `Ecto.Enum` value set at cast time.
 
   `:body` is required only for content-bearing kinds
   (`:privmsg`, `:notice`, `:action`, `:topic`). Presence-event kinds
@@ -152,12 +158,22 @@ defmodule Grappa.Scrollback.Message do
   @spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:network_id, :channel, :server_time, :kind, :sender, :body, :meta])
-    |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
-    |> validate_identifier(:network_id, &Identifier.valid_network_id?/1)
+    |> cast(attrs, [
+      :user_id,
+      :network_id,
+      :channel,
+      :server_time,
+      :kind,
+      :sender,
+      :body,
+      :meta
+    ])
+    |> validate_required([:user_id, :network_id, :channel, :server_time, :kind, :sender])
     |> validate_identifier(:channel, &Identifier.valid_channel?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
+    |> assoc_constraint(:user)
+    |> assoc_constraint(:network)
   end
 
   @spec validate_body_for_kind(Ecto.Changeset.t()) :: Ecto.Changeset.t()

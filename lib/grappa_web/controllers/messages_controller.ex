@@ -2,7 +2,13 @@ defmodule GrappaWeb.MessagesController do
   @moduledoc """
   Read + write surface for `Grappa.Scrollback` messages.
 
-  `index/2` paginates DESC by `(network_id, channel, server_time)`.
+  `index/2` paginates DESC by `(user_id, network_id, channel,
+  server_time)` — the `user_id` partition is the load-bearing per-user
+  iso boundary (Phase 2 sub-task 2e). The URL `:network_id` is a
+  network slug; this controller resolves it to the integer FK via
+  `Networks.get_network_by_slug/1` so the scrollback surface stays
+  internally typed.
+
   `create/2` routes through `Grappa.Session.send_privmsg/4`, which
   persists the row, broadcasts on the per-channel PubSub topic, AND
   sends the PRIVMSG upstream — single source for both the scrollback
@@ -28,26 +34,36 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Scrollback, Session}
+  alias Grappa.{Networks, Repo, Scrollback, Session}
 
   @default_limit 50
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
-  paginated DESC scrollback fetch.
+  paginated DESC scrollback fetch for the authenticated user.
 
   Optional query params:
     * `before` — `server_time` cursor; only rows strictly less than it
       are returned. Absent: latest page. Unparseable: 400.
     * `limit` — page size (default `#{@default_limit}`, hard cap in
-      `Grappa.Scrollback.fetch/4`). Must be a positive integer when
+      `Grappa.Scrollback.fetch/5`). Must be a positive integer when
       present. Absent: default. Non-positive or non-integer: 400.
+
+  Unknown network slug: 404 (`{:error, :not_found}` via Networks).
   """
-  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
-  def index(conn, %{"network_id" => network, "channel_id" => channel} = params) do
+  @spec index(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | :not_found}
+  def index(conn, %{"network_id" => slug, "channel_id" => channel} = params) do
+    user_id = conn.assigns.current_user_id
+
     with {:ok, cursor} <- parse_cursor(params["before"]),
-         {:ok, limit} <- parse_limit(params["limit"]) do
-      messages = Scrollback.fetch(network, channel, cursor, limit)
+         {:ok, limit} <- parse_limit(params["limit"]),
+         {:ok, network} <- Networks.get_network_by_slug(slug) do
+      messages =
+        user_id
+        |> Scrollback.fetch(network.id, channel, cursor, limit)
+        |> preload_networks(network)
+
       render(conn, :index, messages: messages)
     end
   end
@@ -55,12 +71,11 @@ defmodule GrappaWeb.MessagesController do
   @doc """
   `POST /networks/:network_id/channels/:channel_id/messages` —
   delegates to `Grappa.Session.send_privmsg/4` for the active session
-  registered as `("vjt", network)`. The session persists the row with
-  `sender = session.nick`, broadcasts the canonical wire event on
-  `grappa:network:{net}/channel:{chan}`, and writes the PRIVMSG to the
-  upstream socket. Returns 201 with the serialized message on success;
-  404 if no session is registered for the network; 400 for malformed
-  input.
+  registered as `(placeholder_user, network)`. The session persists the
+  row with `sender = session.nick`, broadcasts the canonical wire event
+  on the per-channel topic, and writes the PRIVMSG to the upstream
+  socket. Returns 201 with the serialized message on success; 404 if
+  no session is registered for the network; 400 for malformed input.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
@@ -71,11 +86,17 @@ defmodule GrappaWeb.MessagesController do
     with {:ok, message} <- Session.send_privmsg(Session.placeholder_user(), network, channel, body) do
       conn
       |> put_status(:created)
-      |> render(:show, message: message)
+      |> render(:show, message: Repo.preload(message, :network))
     end
   end
 
   def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
+
+  # Single-network fetch — the network struct is known; preload
+  # in-place rather than issuing N+1 SELECTs through Repo.preload.
+  defp preload_networks(messages, network) do
+    Enum.map(messages, &%{&1 | network: network})
+  end
 
   defp parse_cursor(nil), do: {:ok, nil}
 
