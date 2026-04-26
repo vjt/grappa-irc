@@ -70,7 +70,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/auth/login", %{"password" => "x"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "with missing password returns 400", %{conn: conn} do
@@ -79,7 +79,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/auth/login", %{"name" => "vjt"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "with non-string name returns 400", %{conn: conn} do
@@ -88,7 +88,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/auth/login", %{"name" => 42, "password" => "x"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
 

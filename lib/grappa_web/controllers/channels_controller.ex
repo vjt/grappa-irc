@@ -11,9 +11,9 @@ defmodule GrappaWeb.ChannelsController do
 
   Both endpoints require an active session for the network — without
   one, `Grappa.Session.send_*` returns `{:error, :no_session}` which
-  the `FallbackController` maps to a 404 with `error: "no session"`.
+  the `FallbackController` maps to a 404 with `error: "no_session"`.
   Unknown network slug returns `{:error, :not_found}` → 404 with
-  `error: "not found"`. Channel-membership tracking + persistence of
+  `error: "not_found"`. Channel-membership tracking + persistence of
   JOIN/PART events lands in Phase 5; for now these are pure
   upstream-fire-and-confirm.
   """

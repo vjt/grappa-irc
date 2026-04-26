@@ -6,6 +6,21 @@ defmodule GrappaWeb.FallbackController do
   `FunctionClauseError` and surface as a Phoenix 500 — adding a
   catch-all would hide context bugs that should be loud at boundary.
 
+  ## Wire-string convention (A7)
+
+  All atom-error responses use a single `%{error: "<token>"}` envelope
+  whose value is the **snake_case stringification of the atom tag**:
+  `:bad_request → "bad_request"`, `:not_found → "not_found"`, etc. The
+  `Plugs.Authn` 401 body (`{"error":"unauthorized"}`) follows the same
+  shape — clients parse the same envelope at every door. Adding a new
+  tagged error means: pick a snake_case atom, add a clause here, and
+  the wire string falls out automatically. Don't introduce a different
+  envelope (`%{message: ...}`, `%{code: ...}`) for any sub-class —
+  consistency at the wire is more valuable than per-error nuance.
+  Validation errors (`%Ecto.Changeset{}`) use the **plural**
+  `%{errors: ...}` envelope — deliberately distinct so clients can
+  tell "field-level validation failed" from "single tagged error."
+
   Add a new clause whenever a context introduces a new tagged error
   (e.g. `{:error, :network_unknown}` in Task 5+) and update the spec
   in lockstep.
@@ -25,7 +40,7 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, :bad_request}) do
     conn
     |> put_status(:bad_request)
-    |> json(%{error: "bad request"})
+    |> json(%{error: "bad_request"})
   end
 
   # CRLF / NUL byte in an IRC-bound field. Distinct from :bad_request
@@ -41,13 +56,13 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, :not_found}) do
     conn
     |> put_status(:not_found)
-    |> json(%{error: "not found"})
+    |> json(%{error: "not_found"})
   end
 
   def call(conn, {:error, :no_session}) do
     conn
     |> put_status(:not_found)
-    |> json(%{error: "no session"})
+    |> json(%{error: "no_session"})
   end
 
   # Login failure — uniform shape regardless of which credential

@@ -127,22 +127,22 @@ defmodule GrappaWeb.MessagesControllerTest do
 
   test "GET on unknown network slug returns 404", %{conn: conn} do
     conn = get(conn, "/networks/no-such-net/channels/%23sniffo/messages")
-    assert json_response(conn, 404)["error"] == "not found"
+    assert json_response(conn, 404)["error"] == "not_found"
   end
 
   test "?limit=banana returns 400", %{conn: conn} do
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=banana")
-    assert json_response(conn, 400)["error"] == "bad request"
+    assert json_response(conn, 400)["error"] == "bad_request"
   end
 
   test "?limit=0 returns 400 (must be positive)", %{conn: conn} do
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=0")
-    assert json_response(conn, 400)["error"] == "bad request"
+    assert json_response(conn, 400)["error"] == "bad_request"
   end
 
   test "?before=banana returns 400", %{conn: conn} do
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=banana")
-    assert json_response(conn, 400)["error"] == "bad request"
+    assert json_response(conn, 400)["error"] == "bad_request"
   end
 
   test "GET without Bearer returns 401" do
@@ -153,7 +153,7 @@ defmodule GrappaWeb.MessagesControllerTest do
   describe "POST /networks/:network_id/channels/:channel_id/messages — input validation" do
     test "unknown network slug returns 404 not found", %{conn: conn} do
       # Sub-task 2g: slug → integer FK resolution short-circuits with
-      # "not found" before reaching the Session lookup. A known slug
+      # "not_found" before reaching the Session lookup. A known slug
       # without a session is the separate :no_session path tested in
       # `MessagesControllerOutboundTest`.
       conn =
@@ -161,7 +161,7 @@ defmodule GrappaWeb.MessagesControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 404)["error"] == "not found"
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "empty body returns 400", %{conn: conn} do
@@ -170,7 +170,7 @@ defmodule GrappaWeb.MessagesControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => ""})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "missing body field returns 400", %{conn: conn} do
@@ -179,7 +179,7 @@ defmodule GrappaWeb.MessagesControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "non-string body returns 400", %{conn: conn} do
@@ -188,7 +188,7 @@ defmodule GrappaWeb.MessagesControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => 42})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "POST without Bearer returns 401" do

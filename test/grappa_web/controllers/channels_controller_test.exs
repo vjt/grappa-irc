@@ -76,7 +76,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels", %{"name" => "#sniffo"})
 
-      assert json_response(conn, 404)["error"] == "not found"
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
@@ -88,7 +88,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => "#sniffo"})
 
-      assert json_response(conn, 404)["error"] == "no session"
+      assert json_response(conn, 404)["error"] == "no_session"
     end
 
     test "without Bearer returns 401" do
@@ -106,7 +106,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "non-string name returns 400", %{conn: conn} do
@@ -115,7 +115,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => 42})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "empty name returns 400", %{conn: conn} do
@@ -124,7 +124,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => ""})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     # S29 C1: a channel name carrying an embedded \r or \n would smuggle a
@@ -138,7 +138,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => "#chan\r\nQUIT :pwn"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
 
     test "channel name failing IRC syntax (missing prefix) returns 400", %{conn: conn} do
@@ -147,7 +147,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => "no-prefix"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
 
@@ -170,13 +170,13 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
     test "unknown network slug returns 404 not found", %{conn: conn} do
       conn = delete(conn, "/networks/no-such-net/channels/%23sniffo")
-      assert json_response(conn, 404)["error"] == "not found"
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
       _ = setup_network(vjt, 9999, "azzurra")
       conn = delete(conn, "/networks/azzurra/channels/%23sniffo")
-      assert json_response(conn, 404)["error"] == "no session"
+      assert json_response(conn, 404)["error"] == "no_session"
     end
 
     test "without Bearer returns 401" do
@@ -189,7 +189,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
     test "channel_id with URL-encoded CRLF returns 400", %{conn: conn} do
       # %0A = LF, %0D = CR. "#chan%0AQUIT" decodes to "#chan\nQUIT".
       conn = delete(conn, "/networks/azzurra/channels/%23chan%0AQUIT")
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
 end

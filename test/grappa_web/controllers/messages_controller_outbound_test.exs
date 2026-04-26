@@ -216,7 +216,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/no-such-net/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 404)["error"] == "not found"
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
@@ -227,7 +227,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 404)["error"] == "no session"
+      assert json_response(conn, 404)["error"] == "no_session"
     end
 
     test "without Bearer returns 401" do
@@ -279,7 +279,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23chan%0AQUIT/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 400)["error"] == "bad request"
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
 end
