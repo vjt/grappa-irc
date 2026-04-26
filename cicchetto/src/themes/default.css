@@ -228,6 +228,107 @@ body {
 
 .pane {
   flex: 1;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pane > .muted {
   padding: 1rem;
+}
+
+.scrollback-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.scrollback {
+  flex: 1;
   overflow-y: auto;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+}
+
+.scrollback-empty {
+  margin: 0;
+}
+
+.scrollback-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.05rem 0;
+}
+
+.scrollback-time {
+  color: var(--muted);
+}
+
+.scrollback-sender {
+  color: var(--accent);
+}
+
+.scrollback-body {
+  color: var(--fg);
+}
+
+.scrollback-action {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.scrollback-notice {
+  color: var(--muted);
+}
+
+.compose {
+  display: flex;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem;
+  gap: 0.5rem;
+  background: var(--bg);
+}
+
+.compose textarea {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  resize: none;
+}
+
+.compose textarea:focus {
+  outline: 1px solid var(--accent);
+}
+
+.compose button {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  padding: 0 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.compose button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.compose-error {
+  color: var(--accent);
+  margin: 0;
+  padding: 0.25rem 1rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
 }

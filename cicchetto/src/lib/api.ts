@@ -133,3 +133,51 @@ export async function listChannels(token: string, networkSlug: string): Promise<
   if (!res.ok) throw await readError(res);
   return (await res.json()) as ChannelEntry[];
 }
+
+// Mirror of `GrappaWeb.MessagesController.index/2`. Returns rows DESC by
+// (server_time, id) — newest first. The server emits a flat array, not a
+// `{messages, next_cursor}` envelope; the cursor is `server_time` of the
+// oldest row in the page (callers feed it back as `?before=`). Empty
+// page = no more history.
+export async function listMessages(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+  before?: number,
+): Promise<ScrollbackMessage[]> {
+  const qs = before === undefined ? "" : `?before=${before}`;
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages${qs}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as ScrollbackMessage[];
+}
+
+// Mirror of `GrappaWeb.MessagesController.create/2`. Server hardcodes
+// `kind = :privmsg` — only `body` is in the request envelope. Returns
+// 201 + the persisted Wire row; the same row also fires on the
+// per-channel PubSub topic, so a connected client receives it via WS
+// push and the store's existing event handler appends it to scrollback.
+// The REST response is the secondary confirmation, not the primary
+// surface for the new row.
+export async function sendMessage(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+  body: string,
+): Promise<ScrollbackMessage> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ body }),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as ScrollbackMessage;
+}

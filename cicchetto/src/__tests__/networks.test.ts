@@ -14,6 +14,8 @@ const mockChannel = {
 vi.mock("../lib/api", () => ({
   listNetworks: vi.fn(),
   listChannels: vi.fn(),
+  listMessages: vi.fn(),
+  sendMessage: vi.fn(),
   me: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
@@ -40,6 +42,39 @@ const seedStubs = async () => {
   ]);
   vi.mocked(api.listChannels).mockResolvedValue([{ name: "#grappa" }, { name: "#cicchetto" }]);
   vi.mocked(api.me).mockResolvedValue({ id: "u1", name: "alice", inserted_at: "x" });
+  vi.mocked(api.listMessages).mockResolvedValue([]);
+  vi.mocked(api.sendMessage).mockResolvedValue({
+    id: 999,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: 999,
+    kind: "privmsg",
+    sender: "alice",
+    body: "echo",
+    meta: {},
+  });
+};
+
+const fireMessageEvent = (
+  channel: string,
+  msg: Partial<{ id: number; sender: string; body: string; server_time: number; kind: string }>,
+) => {
+  const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+    p: unknown,
+  ) => void;
+  handler({
+    kind: "message",
+    message: {
+      id: msg.id ?? 1,
+      network: "freenode",
+      channel,
+      server_time: msg.server_time ?? 0,
+      kind: msg.kind ?? "privmsg",
+      sender: msg.sender ?? "bob",
+      body: msg.body ?? "hi",
+      meta: {},
+    },
+  });
 };
 
 describe("networks store", () => {
@@ -164,5 +199,213 @@ describe("networks store", () => {
     expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBe(1);
     store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
     expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBeUndefined();
+  });
+
+  it("incoming PRIVMSG event also appends to scrollbackByChannel for that channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    fireMessageEvent("#grappa", { id: 7, body: "live" });
+    const key = store.channelKey("freenode", "#grappa");
+    expect(store.scrollbackByChannel()[key]).toBeDefined();
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([7]);
+  });
+
+  it("two events on the same channel append in arrival order", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    fireMessageEvent("#grappa", { id: 1, server_time: 100, body: "first" });
+    fireMessageEvent("#grappa", { id: 2, server_time: 200, body: "second" });
+    const key = store.channelKey("freenode", "#grappa");
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.body)).toEqual(["first", "second"]);
+  });
+
+  it("duplicate id from REST + WS overlap is deduped (single entry kept)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 42,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 100,
+        kind: "privmsg",
+        sender: "bob",
+        body: "from rest",
+        meta: {},
+      },
+    ]);
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    fireMessageEvent("#grappa", { id: 42, server_time: 100, body: "from ws" });
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    await vi.waitFor(() => {
+      expect(api.listMessages).toHaveBeenCalled();
+    });
+    const key = store.channelKey("freenode", "#grappa");
+    await vi.waitFor(() => {
+      expect(store.scrollbackByChannel()[key]?.length).toBe(1);
+    });
+  });
+
+  it("selecting a channel fires loadInitialScrollback exactly once across re-selections", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    await vi.waitFor(() => {
+      expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#grappa");
+    });
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    await vi.waitFor(() => {
+      expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#cicchetto");
+    });
+    // Two unique channels = two REST fetches; re-selecting #grappa does
+    // NOT trigger a third call.
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("loadInitialScrollback merges REST DESC page into ASC scrollback", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 3,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 300,
+        kind: "privmsg",
+        sender: "carol",
+        body: "newest",
+        meta: {},
+      },
+      {
+        id: 2,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 200,
+        kind: "privmsg",
+        sender: "bob",
+        body: "middle",
+        meta: {},
+      },
+      {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 100,
+        kind: "privmsg",
+        sender: "alice",
+        body: "oldest",
+        meta: {},
+      },
+    ]);
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    const key = store.channelKey("freenode", "#grappa");
+    await vi.waitFor(() => {
+      expect(store.scrollbackByChannel()[key]?.length).toBe(3);
+    });
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([1, 2, 3]);
+  });
+
+  it("loadMore fetches with before=oldest server_time and prepends older entries", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValueOnce([
+      {
+        id: 5,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 500,
+        kind: "privmsg",
+        sender: "z",
+        body: "now",
+        meta: {},
+      },
+    ]);
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    const key = store.channelKey("freenode", "#grappa");
+    await vi.waitFor(() => {
+      expect(store.scrollbackByChannel()[key]?.length).toBe(1);
+    });
+    vi.mocked(api.listMessages).mockResolvedValueOnce([
+      {
+        id: 3,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 300,
+        kind: "privmsg",
+        sender: "y",
+        body: "older",
+        meta: {},
+      },
+    ]);
+    await store.loadMore("freenode", "#grappa");
+    expect(api.listMessages).toHaveBeenLastCalledWith("tok", "freenode", "#grappa", 500);
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([3, 5]);
+  });
+
+  it("sendMessage POSTs to api.sendMessage with token, slug, channel, body", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    await store.sendMessage("freenode", "#grappa", "hello world");
+    expect(api.sendMessage).toHaveBeenCalledWith("tok", "freenode", "#grappa", "hello world");
+  });
+
+  it("send round-trip: REST POST + WS broadcast → scrollback shows the row exactly once", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    await seedStubs();
+    const api = await import("../lib/api");
+    await import("../lib/socket");
+    const store = await import("../lib/networks");
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    // Server is mocked to return a row with id 999; the matching WS
+    // broadcast carries the same id. Both paths converge in the store.
+    await store.sendMessage("freenode", "#grappa", "echo");
+    expect(api.sendMessage).toHaveBeenCalled();
+    fireMessageEvent("#grappa", { id: 999, server_time: 999, body: "echo", sender: "alice" });
+    const key = store.channelKey("freenode", "#grappa");
+    expect(store.scrollbackByChannel()[key]?.length).toBe(1);
+    expect(store.scrollbackByChannel()[key]?.[0]?.body).toBe("echo");
   });
 });

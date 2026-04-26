@@ -10,6 +10,7 @@ import {
   unreadCounts,
   user,
 } from "./lib/networks";
+import ScrollbackPane from "./ScrollbackPane";
 
 // Logged-in landing surface. Sub-task 4 wires the network → channel
 // sidebar + the live-event WS subscription that drives unread counts;
@@ -86,9 +87,7 @@ const Shell: Component = () => {
             fallback={<p class="muted">select a channel to view scrollback</p>}
           >
             {(sel) => (
-              <p class="muted">
-                {sel().channelName} on {sel().networkSlug} — scrollback wires in sub-task 5
-              </p>
+              <ScrollbackPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
             )}
           </Show>
         </section>
