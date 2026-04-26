@@ -420,22 +420,32 @@ defmodule Grappa.Networks do
   without any further DB lookup.
 
   Errors surface as tagged tuples instead of exceptions because
-  Bootstrap's spawn loop reports per-credential failures (the
-  `failed` counter) and continues; raising would abort the entire
-  boot. The currently-tagged errors:
+  Bootstrap's spawn loop is `Enum.reduce` — a raise from any single
+  credential would abort the whole reduce, leaving every subsequent
+  credential un-spawned. Translating at this boundary gives
+  Bootstrap a `{:ok, plan} | {:error, reason}` shape to drive its
+  per-credential `failed` counter without needing its own
+  try/rescue around each iteration.
+
+  Two reachable error tags:
 
     * `{:error, :no_server}` — `pick_server!/1` raised; the network
-      has zero enabled endpoints.
+      has zero enabled endpoints. Operator action:
+      `mix grappa.add_server`.
     * `{:error, :user_not_found}` — `Accounts.get_user!/1` raised;
       the FK from `network_credentials.user_id` to `users.id` makes
-      this unrepresentable in normal operation, but the catch
-      survives a hand-edited DB.
-
-  Both raises are translated here so callers (Bootstrap, the future
-  operator REST surface) deal with a uniform `{:ok, plan} | {:error,
-  reason}` shape.
+      this unrepresentable in normal operation. The catch survives
+      a hand-edited DB or a not-yet-imagined future code path that
+      could orphan a credential. Bounded scope: the rescue ONLY
+      catches `Ecto.NoResultsError`, NOT generic `Exception`, so a
+      future bug that adds a `Repo.get!/2` here for an UNRELATED
+      lookup will still crash loudly (different from rescuing
+      `_`). If we ever add a second `Repo.get!/2` whose miss is a
+      legitimate caller-handles condition, that's the moment to
+      refactor — not now.
   """
-  @spec session_plan(Credential.t()) :: {:ok, Session.start_opts()} | {:error, atom()}
+  @spec session_plan(Credential.t()) ::
+          {:ok, Session.start_opts()} | {:error, :no_server | :user_not_found}
   def session_plan(%Credential{} = credential) do
     # Caller may pass a credential straight from
     # `list_credentials_for_all_users/0` (network preloaded already)

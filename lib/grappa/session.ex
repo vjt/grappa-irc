@@ -38,13 +38,20 @@ defmodule Grappa.Session do
 
   Trade-off: on a `:transient` restart the Server replays the same
   cached opts (the supervisor child spec captures them at first
-  start). A live credential change in the DB does NOT propagate to
-  the running Server until the operator runs
-  `mix grappa.unbind_network` + `bind_network` (which forces a
-  fresh `start_session/3`) or the next deploy reboots Bootstrap.
-  This is acceptable for Phase 2 — the operator workflow is
-  modify-then-redeploy. Phase 5 hot-reload of credentials gets a
-  dedicated `Session.refresh/2` if needed.
+  start). A live credential change in the DB propagates to the
+  running Server ONLY when `Networks.unbind_credential/2` runs
+  INSIDE the prod BEAM (e.g. via `bin/grappa rpc
+  'Grappa.Networks.unbind_credential(...)'` or any future operator
+  REST surface) — that path goes through `Session.stop_session/2`
+  and the next bind triggers a fresh `start_session/3`. Bare
+  `mix grappa.unbind_network` runs in a SEPARATE short-lived BEAM
+  with its own (empty) session registry, so the `stop_session/2`
+  call there is a no-op and the prod BEAM's running Session
+  outlives the deleted credential row until the next deploy
+  reboots Bootstrap. The operator path that actually re-spawns
+  must hit the live BEAM. Phase 5 hot-reload of credentials gets a
+  dedicated `Session.refresh/2` if the deploy-cycle gap becomes
+  painful.
   """
 
   # `Server` is exported for the test path only — `server_test.exs`
