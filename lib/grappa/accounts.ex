@@ -50,6 +50,8 @@ defmodule Grappa.Accounts do
   alias Grappa.Accounts.{Session, User}
   alias Grappa.Repo
 
+  require Logger
+
   @idle_timeout_seconds 7 * 24 * 3600
   @last_seen_bump_threshold_seconds 60
 
@@ -161,12 +163,16 @@ defmodule Grappa.Accounts do
   @doc """
   Marks the session row's `revoked_at` to now. Idempotent and safe to
   call with an unknown id — both paths return `:ok` (no-op for the
-  unknown id) so callers don't need to branch on existence.
+  unknown id) so callers don't need to branch on existence. The
+  affected-row count is logged so a typo'd revoke (zero matches)
+  remains greppable in operator logs without changing the API
+  contract.
   """
   @spec revoke_session(Ecto.UUID.t()) :: :ok
   def revoke_session(id) when is_binary(id) do
     query = from(s in Session, where: s.id == ^id)
-    {_, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+    {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+    Logger.info("session revoked", session_id: id, affected: affected)
     :ok
   end
 

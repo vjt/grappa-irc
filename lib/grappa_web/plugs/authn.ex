@@ -19,18 +19,32 @@ defmodule GrappaWeb.Plugs.Authn do
 
   alias Grappa.Accounts
 
+  require Logger
+
   @impl Plug
   def init(opts), do: opts
 
   @impl Plug
   def call(conn, _) do
-    with {:ok, token} <- get_token(conn),
-         {:ok, session} <- Accounts.authenticate(token) do
-      conn
-      |> assign(:current_user_id, session.user_id)
-      |> assign(:current_session_id, session.id)
-    else
-      _ -> unauthorized(conn)
+    case get_token(conn) do
+      {:ok, token} ->
+        case Accounts.authenticate(token) do
+          {:ok, session} ->
+            conn
+            |> assign(:current_user_id, session.user_id)
+            |> assign(:current_session_id, session.id)
+
+          {:error, reason} ->
+            # Reason stays in operator logs (greppable) but never reaches
+            # the wire — the 401 body is uniform on purpose so the plug
+            # doesn't leak token-state to a probing attacker.
+            Logger.info("authn rejected", authn_failure: reason)
+            unauthorized(conn)
+        end
+
+      :error ->
+        Logger.info("authn rejected", authn_failure: :no_bearer)
+        unauthorized(conn)
     end
   end
 

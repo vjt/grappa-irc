@@ -53,7 +53,13 @@ config :logger, :console,
     :target,
     :new_nick,
     :modes,
-    :args
+    :args,
+    # Auth context (Phase 2): bearer-token session lifecycle. `session_id`
+    # rides every authn-plug failure and revoke; `affected` rides the
+    # revoke audit log so a typo'd-id revoke is greppable.
+    :session_id,
+    :affected,
+    :authn_failure
   ]
 
 import_config "#{config_env()}.exs"
