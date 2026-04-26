@@ -42,8 +42,10 @@ import { joinChannel } from "./socket";
 //     loading on re-selection — once history is loaded, subsequent
 //     visits read the existing signal.
 //
-// Composite key: `${networkSlug}\0${channelName}`. NUL is forbidden in
-// IRC channel names (RFC 2812) so it can't collide with payload bytes.
+// Composite key: `${networkSlug} ${channelName}`. Space is forbidden
+// in IRC channel names (RFC 2812 chanstring excludes 0x20) so it can't
+// collide with payload bytes. NUL would also work; space wins because
+// it's readable in debugger output and operator log lines.
 //
 // `joined` is a module-level Set guarding double-joins. Phoenix is
 // idempotent on `socket.channel(topic)` returning the existing handle,
@@ -58,7 +60,16 @@ import { joinChannel } from "./socket";
 // overlap in a small race window — the same row would otherwise appear
 // twice. `id` is monotonic per the schema's auto-increment column.
 
-export type ChannelKey = `${string} ${string}`;
+// Opaque-branded composite key. The `unique symbol` brand makes
+// `ChannelKey` distinct from `string` at the type level — a bare
+// network slug or channel name passed where a ChannelKey is expected
+// is a compile error. The brand is declaration-only (no runtime
+// representation), so a ChannelKey is just a string at runtime; only
+// `channelKey(slug, name)` builds one. The earlier `${string} ${string}`
+// template-literal form looked like a constraint but actually erased
+// to `string` in the type system — both ends were unconstrained.
+declare const channelKeyBrand: unique symbol;
+export type ChannelKey = string & { readonly [channelKeyBrand]: true };
 
 export const channelKey = (slug: string, name: string): ChannelKey =>
   `${slug} ${name}` as ChannelKey;
