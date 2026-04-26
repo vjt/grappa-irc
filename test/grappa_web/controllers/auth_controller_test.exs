@@ -51,7 +51,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> post("/auth/login", %{"name" => user.name, "password" => "WRONG"})
 
       assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
-      assert Repo.aggregate(Session, :count, :id) == 0
+      assert session_count() == 0
     end
 
     test "with unknown user returns 401 + invalid_credentials", %{conn: conn} do
@@ -61,7 +61,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> post("/auth/login", %{"name" => "no-such-user", "password" => "whatever-12345"})
 
       assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
-      assert Repo.aggregate(Session, :count, :id) == 0
+      assert session_count() == 0
     end
 
     test "with missing name returns 400", %{conn: conn} do

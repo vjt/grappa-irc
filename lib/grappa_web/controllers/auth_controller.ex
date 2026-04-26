@@ -32,11 +32,19 @@ defmodule GrappaWeb.AuthController do
   surface's malformed-body handling.
   """
   @spec login(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | :invalid_credentials | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :bad_request | :invalid_credentials}
   def login(conn, %{"name" => name, "password" => password})
       when is_binary(name) and is_binary(password) do
-    with {:ok, user} <- Accounts.get_user_by_credentials(name, password),
-         {:ok, session} <- Accounts.create_session(user.id, format_ip(conn), user_agent(conn)) do
+    with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
+      # `create_session/3` returns `{:ok, session} | {:error, changeset}`,
+      # but here `user_id` is freshly fetched and `ip` / `user_agent`
+      # are server-derived — there's no user-supplied input that could
+      # produce an Ecto validation failure. A non-`:ok` here is an
+      # invariant violation (DB constraint blew up, sandbox died, ...)
+      # and "let it crash" is the correct response — wrapping in a
+      # 422 would hide the bug.
+      {:ok, session} = Accounts.create_session(user.id, format_ip(conn), user_agent(conn))
+
       conn
       |> put_status(:ok)
       |> render(:login, token: session.id, user: user)

@@ -77,4 +77,17 @@ defmodule Grappa.AuthFixtures do
     session = session_fixture(user)
     {user, session}
   end
+
+  @doc """
+  Total `sessions` row count. Used by login tests to assert the
+  failure paths do NOT mint a session row, without leaking a raw
+  `Repo.aggregate/3` call into the test body.
+
+  This intentionally lives here (test-support) rather than as a
+  public `Accounts` API: counting all sessions has no production
+  use case — Phase 2j's revocation surface will list-by-user
+  instead.
+  """
+  @spec session_count() :: non_neg_integer()
+  def session_count, do: Repo.aggregate(Session, :count, :id)
 end
