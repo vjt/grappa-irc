@@ -10,26 +10,36 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**Phase 2 implementation** per `docs/plans/2026-04-25-phase2-auth.md`
-— 9 of 12 sub-tasks done (2a-pre, 2a, 2b, 2c, 2d, 2e, 2h, 2f, 2g).
+**Phase 2 COMPLETE.** Live in prod (`192.168.53.11:4000`), bouncer
+connected to Azzurra as `grappa`, joined `#grappa`, NickServ
+IDENTIFY accepted. All 12 plan sub-tasks done; 35 commits pushed
+to `origin/main` from `phase2-auth`. Active checkpoint rotated
+CP07 → CP08.
 
-**Remaining:**
-- **2i** (one-line UserSocket.connect/3 token verify; authz already
-  wired in 2h)
-- **2j** (Bootstrap reads from DB + grappa.toml + Config schema +
-  compose.yaml bind-mount + README rewrite)
-- **2k** (live deploy + smoke against real Azzurra PASS + Libera SASL
-  + DESIGN_NOTES Phase 2 close pass + CP rotation)
+**Phase 3 prep — client walking skeleton (cicchetto PWA):**
+- Pick PWA framework (Svelte vs SolidJS vs lit-html). Bundle
+  budget ≤200 KB gzip. Decision belongs in DESIGN_NOTES before
+  Phase 3 sub-task 1.
+- Bootstrap `cicchetto` repository (separate repo per "two
+  facades, one store" decision). Mirrors grappa's container/
+  worktree/scripts model where it makes sense.
+- Phase 3 Roadmap items: PWA shell + manifest + service worker;
+  login flow → token → connect `/socket/websocket`; channel list +
+  scrollback fetch; send message.
 
-**Codebase review trip:** S15 was last; CP07 closes at S28 →
-threshold hit. **Recommend codebase review BEFORE 2i** to catch drift
-across the 19-commit Phase 2 push before 2j's big-delete pass.
+**Worktree cleanup:** `phase2-auth` worktree at
+`/home/vjt/code/IRC/grappa-phase2` is dead weight post-merge;
+remove via `git worktree remove ~/code/IRC/grappa-phase2`.
 
-**CP rotation:** CP07 at 505 lines after S28 flush — ROTATE TO CP08
-needed (CP07 → status: done; CP08 opens at next session).
-
-Branch state: `phase2-auth` 19 ahead of unpushed local main. Merge
-+ push after 2k.
+**Post-Phase-2 hygiene cluster (carried from S29 + 2j review):**
+- M3 nick-regex consolidation (3 implementations drifting)
+- M5 error-string-casing inconsistency
+- H11 central User wire shape (MeJSON vs AuthJSON)
+- M2 web→Repo dep cleanup (preload via context)
+- M12 `Application.put_env` 6× duplication across mix tasks +
+  Bootstrap (extract `Grappa.MixTaskBoot` helper)
+Combined ~half-session. Land before Phase 3 OR ride naturally as
+Phase 3 surfaces invocation.
 
 ## High
 
@@ -48,9 +58,6 @@ Branch state: `phase2-auth` 19 ahead of unpushed local main. Merge
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
   ugly `tcp_closed terminating` test-stdout noise.
-  **Note:** `Grappa.Config` is DELETED in Phase 2 sub-task 2j; this
-  item moves into Phase 2 Bootstrap rewrite scope (operator-facing
-  warning shape on invalid DB state).
 - Phase 5 hardening: TLS `verify: :verify_none` posture (`lib/grappa/irc/client.ex`)
   → CA chain verification with proper bundle. Document operator's
   TLS-trust-store config strategy. Independent of Phase 2 auth work.
