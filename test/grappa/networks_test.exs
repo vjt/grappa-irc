@@ -357,7 +357,7 @@ defmodule Grappa.NetworksTest do
     end
   end
 
-  describe "update_credential/3" do
+  describe "update_credential!/3" do
     setup do
       user = user_fixture()
       net = network_fixture()
@@ -375,7 +375,7 @@ defmodule Grappa.NetworksTest do
 
     test "preserves password_encrypted on a same-auth_method update", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential(user, net, %{
+               Networks.update_credential!(user, net, %{
                  nick: "renamed",
                  autojoin_channels: ["#new"]
                })
@@ -387,14 +387,14 @@ defmodule Grappa.NetworksTest do
 
     test "rejects auth_method change without a fresh password", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.update_credential(user, net, %{auth_method: :sasl})
+               Networks.update_credential!(user, net, %{auth_method: :sasl})
 
       assert "must be re-supplied when auth_method changes" in errors_on(cs).password
     end
 
     test "accepts auth_method change with a fresh password", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential(user, net, %{
+               Networks.update_credential!(user, net, %{
                  auth_method: :sasl,
                  password: "fresh-sasl-pw"
                })
@@ -405,9 +405,22 @@ defmodule Grappa.NetworksTest do
 
     test "accepts auth_method change to :none without a password", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential(user, net, %{auth_method: :none})
+               Networks.update_credential!(user, net, %{auth_method: :none})
 
       assert cred.auth_method == :none
+    end
+
+    test "raises Ecto.NoResultsError when the binding doesn't exist (the `!` suffix)" do
+      # F4: the spec is `{:ok, _} | {:error, Ecto.Changeset.t()}` —
+      # the Ecto.NoResultsError raise from the inner `get_credential!`
+      # is admitted by the function name. This test pins the contract
+      # so a future "soft return" rewrite has to break the test.
+      orphan_user = user_fixture()
+      orphan_net = network_fixture()
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Networks.update_credential!(orphan_user, orphan_net, %{nick: "x"})
+      end
     end
   end
 

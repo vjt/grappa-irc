@@ -62,7 +62,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
       |> maybe_put_auth(opts)
       |> maybe_put_autojoin(opts)
 
-    case Networks.update_credential(user, network, attrs) do
+    case Networks.update_credential!(user, network, attrs) do
       {:ok, _} -> IO.puts("updated credential for #{user.name} on #{slug}")
       {:error, cs} -> Output.halt_changeset("updating credential", cs)
     end

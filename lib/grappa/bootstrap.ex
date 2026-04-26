@@ -126,7 +126,7 @@ defmodule Grappa.Bootstrap do
       Logger.info("session started", user: user_id, network: slug)
       %{acc | started: acc.started + 1}
     else
-      {:error, {:already_started, _pid}} ->
+      {:error, {:already_started, _}} ->
         # Bootstrap is `restart: :transient` — on the (single) restart
         # every previously-spawned session is still alive under the
         # same `{:via, Registry, ...}` key and `start_session/3`

@@ -9,7 +9,7 @@ defmodule Grappa.Networks do
     * networks: `find_or_create_network/1`, `get_network_by_slug/1`,
       `get_network!/1`, `list_users_for_network/1`
     * servers: `add_server/2`, `list_servers/1`, `remove_server/3`
-    * credentials: `bind_credential/3`, `update_credential/3`,
+    * credentials: `bind_credential/3`, `update_credential!/3`,
       `get_credential!/2`, `unbind_credential/2`,
       `list_credentials_for_user/1`, `list_credentials_for_all_users/0`
 
@@ -145,8 +145,8 @@ defmodule Grappa.Networks do
   """
   @spec add_server(Network.t(), map()) ::
           {:ok, Server.t()} | {:error, :already_exists | Ecto.Changeset.t()}
-  def add_server(%Network{id: network_id}, attrs) do
-    attrs = attrs |> Map.new() |> Map.put(:network_id, network_id)
+  def add_server(%Network{id: network_id}, attrs) when is_map(attrs) do
+    attrs = Map.put(attrs, :network_id, network_id)
 
     result =
       %Server{}
@@ -238,10 +238,9 @@ defmodule Grappa.Networks do
   """
   @spec bind_credential(User.t(), Network.t(), map()) ::
           {:ok, Credential.t()} | {:error, Ecto.Changeset.t()}
-  def bind_credential(%User{id: user_id}, %Network{id: network_id}, attrs) do
+  def bind_credential(%User{id: user_id}, %Network{id: network_id}, attrs) when is_map(attrs) do
     attrs =
       attrs
-      |> Map.new()
       |> Map.put(:user_id, user_id)
       |> Map.put(:network_id, network_id)
 
@@ -252,16 +251,20 @@ defmodule Grappa.Networks do
 
   @doc """
   Updates the credential bound to `(user, network)`. Same validation
-  + encryption pipeline as `bind_credential/3`. Raises if the binding
-  doesn't exist — callers should unbind+rebind, not update, when
-  reassigning a network.
+  + encryption pipeline as `bind_credential/3`. Raises
+  `Ecto.NoResultsError` if the binding doesn't exist (the `!` suffix)
+  — callers should unbind+rebind, not update, when reassigning a
+  network. The mix-task callsite is `mix grappa.update_network_credential`,
+  which surfaces the raise as a non-zero exit; programmatic callers
+  should call `get_credential!/2` themselves first if they need a
+  pre-flight existence check.
   """
-  @spec update_credential(User.t(), Network.t(), map()) ::
+  @spec update_credential!(User.t(), Network.t(), map()) ::
           {:ok, Credential.t()} | {:error, Ecto.Changeset.t()}
-  def update_credential(%User{} = user, %Network{} = network, attrs) do
+  def update_credential!(%User{} = user, %Network{} = network, attrs) when is_map(attrs) do
     user
     |> get_credential!(network)
-    |> Credential.changeset(Map.new(attrs))
+    |> Credential.changeset(attrs)
     |> Repo.update()
   end
 
