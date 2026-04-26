@@ -11,9 +11,25 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 ## Immediate
 
 **Phase 2 implementation** per `docs/plans/2026-04-25-phase2-auth.md`
-(1316-line plan, 12 sub-tasks, 4-6 sessions). Start in fresh
-`phase2-auth` worktree. Decisions A–G locked (see plan + CP06 S20
-entry). First sub-task: 2a-pre (deps + Cloak.Vault setup, ~2h).
+— 9 of 12 sub-tasks done (2a-pre, 2a, 2b, 2c, 2d, 2e, 2h, 2f, 2g).
+
+**Remaining:**
+- **2i** (one-line UserSocket.connect/3 token verify; authz already
+  wired in 2h)
+- **2j** (Bootstrap reads from DB + grappa.toml + Config schema +
+  compose.yaml bind-mount + README rewrite)
+- **2k** (live deploy + smoke against real Azzurra PASS + Libera SASL
+  + DESIGN_NOTES Phase 2 close pass + CP rotation)
+
+**Codebase review trip:** S15 was last; CP07 closes at S28 →
+threshold hit. **Recommend codebase review BEFORE 2i** to catch drift
+across the 19-commit Phase 2 push before 2j's big-delete pass.
+
+**CP rotation:** CP07 at 505 lines after S28 flush — ROTATE TO CP08
+needed (CP07 → status: done; CP08 opens at next session).
+
+Branch state: `phase2-auth` 19 ahead of unpushed local main. Merge
++ push after 2k.
 
 ## High
 
