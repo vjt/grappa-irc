@@ -14,12 +14,15 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
   Idempotent: removing an already-gone endpoint exits 0 with a
   no-op message.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Networks, Grappa.Repo]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Networks, Grappa.Repo, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
   alias Grappa.{Networks, Repo}
   alias Grappa.Networks.Network
+  alias Mix.Tasks.Grappa.OptionParsing
 
   @impl Mix.Task
   def run(args) do
@@ -31,7 +34,7 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
     {:ok, _} = Application.ensure_all_started(:grappa)
 
     network = Repo.get_by!(Network, slug: slug)
-    {host, port} = parse_server(server)
+    {host, port} = OptionParsing.parse_server(server)
 
     {:ok, removed} = Networks.remove_server(network, host, port)
 
@@ -39,17 +42,6 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
       IO.puts("removed server #{host}:#{port} from #{slug}")
     else
       IO.puts("server #{host}:#{port} not on #{slug}; no-op")
-    end
-  end
-
-  defp parse_server(spec) do
-    case String.split(spec, ":") do
-      [host, port_str] ->
-        {port, ""} = Integer.parse(port_str)
-        {host, port}
-
-      _ ->
-        Mix.raise("--server must be host:port (got #{inspect(spec)})")
     end
   end
 end

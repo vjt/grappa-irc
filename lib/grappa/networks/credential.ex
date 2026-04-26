@@ -108,9 +108,15 @@ defmodule Grappa.Networks.Credential do
   end
 
   # Either a new plaintext `:password` arrives in this changeset, OR the
-  # row already carries a stored `password_encrypted` from a prior bind.
-  # Validating only the virtual field would force every update of an
-  # unrelated attribute (nick, autojoin) to re-supply the password.
+  # row already carries a stored `password_encrypted` from a prior bind
+  # AND the auth_method isn't being changed. Validating only the virtual
+  # field would force every update of an unrelated attribute (nick,
+  # autojoin) to re-supply the password. But silently inheriting an
+  # existing password across an auth_method CHANGE would let an operator
+  # accidentally promote a NickServ-IDENTIFY password into a SASL
+  # credential — different upstream auth surface, almost certainly a
+  # typo. So when auth_method is in `cs.changes`, we require a fresh
+  # `:password`.
   @spec validate_password_for_auth_method(Ecto.Changeset.t()) :: Ecto.Changeset.t()
   defp validate_password_for_auth_method(cs) do
     case get_field(cs, :auth_method) do
@@ -120,11 +126,20 @@ defmodule Grappa.Networks.Credential do
       _ ->
         new_pw = get_field(cs, :password)
         stored = get_field(cs, :password_encrypted)
+        auth_method_changed? = Map.has_key?(cs.changes, :auth_method)
 
         cond do
-          is_binary(new_pw) and byte_size(new_pw) > 0 -> cs
-          is_binary(stored) and byte_size(stored) > 0 -> cs
-          true -> add_error(cs, :password, "required for auth_method != :none")
+          is_binary(new_pw) and byte_size(new_pw) > 0 ->
+            cs
+
+          auth_method_changed? ->
+            add_error(cs, :password, "must be re-supplied when auth_method changes")
+
+          is_binary(stored) and byte_size(stored) > 0 ->
+            cs
+
+          true ->
+            add_error(cs, :password, "required for auth_method != :none")
         end
     end
   end

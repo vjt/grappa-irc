@@ -27,11 +27,14 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
   `(user, network)` credential reports a changeset error — use
   `grappa.update_network_credential` to mutate.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Accounts, Grappa.Networks, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
+  alias Mix.Tasks.Grappa.OptionParsing
 
   @switches [
     user: :string,
@@ -62,7 +65,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
 
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
 
-    {host, port} = parse_server(server)
+    {host, port} = OptionParsing.parse_server(server)
 
     case Networks.add_server(network, %{
            host: host,
@@ -77,8 +80,8 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     cred_attrs = %{
       nick: nick,
       password: Keyword.get(opts, :password),
-      auth_method: parse_auth(Keyword.get(opts, :auth, "auto")),
-      autojoin_channels: parse_autojoin(Keyword.get(opts, :autojoin)),
+      auth_method: OptionParsing.parse_auth(Keyword.get(opts, :auth, "auto")),
+      autojoin_channels: OptionParsing.parse_autojoin(Keyword.get(opts, :autojoin)),
       realname: Keyword.get(opts, :realname),
       sasl_user: Keyword.get(opts, :sasl_user)
     }
@@ -90,37 +93,6 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
       {:error, cs} ->
         halt_changeset("credential", cs)
     end
-  end
-
-  defp parse_server(spec) do
-    case String.split(spec, ":") do
-      [host, port_str] ->
-        {port, ""} = Integer.parse(port_str)
-        {host, port}
-
-      _ ->
-        Mix.raise("--server must be host:port (got #{inspect(spec)})")
-    end
-  end
-
-  defp parse_auth(str) do
-    case str do
-      "auto" -> :auto
-      "sasl" -> :sasl
-      "server_pass" -> :server_pass
-      "nickserv_identify" -> :nickserv_identify
-      "none" -> :none
-      other -> Mix.raise("--auth must be auto|sasl|server_pass|nickserv_identify|none (got #{inspect(other)})")
-    end
-  end
-
-  defp parse_autojoin(nil), do: []
-  defp parse_autojoin(""), do: []
-
-  defp parse_autojoin(str) do
-    str
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
   end
 
   @spec halt_changeset(String.t(), Ecto.Changeset.t()) :: no_return()

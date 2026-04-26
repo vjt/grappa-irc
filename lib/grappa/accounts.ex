@@ -4,7 +4,8 @@ defmodule Grappa.Accounts do
 
   Public surface:
 
-    * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`
+    * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`,
+      `get_user_by_name!/1`
     * sessions: `create_session/3`, `authenticate/1`, `revoke_session/1`
 
   Both `User` and `Session` schemas are exported so downstream callers

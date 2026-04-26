@@ -15,7 +15,13 @@ defmodule Grappa.NetworksTest do
   so an explicit cascade-on-empty in code is the only path that drops the
   parent rows.
   """
-  use Grappa.DataCase, async: true
+  # async: false — every test inserts network + (often) server +
+  # credential, and the credential insert pumps through the
+  # single-process Cloak.Vault. Under max_cases:2 with the rest of
+  # the Phase 2 write-heavy suite, this collides into "Database busy"
+  # often enough to be a CI flake source. Serializing this file is
+  # cheaper than further bumping busy_timeout (already at 30s).
+  use Grappa.DataCase, async: false
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.Networks.{Credential, Network, Server}
@@ -177,6 +183,82 @@ defmodule Grappa.NetworksTest do
                })
 
       assert errors_on(cs)[:nick] != nil
+    end
+  end
+
+  describe "update_credential/3" do
+    setup do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} =
+        Networks.bind_credential(user, net, %{
+          nick: "old-nick",
+          password: "old-pw",
+          auth_method: :auto,
+          autojoin_channels: ["#old"]
+        })
+
+      %{user: user, network: net}
+    end
+
+    test "preserves password_encrypted on a same-auth_method update", %{user: user, network: net} do
+      assert {:ok, cred} =
+               Networks.update_credential(user, net, %{
+                 nick: "renamed",
+                 autojoin_channels: ["#new"]
+               })
+
+      assert cred.nick == "renamed"
+      assert cred.password_encrypted == "old-pw"
+      assert cred.autojoin_channels == ["#new"]
+    end
+
+    test "rejects auth_method change without a fresh password", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.update_credential(user, net, %{auth_method: :sasl})
+
+      assert "must be re-supplied when auth_method changes" in errors_on(cs).password
+    end
+
+    test "accepts auth_method change with a fresh password", %{user: user, network: net} do
+      assert {:ok, cred} =
+               Networks.update_credential(user, net, %{
+                 auth_method: :sasl,
+                 password: "fresh-sasl-pw"
+               })
+
+      assert cred.auth_method == :sasl
+      assert cred.password_encrypted == "fresh-sasl-pw"
+    end
+
+    test "accepts auth_method change to :none without a password", %{user: user, network: net} do
+      assert {:ok, cred} =
+               Networks.update_credential(user, net, %{auth_method: :none})
+
+      assert cred.auth_method == :none
+    end
+  end
+
+  describe "list_credentials_for_user/1" do
+    test "returns every binding for a user with networks preloaded" do
+      user = user_fixture()
+      net1 = network_fixture("net-a")
+      net2 = network_fixture("net-b")
+
+      {:ok, _} = Networks.bind_credential(user, net1, %{nick: "n", auth_method: :none, autojoin_channels: []})
+      {:ok, _} = Networks.bind_credential(user, net2, %{nick: "n", auth_method: :none, autojoin_channels: []})
+
+      creds = Networks.list_credentials_for_user(user)
+      assert length(creds) == 2
+      assert Enum.all?(creds, &match?(%Network{}, &1.network))
+      slugs = creds |> Enum.map(& &1.network.slug) |> Enum.sort()
+      assert slugs == ["net-a", "net-b"]
+    end
+
+    test "returns [] for a user with no bindings" do
+      user = user_fixture()
+      assert Networks.list_credentials_for_user(user) == []
     end
   end
 

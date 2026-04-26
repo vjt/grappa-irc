@@ -83,12 +83,18 @@ defmodule Grappa.Networks do
   end
 
   defp classify_server_error(errors, cs) do
-    if unique_collision?(errors), do: {:error, :already_exists}, else: {:error, cs}
+    if host_port_collision?(errors), do: {:error, :already_exists}, else: {:error, cs}
   end
 
-  defp unique_collision?(errors) do
+  # Match by constraint NAME, not just `:unique` — a future second
+  # unique constraint on Server (e.g., a normalized FQDN) should fall
+  # through to a normal changeset error rather than silently get
+  # collapsed into `:already_exists`.
+  @host_port_index "network_servers_network_id_host_port_index"
+  defp host_port_collision?(errors) do
     Enum.any?(errors, fn {_, {_, opts}} ->
-      Keyword.get(opts, :constraint) == :unique
+      Keyword.get(opts, :constraint) == :unique and
+        Keyword.get(opts, :constraint_name) == @host_port_index
     end)
   end
 
@@ -184,17 +190,26 @@ defmodule Grappa.Networks do
   """
   @spec unbind_credential(User.t(), Network.t()) :: :ok
   def unbind_credential(%User{id: user_id}, %Network{id: network_id}) do
-    cred_query =
-      from(c in Credential,
-        where: c.user_id == ^user_id and c.network_id == ^network_id
-      )
+    # Wrap in a transaction so the credential delete + the
+    # last-binding check + the network delete are atomic. Without it,
+    # a concurrent `bind_credential/3` between the check and the
+    # network delete would either get its just-inserted row blown
+    # away by the cascade OR trip the `:restrict` FK and abort. sqlite
+    # is single-writer so the transaction cost is negligible.
+    {:ok, _} =
+      Repo.transaction(fn ->
+        cred_query =
+          from(c in Credential,
+            where: c.user_id == ^user_id and c.network_id == ^network_id
+          )
 
-    {_, _} = Repo.delete_all(cred_query)
+        {_, _} = Repo.delete_all(cred_query)
 
-    if list_users_for_network(%Network{id: network_id}) == [] do
-      net_query = from(n in Network, where: n.id == ^network_id)
-      Repo.delete_all(net_query)
-    end
+        if list_users_for_network(%Network{id: network_id}) == [] do
+          net_query = from(n in Network, where: n.id == ^network_id)
+          Repo.delete_all(net_query)
+        end
+      end)
 
     :ok
   end

@@ -17,12 +17,15 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
   `--autojoin` REPLACES the channel list (comma-separated). To keep
   the existing list, omit the flag.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.Networks.Network
+  alias Mix.Tasks.Grappa.OptionParsing
 
   @switches [
     user: :string,
@@ -68,33 +71,14 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredential do
   defp maybe_put_auth(attrs, opts) do
     case Keyword.get(opts, :auth) do
       nil -> attrs
-      str -> Map.put(attrs, :auth_method, parse_auth(str))
+      str -> Map.put(attrs, :auth_method, OptionParsing.parse_auth(str))
     end
   end
 
   defp maybe_put_autojoin(attrs, opts) do
     case Keyword.get(opts, :autojoin) do
       nil -> attrs
-      str -> Map.put(attrs, :autojoin_channels, parse_autojoin(str))
+      str -> Map.put(attrs, :autojoin_channels, OptionParsing.parse_autojoin(str))
     end
-  end
-
-  defp parse_auth(str) do
-    case str do
-      "auto" -> :auto
-      "sasl" -> :sasl
-      "server_pass" -> :server_pass
-      "nickserv_identify" -> :nickserv_identify
-      "none" -> :none
-      other -> Mix.raise("--auth must be auto|sasl|server_pass|nickserv_identify|none (got #{inspect(other)})")
-    end
-  end
-
-  defp parse_autojoin(""), do: []
-
-  defp parse_autojoin(str) do
-    str
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
   end
 end

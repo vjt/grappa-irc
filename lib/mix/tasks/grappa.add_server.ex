@@ -17,12 +17,15 @@ defmodule Mix.Tasks.Grappa.AddServer do
   this task NEVER creates the network. `--priority` defaults to 0.
   Re-adding the same `(network, host, port)` triple is a no-op.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Networks, Grappa.Repo]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Networks, Grappa.Repo, Mix.Tasks.Grappa.OptionParsing]
 
   use Mix.Task
 
   alias Grappa.{Networks, Repo}
   alias Grappa.Networks.Network
+  alias Mix.Tasks.Grappa.OptionParsing
 
   @switches [network: :string, server: :string, tls: :boolean, priority: :integer]
 
@@ -36,7 +39,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
     {:ok, _} = Application.ensure_all_started(:grappa)
 
     network = Repo.get_by!(Network, slug: slug)
-    {host, port} = parse_server(server)
+    {host, port} = OptionParsing.parse_server(server)
 
     attrs = %{
       host: host,
@@ -55,17 +58,6 @@ defmodule Mix.Tasks.Grappa.AddServer do
       {:error, cs} ->
         IO.puts(:stderr, "error adding server: #{inspect(cs.errors)}")
         System.halt(1)
-    end
-  end
-
-  defp parse_server(spec) do
-    case String.split(spec, ":") do
-      [host, port_str] ->
-        {port, ""} = Integer.parse(port_str)
-        {host, port}
-
-      _ ->
-        Mix.raise("--server must be host:port (got #{inspect(spec)})")
     end
   end
 end
