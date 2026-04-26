@@ -20,6 +20,16 @@ config :grappa, GrappaWeb.Endpoint,
 
 config :phoenix, :json_library, Jason
 
+# Phoenix.Logger redacts these keys from the params it logs on every
+# request + every Channels socket connect. The bearer token rides
+# `?token=…` on the WS upgrade URL because Phoenix.Socket transports
+# params as a query string — without this filter, the `[info] CONNECTED
+# TO …` line prints the bearer verbatim. Bearer is the entire identity
+# in this design; anything that lands in stdout persists across container
+# restarts and ships out with any log forwarder. Per CLAUDE.md Security:
+# "credentials … never logged."
+config :phoenix, :filter_parameters, ["password", "token"]
+
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
   metadata: [
