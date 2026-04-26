@@ -1,12 +1,21 @@
 # grappa — prod compose (standalone, NOT an override of compose.yaml)
 #
-# Build + run:  docker compose -f compose.prod.yaml up -d --build
+# Build + run:  scripts/deploy.sh
 # Tail logs:    docker compose -f compose.prod.yaml logs -f
 #
-# Differences vs dev:
+# Architecture: nginx is the only LAN-facing service. It owns vlan53
+# 192.168.53.11 (where DNS grappa.bad.ass resolves) and reverse-proxies
+# the bouncer + serves cicchetto's static SPA dist. grappa lives on a
+# Docker-managed bridge (grappa_internal) and is reachable ONLY through
+# nginx — operator + iPhone PWA both come in via grappa.bad.ass:80.
+#
+# Differences vs dev (compose.yaml):
 #   - target: runtime (mix release, no mix tools, no source bind-mount)
 #   - SECRET_KEY_BASE required (no dev fallback)
 #   - DATABASE_PATH points at /app/runtime/grappa_prod.db
+#   - grappa is NOT on vlan53 — it's only reachable through nginx
+#   - cicchetto-build (oneshot) populates the cicchetto_dist named volume
+#   - nginx serves dist + proxies /auth /me /networks /healthz /socket
 
 services:
   grappa:
@@ -23,8 +32,7 @@ services:
     restart: unless-stopped
     user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
     networks:
-      vlan53:
-        ipv4_address: 192.168.53.11
+      - grappa_internal
     volumes:
       - ./runtime:/app/runtime
     environment:
@@ -46,6 +54,66 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # Oneshot service — builds cicchetto's static SPA into the
+  # cicchetto_dist named volume. scripts/deploy.sh runs this explicitly
+  # via `compose run --rm` before bringing up nginx, so dist/ is always
+  # fresh on every deploy. The depends_on below is the safety net for
+  # a manual `compose up` (compose will run the dep to completion before
+  # starting nginx).
+  #
+  # Cache layout matches scripts/bun.sh: bun install cache at
+  # ./runtime/bun-cache (host bind-mount, shared across worktrees), tmpfs
+  # /tmp under the dropped UID. node_modules + bun.lock land in the
+  # bind-mounted ./cicchetto on the host — same as dev `scripts/bun.sh`.
+  cicchetto-build:
+    image: oven/bun:1
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - ./cicchetto:/app
+      - ./runtime/bun-cache:/cache
+      - cicchetto_dist:/app/dist
+    tmpfs:
+      - /tmp:exec,uid=1000,gid=1000
+    environment:
+      HOME: /tmp
+      BUN_INSTALL_CACHE_DIR: /cache
+    command: ["sh", "-c", "bun install --frozen-lockfile && bun run build"]
+
+  nginx:
+    image: nginx:alpine
+    container_name: grappa-nginx
+    hostname: grappa-nginx
+    restart: unless-stopped
+    networks:
+      vlan53:
+        ipv4_address: 192.168.53.11
+      grappa_internal:
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - cicchetto_dist:/usr/share/nginx/html:ro
+    depends_on:
+      grappa:
+        condition: service_started
+      cicchetto-build:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 networks:
   vlan53:
     external: true
+  grappa_internal:
+    driver: bridge
+
+volumes:
+  cicchetto_dist:
