@@ -41,7 +41,7 @@ defmodule Grappa.Networks do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.EncryptedBinary, Grappa.Repo, Grappa.Vault],
+    deps: [Grappa.Accounts, Grappa.EncryptedBinary, Grappa.IRC, Grappa.Repo, Grappa.Vault],
     exports: [Network, Server, Credential]
 
   import Ecto.Query
@@ -313,13 +313,17 @@ defmodule Grappa.Networks do
   end
 
   # Mirrors `Grappa.Session.stop_session/2` — see that function for
-  # the canonical semantics. Inlined here to avoid the boundary
-  # cycle: Session.Server.init calls into Networks for credential
-  # resolution, so Networks cannot depend on Session. The
-  # registry-key shape `{:session, user_id, network_id}` is owned
-  # by `Grappa.Session.Server.via/2`; this duplication is documented
-  # architectural debt — future cleanup inverts the dep so Session
-  # takes credential data via opts at start_session/2 time.
+  # the canonical semantics. Inlined here (with the registry-key
+  # tuple replicated) to avoid the Networks ↔ Session boundary
+  # cycle: Session.Server.init reaches into Networks for credential
+  # resolution, so Networks cannot depend on Session — even for the
+  # pure `Server.registry_key/2` helper. The duplication is
+  # documented architectural debt; the dep-inversion that lifts it
+  # (Session takes credential data via opts at start_session/2 time)
+  # is queued for the post-Phase-2 cleanup cluster.
+  #
+  # If the registry key shape ever changes, BOTH this helper AND
+  # `Grappa.Session.Server.registry_key/2` must move in lockstep.
   defp stop_session_for_unbind(user_id, network_id) do
     case Registry.lookup(Grappa.SessionRegistry, {:session, user_id, network_id}) do
       [{pid, _}] ->

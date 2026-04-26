@@ -80,7 +80,7 @@ defmodule Grappa.Session do
   """
   @spec whereis(Ecto.UUID.t(), integer()) :: pid() | nil
   def whereis(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, {:session, user_id, network_id}) do
+    case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(user_id, network_id)) do
       [{pid, _}] -> pid
       [] -> nil
     end

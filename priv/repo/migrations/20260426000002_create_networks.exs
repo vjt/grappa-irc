@@ -52,7 +52,15 @@ defmodule Grappa.Repo.Migrations.CreateNetworks do
       add :realname, :string, null: true
       add :sasl_user, :string, null: true
       add :password_encrypted, :binary, null: true
-      add :auth_method, :string, null: false, default: "auto"
+      # No DB-level default: the schema-layer default was removed in
+      # S29 H10 (commit 7e65be8) but a leftover `default: "auto"` here
+      # would silently re-create the footgun for any insert path that
+      # bypasses the changeset (raw SQL, future bulk import). The
+      # changeset's `validate_required([:auth_method])` is now the
+      # canonical gate. Editing this migration in place — Phase 2 is
+      # still pre-deploy, init-window exception applies; operators on
+      # a previously-migrated dev DB run `mix ecto.reset`.
+      add :auth_method, :string, null: false
       add :auth_command_template, :text, null: true
       # sqlite has no array type; the schema layer codes/decodes JSON.
       add :autojoin_channels, :text, null: false, default: "[]"

@@ -121,11 +121,23 @@ defmodule Grappa.Session.Server do
     GenServer.start_link(__MODULE__, opts, name: via(user_id, network_id))
   end
 
+  @doc """
+  Returns the registry key for `(user_id, network_id)`. Single source
+  of truth for the `{:session, user_id, network_id}` shape — every
+  caller that needs to look up or terminate a session by key must go
+  through this. Adding a discriminator (workspace, shard) becomes a
+  one-place change.
+  """
+  @spec registry_key(Ecto.UUID.t(), integer()) :: {:session, Ecto.UUID.t(), integer()}
+  def registry_key(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
+    {:session, user_id, network_id}
+  end
+
   @doc "Returns the via-tuple for the session registered for `(user_id, network_id)`."
   @spec via(Ecto.UUID.t(), integer()) ::
           {:via, Registry, {atom(), {:session, Ecto.UUID.t(), integer()}}}
   def via(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
-    {:via, Registry, {Grappa.SessionRegistry, {:session, user_id, network_id}}}
+    {:via, Registry, {Grappa.SessionRegistry, registry_key(user_id, network_id)}}
   end
 
   ## GenServer callbacks
@@ -174,8 +186,25 @@ defmodule Grappa.Session.Server do
       when is_binary(target) and is_binary(body) do
     case persist_and_broadcast(state, target, state.nick, body) do
       {:ok, message} ->
-        :ok = Client.send_privmsg(state.client, target, body)
-        {:reply, {:ok, message}, state}
+        # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
+        # since S29 C1. The Session facade pre-validates so the error
+        # branch is unreachable on the documented path; the case below
+        # is forward-compat insurance against a future caller that
+        # bypasses the facade. If it ever fires, surface the typed
+        # error to the caller — a MatchError here would crash the
+        # session GenServer + trip the transient restart loop, much
+        # worse than a 400-shaped error tuple.
+        case Client.send_privmsg(state.client, target, body) do
+          :ok ->
+            {:reply, {:ok, message}, state}
+
+          {:error, :invalid_line} = err ->
+            Logger.error("client rejected privmsg AFTER persist — facade bypass?",
+              channel: target
+            )
+
+            {:reply, err, state}
+        end
 
       {:error, _} = err ->
         {:reply, err, state}
@@ -195,7 +224,22 @@ defmodule Grappa.Session.Server do
 
   @impl GenServer
   def handle_info({:irc, %Message{command: {:numeric, 1}}}, state) do
-    Enum.each(state.autojoin, &Client.send_join(state.client, &1))
+    # autojoin_channels is validated at the credential boundary
+    # (`Networks.Credential.changeset/2` — Identifier.valid_channel?
+    # per entry) so the happy path never sees `{:error, :invalid_line}`
+    # back from Client.send_join. The defensive log+skip below catches
+    # any future code path that mutates state.autojoin without going
+    # through the changeset (REPL, raw Repo.update, etc.).
+    Enum.each(state.autojoin, fn channel ->
+      case Client.send_join(state.client, channel) do
+        :ok ->
+          :ok
+
+        {:error, :invalid_line} ->
+          Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
+      end
+    end)
+
     {:noreply, state}
   end
 

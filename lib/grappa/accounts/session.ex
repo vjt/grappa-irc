@@ -69,10 +69,16 @@ defmodule Grappa.Accounts.Session do
 
   Validates that `user_id`, `created_at`, and `last_seen_at` are
   present (the other fields — `ip`, `user_agent` — are optional;
-  mix-task callers have neither). The `assoc_constraint(:user)`
-  call translates a stale-FK insert attempt into a clean changeset
-  error (`:user — "does not exist"`) so callers can pattern-match
-  rather than rescue `Ecto.ConstraintError`.
+  mix-task callers have neither).
+
+  `assoc_constraint(:user)` is a forward-compat hook: PostgreSQL +
+  MySQL surface FK violations with the constraint name attached so
+  Ecto can map them to `{:user, "does not exist"}`. `ecto_sqlite3`
+  returns the constraint name as `nil` (sqlite quirk), so the
+  built-in handler can't match — the actual stale-FK guard for
+  Grappa lives at `Accounts.create_session/3`'s `validate_user_exists/1`
+  pre-flight (S29 H4 + review-fix #5). Kept here so a future
+  PostgreSQL swap doesn't silently lose the FK validation.
 
   S29 H4: prior to this changeset, `Accounts.create_session/3` used
   `Ecto.Changeset.change/2` (no validation) and let the DB layer

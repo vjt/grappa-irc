@@ -185,6 +185,71 @@ defmodule Grappa.NetworksTest do
       assert errors_on(cs)[:nick] != nil
     end
 
+    # S29 C1 review-fix #1: every text field that ends up interpolated
+    # into a wire line at handshake time (PASS, NICK, USER, PRIVMSG
+    # NickServ) must be CRLF/NUL-free at the changeset boundary. The
+    # operator-input path is the OTHER door into IRC.Client besides the
+    # REST surface; without these checks an operator typo planted CRLF
+    # at bind time would inject an arbitrary IRC command at handshake.
+    test "rejects realname with embedded CRLF", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 realname: "real\r\nQUIT :pwn",
+                 auth_method: :none,
+                 autojoin_channels: []
+               })
+
+      assert errors_on(cs)[:realname] != nil
+    end
+
+    test "rejects sasl_user with embedded LF", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 sasl_user: "user\nQUIT",
+                 auth_method: :sasl,
+                 password: "x",
+                 autojoin_channels: []
+               })
+
+      assert errors_on(cs)[:sasl_user] != nil
+    end
+
+    test "rejects password with NUL byte", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 auth_method: :server_pass,
+                 password: "secret\x00pwn",
+                 autojoin_channels: []
+               })
+
+      assert errors_on(cs)[:password] != nil
+    end
+
+    test "rejects autojoin_channels with invalid channel name", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 auth_method: :none,
+                 autojoin_channels: ["#good", "#bad\r\nQUIT"]
+               })
+
+      assert errors_on(cs)[:autojoin_channels] != nil
+    end
+
+    test "rejects autojoin_channels missing prefix", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.bind_credential(user, net, %{
+                 nick: "vjt",
+                 auth_method: :none,
+                 autojoin_channels: ["no-prefix"]
+               })
+
+      assert errors_on(cs)[:autojoin_channels] != nil
+    end
+
     # S29 H10: dropping the `default: :auto` on Credential.auth_method.
     # Operators must pick the auth method explicitly — :auto is still
     # a valid choice (modern + legacy ircd combo) but it should not

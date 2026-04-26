@@ -32,6 +32,7 @@ defmodule Grappa.Networks.Credential do
 
   alias Grappa.Accounts.User
   alias Grappa.EncryptedBinary
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
 
   @auth_methods [:auto, :sasl, :server_pass, :nickserv_identify, :none]
@@ -119,7 +120,36 @@ defmodule Grappa.Networks.Credential do
     |> validate_length(:nick, min: 1, max: 30)
     |> validate_format(:nick, @nick_format, message: "must be a valid IRC nickname (no spaces, no leading digit-only)")
     |> validate_password_for_auth_method()
+    # S29 C1 review-fix #1: every text field that ends up interpolated
+    # into a wire line — PASS, NICK, USER, PRIVMSG NickServ — must be
+    # CRLF/NUL-free. The REST surface's safe_line_token? guard at
+    # Session.send_* covers user-supplied PRIVMSG body/target; the
+    # operator-input path (this changeset) is the OTHER door into
+    # Client and needs the same hygiene. autojoin_channels gets the
+    # full Identifier.valid_channel?/1 regex (which excludes whitespace
+    # + control bytes) since these become JOIN <name> on registration.
+    |> validate_change(:realname, &validate_safe_line_token/2)
+    |> validate_change(:sasl_user, &validate_safe_line_token/2)
+    |> validate_change(:password, &validate_safe_line_token/2)
+    |> validate_change(:auth_command_template, &validate_safe_line_token/2)
+    |> validate_change(:autojoin_channels, &validate_autojoin_channels/2)
     |> put_encrypted_password()
+  end
+
+  defp validate_safe_line_token(field, value) when is_binary(value) do
+    if Identifier.safe_line_token?(value),
+      do: [],
+      else: [{field, "contains CR, LF, or NUL byte"}]
+  end
+
+  defp validate_autojoin_channels(field, list) when is_list(list) do
+    Enum.flat_map(list, fn name ->
+      cond do
+        not is_binary(name) -> [{field, "must contain only strings"}]
+        not Identifier.valid_channel?(name) -> [{field, "invalid channel name: #{inspect(name)}"}]
+        true -> []
+      end
+    end)
   end
 
   # Either a new plaintext `:password` arrives in this changeset, OR the
