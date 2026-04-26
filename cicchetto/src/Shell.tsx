@@ -1,33 +1,37 @@
 import { useNavigate } from "@solidjs/router";
-import { type Component, createResource, Show } from "solid-js";
-import { me } from "./lib/api";
+import { type Component, For, Show } from "solid-js";
 import * as auth from "./lib/auth";
+import {
+  channelKey,
+  channelsBySlug,
+  networks,
+  selectedChannel,
+  setSelectedChannel,
+  unreadCounts,
+  user,
+} from "./lib/networks";
 
-// Logged-in landing surface. Sub-tasks 4-5 turn this into the channel
-// list + scrollback split-pane; for now it proves the auth round-trip
-// — call /me with the bearer, show the user's name, give them a logout
-// button.
-//
-// `createResource` is keyed on `auth.token` so a token change (logout,
-// refresh) re-fetches /me without component remounts. Returning `null`
-// from the source signal short-circuits the fetch — `RequireAuth`
-// handles the redirect, but defending here keeps the resource state
-// machine sane during the brief unauthenticated render before
-// navigation completes.
+// Logged-in landing surface. Sub-task 4 wires the network → channel
+// sidebar + the live-event WS subscription that drives unread counts;
+// the right pane is the placeholder for sub-task 5's scrollback +
+// compose. The /me + /networks fetches and the per-channel topic joins
+// all live in `lib/networks.ts` — Shell is a pure read-side
+// projection of those signals.
 const Shell: Component = () => {
   const navigate = useNavigate();
-  const [user] = createResource(auth.token, async (token) => {
-    if (token === null) return null;
-    return me(token);
-  });
 
   const handleLogout = async () => {
     await auth.logout();
     navigate("/login", { replace: true });
   };
 
+  const isSelected = (slug: string, name: string): boolean => {
+    const s = selectedChannel();
+    return s !== null && s.networkSlug === slug && s.channelName === name;
+  };
+
   return (
-    <main>
+    <main class="shell-app">
       <header class="shell-header">
         <Show when={user()} fallback={<span class="muted">loading…</span>}>
           {(u) => <span>logged in as {u().name}</span>}
@@ -36,10 +40,59 @@ const Shell: Component = () => {
           log out
         </button>
       </header>
-      <section class="shell">
-        <h1>cicchetto</h1>
-        <p class="muted">walking-skeleton — sub-tasks 4-7 wire channels, scrollback, compose.</p>
-      </section>
+      <div class="shell-body">
+        <aside class="sidebar">
+          <Show
+            when={(networks()?.length ?? 0) > 0}
+            fallback={<p class="muted sidebar-empty">no networks</p>}
+          >
+            <For each={networks()}>
+              {(network) => (
+                <section class="network">
+                  <h3>{network.slug}</h3>
+                  <ul>
+                    <For each={channelsBySlug()?.[network.slug] ?? []}>
+                      {(channel) => {
+                        const key = channelKey(network.slug, channel.name);
+                        return (
+                          <li classList={{ selected: isSelected(network.slug, channel.name) }}>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedChannel({
+                                  networkSlug: network.slug,
+                                  channelName: channel.name,
+                                })
+                              }
+                            >
+                              <span class="channel-name">{channel.name}</span>
+                              <Show when={(unreadCounts()[key] ?? 0) > 0}>
+                                <span class="unread">{unreadCounts()[key]}</span>
+                              </Show>
+                            </button>
+                          </li>
+                        );
+                      }}
+                    </For>
+                  </ul>
+                </section>
+              )}
+            </For>
+          </Show>
+        </aside>
+        <section class="pane">
+          <Show
+            when={selectedChannel()}
+            fallback={<p class="muted">select a channel to view scrollback</p>}
+          >
+            {(sel) => (
+              <p class="muted">
+                {sel().channelName} on {sel().networkSlug} — scrollback wires in sub-task 5
+              </p>
+            )}
+          </Show>
+        </section>
+      </div>
     </main>
   );
 };

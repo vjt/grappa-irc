@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@solidjs/router": "^0.16.1",
+    "phoenix": "^1.8.5",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
@@ -22,6 +23,7 @@
     "@solidjs/testing-library": "^0.8.10",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/jsdom": "^28.0.1",
+    "@types/phoenix": "^1.6.7",
     "jsdom": "^29.0.2",
     "typescript": "^6.0.3",
     "vite": "^8.0.10",
