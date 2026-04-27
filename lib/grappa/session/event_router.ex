@@ -278,10 +278,19 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
+    # Q1: self-KICK (target == state.nick) drops the channel key entirely.
+    # Symmetric with self-PART. Other-user KICK preserves the inner-nick
+    # delete.
     members =
-      case Map.get(state.members, channel) do
-        nil -> state.members
-        ch_members -> Map.put(state.members, channel, Map.delete(ch_members, target))
+      cond do
+        target == state.nick ->
+          Map.delete(state.members, channel)
+
+        Map.has_key?(state.members, channel) ->
+          Map.update!(state.members, channel, &Map.delete(&1, target))
+
+        true ->
+          state.members
       end
 
     {state, eff} =
