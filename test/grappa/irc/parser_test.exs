@@ -198,6 +198,59 @@ defmodule Grappa.IRC.ParserTest do
     end
   end
 
+  describe "parse/1 — CR/LF stripping invariant (C6 / S5)" do
+    # RFC 2812: "no occurrence of CR or LF is allowed inside an IRC
+    # message." The socket's `packet: :line` mode strips the trailing
+    # `\n` before delivery, so only embedded `\r` (and theoretical
+    # embedded `\n` from a misframed transport) can survive into raw
+    # bytes. The parser invariant: produced `params`, `command`, and
+    # `prefix` tokens NEVER contain `\r` or `\n` — downstream callers
+    # (notably `Session.Server` echoing PING tokens via
+    # `Client.send_pong/2`) rely on this so they don't have to
+    # re-validate parser output.
+    # Stripping (not splitting) merges hostile adjacent commands into
+    # a single garbled token — that's intentional. The invariant we
+    # need is "tokens never contain `\r` or `\n`" so an echoing caller
+    # (`Session.Server` → `Client.send_pong/2`) cannot leak a second
+    # CRLF-framed command onto the wire. The fact that the second
+    # command's bytes survive concatenated into the first param is a
+    # garbled-message UX issue, not a security one.
+    test "embedded CR in trailing param: token contains no CR (PING attack)" do
+      assert {:ok, %Message{command: :ping, params: [token]}} =
+               Parser.parse("PING :tok\rNICK pwn")
+
+      refute String.contains?(token, "\r")
+      refute String.contains?(token, "\n")
+    end
+
+    test "embedded LF in trailing param: token contains no LF" do
+      assert {:ok, %Message{command: :ping, params: [token]}} =
+               Parser.parse("PING :tok\nNICK pwn")
+
+      refute String.contains?(token, "\n")
+    end
+
+    test "embedded CR in middle param: token contains no CR" do
+      assert {:ok, %Message{command: :join, params: [channel]}} =
+               Parser.parse("JOIN #chan\rQUIT")
+
+      refute String.contains?(channel, "\r")
+    end
+
+    test "embedded CR in PRIVMSG body: body contains no CR (no smuggling)" do
+      assert {:ok, %Message{command: :privmsg, params: ["#sniffo", body]}} =
+               Parser.parse(":vjt!~vjt@host PRIVMSG #sniffo :ciao\rQUIT :pwn")
+
+      refute String.contains?(body, "\r")
+      refute String.contains?(body, "\n")
+    end
+
+    test "trailing CR/LF is stripped (existing tolerance preserved)" do
+      assert {:ok, %Message{command: :ping, params: ["foo"]}} =
+               Parser.parse("PING :foo\r\n")
+    end
+  end
+
   describe "parse/1 — error cases" do
     test "empty string rejected" do
       assert {:error, :empty} = Parser.parse("")

@@ -14,7 +14,7 @@ defmodule Grappa.ScrollbackTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Accounts, Networks, Repo, Scrollback}
+  alias Grappa.{Accounts, Networks, Repo, Scrollback, ScrollbackHelpers}
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.{Message, Wire}
 
@@ -43,7 +43,7 @@ defmodule Grappa.ScrollbackTest do
 
   describe "insert/1" do
     test "persists a valid message and returns the schema struct", %{user: user, network: net} do
-      assert {:ok, %Message{} = m} = Scrollback.insert(sample(user, net, 0))
+      assert {:ok, %Message{} = m} = ScrollbackHelpers.insert(sample(user, net, 0))
       assert m.body == "msg 0"
       assert m.kind == :privmsg
       assert m.user_id == user.id
@@ -53,14 +53,14 @@ defmodule Grappa.ScrollbackTest do
 
     test "rejects invalid kind via Ecto.Enum cast", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(sample(user, net, 0, %{kind: "bogus"}))
+               ScrollbackHelpers.insert(sample(user, net, 0, %{kind: "bogus"}))
 
       assert "is invalid" in errors_on(cs).kind
     end
 
     test "rejects missing required fields (user_id/network_id/channel/server_time/kind/sender)" do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(%{channel: "#x"})
+               ScrollbackHelpers.insert(%{channel: "#x"})
 
       errors = errors_on(cs)
       assert "can't be blank" in errors.user_id
@@ -95,13 +95,13 @@ defmodule Grappa.ScrollbackTest do
   describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do
     test "accepts :join with nil body and default meta map", %{user: user, network: net} do
       assert {:ok, %Message{kind: :join, body: nil, meta: %{}}} =
-               Scrollback.insert(sample(user, net, 0, %{kind: :join, sender: "alice", body: nil}))
+               ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, sender: "alice", body: nil}))
     end
 
     test "accepts :kick with body (reason) + atom-keyed meta carrying target nick",
          %{user: user, network: net} do
       {:ok, inserted} =
-        Scrollback.insert(
+        ScrollbackHelpers.insert(
           sample(user, net, 0, %{
             kind: :kick,
             sender: "vjt",
@@ -119,14 +119,14 @@ defmodule Grappa.ScrollbackTest do
     test "rejects :privmsg without body (per-kind body required for content-bearing kinds)",
          %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(sample(user, net, 0, %{kind: :privmsg, sender: "vjt", body: nil}))
+               ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg, sender: "vjt", body: nil}))
 
       assert "can't be blank" in errors_on(cs).body
     end
 
     test "rejects :topic without body (per-kind body required)", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Scrollback.insert(sample(user, net, 0, %{kind: :topic, sender: "ChanServ", body: nil}))
+               ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :topic, sender: "ChanServ", body: nil}))
 
       assert "can't be blank" in errors_on(cs).body
     end
@@ -149,7 +149,7 @@ defmodule Grappa.ScrollbackTest do
       for {kind, overrides} <- cases do
         attrs = sample(user, net, 0, Map.merge(%{kind: kind, sender: "vjt"}, overrides))
 
-        assert {:ok, %Message{kind: ^kind}} = Scrollback.insert(attrs),
+        assert {:ok, %Message{kind: ^kind}} = ScrollbackHelpers.insert(attrs),
                "kind #{inspect(kind)} should be accepted"
       end
     end
@@ -158,7 +158,7 @@ defmodule Grappa.ScrollbackTest do
   describe "fetch/5" do
     test "returns the latest page in descending server_time order",
          %{user: user, network: net} do
-      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
+      for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 3)
 
@@ -168,7 +168,7 @@ defmodule Grappa.ScrollbackTest do
 
     test "paginates by `before` cursor (strict less-than on server_time)",
          %{user: user, network: net} do
-      for i <- 0..4, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
+      for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       [_, last_of_first_page] = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 2)
       next_page = Scrollback.fetch(user.id, net.id, "#sniffo", last_of_first_page.server_time, 2)
@@ -179,9 +179,9 @@ defmodule Grappa.ScrollbackTest do
     test "isolates rows by (network_id, channel)", %{user: user, network: net} do
       {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
 
-      {:ok, _} = Scrollback.insert(sample(user, net, 0, %{channel: "#a"}))
-      {:ok, _} = Scrollback.insert(sample(user, net, 1, %{channel: "#b"}))
-      {:ok, _} = Scrollback.insert(sample(user, other_net, 2, %{channel: "#a"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{channel: "#a"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#b"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{channel: "#a"}))
 
       page = Scrollback.fetch(user.id, net.id, "#a", nil, 10)
       assert length(page) == 1
@@ -195,8 +195,8 @@ defmodule Grappa.ScrollbackTest do
 
       # Both users write to the SAME (network, channel). The DB row stream is
       # one (one row per user write); the fetch surface MUST partition.
-      {:ok, _} = Scrollback.insert(sample(vjt, net, 0, %{sender: "vjt", body: "vjt-msg"}))
-      {:ok, _} = Scrollback.insert(sample(alice, net, 1, %{sender: "alice", body: "alice-msg"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(vjt, net, 0, %{sender: "vjt", body: "vjt-msg"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 1, %{sender: "alice", body: "alice-msg"}))
 
       vjt_page = Scrollback.fetch(vjt.id, net.id, "#sniffo", nil, 10)
       assert length(vjt_page) == 1
@@ -219,7 +219,7 @@ defmodule Grappa.ScrollbackTest do
     # to do its own `preload_networks/2` post-fetch.
     test "returns rows with :network preloaded so callers can render to wire shape",
          %{user: user, network: net} do
-      for i <- 0..2, do: {:ok, _} = Scrollback.insert(sample(user, net, i))
+      for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, 10)
 
@@ -235,7 +235,7 @@ defmodule Grappa.ScrollbackTest do
     test "clamps limit to max_page_size/0", %{user: user, network: net} do
       cap = Scrollback.max_page_size()
 
-      for i <- 0..(cap + 4), do: {:ok, _} = Scrollback.insert(sample(user, net, i))
+      for i <- 0..(cap + 4), do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       page = Scrollback.fetch(user.id, net.id, "#sniffo", nil, cap + 1_000)
       assert length(page) == cap
@@ -250,7 +250,7 @@ defmodule Grappa.ScrollbackTest do
 
   describe "Wire.to_json/1 (per-user iso wire-shape contract)" do
     test "emits network slug, NOT the integer network_id", %{user: user, network: net} do
-      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      {:ok, message} = ScrollbackHelpers.insert(sample(user, net, 0))
       preloaded = Repo.preload(message, :network)
 
       wire = Wire.to_json(preloaded)
@@ -260,7 +260,7 @@ defmodule Grappa.ScrollbackTest do
 
     test "does NOT expose user_id (it's a topic discriminator, not a payload field per decision G3)",
          %{user: user, network: net} do
-      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      {:ok, message} = ScrollbackHelpers.insert(sample(user, net, 0))
       preloaded = Repo.preload(message, :network)
 
       wire = Wire.to_json(preloaded)
@@ -269,7 +269,7 @@ defmodule Grappa.ScrollbackTest do
 
     test "carries id, channel, server_time, kind, sender, body, meta — the rest of the wire",
          %{user: user, network: net} do
-      {:ok, message} = Scrollback.insert(sample(user, net, 42, %{body: "hello", sender: "vjt"}))
+      {:ok, message} = ScrollbackHelpers.insert(sample(user, net, 42, %{body: "hello", sender: "vjt"}))
       preloaded = Repo.preload(message, :network)
 
       wire = Wire.to_json(preloaded)
@@ -289,7 +289,7 @@ defmodule Grappa.ScrollbackTest do
     # there. This catches a typo'd schema before the controller does.
     test "Message.belongs_to(:network) is wired (preload returns Network struct)",
          %{user: user, network: net} do
-      {:ok, message} = Scrollback.insert(sample(user, net, 0))
+      {:ok, message} = ScrollbackHelpers.insert(sample(user, net, 0))
       preloaded = Repo.preload(message, :network)
       assert %Network{slug: slug} = preloaded.network
       assert slug == net.slug

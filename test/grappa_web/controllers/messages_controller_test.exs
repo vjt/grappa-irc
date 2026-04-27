@@ -14,7 +14,7 @@ defmodule GrappaWeb.MessagesControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Networks, Scrollback}
+  alias Grappa.{Networks, ScrollbackHelpers}
 
   setup %{conn: conn} do
     {user, session} = user_and_session()
@@ -30,7 +30,7 @@ defmodule GrappaWeb.MessagesControllerTest do
   defp seed(user, network, channel \\ "#sniffo") do
     for i <- 0..4 do
       {:ok, _} =
-        Scrollback.insert(%{
+        ScrollbackHelpers.insert(%{
           user_id: user.id,
           network_id: network.id,
           channel: channel,
@@ -80,7 +80,7 @@ defmodule GrappaWeb.MessagesControllerTest do
     other_user = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
 
     {:ok, _} =
-      Scrollback.insert(%{
+      ScrollbackHelpers.insert(%{
         user_id: user.id,
         network_id: network.id,
         channel: "#sniffo",
@@ -91,7 +91,7 @@ defmodule GrappaWeb.MessagesControllerTest do
       })
 
     {:ok, _} =
-      Scrollback.insert(%{
+      ScrollbackHelpers.insert(%{
         user_id: user.id,
         network_id: network.id,
         channel: "#other",
@@ -102,7 +102,7 @@ defmodule GrappaWeb.MessagesControllerTest do
       })
 
     {:ok, _} =
-      Scrollback.insert(%{
+      ScrollbackHelpers.insert(%{
         user_id: user.id,
         network_id: other_net.id,
         channel: "#sniffo",
@@ -114,7 +114,7 @@ defmodule GrappaWeb.MessagesControllerTest do
 
     # Per-user iso check: same channel + network, different user.
     {:ok, _} =
-      Scrollback.insert(%{
+      ScrollbackHelpers.insert(%{
         user_id: other_user.id,
         network_id: network.id,
         channel: "#sniffo",

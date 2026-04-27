@@ -219,15 +219,16 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `PONG :<token>\\r\\n` in response to an upstream PING. Rejects
-  CR/LF/NUL with `{:error, :invalid_line}`.
+  Sends `PONG :<token>\\r\\n` in response to an upstream PING.
+
+  Unlike the other outbound helpers, this one has no CR/LF guard: the
+  token is parser-supplied — `Grappa.IRC.Parser` strips ALL `\\r`/`\\n`
+  from inbound bytes (the parser invariant pinned in C6 / S5), so by
+  the time `Session.Server` echoes the token here it cannot contain
+  CR/LF. Contract is `:ok`; callers do `:ok = send_pong(...)`.
   """
-  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
-  def send_pong(client, token) do
-    if Identifier.safe_line_token?(token),
-      do: send_line(client, "PONG :#{token}\r\n"),
-      else: {:error, :invalid_line}
-  end
+  @spec send_pong(pid(), String.t()) :: :ok
+  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
 
   ## GenServer callbacks
 
@@ -417,7 +418,7 @@ defmodule Grappa.IRC.Client do
 
   defp handle_irc(%Message{command: {:numeric, 903}}, state) do
     :ok = transport_send(state, "CAP END\r\n")
-    {:cont, %{state | phase: :pre_register}}
+    {:cont, leave_cap_negotiation(state, :pre_register)}
   end
 
   defp handle_irc(%Message{command: {:numeric, code}}, state) when code in [904, 905] do
@@ -438,7 +439,7 @@ defmodule Grappa.IRC.Client do
   end
 
   defp handle_irc(%Message{command: {:numeric, 1}}, state) do
-    {:cont, %{maybe_nickserv_identify(state) | phase: :registered}}
+    {:cont, leave_cap_negotiation(maybe_nickserv_identify(state), :registered)}
   end
 
   defp handle_irc(_, state), do: {:cont, state}
@@ -467,7 +468,6 @@ defmodule Grappa.IRC.Client do
 
   defp handle_cap([_, "LS", chunk], %{phase: :awaiting_cap_ls} = state) do
     caps = parse_(chunk) ++ state.caps_buffer
-    state = %{state | caps_buffer: []}
     finalize_cap_ls(caps, state)
   end
 
@@ -497,7 +497,7 @@ defmodule Grappa.IRC.Client do
   defp finalize_cap_ls(caps, state) do
     if "sasl" in caps and state.auth_method in [:auto, :sasl] do
       :ok = transport_send(state, "CAP REQ :sasl\r\n")
-      {:cont, %{state | phase: :awaiting_cap_ack}}
+      {:cont, leave_cap_negotiation(state, :awaiting_cap_ack)}
     else
       cap_unavailable(state)
     end
@@ -520,10 +520,30 @@ defmodule Grappa.IRC.Client do
   defp maybe_send_cap_end(%{phase: phase} = state)
        when phase in [:awaiting_cap_ls, :awaiting_cap_ack, :sasl_pending] do
     :ok = transport_send(state, "CAP END\r\n")
-    %{state | phase: :pre_register}
+    leave_cap_negotiation(state, :pre_register)
   end
 
   defp maybe_send_cap_end(state), do: state
+
+  # Single source of truth for ANY phase change that should clear
+  # `:caps_buffer`. `:caps_buffer` accumulates ONLY during
+  # `:awaiting_cap_ls` and MUST be empty whenever the phase leaves
+  # it. Owning both fields here means "exiting a phase clears all
+  # phase-local state" lives in ONE place — no per-callsite reminder
+  # to also-clear-the-buffer (today's S6 latency, Phase 5 reconnect's
+  # bug). Routed by every transition out of `:awaiting_cap_ls`:
+  #
+  #   * finalize_cap_ls (LS → AWAIT_ACK)
+  #   * handle_irc(numeric 1, _) (LS → REGISTERED)
+  #   * handle_irc(numeric 903, _) (SASL_PENDING → PRE_REGISTER)
+  #   * maybe_send_cap_end (any cap-phase → PRE_REGISTER)
+  #
+  # The helper name still says "leave_cap_negotiation" because the
+  # AWAIT_ACK target is mid-flight; the consumer that grew the buffer
+  # is `:awaiting_cap_ls`, and that's the consumer this clears for.
+  defp leave_cap_negotiation(state, new_phase) do
+    %{state | phase: new_phase, caps_buffer: []}
+  end
 
   defp maybe_nickserv_identify(%__MODULE__{auth_method: :nickserv_identify, password: pw} = state)
        when is_binary(pw) and pw != "" do

@@ -76,7 +76,14 @@ config :logger, :console,
     # log lines to surface the rejected nick directly.
     :numeric,
     :sasl_user,
-    :nick
+    :nick,
+    # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
+    # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
+    # so the operator can grep the lifecycle of a nick across a
+    # session — the Scrollback rows preserve the moment-of-write
+    # nick, but the upstream-driven mutations only land in the log.
+    :from,
+    :to
   ]
 
 import_config "#{config_env()}.exs"

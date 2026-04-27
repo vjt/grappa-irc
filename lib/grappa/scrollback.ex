@@ -70,24 +70,6 @@ defmodule Grappa.Scrollback do
   def max_page_size, do: @max_limit
 
   @doc """
-  Inserts a scrollback row.
-
-  `attrs` MUST carry `:user_id` (UUID) and `:network_id` (integer);
-  both are FK-validated against `users` / `networks` so a stale id
-  surfaces as `{:error, changeset}` instead of an FK exception.
-
-  Returns `{:ok, message}` on success or `{:error, changeset}` when the
-  attrs fail validation (missing required field, invalid `:kind`,
-  unknown FK).
-  """
-  @spec insert(map()) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
-  def insert(attrs) do
-    %Message{}
-    |> Message.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
   Persists a `:privmsg` row with `server_time` defaulted to the
   current millisecond. The producing-side defaults (kind, server_time)
   live here so callers — REST controller, IRC.Session, future Phase 6
@@ -106,15 +88,18 @@ defmodule Grappa.Scrollback do
           {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
   def persist_privmsg(user_id, network_id, channel, sender, body)
       when is_binary(user_id) and is_integer(network_id) do
-    case insert(%{
-           user_id: user_id,
-           network_id: network_id,
-           channel: channel,
-           server_time: System.system_time(:millisecond),
-           kind: :privmsg,
-           sender: sender,
-           body: body
-         }) do
+    changeset =
+      Message.changeset(%Message{}, %{
+        user_id: user_id,
+        network_id: network_id,
+        channel: channel,
+        server_time: System.system_time(:millisecond),
+        kind: :privmsg,
+        sender: sender,
+        body: body
+      })
+
+    case Repo.insert(changeset) do
       {:ok, message} -> {:ok, Repo.preload(message, :network)}
       {:error, _} = err -> err
     end
