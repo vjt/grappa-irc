@@ -66,7 +66,7 @@ defmodule Grappa.Scrollback.Meta do
   """
   use Ecto.Type
 
-  @known_keys ~w[target new_nick modes args reason]a
+  @known_keys ~w[target new_nick modes args]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -75,7 +75,7 @@ defmodule Grappa.Scrollback.Meta do
   architecture review A18, and a unit test catches drift at test time
   without runtime mutation of Logger config.
   """
-  @spec known_keys() :: [:target | :new_nick | :modes | :args | :reason, ...]
+  @spec known_keys() :: [:target | :new_nick | :modes | :args, ...]
   def known_keys, do: @known_keys
 
   @impl Ecto.Type

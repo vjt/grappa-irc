@@ -56,14 +56,11 @@ const formatTime = (epochMs: number): string => {
 // channel name stays for now so cross-channel views remain readable.
 
 // `:part` / `:quit` / `:kick` carry their reason in `body` per
-// `Grappa.Scrollback.Meta`'s per-kind shape table (meta.ex:58-61: "body
-// carries reason"). Defense-in-depth: also accept `meta.reason` so a
-// future server-side change (review S29) that shifts reason into the
-// meta payload doesn't silently lose it. Body wins when both present.
-const reasonOf = (msg: ScrollbackMessage): string | null => {
-  if (msg.body) return msg.body;
-  return typeof msg.meta.reason === "string" ? msg.meta.reason : null;
-};
+// `Grappa.Scrollback.Meta`'s per-kind shape table ("body carries
+// reason"). The Meta allowlist intentionally has no `:reason` key —
+// review S29 closed the dead key on the server side, so a single
+// `body`-only lookup is the contract.
+const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
 const renderBody = (msg: ScrollbackMessage): JSX.Element => {
   switch (msg.kind) {
