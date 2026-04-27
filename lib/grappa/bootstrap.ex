@@ -7,7 +7,9 @@ defmodule Grappa.Bootstrap do
   Lives in the application supervision tree as a `Task` with
   `restart: :transient` — runs once, exits `:normal` on completion (does
   not restart). If `run/0` itself crashes (an unhandled exception
-  inside the spawn loop), `:transient` brings it back exactly once.
+  inside the spawn loop), `:transient` restarts it subject to the
+  supervisor's restart budget (default `max_restarts: 3` over 5s);
+  exhausting the budget terminates the application.
 
   ## DB is the source of truth
 

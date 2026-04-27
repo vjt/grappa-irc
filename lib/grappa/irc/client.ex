@@ -458,10 +458,12 @@ defmodule Grappa.IRC.Client do
   # `:awaiting_cap_ls`; the continuation clauses must do the same so
   # the strays are absorbed by the catch-all below.
   #
-  # The list arg is `parse_(chunk) ++ buffer` (chunk on the LEFT) so
-  # `++` cost stays O(chunk_size) — appending the buffer to the chunk
-  # would be O(buffer_size) and turn an N-line CAP LS into O(N²) work.
-  # `"sasl" in caps` doesn't care about order.
+  # `++` copies its left argument, so put the smaller list on the left:
+  # `chunk ++ buffer` is O(|chunk|) (bounded — IRCv3 lines fit ~15 caps
+  # before splitting), while `buffer ++ chunk` would be O(|buffer|) and
+  # grow with N accumulated chunks, turning an N-line CAP LS into O(N²)
+  # work. Final cap-set order is irrelevant; `"sasl" in caps` is the
+  # only consumer.
   defp handle_cap([_, "LS", "*", chunk], %{phase: :awaiting_cap_ls} = state) do
     {:cont, %{state | caps_buffer: parse_(chunk) ++ state.caps_buffer}}
   end

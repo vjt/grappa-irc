@@ -196,6 +196,9 @@ defmodule Grappa.IRC.Parser do
   defp do_unescape(<<"\\", c::utf8, rest::binary>>, acc),
     do: do_unescape(rest, <<acc::binary, c::utf8>>)
 
+  # IRCv3 message-tags spec: a trailing backslash is dropped silently
+  # (the escape is incomplete — there is no following character to
+  # un-escape, and the spec mandates "drop" rather than "preserve").
   defp do_unescape(<<"\\">>, acc), do: acc
 
   defp do_unescape(<<c::utf8, rest::binary>>, acc),
