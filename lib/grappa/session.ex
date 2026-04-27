@@ -282,6 +282,29 @@ defmodule Grappa.Session do
     end
   end
 
+  @doc """
+  Returns a snapshot of the channel's member list in mIRC sort order
+  (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
+  Each entry: `%{nick: String.t(), modes: [String.t()]}`.
+
+  Returns `{:ok, []}` if the session is registered but has no members
+  recorded for the channel (operator joined but NAMES hasn't completed,
+  or unknown channel). Returns `{:error, :no_session}` if no session
+  is registered for `(user_id, network_id)`.
+
+  Used by `GET /networks/:net/channels/:chan/members` (P4-1's nick-list
+  sidebar consumer). Snapshot, not subscription — cicchetto refetches
+  on channel-select; presence pushes via PubSub flow through
+  `MessagesChannel` already.
+  """
+  @spec list_members(Ecto.UUID.t(), integer(), String.t()) ::
+          {:ok, [%{nick: String.t(), modes: [String.t()]}]}
+          | {:error, :no_session}
+  def list_members(user_id, network_id, channel)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(channel) do
+    call_session(user_id, network_id, {:list_members, channel})
+  end
+
   defp call_session(user_id, network_id, request) do
     case whereis(user_id, network_id) do
       nil -> {:error, :no_session}
