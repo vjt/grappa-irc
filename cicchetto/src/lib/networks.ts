@@ -47,10 +47,13 @@ import { joinChannel } from "./socket";
 // collide with payload bytes. NUL would also work; space wins because
 // it's readable in debugger output and operator log lines.
 //
-// `joined` is a module-level Set guarding double-joins. Phoenix is
-// idempotent on `socket.channel(topic)` returning the existing handle,
-// but tracking the join here keeps the handler-install step explicit
-// and lets future Phase-5 PART logic mirror with a `leave + delete`.
+// `joined` is a Set guarding double-joins. Phoenix is idempotent on
+// `socket.channel(topic)` returning the existing handle, but tracking
+// the join here keeps the handler-install step explicit and lets
+// future Phase-5 PART logic mirror with a `leave + delete`. Lives
+// inside `createRoot` alongside the signal store so its lifecycle is
+// coupled to the same identity-transition cleanup arm — see the
+// `on(token, ...)` effect below.
 //
 // Scrollback ordering: stored ASCENDING by server_time so render is
 // natural top-to-bottom and `<For>` keys (message id) stay stable.
@@ -76,10 +79,16 @@ export const channelKey = (slug: string, name: string): ChannelKey =>
 
 export type SelectedChannel = { networkSlug: string; channelName: string } | null;
 
-const joined = new Set<ChannelKey>();
-const loadedChannels = new Set<ChannelKey>();
-
 const exports = createRoot(() => {
+  // Identity-scoped state: the two Sets below guard the join-effect
+  // and the load-once REST gate. Both are scoped to the *current*
+  // bearer; a logout or rotation MUST clear them so the join effect
+  // re-evaluates under the new identity (otherwise the new user's
+  // joinChannel calls are skipped and live messages silently drop).
+  // Key shape `${slug} ${name}` is user-agnostic, so persisting them
+  // across identity changes is a cross-tenant state leak.
+  const joined = new Set<ChannelKey>();
+  const loadedChannels = new Set<ChannelKey>();
   const [networks] = createResource<Network[], string | null>(token, async (t) => {
     if (!t) return [];
     return listNetworks(t);
@@ -108,6 +117,32 @@ const exports = createRoot(() => {
   const [scrollbackByChannel, setScrollbackByChannel] = createSignal<
     Record<ChannelKey, ScrollbackMessage[]>
   >({});
+
+  // Identity-transition cleanup. `prev != null` filters BOTH the
+  // initial run (prev === undefined) and the cold-start login
+  // (prev === null) via the loose-equality `!= null` idiom — both
+  // are no-ops for cleanup. The two transitions that DO need cleanup:
+  //   - logout: prev = "tokA", t = null
+  //   - rotation: prev = "tokA", t = "tokB" (both non-null, distinct)
+  // Solid's signal equality dedupes a no-op `setToken(same)`, so
+  // `t !== prev` is satisfied on every emitted change.
+  //
+  // Registered BEFORE the join effect so the Sets are cleared first;
+  // the join effect then runs against fresh state once `me`/
+  // `channelsBySlug` resolve under the new bearer. Order matters
+  // because Solid evaluates effects in registration order on the
+  // same flush.
+  createEffect(
+    on(token, (t, prev) => {
+      if (prev != null && t !== prev) {
+        joined.clear();
+        loadedChannels.clear();
+        setScrollbackByChannel({});
+        setUnreadCounts({});
+        setSelectedChannel(null);
+      }
+    }),
+  );
 
   // Insert an incoming message into the per-channel ascending list,
   // deduping by id. REST + WS can overlap: the row inserted by POST
