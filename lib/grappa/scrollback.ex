@@ -51,7 +51,7 @@ defmodule Grappa.Scrollback do
   import Ecto.Query
 
   alias Grappa.Repo
-  alias Grappa.Scrollback.Message
+  alias Grappa.Scrollback.{Message, Meta}
 
   @max_limit 500
 
@@ -98,6 +98,42 @@ defmodule Grappa.Scrollback do
         sender: sender,
         body: body
       })
+
+    case Repo.insert(changeset) do
+      {:ok, message} -> {:ok, Repo.preload(message, :network)}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  Persists a scrollback row of arbitrary kind. Takes the full attribute
+  map explicitly — no defaulting, no implicit current-time read. Caller
+  is responsible for `:server_time` (epoch ms) and `:meta` (`%{}` for
+  kinds without event-specific payload).
+
+  The returned row has `:network` preloaded so callers can hand it
+  straight to `Grappa.Scrollback.Wire.message_event/1` (which
+  pattern-matches on `%Network{slug: _}` and crashes on unloaded assoc).
+  Single source for the wire-shape contract — every door (REST,
+  PubSub, future Phase 6 listener) goes through here.
+
+  Body validation per-kind is enforced by `Message.changeset/2`:
+  `:privmsg | :notice | :action | :topic` require non-nil body;
+  `:join | :part | :quit | :nick_change | :mode | :kick` accept
+  `body: nil` (presence kinds + state changes).
+  """
+  @spec persist_event(%{
+          required(:user_id) => Ecto.UUID.t(),
+          required(:network_id) => integer(),
+          required(:channel) => String.t(),
+          required(:server_time) => integer(),
+          required(:kind) => Message.kind(),
+          required(:sender) => String.t(),
+          required(:body) => String.t() | nil,
+          required(:meta) => Meta.t()
+        }) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+  def persist_event(%{kind: kind} = attrs) when is_atom(kind) do
+    changeset = Message.changeset(%Message{}, attrs)
 
     case Repo.insert(changeset) do
       {:ok, message} -> {:ok, Repo.preload(message, :network)}
