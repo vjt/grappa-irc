@@ -91,4 +91,47 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{}
     end
   end
+
+  describe "route/2 — :join" do
+    test "JOIN-other adds nick to state.members[channel] + emits :persist :join" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:join, ["#italia"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :join, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"] == %{"vjt" => [], "alice" => []}
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "alice"
+      assert attrs.body == nil
+      assert attrs.meta == %{}
+    end
+
+    test "JOIN-self clears stale state.members[channel] then adds self" do
+      # Stale state from a previous session (operator reconnect, BNC bug):
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"stale_user_1" => [], "stale_user_2" => ["@"]}}
+        })
+
+      m = msg(:join, ["#italia"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :join, _}]} =
+               EventRouter.route(m, state)
+
+      # Stale users wiped; only self remains. 353 RPL_NAMREPLY arrives
+      # immediately after and re-populates the rest.
+      assert new_state.members["#italia"] == %{"vjt" => []}
+    end
+
+    test "JOIN-other to an unknown channel creates the channel entry" do
+      state = base_state()
+      m = msg(:join, ["#new"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :join, _}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#new"] == %{"alice" => []}
+    end
+  end
 end
