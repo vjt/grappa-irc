@@ -144,12 +144,47 @@ defmodule Grappa.Session do
         :ok
 
       pid ->
+        # Monitor BEFORE terminate so we never miss the DOWN — even if
+        # the child dies between `whereis` and the monitor, the receive
+        # below gets an immediate DOWN with reason `:noproc`.
+        ref = Process.monitor(pid)
+
         # `terminate_child` returns `{:error, :not_found}` on a race
         # where the child died between whereis and terminate; treat
         # both branches as success since the post-condition (no
         # session for the key) is what we promise.
         _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          5_000 ->
+            Process.demonitor(ref, [:flush])
+            :ok
+        end
+
+        # `Process.monitor` DOWN guarantees the process is dead, but
+        # `Grappa.SessionRegistry`'s OWN monitor on `pid` runs in the
+        # Registry process — it may not have unregistered the dead pid
+        # yet. Spin a tiny `Registry.lookup`-poll until the entry is
+        # gone or the budget expires; without this, callers chaining
+        # `stop_session/2` → `start_session/3` race a transient
+        # `:already_started` shape backed by a dead pid.
+        wait_until_unregistered(user_id, network_id, 100)
         :ok
+    end
+  end
+
+  defp wait_until_unregistered(_, _, 0), do: :ok
+
+  defp wait_until_unregistered(user_id, network_id, attempts) do
+    case whereis(user_id, network_id) do
+      nil ->
+        :ok
+
+      _ ->
+        Process.sleep(5)
+        wait_until_unregistered(user_id, network_id, attempts - 1)
     end
   end
 

@@ -31,10 +31,10 @@ defmodule Grappa.Bootstrap do
   bound logs a warning and returns `:ok` — the rest of the supervision
   tree (Endpoint, Repo, PubSub, Registry, SessionSupervisor) is up and
   the bouncer continues running with zero sessions, ready for the
-  operator to bind the first credential and reboot. Per-session start
-  failures (upstream connection refused, no enabled server, SASL auth
-  failure, etc.) increment the `failed` counter and continue with the
-  next session; one bad network does not block the others.
+  operator to bind the first credential and reboot. Per-session
+  Bootstrap-time failures (no enabled server, missing user) increment
+  the `failed` counter and continue with the next session; one bad row
+  does not block the others.
 
   Two counters, two operationally-distinct conditions:
 
@@ -43,11 +43,24 @@ defmodule Grappa.Bootstrap do
       session is up under the same Registry key, which is what
       Bootstrap restarts find on every previously-spawned row).
     * `failed`  — `{:error, _}` from `Networks.session_plan/1`
-      (`:no_server`, `:user_not_found`) OR from
-      `Session.start_session/3` (upstream connection refused, etc.).
-      Operator action: investigate the upstream or
-      `mix grappa.update_network_credential` /
-      `mix grappa.add_server`.
+      (`:no_server`, `:user_not_found`) OR a hard Session-init failure
+      (`{:missing_password, _}` from `IRC.Client.init/1`'s validation
+      path, propagating up via the linked Client crash inside
+      `Session.handle_continue/2`'s `Client.start_link/1`).
+
+  Note — post-C2 (CP10 S3) `init/1` no longer blocks on TCP/TLS
+  connect: `Session.Server.init/1` and `IRC.Client.init/1` defer the
+  socket setup into `handle_continue(:connect, _)` so Bootstrap's
+  `Enum.reduce` loop is not serialized by upstream latency. Connection
+  refused / DNS hang / TCP RST are now surfaced **async** via the
+  per-Session `:transient` restart policy (`max_restarts: 3` over 5s)
+  followed by `DynamicSupervisor` terminating the child. Bootstrap
+  itself reports `started=N failed=0` for any row whose Session passed
+  its `init/1` validation regardless of upstream health; operators
+  grep `(stop) {:connect_failed, _}` from the `Session.Server` /
+  `IRC.Client` terminate path to surface the bad network. Phase 5
+  reconnect/backoff replaces the exhaust-and-give-up shape with proper
+  health tracking.
 
   ## Test surface
 

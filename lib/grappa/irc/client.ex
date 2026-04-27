@@ -118,7 +118,7 @@ defmodule Grappa.IRC.Client do
           | :registered
 
   @type t :: %__MODULE__{
-          socket: :gen_tcp.socket() | :ssl.sslsocket(),
+          socket: :gen_tcp.socket() | :ssl.sslsocket() | nil,
           transport: :tcp | :ssl,
           dispatch_to: pid(),
           nick: String.t(),
@@ -130,8 +130,12 @@ defmodule Grappa.IRC.Client do
           caps_buffer: [String.t()]
         }
 
+  # `:socket` is intentionally NOT enforced — pre-connect (between `init/1`
+  # returning and `handle_continue(:connect, _)` running) it is `nil`. Every
+  # code path that touches the socket runs from `handle_info` / `handle_cast`,
+  # both of which are queued behind the `{:continue, :connect}` per OTP, so
+  # the only legal `socket: nil` window is bounded by the continue.
   @enforce_keys [
-    :socket,
     :transport,
     :dispatch_to,
     :nick,
@@ -227,6 +231,13 @@ defmodule Grappa.IRC.Client do
 
   ## GenServer callbacks
 
+  # `init/1` is intentionally non-blocking — TCP/TLS connect + handshake
+  # live in `handle_continue(:connect, _)`. CLAUDE.md OTP discipline:
+  # "blocking work in `init/1` without `{:continue, _}`" freezes the
+  # parent supervisor's `start_child` loop on a flapping upstream. The
+  # `{:continue, {:connect, opts}}` shape carries the connect inputs as
+  # the continue term so the prelim state struct stays sealed (no
+  # connect-config fields leaking onto runtime state).
   @impl GenServer
   def init(%{auth_method: m} = opts) when m in @auth_methods do
     Logger.metadata(Keyword.new(opts.logger_metadata))
@@ -238,8 +249,23 @@ defmodule Grappa.IRC.Client do
     # tests) that hands Client a half-built opts map crashes at boot
     # rather than mid-SASL with a `<< nil :: binary >>` ArgumentError.
     case validate_password_present(opts) do
-      :ok -> do_init(opts)
-      {:error, reason} -> {:stop, reason}
+      :ok ->
+        # TLS posture warning fires synchronously in init/1 (NOT
+        # handle_continue) so a linked-caller-dies-early scenario
+        # — `Process.flag(:trap_exit, true); spawn(fn -> start_link end)`
+        # — still emits the warning before the Client process is
+        # SIGTERM'd by the dying spawn link. Phase 5 hardening will
+        # move this to `Bootstrap` per `lib/grappa/bootstrap.ex` (CP10
+        # finding S24); for now keep it where the existing TLS warning
+        # test pins it.
+        if opts.tls do
+          Logger.warning("phase 1 TLS posture: verify_none — no certificate chain validation. Phase 5 hardens this.")
+        end
+
+        {:ok, build_initial_state(opts), {:continue, {:connect, opts}}}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
@@ -251,34 +277,31 @@ defmodule Grappa.IRC.Client do
   defp validate_password_present(%{auth_method: m}),
     do: {:error, {:missing_password, m}}
 
-  defp do_init(opts) do
-    if opts.tls do
-      Logger.warning("phase 1 TLS posture: verify_none — no certificate chain validation. Phase 5 hardens this.")
-    end
+  defp build_initial_state(opts) do
+    %__MODULE__{
+      socket: nil,
+      transport: if(opts.tls, do: :ssl, else: :tcp),
+      dispatch_to: opts.dispatch_to,
+      nick: opts.nick,
+      realname: opts.realname,
+      sasl_user: opts.sasl_user,
+      password: Map.get(opts, :password),
+      auth_method: opts.auth_method,
+      phase: :pre_register,
+      caps_buffer: []
+    }
+  end
 
+  @impl GenServer
+  def handle_continue({:connect, opts}, state) do
     host = to_charlist(opts.host)
 
     case do_connect(host, opts.port, opts.tls) do
       {:ok, socket} ->
-        transport = if(opts.tls, do: :ssl, else: :tcp)
-
-        state = %__MODULE__{
-          socket: socket,
-          transport: transport,
-          dispatch_to: opts.dispatch_to,
-          nick: opts.nick,
-          realname: opts.realname,
-          sasl_user: opts.sasl_user,
-          password: Map.get(opts, :password),
-          auth_method: opts.auth_method,
-          phase: :pre_register,
-          caps_buffer: []
-        }
-
-        {:ok, perform_initial_handshake(state)}
+        {:noreply, perform_initial_handshake(%{state | socket: socket})}
 
       {:error, reason} ->
-        {:stop, {:connect_failed, reason}}
+        {:stop, {:connect_failed, reason}, state}
     end
   end
 
@@ -301,17 +324,25 @@ defmodule Grappa.IRC.Client do
 
   ## Connection
 
+  # Explicit 30s connect timeout on both transports. The Erlang default
+  # is `:infinity` — a black-holed SYN would deadlock `handle_continue`
+  # forever, leaving the GenServer alive-but-unreachable until
+  # `:gen_tcp` / `:ssl` give up. 30s is the standard upstream-handshake
+  # ceiling; Phase 5 reconnect/backoff revisits this when retry policy
+  # lands.
+  @connect_timeout_ms 30_000
+
   defp do_connect(host, port, false) do
-    :gen_tcp.connect(host, port, [:binary, packet: :line, active: :once])
+    :gen_tcp.connect(host, port, [:binary, packet: :line, active: :once], @connect_timeout_ms)
   end
 
   defp do_connect(host, port, true) do
-    :ssl.connect(host, port, [
-      :binary,
-      packet: :line,
-      active: :once,
-      verify: :verify_none
-    ])
+    :ssl.connect(
+      host,
+      port,
+      [:binary, packet: :line, active: :once, verify: :verify_none],
+      @connect_timeout_ms
+    )
   end
 
   ## Initial handshake (PASS, CAP LS, NICK, USER)

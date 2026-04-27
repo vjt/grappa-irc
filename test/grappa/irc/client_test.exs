@@ -32,6 +32,16 @@ defmodule Grappa.IRC.ClientTest do
     {server, IRCServer.port(server)}
   end
 
+  # Bind ephemeral port, capture number, release immediately. The kernel
+  # may eventually reuse it; the C2 non-blocking-init test only needs the
+  # port to be unbound for the ~10ms it takes the connect to refuse.
+  defp pick_unused_port do
+    {:ok, l} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(l)
+    :gen_tcp.close(l)
+    port
+  end
+
   defp start_client(port, overrides \\ %{}) do
     opts =
       Map.merge(
@@ -698,6 +708,41 @@ defmodule Grappa.IRC.ClientTest do
       Process.sleep(50)
       lines_after = IRCServer.sent_lines(server)
       assert lines_after == lines_before
+    end
+  end
+
+  describe "init/1 non-blocking (C2)" do
+    # C2 cluster — `init/1` must NOT call `:gen_tcp.connect`/`:ssl.connect`
+    # synchronously. Connect + handshake live in `handle_continue(:connect, _)`
+    # so a flapping/black-holed upstream cannot freeze the supervisor or
+    # serialize Bootstrap's per-credential start_child loop.
+
+    test "start_link returns {:ok, pid} BEFORE TCP connect resolves; failure surfaces async" do
+      # Pre-fix: init/1 calls do_connect synchronously; an unused localhost
+      # port refuses fast → init returns {:stop, {:connect_failed, :econnrefused}}
+      # → start_link returns {:error, _}. Pinning the {:ok, pid} contract is
+      # the load-bearing assertion: it can only hold once the connect moves
+      # into handle_continue.
+      port = pick_unused_port()
+      Process.flag(:trap_exit, true)
+
+      assert {:ok, client} =
+               Client.start_link(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 dispatch_to: self(),
+                 logger_metadata: [],
+                 nick: "grappa-test",
+                 realname: "grappa-test",
+                 sasl_user: "grappa-test",
+                 auth_method: :none
+               })
+
+      assert is_pid(client)
+
+      # Connect failure now arrives via process EXIT (handle_continue → :stop).
+      assert_receive {:EXIT, ^client, {:connect_failed, :econnrefused}}, 1_000
     end
   end
 

@@ -139,7 +139,22 @@ defmodule Grappa.BootstrapTest do
   end
 
   describe "run/0 partial failure" do
-    test "some sessions start, some fail — summary reflects both" do
+    test "all sessions counted as started; upstream-connect failures surface async (C2)" do
+      # Pre-C2 `Session.Server.init/1` called `Client.start_link/1`
+      # synchronously, so a refused upstream returned `{:error, _}` from
+      # `Session.start_session/3` and Bootstrap incremented `failed`.
+      # Post-C2 the Client connect lives in `handle_continue(:connect, _)`
+      # — `init/1` returns `{:ok, state, {:continue, _}}` regardless of
+      # upstream reachability, so Bootstrap counts every credential row
+      # as `started`. Connect refusals surface asynchronously: the
+      # Session crashes with `{:connect_failed, _}`, the per-session
+      # `:transient` policy retries up to `max_restarts: 3`, then the
+      # `DynamicSupervisor` terminates the child. The contract assertion
+      # here is "Bootstrap returned :ok and reported all sessions
+      # started"; per-session async health is observed via Logger.error
+      # at session-crash time (operators grep `session start failed`
+      # under the new semantic, plus `(stop) {:connect_failed, _}` from
+      # the Session GenServer terminate path).
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {_, port_ok} = start_server()
       # 1 is a privileged port; connect from container as non-root will fail.
@@ -156,10 +171,9 @@ defmodule Grappa.BootstrapTest do
 
       log = capture_log(fn -> assert :ok = Bootstrap.run() end)
 
-      assert log =~ "started=1"
-      assert log =~ "failed=1"
+      assert log =~ "started=2"
+      assert log =~ "failed=0"
       assert is_pid(Session.whereis(vjt.id, ok_net.id))
-      assert Session.whereis(vjt.id, bad_net.id) == nil
     end
   end
 end
