@@ -37,10 +37,18 @@ export type Network = {
   updated_at: string;
 };
 
-// Mirror of `Grappa.Networks.Wire.channel_json/0`. Object envelope (not
-// a bare string) is the Phase 5 extension point for joined/topic/unread.
+// Mirror of `Grappa.Networks.Wire.channel_json/0` post-A5. Object envelope
+// extended in P4-1 with the live `joined` state and the `source` of the
+// list entry: `"autojoin"` (declared in the credential's autojoin_channels),
+// `"joined"` (currently in session state.members but NOT in autojoin —
+// dynamically joined post-boot via REST/IRC).
+//
+// Q3 of P4-1 cluster pinned the merge: when a channel is in BOTH sources,
+// `:autojoin` wins (operator intent durable; session JOIN transient).
 export type ChannelEntry = {
   name: string;
+  joined: boolean;
+  source: "autojoin" | "joined";
 };
 
 // Mirror of `Grappa.Scrollback.Wire.t/0` + the `:event` push wrapper
@@ -224,4 +232,44 @@ export async function sendMessage(
   );
   if (!res.ok) throw await readError(res);
   return (await res.json()) as ScrollbackMessage;
+}
+
+// Mirror of `GrappaWeb.ChannelsController.topic/2`. Sets the topic on
+// `channelName` for the operator's session on `networkSlug`. Server emits
+// a `:topic` scrollback row that the WS push delivers; we don't read the
+// 202 body (it's `{ok: true}`).
+export async function postTopic(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+  body: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/topic`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ body }),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+}
+
+// Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`
+// upstream through the session. The upstream replays the NICK back via
+// `EventRouter`'s NICK handler which fans out per-channel `:nick_change`
+// scrollback rows + reconciles `state.nick` server-side.
+export async function postNick(token: string, networkSlug: string, nick: string): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/nick`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ nick }),
+  });
+  if (!res.ok) throw await readError(res);
 }
