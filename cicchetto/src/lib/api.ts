@@ -258,6 +258,43 @@ export async function postTopic(
   if (!res.ok) throw await readError(res);
 }
 
+// Mirror of `GrappaWeb.ChannelsController.create/2`. POST a channel
+// name; the server forwards a JOIN to the upstream session. The 202
+// envelope is `{ok: true}` — we don't read the body.
+export async function postJoin(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/channels`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ name: channelName }),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// Mirror of `GrappaWeb.ChannelsController.delete/2`. DELETE the channel
+// to forward a PART upstream. Server emits a `:part` scrollback row +
+// the EventRouter Map.deletes the channel key from state.members.
+export async function postPart(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  if (!res.ok) throw await readError(res);
+}
+
 // Mirror of `GrappaWeb.MembersJSON.index/1` — wire shape:
 //   { "members": [{"nick": String, "modes": [String]}] }
 // Already mIRC-sorted by `Session.list_members/3` (ops → voiced → plain,
