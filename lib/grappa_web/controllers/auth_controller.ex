@@ -63,9 +63,11 @@ defmodule GrappaWeb.AuthController do
     send_resp(conn, :no_content, "")
   end
 
+  @spec format_ip(Plug.Conn.t()) :: String.t() | nil
   defp format_ip(%Plug.Conn{remote_ip: nil}), do: nil
   defp format_ip(%Plug.Conn{remote_ip: ip}), do: ip |> :inet.ntoa() |> to_string()
 
+  @spec user_agent(Plug.Conn.t()) :: String.t() | nil
   defp user_agent(conn) do
     case get_req_header(conn, "user-agent") do
       [ua | _] -> ua

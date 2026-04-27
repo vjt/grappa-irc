@@ -39,7 +39,9 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{IRC.Identifier, Scrollback, Session}
+  import GrappaWeb.Validation, only: [validate_channel_name: 1]
+
+  alias Grappa.{Scrollback, Session}
 
   @default_limit 50
 
@@ -65,7 +67,12 @@ defmodule GrappaWeb.MessagesController do
     user_id = conn.assigns.current_user_id
     network = conn.assigns.network
 
-    with {:ok, cursor} <- parse_cursor(params["before"]),
+    # Reject malformed channel-name shape with 400 — same boundary the
+    # POST surface uses (S40). Without this, an invalid `channel_id`
+    # path segment fed straight into `Scrollback.fetch/5` would return
+    # 200 + an empty list, hiding the client typo.
+    with :ok <- validate_channel_name(channel),
+         {:ok, cursor} <- parse_cursor(params["before"]),
          {:ok, limit} <- parse_limit(params["limit"]) do
       # `:network` is preloaded by `Scrollback.fetch/5` itself —
       # the boundary contract returns wire-shape-ready rows. No
@@ -114,10 +121,6 @@ defmodule GrappaWeb.MessagesController do
   end
 
   def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
-
-  defp validate_channel_name(name) do
-    if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
-  end
 
   defp parse_cursor(nil), do: {:ok, nil}
 

@@ -83,6 +83,7 @@ defmodule Grappa.Scrollback.Message do
   alias Grappa.Accounts.User
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
+  alias Grappa.Scrollback.Meta
 
   @kinds [
     :privmsg,
@@ -122,7 +123,7 @@ defmodule Grappa.Scrollback.Message do
           kind: kind() | nil,
           sender: String.t(),
           body: String.t() | nil,
-          meta: map(),
+          meta: Meta.t(),
           inserted_at: DateTime.t() | nil
         }
 

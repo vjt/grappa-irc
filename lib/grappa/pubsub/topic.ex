@@ -73,10 +73,11 @@ defmodule Grappa.PubSub.Topic do
       [name] ->
         {:ok, {:user, name}}
 
-      [name, "network:" <> slug] when slug != "" ->
+      [name, "network:" <> slug] when name != "" and slug != "" ->
         {:ok, {:network, name, slug}}
 
-      [name, "network:" <> slug, "channel:" <> chan] when slug != "" and chan != "" ->
+      [name, "network:" <> slug, "channel:" <> chan]
+      when name != "" and slug != "" and chan != "" ->
         {:ok, {:channel, name, slug, chan}}
 
       _ ->

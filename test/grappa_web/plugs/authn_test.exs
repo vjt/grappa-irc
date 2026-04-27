@@ -24,7 +24,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
   end
 
   describe "valid Bearer token" do
-    test "assigns :current_user_id + :current_session_id and does NOT halt",
+    test "assigns :current_user_id + :current_session_id + :current_user and does NOT halt",
          %{conn: conn, user: user, session: session} do
       result =
         conn
@@ -34,6 +34,12 @@ defmodule GrappaWeb.Plugs.AuthnTest do
       refute result.halted
       assert result.assigns.current_user_id == user.id
       assert result.assigns.current_session_id == session.id
+      # S42: the plug also loads the User struct so downstream plugs +
+      # controllers don't re-fetch. Pin the contract here so a future
+      # "the controllers don't read this — drop the load" change fails
+      # the plug's own test before it propagates.
+      assert %User{id: user_id} = result.assigns.current_user
+      assert user_id == user.id
     end
   end
 

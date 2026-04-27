@@ -12,8 +12,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // must also be hoisted to be initialized in time.
 
 const h = vi.hoisted(() => {
+  // phoenix.js's `Channel.join()` returns a Push; `.receive(...)`
+  // returns the same Push for chaining. The mock mirrors this so the
+  // production code's `.join().receive("error", ...).receive(...)`
+  // chain (S48) doesn't crash inside the test.
+  const mockJoinPush = { receive: vi.fn() };
+  mockJoinPush.receive.mockReturnValue(mockJoinPush);
   const mockChannel = {
-    join: vi.fn(),
+    join: vi.fn(() => mockJoinPush),
     on: vi.fn(),
     leave: vi.fn(),
   };
@@ -24,7 +30,7 @@ const h = vi.hoisted(() => {
     channel: vi.fn().mockReturnValue(mockChannel),
   };
   const socketCtor = vi.fn();
-  return { mockChannel, mockSocketInstance, socketCtor };
+  return { mockChannel, mockJoinPush, mockSocketInstance, socketCtor };
 });
 
 vi.mock("phoenix", () => {
@@ -105,17 +111,17 @@ describe("socket singleton", () => {
     expect(h.mockChannel.join).toHaveBeenCalledTimes(1);
   });
 
-  it("joinNetwork builds the per-(user, network) topic", async () => {
+  it("joinChannel registers error + timeout handlers on the join Push (S48)", async () => {
+    // The server can return `{:error, %{reason: "unknown topic" |
+    // "forbidden"}}` from `GrappaChannel.join/3`; without a `.receive`
+    // hook these errors used to vanish into the void. Pin that the
+    // production call chains both an "error" and a "timeout" hook so a
+    // future refactor that drops one fails this test.
     localStorage.setItem("grappa-token", "tok-1");
     const socket = await import("../lib/socket");
-    socket.joinNetwork("alice", "freenode");
-    expect(h.mockSocketInstance.channel).toHaveBeenCalledWith("grappa:user:alice/network:freenode");
-  });
-
-  it("joinUser builds the per-user topic", async () => {
-    localStorage.setItem("grappa-token", "tok-1");
-    const socket = await import("../lib/socket");
-    socket.joinUser("alice");
-    expect(h.mockSocketInstance.channel).toHaveBeenCalledWith("grappa:user:alice");
+    socket.joinChannel("alice", "freenode", "#grappa");
+    const eventNames = h.mockJoinPush.receive.mock.calls.map((c) => c[0]);
+    expect(eventNames).toContain("error");
+    expect(eventNames).toContain("timeout");
   });
 });

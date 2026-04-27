@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0a0a0a" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- iOS Safari ignores manifest.json for standalone-mode chrome
+         and splash; these three drive Add-to-Home-Screen on iOS (S45).
+         `apple-mobile-web-app-capable` opts into standalone mode (no
+         Safari chrome); `apple-mobile-web-app-status-bar-style` tunes
+         the status-bar overlay (black-translucent lets the page paint
+         under it); `apple-touch-icon` is what iOS scrapes for the
+         home-screen icon. Android/Chrome are manifest-driven and
+         unaffected. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
     <title>Cicchetto</title>
   </head>
   <body>

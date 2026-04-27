@@ -66,7 +66,19 @@ defmodule Grappa.Scrollback.Meta do
   """
   use Ecto.Type
 
-  @known_keys ~w[target new_nick modes args reason]a
+  @typedoc """
+  The atom-keyed allowlist shape. The whole point of this custom Ecto
+  type is the closed-set keying: schemas declaring `meta:
+  Grappa.Scrollback.Meta.t()` get a Dialyzer-visible contract that says
+  "these are the only atom keys producers may write." `term()` values
+  because the per-kind shapes (string, [string], etc.) live in the
+  moduledoc per-kind table, not in the type — encoding all six per-kind
+  shapes in the type would require a discriminated union keyed on
+  `Message.kind`, which is the schema's job, not this map's.
+  """
+  @type t :: %{optional(:target | :new_nick | :modes | :args) => term()}
+
+  @known_keys ~w[target new_nick modes args]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -75,7 +87,7 @@ defmodule Grappa.Scrollback.Meta do
   architecture review A18, and a unit test catches drift at test time
   without runtime mutation of Logger config.
   """
-  @spec known_keys() :: [:target | :new_nick | :modes | :args | :reason, ...]
+  @spec known_keys() :: [:target | :new_nick | :modes | :args, ...]
   def known_keys, do: @known_keys
 
   @impl Ecto.Type

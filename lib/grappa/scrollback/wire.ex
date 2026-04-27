@@ -32,7 +32,7 @@ defmodule Grappa.Scrollback.Wire do
   """
 
   alias Grappa.Networks.Network
-  alias Grappa.Scrollback.Message
+  alias Grappa.Scrollback.{Message, Meta}
 
   @type t :: %{
           id: integer(),
@@ -42,7 +42,7 @@ defmodule Grappa.Scrollback.Wire do
           kind: Message.kind(),
           sender: String.t(),
           body: String.t() | nil,
-          meta: map()
+          meta: Meta.t()
         }
 
   @type event :: {:event, %{kind: :message, message: t()}}

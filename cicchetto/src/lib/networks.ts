@@ -108,7 +108,7 @@ const exports = createRoot(() => {
       const entries = await Promise.all(
         nets.map(async (n) => [n.slug, await listChannels(t, n.slug)] as const),
       );
-      return Object.fromEntries(entries) as Record<string, ChannelEntry[]>;
+      return Object.fromEntries(entries);
     },
   );
 

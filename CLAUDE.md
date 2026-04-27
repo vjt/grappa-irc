@@ -23,7 +23,7 @@ Grappa.Application
 ├── DynamicSupervisor            (name: Grappa.SessionSupervisor)
 │   └── Grappa.Session.Server    (one per (user, network), :transient)
 ├── GrappaWeb.Endpoint           (Phoenix HTTP + WS)
-└── Grappa.Bootstrap             (reads grappa.toml, spawns sessions)
+└── Grappa.Bootstrap             (reads DB credentials, spawns sessions)
 ```
 
 Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
@@ -68,8 +68,8 @@ shared across all worktrees) and bind-mount the worktree's source files
 (lib, test, config, priv/repo, mix.exs, etc.) on top via `-v` overrides.
 The live container always has main's source mounted; from a worktree,
 `scripts/*` always uses oneshot runs so the worktree code wins. Anything
-not overridden (priv/plts cache, runtime/sqlite db, grappa.toml) comes
-from the main repo so PLT cache and operator state stay single-source.
+not overridden (priv/plts cache, runtime/sqlite db) comes from the
+main repo so PLT cache and operator state stay single-source.
 
 ```
 scripts/mix.sh <task>        # mix task in container
@@ -346,9 +346,14 @@ not the surrounding code.**
 - **Log file**: container's stdout, captured by Docker JSON logger
   (max 5MB × 3 files in dev, 10MB × 5 in prod). Tail via
   `scripts/monitor.sh`.
-- **Config**: TOML at `grappa.toml` in repo root, bind-mounted into
-  container at `/app/grappa.toml`. Read by `Grappa.Config` at boot.
-  Schema validated.
+- **Config**: DB-driven (Phase 2 sub-task 2j replaced the TOML loader).
+  Operator binds users + networks via mix tasks: `mix grappa.create_user`
+  creates a `User` row, `mix grappa.bind_network --auth ...` writes a
+  `Networks.Credential` (with encrypted SASL/NickServ passwords via
+  Cloak.Vault). `Grappa.Bootstrap` reads every credential at boot via
+  `Networks.list_credentials_for_all_users/0` and spawns one
+  `Session.Server` per row. Adding a binding requires no config edit —
+  next reboot picks it up.
 
 ## Monitoring
 
@@ -447,9 +452,12 @@ is due. Don't just look at todo.md.
 
 - **Credentials via env vars only.** SECRET_KEY_BASE, RELEASE_COOKIE,
   SASL passwords. Never committed. Never logged.
-- **NickServ passwords** are stored in `grappa.toml` (operator-edited,
-  gitignored). Phase 2 will store user-uploaded SASL credentials in
-  the DB encrypted at rest (Argon2 or libsodium).
+- **NickServ + SASL passwords** are stored in the DB encrypted at rest
+  via Cloak.Vault (AES-GCM, key from `CLOAK_KEY` env). Operator binds a
+  network with `mix grappa.bind_network --auth ...`; the cleartext
+  never hits a config file. Phase 5 hardening adds HSM-keyed Vault
+  (yubico-hsm / TPM / KMS) for operators who want to escape "env on
+  disk" key storage.
 - **TLS verification on by default.** The Phase 1 `verify: :verify_none`
   is a temporary expedient — Phase 5 hardening adds proper CA chain
   verification. Document the change when it lands.

@@ -9,8 +9,14 @@
 #
 # cicchetto/ (the SolidJS PWA) is the working directory inside the
 # container at /app. The grappa Elixir container is unaffected — bun
-# is build-only (output is static dist/ served by nginx in prod), so
-# there is no long-running bun container, only oneshot runs.
+# is dev-only (typecheck, lint, vitest, vite preview, vite build into
+# `cicchetto/dist/` for local inspection). Production deploys do NOT
+# consume `cicchetto/dist/`; `scripts/deploy.sh` invokes the compose
+# `cicchetto-build` oneshot which writes to the bind-mounted
+# `runtime/cicchetto-dist/` (the path nginx serves). So `bun.sh run
+# build` is for local preview / debugging, not "preview prod" — for a
+# build that matches what nginx will serve, run `scripts/deploy.sh`
+# (or the standalone `docker compose run cicchetto-build`).
 #
 # Worktree-aware: cicchetto/ is bind-mounted from SRC_ROOT, so each
 # worktree builds from its own source. The bun install cache is a host

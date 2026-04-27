@@ -98,6 +98,20 @@ defmodule Grappa.PubSub.TopicTest do
       assert Topic.parse("foo:bar:baz") == :error
     end
 
+    test "S38: rejects compound network shape with empty user_name" do
+      # `grappa:user:/network:azzurra` has rest = "/network:azzurra",
+      # which splits into `["", "network:azzurra"]`. Without an explicit
+      # `name != ""` guard, the two-segment clause matched with
+      # `name = ""` — channel-side authz rejected it today, but a
+      # parser-invariant violation should not depend on a downstream
+      # check to avoid leaking to subscribers.
+      assert Topic.parse("grappa:user:/network:azzurra") == :error
+    end
+
+    test "S38: rejects compound channel shape with empty user_name" do
+      assert Topic.parse("grappa:user:/network:azzurra/channel:#sniffo") == :error
+    end
+
     test "rejects non-grappa prefix" do
       assert Topic.parse("user:vjt") == :error
     end

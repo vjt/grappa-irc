@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 
@@ -6,25 +7,25 @@ import type { ScrollbackMessage } from "../lib/api";
 // a pure projection of `scrollbackByChannel` + `sendMessage`. The store
 // itself is exercised in networks.test.ts.
 //
-// `vi.hoisted` is mandatory: vi.mock is hoisted to the top of the file
-// (before non-mock declarations), so anything the factory closes over
-// must also be hoisted. Mirrors the pattern in socket.test.ts. The
-// scrollback "signal" is mocked as a plain getter (not a real Solid
-// signal) — tests that need a value seed it BEFORE render, so reactive
-// updates aren't required for the assertions in this file.
+// The scrollback signal is a REAL Solid signal (S51) — earlier shape
+// used a plain `vi.fn()` getter, which meant tests could only seed the
+// value BEFORE render. The auto-scroll-on-new-message UX
+// (`createEffect(on(() => messages()?.length, …))` inside
+// ScrollbackPane) needs the accessor to be reactive so updates
+// mid-render flow through Solid's dependency tracker. A plain-fn mock
+// pinned only "what does the initial render look like," not the
+// reactive contract — a refactor that broke reactivity would have
+// stayed green.
 
-const h = vi.hoisted(() => ({
-  scrollbackByChannel: vi.fn<() => Record<string, ScrollbackMessage[]>>(() => ({})),
+const [scrollback, setScrollback] = createSignal<Record<string, ScrollbackMessage[]>>({});
+
+vi.mock("../lib/networks", () => ({
+  scrollbackByChannel: () => scrollback(),
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
   sendMessage: vi.fn(),
 }));
 
-vi.mock("../lib/networks", () => ({
-  scrollbackByChannel: h.scrollbackByChannel,
-  channelKey: h.channelKey,
-  sendMessage: h.sendMessage,
-}));
-
+import { sendMessage } from "../lib/networks";
 import ScrollbackPane from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
@@ -62,7 +63,7 @@ const fixture: ScrollbackMessage[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.scrollbackByChannel.mockReturnValue({});
+  setScrollback({});
 });
 
 describe("ScrollbackPane", () => {
@@ -71,8 +72,23 @@ describe("ScrollbackPane", () => {
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
   });
 
+  it("re-renders when the scrollback signal updates mid-mount (S51 reactivity pin)", async () => {
+    // Pre-S51 the mock was a plain `vi.fn()` returning a value seeded
+    // before render; this assertion would have stayed green even if
+    // ScrollbackPane stopped tracking the signal reactively. With a
+    // real Solid signal the test fails fast on a non-reactive refactor.
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+    expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
+
+    setScrollback({ "freenode #grappa": fixture });
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("scrollback-line")).toHaveLength(3);
+    });
+  });
+
   it("renders one line per message with kind-specific shape", () => {
-    h.scrollbackByChannel.mockReturnValue({ "freenode #grappa": fixture });
+    setScrollback({ "freenode #grappa": fixture });
     render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
     const lines = screen.getAllByTestId("scrollback-line");
     expect(lines).toHaveLength(3);
@@ -195,7 +211,7 @@ describe("ScrollbackPane", () => {
         meta: { target: "mallory" },
       },
     ];
-    h.scrollbackByChannel.mockReturnValue({ "n #c": allKinds });
+    setScrollback({ "n #c": allKinds });
     render(() => <ScrollbackPane networkSlug="n" channelName="#c" />);
     const lines = screen.getAllByTestId("scrollback-line");
     expect(lines).toHaveLength(10);
@@ -228,7 +244,7 @@ describe("ScrollbackPane", () => {
   });
 
   it("scopes scrollback to the (slug, channel) pair via channelKey", () => {
-    h.scrollbackByChannel.mockReturnValue({
+    setScrollback({
       "freenode #grappa": fixture,
       "freenode #cicchetto": [
         {
@@ -250,13 +266,13 @@ describe("ScrollbackPane", () => {
   });
 
   it("submitting a non-empty draft calls store.sendMessage and clears the textarea", async () => {
-    h.sendMessage.mockResolvedValue(undefined);
+    vi.mocked(sendMessage).mockResolvedValue(undefined);
     render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
     const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: "yo" } });
     fireEvent.click(screen.getByRole("button", { name: /send/i }));
     await waitFor(() => {
-      expect(h.sendMessage).toHaveBeenCalledWith("freenode", "#grappa", "yo");
+      expect(vi.mocked(sendMessage)).toHaveBeenCalledWith("freenode", "#grappa", "yo");
     });
     await waitFor(() => {
       expect(textarea.value).toBe("");
@@ -264,16 +280,16 @@ describe("ScrollbackPane", () => {
   });
 
   it("Enter key submits; Shift+Enter does not", async () => {
-    h.sendMessage.mockResolvedValue(undefined);
+    vi.mocked(sendMessage).mockResolvedValue(undefined);
     render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
     const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: "shift" } });
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
-    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(sendMessage)).not.toHaveBeenCalled();
     fireEvent.input(textarea, { target: { value: "plain" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
     await waitFor(() => {
-      expect(h.sendMessage).toHaveBeenCalledWith("freenode", "#grappa", "plain");
+      expect(vi.mocked(sendMessage)).toHaveBeenCalledWith("freenode", "#grappa", "plain");
     });
   });
 
@@ -282,11 +298,11 @@ describe("ScrollbackPane", () => {
     const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: /send/i }));
-    expect(h.sendMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(sendMessage)).not.toHaveBeenCalled();
   });
 
   it("renders a compose error when sendMessage rejects", async () => {
-    h.sendMessage.mockRejectedValue(new Error("no_session"));
+    vi.mocked(sendMessage).mockRejectedValue(new Error("no_session"));
     render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
     const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: "boom" } });

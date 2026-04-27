@@ -32,7 +32,9 @@ defmodule GrappaWeb.ChannelsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, IRC.Identifier, Networks, Session}
+  import GrappaWeb.Validation, only: [validate_channel_name: 1]
+
+  alias Grappa.{Networks, Session}
 
   @doc """
   `GET /networks/:network_id/channels` — lists the user's channels for
@@ -43,7 +45,7 @@ defmodule GrappaWeb.ChannelsController do
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
   def index(conn, _) do
-    user = Accounts.get_user!(conn.assigns.current_user_id)
+    user = conn.assigns.current_user
     network = conn.assigns.network
 
     with {:ok, credential} <- Networks.get_credential(user, network) do
@@ -97,9 +99,5 @@ defmodule GrappaWeb.ChannelsController do
       |> put_status(:accepted)
       |> json(%{ok: true})
     end
-  end
-
-  defp validate_channel_name(name) do
-    if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
   end
 end

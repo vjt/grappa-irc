@@ -96,8 +96,11 @@ defmodule Grappa.IRC.ParserTest do
                Parser.parse(":a FOOBAR #x")
     end
 
-    test "numeric 000 is parsed as {:numeric, 0}" do
-      assert {:ok, %Message{command: {:numeric, 0}, params: []}} = Parser.parse("000")
+    test "\"000\" is not a valid RFC numeric and falls through to :unknown" do
+      # RFC 2812 numerics span 001..999. The `{:numeric, 1..999}` type
+      # excludes zero so consumers can pattern-match exhaustively
+      # without a special "is this really a numeric?" check (S27).
+      assert {:ok, %Message{command: {:unknown, "000"}, params: []}} = Parser.parse("000")
     end
   end
 
