@@ -219,8 +219,10 @@ describe("ScrollbackPane", () => {
     expect(lines[4]).toHaveTextContent("dave");
     expect(lines[5]).toHaveTextContent("eve");
     expect(lines[6]).toHaveTextContent("frank2");
-    expect(lines[7]).toHaveTextContent("+o");
-    expect(lines[7]).toHaveTextContent("heidi");
+    // Pin args adjacency to the modes flag — a refactor that rendered
+    // `sets mode +o on #c heidi` (args at wrong position) would still
+    // include both tokens but break readability.
+    expect(lines[7]).toHaveTextContent("+o heidi");
     expect(lines[8]).toHaveTextContent("new topic");
     expect(lines[9]).toHaveTextContent("mallory");
   });

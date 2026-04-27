@@ -48,6 +48,23 @@ const formatTime = (epochMs: number): string => {
 // (mirror of `Grappa.Scrollback.Meta` allowlist: `target`, `new_nick`,
 // `modes`, `args`, `reason`); `meta` is typed `Record<string, unknown>`
 // on the wire so each access narrows defensively.
+//
+// Phase 4 (irssi-shape buffer redesign) will drop the explicit channel
+// suffix on `:join` / `:part` / `:kick` lines when rendered inside a
+// single-channel buffer — irssi convention is `* carol has joined`
+// (no channel name) when the line is unambiguous from context. The
+// channel name stays for now so cross-channel views remain readable.
+
+// `:part` / `:quit` / `:kick` carry their reason in `body` per
+// `Grappa.Scrollback.Meta`'s per-kind shape table (meta.ex:58-61: "body
+// carries reason"). Defense-in-depth: also accept `meta.reason` so a
+// future server-side change (review S29) that shifts reason into the
+// meta payload doesn't silently lose it. Body wins when both present.
+const reasonOf = (msg: ScrollbackMessage): string | null => {
+  if (msg.body) return msg.body;
+  return typeof msg.meta.reason === "string" ? msg.meta.reason : null;
+};
+
 const renderBody = (msg: ScrollbackMessage): JSX.Element => {
   switch (msg.kind) {
     case "privmsg":
@@ -76,19 +93,23 @@ const renderBody = (msg: ScrollbackMessage): JSX.Element => {
           * {msg.sender} has joined {msg.channel}
         </span>
       );
-    case "part":
+    case "part": {
+      const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
           * {msg.sender} has left {msg.channel}
-          {msg.body ? ` (${msg.body})` : ""}
+          {reason ? ` (${reason})` : ""}
         </span>
       );
-    case "quit":
+    }
+    case "quit": {
+      const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {msg.sender} has quit{msg.body ? ` (${msg.body})` : ""}
+          * {msg.sender} has quit{reason ? ` (${reason})` : ""}
         </span>
       );
+    }
     case "nick_change": {
       const newNick = typeof msg.meta.new_nick === "string" ? msg.meta.new_nick : "?";
       return (
@@ -115,10 +136,11 @@ const renderBody = (msg: ScrollbackMessage): JSX.Element => {
       );
     case "kick": {
       const target = typeof msg.meta.target === "string" ? msg.meta.target : "?";
+      const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
           * {msg.sender} kicked {target} from {msg.channel}
-          {msg.body ? ` (${msg.body})` : ""}
+          {reason ? ` (${reason})` : ""}
         </span>
       );
     }
