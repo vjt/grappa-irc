@@ -20,7 +20,7 @@ defmodule Grappa.AuthFixtures do
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session]
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
-  alias Grappa.Networks.{Credential, Network, Server}
+  alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -107,7 +107,7 @@ defmodule Grappa.AuthFixtures do
     tls = Keyword.get(attrs, :tls, false)
 
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
-    {:ok, server} = Networks.add_server(network, %{host: host, port: port, tls: tls})
+    {:ok, server} = Servers.add_server(network, %{host: host, port: port, tls: tls})
     {network, server}
   end
 
@@ -125,26 +125,26 @@ defmodule Grappa.AuthFixtures do
       autojoin_channels: ["#sniffo"]
     }
 
-    {:ok, credential} = Networks.bind_credential(user, network, Map.merge(base, attrs))
+    {:ok, credential} = Credentials.bind_credential(user, network, Map.merge(base, attrs))
     credential
   end
 
   @doc """
   Test convenience: resolve `(user, network)` into the
-  `Session.start_opts/0` plan via `Networks.session_plan/1` and
+  `Session.start_opts/0` plan via `SessionPlan.resolve/1` and
   spawn a `Session.Server` under the singleton supervisor. Mirrors
   `Bootstrap`'s production spawn path so the test surface stays
   honest about what `Session.start_session/3` actually consumes —
   no test-only convenience that bypasses the plan resolution.
 
   Returns the spawned pid on success; raises with a useful tag if
-  `session_plan/1` fails (`:no_server` / `:user_not_found` are
+  `SessionPlan.resolve/1` fails (`:no_server` / `:user_not_found` are
   test-setup bugs the test should fix, not silently absorb).
   """
   @spec start_session_for(User.t(), Network.t()) :: pid()
   def start_session_for(%User{} = user, %Network{} = network) do
-    credential = Networks.get_credential!(user, network)
-    {:ok, plan} = Networks.session_plan(credential)
+    credential = Credentials.get_credential!(user, network)
+    {:ok, plan} = SessionPlan.resolve(credential)
     {:ok, pid} = Grappa.Session.start_session(user.id, network.id, plan)
     pid
   end

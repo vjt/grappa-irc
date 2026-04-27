@@ -10,7 +10,7 @@ defmodule Grappa.Session.ServerTest do
   `Session.Server.init/1` is a pure data consumer: it takes the
   fully-resolved `Grappa.Session.start_opts/0` plan (host / port /
   tls / nick / realname / sasl_user / password / auth_method /
-  autojoin_channels / user_name / network_slug). `Networks.session_plan/1`
+  autojoin_channels / user_name / network_slug). `SessionPlan.resolve/1`
   is the canonical producer; tests build the DB rows via
   `network_with_server/1` + `credential_fixture/3` then go through
   `start_session_for/2` (in `Grappa.AuthFixtures`) which mirrors
@@ -29,7 +29,8 @@ defmodule Grappa.Session.ServerTest do
   import ExUnit.CaptureLog
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, Networks, PubSub.Topic, Scrollback, Session}
+  alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
+  alias Grappa.Networks.{Credentials, SessionPlan}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -96,9 +97,9 @@ defmodule Grappa.Session.ServerTest do
 
     # Cluster 2 (A2): the "missing credential / missing servers"
     # failure modes moved out of `Session.Server.init/1` and into
-    # `Networks.session_plan/1` (the data resolver). The equivalent
+    # `SessionPlan.resolve/1` (the data resolver). The equivalent
     # invariants now live in `Grappa.NetworksTest` —
-    # `session_plan/1 returns {:error, :no_server}` and friends.
+    # `SessionPlan.resolve/1 returns {:error, :no_server}` and friends.
     # Server boot can still fail at `Client.start_link` (port
     # refused) — covered by the `bootstrap_test.exs` partial-failure
     # path which exercises a refused upstream port end-to-end.
@@ -124,8 +125,8 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       Process.flag(:trap_exit, true)
 
-      credential = Networks.get_credential!(user, network)
-      {:ok, plan} = Networks.session_plan(credential)
+      credential = Credentials.get_credential!(user, network)
+      {:ok, plan} = SessionPlan.resolve(credential)
       init_opts = Map.merge(plan, %{user_id: user.id, network_id: network.id})
 
       # Pre-fix: `Client.start_link/1` returns `{:error, :econnrefused}`
@@ -209,21 +210,21 @@ defmodule Grappa.Session.ServerTest do
       assert Session.whereis(user.id, network.id) == nil
     end
 
-    # The integration check: Networks.unbind_credential/2 must call
+    # The integration check: Credentials.unbind_credential/2 must call
     # stop_session/2 BEFORE deleting the credential row so the running
     # GenServer doesn't outlive the FK row it cached. Without the
     # teardown the GenServer's `state.network_id` points at a deleted
     # row; the next outbound PRIVMSG crashes the call handler and
     # the `:transient` restart would loop forever (init can't reload
     # the now-absent credential).
-    test "Networks.unbind_credential/2 tears down the running session" do
+    test "Credentials.unbind_credential/2 tears down the running session" do
       {_, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
       assert Process.alive?(pid)
 
-      assert :ok = Networks.unbind_credential(user, network)
+      assert :ok = Credentials.unbind_credential(user, network)
 
       refute Process.alive?(pid)
       assert Session.whereis(user.id, network.id) == nil

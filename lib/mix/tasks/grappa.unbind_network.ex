@@ -4,7 +4,7 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
   @moduledoc """
   Removes the per-(user, network) credential. If no other user has a
   credential on the same network, the network row + servers are also
-  cascade-deleted (see `Grappa.Networks.unbind_credential/2`).
+  cascade-deleted (see `Grappa.Networks.Credentials.unbind_credential/2`).
 
   ## Usage
 
@@ -20,6 +20,7 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks.Credentials
   alias Mix.Tasks.Grappa.Boot
 
   @impl Mix.Task
@@ -34,7 +35,7 @@ defmodule Mix.Tasks.Grappa.UnbindNetwork do
 
     case Networks.get_network_by_slug(slug) do
       {:ok, network} ->
-        :ok = Networks.unbind_credential(user, network)
+        :ok = Credentials.unbind_credential(user, network)
         IO.puts("unbound #{user.name} from #{slug}")
 
       {:error, :not_found} ->

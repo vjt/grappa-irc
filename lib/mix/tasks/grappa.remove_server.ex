@@ -21,6 +21,7 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
   use Mix.Task
 
   alias Grappa.Networks
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.{Boot, OptionParsing}
 
   @impl Mix.Task
@@ -34,7 +35,7 @@ defmodule Mix.Tasks.Grappa.RemoveServer do
     network = Networks.get_network_by_slug!(slug)
     {host, port} = OptionParsing.parse_server(server)
 
-    {:ok, removed} = Networks.remove_server(network, host, port)
+    {:ok, removed} = Servers.remove_server(network, host, port)
 
     if removed > 0 do
       IO.puts("removed server #{host}:#{port} from #{slug}")

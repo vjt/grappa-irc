@@ -151,7 +151,7 @@ defmodule Grappa.Scrollback do
   @doc """
   Returns `true` if at least one row exists for `network_id`.
 
-  Sole consumer is `Grappa.Networks.unbind_credential/2`'s
+  Sole consumer is `Grappa.Networks.Credentials.unbind_credential/2`'s
   cascade-on-empty path: if the last user unbinds and any archival
   scrollback still references the network, the cascade rolls back
   with `{:error, :scrollback_present}` so the operator must

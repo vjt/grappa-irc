@@ -5,12 +5,13 @@ defmodule Mix.Tasks.Grappa.RemoveServerTest do
   import ExUnit.CaptureIO
 
   alias Grappa.Networks
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.RemoveServer
 
   setup do
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
-    {:ok, _} = Networks.add_server(network, %{host: "h1", port: 6697})
-    {:ok, _} = Networks.add_server(network, %{host: "h2", port: 6697})
+    {:ok, _} = Servers.add_server(network, %{host: "h1", port: 6697})
+    {:ok, _} = Servers.add_server(network, %{host: "h2", port: 6697})
     %{network: network}
   end
 
@@ -21,7 +22,7 @@ defmodule Mix.Tasks.Grappa.RemoveServerTest do
       end)
 
     assert output =~ "removed server h1:6697 from azzurra"
-    assert [%{host: "h2"}] = Networks.list_servers(network)
+    assert [%{host: "h2"}] = Servers.list_servers(network)
   end
 
   test "is idempotent when the server is not on the network" do

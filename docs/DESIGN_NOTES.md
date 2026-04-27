@@ -476,7 +476,7 @@ Bahamut accepts `PASS <pw>` BEFORE NICK + USER, stashes it, and post-001 routes 
 
 ### 2026-04-26 — Phase 2 close: NoServerError as exception, not `{:error, :no_server}`
 
-`Grappa.Session.Server.NoServerError` is raised, not returned, when `Networks.list_servers/1` returns `[]` for a bound credential's network at session-init time.
+`Grappa.Networks.NoServerError` (post-A2/A10 — was `Grappa.Session.Server.NoServerError` before the cycle inversion) is raised, not returned, when `Grappa.Networks.Servers.list_servers/1` (post-D1/A2 — was `Networks.list_servers/1`) returns `[]` for a bound credential's network at session-init time.
 
 **Why exception not tuple:** Session.Server is started under DynamicSupervisor with `restart: :transient`. An `{:error, _}` return from `init/1` propagates up to the supervisor as a normal failure; with `:transient`, the supervisor would retry the spawn — but the underlying state (zero servers for this network) doesn't change between retries, so the loop would burn CPU forever until something else inserts a Server row.
 
@@ -829,6 +829,94 @@ lines of each other. The TIMING is the discriminator, not the call.
 The principle is now load-bearing for any future site that wants to
 reach for `Application.env` — the question is "boot-time or runtime?"
 not "is there an exemption for this module?"
+
+---
+
+## 2026-04-27 — Sub-contexts split by VERB, not by NOUN (CP10 S12, D1/A2)
+
+### The principle
+
+When a context module grows past three or four distinct
+responsibilities, split it into sub-modules **keyed by the verb**, not
+by the shared noun. The shared noun stays — it's the schema, the
+domain entity, the identifier — but the verbs (CRUD, lifecycle,
+resolve, render) each get their own module. All sub-modules sit under
+one `Boundary` umbrella so the dep graph stays explicit at the
+context level; internal cohesion is regained at the file level.
+
+This is the concrete shape of CLAUDE.md's "Reuse the verbs, not the
+nouns. When a second use case fits 80% of existing infrastructure,
+ask 'what are the 20% that don't fit?' Those 20% are the domain
+boundary." Pre-A2 the Networks context had absorbed four verb-shapes
+(network slug CRUD + server endpoint CRUD + credential lifecycle +
+session-plan resolution) because they all touched the `Network`
+schema. Sharing the noun made the absorption feel natural; the cost
+landed at maintenance time when a Phase 5 surface needed to extend
+just one verb but touched a 500-line module owning the other three.
+
+### What changed
+
+**Before** (god-context, the 2026-04-27 architecture review's A2
+finding):
+
+    Grappa.Networks (501 lines, 17 public functions, 7 deps)
+      ├─ network slug CRUD
+      ├─ server endpoint CRUD + selection policy
+      ├─ credential lifecycle (bind/update/get/unbind + Cloak)
+      └─ session-plan resolver
+
+**After** (verb-keyed sub-modules under one Boundary):
+
+    Grappa.Networks (slim core: slug CRUD)
+      ├─ Grappa.Networks.Servers      (server endpoint verbs)
+      ├─ Grappa.Networks.Credentials  (credential lifecycle verbs)
+      ├─ Grappa.Networks.SessionPlan  (resolver — single verb: resolve/1)
+      └─ Grappa.Networks.{Network,Server,Credential,Wire,NoServerError}
+                                      (schemas + serializer — unchanged)
+
+The umbrella `Grappa.Networks` keeps `top_level?: true` Boundary with
+the same deps list (Accounts, EncryptedBinary, IRC, Repo, Scrollback,
+Session, Vault). Sub-modules inherit the parent boundary; no new
+boundaries declared. `exports:` extended to surface the four verb-modules
+to external consumers. Dialyzer + Boundary + Credo + Sobelow all stay
+green; test count unchanged at 442 (the move was mechanical, no
+behaviour change).
+
+### Why the noun-keyed alternative was wrong
+
+A noun-keyed split would have moved fields off `Network` /
+`Credential` / `Server` into smaller schemas. That trades one kind of
+duplication for another — the FK web stays the same, but query bodies
+fragment across schemas. The verbs (CRUD, resolve) still pile up
+somewhere — usually back on the umbrella context, defeating the
+split.
+
+A verb-keyed split keeps the schemas as-is (one `Network` row, one
+`Credential` row, one `Server` row — the FK shape is stable). Only the
+**verb modules** divide. Each module is the single point of edit for
+its responsibility set; Phase 5's multi-server failover lands in
+`Servers`, not the umbrella. Phase 5's credential REST surface lands
+in `Credentials`, not the umbrella. The next decade of feature growth
+hits cohesive modules instead of bloating one further.
+
+### Why this principle is load-bearing
+
+Three god-modules surfaced in the 2026-04-27 architecture review:
+`Grappa.Networks` (this entry — A2), `Grappa.IRC.Client` (A3, FSM
+extraction pending), `cicchetto/src/lib/networks.ts` (A4, client-side
+split pending). Each absorbed multiple verbs around a shared noun —
+the IRC GenServer state, the network-and-channel store. The
+**verb-keyed sub-module** pattern documented here applies to all
+three; A3 + A4 will repeat it.
+
+The principle also forward-defends Phase 5/6: every new "where does
+this go?" question routes to "which verb is this?" rather than
+"what noun does it touch?" Pattern propagation rule means whichever
+context absorbs the next presence-event capture / multi-server
+failover / WebRTC voice surface becomes the template — keeping the
+verb-keyed shape clean now means future sub-contexts won't accidentally
+rebuild a god-context by sharing a noun with three already-cohesive
+sub-modules.
 
 ---
 

@@ -11,7 +11,7 @@ defmodule Grappa.BootstrapTest do
 
   Operator door for binding a `(user, network)`: `mix grappa.create_user`
   + `mix grappa.bind_network --auth ...`. Bootstrap re-enumerates
-  credentials on every boot via `Networks.list_credentials_for_all_users/0`.
+  credentials on every boot via `Credentials.list_credentials_for_all_users/0`.
   Two counters: `started` + `failed` — the FK from
   `network_credentials.user_id` to `users.id` makes a "user not in DB"
   scenario unrepresentable.
@@ -26,6 +26,7 @@ defmodule Grappa.BootstrapTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Bootstrap, IRCServer, Networks, Session}
+  alias Grappa.Networks.{Credentials, Servers}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -40,10 +41,10 @@ defmodule Grappa.BootstrapTest do
   defp bind_db(user, slug, port) do
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
 
-    {:ok, _} = Networks.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
+    {:ok, _} = Servers.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
 
     {:ok, _} =
-      Networks.bind_credential(user, network, %{
+      Credentials.bind_credential(user, network, %{
         nick: "vjt",
         auth_method: :none,
         autojoin_channels: []

@@ -15,14 +15,14 @@ defmodule GrappaWeb.NetworksController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.Networks
+  alias Grappa.Networks.Credentials
 
   @doc "`GET /networks` — list of network metadata for the bearer's user."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
     networks =
       conn.assigns.current_user
-      |> Networks.list_credentials_for_user()
+      |> Credentials.list_credentials_for_user()
       |> Enum.map(& &1.network)
 
     render(conn, :index, networks: networks)

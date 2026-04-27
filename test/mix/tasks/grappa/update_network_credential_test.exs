@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredentialTest do
   import ExUnit.CaptureIO
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks.Credentials
   alias Mix.Tasks.Grappa.UpdateNetworkCredential
 
   setup do
@@ -12,7 +13,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredentialTest do
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
 
     {:ok, _} =
-      Networks.bind_credential(user, network, %{
+      Credentials.bind_credential(user, network, %{
         nick: "old-nick",
         password: "old-pw",
         auth_method: :auto,
@@ -41,7 +42,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredentialTest do
 
     assert output =~ "updated credential for vjt on azzurra"
 
-    cred = Networks.get_credential!(user, network)
+    cred = Credentials.get_credential!(user, network)
     assert cred.nick == "new-nick"
     assert cred.password_encrypted == "new-pw"
     assert cred.autojoin_channels == ["#new1", "#new2"]
@@ -62,7 +63,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredentialTest do
       ])
     end)
 
-    cred = Networks.get_credential!(user, network)
+    cred = Credentials.get_credential!(user, network)
     assert cred.auth_method == :nickserv_identify
     assert cred.password_encrypted == "fresh-ns-pw"
     assert cred.nick == "old-nick"
@@ -81,7 +82,7 @@ defmodule Mix.Tasks.Grappa.UpdateNetworkCredentialTest do
       ])
     end)
 
-    cred = Networks.get_credential!(user, network)
+    cred = Credentials.get_credential!(user, network)
     assert cred.nick == "renamed-only"
     assert cred.password_encrypted == "old-pw"
     assert cred.auth_method == :auto

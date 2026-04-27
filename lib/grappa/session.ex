@@ -26,22 +26,22 @@ defmodule Grappa.Session do
 
   `start_session/3` takes `(user_id, network_id, opts)` where `opts`
   is the fully-resolved primitive plan — no `Credential` / `Network`
-  / `Server` struct refs cross the Session boundary. `Networks.session_plan/1`
+  / `Server` struct refs cross the Session boundary. `SessionPlan.resolve/1`
   is the canonical producer of that plan; `Bootstrap` threads the
   resolved opts in. The Server's `init/1` is therefore a pure data
   consumer (no `Repo`, no `Networks`, no `Accounts` reads), which
   shrinks the Session boundary deps from 7 → 4 (`Grappa.IRC`,
   `Grappa.Log`, `Grappa.PubSub`, `Grappa.Scrollback`) and makes the
-  reverse `Networks → Session` edge legal — `Networks.unbind_credential/2`
+  reverse `Networks → Session` edge legal — `Credentials.unbind_credential/2`
   now calls `Session.stop_session/2` directly instead of the inlined
   registry-tuple workaround.
 
   Trade-off: on a `:transient` restart the Server replays the same
   cached opts (the supervisor child spec captures them at first
   start). A live credential change in the DB propagates to the
-  running Server ONLY when `Networks.unbind_credential/2` runs
+  running Server ONLY when `Credentials.unbind_credential/2` runs
   INSIDE the prod BEAM (e.g. via `bin/grappa rpc
-  'Grappa.Networks.unbind_credential(...)'` or any future operator
+  'Grappa.Networks.Credentials.unbind_credential(...)'` or any future operator
   REST surface) — that path goes through `Session.stop_session/2`
   and the next bind triggers a fresh `start_session/3`. Bare
   `mix grappa.unbind_network` runs in a SEPARATE short-lived BEAM
@@ -80,10 +80,10 @@ defmodule Grappa.Session do
   @typedoc """
   Pre-resolved primitive opts consumed by `start_session/3` and
   `Grappa.Session.Server`'s `init/1` callback. Produced canonically by
-  `Grappa.Networks.session_plan/1`; the field set is the single
+  `Grappa.Networks.SessionPlan.resolve/1`; the field set is the single
   source of truth for what the Session boundary needs to start an
   upstream IRC connection — adding a field requires extending this
-  type AND `session_plan/1`'s `build_plan/4` AND the Server state
+  type AND `SessionPlan.resolve/1`'s `build_plan/4` AND the Server state
   struct in lockstep.
   """
   @type start_opts :: %{
@@ -138,7 +138,7 @@ defmodule Grappa.Session do
   if any. Idempotent: returns `:ok` whether or not a session was
   registered for the key.
 
-  Used by `Grappa.Networks.unbind_credential/2` to tear down the
+  Used by `Grappa.Networks.Credentials.unbind_credential/2` to tear down the
   GenServer BEFORE the credential row is deleted (S29 H5). Without
   this, a unbind would leave the GenServer running with cached
   `state.network_id` pointing at a deleted FK; the next outbound

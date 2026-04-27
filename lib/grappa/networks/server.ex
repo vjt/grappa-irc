@@ -45,7 +45,7 @@ defmodule Grappa.Networks.Server do
   @doc """
   Builds a create/update changeset. Required fields: `:network_id`,
   `:host`, `:port`. The `(network_id, host, port)` unique constraint
-  is mapped to `:already_exists` by `Grappa.Networks.add_server/2`;
+  is mapped to `:already_exists` by `Grappa.Networks.Servers.add_server/2`;
   callers of this changeset directly will see a normal Ecto.Changeset
   error instead.
   """

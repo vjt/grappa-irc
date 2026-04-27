@@ -34,7 +34,8 @@ defmodule GrappaWeb.ChannelsController do
 
   import GrappaWeb.Validation, only: [validate_channel_name: 1]
 
-  alias Grappa.{Networks, Session}
+  alias Grappa.Networks.Credentials
+  alias Grappa.Session
 
   @doc """
   `GET /networks/:network_id/channels` — lists the user's channels for
@@ -48,7 +49,7 @@ defmodule GrappaWeb.ChannelsController do
     user = conn.assigns.current_user
     network = conn.assigns.network
 
-    with {:ok, credential} <- Networks.get_credential(user, network) do
+    with {:ok, credential} <- Credentials.get_credential(user, network) do
       render(conn, :index, channels: credential.autojoin_channels)
     end
   end

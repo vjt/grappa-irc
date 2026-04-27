@@ -29,6 +29,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
   use Mix.Task
 
   alias Grappa.Networks
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [network: :string, server: :string, tls: :boolean, priority: :integer]
@@ -51,7 +52,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
       priority: Keyword.get(opts, :priority, 0)
     }
 
-    case Networks.add_server(network, attrs) do
+    case Servers.add_server(network, attrs) do
       {:ok, _} -> IO.puts("added server #{host}:#{port} to #{slug}")
       {:error, :already_exists} -> IO.puts("server #{host}:#{port} already on #{slug}; no-op")
       {:error, cs} -> Output.halt_changeset("adding server", cs)
