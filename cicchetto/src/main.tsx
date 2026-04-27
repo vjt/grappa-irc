@@ -10,8 +10,15 @@ import { isAuthenticated } from "./lib/auth";
 // which contained the join effect); after the verb-keyed split the
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
+import { applyTheme } from "./lib/theme";
 import Shell from "./Shell";
 import "./themes/default.css";
+
+// Pre-paint the resolved theme on document.documentElement.dataset.theme
+// BEFORE render() so the first frame already has the correct theme — no
+// FOUC on cold load and no flash on toggle (both themes ship in one CSS
+// file via :root[data-theme="..."] blocks).
+applyTheme();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found in index.html");
