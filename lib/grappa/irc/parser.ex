@@ -47,7 +47,8 @@ defmodule Grappa.IRC.Parser do
   Commands are normalized at parse time:
 
     * RFC numerics (`"001"`, `"376"` — three ASCII digits) become
-      `{:numeric, 0..999}`.
+      `{:numeric, 1..999}`. `"000"` is not a valid RFC numeric and
+      falls through to `{:unknown, "000"}`.
     * Recognised RFC 2812 / IRCv3 verbs become atoms (`"PRIVMSG"` →
       `:privmsg`). The match is case-insensitive — RFC 2812 §2.3
       defines commands as case-insensitive, even though servers send
@@ -149,6 +150,10 @@ defmodule Grappa.IRC.Parser do
   end
 
   @spec normalize_command(String.t()) :: Message.command()
+  # RFC 2812 numerics span `001..999`. `"000"` is not a valid numeric
+  # — fall through to `{:unknown, "000"}` so the type stays `1..999`.
+  defp normalize_command("000"), do: {:unknown, "000"}
+
   defp normalize_command(<<a, b, c>>) when a in ?0..?9 and b in ?0..?9 and c in ?0..?9 do
     {:numeric, (a - ?0) * 100 + (b - ?0) * 10 + (c - ?0)}
   end

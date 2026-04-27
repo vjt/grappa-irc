@@ -241,7 +241,7 @@ defmodule Grappa.IRC.Client do
   # connect-config fields leaking onto runtime state).
   @impl GenServer
   def init(%{auth_method: m} = opts) when m in @auth_methods do
-    Logger.metadata(Keyword.new(opts.logger_metadata))
+    Logger.metadata(opts.logger_metadata)
 
     # Boundary contract: `:none` is the only auth_method that doesn't
     # need a password. The Credential schema validates the same

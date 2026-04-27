@@ -68,7 +68,7 @@ defmodule Grappa.IRC.Message do
           | :oper
           | :away
           | :ison
-          | {:numeric, 0..999}
+          | {:numeric, 1..999}
           | {:unknown, String.t()}
 
   @type tags :: %{optional(String.t()) => String.t() | true}
