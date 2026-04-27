@@ -149,6 +149,41 @@ defmodule Grappa.IRC.Client do
       else: {:error, :invalid_line}
   end
 
+  @doc """
+  Sends `TOPIC <channel> :<body>\\r\\n`. The colon prefix marks the body
+  as a trailing param so spaces are preserved verbatim. Rejects CR/LF/NUL
+  in either field, AND a malformed channel name (missing `#`/`&`/`+`/`!`
+  prefix or embedded whitespace), with `{:error, :invalid_line}`.
+
+  Used by `Grappa.Session.send_topic/4` (the `/topic` slash command in
+  cicchetto's compose box).
+  """
+  @spec send_topic(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_topic(client, channel, body) do
+    if Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(body) and
+         Identifier.valid_channel?(channel) do
+      send_line(client, "TOPIC #{channel} :#{body}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `NICK <new>\\r\\n`. Rejects CR/LF/NUL + malformed nick (whitespace,
+  non-RFC-2812 chars) with `{:error, :invalid_line}`. The upstream replays
+  the NICK back so `Grappa.Session.EventRouter`'s NICK handler reconciles
+  `state.nick` and emits the per-channel `:nick_change` persist effects;
+  no scrollback row is written by this helper.
+  """
+  @spec send_nick(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_nick(client, nick) do
+    if Identifier.safe_line_token?(nick) and Identifier.valid_nick?(nick) do
+      send_line(client, "NICK #{nick}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
+
   @doc "Sends `QUIT :<reason>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
   @spec send_quit(pid(), String.t()) :: :ok | {:error, :invalid_line}
   def send_quit(client, reason) do
