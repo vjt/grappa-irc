@@ -35,6 +35,13 @@ vi.mock("../lib/socket", () => ({
   joinChannel: vi.fn(() => mockChannel),
 }));
 
+vi.mock("../lib/members", () => ({
+  applyPresenceEvent: vi.fn(),
+  loadMembers: vi.fn(),
+  membersByChannel: vi.fn(() => ({})),
+  seedFromTest: vi.fn(),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -243,6 +250,39 @@ describe("subscribe — WS join effect", () => {
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
+    });
+
+    it("dispatches presence events to members.applyPresenceEvent (P4-1 Q4)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const members = await import("../lib/members");
+      await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      fireMessageEvent("#grappa", { id: 10, kind: "join", sender: "newcomer" });
+      fireMessageEvent("#grappa", { id: 11, kind: "part", sender: "newcomer" });
+      fireMessageEvent("#grappa", { id: 12, kind: "quit", sender: "alice" });
+      fireMessageEvent("#grappa", { id: 13, kind: "nick_change", sender: "alice" });
+      fireMessageEvent("#grappa", { id: 14, kind: "mode", sender: "op" });
+      fireMessageEvent("#grappa", { id: 15, kind: "kick", sender: "op" });
+      fireMessageEvent("#grappa", { id: 16, kind: "privmsg", sender: "alice" });
+
+      // applyPresenceEvent is called for ALL events; the filtering by
+      // kind happens inside members.ts itself (privmsg is a no-op there).
+      // Subscribe.ts dispatches every event; members.ts decides what
+      // matters. Assert the call count includes the privmsg too.
+      expect(members.applyPresenceEvent).toHaveBeenCalledTimes(7);
+      const key = channelKey("freenode", "#grappa");
+      expect(members.applyPresenceEvent).toHaveBeenCalledWith(
+        key,
+        expect.objectContaining({ id: 10, kind: "join" }),
+      );
+      expect(members.applyPresenceEvent).toHaveBeenCalledWith(
+        key,
+        expect.objectContaining({ id: 14, kind: "mode" }),
+      );
     });
 
     it("logout (token → null) clears scrollback + unread + selection", async () => {
