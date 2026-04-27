@@ -22,6 +22,14 @@ defmodule Grappa.Release do
 
   @app :grappa
 
+  # S8: hardcoded list, NOT `Application.fetch_env!(@app, :ecto_repos)`.
+  # Per `Grappa.Repo` moduledoc the bouncer runs a single shared Repo —
+  # the iteration over `:ecto_repos` was dead generality, and reading
+  # `Application.get_env/2` outside `config/` + `lib/grappa/application.ex`
+  # is the CLAUDE.md-banned "config-as-IPC" shape. If a future Repo
+  # arrives, add it here explicitly so the dep edge is grep-visible.
+  @repos [Grappa.Repo]
+
   @doc """
   Runs all pending migrations against every configured Repo.
   """
@@ -29,7 +37,7 @@ defmodule Grappa.Release do
   def migrate do
     load_app()
 
-    for repo <- repos() do
+    for repo <- @repos do
       {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :up, all: true))
     end
 
@@ -45,8 +53,6 @@ defmodule Grappa.Release do
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))
     :ok
   end
-
-  defp repos, do: Application.fetch_env!(@app, :ecto_repos)
 
   defp load_app do
     case Application.load(@app) do
