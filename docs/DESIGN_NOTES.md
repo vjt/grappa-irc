@@ -770,13 +770,16 @@ exception.
 mechanism**, not a runtime IPC channel. Two timeframes, two postures:
 
 - **Boot-time (allowed):** `config/*.exs`, `lib/grappa/application.ex`
-  start/2, mix-task `start_app_silent/0` BEFORE
+  start/2, and inside mix-task helpers BEFORE
   `Application.ensure_all_started/1`. These sites configure the
   application BEFORE the supervision tree comes up. The mix-task put_env
-  in `Mix.Tasks.Grappa.Boot` (`Application.put_env(:grappa,
-  :start_bootstrap, false)` then `ensure_all_started/1`) is
-  mirror-symmetric with `config/test.exs`'s `:start_bootstrap, false` —
-  both pre-configure the same documented exception point.
+  in `Mix.Tasks.Grappa.Boot.start_app_silent/0`
+  (`Application.put_env(:grappa, :start_bootstrap, false)` then
+  `ensure_all_started/1`) is the canonical instance — mirror-symmetric
+  with `config/test.exs`'s `:start_bootstrap, false`. The discriminator
+  is the `ensure_all_started/1` boundary, not the helper name; a future
+  operator-task helper that needs the same suppression follows the
+  same shape.
 - **Runtime (banned):** GenServer callbacks, controllers, context
   functions, release tasks, plug bodies. None of these may read or
   write `Application.env`. Inject config via `start_link/1` opts; the

@@ -132,14 +132,15 @@ defmodule GrappaWeb.Plugs.AuthnTest do
     # needs its own 401 path, but the wire bytes must match the tag the
     # rest of the surface produces. If FallbackController's snake_case
     # convention shifts, this pin trips before clients diverge.
+    #
+    # Both branches receive the same raw conn — no `accepts/2`
+    # preprocessing, no halted-state injection — so the assertion
+    # exercises ONLY the body-byte equality and not any incidental
+    # plug pipeline state.
     test "Authn 401 body matches FallbackController {:error, :unauthorized}",
          %{conn: conn} do
       authn_result = Authn.call(conn, Authn.init([]))
-
-      fc_result =
-        conn
-        |> Phoenix.Controller.accepts(["json"])
-        |> FallbackController.call({:error, :unauthorized})
+      fc_result = FallbackController.call(conn, {:error, :unauthorized})
 
       assert authn_result.status == fc_result.status
       assert authn_result.resp_body == fc_result.resp_body

@@ -28,6 +28,8 @@ defmodule Grappa.Release do
   # `Application.get_env/2` outside `config/` + `lib/grappa/application.ex`
   # is the CLAUDE.md-banned "config-as-IPC" shape. If a future Repo
   # arrives, add it here explicitly so the dep edge is grep-visible.
+  # Mirror this list with `mix.exs` `:ecto_repos` — drift would now be
+  # silent (no fetch_env to fail loudly on a missing app config key).
   @repos [Grappa.Repo]
 
   @doc """

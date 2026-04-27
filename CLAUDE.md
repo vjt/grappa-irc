@@ -249,14 +249,15 @@ not the surrounding code.**
 - **`Application.{put,get}_env/2`: boot-time only, runtime banned.**
   Allowed at boot-time configuration boundaries: `config/*.exs`,
   `lib/grappa/application.ex` start/2 (the documented exception), and
-  mix-task `start_app_silent/0` BEFORE `Application.ensure_all_started/1`
+  inside mix-task helpers BEFORE `Application.ensure_all_started/1`
   (operator-task suppression of `Grappa.Bootstrap` is mirror-symmetric
   with `config/test.exs`'s `:start_bootstrap, false` — pre-boot
-  configuration of the same exception point, not config-as-IPC). Banned
-  at runtime — neither read nor written from any GenServer callback,
-  controller, context function, or release task. Pass config via
-  `start_link/1` opts; the supervisor reads env at boot and injects.
-  Lets tests substitute values without runtime config tricks.
+  configuration of the same exception point, not config-as-IPC).
+  Banned at runtime — neither read nor written from any GenServer
+  callback, controller, context function, plug body, or release task.
+  Pass config via `start_link/1` opts; the supervisor reads env at
+  boot and injects. Lets tests substitute values without runtime
+  config tricks.
 
 ### Phoenix / Ecto patterns
 
