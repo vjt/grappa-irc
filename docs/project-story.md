@@ -918,3 +918,129 @@ pushback, the threat-model honest answer, the receipts captured in
 DESIGN_NOTES. The plan distills the decisions; the discussion makes
 them. A plan written without the discussion is just a longer
 version of the README spec.
+
+## S38 — 2026-04-27 — Phase 3 walking skeleton in your pocket
+
+This is the session where the project became real for the first
+time. Not "the tests pass" real, not "the bouncer connects to
+Azzurra" real — both of those happened weeks ago. This is the
+"I tap the icon on my home screen and the channel is right there"
+real. The session output, in bytes: 17 commits on main, 21.45 KB
+gzipped JS. The session output, as memory: the user reporting back
+"works. can log in and see scrillback and send messages. vidual
+layout is messy but i guess we do that later. verified also
+session persists app clisure" — typos and all, because typing on
+a phone in landscape while your pocket-irssi is open is exactly
+the user posture this whole project was designed for.
+
+The path from "all gates green on the worktree" to "iPhone PWA
+installed and round-tripping" was nine sub-tasks long but only the
+last one matters from the outside. The first seven (REST gaps,
+SolidJS scaffold, login, channel list, scrollback, compose, deploy
+plumbing) had each landed clean during the prior session. This
+session was supposed to be sub-task 8 — wrap-up + deploy + iPhone.
+That's a one-paragraph runbook: re-run gates, code review, merge,
+deploy, register DNS, hand to operator, write CP entry. It became
+seventeen commits.
+
+The code-reviewer agent went hunting and came back with two real
+prod blockers neither of which would have surfaced before the
+operator's first iPhone session. Phoenix's `check_origin` defaults
+to "match endpoint URL host," which is `localhost` until you tell
+it otherwise — every WebSocket connect from `grappa.bad.ass` would
+have been silently rejected. And the bearer token rides the WS
+upgrade URL as `?token=…` because that's how `Phoenix.Socket`
+transports its `params` callback, and Phoenix's logger filters
+`["password"]` by default but not `"token"` — so the bearer would
+have been written verbatim into stdout on every connect. Both
+two-line fixes. Both invisible until production. Both the kind of
+"the test suite is green and the feature is broken" that 424
+passing ExUnit tests cannot catch by construction, because the
+unit tests don't exercise the runtime config that the release
+boots with.
+
+Then the deploys. The first deploy attempt got a permissions error
+on the cicchetto-build container's first write into `/app/dist` —
+fresh Docker named volumes are root-owned, but the container drops
+to UID 1000 to keep `node_modules` writes from landing as root on
+the host bind-mount. Container-as-1000 + named-volume-as-root, and
+Vite's `prepare-out-dir` step blew up with EACCES on the very
+first file copy. Fix: replace the named volume with a host
+bind-mount at `./runtime/cicchetto-dist`, `mkdir -p` it in
+`deploy.sh` so it inherits the operator's UID. Bonus consequence:
+dist/ is now `ls`-able from the host. Second deploy attempt got
+through the build, through the container start, through migrations,
+through the healthcheck. Then DNS registration: the script read
+`TECHNITIUM_API_TOKEN` but the canonical `/srv/dns/.env` exports it
+as `TECHNITIUM_TOKEN` — typo in the original task description,
+caught at the first run, fix one rename. Three small surprises in
+a row, each one a five-minute fix, each one only visible at
+deploy-against-the-live-system time.
+
+After deploy + DNS came the password reset. The user couldn't
+remember the vjt password set during the Phase 2 deploy a week
+back, and there's no `mix grappa.reset_password` task because in
+Phase 2 we agreed credentials are operator-managed and the schema
+already supports plain `User.changeset(%{password: ...}) |>
+Repo.update!()` via the existing changeset path. So a one-liner
+through `bin/grappa rpc` against the live release. The min-8
+length validation rejected the user's first attempt ("suxsux", 6
+chars). Production code stayed unweakened — CLAUDE.md "Never
+weaken production code to make tests pass" applies the same way to
+admin tasks: the validation is doing its job, pick a longer
+string. Second attempt landed. Login API call confirmed via curl.
+Operator opened Safari. The icon went on the home screen. The
+channel list rendered. The bouncer's scrollback flowed in.
+
+And then, after the iPhone confirmation, the user asked: "review
+time?" The session-1 instinct would have been to dispatch the
+existing `/review codebase` skill at the merged Phase 3 work.
+But Phase 3 was the session that made cicchetto a first-class
+subsystem of the project — ~1100 LOC of TypeScript and SolidJS
+that the existing review skill literally could not see, because
+its dispatch table was Elixir/Phoenix-only. A `/review codebase`
+run would have produced a server-side-clean report while
+client-side bugs went unnoticed. CLAUDE.md "Total consistency or
+nothing" applies to the meta-tooling too. So before running the
+review, we extended the skill: a sixth agent for `cicchetto/`,
+agent-prompt bullets covering SolidJS reactivity bugs and TS
+strictness and wire-shape drift and a11y baseline and PWA shell
+correctness; the architecture review concerns broadened to span
+server↔client; the cross-module agent learned to cross-check
+`compose.prod.yaml` env vars against `runtime.exs` reads, and
+nginx's reverse-proxy allowlist against the router's routes. One
+commit, 185 insertions / 41 deletions across the spec doc and
+the skill file. The actual review is deferred to next session —
+running six parallel agents on top of a context that already
+covered the entire Phase 3 arc would have forced a mid-review
+compaction.
+
+Phase 3 walking skeleton is done. The user's pocket has an
+installable PWA that talks to a 24/7 bouncer running on a
+Raspberry Pi in their living room, over a real-time WebSocket,
+through a reverse proxy that issues a CSP that the browser
+respects, with a bearer token that the operator can rotate from
+`bin/grappa rpc` if they ever lose it again. The visual layout
+is, per operator review, messy. That's exactly what Phase 4 owns.
+
+**Law:** "tests green" is a property of the test suite, not the
+production system. The walking-skeleton review caught two
+operational blockers (`check_origin` rejected every real WS
+connect; bearer logged verbatim from a default-`["password"]`
+filter) that 424 passing tests couldn't surface — because they
+ride runtime config that the test environment overrides. When a
+phase reaches first-prod-deploy, the gate is not "the suite passes"
+but "I have run the literal command-line story end-to-end against
+the system the operator will use." Defer that gate and you defer
+discovery into the operator's first session, which is the worst
+moment to discover anything.
+
+**Law:** when a phase grows a new subsystem, the meta-tooling
+(review skills, doc structures, lint baselines, CI gates) grows
+behind it or it grows wrong. The `/review codebase` skill that
+was perfect for Phase 1 was actively misleading by the end of
+Phase 3 because the cicchetto/ subsystem was invisible to it.
+"Total consistency or nothing" is a CLAUDE.md rule for code; it
+applies just as hard to the apparatus you use to review the code.
+Half-coverage is worse than no coverage because it lulls you into
+thinking the review ran. Update the meta when you add the matter.
