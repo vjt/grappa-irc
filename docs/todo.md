@@ -11,12 +11,14 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 ## Immediate
 
 **Phase 2 + Phase 3 walking skeleton + CP10 review-fix campaign
-COMPLETE.** Bouncer + cicchetto PWA live at `http://grappa.bad.ass`
+IN PROGRESS.** Bouncer + cicchetto PWA live at `http://grappa.bad.ass`
 (192.168.53.11 → nginx → grappa:4000). iPhone install + login +
 scrollback + send round-trip operator-verified 2026-04-27 (CP09 S3).
-CP10 codebase review (2026-04-27) → 4 clusters closed: C1
+CP10 codebase review (2026-04-27) → 5 clusters closed: C1
 (vite-plugin-pwa SW), C2 (init/1 → handle_continue), C3 (MessageKind
-widen + exhaustive switch), C4 (post-Phase-2 hygiene close-out).
+widen + exhaustive switch), C4 (post-Phase-2 hygiene close-out),
+C5 (security correctness: S14 probing-oracle plug + S18 socket
+token-rotation reconnect).
 
 **Next — Phase 4 brainstorm (PENDING, not started):** Phase 4 is the
 irssi-shape UI redesign. Per `superpowers:brainstorming` skill +
@@ -31,16 +33,21 @@ See README "Roadmap" + DESIGN_NOTES "Mobile is an ergonomics layer
 on irssi-shape, not a different shape."
 
 **Correctness carryovers (post-CP10 review, fix campaign in progress):**
-- C5 (security): S14 MessagesController.index probing oracle + S18
-  socket params token rotation timing.
 - C6 (IRC-state): S5 send_pong spec drift, S6 caps_buffer phase
   escape, S7 Scrollback.insert/1 invariant violation, S13 stale
   state.nick after upstream NICK collision.
 - C7 (S17 channel-test flake): grappa_channel_test.exs:76 ~1-in-5.
   Two prior cycles ("may resolve naturally") were wrong — instrument
-  the join handshake, no races.
+  the join handshake, no races. Folds A1 cicchetto Set leak (same
+  lifecycle question — token-rotation cleanup of `joined` /
+  `loadedChannels` Sets).
 - C8 (omnibus): S29 dead `:reason` key + non-Phase-5 LOW catalogue
   sweep + this todo.md sweep.
+- D1 (architectural HIGHs, post-correctness, pre-Phase-4): A2 Networks
+  god-context split (7 deps), A3 IRC.Client god-module FSM extraction,
+  A4 cicchetto/lib/networks.ts god-module split (9 concerns). Each
+  ~half-session. May fold into Phase 4 brainstorm if the brainstorm
+  itself surfaces a cleaner refactoring sequence.
 
 ## High
 
