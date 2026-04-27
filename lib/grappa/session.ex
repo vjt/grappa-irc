@@ -283,6 +283,27 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns a snapshot of currently-joined channels for the session at
+  `(user_id, network_id)`, sorted alphabetically.
+
+  Source-of-truth: `Map.keys(Session.Server.state.members)`. The
+  self-JOIN wipe + self-PART/KICK delete in `Grappa.Session.EventRouter`
+  keeps the keys aligned with live membership (Q1 of P4-1 cluster).
+
+  Returns `{:error, :no_session}` if no session is registered for
+  `(user_id, network_id)`. Used by `GET /networks/:net/channels`
+  (P4-1's A5 close: `ChannelsController` composes this with the
+  credential autojoin list to produce the `{name, joined, source}`
+  wire shape).
+  """
+  @spec list_channels(Ecto.UUID.t(), integer()) ::
+          {:ok, [String.t()]} | {:error, :no_session}
+  def list_channels(user_id, network_id)
+      when is_binary(user_id) and is_integer(network_id) do
+    call_session(user_id, network_id, {:list_channels})
+  end
+
+  @doc """
   Returns a snapshot of the channel's member list in mIRC sort order
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
   Each entry: `%{nick: String.t(), modes: [String.t()]}`.

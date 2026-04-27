@@ -807,4 +807,27 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "Session.list_channels/2 facade" do
+    test "returns sorted channel-name list from session state" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | members: %{
+              "#italia" => %{"vjt" => []},
+              "#azzurra" => %{"vjt" => []}
+            }
+        }
+      end)
+
+      assert {:ok, ["#azzurra", "#italia"]} =
+               Session.list_channels(user.id, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

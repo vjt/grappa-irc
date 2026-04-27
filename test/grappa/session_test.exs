@@ -70,4 +70,11 @@ defmodule Grappa.SessionTest do
                Session.send_part(@user_id, @network_id, "#chan")
     end
   end
+
+  describe "list_channels/2" do
+    test "returns {:error, :no_session} when no session is registered" do
+      assert {:error, :no_session} =
+               Session.list_channels(@user_id, @network_id)
+    end
+  end
 end
