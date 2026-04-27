@@ -24,12 +24,21 @@ correctness — collapsed to A1 cicchetto identity-scoped state
 cleanup; S17 verified resolved upstream), C8 (omnibus housekeeping —
 S29 dead key + LOW catalogue sweep + this todo sweep).
 
-**Next — D1 architectural HIGHs (pre-Phase-4, ~half-session each):**
-- A2 Networks god-context split (7 deps).
-- A3 IRC.Client god-module FSM extraction.
-- A4 cicchetto/lib/networks.ts god-module split (9 concerns).
-Each is its own cluster. May fold into Phase 4 brainstorm if the
-brainstorm surfaces a cleaner refactoring sequence.
+**D1/A2 CLOSED 2026-04-27 (CP10 S12).** Networks god-context split
+into Networks (slug CRUD) + Networks.Servers + Networks.Credentials +
+Networks.SessionPlan; verb-keyed sub-modules under one Boundary
+umbrella; production verified.
+
+**Next — D2 + D3 architectural HIGHs (pre-Phase-4, ~half-session each):**
+- D2 / A3 IRC.Client god-module FSM extraction (~590 lines, FSM +
+  CAP/SASL flow + transport + policy interleaved). Same verb-keyed
+  pattern: schema/state stays on Client GenServer; the FSM phase
+  transitions + cap_buffer extract to `Grappa.IRC.Client.AuthFSM` (or
+  similar). Worktree-per-cluster + orchestrator file-handoff resume.
+- D3 / A4 cicchetto/lib/networks.ts god-module split (9 concerns).
+  Bumps bundle hash → browser-shell verify required after deploy.
+
+After D1+D2+D3: Phase 4 brainstorm (irssi-shape UI) on clean modules.
 
 **Phase 4 brainstorm (after D1):** irssi-shape UI redesign. Per
 `superpowers:brainstorming` skill — run a brainstorm BEFORE any
