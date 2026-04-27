@@ -168,6 +168,9 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
+    # Defensive: persist the audit row even for an unknown channel
+    # (member-state untouched). Lets a renderer recover the PART event
+    # if upstream re-orders relative to a JOIN we haven't seen yet.
     members =
       case Map.get(state.members, channel) do
         nil -> state.members
