@@ -191,4 +191,21 @@ defmodule Grappa.Networks.WireTest do
       assert_raise Protocol.UndefinedError, fn -> Jason.encode!(network) end
     end
   end
+
+  describe "channel_to_json/3 (P4-1 A5 wire)" do
+    test "renders {name, joined, source} for an autojoin-joined channel" do
+      assert %{name: "#italia", joined: true, source: :autojoin} =
+               Wire.channel_to_json("#italia", true, :autojoin)
+    end
+
+    test "renders {name, joined, source} for an autojoin-but-parted channel" do
+      assert %{name: "#italia", joined: false, source: :autojoin} =
+               Wire.channel_to_json("#italia", false, :autojoin)
+    end
+
+    test "renders {name, joined, source} for a session-joined channel (not in autojoin)" do
+      assert %{name: "#bnc", joined: true, source: :joined} =
+               Wire.channel_to_json("#bnc", true, :joined)
+    end
+  end
 end
