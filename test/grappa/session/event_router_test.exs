@@ -168,4 +168,55 @@ defmodule Grappa.Session.EventRouterTest do
       refute Map.has_key?(new_state.members, "#unknown")
     end
   end
+
+  describe "route/2 — :quit (fan-out per channel where nick was member)" do
+    test "QUIT emits one :persist :quit per channel + removes nick from all" do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => [], "alice" => []},
+            "#italia.lib" => %{"alice" => ["+"], "bob" => []},
+            "#empty" => %{"vjt" => []}
+          }
+        })
+
+      m = msg(:quit, ["Ping timeout"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      # Two :persist effects (alice was in #italia and #italia.lib);
+      # #empty had no alice — no row, no mutation.
+      persist_channels =
+        effects
+        |> Enum.map(fn {:persist, :quit, attrs} -> attrs.channel end)
+        |> Enum.sort()
+
+      assert persist_channels == ["#italia", "#italia.lib"]
+
+      Enum.each(effects, fn {:persist, :quit, attrs} ->
+        assert attrs.sender == "alice"
+        assert attrs.body == "Ping timeout"
+        assert attrs.meta == %{}
+      end)
+
+      assert new_state.members["#italia"] == %{"vjt" => []}
+      assert new_state.members["#italia.lib"] == %{"bob" => []}
+      assert new_state.members["#empty"] == %{"vjt" => []}
+    end
+
+    test "QUIT with no reason emits body=nil" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+      m = msg(:quit, [], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :quit, %{body: nil}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "QUIT for nick not in any channel emits no effects + no mutation" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:quit, ["bye"], {:nick, "stranger", "u", "h"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
 end
