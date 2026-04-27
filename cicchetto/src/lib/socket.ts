@@ -25,6 +25,14 @@ import { token } from "./auth";
 // createRoot anchors the effect since module-level effects need an
 // owner.
 //
+// Rotation side-effect: dropping the socket fires `phx_close` on every
+// joined channel; phoenix.js auto-rejoins on the next `connect()`, so
+// the rotation triggers a clean tear-down + rejoin loop across all
+// active topics. Any in-flight `ch.join()` whose handshake was mid-
+// rotation either completes against the old socket then immediately
+// tears down, or errors out and rejoins under the new bearer. Phase 5
+// telemetry should observe the rejoin volume on rotation events.
+//
 // Topic vocabulary mirrors `Grappa.PubSub.Topic` exactly. Don't
 // reformat segment separators or re-encode identifiers — the server's
 // `Topic.parse/1` is the authority and accepts these byte-for-byte.

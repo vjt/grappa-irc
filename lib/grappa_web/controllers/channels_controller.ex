@@ -4,28 +4,30 @@ defmodule GrappaWeb.ChannelsController do
   (`create/2` + `delete/2`) for the per-(user, network) session.
 
   Sub-task 2g: lookup is keyed by `(conn.assigns.current_user_id,
-  network.id)` end-to-end. The URL `:network_id` is a slug; this
-  controller resolves it to the integer FK via
-  `Networks.get_network_by_slug/1` so the session lookup matches the
-  internal registry shape.
+  network.id)` end-to-end. The URL `:network_id` slug → schema struct
+  resolution + per-user credential check happens in
+  `GrappaWeb.Plugs.ResolveNetwork`; this controller reads
+  `conn.assigns.network` and never re-resolves.
 
   ## index
 
   `GET /networks/:network_id/channels` returns the credential's
   `:autojoin_channels` (Phase 3 walking-skeleton source-of-truth).
-  Per-user iso: a missing credential for `(current_user, network)`
-  surfaces as `{:error, :not_found}` so probing users cannot
-  distinguish "wrong slug" from "someone else's network."
-  Session-tracked membership (so JOIN-via-REST mutations show up
-  here too) lands in Phase 5.
+  Per-user iso is enforced by `Plugs.ResolveNetwork` upstream — both
+  "wrong slug" and "someone else's network" surface to the wire as the
+  same uniform `404 {"error": "not_found"}` body so probers cannot
+  distinguish. Session-tracked membership (so JOIN-via-REST mutations
+  show up here too) lands in Phase 5.
 
   ## create / delete
 
   Both require an active session for the network — without one,
   `Grappa.Session.send_*` returns `{:error, :no_session}` which the
-  `FallbackController` maps to a 404 with `error: "no_session"`.
-  Unknown network slug returns `{:error, :not_found}` → 404 with
-  `error: "not_found"`. Persistence of JOIN/PART events into
+  `FallbackController` maps to a uniform 404 `{"error": "not_found"}`
+  (CP10 S14 oracle close: same body as the unknown-slug and
+  not-your-network cases). The internal `:no_session` tag is preserved
+  in `Session` boundary @specs and operator log lines for tracing,
+  but never reaches the wire. Persistence of JOIN/PART events into
   scrollback lands in Phase 5.
   """
   use GrappaWeb, :controller

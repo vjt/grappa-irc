@@ -4,10 +4,10 @@ defmodule GrappaWeb.MessagesController do
 
   `index/2` paginates DESC by `(user_id, network_id, channel,
   server_time)` — the `user_id` partition is the load-bearing per-user
-  iso boundary (Phase 2 sub-task 2e). The URL `:network_id` is a
-  network slug; this controller resolves it to the integer FK via
-  `Networks.get_network_by_slug/1` so the scrollback surface stays
-  internally typed.
+  iso boundary (Phase 2 sub-task 2e). The URL `:network_id` slug →
+  schema struct resolution + per-user credential check happens in
+  `GrappaWeb.Plugs.ResolveNetwork`; this controller reads
+  `conn.assigns.network` and never re-resolves.
 
   `create/2` routes through `Grappa.Session.send_privmsg/4`, which
   persists the row, broadcasts on the per-channel PubSub topic, AND
@@ -15,8 +15,11 @@ defmodule GrappaWeb.MessagesController do
   row and the wire event. The lookup is keyed by
   `(conn.assigns.current_user_id, network.id)` end-to-end (sub-task
   2g) so two users on the same network land in different sessions.
-  Unknown network slug → 404 `:not_found`; known slug but no session
-  → 404 `:no_session`; both via `FallbackController`.
+  Unknown slug, not-your-network, and known-slug-but-no-session all
+  surface as the same uniform 404 `{"error": "not_found"}` body via
+  `FallbackController` (CP10 S14 oracle close). The internal
+  `:no_session` tag is preserved in `Session` boundary @specs and
+  operator log lines for tracing, but never reaches the wire.
 
   Pagination params (`?before=`, `?limit=`) are validated at the
   boundary per CLAUDE.md: absent params fall back to defaults, but a
