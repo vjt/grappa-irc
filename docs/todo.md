@@ -51,18 +51,44 @@ at `http://grappa.bad.ass`; bundle hash `index-yiUejGMf.js` →
 languages and three verb shapes. Phase 4 brainstorm (irssi-shape UI)
 is now unblocked — runs against post-A4 modules.
 
-After D3: Phase 4 brainstorm (irssi-shape UI) on clean modules.
+**Phase 4 brainstorm CLOSED 2026-04-27 (CP10 S15).** Spec at
+`docs/plans/2026-04-27-phase-4-product-shape.md`. Web-IRC product shape
+walked as one design surface (three auth modes + irssi-shape UI + voice
+I/O). Cluster trajectory: E1 → P4-1 → P4-V (Phase 4 closes here) → M2
+→ M3 → M3-A (post-Phase-4, additive). Decisions D1-D6 pinned. 10 open
+design questions deferred to respective clusters.
 
-**Phase 4 brainstorm (after D1):** irssi-shape UI redesign. Per
-`superpowers:brainstorming` skill — run a brainstorm BEFORE any
-creative work to align on scope + non-goals + visual model.
-- Keyboard-first layout (Ctrl-N / Ctrl-P / Alt-1..9 channel switching).
-- Theme system (single global theme, irssi-shape colour palette).
-- Nick list + mode indicators + topic bar + presence per channel.
-- Mobile ergonomics (tap targets, swipe-to-switch, full-screen compose).
-- Voice I/O optional drop-in (Vosk/piper, ≤200 KB gzip ex-model).
-See README "Roadmap" + DESIGN_NOTES "Mobile is an ergonomics layer
-on irssi-shape, not a different shape."
+**Phase 4 cluster trajectory (writing-plans up next):**
+- **E1** — A6 architectural close (server-side only, ~3/4 session).
+  `Grappa.Session.EventRouter` extraction (4th application of verb-keyed
+  sub-context principle, mirrors AuthFSM from D2). `Scrollback.persist_event/1`
+  refactor (drops `kind: :privmsg` hardcode). Producers for all 10
+  message kinds (`:privmsg | :notice | :action | :join | :part | :quit
+  | :nick_change | :mode | :topic | :kick`). `Session.list_members/2`
+  + REST `GET /networks/:net/channels/:chan/members`.
+- **P4-1** — Phase 4 first ship UI on clean A6 surface (~full session,
+  possibly two). cicchetto rewrite to three-pane responsive +
+  mIRC-light/irssi-dark theme presets + tappable channel sidebar +
+  nick list right pane + topic bar + compose with tab-complete +
+  slash commands + irssi keyboard shortcuts + mobile drawers.
+  Server-side: A5 fix (ChannelsController returns session-tracked).
+- **P4-V** — Voice I/O cluster, Phase 4 closes (~half session).
+  Per-channel TTS + STT toggle. Browser-native APIs (`SpeechSynthesis`
+  + `SpeechRecognition`). Vosk/piper offline drop-in deferred to
+  Phase 4.6 / Phase 5.
+
+**Post-Phase-4 (additive — no P4 retrofit needed):**
+- **M2** — NickServ-as-IDP (~full session). Lazy User row creation,
+  `Grappa.IRC.AuthFSM` first reuse, single-network gating, login UI
+  second tab.
+- **M3** — Anon ephemeral (~full session). `users.expires_at` migration,
+  `POST /auth/anon-login`, cookie path on `Plugs.Authn`, Reaper
+  GenServer, login UI third tab. Anon shape pinned in spec D2: real
+  `users` row + random bearer-as-cookie + 48h TTL, reuses every
+  Scrollback verb unchanged.
+- **M3-A** — Anon abuse posture (~half session). Per-IP rate-limit
+  on session creation, operator allowlist per network, captcha hook
+  for Phase 5+ if abuse materialises.
 
 **D-cluster triage backlog (test-suite flakes surfaced during the
 correctness campaign — defer to a dedicated investigation pass, not
