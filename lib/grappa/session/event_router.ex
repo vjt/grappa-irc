@@ -217,7 +217,7 @@ defmodule Grappa.Session.EventRouter do
   @spec channels_with_member(members(), String.t()) :: [String.t()]
   defp channels_with_member(members, nick) do
     members
-    |> Enum.filter(fn {_ch, ch_members} -> Map.has_key?(ch_members, nick) end)
+    |> Enum.filter(fn {_, ch_members} -> Map.has_key?(ch_members, nick) end)
     |> Enum.map(fn {ch, _} -> ch end)
     |> Enum.sort()
   end
