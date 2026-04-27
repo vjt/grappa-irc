@@ -134,4 +134,38 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#new"] == %{"alice" => []}
     end
   end
+
+  describe "route/2 — :part" do
+    test "PART removes nick from state.members[channel] + emits :persist :part body=reason" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => [], "alice" => []}}})
+      m = msg(:part, ["#italia", "see you"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :part, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"] == %{"vjt" => []}
+      assert attrs.body == "see you"
+      assert attrs.meta == %{}
+    end
+
+    test "PART with no reason emits body=nil" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => [], "alice" => []}}})
+      m = msg(:part, ["#italia"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :part, %{body: nil}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "PART for unknown channel is a no-op (defensive)" do
+      state = base_state()
+      m = msg(:part, ["#unknown"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :part, _}]} =
+               EventRouter.route(m, state)
+
+      # Map.update with default-keep on missing key — channel doesn't
+      # appear in members; persist row still writes (audit trail).
+      refute Map.has_key?(new_state.members, "#unknown")
+    end
+  end
 end

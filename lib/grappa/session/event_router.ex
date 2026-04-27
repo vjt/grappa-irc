@@ -158,6 +158,26 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff]}
   end
 
+  def route(%Message{command: :part, params: [channel | rest]} = msg, state)
+      when is_binary(channel) do
+    sender = Message.sender_nick(msg)
+
+    reason =
+      case rest do
+        [r | _] when is_binary(r) -> r
+        _ -> nil
+      end
+
+    members =
+      case Map.get(state.members, channel) do
+        nil -> state.members
+        ch_members -> Map.put(state.members, channel, Map.delete(ch_members, sender))
+      end
+
+    {state, eff} = build_persist(%{state | members: members}, :part, channel, sender, reason, %{})
+    {:cont, state, [eff]}
+  end
+
   def route(%Message{} = _, state), do: {:cont, state, []}
 
   # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
