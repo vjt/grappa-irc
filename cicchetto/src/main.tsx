@@ -44,6 +44,8 @@ render(
 // precache manifest is embedded into the SW bytes at build time, so
 // any deploy that bumps an asset hash bumps the SW byte content,
 // triggering re-install + cache eviction on the next page load.
-// `immediate: true` registers without waiting for `window.load` —
-// shell-only cache, no large background work to defer.
-registerSW({ immediate: true });
+// Default registration timing (deferred until `window.load`) avoids
+// contending with first-paint asset fetches for bandwidth on slow
+// connections — Workbox author flags `immediate: true` as
+// not-recommended for exactly this reason.
+registerSW();

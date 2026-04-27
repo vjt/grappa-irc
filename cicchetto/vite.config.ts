@@ -37,9 +37,10 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       // Explicit registration via `virtual:pwa-register` in main.tsx
-      // — keeps the registration call visible at the entry point and
-      // avoids an inline `<script>` injection that the prod nginx CSP
-      // may need to allow separately.
+      // — keeps the registration call visible at the entry point.
+      // (Plugin's `'auto'` mode resolves to `false` here anyway because
+      // main.tsx imports the virtual module, but pinning `false` makes
+      // the choice deterministic instead of plugin-internal-heuristic.)
       injectRegister: false,
       includeAssets: ["icon.svg", "icon-192.png", "icon-512.png"],
       manifest: {
@@ -68,12 +69,23 @@ export default defineConfig({
       },
       workbox: {
         // Shell-only: precache the build's hashed JS/CSS + index.html
-        // + manifest + icons. Workbox's runtime fetch handler falls
-        // through to network for everything else (REST + WS upgrades),
-        // matching the original sw.js intent.
+        // + manifest + icons. Workbox's runtime handlers do nothing
+        // for non-navigation requests by default, so REST `fetch`
+        // calls (mode=cors/same-origin) and WS upgrades (mode=websocket)
+        // pass straight through to the network — that part is
+        // architectural, not denylist-driven.
         globPatterns: ["**/*.{js,css,html,svg,png,webmanifest,ico}"],
-        // Don't intercept REST/WS — same exclusions the home-rolled
-        // SW had (network-first for /auth, /me, /networks, /socket).
+        // SPA navigation fallback: a navigation to any in-app route
+        // (e.g. /shell, /login) should serve the precached
+        // index.html. The denylist excludes paths that must reach
+        // the origin server even on an explicit navigation — e.g. an
+        // OAuth-style redirect into /auth/something. Workbox's
+        // NavigationRoute only matches `request.mode === "navigate"`,
+        // so this list does NOT (and is not the mechanism that
+        // would) protect the REST + WS surface from interception —
+        // those are non-navigation requests and never reach this
+        // route. Keep these in lockstep with router.ex's REST scope
+        // prefixes if new ones are added.
         navigateFallbackDenylist: [/^\/auth/, /^\/me/, /^\/networks/, /^\/socket/],
       },
     }),

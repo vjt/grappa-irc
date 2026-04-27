@@ -557,6 +557,58 @@ Phoenix's default behavior when `check_origin` is unset is "match the endpoint U
 
 ---
 
+## 2026-04-27 — vite-plugin-pwa swap-in (CP10 S2)
+
+CP10 codebase review caught two coupled cache-busting bugs in the
+Phase-3 home-rolled service worker (`cicchetto/public/sw.js`): a
+static `CACHE = "cicchetto-shell-v1"` name that never bumped, and a
+shell precache list that referenced hashed `/assets/*` it didn't
+actually pre-cache. After ANY deploy bumping Vite asset hashes, the
+operator's installed PWA stayed pinned to the first-install shell
+forever. Fixed by replacing the home-rolled SW with vite-plugin-pwa
+in `generateSW` mode — Workbox embeds the precache manifest into the
+SW bytes at build time, so any asset-hash bump bumps the SW byte
+content, the browser detects an updated SW, and activate evicts the
+prior precache automatically. (CP10 review HIGH S2/S3.)
+
+**Apply:**
+
+- Manifest now lives in `cicchetto/vite.config.ts` under the
+  `VitePWA({ manifest: ... })` block — single source of truth, no
+  more `cicchetto/public/manifest.json` to keep in sync. Plugin
+  generates `dist/manifest.webmanifest` and auto-injects the
+  `<link rel="manifest">` tag into `dist/index.html`.
+- `registerType: "autoUpdate"` — shell-only cache, stale assets are
+  never useful, so no opt-in prompt.
+- `injectRegister: false` — explicit registration via
+  `virtual:pwa-register` in `cicchetto/src/main.tsx` (deterministic;
+  `'auto'` would resolve to `false` here anyway because main.tsx
+  imports the virtual module, but pinning is clearer than relying
+  on plugin-internal heuristics).
+- `navigateFallbackDenylist` for `/auth`, `/me`, `/networks`,
+  `/socket` covers SPA-routing edge cases (e.g. a navigation-mode
+  request to `/auth/oauth-redirect`); REST `fetch` calls and WS
+  upgrades are non-navigation and bypass `NavigationRoute`
+  architecturally — the denylist is NOT what protects the REST + WS
+  surface from interception. Add new prefixes here in lockstep with
+  `router.ex` if they appear.
+- New devDeps: `vite-plugin-pwa@1.2.0` + `workbox-window@7.4.0`.
+  Peer warning on `vite@8.0.10` (plugin pins `^7`); zero observed
+  runtime impact, build + virtual-module integration work as
+  designed. Re-evaluate when vite-plugin-pwa ships a release with a
+  `^8` peer.
+- **Legacy cache leak (one-shot per device):** the CP09 home-rolled
+  cache name `cicchetto-shell-v1` won't be evicted by Workbox's
+  `cleanupOutdatedCaches` (it only deletes caches whose names
+  contain the substring `-precache-`). Operators who installed the
+  PWA pre-CP10 will carry a few-KB stale cache forever — harmless
+  (the new SW doesn't read it) but visible in DevTools >
+  Application > Cache Storage. Intentionally NOT cleaned because
+  the cleanup mechanism (an `injectManifest`-mode custom SW) costs
+  more than the leak; phase-4-onward installs are unaffected.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
