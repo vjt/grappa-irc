@@ -68,11 +68,6 @@ Phase 3 surfaces invocation.
 - Phase 5 hardening: TLS `verify: :verify_none` posture (`lib/grappa/irc/client.ex`)
   → CA chain verification with proper bundle. Document operator's
   TLS-trust-store config strategy. Independent of Phase 2 auth work.
-- Phase 5 hardening: synchronous `IRC.Client.connect` in `init/1`
-  blocks supervisor boot for the connect-timeout window. Add
-  `{:continue, :connect}` (or move connect into `handle_info` after
-  `init` returns) so Session start is non-blocking. Code-review
-  CONSIDER #7 from S11.
 - Phase 5 hardening (NEW from S20 Phase 2 plan): post-registration
   `+r` umode check on Session connect. If after `001 RPL_WELCOME`
   the client did NOT receive `+r` (or equivalent network-specific
