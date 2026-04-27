@@ -243,6 +243,12 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  @doc """
+  Returns a snapshot of `state.members[channel]` in mIRC sort order
+  (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
+  Each entry: `%{nick: String.t(), modes: [String.t()]}`. Public via
+  `Grappa.Session.list_members/3`.
+  """
   def handle_call({:list_members, channel}, _, state) when is_binary(channel) do
     members =
       state.members

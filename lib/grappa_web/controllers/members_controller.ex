@@ -19,6 +19,18 @@ defmodule GrappaWeb.MembersController do
 
   alias Grappa.Session
 
+  @doc """
+  `GET /networks/:network_id/channels/:channel_id/members` —
+  returns the per-channel member snapshot in mIRC sort order
+  (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
+  Wraps `Grappa.Session.list_members/3`. Snapshot, not subscription —
+  presence updates flow through `MessagesChannel` PubSub.
+
+  Unknown slug, no credential, or wrong-user network all collapse to
+  404 `not_found` via `Plugs.ResolveNetwork`. `:no_session` (registered
+  user but session not running) also collapses to 404 via
+  `FallbackController`'s `:no_session` clause (S14 oracle close).
+  """
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :no_session}
   def index(conn, %{"channel_id" => channel}) do
