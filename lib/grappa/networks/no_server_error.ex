@@ -1,7 +1,7 @@
 defmodule Grappa.Networks.NoServerError do
   @moduledoc """
-  Raised by `Grappa.Networks.pick_server!/1` when a network resolves
-  to zero enabled server endpoints.
+  Raised by `Grappa.Networks.Servers.pick_server!/1` when a network
+  resolves to zero enabled server endpoints.
 
   Lives in the `Networks` boundary because the policy is operator-side
   ("which endpoint of this network do we connect to?") and `Networks`

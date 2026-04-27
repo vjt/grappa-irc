@@ -7,6 +7,7 @@ defmodule Mix.Tasks.Grappa.AddServerTest do
   import ExUnit.CaptureIO
 
   alias Grappa.Networks
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.AddServer
 
   setup do
@@ -29,7 +30,7 @@ defmodule Mix.Tasks.Grappa.AddServerTest do
       end)
 
     assert output =~ "added server irc.azzurra.chat:6697 to azzurra"
-    [server] = Networks.list_servers(network)
+    [server] = Servers.list_servers(network)
     assert server.host == "irc.azzurra.chat"
     assert server.port == 6697
     assert server.priority == 1
@@ -42,7 +43,7 @@ defmodule Mix.Tasks.Grappa.AddServerTest do
     output = capture_io(fn -> AddServer.run(args) end)
     assert output =~ "already on azzurra; no-op"
 
-    [_] = Networks.list_servers(network)
+    [_] = Servers.list_servers(network)
   end
 
   test "raises when the network does not exist" do

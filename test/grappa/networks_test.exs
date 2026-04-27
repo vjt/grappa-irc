@@ -25,7 +25,7 @@ defmodule Grappa.NetworksTest do
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.IRC.Identifier
-  alias Grappa.Networks.{Credential, Network, Server}
+  alias Grappa.Networks.{Credential, Network, Server, Servers}
 
   defp user_fixture(name \\ nil) do
     name = name || "vjt-#{System.unique_integer([:positive])}"
@@ -100,7 +100,7 @@ defmodule Grappa.NetworksTest do
       net = network_fixture("azzurra")
 
       assert {:ok, %Server{} = srv} =
-               Networks.add_server(net, %{
+               Servers.add_server(net, %{
                  host: "irc.azzurra.chat",
                  port: 6697,
                  tls: true,
@@ -118,35 +118,35 @@ defmodule Grappa.NetworksTest do
       net = network_fixture("azzurra")
       attrs = %{host: "irc.azzurra.chat", port: 6697, tls: true}
 
-      assert {:ok, _} = Networks.add_server(net, attrs)
-      assert {:error, :already_exists} = Networks.add_server(net, attrs)
+      assert {:ok, _} = Servers.add_server(net, attrs)
+      assert {:error, :already_exists} = Servers.add_server(net, attrs)
     end
 
     test "rejects a missing host or port" do
       net = network_fixture()
 
       assert {:error, %Ecto.Changeset{}} =
-               Networks.add_server(net, %{port: 6697})
+               Servers.add_server(net, %{port: 6697})
 
       assert {:error, %Ecto.Changeset{}} =
-               Networks.add_server(net, %{host: "x"})
+               Servers.add_server(net, %{host: "x"})
     end
   end
 
   describe "list_servers/1" do
     test "returns servers ordered by (priority asc, id asc)" do
       net = network_fixture("azzurra")
-      {:ok, _} = Networks.add_server(net, %{host: "a", port: 6697, priority: 1})
-      {:ok, _} = Networks.add_server(net, %{host: "b", port: 6697, priority: 0})
-      {:ok, _} = Networks.add_server(net, %{host: "c", port: 6697, priority: 0})
+      {:ok, _} = Servers.add_server(net, %{host: "a", port: 6697, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "b", port: 6697, priority: 0})
+      {:ok, _} = Servers.add_server(net, %{host: "c", port: 6697, priority: 0})
 
       assert [%Server{host: "b"}, %Server{host: "c"}, %Server{host: "a"}] =
-               Networks.list_servers(net)
+               Servers.list_servers(net)
     end
 
     test "returns [] when the network has no servers" do
       net = network_fixture()
-      assert Networks.list_servers(net) == []
+      assert Servers.list_servers(net) == []
     end
   end
 
@@ -549,7 +549,7 @@ defmodule Grappa.NetworksTest do
     test "cascades the network + servers when no other credentials reference it" do
       user = user_fixture()
       net = network_fixture("azzurra-solo")
-      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+      {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{
@@ -568,7 +568,7 @@ defmodule Grappa.NetworksTest do
       u1 = user_fixture()
       u2 = user_fixture()
       net = network_fixture("azzurra-shared")
-      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+      {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
         Networks.bind_credential(u1, net, %{
@@ -606,7 +606,7 @@ defmodule Grappa.NetworksTest do
     test "returns {:error, :scrollback_present} when last user has scrollback on the network" do
       user = user_fixture()
       net = network_fixture("azzurra-archived")
-      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+      {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{
@@ -644,7 +644,7 @@ defmodule Grappa.NetworksTest do
     test "still cascades when last user has NO scrollback (the happy path remains)" do
       user = user_fixture()
       net = network_fixture("azzurra-cleancascade")
-      {:ok, _} = Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
+      {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{
@@ -676,35 +676,35 @@ defmodule Grappa.NetworksTest do
   describe "pick_server!/1 (A2/A10 — lifted from Session.Server)" do
     test "returns the lowest-priority enabled server, ties broken by id" do
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "h1", port: 6667, priority: 5})
-      {:ok, _} = Networks.add_server(net, %{host: "h2", port: 6667, priority: 1})
-      {:ok, _} = Networks.add_server(net, %{host: "h3", port: 6667, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "h1", port: 6667, priority: 5})
+      {:ok, _} = Servers.add_server(net, %{host: "h2", port: 6667, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "h3", port: 6667, priority: 1})
 
       preloaded = Repo.preload(net, :servers)
-      assert %Server{host: "h2"} = Networks.pick_server!(preloaded)
+      assert %Server{host: "h2"} = Servers.pick_server!(preloaded)
     end
 
     test "skips disabled servers even when priority would prefer them" do
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "disabled", port: 6667, priority: 0, enabled: false})
-      {:ok, _} = Networks.add_server(net, %{host: "enabled", port: 6667, priority: 5})
+      {:ok, _} = Servers.add_server(net, %{host: "disabled", port: 6667, priority: 0, enabled: false})
+      {:ok, _} = Servers.add_server(net, %{host: "enabled", port: 6667, priority: 5})
 
       preloaded = Repo.preload(net, :servers)
-      assert %Server{host: "enabled"} = Networks.pick_server!(preloaded)
+      assert %Server{host: "enabled"} = Servers.pick_server!(preloaded)
     end
 
     test "raises NoServerError when every server is disabled" do
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "off", port: 6667, enabled: false})
+      {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, enabled: false})
       preloaded = Repo.preload(net, :servers)
 
-      assert_raise Networks.NoServerError, fn -> Networks.pick_server!(preloaded) end
+      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded) end
     end
 
     test "raises NoServerError when the network has zero servers" do
       net = network_fixture()
       preloaded = Repo.preload(net, :servers)
-      assert_raise Networks.NoServerError, fn -> Networks.pick_server!(preloaded) end
+      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded) end
     end
   end
 
@@ -717,7 +717,7 @@ defmodule Grappa.NetworksTest do
     test "returns the resolved primitive opts for a bound credential" do
       user = user_fixture()
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "irc.example", port: 6697, tls: true, priority: 0})
+      {:ok, _} = Servers.add_server(net, %{host: "irc.example", port: 6697, tls: true, priority: 0})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{
@@ -748,7 +748,7 @@ defmodule Grappa.NetworksTest do
     test "returns {:error, :no_server} when the network has zero enabled servers" do
       user = user_fixture()
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "off", port: 6667, enabled: false})
+      {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, enabled: false})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{
@@ -779,7 +779,7 @@ defmodule Grappa.NetworksTest do
     test "is a no-op preload when the credential already has :network preloaded (Bootstrap path)" do
       user = user_fixture()
       net = network_fixture()
-      {:ok, _} = Networks.add_server(net, %{host: "h", port: 6667})
+      {:ok, _} = Servers.add_server(net, %{host: "h", port: 6667})
 
       {:ok, _} =
         Networks.bind_credential(user, net, %{

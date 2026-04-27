@@ -7,13 +7,13 @@ defmodule Mix.Tasks.Grappa.UnbindNetworkTest do
   import ExUnit.CaptureIO
 
   alias Grappa.{Accounts, Networks, Repo}
-  alias Grappa.Networks.Network
+  alias Grappa.Networks.{Network, Servers}
   alias Mix.Tasks.Grappa.UnbindNetwork
 
   setup do
     {:ok, user} = Accounts.create_user(%{name: "vjt", password: "correct horse battery staple"})
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
-    {:ok, _} = Networks.add_server(network, %{host: "h", port: 6697})
+    {:ok, _} = Servers.add_server(network, %{host: "h", port: 6697})
 
     {:ok, _} =
       Networks.bind_credential(user, network, %{

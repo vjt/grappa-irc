@@ -26,6 +26,7 @@ defmodule Grappa.BootstrapTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Bootstrap, IRCServer, Networks, Session}
+  alias Grappa.Networks.Servers
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -40,7 +41,7 @@ defmodule Grappa.BootstrapTest do
   defp bind_db(user, slug, port) do
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
 
-    {:ok, _} = Networks.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
+    {:ok, _} = Servers.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
 
     {:ok, _} =
       Networks.bind_credential(user, network, %{

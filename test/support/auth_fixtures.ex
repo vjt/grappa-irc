@@ -20,7 +20,7 @@ defmodule Grappa.AuthFixtures do
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session]
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
-  alias Grappa.Networks.{Credential, Network, Server}
+  alias Grappa.Networks.{Credential, Network, Server, Servers}
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -107,7 +107,7 @@ defmodule Grappa.AuthFixtures do
     tls = Keyword.get(attrs, :tls, false)
 
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
-    {:ok, server} = Networks.add_server(network, %{host: host, port: port, tls: tls})
+    {:ok, server} = Servers.add_server(network, %{host: host, port: port, tls: tls})
     {network, server}
   end
 

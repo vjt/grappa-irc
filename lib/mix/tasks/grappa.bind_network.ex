@@ -43,6 +43,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [
@@ -76,7 +77,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
 
     {host, port} = OptionParsing.parse_server(server)
 
-    case Networks.add_server(network, %{
+    case Servers.add_server(network, %{
            host: host,
            port: port,
            tls: Keyword.get(opts, :tls, true)

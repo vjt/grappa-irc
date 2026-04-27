@@ -12,6 +12,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
   import ExUnit.CaptureIO
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks.Servers
   alias Mix.Tasks.Grappa.BindNetwork
 
   setup do
@@ -44,7 +45,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
     assert output =~ "bound vjt to azzurra"
 
     assert {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
-    assert [server] = Networks.list_servers(network)
+    assert [server] = Servers.list_servers(network)
     assert server.host == "irc.azzurra.chat"
     assert server.port == 6697
     assert server.tls == true
@@ -74,7 +75,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
     capture_io(fn -> BindNetwork.run(args) end)
 
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
-    [_] = Networks.list_servers(network)
+    [_] = Servers.list_servers(network)
 
     # Second run with a fresh user but same server should succeed
     # without raising on the server-uniqueness conflict.
@@ -83,7 +84,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
     args2 = ["--user", "alice" | tl(args)]
     capture_io(fn -> BindNetwork.run(args2) end)
 
-    [_] = Networks.list_servers(network)
+    [_] = Servers.list_servers(network)
   end
 
   test "auth=none accepts no password", %{user: _user} do
