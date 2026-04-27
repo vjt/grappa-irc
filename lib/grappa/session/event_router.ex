@@ -126,5 +126,46 @@ defmodule Grappa.Session.EventRouter do
   match; this match is the equivalent here.
   """
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
+  def route(%Message{command: :privmsg, params: [channel, body]} = msg, state)
+      when is_binary(channel) and is_binary(body) do
+    kind = if ctcp_action?(body), do: :action, else: :privmsg
+    persist(state, kind, channel, Message.sender_nick(msg), body, %{})
+  end
+
+  def route(%Message{command: :notice, params: [channel, body]} = msg, state)
+      when is_binary(channel) and is_binary(body) do
+    persist(state, :notice, channel, Message.sender_nick(msg), body, %{})
+  end
+
   def route(%Message{} = _, state), do: {:cont, state, []}
+
+  # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
+  # scrollback body. ACTION (CTCP /me) is the only verb that earns its
+  # own scrollback kind today; other CTCP verbs (VERSION, PING, etc.)
+  # produce :reply effects in Phase 5+.
+  defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
+  defp ctcp_action?(_), do: false
+
+  @spec persist(
+          state(),
+          Grappa.Scrollback.Message.kind(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          map()
+        ) ::
+          {:cont, state(), [effect()]}
+  defp persist(state, kind, channel, sender, body, meta) do
+    attrs = %{
+      user_id: state.user_id,
+      network_id: state.network_id,
+      channel: channel,
+      server_time: System.system_time(:millisecond),
+      sender: sender,
+      body: body,
+      meta: meta
+    }
+
+    {:cont, state, [{:persist, kind, attrs}]}
+  end
 end

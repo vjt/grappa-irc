@@ -41,4 +41,54 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(msg({:unknown, "FOO"}, ["bar"]), state)
     end
   end
+
+  describe "route/2 — :privmsg" do
+    test "PRIVMSG #channel :body emits :persist with kind=:privmsg" do
+      state = base_state()
+
+      m = msg(:privmsg, ["#italia", "ciao"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "alice"
+      assert attrs.body == "ciao"
+      assert attrs.meta == %{}
+      assert attrs.user_id == @user_id
+      assert attrs.network_id == @network_id
+      assert is_integer(attrs.server_time)
+    end
+
+    test "PRIVMSG carrying CTCP ACTION classifies as :action with body framed" do
+      state = base_state()
+
+      # CTCP ACTION shape: \x01ACTION <text>\x01
+      body = <<0x01, "ACTION waves hello", 0x01>>
+      m = msg(:privmsg, ["#italia", body], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :action, attrs}]} =
+               EventRouter.route(m, state)
+
+      # CLAUDE.md "CTCP control characters preserved as-is in scrollback body"
+      assert attrs.body == body
+      refute Map.has_key?(attrs, :kind_tag)
+    end
+  end
+
+  describe "route/2 — :notice" do
+    test "NOTICE #channel :body emits :persist with kind=:notice" do
+      state = base_state()
+
+      m = msg(:notice, ["#italia", "auth banner"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "irc.azzurra.chat"
+      assert attrs.body == "auth banner"
+      assert attrs.meta == %{}
+    end
+  end
 end
