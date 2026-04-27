@@ -82,6 +82,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
+  alias Grappa.Session.EventRouter
 
   require Logger
 
@@ -113,11 +114,10 @@ defmodule Grappa.Session.Server do
           network_id: integer(),
           network_slug: String.t(),
           nick: String.t(),
+          members: %{String.t() => %{String.t() => [String.t()]}},
           autojoin: [String.t()],
           client: pid() | nil
         }
-
-  @logged_event_commands [:join, :part, :quit, :nick, :mode, :topic, :kick]
 
   ## API
 
@@ -164,6 +164,7 @@ defmodule Grappa.Session.Server do
       network_id: opts.network_id,
       network_slug: opts.network_slug,
       nick: opts.nick,
+      members: %{},
       autojoin: opts.autojoin_channels,
       client: nil
     }
@@ -197,8 +198,26 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
-    case persist_and_broadcast(state, target, state.nick, body) do
+    attrs = %{
+      user_id: state.user_id,
+      network_id: state.network_id,
+      channel: target,
+      server_time: System.system_time(:millisecond),
+      kind: :privmsg,
+      sender: state.nick,
+      body: body,
+      meta: %{}
+    }
+
+    case Scrollback.persist_event(attrs) do
       {:ok, message} ->
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.channel(state.user_name, state.network_slug, target),
+            Wire.message_event(message)
+          )
+
         # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
         # since S29 C1. The Session facade pre-validates so the error
         # branch is unreachable on the documented path; the case below
@@ -224,6 +243,22 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  @doc """
+  Returns a snapshot of `state.members[channel]` in mIRC sort order
+  (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
+  Each entry: `%{nick: String.t(), modes: [String.t()]}`. Public via
+  `Grappa.Session.list_members/3`.
+  """
+  def handle_call({:list_members, channel}, _, state) when is_binary(channel) do
+    members =
+      state.members
+      |> Map.get(channel, %{})
+      |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
+      |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
+
+    {:reply, {:ok, members}, state}
+  end
+
   @impl GenServer
   def handle_cast({:send_join, channel}, state) when is_binary(channel) do
     :ok = Client.send_join(state.client, channel)
@@ -236,17 +271,20 @@ defmodule Grappa.Session.Server do
   end
 
   @impl GenServer
+  def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
+    :ok = Client.send_pong(state.client, token)
+    {:noreply, state}
+  end
+
+  # 001 RPL_WELCOME: autojoin BEFORE delegating to EventRouter. Autojoin
+  # reads `state.autojoin` and writes via `state.client` — both are
+  # transport-side concerns the pure router doesn't carry. Nick
+  # reconciliation (state.nick = welcomed_nick) lives in EventRouter.
   def handle_info(
-        {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]}},
+        {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]} = msg},
         state
       )
       when is_binary(welcomed_nick) do
-    # autojoin_channels is validated at the credential boundary
-    # (`Networks.Credential.changeset/2` — Identifier.valid_channel?
-    # per entry) so the happy path never sees `{:error, :invalid_line}`
-    # back from Client.send_join. The defensive log+skip below catches
-    # any future code path that mutates state.autojoin without going
-    # through the changeset (REPL, raw Repo.update, etc.).
     Enum.each(state.autojoin, fn channel ->
       case Client.send_join(state.client, channel) do
         :ok ->
@@ -257,11 +295,6 @@ defmodule Grappa.Session.Server do
       end
     end)
 
-    # S13: 001 RPL_WELCOME's first param is the *welcomed* nick —
-    # what the upstream actually registered us as, which may differ
-    # from what we requested (case-fold normalization, services-driven
-    # rename, length truncation). `state.nick` is the source of truth
-    # for outbound PRIVMSG sender attribution; let upstream win.
     if welcomed_nick != state.nick do
       Logger.info("nick reconciled at registration",
         from: state.nick,
@@ -269,85 +302,10 @@ defmodule Grappa.Session.Server do
       )
     end
 
-    {:noreply, %{state | nick: welcomed_nick}}
+    delegate(msg, state)
   end
 
-  def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
-    :ok = Client.send_pong(state.client, token)
-    {:noreply, state}
-  end
-
-  def handle_info(
-        {:irc, %Message{command: :privmsg, params: [target, body]} = msg},
-        state
-      )
-      when is_binary(body) do
-    case persist_and_broadcast(state, target, Message.sender_nick(msg), body) do
-      {:ok, _} ->
-        :ok
-
-      {:error, changeset} ->
-        Logger.error("scrollback insert failed",
-          command: :privmsg,
-          channel: target,
-          error: inspect(changeset.errors)
-        )
-    end
-
-    {:noreply, state}
-  end
-
-  # S13: own-nick rename (services or operator-driven `/nick`). Sender
-  # prefix matches `state.nick` AND command is NICK; new nick is in
-  # params[0]. Update the local source of truth so subsequent outbound
-  # PRIVMSG persistence + broadcast carry the new nick. Other-user
-  # NICK falls through to the @logged_event_commands clause below.
-  #
-  # Pre-001 hole (Phase 5 revisit): if upstream emits a NICK BEFORE
-  # `001` reconciles `state.nick` to the welcomed nick, the
-  # `sender_nick == state.nick` self-check misses (`state.nick` is
-  # still the credential's requested nick, sender is the upstream
-  # actual). Today this is theoretical — `433 ERR_NICKNAMEINUSE`
-  # crashes the Client at `IRC.Client.handle_irc/2:435-439` so a
-  # mid-registration NICK never reaches Session. Phase 5
-  # nick-mangling fallback (the same TODO in `IRC.Client`) reopens
-  # this; the Session-side fix at that point is to compare against
-  # the credential's nick AND the welcomed nick, or to seed
-  # `state.nick` from `:user_id` lookup at init.
-  def handle_info(
-        {:irc, %Message{command: :nick, params: [new_nick | _]} = msg},
-        state
-      )
-      when is_binary(new_nick) do
-    if Message.sender_nick(msg) == state.nick do
-      Logger.info("own nick changed", from: state.nick, to: new_nick)
-      {:noreply, %{state | nick: new_nick}}
-    else
-      Logger.info("irc event",
-        command: :nick,
-        sender: Message.sender_nick(msg),
-        channel: new_nick
-      )
-
-      {:noreply, state}
-    end
-  end
-
-  def handle_info(
-        {:irc, %Message{command: cmd, params: params} = msg},
-        state
-      )
-      when cmd in @logged_event_commands do
-    Logger.info("irc event",
-      command: cmd,
-      sender: Message.sender_nick(msg),
-      channel: List.first(params)
-    )
-
-    {:noreply, state}
-  end
-
-  def handle_info({:irc, %Message{}}, state), do: {:noreply, state}
+  def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
   ## Internals
 
@@ -372,32 +330,60 @@ defmodule Grappa.Session.Server do
     }
   end
 
-  # Helper does not log — caller decides. Inbound `handle_info`
-  # logs because nothing else surfaces the failure; outbound
-  # `handle_call` returns the error tuple so the controller (via
-  # `FallbackController`) renders the HTTP error.
-  @spec persist_and_broadcast(state(), String.t(), String.t(), String.t()) ::
-          {:ok, Scrollback.Message.t()} | {:error, Ecto.Changeset.t()}
-  defp persist_and_broadcast(state, target, sender, body) do
-    case Scrollback.persist_privmsg(state.user_id, state.network_id, target, sender, body) do
+  # `EventRouter.route/2` returns `{:cont, new_state, [effect]}`. Effects
+  # are flushed in arrival order via `apply_effects/2`. The router owns
+  # state derivation (members map, nick reconcile); Server owns the
+  # transport — Client.send_line for `:reply`, Scrollback.persist_event
+  # + PubSub.broadcast for `:persist`.
+  @spec delegate(Message.t(), state()) :: {:noreply, state()}
+  defp delegate(msg, state) do
+    {:cont, derived_state, effects} = EventRouter.route(msg, state)
+    {:noreply, apply_effects(effects, derived_state)}
+  end
+
+  @spec apply_effects([EventRouter.effect()], state()) :: state()
+  defp apply_effects([], state), do: state
+
+  defp apply_effects([{:persist, kind, attrs} | rest], state) do
+    full_attrs = Map.put(attrs, :kind, kind)
+
+    case Scrollback.persist_event(full_attrs) do
       {:ok, message} ->
         # Topic shape is `(user_name, network_slug, channel)` —
         # sub-task 2h roots every Grappa topic in the user
-        # discriminator so two users on the same (network, channel)
-        # land in different topic strings + different PubSub mailboxes.
-        # `:network` is preloaded by `Scrollback.persist_privmsg/5`
-        # itself — Wire.message_event pattern-matches on it.
+        # discriminator. `:network` is preloaded by
+        # `Scrollback.persist_event/1`; Wire.message_event
+        # pattern-matches on it.
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.user_name, state.network_slug, target),
+            Topic.channel(state.user_name, state.network_slug, attrs.channel),
             Wire.message_event(message)
           )
 
-        {:ok, message}
+      {:error, changeset} ->
+        Logger.error("scrollback insert failed",
+          command: kind,
+          channel: attrs.channel,
+          error: inspect(changeset.errors)
+        )
+    end
 
-      {:error, _} = err ->
-        err
+    apply_effects(rest, state)
+  end
+
+  defp apply_effects([{:reply, line} | rest], state) do
+    :ok = Client.send_line(state.client, line)
+    apply_effects(rest, state)
+  end
+
+  # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,
+  # alphabetical by nick (caller `Enum.sort_by` does the secondary).
+  defp member_sort_tier(modes) do
+    cond do
+      "@" in modes -> 0
+      "+" in modes -> 1
+      true -> 2
     end
   end
 end
