@@ -71,10 +71,17 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "not_found"})
   end
 
+  # S14 oracle close: `:no_session` collapses to the same wire body as
+  # `:not_found`. The internal tag is preserved so callers (Session
+  # boundary, controllers) keep their typed return shape and operator
+  # logs distinguish the two states; the wire bytes are uniform so a
+  # probing user cannot tell "credential exists, session not running"
+  # apart from "no credential" or "wrong slug." All three are
+  # network-not-found from the wire's perspective.
   def call(conn, {:error, :no_session}) do
     conn
     |> put_status(:not_found)
-    |> json(%{error: "no_session"})
+    |> json(%{error: "not_found"})
   end
 
   # Login failure — uniform shape regardless of which credential

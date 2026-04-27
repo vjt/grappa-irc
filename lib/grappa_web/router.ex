@@ -36,6 +36,16 @@ defmodule GrappaWeb.Router do
     plug GrappaWeb.Plugs.Authn
   end
 
+  # Per-user iso boundary for `/networks/:network_id/...`. Resolves the
+  # slug to the integer FK + asserts the authenticated user has a
+  # credential for the network. Failures collapse to 404 :not_found
+  # (uniform body) so a probing user cannot distinguish "wrong slug"
+  # from "someone else's network." See `GrappaWeb.Plugs.ResolveNetwork`
+  # moduledoc; this is the CP10 review S14 oracle close.
+  pipeline :resolve_network do
+    plug GrappaWeb.Plugs.ResolveNetwork
+  end
+
   scope "/", GrappaWeb do
     pipe_through []
 
@@ -55,17 +65,16 @@ defmodule GrappaWeb.Router do
     get "/me", MeController, :show
 
     get "/networks", NetworksController, :index
-    get "/networks/:network_id/channels", ChannelsController, :index
+  end
 
-    get "/networks/:network_id/channels/:channel_id/messages",
-        MessagesController,
-        :index
+  scope "/networks/:network_id", GrappaWeb do
+    pipe_through [:api, :authn, :resolve_network]
 
-    post "/networks/:network_id/channels/:channel_id/messages",
-         MessagesController,
-         :create
+    get "/channels", ChannelsController, :index
+    post "/channels", ChannelsController, :create
+    delete "/channels/:channel_id", ChannelsController, :delete
 
-    post "/networks/:network_id/channels", ChannelsController, :create
-    delete "/networks/:network_id/channels/:channel_id", ChannelsController, :delete
+    get "/channels/:channel_id/messages", MessagesController, :index
+    post "/channels/:channel_id/messages", MessagesController, :create
   end
 end
