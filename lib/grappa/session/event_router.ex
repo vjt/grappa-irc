@@ -178,6 +178,33 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff]}
   end
 
+  def route(%Message{command: :quit, params: rest} = msg, state) do
+    sender = Message.sender_nick(msg)
+
+    reason =
+      case rest do
+        [r | _] when is_binary(r) -> r
+        _ -> nil
+      end
+
+    case channels_with_member(state.members, sender) do
+      [] ->
+        {:cont, state, []}
+
+      channels ->
+        members = remove_member_everywhere(state.members, channels, sender)
+        new_state = %{state | members: members}
+
+        effects =
+          for ch <- channels do
+            {_, eff} = build_persist(new_state, :quit, ch, sender, reason, %{})
+            eff
+          end
+
+        {:cont, new_state, effects}
+    end
+  end
+
   def route(%Message{} = _, state), do: {:cont, state, []}
 
   # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
@@ -186,6 +213,21 @@ defmodule Grappa.Session.EventRouter do
   # produce :reply effects in Phase 5+.
   defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
   defp ctcp_action?(_), do: false
+
+  @spec channels_with_member(members(), String.t()) :: [String.t()]
+  defp channels_with_member(members, nick) do
+    members
+    |> Enum.filter(fn {_ch, ch_members} -> Map.has_key?(ch_members, nick) end)
+    |> Enum.map(fn {ch, _} -> ch end)
+    |> Enum.sort()
+  end
+
+  @spec remove_member_everywhere(members(), [String.t()], String.t()) :: members()
+  defp remove_member_everywhere(members, channels, nick) do
+    Enum.reduce(channels, members, fn ch, acc ->
+      Map.update!(acc, ch, &Map.delete(&1, nick))
+    end)
+  end
 
   @spec build_persist(
           state(),
