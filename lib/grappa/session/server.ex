@@ -236,7 +236,11 @@ defmodule Grappa.Session.Server do
   end
 
   @impl GenServer
-  def handle_info({:irc, %Message{command: {:numeric, 1}}}, state) do
+  def handle_info(
+        {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]}},
+        state
+      )
+      when is_binary(welcomed_nick) do
     # autojoin_channels is validated at the credential boundary
     # (`Networks.Credential.changeset/2` — Identifier.valid_channel?
     # per entry) so the happy path never sees `{:error, :invalid_line}`
@@ -253,7 +257,19 @@ defmodule Grappa.Session.Server do
       end
     end)
 
-    {:noreply, state}
+    # S13: 001 RPL_WELCOME's first param is the *welcomed* nick —
+    # what the upstream actually registered us as, which may differ
+    # from what we requested (case-fold normalization, services-driven
+    # rename, length truncation). `state.nick` is the source of truth
+    # for outbound PRIVMSG sender attribution; let upstream win.
+    if welcomed_nick != state.nick do
+      Logger.info("nick reconciled at registration",
+        from: state.nick,
+        to: welcomed_nick
+      )
+    end
+
+    {:noreply, %{state | nick: welcomed_nick}}
   end
 
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
@@ -279,6 +295,30 @@ defmodule Grappa.Session.Server do
     end
 
     {:noreply, state}
+  end
+
+  # S13: own-nick rename (services or operator-driven `/nick`). Sender
+  # prefix matches `state.nick` AND command is NICK; new nick is in
+  # params[0]. Update the local source of truth so subsequent outbound
+  # PRIVMSG persistence + broadcast carry the new nick. Other-user
+  # NICK falls through to the @logged_event_commands clause below.
+  def handle_info(
+        {:irc, %Message{command: :nick, params: [new_nick | _]} = msg},
+        state
+      )
+      when is_binary(new_nick) do
+    if Message.sender_nick(msg) == state.nick do
+      Logger.info("own nick changed", from: state.nick, to: new_nick)
+      {:noreply, %{state | nick: new_nick}}
+    else
+      Logger.info("irc event",
+        command: :nick,
+        sender: Message.sender_nick(msg),
+        channel: new_nick
+      )
+
+      {:noreply, state}
+    end
   end
 
   def handle_info(

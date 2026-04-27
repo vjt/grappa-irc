@@ -451,6 +451,126 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "nick mutation tracking (C6 / S13)" do
+    # `state.nick` is captured at `init/1` from the credential's nick
+    # field, but the upstream server is the source of truth: a nick
+    # collision can land us on a fallback (`433 ERR_NICKNAMEINUSE`
+    # is currently fatal but Phase 5 may add fallback), `001 RPL_WELCOME`
+    # always echoes the *welcomed* nick (which may differ from
+    # requested even on a clean register), and an admin/services-issued
+    # forced rename arrives as a self-prefixed `NICK` after
+    # registration. Without tracking, outbound PRIVMSGs from the
+    # operator persist Scrollback rows with the dead nick — and the
+    # rows are forever (immutable historical record).
+
+    test "RPL_WELCOME echoes welcomed nick: subsequent PRIVMSG persists with welcomed nick" do
+      welcomed_nick_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          # Server registers the operator under a different nick than
+          # the one requested (rare but possible — Azzurra used to do
+          # this with case-fold normalization).
+          {:reply, ":server 001 grappa-actual :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(welcomed_nick_handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      # Autojoin JOIN signals Session has processed `001` fully.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "hi")
+      assert msg.sender == "grappa-actual"
+
+      assert_message_event(
+        kind: :privmsg,
+        body: "hi",
+        sender: "grappa-actual",
+        channel: "#sniffo",
+        network: network.slug,
+        meta: %{}
+      )
+
+      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      assert row.sender == "grappa-actual"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-NICK rename: subsequent PRIVMSG persists with new nick" do
+      rfc_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(rfc_handler)
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Forced upstream rename — services or operator-driven.
+      IRCServer.feed(server, ":grappa-test!u@h NICK :renamed-vjt\r\n")
+
+      # PING/PONG round-trip flushes the cross-process pipeline:
+      # the NICK has cleared TCP buffer, Client mailbox, and Session
+      # mailbox by the time we see the PONG line back at the server.
+      # `:sys.get_state` alone is insufficient — it serializes against
+      # the Session mailbox but the NICK message may still be in
+      # transit through the kernel TCP buffer or the Client GenServer.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "post-rename")
+      assert msg.sender == "renamed-vjt"
+
+      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      assert row.sender == "renamed-vjt"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "other-user NICK rename does NOT affect own state.nick" do
+      rfc_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(rfc_handler)
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":alice!~a@host NICK :alice2\r\n")
+
+      # PING/PONG flushes — same rationale as the self-rename test.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "still me")
+      assert msg.sender == "grappa-test"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "malformed inbound" do
     test "parse error logged, session stays alive" do
       {server, port} = start_server()
