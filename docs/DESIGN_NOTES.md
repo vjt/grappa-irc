@@ -755,6 +755,80 @@ the next iteration doesn't have to rediscover it.
 
 ---
 
+## 2026-04-27 — `Application.{put,get}_env/2`: boot-time vs runtime (CP10 S5, C4)
+
+Hygiene cluster (post-CP10 review) closed three Application-env-related
+items and surfaced one unifying principle worth pinning. The original
+CLAUDE.md rule was a single-line "no `Application.get_env/2` outside
+`config/`" that didn't address `put_env`, didn't say *when* (boot vs
+runtime), and didn't enumerate which paths inherit the documented
+exception.
+
+### The principle
+
+`Application.{put,get}_env/2` is a **boot-time configuration
+mechanism**, not a runtime IPC channel. Two timeframes, two postures:
+
+- **Boot-time (allowed):** `config/*.exs`, `lib/grappa/application.ex`
+  start/2, mix-task `start_app_silent/0` BEFORE
+  `Application.ensure_all_started/1`. These sites configure the
+  application BEFORE the supervision tree comes up. The mix-task put_env
+  in `Mix.Tasks.Grappa.Boot` (`Application.put_env(:grappa,
+  :start_bootstrap, false)` then `ensure_all_started/1`) is
+  mirror-symmetric with `config/test.exs`'s `:start_bootstrap, false` —
+  both pre-configure the same documented exception point.
+- **Runtime (banned):** GenServer callbacks, controllers, context
+  functions, release tasks, plug bodies. None of these may read or
+  write `Application.env`. Inject config via `start_link/1` opts; the
+  supervisor reads env at boot and threads values into children.
+
+### What changed
+
+- **C4 fix S8 (`lib/grappa/release.ex`):** dropped
+  `Application.fetch_env!(@app, :ecto_repos)` in favor of a hardcoded
+  `@repos = [Grappa.Repo]`. Per `Grappa.Repo`'s moduledoc the bouncer
+  runs a single shared Repo; the iteration over `:ecto_repos` was dead
+  generality dating to the Phoenix template, and Release tasks are
+  RUNTIME (post-`load_app/0`), so the get_env was a clean violation.
+  Hardcoding the list also makes the dep edge grep-visible — a future
+  Repo addition is one explicit line, not "set mix.exs `:ecto_repos`
+  and pray".
+- **C4 disposition S54 (`lib/mix/tasks/grappa/boot.ex`):** kept the
+  `Application.put_env(:grappa, :start_bootstrap, false)` call, but
+  refined the CLAUDE.md rule to make it explicit that pre-`ensure_all_started/1`
+  put_env in mix tasks is allowed. The two CP10-review-proposed
+  alternatives both lost: option (a) "exempt this site" reduces to a
+  growing exemption list, which is the discipline failure mode CLAUDE.md
+  warns against; option (b) "refactor `Grappa.Application.start/2` to
+  accept `:bootstrap?` injected at start-time" requires either replacing
+  `mix.exs`'s `mod` args (compile-time, not boot-time injection — same
+  shape under a different name) OR hand-rolling a child list in the
+  mix task that mirrors `Application.start/2`'s subset, which violates
+  design-discipline (1) "don't duplicate state — derive it" and is
+  heavier than the 5 lines it would replace.
+- **CLAUDE.md rule rewrite:** the OTP-patterns line now reads
+  "**`Application.{put,get}_env/2`: boot-time only, runtime banned**"
+  with the four allowed sites enumerated explicitly + the runtime
+  prohibition spelled out. Future plans/reviews lean on this line
+  instead of debating each site case-by-case.
+
+### Why the distinction matters
+
+The CLAUDE.md ban is about **config-as-IPC at runtime** — one module
+mutates `Application.env`, another module reads it later, and the two
+sites are coupled through a global key with no explicit dep edge. That
+shape hides drift, defeats type contracts, and makes tests fragile to
+ordering. Pre-`ensure_all_started/1` put_env in mix tasks doesn't have
+that shape: there's no concurrent reader, no later-running module
+expecting a specific value, and the put + the start are within five
+lines of each other. The TIMING is the discriminator, not the call.
+
+The principle is now load-bearing for any future site that wants to
+reach for `Application.env` — the question is "boot-time or runtime?"
+not "is there an exemption for this module?"
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
