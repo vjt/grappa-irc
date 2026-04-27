@@ -258,6 +258,24 @@ export async function postTopic(
   if (!res.ok) throw await readError(res);
 }
 
+// Mirror of `GrappaWeb.MembersJSON.index/1` — wire shape:
+//   { "members": [{"nick": String, "modes": [String]}] }
+// Already mIRC-sorted by `Session.list_members/3` (ops → voiced → plain,
+// alphabetical within tier). cicchetto preserves that order.
+export async function listMembers(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+): Promise<{ nick: string; modes: string[] }[]> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/members`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as { members: { nick: string; modes: string[] }[] };
+  return body.members;
+}
+
 // Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`
 // upstream through the session. The upstream replays the NICK back via
 // `EventRouter`'s NICK handler which fans out per-channel `:nick_change`
