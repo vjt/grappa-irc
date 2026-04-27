@@ -42,6 +42,11 @@ vi.mock("../lib/members", () => ({
   seedFromTest: vi.fn(),
 }));
 
+vi.mock("../lib/mentions", () => ({
+  bumpMention: vi.fn(),
+  mentionCounts: () => ({}),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -250,6 +255,54 @@ describe("subscribe — WS join effect", () => {
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
+    });
+
+    it("PRIVMSG mentioning operator nick on non-selected channel bumps mention badge (P4-1 Task 29)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      // Selection on OTHER channel; mention arrives on #grappa.
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+
+      fireMessageEvent("#grappa", { id: 100, kind: "privmsg", body: "hey alice come look" });
+
+      const key = channelKey("freenode", "#grappa");
+      expect(mentions.bumpMention).toHaveBeenCalledWith(key);
+    });
+
+    it("PRIVMSG mentioning nick on the SELECTED channel does NOT bump mention badge", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      fireMessageEvent("#grappa", { id: 101, kind: "privmsg", body: "hey alice" });
+
+      expect(mentions.bumpMention).not.toHaveBeenCalled();
+    });
+
+    it("PRIVMSG without nick mention does NOT bump mention badge", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+      fireMessageEvent("#grappa", { id: 102, kind: "privmsg", body: "no mention here" });
+
+      expect(mentions.bumpMention).not.toHaveBeenCalled();
     });
 
     it("dispatches presence events to members.applyPresenceEvent (P4-1 Q4)", async () => {

@@ -1,6 +1,7 @@
 import { type Component, createEffect, createSignal, For, type JSX, on, Show } from "solid-js";
 import type { ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
+import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
 import { scrollbackByChannel } from "./lib/scrollback";
 
@@ -149,18 +150,6 @@ const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
   "topic",
   "kick",
 ]);
-
-// Mention matcher: case-insensitive word-boundary match against the
-// operator's own nick. Only checks `body` (sender / channel / topic
-// content are not "mentions" in the IRC UX sense). Plain regex with
-// \b boundaries — Unicode-naive but matches mIRC/irssi convention.
-const mentionsUser = (body: string | null, nick: string | null): boolean => {
-  if (!body || !nick) return false;
-  // Escape regex metacharacters in the nick (e.g. brackets are valid
-  // RFC 2812 nick chars).
-  const escaped = nick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b${escaped}\\b`, "i").test(body);
-};
 
 const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | null }> = (props) => {
   const isMention = () =>
