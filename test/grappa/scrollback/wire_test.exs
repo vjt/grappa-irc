@@ -7,7 +7,7 @@ defmodule Grappa.Scrollback.WireTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Accounts, Networks, Repo, Scrollback}
+  alias Grappa.{Accounts, Networks, Repo, Scrollback, ScrollbackHelpers}
   alias Grappa.Scrollback.Wire
 
   setup do
@@ -41,7 +41,7 @@ defmodule Grappa.Scrollback.WireTest do
   describe "to_json/1" do
     test "renders a privmsg row to the canonical JSON-shape map (slug under :network)",
          %{user: user, network: network} do
-      {:ok, msg} = Scrollback.insert(sample(user, network, 42))
+      {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 42))
       preloaded = Repo.preload(msg, :network)
 
       assert Wire.to_json(preloaded) == %{
@@ -59,7 +59,7 @@ defmodule Grappa.Scrollback.WireTest do
     test "includes atom-keyed meta payload for non-privmsg kinds (round-trip via DB)",
          %{user: user, network: network} do
       {:ok, _} =
-        Scrollback.insert(sample(user, network, 0, %{kind: :nick_change, body: nil, meta: %{new_nick: "vjt2"}}))
+        ScrollbackHelpers.insert(sample(user, network, 0, %{kind: :nick_change, body: nil, meta: %{new_nick: "vjt2"}}))
 
       [fetched] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
       wire = fetched |> Repo.preload(:network) |> Wire.to_json()
@@ -71,7 +71,7 @@ defmodule Grappa.Scrollback.WireTest do
 
     test "does NOT expose user_id (decision G3 — topic discriminator, not payload)",
          %{user: user, network: network} do
-      {:ok, msg} = Scrollback.insert(sample(user, network, 0))
+      {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 0))
       preloaded = Repo.preload(msg, :network)
 
       wire = Wire.to_json(preloaded)
@@ -82,7 +82,7 @@ defmodule Grappa.Scrollback.WireTest do
   describe "message_event/1" do
     test "wraps a row in {:event, %{kind: :message, message: wire}}",
          %{user: user, network: network} do
-      {:ok, msg} = Scrollback.insert(sample(user, network, 1))
+      {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 1))
       preloaded = Repo.preload(msg, :network)
 
       assert {:event, %{kind: :message, message: wire}} = Wire.message_event(preloaded)

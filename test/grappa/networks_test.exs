@@ -617,7 +617,7 @@ defmodule Grappa.NetworksTest do
 
       # One scrollback row blocks the cascade.
       {:ok, _} =
-        Grappa.Scrollback.insert(%{
+        Grappa.ScrollbackHelpers.insert(%{
           user_id: user.id,
           network_id: net.id,
           channel: "#sniffo",

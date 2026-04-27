@@ -2,7 +2,7 @@ defmodule Grappa.Scrollback.MetaTest do
   @moduledoc """
   Unit tests for the custom `Ecto.Type` used by
   `Grappa.Scrollback.Message.meta`. Pinned at the type level (not just
-  via `Scrollback.insert/1` integration) because the allowlist + atom
+  via `Message.changeset/2` integration) because the allowlist + atom
   table guard is a security boundary — unknown JSON keys MUST NOT be
   atomized via `String.to_atom/1` (atom table is unbounded and not
   garbage-collected).

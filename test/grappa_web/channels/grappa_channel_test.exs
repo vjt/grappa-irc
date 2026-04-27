@@ -24,7 +24,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Networks, PubSub.Topic, Repo, Scrollback}
+  alias Grappa.{Networks, PubSub.Topic, Repo, ScrollbackHelpers}
   alias Grappa.Scrollback.Wire
   alias GrappaWeb.UserSocket
 
@@ -49,7 +49,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       {:ok, message} =
-        Scrollback.insert(%{
+        ScrollbackHelpers.insert(%{
           user_id: user.id,
           network_id: network.id,
           channel: chan,
