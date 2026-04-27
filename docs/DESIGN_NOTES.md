@@ -684,6 +684,77 @@ explicitly on both `:gen_tcp.connect/4` and `:ssl.connect/4`.
 
 ---
 
+## 2026-04-27 — `MessageKind` mirrors server enum, exhaustive switch enforces drift (CP10 S4, C3)
+
+Closes CP10 codebase-review HIGH cicchetto/S4 + MEDIUM cicchetto/S15 as
+a single cluster. The TS `MessageKind` union pre-fix carried only three
+of the server's ten `Grappa.Scrollback.Message.kind()` atoms
+(`privmsg | notice | action`); the renderer's `<Show>` fallback rendered
+every other kind with PRIVMSG `<sender>` framing. Phase 5 presence-event
+capture (`:join`, `:part`, `:nick_change`, ...) would have shipped JOIN
+events as PRIVMSGs silently, with no compile-time signal.
+
+The cluster fixes both halves of the contract:
+
+- **Type contract.** `MessageKind` is widened to all ten kinds verbatim
+  — same atom forms the server emits, mirrored as snake_case strings
+  (Jason's `Atom.to_string/1` on `:nick_change` lands as
+  `"nick_change"`, never camel/kebab). The wire is the contract; the
+  client mirrors it without transform.
+- **Render contract.** `ScrollbackLine` delegates to a `renderBody/1`
+  switch that exhausts the union, with a `default` arm
+  `const _exhaustive: never = msg.kind` that turns any future addition
+  to `MessageKind` into a compile error here. No `as` cast, no runtime
+  fallback — the type system is the gate.
+
+### Five load-bearing apply rules
+
+1. **Wire-shape source-of-truth is the server.** The TS union mirrors
+   `Grappa.Scrollback.Message.@kinds` verbatim. When extending the
+   server enum, extend the TS union in the same commit; the
+   `assertNever` arm will surface any drift. Conversely, *never* add a
+   client-only kind — there's no producer for it, and it would render
+   the server's exhaustiveness invariant unenforceable.
+2. **Atom forms are the wire forms.** Jason serializes atoms via
+   `Atom.to_string/1` — `:nick_change` → `"nick_change"`. No kebab,
+   no camel, no transform. The Wire moduledoc + the TS union docstring
+   both pin this so a future contributor doesn't introduce
+   `to_camel_case` "to match TS conventions" and shatter the contract.
+3. **Framing follows irssi convention.** PRIVMSG `<nick> body`,
+   NOTICE `-nick- body`, ACTION + presence/op kinds
+   `* nick <verb> [target]`. Presence kinds carry their event-specific
+   fields in `meta` (mirror of `Grappa.Scrollback.Meta`'s allowlist:
+   `target`, `new_nick`, `modes`, `args`, `reason`); each access
+   narrows defensively against the wire-side `Record<string, unknown>`
+   (`typeof === "string"` / `Array.isArray`) so a malformed broadcast
+   degrades to `?` rather than crashing the renderer.
+4. **`reasonOf/1` defends against future server-side reshape.** The
+   per-kind shape table in `Scrollback.Meta`'s moduledoc places
+   `:reason` for `:quit` / `:kick` "in body, not meta," but the
+   allowlist still includes `:reason` (review S29 dead key). The
+   renderer reads `body` first, falls back to `meta.reason` — so if
+   the server ever shifts reason into the meta payload (S29 fix path),
+   the client doesn't silently drop it.
+5. **TDD pin first, exhaust the type AND the runtime.** The failing
+   test was `kind: "join"` rejected at compile time (TS2322 against
+   the narrow union); the runtime assertions then pinned that
+   presence/op rows NEVER render `<sender>` PRIVMSG framing. This
+   shape — type-system gate AND runtime contract — is the canonical
+   pattern for any client-side mirror of a server-side closed-set
+   atom enum. Future kind extensions must update both layers in
+   lockstep.
+
+### Phase 4 / Phase 5 follow-ups
+
+The renderer currently includes the channel name on `:join` / `:part` /
+`:kick` lines (e.g. `* carol has joined #grappa`). Phase 4's
+irssi-shape buffer redesign will drop the channel suffix when the line
+is unambiguous from buffer context — irssi convention is `* carol has
+joined` inside a single-channel pane. Documented as an inline TODO so
+the next iteration doesn't have to rediscover it.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
