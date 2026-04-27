@@ -152,7 +152,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "PER-USER ISO: alice's GET on the same channel does NOT see vjt's POSTed message",
+    test "PER-USER ISO: alice's GET on the same channel returns 404 not_found",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
       network = setup_network(vjt, port)
@@ -167,6 +167,10 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert json_response(conn1, 201)
 
       # Different user — auth as alice, fetch the same channel.
+      # S14 oracle close: pre-fix this returned 200 [] because the
+      # user_id partition silently filtered to empty rows — leaking
+      # network existence. Now `Plugs.ResolveNetwork` rejects with the
+      # same 404 not_found body as "wrong slug."
       alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
 
       conn2 =
@@ -174,7 +178,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> put_bearer(session_fixture(alice).id)
         |> get("/networks/#{network.slug}/channels/%23sniffo/messages")
 
-      assert json_response(conn2, 200) == []
+      assert json_response(conn2, 404)["error"] == "not_found"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -214,7 +218,12 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert json_response(conn, 404)["error"] == "not_found"
     end
 
-    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+    # S14 oracle close: known slug + credential but no session running
+    # surfaces with the SAME body as "unknown slug" + "no credential."
+    # Internal :no_session tag preserved for operator-log tracing; the
+    # wire body is uniform `not_found` to prevent the probing oracle.
+    test "known slug but no session returns 404 not_found (oracle close)",
+         %{conn: conn, vjt: vjt} do
       _ = setup_network(vjt, 9999, "azzurra")
 
       conn =
@@ -222,7 +231,23 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => "hello"})
 
-      assert json_response(conn, 404)["error"] == "no_session"
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    # S14 oracle close: a probing user posting against someone else's
+    # network gets the SAME body as "unknown slug." Pre-fix this leaked
+    # network existence via a distinct :no_session body.
+    test "POST against another user's network returns 404 not_found", %{conn: conn} do
+      alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: 7201, slug: "alice-only-#{System.unique_integer([:positive])}")
+      _ = credential_fixture(alice, network)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "without Bearer returns 401" do

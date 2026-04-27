@@ -18,7 +18,12 @@ defmodule GrappaWeb.MessagesControllerTest do
 
   setup %{conn: conn} do
     {user, session} = user_and_session()
-    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+    # S14: every `/networks/:slug/...` route now passes through the
+    # `ResolveNetwork` plug which requires a credential for
+    # (current_user, network). Test setup binds the user to the network
+    # so the index/create paths reach the controller action.
+    {network, _} = network_with_server(port: 7301, slug: "azzurra")
+    _ = credential_fixture(user, network)
     {:ok, conn: put_bearer(conn, session.id), user: user, network: network}
   end
 
@@ -127,6 +132,19 @@ defmodule GrappaWeb.MessagesControllerTest do
 
   test "GET on unknown network slug returns 404", %{conn: conn} do
     conn = get(conn, "/networks/no-such-net/channels/%23sniffo/messages")
+    assert json_response(conn, 404)["error"] == "not_found"
+  end
+
+  # S14 oracle close: a probing user querying scrollback for someone
+  # else's network gets the SAME body as querying an unknown slug.
+  # Pre-fix this would have returned 200 [] (empty list — also a leak,
+  # since the user_id partition silently filtered to no rows).
+  test "GET against another user's network returns 404 not_found", %{conn: conn} do
+    alice = user_fixture(name: "alice-#{System.unique_integer([:positive])}")
+    {alice_network, _} = network_with_server(port: 7302, slug: "alice-only-#{System.unique_integer([:positive])}")
+    _ = credential_fixture(alice, alice_network)
+
+    conn = get(conn, "/networks/#{alice_network.slug}/channels/%23sniffo/messages")
     assert json_response(conn, 404)["error"] == "not_found"
   end
 

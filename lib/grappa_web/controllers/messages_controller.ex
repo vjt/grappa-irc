@@ -36,7 +36,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{IRC.Identifier, Networks, Scrollback, Session}
+  alias Grappa.{IRC.Identifier, Scrollback, Session}
 
   @default_limit 50
 
@@ -51,16 +51,19 @@ defmodule GrappaWeb.MessagesController do
       `Grappa.Scrollback.fetch/5`). Must be a positive integer when
       present. Absent: default. Non-positive or non-integer: 400.
 
-  Unknown network slug: 404 (`{:error, :not_found}` via Networks).
+  Unknown slug, no credential, or wrong-user network all collapse to
+  404 `not_found` via `Plugs.ResolveNetwork` BEFORE this action runs;
+  the action consumes `conn.assigns.network` (the resolved schema
+  struct) without re-resolving (S14 oracle close).
   """
   @spec index(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | :not_found}
-  def index(conn, %{"network_id" => slug, "channel_id" => channel} = params) do
+          Plug.Conn.t() | {:error, :bad_request}
+  def index(conn, %{"channel_id" => channel} = params) do
     user_id = conn.assigns.current_user_id
+    network = conn.assigns.network
 
     with {:ok, cursor} <- parse_cursor(params["before"]),
-         {:ok, limit} <- parse_limit(params["limit"]),
-         {:ok, network} <- Networks.get_network_by_slug(slug) do
+         {:ok, limit} <- parse_limit(params["limit"]) do
       # `:network` is preloaded by `Scrollback.fetch/5` itself —
       # the boundary contract returns wire-shape-ready rows. No
       # post-fetch preload helper here; A26 collapsed the
@@ -79,22 +82,23 @@ defmodule GrappaWeb.MessagesController do
   the row with `sender = session.nick`, broadcasts the canonical wire
   event on the per-channel topic, and writes the PRIVMSG to the
   upstream socket. Returns 201 with the serialized message on success;
-  404 if the network slug is unknown OR no session is registered for
-  the (user, network) pair; 400 for malformed input.
+  404 `not_found` for unknown slug / no credential / no session (all
+  collapsed by `Plugs.ResolveNetwork` + `FallbackController`'s
+  `:no_session` clause); 400 for malformed input.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :bad_request | :not_found | :no_session}
+          | {:error, :bad_request | :no_session | :invalid_line}
           | {:error, Ecto.Changeset.t()}
-  def create(conn, %{"network_id" => slug, "channel_id" => channel, "body" => body})
+  def create(conn, %{"channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
     user_id = conn.assigns.current_user_id
+    network = conn.assigns.network
 
     # Channel-name shape check is :bad_request; the body's CRLF/NUL
     # check happens inside Session.send_privmsg and surfaces as
     # :invalid_line. Two distinct error tags so client UX can branch.
     with :ok <- validate_channel_name(channel),
-         {:ok, network} <- Networks.get_network_by_slug(slug),
          {:ok, message} <- Session.send_privmsg(user_id, network.id, channel, body) do
       # `:network` is preloaded by `Scrollback.persist_privmsg/5` —
       # the Session contract returns a wire-shape-ready row. Don't
@@ -106,7 +110,7 @@ defmodule GrappaWeb.MessagesController do
     end
   end
 
-  def create(_, %{"network_id" => _, "channel_id" => _}), do: {:error, :bad_request}
+  def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
 
   defp validate_channel_name(name) do
     if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}

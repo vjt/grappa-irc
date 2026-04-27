@@ -27,6 +27,13 @@ defmodule GrappaWeb.ChannelsControllerTest do
     {:ok, conn: put_bearer(conn, session_fixture(vjt).id), vjt: vjt}
   end
 
+  # S14: body-validation tests target /networks/azzurra/... without
+  # building a per-test IRCServer; `Plugs.ResolveNetwork` requires a
+  # credential first, so provision the binding without a real server.
+  defp ensure_azzurra_credential(vjt) do
+    setup_network(vjt, System.unique_integer([:positive]), "azzurra")
+  end
+
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
   defp start_server do
@@ -74,7 +81,12 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 404)["error"] == "not_found"
     end
 
-    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+    # S14 oracle close: known slug + credential but no session running
+    # surfaces with the SAME body as "unknown slug" + "no credential" so
+    # a probing user cannot distinguish the three states. Internal tag
+    # remains `:no_session` for operator-log tracing.
+    test "known slug but no session returns 404 not_found (oracle close)",
+         %{conn: conn, vjt: vjt} do
       _ = setup_network(vjt, 9999, "azzurra")
       # No session started — Session.send_join returns :no_session.
 
@@ -83,7 +95,25 @@ defmodule GrappaWeb.ChannelsControllerTest do
         |> put_req_header("content-type", "application/json")
         |> post("/networks/azzurra/channels", %{"name" => "#sniffo"})
 
-      assert json_response(conn, 404)["error"] == "no_session"
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    # S14 oracle close: a probing user posting JOIN against someone
+    # else's network gets the SAME body as posting against an unknown
+    # slug. Pre-fix this surfaced as :no_session (different body),
+    # leaking network existence.
+    test "POST against another user's network returns 404 not_found", %{conn: conn} do
+      alice = user_fixture(name: "alice-#{u()}")
+      {network, _} = network_with_server(port: 7101, slug: "alice-only-#{u()}")
+      _ = credential_fixture(alice, network)
+      # `conn` is bound to vjt (setup); vjt has no credential here.
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels", %{"name" => "#sniffo"})
+
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "without Bearer returns 401" do
@@ -95,7 +125,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
-    test "missing name returns 400", %{conn: conn} do
+    test "missing name returns 400", %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
       conn =
         conn
         |> put_req_header("content-type", "application/json")
@@ -104,7 +136,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    test "non-string name returns 400", %{conn: conn} do
+    test "non-string name returns 400", %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
       conn =
         conn
         |> put_req_header("content-type", "application/json")
@@ -113,7 +147,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    test "empty name returns 400", %{conn: conn} do
+    test "empty name returns 400", %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
       conn =
         conn
         |> put_req_header("content-type", "application/json")
@@ -127,7 +163,9 @@ defmodule GrappaWeb.ChannelsControllerTest do
     # Reject at the controller via Identifier.valid_channel?/1 — the
     # regex already excludes whitespace + control bytes — so the body
     # never reaches the Session.
-    test "channel name with embedded CRLF returns 400", %{conn: conn} do
+    test "channel name with embedded CRLF returns 400", %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
       conn =
         conn
         |> put_req_header("content-type", "application/json")
@@ -136,7 +174,10 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    test "channel name failing IRC syntax (missing prefix) returns 400", %{conn: conn} do
+    test "channel name failing IRC syntax (missing prefix) returns 400",
+         %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
       conn =
         conn
         |> put_req_header("content-type", "application/json")
@@ -168,10 +209,24 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 404)["error"] == "not_found"
     end
 
-    test "known slug but no session returns 404 no session", %{conn: conn, vjt: vjt} do
+    # S14 oracle close: same as POST counterpart. :no_session collapses
+    # to :not_found at the wire body so credential-without-session is
+    # indistinguishable from no-credential and unknown-slug.
+    test "known slug but no session returns 404 not_found (oracle close)",
+         %{conn: conn, vjt: vjt} do
       _ = setup_network(vjt, 9999, "azzurra")
       conn = delete(conn, "/networks/azzurra/channels/%23sniffo")
-      assert json_response(conn, 404)["error"] == "no_session"
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    # S14 oracle close: DELETE against another user's network.
+    test "DELETE against another user's network returns 404 not_found", %{conn: conn} do
+      alice = user_fixture(name: "alice-#{u()}")
+      {network, _} = network_with_server(port: 7102, slug: "alice-only-#{u()}")
+      _ = credential_fixture(alice, network)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo")
+      assert json_response(conn, 404)["error"] == "not_found"
     end
 
     test "without Bearer returns 401" do
@@ -181,7 +236,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
     # S29 C1: URL-encoded CRLF in :channel_id smuggles a second IRC
     # command into PART. Same controller-level rejection.
-    test "channel_id with URL-encoded CRLF returns 400", %{conn: conn} do
+    test "channel_id with URL-encoded CRLF returns 400", %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
       # %0A = LF, %0D = CR. "#chan%0AQUIT" decodes to "#chan\nQUIT".
       conn = delete(conn, "/networks/azzurra/channels/%23chan%0AQUIT")
       assert json_response(conn, 400)["error"] == "bad_request"
