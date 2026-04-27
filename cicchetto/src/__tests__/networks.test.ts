@@ -409,4 +409,82 @@ describe("networks store", () => {
     expect(store.scrollbackByChannel()[key]?.length).toBe(1);
     expect(store.scrollbackByChannel()[key]?.[0]?.body).toBe("echo");
   });
+
+  // C7 / A1 (architecture review HIGH): module-singleton state must be
+  // cleared on identity transitions. Pre-fix the `joined` and
+  // `loadedChannels` Sets persist across token rotations and logout, so a
+  // logout-then-login-as-different-user shows empty scrollback for every
+  // channel (the join effect skips re-installing the WS handler because
+  // `joined.has(key)` is true) AND the new user inherits the previous
+  // user's scrollback (`scrollbackByChannel` keyed on slug+channel, not
+  // user). Same lifecycle question as C7's S17 server-side mirror — when
+  // does channel-join state get cleaned up.
+  describe("identity-transition state cleanup", () => {
+    it("token rotation A→B clears scrollback + unread + selection and re-joins channels under the new identity", async () => {
+      localStorage.setItem("grappa-token", "tokA");
+      await seedStubs();
+      const auth = await import("../lib/auth");
+      const socket = await import("../lib/socket");
+      const store = await import("../lib/networks");
+
+      await vi.waitFor(() => {
+        expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      });
+      expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
+
+      // Populate per-channel state under user A.
+      fireMessageEvent("#grappa", { id: 1, body: "as A" });
+      const key = store.channelKey("freenode", "#grappa");
+      expect(store.scrollbackByChannel()[key]?.length).toBe(1);
+      expect(store.unreadCounts()[key]).toBe(1);
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      expect(store.selectedChannel()).not.toBeNull();
+
+      // /me now resolves to a different user; clear joinChannel call
+      // history so the assertion below counts only post-rotation calls.
+      const api = await import("../lib/api");
+      vi.mocked(api.me).mockResolvedValue({ id: "u2", name: "bob", inserted_at: "x" });
+      vi.mocked(socket.joinChannel).mockClear();
+
+      auth.setToken("tokB");
+
+      await vi.waitFor(() => {
+        expect(store.scrollbackByChannel()[key]).toBeUndefined();
+      });
+      expect(store.unreadCounts()[key]).toBeUndefined();
+      expect(store.selectedChannel()).toBeNull();
+
+      await vi.waitFor(() => {
+        expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      });
+      expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
+      expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
+    });
+
+    it("logout (token → null) clears scrollback + unread + selection", async () => {
+      localStorage.setItem("grappa-token", "tokA");
+      await seedStubs();
+      const auth = await import("../lib/auth");
+      await import("../lib/socket");
+      const store = await import("../lib/networks");
+
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      fireMessageEvent("#grappa", { id: 1, body: "as A" });
+      const key = store.channelKey("freenode", "#grappa");
+      expect(store.scrollbackByChannel()[key]?.length).toBe(1);
+      expect(store.unreadCounts()[key]).toBe(1);
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+
+      auth.setToken(null);
+
+      await vi.waitFor(() => {
+        expect(store.scrollbackByChannel()[key]).toBeUndefined();
+      });
+      expect(store.unreadCounts()[key]).toBeUndefined();
+      expect(store.selectedChannel()).toBeNull();
+    });
+  });
 });
