@@ -99,6 +99,56 @@ defmodule Grappa.IRC.Parser.PropertyTest do
     end
   end
 
+  describe "CR/LF invariant — adversarial input (C6 / S5)" do
+    # Inverse property to the round-trip block above: feed the parser
+    # adversarial input WITH embedded CR/LF in arbitrary positions, then
+    # assert the parsed `params`, `command`, and `prefix` tokens are
+    # CR/LF-free. The parser invariant `Session.Server` relies on for
+    # `Client.send_pong/2` is "tokens never carry control bytes" —
+    # a future refactor of `strip_crlf/1` (e.g. switching from
+    # `:binary.replace` to a regex) could regress on a sequence the
+    # five unit tests in `parser_test.exs` don't enumerate.
+
+    property "no parsed token contains CR or LF, regardless of input position" do
+      check all(line <- adversarial_line_gen()) do
+        case Parser.parse(line) do
+          {:ok, %Message{params: params, command: command, prefix: prefix}} ->
+            for param <- params do
+              refute String.contains?(param, "\r"), "param has CR: #{inspect(param)}"
+              refute String.contains?(param, "\n"), "param has LF: #{inspect(param)}"
+            end
+
+            case command do
+              {:unknown, raw} ->
+                refute String.contains?(raw, "\r")
+                refute String.contains?(raw, "\n")
+
+              _ ->
+                :ok
+            end
+
+            case prefix do
+              {:nick, nick, user, host} ->
+                for token <- [nick, user, host], is_binary(token) do
+                  refute String.contains?(token, "\r")
+                  refute String.contains?(token, "\n")
+                end
+
+              {:server, host} ->
+                refute String.contains?(host, "\r")
+                refute String.contains?(host, "\n")
+
+              nil ->
+                :ok
+            end
+
+          {:error, _} ->
+            :ok
+        end
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Generators — constrained so the parser can round-trip cleanly. We don't
   # generate adversarial input here (that's the unit test's job). We generate
@@ -195,6 +245,34 @@ defmodule Grappa.IRC.Parser.PropertyTest do
   # property generator. Escape decoding is exercised in the unit tests.
   defp tag_value_gen do
     StreamData.string(Enum.concat([?a..?z, ?A..?Z, ?0..?9]), min_length: 1, max_length: 12)
+  end
+
+  # Adversarial line generator: builds a vaguely IRC-shaped line then
+  # sprinkles `\r` / `\n` bytes at arbitrary positions. The exact byte
+  # sequences don't matter — the property only cares that whatever
+  # comes back parsed has CR/LF stripped from every token.
+  defp adversarial_line_gen do
+    gen all(
+          base <- StreamData.string(:printable, min_length: 1, max_length: 60),
+          inserts <-
+            StreamData.list_of(
+              StreamData.tuple({StreamData.member_of(["\r", "\n", "\r\n"]), StreamData.integer(0..60)}),
+              max_length: 5
+            )
+          # Skip lines that would be only whitespace post-strip — the
+          # parser correctly rejects those with `:empty` and the
+          # property has nothing to assert on the `{:error, _}` arm.
+        ) do
+      sprinkle_crlf(base, inserts)
+    end
+  end
+
+  defp sprinkle_crlf(base, inserts) do
+    Enum.reduce(inserts, base, fn {sep, pos}, acc ->
+      pos = min(pos, byte_size(acc))
+      <<head::binary-size(pos), tail::binary>> = acc
+      head <> sep <> tail
+    end)
   end
 
   # ---------------------------------------------------------------------------

@@ -16,6 +16,10 @@ defmodule Grappa.ScrollbackHelpers do
   so the test surface lives entirely under `test/support/` and
   cannot leak into a production code path. C6 / S7.
   """
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Repo, Grappa.Scrollback]
+
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
 

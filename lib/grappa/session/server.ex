@@ -302,6 +302,18 @@ defmodule Grappa.Session.Server do
   # params[0]. Update the local source of truth so subsequent outbound
   # PRIVMSG persistence + broadcast carry the new nick. Other-user
   # NICK falls through to the @logged_event_commands clause below.
+  #
+  # Pre-001 hole (Phase 5 revisit): if upstream emits a NICK BEFORE
+  # `001` reconciles `state.nick` to the welcomed nick, the
+  # `sender_nick == state.nick` self-check misses (`state.nick` is
+  # still the credential's requested nick, sender is the upstream
+  # actual). Today this is theoretical — `433 ERR_NICKNAMEINUSE`
+  # crashes the Client at `IRC.Client.handle_irc/2:435-439` so a
+  # mid-registration NICK never reaches Session. Phase 5
+  # nick-mangling fallback (the same TODO in `IRC.Client`) reopens
+  # this; the Session-side fix at that point is to compare against
+  # the credential's nick AND the welcomed nick, or to seed
+  # `state.nick` from `:user_id` lookup at init.
   def handle_info(
         {:irc, %Message{command: :nick, params: [new_nick | _]} = msg},
         state
