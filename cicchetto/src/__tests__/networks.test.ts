@@ -56,7 +56,8 @@ beforeEach(() => {
 const loadStore = async () => {
   const networks = await import("../lib/networks");
   const scrollback = await import("../lib/scrollback");
-  return { ...networks, ...scrollback };
+  const selection = await import("../lib/selection");
+  return { ...networks, ...scrollback, ...selection };
 };
 
 const seedStubs = async () => {
