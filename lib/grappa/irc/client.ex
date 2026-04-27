@@ -418,7 +418,7 @@ defmodule Grappa.IRC.Client do
 
   defp handle_irc(%Message{command: {:numeric, 903}}, state) do
     :ok = transport_send(state, "CAP END\r\n")
-    {:cont, %{state | phase: :pre_register}}
+    {:cont, leave_cap_negotiation(state, :pre_register)}
   end
 
   defp handle_irc(%Message{command: {:numeric, code}}, state) when code in [904, 905] do
@@ -439,7 +439,7 @@ defmodule Grappa.IRC.Client do
   end
 
   defp handle_irc(%Message{command: {:numeric, 1}}, state) do
-    {:cont, %{maybe_nickserv_identify(state) | phase: :registered}}
+    {:cont, leave_cap_negotiation(maybe_nickserv_identify(state), :registered)}
   end
 
   defp handle_irc(_, state), do: {:cont, state}
@@ -521,10 +521,24 @@ defmodule Grappa.IRC.Client do
   defp maybe_send_cap_end(%{phase: phase} = state)
        when phase in [:awaiting_cap_ls, :awaiting_cap_ack, :sasl_pending] do
     :ok = transport_send(state, "CAP END\r\n")
-    %{state | phase: :pre_register}
+    leave_cap_negotiation(state, :pre_register)
   end
 
   defp maybe_send_cap_end(state), do: state
+
+  # Single source of truth for "leaving CAP negotiation." `:phase` and
+  # `:caps_buffer` are both phase-local — `caps_buffer` accumulates
+  # ONLY during `:awaiting_cap_ls` and MUST be empty whenever the phase
+  # leaves it. Owning both fields here means "exiting a phase clears
+  # all phase-local state" lives in ONE place; no per-callsite reminder
+  # to also-clear-the-buffer (today's S6 latency, Phase 5 reconnect's
+  # bug). The escape points are: finalize_cap_ls (LS → AWAIT_ACK,
+  # clears inline since the buffer is the input it just consumed),
+  # numeric 001 (LS → REGISTERED), numeric 903 (SASL_PENDING →
+  # PRE_REGISTER), and maybe_send_cap_end (any cap-phase → PRE_REGISTER).
+  defp leave_cap_negotiation(state, new_phase) do
+    %{state | phase: new_phase, caps_buffer: []}
+  end
 
   defp maybe_nickserv_identify(%__MODULE__{auth_method: :nickserv_identify, password: pw} = state)
        when is_binary(pw) and pw != "" do

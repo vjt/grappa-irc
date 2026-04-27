@@ -621,6 +621,49 @@ defmodule Grappa.IRC.ClientTest do
       assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
     end
 
+    test "001 during awaiting_cap_ls clears caps_buffer (C6 / S6)" do
+      # Latent bug pre-fix: a server emitting `001` while the client is
+      # still in `:awaiting_cap_ls` (mid-continuation, partial caps
+      # buffered) leaves `state.caps_buffer` non-empty after the phase
+      # transitions to `:registered`. Today nothing re-enters
+      # `:awaiting_cap_ls`, so the residue is harmless; Phase 5
+      # reconnect-with-backoff would reuse the same Client GenServer
+      # state, and the next negotiation would inherit stale chunks.
+      # The fix: "leaving CAP negotiation" is one function that owns
+      # both `:phase` and `:caps_buffer` — mid-continuation state
+      # cannot survive any phase exit.
+      direct_001_handler = fn state, line ->
+        cond do
+          String.starts_with?(line, "CAP LS") ->
+            # Continuation marker `*` — accumulate, don't finalize.
+            {:reply, ":server CAP * LS * :extended-join chghost away-notify\r\n", state}
+
+          String.starts_with?(line, "USER ") ->
+            # Server skips the LS finalize AND CAP END; jumps to 001.
+            {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+
+          true ->
+            {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(direct_001_handler)
+
+      client =
+        start_client(port, %{
+          auth_method: :auto,
+          password: "swordfish",
+          sasl_user: "vjt"
+        })
+
+      # Wait for the server to have written the 001; then poll for the
+      # phase transition (no CAP END is sent — handshake is one-sided).
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+      Process.sleep(50)
+
+      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+    end
+
     test "433 ERR_NICKNAMEINUSE during registration crashes {:nick_rejected, 433, nick}" do
       nick_clash_handler = fn state, line ->
         if String.starts_with?(line, "USER ") do
