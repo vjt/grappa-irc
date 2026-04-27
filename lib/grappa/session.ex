@@ -158,11 +158,18 @@ defmodule Grappa.Session do
         # below gets an immediate DOWN with reason `:noproc`.
         ref = Process.monitor(pid)
 
-        # `terminate_child` returns `{:error, :not_found}` on a race
-        # where the child died between whereis and terminate; treat
-        # both branches as success since the post-condition (no
-        # session for the key) is what we promise.
-        _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+        # `terminate_child` returns `:ok | {:error, :not_found}` for a
+        # `DynamicSupervisor` (the `:simple_one_for_one` error tag is
+        # impossible here — only plain Supervisor in legacy strategy
+        # mode emits it). The `:not_found` branch covers the race where
+        # the child died between `whereis` and this call; treat both
+        # branches as success since the post-condition (no session for
+        # the key) is what we promise. Pattern-match explicitly so an
+        # unexpected return shape from a future OTP would crash.
+        case DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid) do
+          :ok -> :ok
+          {:error, :not_found} -> :ok
+        end
 
         receive do
           {:DOWN, ^ref, :process, ^pid, _} -> :ok
