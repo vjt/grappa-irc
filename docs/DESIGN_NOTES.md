@@ -476,7 +476,7 @@ Bahamut accepts `PASS <pw>` BEFORE NICK + USER, stashes it, and post-001 routes 
 
 ### 2026-04-26 — Phase 2 close: NoServerError as exception, not `{:error, :no_server}`
 
-`Grappa.Session.Server.NoServerError` is raised, not returned, when `Networks.list_servers/1` returns `[]` for a bound credential's network at session-init time.
+`Grappa.Networks.NoServerError` (post-A2/A10 — was `Grappa.Session.Server.NoServerError` before the cycle inversion) is raised, not returned, when `Grappa.Networks.Servers.list_servers/1` (post-D1/A2 — was `Networks.list_servers/1`) returns `[]` for a bound credential's network at session-init time.
 
 **Why exception not tuple:** Session.Server is started under DynamicSupervisor with `restart: :transient`. An `{:error, _}` return from `init/1` propagates up to the supervisor as a normal failure; with `:transient`, the supervisor would retry the spawn — but the underlying state (zero servers for this network) doesn't change between retries, so the loop would burn CPU forever until something else inserts a Server row.
 

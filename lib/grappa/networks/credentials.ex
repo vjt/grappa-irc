@@ -225,13 +225,13 @@ defmodule Grappa.Networks.Credentials do
     Repo.all(query)
   end
 
-  @doc """
-  Returns the user_ids that currently have a credential on `network`.
-  Used by `unbind_credential/2` to decide whether to cascade-delete
-  the parent network row when the last binding is removed.
-  """
+  # Returns the user_ids that currently have a credential on the network.
+  # Sole consumer is `unbind_credential/2`'s cascade gate (does any
+  # other user still bind this network?). Private — Boundary doesn't
+  # catch dead-API-surface drift, so demoting closes that door
+  # explicitly.
   @spec list_users_for_network(Network.t()) :: [Ecto.UUID.t()]
-  def list_users_for_network(%Network{id: network_id}) do
+  defp list_users_for_network(%Network{id: network_id}) do
     query =
       from(c in Credential,
         where: c.network_id == ^network_id,
