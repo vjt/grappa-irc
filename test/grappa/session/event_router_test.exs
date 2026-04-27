@@ -491,4 +491,75 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.nick == "vjt_truncated"
     end
   end
+
+  describe "A6 contract — every Scrollback.kind() has at least one EventRouter route" do
+    alias Grappa.Scrollback.Message, as: ScrollbackMessage
+
+    # Synthesized fixture lines for each kind. Mapping is hand-built
+    # because some kinds (:nick_change) are produced by the NICK command
+    # not a kind-named command, and :action is produced by PRIVMSG with
+    # a CTCP-framed body. The test asserts that EACH synthesized fixture
+    # results in AT LEAST ONE :persist effect tagged with the expected
+    # kind — the producer-side proof that A6 is closed.
+    defp fixture_for(:privmsg) do
+      {msg(:privmsg, ["#c", "body"], {:nick, "alice", "u", "h"}), base_state(%{members: %{"#c" => %{"alice" => []}}})}
+    end
+
+    defp fixture_for(:notice) do
+      {msg(:notice, ["#c", "body"], {:server, "irc"}), base_state()}
+    end
+
+    defp fixture_for(:action) do
+      body = <<0x01, "ACTION waves", 0x01>>
+      {msg(:privmsg, ["#c", body], {:nick, "alice", "u", "h"}), base_state()}
+    end
+
+    defp fixture_for(:join) do
+      {msg(:join, ["#c"], {:nick, "alice", "u", "h"}), base_state()}
+    end
+
+    defp fixture_for(:part) do
+      {msg(:part, ["#c"], {:nick, "alice", "u", "h"}), base_state(%{members: %{"#c" => %{"alice" => []}}})}
+    end
+
+    defp fixture_for(:quit) do
+      {msg(:quit, ["bye"], {:nick, "alice", "u", "h"}), base_state(%{members: %{"#c" => %{"alice" => []}}})}
+    end
+
+    defp fixture_for(:nick_change) do
+      {msg(:nick, ["alice_"], {:nick, "alice", "u", "h"}), base_state(%{members: %{"#c" => %{"alice" => []}}})}
+    end
+
+    defp fixture_for(:mode) do
+      {msg(:mode, ["#c", "+o", "alice"], {:nick, "ChanServ", "u", "h"}),
+       base_state(%{members: %{"#c" => %{"alice" => []}}})}
+    end
+
+    defp fixture_for(:topic) do
+      {msg(:topic, ["#c", "topic"], {:nick, "ChanServ", "u", "h"}), base_state()}
+    end
+
+    defp fixture_for(:kick) do
+      {msg(:kick, ["#c", "spammer"], {:nick, "ChanServ", "u", "h"}),
+       base_state(%{members: %{"#c" => %{"spammer" => []}}})}
+    end
+
+    test "every Scrollback kind has at least one EventRouter route producing :persist" do
+      for kind <- ScrollbackMessage.kinds() do
+        {message, state} = fixture_for(kind)
+        {:cont, _, effects} = EventRouter.route(message, state)
+
+        persist_kinds =
+          effects
+          |> Enum.filter(&match?({:persist, _, _}, &1))
+          |> Enum.map(fn {:persist, k, _} -> k end)
+
+        assert kind in persist_kinds,
+               "A6 violation: kind #{inspect(kind)} has no EventRouter route producing :persist. " <>
+                 "Effects produced: #{inspect(effects)}. " <>
+                 "If you added a new kind to Scrollback.Message.@kinds, also wire a clause " <>
+                 "in lib/grappa/session/event_router.ex (and add a fixture_for/1 above)."
+      end
+    end
+  end
 end
