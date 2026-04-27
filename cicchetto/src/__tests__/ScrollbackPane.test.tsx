@@ -1,11 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 
 // Mock the store boundary, not the REST/WS plumbing — ScrollbackPane is
-// a pure projection of `scrollbackByChannel` + `sendMessage`. The store
-// itself is exercised in networks.test.ts.
+// a pure projection of `scrollbackByChannel` + `networks.user` (for the
+// mention matcher). The store itself is exercised in scrollback.test.ts.
 //
 // The scrollback signal is a REAL Solid signal (S51) — earlier shape
 // used a plain `vi.fn()` getter, which meant tests could only seed the
@@ -18,17 +18,23 @@ import type { ScrollbackMessage } from "../lib/api";
 // stayed green.
 
 const [scrollback, setScrollback] = createSignal<Record<string, ScrollbackMessage[]>>({});
+const [userNick, setUserNick] = createSignal<string | null>(null);
 
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
-  sendMessage: vi.fn(),
+}));
+
+vi.mock("../lib/networks", () => ({
+  user: () => {
+    const n = userNick();
+    return n === null ? null : { id: "u1", name: n, inserted_at: "x" };
+  },
 }));
 
 vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
-import { sendMessage } from "../lib/scrollback";
 import ScrollbackPane from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
@@ -67,6 +73,7 @@ const fixture: ScrollbackMessage[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   setScrollback({});
+  setUserNick(null);
 });
 
 describe("ScrollbackPane", () => {
@@ -268,50 +275,117 @@ describe("ScrollbackPane", () => {
     expect(lines[0]).toHaveTextContent("different channel");
   });
 
-  it("submitting a non-empty draft calls store.sendMessage and clears the textarea", async () => {
-    vi.mocked(sendMessage).mockResolvedValue(undefined);
+  // P4-1 Q10: ScrollbackPane is now compose-free; ComposeBox owns the
+  // textarea + send button. The legacy compose tests moved to
+  // ComposeBox.test.tsx.
+  it("does NOT render the inline compose form (P4-1 split)", () => {
+    setScrollback({ "freenode #grappa": fixture });
     render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
-    const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "yo" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() => {
-      expect(vi.mocked(sendMessage)).toHaveBeenCalledWith("freenode", "#grappa", "yo");
-    });
-    await waitFor(() => {
-      expect(textarea.value).toBe("");
-    });
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(document.querySelector("form.compose")).toBeNull();
   });
 
-  it("Enter key submits; Shift+Enter does not", async () => {
-    vi.mocked(sendMessage).mockResolvedValue(undefined);
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
-    const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "shift" } });
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
-    expect(vi.mocked(sendMessage)).not.toHaveBeenCalled();
-    fireEvent.input(textarea, { target: { value: "plain" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    await waitFor(() => {
-      expect(vi.mocked(sendMessage)).toHaveBeenCalledWith("freenode", "#grappa", "plain");
+  describe("mention highlight (P4-1)", () => {
+    it("adds .scrollback-mention to lines that mention the user's nick", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #a": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#a",
+            server_time: 100,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hi vjt!",
+            meta: {},
+          },
+        ],
+      });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+      ));
+      const line = container.querySelector('[data-kind="privmsg"]');
+      expect(line?.classList.contains("scrollback-mention")).toBe(true);
     });
-  });
 
-  it("does not submit a whitespace-only draft", () => {
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
-    const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "   " } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-    expect(vi.mocked(sendMessage)).not.toHaveBeenCalled();
-  });
+    it("case-insensitive match: uppercase mention still highlights", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #a": [
+          {
+            id: 2,
+            network: "freenode",
+            channel: "#a",
+            server_time: 100,
+            kind: "privmsg",
+            sender: "alice",
+            body: "VJT around?",
+            meta: {},
+          },
+        ],
+      });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+      ));
+      const line = container.querySelector('[data-kind="privmsg"]');
+      expect(line?.classList.contains("scrollback-mention")).toBe(true);
+    });
 
-  it("renders a compose error when sendMessage rejects", async () => {
-    vi.mocked(sendMessage).mockRejectedValue(new Error("no_session"));
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
-    const textarea = screen.getByLabelText(/compose message/i) as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: "boom" } });
-    fireEvent.click(screen.getByRole("button", { name: /send/i }));
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/no_session/);
+    it("word-boundary: substring match inside another word does NOT highlight", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #a": [
+          {
+            id: 3,
+            network: "freenode",
+            channel: "#a",
+            server_time: 100,
+            kind: "privmsg",
+            sender: "alice",
+            body: "vjtfoo bar",
+            meta: {},
+          },
+        ],
+      });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+      ));
+      const line = container.querySelector('[data-kind="privmsg"]');
+      expect(line?.classList.contains("scrollback-mention")).toBe(false);
+    });
+
+    it("no-mention privmsg has no .scrollback-mention class", () => {
+      setUserNick("vjt");
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      const lines = screen.getAllByTestId("scrollback-line");
+      for (const line of lines) {
+        expect(line.classList.contains("scrollback-mention")).toBe(false);
+      }
+    });
+
+    it("non-privmsg kinds never highlight even if body matches nick", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #a": [
+          {
+            id: 4,
+            network: "freenode",
+            channel: "#a",
+            server_time: 100,
+            kind: "topic",
+            sender: "alice",
+            body: "vjt set this",
+            meta: {},
+          },
+        ],
+      });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+      ));
+      const line = container.querySelector('[data-kind="topic"]');
+      expect(line?.classList.contains("scrollback-mention")).toBe(false);
     });
   });
 });
