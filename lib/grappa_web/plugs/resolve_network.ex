@@ -15,14 +15,16 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   the `Networks.get_network_by_slug/1` boilerplate from every
   network-scoped controller action.
 
-  Runs after `Plugs.Authn`. Routes that don't carry `:network_id`
-  (login, `/me`, `/networks` index) skip this pipeline.
+  Runs after `Plugs.Authn`. Consumes `conn.assigns.current_user`
+  (loaded once by `Plugs.Authn` per request — S42) so the credential
+  lookup here doesn't re-fetch the user. Routes that don't carry
+  `:network_id` (login, `/me`, `/networks` index) skip this pipeline.
   """
   @behaviour Plug
 
   import Plug.Conn
 
-  alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks
   alias GrappaWeb.FallbackController
 
   require Logger
@@ -32,10 +34,10 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
 
   @impl Plug
   def call(conn, _) do
-    user_id = conn.assigns.current_user_id
+    user = conn.assigns.current_user
     slug = conn.path_params["network_id"]
 
-    case resolve(user_id, slug) do
+    case resolve(user, slug) do
       {:ok, network} ->
         assign(conn, :network, network)
 
@@ -53,9 +55,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     end
   end
 
-  defp resolve(user_id, slug) do
-    user = Accounts.get_user!(user_id)
-
+  defp resolve(user, slug) do
     with {:ok, network} <- Networks.get_network_by_slug(slug),
          {:ok, _} <- Networks.get_credential(user, network) do
       {:ok, network}

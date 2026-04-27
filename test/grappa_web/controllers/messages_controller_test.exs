@@ -163,6 +163,16 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 
+  test "GET with malformed channel_id (no sigil) returns 400 (S40)", %{conn: conn} do
+    # S40 lifted the channel-name shape check from the POST surface
+    # into the GET surface so an invalid channel_id segment doesn't
+    # silently fall through to `Scrollback.fetch/5` and return
+    # 200 + empty list, hiding a client typo. Mirror of the POST
+    # validation tests below.
+    conn = get(conn, "/networks/azzurra/channels/notachan/messages")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
   test "GET without Bearer returns 401" do
     conn = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
     assert json_response(conn, 401) == %{"error" => "unauthorized"}

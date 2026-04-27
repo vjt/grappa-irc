@@ -46,7 +46,7 @@ const formatTime = (epochMs: number): string => {
 // `-nick- body`, ACTION + presence/op kinds `* nick <verb> [target]`.
 // The non-message kinds carry their event-specific fields in `meta`
 // (mirror of `Grappa.Scrollback.Meta` allowlist: `target`, `new_nick`,
-// `modes`, `args`, `reason`); `meta` is typed `Record<string, unknown>`
+// `modes`, `args`); `meta` is typed `Record<string, unknown>`
 // on the wire so each access narrows defensively.
 //
 // Phase 4 (irssi-shape buffer redesign) will drop the explicit channel

@@ -75,16 +75,6 @@ fixed in C8):**
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
-
-## High
-
-- (S17 channel-test flake moved to Immediate § C7. Two prior "may
-  resolve naturally" cycles were wrong; instrumenting the join
-  handshake is the active approach.)
-
-- Phase 5 hardening: Session.Server should `terminate/2` cleanly —
-  send QUIT to upstream + close socket. Currently :normal exit kills
-  IRC.Client via link, which silently dies; OK for prod but emits
   ugly `tcp_closed terminating` test-stdout noise.
 - Phase 5 hardening: TLS `verify: :verify_none` posture (`lib/grappa/irc/client.ex`)
   → CA chain verification with proper bundle. Document operator's
