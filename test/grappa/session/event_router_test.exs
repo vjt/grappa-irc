@@ -362,4 +362,133 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, _, [{:persist, :mode, _}]} = EventRouter.route(m, state)
     end
   end
+
+  describe "route/2 — :topic (TOPIC command only)" do
+    test "TOPIC command emits :persist :topic with body=new_topic" do
+      state = base_state()
+
+      m = msg(:topic, ["#italia", "Welcome to Italia"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :topic, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "ChanServ"
+      assert attrs.body == "Welcome to Italia"
+      assert attrs.meta == %{}
+    end
+  end
+
+  describe "route/2 — :kick" do
+    test "KICK removes target from state.members[channel] + emits :persist :kick" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"vjt" => [], "spammer" => []}}
+        })
+
+      m = msg(:kick, ["#italia", "spammer", "go away"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :kick, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"] == %{"vjt" => []}
+      assert attrs.sender == "ChanServ"
+      assert attrs.body == "go away"
+      assert attrs.meta == %{target: "spammer"}
+    end
+
+    test "KICK with no reason emits body=nil" do
+      state = base_state(%{members: %{"#italia" => %{"spammer" => []}}})
+      m = msg(:kick, ["#italia", "spammer"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, _, [{:persist, :kick, %{body: nil, meta: %{target: "spammer"}}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "KICK target == own nick still removes (we're being kicked)" do
+      state = base_state(%{nick: "vjt", members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:kick, ["#italia", "vjt", "rude"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :kick, _}]} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{}
+    end
+  end
+
+  describe "route/2 — :numeric 332 / 333 (TOPIC backfill on JOIN — no-op)" do
+    test "332 RPL_TOPIC is a no-op (topic-bar reads live state, not scrollback)" do
+      state = base_state()
+      m = msg({:numeric, 332}, ["vjt", "#italia", "current topic text"], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "333 RPL_TOPICWHOTIME is a no-op" do
+      state = base_state()
+      m = msg({:numeric, 333}, ["vjt", "#italia", "ChanServ", "1717890000"], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
+
+  describe "route/2 — numeric 353 RPL_NAMREPLY (members bootstrap)" do
+    test "353 populates state.members[channel] with prefix-stripped nicks + modes" do
+      state = base_state()
+
+      # `:server 353 vjt = #italia :@op_user +voiced_user plain_user`
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#italia", "@op_user +voiced_user plain_user"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.members["#italia"] == %{
+               "op_user" => ["@"],
+               "voiced_user" => ["+"],
+               "plain_user" => []
+             }
+    end
+
+    test "353 is additive — second line for the same channel merges" do
+      state = base_state(%{members: %{"#big" => %{"a" => []}}})
+
+      m = msg({:numeric, 353}, ["vjt", "=", "#big", "@b +c d"], {:server, "irc"})
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.members["#big"] == %{
+               "a" => [],
+               "b" => ["@"],
+               "c" => ["+"],
+               "d" => []
+             }
+    end
+
+    test "366 RPL_ENDOFNAMES is a no-op (end marker)" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+
+      m = msg({:numeric, 366}, ["vjt", "#italia", "End of /NAMES list."], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
+
+  describe "route/2 — numeric 001 RPL_WELCOME (nick reconciliation)" do
+    test "001 with welcomed nick == requested nick leaves state.nick unchanged" do
+      state = base_state(%{nick: "vjt"})
+      m = msg({:numeric, 1}, ["vjt", "Welcome to IRC vjt!u@h"], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "001 with welcomed nick != requested nick reconciles state.nick" do
+      state = base_state(%{nick: "vjt"})
+      m = msg({:numeric, 1}, ["vjt_truncated", "Welcome to IRC"], {:server, "irc"})
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.nick == "vjt_truncated"
+    end
+  end
 end
