@@ -159,6 +159,27 @@ defmodule Grappa.IRC.ClientTest do
       assert {:ok, "JOIN #sniffo\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
     end
+
+    test "send_topic/3 emits TOPIC #chan :body framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_topic(client, "#italia", "ciao mondo")
+
+      assert {:ok, "TOPIC #italia :ciao mondo\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+    end
+
+    test "send_nick/2 emits NICK new\\r\\n" do
+      {server, port} = start_server()
+      client = start_client(port)
+      :ok = await_handshake(server)
+
+      :ok = Client.send_nick(client, "vjt-away")
+
+      assert {:ok, "NICK vjt-away\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
+    end
   end
 
   describe "inbound: server → client → dispatch_to" do
@@ -733,6 +754,20 @@ defmodule Grappa.IRC.ClientTest do
 
     test "send_quit/2 rejects \\r\\n in reason", %{client: client} do
       assert {:error, :invalid_line} = Client.send_quit(client, "bye\r\nNICK pwn")
+    end
+
+    test "send_topic/3 rejects \\r\\n in body", %{client: client} do
+      assert {:error, :invalid_line} =
+               Client.send_topic(client, "#italia", "evil\r\nINJECTION")
+    end
+
+    test "send_topic/3 rejects malformed channel (missing #/&/+/!)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_topic(client, "no-hash", "body")
+    end
+
+    test "send_nick/2 rejects spaces / CRLF in nick", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_nick(client, "vjt away")
+      assert {:error, :invalid_line} = Client.send_nick(client, "vjt\r\nQUIT")
     end
 
     # send_pong/2 has NO CR/LF guard (C6 / S5). PING token is
