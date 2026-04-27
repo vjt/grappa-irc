@@ -830,4 +830,71 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "send_topic/4" do
+    test "persists a :topic scrollback row, broadcasts, and writes TOPIC upstream" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert {:ok, message} =
+               Session.send_topic(user.id, network.id, "#italia", "new topic")
+
+      assert message.kind == :topic
+      assert message.channel == "#italia"
+      assert message.body == "new topic"
+      assert message.sender == "grappa-test"
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+
+      assert line == "TOPIC #italia :new topic\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "rejects CRLF in body before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x", "bad\r\nINJECT")
+    end
+
+    test "rejects CRLF in channel before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x\r\nQUIT", "ok")
+    end
+
+    test "no_session for unknown (user, network)" do
+      assert {:error, :no_session} =
+               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x", "ok")
+    end
+  end
+
+  describe "send_nick/3" do
+    test "writes NICK upstream" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert :ok = Session.send_nick(user.id, network.id, "vjt-away")
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
+
+      assert line == "NICK vjt-away\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "rejects CRLF in nick before whereis lookup" do
+      assert {:error, :invalid_line} =
+               Session.send_nick(Ecto.UUID.generate(), 999_999, "vjt\r\nQUIT")
+    end
+
+    test "no_session for unknown (user, network)" do
+      assert {:error, :no_session} =
+               Session.send_nick(Ecto.UUID.generate(), 999_999, "newnick")
+    end
+  end
 end
