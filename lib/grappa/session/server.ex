@@ -379,13 +379,24 @@ defmodule Grappa.Session.Server do
   @spec persist_and_broadcast(state(), String.t(), String.t(), String.t()) ::
           {:ok, Scrollback.Message.t()} | {:error, Ecto.Changeset.t()}
   defp persist_and_broadcast(state, target, sender, body) do
-    case Scrollback.persist_privmsg(state.user_id, state.network_id, target, sender, body) do
+    attrs = %{
+      user_id: state.user_id,
+      network_id: state.network_id,
+      channel: target,
+      server_time: System.system_time(:millisecond),
+      kind: :privmsg,
+      sender: sender,
+      body: body,
+      meta: %{}
+    }
+
+    case Scrollback.persist_event(attrs) do
       {:ok, message} ->
         # Topic shape is `(user_name, network_slug, channel)` —
         # sub-task 2h roots every Grappa topic in the user
         # discriminator so two users on the same (network, channel)
         # land in different topic strings + different PubSub mailboxes.
-        # `:network` is preloaded by `Scrollback.persist_privmsg/5`
+        # `:network` is preloaded by `Scrollback.persist_event/1`
         # itself — Wire.message_event pattern-matches on it.
         :ok =
           Phoenix.PubSub.broadcast(
