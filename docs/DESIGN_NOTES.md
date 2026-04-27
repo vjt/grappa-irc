@@ -609,6 +609,81 @@ prior precache automatically. (CP10 review HIGH S2/S3.)
 
 ---
 
+## 2026-04-27 — `init/1` defers connect via `handle_continue` (CP10 S3, C2)
+
+CP10 codebase review caught two coupled OTP-discipline bugs in the
+upstream-IRC stack: `Grappa.IRC.Client.init/1` did blocking
+`:gen_tcp.connect/3` + `:ssl.connect/3` + `PASS/CAP/NICK/USER`
+handshake synchronously inside the GenServer init callback, and
+`Grappa.Session.Server.init/1` synchronously called
+`Client.start_link/1` from its own init. Both are textbook CLAUDE.md
+"blocking work in `init/1` without `{:continue, _}`" — a flapping or
+black-holed upstream froze `Bootstrap`'s sequential `Enum.reduce` over
+credentials and serialized every other (user, network) `start_child`
+cascade through the singleton `SessionSupervisor`. The
+`:gen_tcp.connect/3` call additionally defaulted to `:infinity` on
+the connect timeout — a SYN-dropped router could deadlock the whole
+boot path forever. (CP10 review HIGH S1 + S12.)
+
+Fix: both `init/1` callbacks return `{:ok, state, {:continue, _}}`
+and move connect + handshake (Client) / `Client.start_link` (Session)
+into `handle_continue/2`. Connect timeout pinned to 30_000 ms
+explicitly on both `:gen_tcp.connect/4` and `:ssl.connect/4`.
+
+**Apply:**
+
+- **`{:continue, term}` carries the connect inputs** (Client:
+  `{:connect, opts}`, Session: `{:start_client, client_opts}`) instead
+  of stashing on the runtime struct. The struct stays sealed — no
+  leaking config fields onto state — and Phase 5 reconnect/backoff
+  will need a *different* shape (`{:reconnect, attempt_n,
+  backoff_ms}`) anyway, so foreshadowing now would be premature.
+- **The bounded `socket: nil` / `client: nil` window is OTP-safe.**
+  Per OTP `gen_server` contract, `handle_continue/2` runs before any
+  mailbox dispatch (`handle_call`/`handle_info`/`handle_cast`) — no
+  external observer can see the pre-continue nil state.
+  `:sys.get_state/1` is itself queued behind the continue.
+- **TLS posture warning fires in `init/1`, NOT `handle_continue/2`.**
+  The existing TLS-warning test uses `Process.flag(:trap_exit, true);
+  spawn(fn -> Client.start_link(...) end)` and asserts the warning
+  emits regardless of upstream reachability. If the warning fired in
+  `handle_continue`, the spawn-fn-dies-fast → linked-Client-receives-
+  EXIT cascade would terminate the Client process before the continue
+  runs. Phase 5 hardening (CP10 finding S24) will move this to
+  `Bootstrap` so it fires once at app boot rather than per-connect;
+  for now the placement is load-bearing.
+- **Bootstrap semantic SHIFTED.** Pre-fix, an upstream connect refusal
+  caused `Session.start_session/3` to return `{:error,
+  {:client_start_failed, _}}` synchronously, and Bootstrap counted it
+  under `failed`. Post-fix, the failure is async — Bootstrap reports
+  `started=N failed=0` for any row that passed `Client.init/1`'s
+  validation; the per-Session `:transient` policy retries up to
+  `max_restarts: 3` and the `DynamicSupervisor` then terminates the
+  child permanently. Operators grep `(stop) {:connect_failed, _}`
+  from the Session crash trace under the new semantic. Phase 5
+  reconnect/backoff replaces the exhaust-and-give-up shape with
+  proper session-health tracking + a per-Session telemetry surface.
+- **Pre-existing `Session.stop_session/2` race closed.**
+  `DynamicSupervisor.terminate_child/2` returns when the child is
+  dead, but `Grappa.SessionRegistry`'s OWN process-monitor on the
+  dying pid runs in the Registry process and may not have processed
+  its `{:DOWN, ...}` yet. `stop_session/2` now monitors the pid
+  itself, awaits the DOWN (with a 5s budget that `Logger.error`s on
+  timeout — silent timeout would leave the next `start_session/3`
+  racing a zombie `:already_started`), then polls `Registry.lookup`
+  until the entry is gone. Race surfaced reliably while iterating on
+  the C2 test.
+- **Test-side discipline.** The Session-level non-blocking-init test
+  uses `Server.start_link/1` directly (linked to the test pid), NOT
+  `Session.start_session/3` via `DynamicSupervisor`. The latter would
+  trigger the connect-refused crash → `:transient` restart cycle,
+  which exhausts `SessionSupervisor`'s `max_restarts: 3` budget in
+  <100ms and crashes the supervisor — torching every other Session
+  in the test run. Pinning the GenServer init contract directly is
+  the right surface; the supervisor path is the wrong unit-of-test.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
