@@ -35,12 +35,24 @@ defmodule GrappaWeb.FallbackController do
            | :no_session
            | :invalid_credentials
            | :invalid_line
+           | :unauthorized
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do
     conn
     |> put_status(:bad_request)
     |> json(%{error: "bad_request"})
+  end
+
+  # `Plugs.Authn` runs upstream of every controller's `action_fallback`
+  # so it can't lean on the implicit dispatch — but the 401 wire body
+  # must match what this module produces, otherwise the snake_case
+  # envelope splits across two emitters. M5: `Authn.unauthorized/1`
+  # delegates here so the body bytes live in one place.
+  def call(conn, {:error, :unauthorized}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "unauthorized"})
   end
 
   # CRLF / NUL byte in an IRC-bound field. Distinct from :bad_request

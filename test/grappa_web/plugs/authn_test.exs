@@ -8,7 +8,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
   use GrappaWeb.ConnCase, async: true
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Repo}
-  alias GrappaWeb.Plugs.Authn
+  alias GrappaWeb.{FallbackController, Plugs.Authn}
 
   setup do
     # See `Grappa.Accounts.SessionsTest` for why we bypass create_user/1
@@ -125,6 +125,25 @@ defmodule GrappaWeb.Plugs.AuthnTest do
 
       assert ["application/json" <> _] = get_resp_header(result, "content-type")
       assert result.resp_body == ~s({"error":"unauthorized"})
+    end
+
+    # M5: 401 body shape lives in ONE module — FallbackController. The
+    # plug is upstream of every controller's `action_fallback` so it
+    # needs its own 401 path, but the wire bytes must match the tag the
+    # rest of the surface produces. If FallbackController's snake_case
+    # convention shifts, this pin trips before clients diverge.
+    #
+    # Both branches receive the same raw conn — no `accepts/2`
+    # preprocessing, no halted-state injection — so the assertion
+    # exercises ONLY the body-byte equality and not any incidental
+    # plug pipeline state.
+    test "Authn 401 body matches FallbackController {:error, :unauthorized}",
+         %{conn: conn} do
+      authn_result = Authn.call(conn, Authn.init([]))
+      fc_result = FallbackController.call(conn, {:error, :unauthorized})
+
+      assert authn_result.status == fc_result.status
+      assert authn_result.resp_body == fc_result.resp_body
     end
   end
 end
