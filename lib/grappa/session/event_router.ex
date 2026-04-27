@@ -129,12 +129,33 @@ defmodule Grappa.Session.EventRouter do
   def route(%Message{command: :privmsg, params: [channel, body]} = msg, state)
       when is_binary(channel) and is_binary(body) do
     kind = if ctcp_action?(body), do: :action, else: :privmsg
-    persist(state, kind, channel, Message.sender_nick(msg), body, %{})
+    {state, eff} = build_persist(state, kind, channel, Message.sender_nick(msg), body, %{})
+    {:cont, state, [eff]}
   end
 
   def route(%Message{command: :notice, params: [channel, body]} = msg, state)
       when is_binary(channel) and is_binary(body) do
-    persist(state, :notice, channel, Message.sender_nick(msg), body, %{})
+    {state, eff} = build_persist(state, :notice, channel, Message.sender_nick(msg), body, %{})
+    {:cont, state, [eff]}
+  end
+
+  def route(%Message{command: :join, params: [channel | _]} = msg, state)
+      when is_binary(channel) do
+    sender = Message.sender_nick(msg)
+
+    members =
+      if sender == state.nick do
+        # Self-JOIN: wipe stale state for this channel (reconnect path);
+        # 353 RPL_NAMREPLY immediately following will re-populate. Keep
+        # self in the set so an outbound PRIVMSG before NAMES arrives is
+        # still attributed to a known member.
+        Map.put(state.members, channel, %{sender => []})
+      else
+        Map.update(state.members, channel, %{sender => []}, &Map.put(&1, sender, []))
+      end
+
+    {state, eff} = build_persist(%{state | members: members}, :join, channel, sender, nil, %{})
+    {:cont, state, [eff]}
   end
 
   def route(%Message{} = _, state), do: {:cont, state, []}
@@ -146,7 +167,7 @@ defmodule Grappa.Session.EventRouter do
   defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
   defp ctcp_action?(_), do: false
 
-  @spec persist(
+  @spec build_persist(
           state(),
           Grappa.Scrollback.Message.kind(),
           String.t(),
@@ -154,8 +175,8 @@ defmodule Grappa.Session.EventRouter do
           String.t() | nil,
           map()
         ) ::
-          {:cont, state(), [effect()]}
-  defp persist(state, kind, channel, sender, body, meta) do
+          {state(), effect()}
+  defp build_persist(state, kind, channel, sender, body, meta) do
     attrs = %{
       user_id: state.user_id,
       network_id: state.network_id,
@@ -166,6 +187,6 @@ defmodule Grappa.Session.EventRouter do
       meta: meta
     }
 
-    {:cont, state, [{:persist, kind, attrs}]}
+    {state, {:persist, kind, attrs}}
   end
 end
