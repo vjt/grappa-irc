@@ -46,7 +46,10 @@ const seedStubs = async () => {
   vi.mocked(api.listNetworks).mockResolvedValue([
     { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
   ]);
-  vi.mocked(api.listChannels).mockResolvedValue([{ name: "#grappa" }, { name: "#cicchetto" }]);
+  vi.mocked(api.listChannels).mockResolvedValue([
+    { name: "#grappa", joined: true, source: "autojoin" },
+    { name: "#cicchetto", joined: true, source: "autojoin" },
+  ]);
   vi.mocked(api.me).mockResolvedValue({ id: "u1", name: "alice", inserted_at: "x" });
   vi.mocked(api.listMessages).mockResolvedValue([]);
   vi.mocked(api.sendMessage).mockResolvedValue({
