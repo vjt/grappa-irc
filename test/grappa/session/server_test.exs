@@ -38,6 +38,16 @@ defmodule Grappa.Session.ServerTest do
     {server, IRCServer.port(server)}
   end
 
+  # See `Grappa.IRC.ClientTest` — same trick. Bind ephemeral, capture,
+  # release. The connect attempt that follows refuses fast on localhost
+  # because nothing took the port back over in the meantime.
+  defp pick_unused_port do
+    {:ok, l} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(l)
+    :gen_tcp.close(l)
+    port
+  end
+
   defp setup_user_and_network(port, cred_attrs \\ %{}) do
     user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
@@ -92,6 +102,50 @@ defmodule Grappa.Session.ServerTest do
     # Server boot can still fail at `Client.start_link` (port
     # refused) — covered by the `bootstrap_test.exs` partial-failure
     # path which exercises a refused upstream port end-to-end.
+  end
+
+  describe "init/1 non-blocking (C2)" do
+    # Pairs with `Grappa.IRC.ClientTest`'s C2 test. `Session.Server.init/1`
+    # must NOT call `Client.start_link/1` synchronously: Bootstrap iterates
+    # credentials sequentially via `Enum.reduce` and a slow upstream would
+    # serialize every other (user, network) start_child. Client spawn
+    # moves into `handle_continue(:connect, _)`.
+
+    test "Server.start_link/1 returns {:ok, pid} even when upstream is unreachable" do
+      # Test the GenServer init contract directly — `Session.Server.start_link/1`
+      # — instead of going through `Session.start_session/3` /
+      # `DynamicSupervisor`. The `:transient` restart cycle that fires when
+      # the connect-refused crash propagates would otherwise burn through the
+      # singleton `SessionSupervisor`'s `max_restarts: 3` budget in <100ms,
+      # crashing the supervisor and cascading through every other Session in
+      # the test run. Linking to the test pid (via `start_link`) traps the
+      # crash here so the supervisor is never involved.
+      port = pick_unused_port()
+      {user, network, _} = setup_user_and_network(port)
+      Process.flag(:trap_exit, true)
+
+      credential = Networks.get_credential!(user, network)
+      {:ok, plan} = Networks.session_plan(credential)
+      init_opts = Map.merge(plan, %{user_id: user.id, network_id: network.id})
+
+      # Pre-fix: `Client.start_link/1` returns `{:error, :econnrefused}`
+      # synchronously inside `Session.Server.init/1`, which returns
+      # `{:stop, _}` → `Server.start_link/1` returns `{:error, _}`.
+      # Post-fix: `init/1` returns ok-with-continue, Client spawn happens
+      # async in `handle_continue`, `start_link/1` returns `{:ok, pid}`.
+      assert {:ok, pid} = Grappa.Session.Server.start_link(init_opts)
+      assert is_pid(pid)
+
+      # The connect failure surfaces async — `Client.start_link/1` returns
+      # `{:ok, _}` immediately (post-C2), `Session.handle_continue/2` writes
+      # the client pid into state, then the Client's OWN `handle_continue`
+      # runs the connect, hits :econnrefused, and crashes. The link kills
+      # Session with the same `{:connect_failed, _}` reason — no
+      # `:client_start_failed` wrapping (that path only fires if
+      # `Client.start_link/1` itself returns `{:error, _}`, e.g. a
+      # `{:missing_password, _}` validation failure).
+      assert_receive {:EXIT, ^pid, {:connect_failed, _}}, 1_000
+    end
   end
 
   describe "registration" do

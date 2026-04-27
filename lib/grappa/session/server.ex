@@ -114,7 +114,7 @@ defmodule Grappa.Session.Server do
           network_slug: String.t(),
           nick: String.t(),
           autojoin: [String.t()],
-          client: pid()
+          client: pid() | nil
         }
 
   @logged_event_commands [:join, :part, :quit, :nick, :mode, :topic, :kick]
@@ -148,25 +148,37 @@ defmodule Grappa.Session.Server do
 
   ## GenServer callbacks
 
+  # `init/1` is intentionally non-blocking — `Client.start_link/1` runs
+  # in `handle_continue(:start_client, _)` so a slow upstream cannot
+  # serialize Bootstrap's per-credential `Enum.reduce` start_child
+  # loop. Pairs with `Grappa.IRC.Client.init/1`'s own `{:continue,
+  # :connect}` deferral; together they keep boot O(1) per session
+  # regardless of upstream reachability.
   @impl GenServer
   def init(opts) do
     :ok = Log.set_session_context(opts.user_name, opts.network_slug)
 
-    case Client.start_link(client_opts(opts)) do
+    state = %{
+      user_id: opts.user_id,
+      user_name: opts.user_name,
+      network_id: opts.network_id,
+      network_slug: opts.network_slug,
+      nick: opts.nick,
+      autojoin: opts.autojoin_channels,
+      client: nil
+    }
+
+    {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
+  end
+
+  @impl GenServer
+  def handle_continue({:start_client, client_opts}, state) do
+    case Client.start_link(client_opts) do
       {:ok, client} ->
-        {:ok,
-         %{
-           user_id: opts.user_id,
-           user_name: opts.user_name,
-           network_id: opts.network_id,
-           network_slug: opts.network_slug,
-           nick: opts.nick,
-           autojoin: opts.autojoin_channels,
-           client: client
-         }}
+        {:noreply, %{state | client: client}}
 
       {:error, reason} ->
-        {:stop, {:client_start_failed, reason}}
+        {:stop, {:client_start_failed, reason}, state}
     end
   end
 
