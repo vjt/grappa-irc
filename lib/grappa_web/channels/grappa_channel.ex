@@ -36,7 +36,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.PubSub.Topic
 
   @impl Phoenix.Channel
-  def join(topic, _payload, socket) do
+  def join(topic, _, socket) do
     with {:ok, parsed} <- Topic.parse(topic),
          :ok <- authorize(parsed, socket) do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
