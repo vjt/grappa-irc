@@ -47,12 +47,21 @@ defmodule Grappa.Networks.Wire do
         }
 
   @typedoc """
-  Per-channel wire shape returned by the Phase 3 channel-listing
-  endpoint. Object-shaped (not a bare string) so Phase 5
-  channel-membership tracking can extend with `:joined`, `:topic`,
-  `:unread_count`, etc. without breaking existing clients.
+  Per-channel wire shape returned by `GET /networks/:net/channels`. Object
+  envelope (not a bare string) per architecture review A5 close: every
+  channel entry advertises both `:joined` (currently-in-session) and
+  `:source` (`:autojoin` if declared in the credential's autojoin list,
+  `:joined` if dynamically joined via REST/IRC after boot). When a
+  channel is in BOTH sources, `:autojoin` wins (operator intent durable).
+
+  Q3 of P4-1 cluster pinned the merge order; P4-1 is the cluster that
+  landed it.
   """
-  @type channel_json :: %{name: String.t()}
+  @type channel_json :: %{
+          name: String.t(),
+          joined: boolean(),
+          source: :autojoin | :joined
+        }
 
   @doc """
   Renders a `Networks.Credential` row to its public JSON shape. The
@@ -97,10 +106,14 @@ defmodule Grappa.Networks.Wire do
   end
 
   @doc """
-  Renders a single channel name to its public JSON shape. Caller
-  passes the IRC channel string (e.g. `"#sniffo"`). Object envelope
-  is the extension point for Phase 5 (joined/topic/unread).
+  Renders a single channel entry to its public JSON shape, given the
+  channel `name`, the live `joined` state, and the `source` of the
+  list entry. Caller is responsible for the source-merge logic
+  (`GrappaWeb.ChannelsController.merge_channel_sources/2`).
   """
-  @spec channel_to_json(String.t()) :: channel_json()
-  def channel_to_json(name) when is_binary(name), do: %{name: name}
+  @spec channel_to_json(String.t(), boolean(), :autojoin | :joined) :: channel_json()
+  def channel_to_json(name, joined, source)
+      when is_binary(name) and is_boolean(joined) and source in [:autojoin, :joined] do
+    %{name: name, joined: joined, source: source}
+  end
 end
