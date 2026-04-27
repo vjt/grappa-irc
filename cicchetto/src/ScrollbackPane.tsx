@@ -1,4 +1,4 @@
-import { type Component, createEffect, createSignal, For, on, Show } from "solid-js";
+import { type Component, createEffect, createSignal, For, type JSX, on, Show } from "solid-js";
 import type { ScrollbackMessage } from "./lib/api";
 import { channelKey, scrollbackByChannel, sendMessage } from "./lib/networks";
 
@@ -35,6 +35,133 @@ const formatTime = (epochMs: number): string => {
   return `${hh}:${mm}:${ss}`;
 };
 
+// Wire-shape source-of-truth: the server's `Grappa.Scrollback.Message.kind()`
+// enum is the canonical producer (lib/grappa/scrollback/message.ex).
+// `MessageKind` mirrors it; this switch must stay exhaustive over the
+// union. The `default` arm's `assertNever` makes adding a new kind to
+// the union a compile error here — the contract is enforced at the
+// type system layer, not by tests or runtime fallbacks.
+//
+// Framing follows irssi convention: PRIVMSG `<nick> body`, NOTICE
+// `-nick- body`, ACTION + presence/op kinds `* nick <verb> [target]`.
+// The non-message kinds carry their event-specific fields in `meta`
+// (mirror of `Grappa.Scrollback.Meta` allowlist: `target`, `new_nick`,
+// `modes`, `args`, `reason`); `meta` is typed `Record<string, unknown>`
+// on the wire so each access narrows defensively.
+//
+// Phase 4 (irssi-shape buffer redesign) will drop the explicit channel
+// suffix on `:join` / `:part` / `:kick` lines when rendered inside a
+// single-channel buffer — irssi convention is `* carol has joined`
+// (no channel name) when the line is unambiguous from context. The
+// channel name stays for now so cross-channel views remain readable.
+
+// `:part` / `:quit` / `:kick` carry their reason in `body` per
+// `Grappa.Scrollback.Meta`'s per-kind shape table (meta.ex:58-61: "body
+// carries reason"). Defense-in-depth: also accept `meta.reason` so a
+// future server-side change (review S29) that shifts reason into the
+// meta payload doesn't silently lose it. Body wins when both present.
+const reasonOf = (msg: ScrollbackMessage): string | null => {
+  if (msg.body) return msg.body;
+  return typeof msg.meta.reason === "string" ? msg.meta.reason : null;
+};
+
+const renderBody = (msg: ScrollbackMessage): JSX.Element => {
+  switch (msg.kind) {
+    case "privmsg":
+      return (
+        <>
+          <span class="scrollback-sender">{`<${msg.sender}>`}</span>{" "}
+          <span class="scrollback-body">{msg.body}</span>
+        </>
+      );
+    case "notice":
+      return (
+        <>
+          <span class="scrollback-sender">{`-${msg.sender}-`}</span>{" "}
+          <span class="scrollback-body">{msg.body}</span>
+        </>
+      );
+    case "action":
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} {msg.body}
+        </span>
+      );
+    case "join":
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} has joined {msg.channel}
+        </span>
+      );
+    case "part": {
+      const reason = reasonOf(msg);
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} has left {msg.channel}
+          {reason ? ` (${reason})` : ""}
+        </span>
+      );
+    }
+    case "quit": {
+      const reason = reasonOf(msg);
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} has quit{reason ? ` (${reason})` : ""}
+        </span>
+      );
+    }
+    case "nick_change": {
+      const newNick = typeof msg.meta.new_nick === "string" ? msg.meta.new_nick : "?";
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} is now known as {newNick}
+        </span>
+      );
+    }
+    case "mode": {
+      const modes = typeof msg.meta.modes === "string" ? msg.meta.modes : "";
+      const args = Array.isArray(msg.meta.args) ? ` ${msg.meta.args.join(" ")}` : "";
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} sets mode {modes}
+          {args} on {msg.channel}
+        </span>
+      );
+    }
+    case "topic":
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} changed topic: {msg.body}
+        </span>
+      );
+    case "kick": {
+      const target = typeof msg.meta.target === "string" ? msg.meta.target : "?";
+      const reason = reasonOf(msg);
+      return (
+        <span class="scrollback-body">
+          * {msg.sender} kicked {target} from {msg.channel}
+          {reason ? ` (${reason})` : ""}
+        </span>
+      );
+    }
+    default: {
+      const _exhaustive: never = msg.kind;
+      void _exhaustive;
+      return null;
+    }
+  }
+};
+
+const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
+  "join",
+  "part",
+  "quit",
+  "nick_change",
+  "mode",
+  "topic",
+  "kick",
+]);
+
 const ScrollbackLine: Component<{ msg: ScrollbackMessage }> = (props) => {
   return (
     <div
@@ -42,26 +169,13 @@ const ScrollbackLine: Component<{ msg: ScrollbackMessage }> = (props) => {
       classList={{
         "scrollback-action": props.msg.kind === "action",
         "scrollback-notice": props.msg.kind === "notice",
+        "scrollback-presence": PRESENCE_KINDS.has(props.msg.kind),
       }}
       data-testid="scrollback-line"
       data-kind={props.msg.kind}
     >
       <span class="scrollback-time">{formatTime(props.msg.server_time)}</span>{" "}
-      <Show
-        when={props.msg.kind === "action"}
-        fallback={
-          <>
-            <span class="scrollback-sender">
-              {props.msg.kind === "notice" ? `-${props.msg.sender}-` : `<${props.msg.sender}>`}
-            </span>{" "}
-            <span class="scrollback-body">{props.msg.body}</span>
-          </>
-        }
-      >
-        <span class="scrollback-body">
-          * {props.msg.sender} {props.msg.body}
-        </span>
-      </Show>
+      {renderBody(props.msg)}
     </div>
   );
 };

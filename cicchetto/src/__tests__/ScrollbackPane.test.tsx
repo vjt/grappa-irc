@@ -86,6 +86,147 @@ describe("ScrollbackPane", () => {
     expect(lines[2]).toHaveTextContent("topic locked");
   });
 
+  it("renders all ten server kinds without falling through to PRIVMSG framing", () => {
+    // Server `Grappa.Scrollback.Message.kind()` enum: ten kinds. Phase 5
+    // presence-event capture will emit any of them on the wire; the
+    // renderer must NOT render presence/op kinds with the `<sender>`
+    // PRIVMSG angle-bracket framing. This test pins the contract: each
+    // non-message kind renders `* sender <verb>` (irssi-shape) or
+    // dash-framed (notice) — never angle-bracketed.
+    const allKinds: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "n",
+        channel: "#c",
+        server_time: 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: "hi",
+        meta: {},
+      },
+      {
+        id: 2,
+        network: "n",
+        channel: "#c",
+        server_time: 2,
+        kind: "notice",
+        sender: "ChanServ",
+        body: "lock",
+        meta: {},
+      },
+      {
+        id: 3,
+        network: "n",
+        channel: "#c",
+        server_time: 3,
+        kind: "action",
+        sender: "bob",
+        body: "waves",
+        meta: {},
+      },
+      {
+        id: 4,
+        network: "n",
+        channel: "#c",
+        server_time: 4,
+        kind: "join",
+        sender: "carol",
+        body: null,
+        meta: {},
+      },
+      {
+        id: 5,
+        network: "n",
+        channel: "#c",
+        server_time: 5,
+        kind: "part",
+        sender: "dave",
+        body: "bye",
+        meta: {},
+      },
+      {
+        id: 6,
+        network: "n",
+        channel: "#c",
+        server_time: 6,
+        kind: "quit",
+        sender: "eve",
+        body: "ping timeout",
+        meta: {},
+      },
+      {
+        id: 7,
+        network: "n",
+        channel: "#c",
+        server_time: 7,
+        kind: "nick_change",
+        sender: "frank",
+        body: null,
+        meta: { new_nick: "frank2" },
+      },
+      {
+        id: 8,
+        network: "n",
+        channel: "#c",
+        server_time: 8,
+        kind: "mode",
+        sender: "grace",
+        body: null,
+        meta: { modes: "+o", args: ["heidi"] },
+      },
+      {
+        id: 9,
+        network: "n",
+        channel: "#c",
+        server_time: 9,
+        kind: "topic",
+        sender: "ivan",
+        body: "new topic",
+        meta: {},
+      },
+      {
+        id: 10,
+        network: "n",
+        channel: "#c",
+        server_time: 10,
+        kind: "kick",
+        sender: "judy",
+        body: "spam",
+        meta: { target: "mallory" },
+      },
+    ];
+    h.scrollbackByChannel.mockReturnValue({ "n #c": allKinds });
+    render(() => <ScrollbackPane networkSlug="n" channelName="#c" />);
+    const lines = screen.getAllByTestId("scrollback-line");
+    expect(lines).toHaveLength(10);
+
+    // PRIVMSG: angle-bracket sender
+    expect(lines[0]).toHaveTextContent("<alice>");
+    // NOTICE: dash-framed sender
+    expect(lines[1]).toHaveTextContent("-ChanServ-");
+    expect(lines[1]).not.toHaveTextContent("<ChanServ>");
+    // ACTION: irssi `* sender body`
+    expect(lines[2]).toHaveTextContent("* bob waves");
+    expect(lines[2]).not.toHaveTextContent("<bob>");
+
+    // Presence + op kinds: NEVER angle-bracket framing.
+    for (let i = 3; i < 10; i++) {
+      expect(lines[i]).not.toHaveTextContent(`<${allKinds[i]?.sender}>`);
+    }
+
+    expect(lines[3]).toHaveTextContent("carol");
+    expect(lines[3]).toHaveTextContent("#c");
+    expect(lines[4]).toHaveTextContent("dave");
+    expect(lines[5]).toHaveTextContent("eve");
+    expect(lines[6]).toHaveTextContent("frank2");
+    // Pin args adjacency to the modes flag — a refactor that rendered
+    // `sets mode +o on #c heidi` (args at wrong position) would still
+    // include both tokens but break readability.
+    expect(lines[7]).toHaveTextContent("+o heidi");
+    expect(lines[8]).toHaveTextContent("new topic");
+    expect(lines[9]).toHaveTextContent("mallory");
+  });
+
   it("scopes scrollback to the (slug, channel) pair via channelKey", () => {
     h.scrollbackByChannel.mockReturnValue({
       "freenode #grappa": fixture,

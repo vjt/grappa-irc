@@ -286,6 +286,11 @@ body {
   color: var(--muted);
 }
 
+.scrollback-presence {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .compose {
   display: flex;
   border-top: 1px solid var(--border);

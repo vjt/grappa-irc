@@ -48,7 +48,25 @@ export type ChannelEntry = {
 // is literally `"event"`; the `kind` field discriminates the inner
 // payload shape so future kinds (presence, topic-change) can land
 // without changing the channel push contract.
-export type MessageKind = "privmsg" | "notice" | "action";
+//
+// The union mirrors `Grappa.Scrollback.Message.kind()` exhaustively
+// (lib/grappa/scrollback/message.ex `@kinds`). Wire encoding is
+// `Atom.to_string/1` via Jason — `:nick_change` serializes to
+// `"nick_change"` (snake_case, NOT kebab). Phase 1 only WRITES `:privmsg`
+// today; the rest are reserved for Phase 5 presence-event capture and
+// the Phase 6 IRCv3 `CHATHISTORY` listener facade. Renderers MUST be
+// exhaustive over this union — see `assertNever` in `ScrollbackPane`.
+export type MessageKind =
+  | "privmsg"
+  | "notice"
+  | "action"
+  | "join"
+  | "part"
+  | "quit"
+  | "nick_change"
+  | "mode"
+  | "topic"
+  | "kick";
 
 export type ScrollbackMessage = {
   id: number;
