@@ -13,8 +13,15 @@ defmodule Grappa.IRC.AuthFSM do
   principle from D1/A2 (DESIGN_NOTES "Sub-contexts split by VERB, not
   by NOUN") applies: the IRC-client GenServer keeps transport + line
   dispatch + outbound helpers; the auth-handshake verbs (CAP/SASL/PASS
-  state transitions) extract here. The Phase 6 IRCv3 listener facade
-  reuses the same FSM without inheriting the Client's GenServer.
+  state transitions) extract here.
+
+  The Phase 6 IRCv3 listener facade reuses the SHAPE — pure FSM,
+  `step/2` returning `(state, [iodata]) | {:stop, reason, state, [iodata]}`,
+  no Logger/process coupling — not this FSM itself. The listener
+  handles the SERVER side of registration (it RECEIVES PASS/CAP/NICK/USER
+  from a downstream PWA client and SENDS 001/903/904); a peer module
+  will live alongside under the same shape template. What's reusable
+  is the framework, not the bytes.
 
   ## Phases
 
@@ -225,6 +232,14 @@ defmodule Grappa.IRC.AuthFSM do
     {:stop, {:nick_rejected, code, state.nick}, state, []}
   end
 
+  # 001 RPL_WELCOME unconditionally promotes to `:registered`. No
+  # `CAP END` is emitted here even when arriving from `:awaiting_cap_ls`:
+  # IRCv3 cap negotiation is "active" only after the server replied to
+  # `CAP LS`. If the server jumped straight to 001 (Bahamut/Azzurra,
+  # very-old-ircd, or a server that 421'd CAP earlier and proceeded), it
+  # never opened the negotiation, so closing it would be protocol noise.
+  # `cap_unavailable/1` covers the cases where the negotiation WAS opened
+  # and must be closed (CAP NAK, no-sasl LS, etc.).
   def step(state, %Message{command: {:numeric, 1}}) do
     {identified_state, sends} = maybe_nickserv_identify(state)
     {:cont, leave_cap_negotiation(identified_state, :registered), sends}

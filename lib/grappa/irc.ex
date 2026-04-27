@@ -7,10 +7,11 @@ defmodule Grappa.IRC do
   (`Grappa.IRC.Client`), the pure auth state machine
   (`Grappa.IRC.AuthFSM`), and identifier validators
   (`Grappa.IRC.Identifier`). Phase 6's IRCv3 listener facade reuses the
-  same parser + message struct + AuthFSM for downstream PWA-client
-  reads, so the module set is intentionally factored as a reusable
-  library — see the `project_extract_irc_libs` memory for the eventual
-  extraction plan.
+  parser + message struct directly and reuses the AuthFSM SHAPE (pure
+  FSM with `(state, [iodata])` step contract) for a peer
+  server-side registration FSM. The module set is intentionally
+  factored as a reusable library — see the `project_extract_irc_libs`
+  memory for the eventual extraction plan.
 
   This module exists to host the `Boundary` annotation for the IRC
   namespace; it has no runtime API of its own.

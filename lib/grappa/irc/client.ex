@@ -215,7 +215,7 @@ defmodule Grappa.IRC.Client do
       {:ok, socket} ->
         connected = %{state | socket: socket}
         {fsm, sends} = AuthFSM.initial_handshake(state.fsm)
-        :ok = flush(connected, sends)
+        Enum.each(sends, &(:ok = transport_send(connected, &1)))
         {:noreply, %{connected | fsm: fsm}}
 
       {:error, reason} ->
@@ -286,22 +286,15 @@ defmodule Grappa.IRC.Client do
   defp run_fsm_step(%Message{} = msg, state) do
     case AuthFSM.step(state.fsm, msg) do
       {:cont, fsm, sends} ->
-        :ok = flush(state, sends)
+        Enum.each(sends, &(:ok = transport_send(state, &1)))
         :ok = transport_setopts(state, active: :once)
         {:noreply, %{state | fsm: fsm}}
 
       {:stop, reason, fsm, sends} ->
-        :ok = flush(state, sends)
+        Enum.each(sends, &(:ok = transport_send(state, &1)))
         log_stop_reason(reason, fsm)
         {:stop, reason, %{state | fsm: fsm}}
     end
-  end
-
-  defp flush(_, []), do: :ok
-
-  defp flush(state, [line | rest]) do
-    :ok = transport_send(state, line)
-    flush(state, rest)
   end
 
   # Logger metadata is set in init/1 from `opts.logger_metadata` so the
