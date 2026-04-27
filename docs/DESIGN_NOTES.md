@@ -960,6 +960,65 @@ listener-facade FSM will likely need the same shape (e.g. emit a
 
 ---
 
+## 2026-04-27 — Verb-keyed split is language-agnostic (CP10 S14, D3/A4 — corollary to D1/A2 + D2/A3)
+
+D3 applied the verb-keyed sub-context principle to a TypeScript
+client-side module-singleton store (`cicchetto/src/lib/networks.ts`,
+280 lines, 9 concerns). The pre-D3 god-module owned three resources
+(networks/me/channelsBySlug), per-channel scrollback state + verbs,
+unread + selection state, and the WS join effect — all inside a
+single `createRoot` block. Post-D3 the verbs split into five modules
+mirroring the same pattern D1 used server-side.
+
+The corollary, refining the principle for cross-language application:
+
+> **The verb-keyed sub-context principle is language-agnostic.** The
+> implementation primitive differs; the architectural contract holds.
+>
+>   * **Elixir (D1, D2):** umbrella is `Grappa.<Context>` with `Boundary
+>     top_level?: true`. Schemas in shared low-level modules
+>     (`Network`, `Credential`, `Server` for D1; `Message`, `Wire` for
+>     scrollback). Verbs in per-verb modules under the umbrella
+>     (`Networks.Servers`, `Networks.Credentials`, `Networks.SessionPlan`
+>     for D1; `IRC.Client` + `IRC.AuthFSM` for D2). Boundary library
+>     enforces dep direction.
+>   * **TypeScript/Solid (D3):** umbrella is `cicchetto/src/lib/`.
+>     Schemas in a shared low-level module (`api.ts` for the wire
+>     types, `channelKey.ts` for the brand). Verbs in per-verb
+>     modules (`scrollback.ts`, `selection.ts`, `subscribe.ts`,
+>     and the slim `networks.ts` for resource verbs). Module-import
+>     discipline + `tsconfig` strict mode enforces dep direction;
+>     there is no Boundary equivalent, and that is acceptable for a
+>     codebase of this size.
+>
+> **The lifecycle primitive is the verb's most natural unit-of-
+> isolation.** In Elixir, that's the OTP supervisor (the `IRC.Client`
+> GenServer + `:transient` restart pairing). In TypeScript/Solid,
+> that's the `createRoot` + `createEffect(on(token, …))` cleanup arm
+> — the module-singleton lives for app lifetime, the cleanup arm
+> handles identity transitions (the C7/A1 pattern). Same shape, same
+> intent, different primitive.
+
+D1 was the principle's first application (function-shaped Elixir
+verbs). D2 was the second (FSM-shaped Elixir verbs). D3 is the third
+(module-singleton TypeScript verbs). Three applications across two
+languages and three verb shapes validate the principle as
+language-agnostic; future surfaces (Phase 4 irssi-shape UI, Phase 5
+hardening, Phase 6 IRCv3 listener facade) inherit it regardless of
+which side of the wire they land on.
+
+The cross-module **ingestion verb** pattern is load-bearing in
+TypeScript the same way it is in Elixir. D3's `appendToScrollback`
+(public on `scrollback.ts`, consumed by `subscribe.ts`'s WS handler)
++ `bumpUnread` (public on `selection.ts`, consumed by the same
+handler) are the analogues of D1's `Networks.Servers.pick_server!/1`
++ `Networks.Credentials.encrypt_password/2` — public verbs that one
+context calls into another with. The producer publishes one row; both
+consumer stores update via their respective verb. "Implement once,
+reuse everywhere": never duplicate the mutation logic in the consumer.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

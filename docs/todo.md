@@ -37,10 +37,19 @@ extraction shape — `step(state, msg) :: {:cont|:stop, state,
 verb-keyed sub-context principle (DESIGN_NOTES corollary entry).
 Production verified at `http://grappa.bad.ass`.
 
-**Next — D3 architectural HIGH (pre-Phase-4, ~half-session):**
-- D3 / A4 cicchetto/lib/networks.ts god-module split (9 concerns).
-  Same verb-keyed pattern; client-side mirror of A2. Bumps bundle
-  hash → browser-shell verify required after deploy.
+**D3/A4 CLOSED 2026-04-27 (CP10 S14).** cicchetto/lib/networks.ts
+god-module split into 5 verb-keyed modules: channelKey (shared brand)
++ networks (slim resources) + scrollback (state + verbs) + selection
+(selectedChannel + unread + bumpUnread) + subscribe (WS join effect).
+First cross-language application of the verb-keyed sub-context
+principle (DESIGN_NOTES corollary entry); same lifecycle pattern via
+module-singleton + createRoot + on(token) cleanup. Production verified
+at `http://grappa.bad.ass`; bundle hash `index-yiUejGMf.js` →
+`index-BQpneWxT.js`.
+
+**D-cluster trajectory complete.** D1 + D2 + D3 closed across two
+languages and three verb shapes. Phase 4 brainstorm (irssi-shape UI)
+is now unblocked — runs against post-A4 modules.
 
 After D3: Phase 4 brainstorm (irssi-shape UI) on clean modules.
 
