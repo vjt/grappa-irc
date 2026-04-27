@@ -692,9 +692,13 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_quit(client, "bye\r\nNICK pwn")
     end
 
-    test "send_pong/2 rejects \\r\\n in token", %{client: client} do
-      assert {:error, :invalid_line} = Client.send_pong(client, "tok\r\n")
-    end
+    # send_pong/2 has NO CR/LF guard (C6 / S5). PING token is
+    # parser-supplied; `Grappa.IRC.Parser` strips all `\r`/`\n` from
+    # inbound bytes, so the token cannot carry control chars by the
+    # time it reaches send_pong. The other helpers above accept
+    # operator/user input and therefore retain their guards. The
+    # parser invariant is pinned in `Grappa.IRC.ParserTest` under
+    # "CR/LF stripping invariant (C6 / S5)".
 
     test "rejected lines never reach the server socket", %{server: server, client: client} do
       :ok = await_handshake(server)

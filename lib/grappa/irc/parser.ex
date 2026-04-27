@@ -106,13 +106,23 @@ defmodule Grappa.IRC.Parser do
   becomes `{:nick, token, nil, nil}`). Downstream consumers ignore
   events whose shape doesn't match a handled command — defensive
   parsing here would just shift the rejection point.
+
+  ## CR/LF invariant (C6 / S5)
+
+  RFC 2812 forbids CR and LF inside a message body. ALL `\\r` and `\\n`
+  bytes — trailing OR embedded — are stripped before grammar parsing,
+  so produced `params`, `command`, and `prefix` tokens are guaranteed
+  CR/LF-free. Downstream callers (`Session.Server` echoing PING tokens
+  via `Client.send_pong/2`) rely on this to skip re-validating parser
+  output — preventing a CR-injection attack from a hostile upstream
+  smuggling a second IRC command into the bouncer's outbound stream.
   """
   @spec parse(binary()) :: {:ok, Message.t()} | {:error, parse_error()}
   def parse(raw) when is_binary(raw) do
     line =
       raw
       |> to_utf8()
-      |> trim_crlf()
+      |> strip_crlf()
       |> String.trim_leading()
 
     if line == "", do: {:error, :empty}, else: parse_line(line)
@@ -241,11 +251,14 @@ defmodule Grappa.IRC.Parser do
     end
   end
 
-  defp trim_crlf(line) do
-    line
-    |> String.trim_trailing("\n")
-    |> String.trim_trailing("\r")
-  end
+  # Strip ALL `\r` and `\n` bytes — trailing or embedded. RFC 2812
+  # forbids them inside a message; a hostile upstream emitting
+  # `PING :tok\rNICK pwn` would otherwise smuggle a second command
+  # into the parsed `params` and through any caller that echoes the
+  # token back upstream (S5: `Client.send_pong/2` → outbound socket).
+  # `:binary.replace/4` with `[:global]` is a single C-level pass over
+  # the binary; cheaper than a regex compile.
+  defp strip_crlf(line), do: :binary.replace(line, ["\r", "\n"], "", [:global])
 
   defp to_utf8(bytes) do
     case :unicode.characters_to_binary(bytes, :utf8, :utf8) do

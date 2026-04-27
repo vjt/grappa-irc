@@ -219,15 +219,16 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `PONG :<token>\\r\\n` in response to an upstream PING. Rejects
-  CR/LF/NUL with `{:error, :invalid_line}`.
+  Sends `PONG :<token>\\r\\n` in response to an upstream PING.
+
+  Unlike the other outbound helpers, this one has no CR/LF guard: the
+  token is parser-supplied — `Grappa.IRC.Parser` strips ALL `\\r`/`\\n`
+  from inbound bytes (the parser invariant pinned in C6 / S5), so by
+  the time `Session.Server` echoes the token here it cannot contain
+  CR/LF. Contract is `:ok`; callers do `:ok = send_pong(...)`.
   """
-  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
-  def send_pong(client, token) do
-    if Identifier.safe_line_token?(token),
-      do: send_line(client, "PONG :#{token}\r\n"),
-      else: {:error, :invalid_line}
-  end
+  @spec send_pong(pid(), String.t()) :: :ok
+  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
 
   ## GenServer callbacks
 
