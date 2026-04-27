@@ -50,6 +50,9 @@ priv/plts/*.plt.hash
 !.claude/skills/
 !.claude/settings.json
 
+# ── Superpowers brainstorm session artifacts (mockups, state events)
+.superpowers/
+
 # ── Editors / OS
 .DS_Store
 Thumbs.db
