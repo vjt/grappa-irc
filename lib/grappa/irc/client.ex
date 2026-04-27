@@ -465,11 +465,11 @@ defmodule Grappa.IRC.Client do
   # work. Final cap-set order is irrelevant; `"sasl" in caps` is the
   # only consumer.
   defp handle_cap([_, "LS", "*", chunk], %{phase: :awaiting_cap_ls} = state) do
-    {:cont, %{state | caps_buffer: parse_(chunk) ++ state.caps_buffer}}
+    {:cont, %{state | caps_buffer: parse_cap_list(chunk) ++ state.caps_buffer}}
   end
 
   defp handle_cap([_, "LS", chunk], %{phase: :awaiting_cap_ls} = state) do
-    caps = parse_(chunk) ++ state.caps_buffer
+    caps = parse_cap_list(chunk) ++ state.caps_buffer
     finalize_cap_ls(caps, state)
   end
 
@@ -480,7 +480,7 @@ defmodule Grappa.IRC.Client do
   # against an un-ACK'd cap. Phase guard makes this a no-op outside
   # the SASL chain (defensive against stray ACKs post-registration).
   defp handle_cap([_, "ACK", caps_blob | _], %{phase: :awaiting_cap_ack} = state) do
-    if "sasl" in parse_(caps_blob) do
+    if "sasl" in parse_cap_list(caps_blob) do
       :ok = transport_send(state, "AUTHENTICATE PLAIN\r\n")
       {:cont, %{state | phase: :sasl_pending}}
     else
@@ -571,7 +571,10 @@ defmodule Grappa.IRC.Client do
     Base.encode64(<<0, u::binary, 0, u::binary, 0, pw::binary>>)
   end
 
-  defp parse_(blob) do
+  # Parse a CAP LS / CAP ACK cap-list blob: space-separated cap tokens,
+  # each optionally suffixed with `=<value>` (we drop the value, keeping
+  # only the cap name) — IRCv3.2 cap negotiation only inspects names.
+  defp parse_cap_list(blob) do
     blob
     |> String.split(" ", trim: true)
     |> Enum.map(fn cap -> cap |> String.split("=", parts: 2) |> List.first() end)
