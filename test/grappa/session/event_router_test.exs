@@ -289,4 +289,77 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
   end
+
+  describe "route/2 — :mode" do
+    test "MODE +o adds @ to target nick's mode list" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["alice"] == ["@"]
+      assert attrs.meta == %{modes: "+o", args: ["alice"]}
+      assert attrs.body == nil
+      assert attrs.sender == "ChanServ"
+    end
+
+    test "MODE -o removes @ from target nick's mode list" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => ["@"]}}})
+
+      m = msg(:mode, ["#italia", "-o", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, _}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["alice"] == []
+    end
+
+    test "MODE +ovo applies sequentially across args" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"a" => [], "b" => [], "c" => []}}
+        })
+
+      m = msg(:mode, ["#italia", "+ovo", "a", "b", "c"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["a"] == ["@"]
+      assert new_state.members["#italia"]["b"] == ["+"]
+      assert new_state.members["#italia"]["c"] == ["@"]
+      assert attrs.meta == %{modes: "+ovo", args: ["a", "b", "c"]}
+    end
+
+    test "MODE +b (channel-level, not user mode) emits :persist but no member mutation" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      # +b is a ban — not in our user-mode prefix table; channel-level only.
+      m = msg(:mode, ["#italia", "+b", "*!*@spammer.net"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
+               EventRouter.route(m, state)
+
+      # alice mode list unchanged — +b doesn't apply to a member's modes
+      assert new_state.members["#italia"] == %{"alice" => []}
+      assert attrs.meta == %{modes: "+b", args: ["*!*@spammer.net"]}
+    end
+
+    test "MODE on user (not channel) — params shape still matches; persist row written" do
+      # IRC user-MODE: `:vjt MODE vjt +i` — first param is the nick, not
+      # a channel name. Identifier.valid_channel? would reject; the
+      # changeset rejects the row at the boundary. Skip user-MODE for
+      # now: the handler matches `params: [channel | _]` regardless,
+      # but persist will fail validation. Test that we still pass through
+      # without crashing — caller logs the changeset error.
+      state = base_state(%{nick: "vjt"})
+      m = msg(:mode, ["vjt", "+i"], {:nick, "vjt", "u", "h"})
+
+      # We still emit :persist; the persistence layer validates and
+      # rejects (changeset error logged by Server.apply_effects).
+      assert {:cont, _, [{:persist, :mode, _}]} = EventRouter.route(m, state)
+    end
+  end
 end

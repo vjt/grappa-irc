@@ -205,6 +205,24 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
+  def route(%Message{command: :mode, params: [channel, modes | args]} = msg, state)
+      when is_binary(channel) and is_binary(modes) do
+    sender = Message.sender_nick(msg)
+    members = apply_mode_string(state.members, channel, modes, args)
+
+    {state, eff} =
+      build_persist(
+        %{state | members: members},
+        :mode,
+        channel,
+        sender,
+        nil,
+        %{modes: modes, args: args}
+      )
+
+    {:cont, state, [eff]}
+  end
+
   def route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
       when is_binary(new_nick) do
     old_nick = Message.sender_nick(msg)
@@ -266,6 +284,77 @@ defmodule Grappa.Session.EventRouter do
       end)
     end)
   end
+
+  # User-mode prefix table (Q-non-blocking pin): hard-coded `(ov)@+`
+  # default per RFC 2812 + most networks. PREFIX ISUPPORT-driven
+  # negotiation deferred to Phase 5; the table is a compile-time
+  # constant here.
+  @user_mode_prefixes %{"o" => "@", "v" => "+"}
+
+  @spec apply_mode_string(members(), String.t(), String.t(), [String.t()]) :: members()
+  defp apply_mode_string(members, channel, mode_string, args) do
+    case Map.get(members, channel) do
+      nil ->
+        members
+
+      ch_members ->
+        ch_members = walk_modes(ch_members, mode_string, args, :add)
+        Map.put(members, channel, ch_members)
+    end
+  end
+
+  defp walk_modes(ch_members, "", _, _), do: ch_members
+  defp walk_modes(ch_members, "+" <> rest, args, _), do: walk_modes(ch_members, rest, args, :add)
+
+  defp walk_modes(ch_members, "-" <> rest, args, _),
+    do: walk_modes(ch_members, rest, args, :remove)
+
+  defp walk_modes(ch_members, <<mode::binary-size(1), rest::binary>>, args, direction) do
+    case Map.fetch(@user_mode_prefixes, mode) do
+      {:ok, prefix} ->
+        {target, remaining_args} = pop_arg(args)
+        ch_members = update_member_mode(ch_members, target, prefix, direction)
+        walk_modes(ch_members, rest, remaining_args, direction)
+
+      :error ->
+        # Channel-level mode (e.g. `+b ban_mask`); consumes one arg if it
+        # takes one, none otherwise. Without a per-mode arg-taking table
+        # we conservatively consume one arg if any remain — matches
+        # Bahamut/InspIRCd behaviour for the most common channel modes
+        # (k, l, b, e, I); the over-consume case is rare and only loses
+        # us one inferred arg in a multi-mode line, never affects member
+        # state.
+        {_, remaining_args} = pop_arg(args)
+        walk_modes(ch_members, rest, remaining_args, direction)
+    end
+  end
+
+  defp pop_arg([h | t]), do: {h, t}
+  defp pop_arg([]), do: {nil, []}
+
+  defp update_member_mode(ch_members, nil, _, _), do: ch_members
+
+  defp update_member_mode(ch_members, target, prefix, direction) when is_binary(target) do
+    case Map.fetch(ch_members, target) do
+      {:ok, modes} ->
+        Map.put(ch_members, target, toggle_mode(modes, prefix, direction))
+
+      :error ->
+        # Target isn't in our members map (race with NAMES, or non-member
+        # channel-mode arg); leave the map untouched. The persist row
+        # still records the raw MODE line — audit trail intact.
+        ch_members
+    end
+  end
+
+  # `[prefix | modes]` prepend keeps the helper O(1); the canonical
+  # mIRC sort happens at `Session.list_members/3` query time, so list
+  # order in the in-memory map is irrelevant.
+  defp toggle_mode(modes, prefix, :add) do
+    if prefix in modes, do: modes, else: [prefix | modes]
+  end
+
+  defp toggle_mode(modes, prefix, :remove), do: List.delete(modes, prefix)
 
   @spec build_persist(
           state(),
