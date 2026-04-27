@@ -773,4 +773,38 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "list_channels via GenServer.call" do
+    test "returns Map.keys(state.members) sorted alphabetically" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | members: %{
+              "#azzurra" => %{"vjt" => []},
+              "#italia" => %{"vjt" => [], "alice" => []},
+              "#bnc" => %{"vjt" => []}
+            }
+        }
+      end)
+
+      assert {:ok, channels} = GenServer.call(pid, {:list_channels})
+      assert channels == ["#azzurra", "#bnc", "#italia"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "returns empty list when state.members is empty" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      assert {:ok, []} = GenServer.call(pid, {:list_channels})
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end
