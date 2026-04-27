@@ -10,7 +10,7 @@ Full protocol at `docs/reviewing.md`.
 
 ## Argument: `codebase`
 
-Line-level scan. 5 parallel background agents, one per scope:
+Line-level scan. 6 parallel background agents, one per scope:
 
 | Agent | Scope |
 |-------|-------|
@@ -18,10 +18,15 @@ Line-level scan. 5 parallel background agents, one per scope:
 | persistence/ | `lib/grappa/scrollback*`, `priv/repo/migrations/` |
 | lifecycle/ | `lib/grappa/{application,bootstrap,config,release,repo,session}*`, `lib/grappa/session/` |
 | web/ | `lib/grappa_web/` (endpoint, router, controllers, channels) |
-| cross-module + infra | Patterns across all modules + `scripts/`, `Dockerfile`, `compose*.yaml`, `config/`, `.env.example`, `grappa.toml.example` |
+| cicchetto/ | `cicchetto/src/**`, `cicchetto/{tsconfig.json,vite.config.ts,vitest.config.ts,biome.json,package.json,index.html}`, `cicchetto/public/{manifest.json,sw.js,icon*}` |
+| cross-module + infra | Patterns across all server modules + `scripts/`, `Dockerfile`, `compose*.yaml`, `config/`, `infra/nginx.conf`, `.env.example`, `grappa.toml.example`, `cicchetto/biome.json`, `cicchetto/vite.config.ts`, `cicchetto/package.json` ↔ `cicchetto/bun.lock` sync, `scripts/bun.sh` |
 
 Each agent MUST read EVERY file in scope + `CLAUDE.md` + the active
-checkpoint under `docs/checkpoints/` + `docs/DESIGN_NOTES.md`.
+checkpoint under `docs/checkpoints/` + `docs/DESIGN_NOTES.md`. The
+cicchetto/ agent additionally reads its server-side wire-shape
+counterparts (`lib/grappa/{accounts,networks,scrollback}/wire.ex`,
+`lib/grappa_web/controllers/*_json.ex`) so wire-shape drift is caught
+against the source of truth.
 
 ### Agent instructions (include in every agent prompt)
 
@@ -36,7 +41,7 @@ Description.
 **Fix:** Concrete suggestion.
 ```
 
-What to look for (Elixir/Phoenix-specific):
+What to look for (server-side: irc/, persistence/, lifecycle/, web/, cross-module agents):
 - Dead code (unused functions, aliases, requires, modules, unreachable clauses)
 - Default arguments via `\\` — only genuine config defaults are acceptable
   (CLAUDE.md "No default arguments via `\\`")
@@ -66,9 +71,51 @@ What to look for (Elixir/Phoenix-specific):
   violations are bugs even when the spec or plan asks for the
   pattern.** The spec can inherit a bug from existing code.
 
+What the cicchetto/ agent looks for (TypeScript/SolidJS/PWA-specific):
+- SolidJS reactivity bugs: `setSignal` inside a tracked scope (effect
+  loops), `createResource` source signal that never invalidates,
+  `untrack` covering up missing reactivity, `createRoot` ownership
+  leaks (effects outliving their owner), `on(...)` defer-flag misuse,
+  module-singleton-signal double-init under `vi.resetModules`.
+- TypeScript strictness: `any`, `as` casts that bypass exhaustiveness,
+  missing `unknown` narrowing on `JSON.parse`/`fetch` body reads,
+  optional-chain holes, non-exhaustive switch on closed unions
+  (`MessageKind` is the canonical case), `noUncheckedIndexedAccess`
+  violations, `@ts-ignore` / `@ts-expect-error` without a comment.
+- Wire-shape drift: every `cicchetto/src/lib/api.ts` type must mirror
+  `Grappa.{Accounts,Networks,Scrollback}.Wire` + `GrappaWeb.*JSON`.
+  Missing fields, mismatched optionality, type narrower than server,
+  PubSub event payload shape divergence vs `GrappaWeb.GrappaChannel`.
+- XSS / token leakage / CSP-incompatible patterns: `innerHTML`,
+  `dangerouslySetInnerHTML`-equivalent, `eval`, inline `<script>`
+  injected at runtime, token in URL bar / `window.history`, leaked
+  through `console.log` of full request objects, third-party script
+  loads the nginx CSP rejects.
+- A11y baseline: semantic HTML, ARIA roles/labels, keyboard
+  reachability, visible focus, tap targets ≥44pt on iOS, color
+  contrast on dark backgrounds, `lang` attribute, form-label
+  association.
+- Test quality: outcome assertions vs implementation details,
+  module-boundary mocks (`vi.mock` on `../lib/api`/`../lib/socket`
+  not internal helpers), no buggy-behavior pinning, realistic mock
+  data, production code paths called rather than re-implemented,
+  `vi.resetModules()` between cases for module-singleton signals.
+- PWA shell correctness: `manifest.json` required fields (name,
+  start_url, display, icons 192/512); SW caching matches documented
+  intent (shell-cache only, no API/WS); cache-bump on deploy
+  (`Cache-Control: no-cache` from nginx OR versioned SW filename);
+  `index.html` includes the manifest link.
+- Build + tooling drift: `tsconfig.json` strict flags pinned;
+  `package.json` ↔ `bun.lock` sync; Vite base/root/outDir match
+  nginx + compose.prod.yaml expectations; `vite-plugin-solid` is
+  the plugin layer.
+
 What to IGNORE: style preferences, "could be improved" without
 concrete impact, Phase 5+ deferred work explicitly noted in todo.md
-or the active checkpoint.
+or the active checkpoint, Phase 4 UI scope (irssi-shape redesign:
+keyboard layout, theme system, nick lists, mode indicators, topic
+bar, mobile ergonomics, voice I/O — flag bugs but not "the layout is
+messy").
 
 ### Cross-module + infra agent additions
 
@@ -81,13 +128,23 @@ The cross-module agent additionally searches the ENTIRE `lib/` for:
 - Inline string interpolation in `Logger.{info,warning,error,debug}`
   calls where structured-KV metadata would be cleaner
 - Bare `catch _, _` / `rescue _` patterns
-- Inter-context call rules (Phase 1 Task 10 will enforce via
-  `Boundary` annotations — flag obvious violations now)
+- Inter-context call rules (`Boundary` annotations — flag obvious
+  violations now if they aren't already in
+  `mix boundary.find_violations`)
 - Migration drift (`priv/repo/migrations/` order, idempotency,
   schema_migrations consistency)
 - Infra: `scripts/*.sh` consistency, `Dockerfile` stages, compose
   files (project-name conflicts, port collisions, env var coverage),
-  `.env.example` ↔ `runtime.exs` symmetry
+  `.env.example` ↔ `runtime.exs` symmetry, `compose.prod.yaml` env
+  vars vs `runtime.exs` reads, `infra/nginx.conf` reverse-proxy
+  allowlist vs `lib/grappa_web/router.ex` routes (any new server
+  route must land in nginx OR be intentionally bouncer-internal)
+- Cicchetto-side cross-cutting: `cicchetto/biome.json` rule
+  consistency, `cicchetto/vite.config.ts` build target / outDir
+  matching `compose.prod.yaml` `cicchetto-build` expectations,
+  `cicchetto/package.json` version pinning AND lockfile sync
+  (`cicchetto/bun.lock`), `scripts/bun.sh` UID/cache layout
+  matching `compose.prod.yaml` `cicchetto-build`
 
 ## Argument: `architecture`
 
@@ -95,14 +152,15 @@ Concern-based structural review. 6 parallel background agents, one per CONCERN:
 
 | Agent | Concern |
 |-------|---------|
-| Abstraction boundaries | Leaky abstractions, contexts reaching into each other's schemas, return types forcing callers to parse |
-| Responsibility & cohesion | ONE job per context? God modules, feature envy, misplaced logic (e.g. controller doing IRC parsing) |
-| Duplication | Same problem solved differently, copy-paste with tweaks, parallel structures that drift (the wire-shape unification across REST/PubSub/listener is the canonical case to verify) |
-| Dependency architecture | Dependency direction (web → contexts → schemas), import cycles, hidden coupling via `Application.put_env`, supervision-tree ordering invariants |
-| Type system leverage | Atoms-or-typed-literals (CLAUDE.md "Atoms or `@type t :: literal | literal` — never untyped strings"), structs over maps, `@spec` discipline, custom Ecto types over `:map` + key conventions |
-| Extension & maintainability | Adding a new IRC kind = touching 15 files? Adding a new context = touching the supervision tree? Config sprawl, test architecture (mirrors lib/ vs outcome-tested) |
+| Abstraction boundaries | Leaky abstractions, contexts reaching into each other's schemas, return types forcing callers to parse. Includes the server↔client boundary: does cicchetto's `api.ts` consume domain types or re-shape on the client? |
+| Responsibility & cohesion | ONE job per context? God modules, feature envy, misplaced logic (controller doing IRC parsing, schema doing PubSub broadcast, cicchetto component holding domain state instead of consuming it from `lib/networks.ts`). |
+| Duplication | Same problem solved differently, copy-paste with tweaks, parallel structures that drift. Canonical cases: wire-shape unification across REST/PubSub/Channel/Phase-6 listener AND across server `Wire` modules ↔ cicchetto `api.ts` types. |
+| Dependency architecture | Dependency direction (web → contexts → schemas; cicchetto components → `lib/*.ts` stores → `api.ts` + `socket.ts`), import cycles (TS module cycles + Elixir Boundary), hidden coupling via `Application.put_env` or module-level mutable state on the client, supervision-tree ordering invariants. |
+| Type system leverage | Atoms-or-typed-literals (CLAUDE.md "never untyped strings"), structs over maps, custom Ecto types over `:map` + key conventions. On the client: TS `strict` + `noUncheckedIndexedAccess`, branded/opaque types over bare `string` for keys (the `ChannelKey` pattern), exhaustive switch over closed unions, `unknown` narrowing instead of `any`. `@spec` discipline (Dialyxir `:underspecs`) on the server. |
+| Extension & maintainability | Adding a new IRC kind = touching 15 files (server kind enum + Wire + cicchetto `MessageKind` + ScrollbackPane render + tests)? Adding a new context = touching the supervision tree? Config sprawl across `config/*.exs` AND `cicchetto/{tsconfig,vite,vitest,biome}.json`? Test architecture (lib/ mirror vs outcome-tested; client `__tests__/` colocated). |
 
-Each agent reads files across the ENTIRE codebase following the concern.
+Each agent reads files across the ENTIRE codebase (server + cicchetto)
+following the concern.
 
 ### Agent instructions (include in every agent prompt)
 
