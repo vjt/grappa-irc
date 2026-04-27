@@ -72,7 +72,7 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  describe "persist_privmsg/5" do
+  describe "persist_event/1 — :network preloading (was persist_privmsg/5)" do
     test "returns the row with :network preloaded so Wire.to_json/1 doesn't need to",
          %{user: user, network: net} do
       # Wire.to_json/1 pattern-matches on `%Network{slug: slug}` and
@@ -83,8 +83,18 @@ defmodule Grappa.ScrollbackTest do
       # Pushing the preload into the Scrollback boundary collapses the
       # two parallel preload sites into one — the contract is now "the
       # row I hand back is wire-shape-ready".
-      assert {:ok, %Message{} = m} =
-               Scrollback.persist_privmsg(user.id, net.id, "#sniffo", "vjt", "ciao")
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: System.system_time(:millisecond),
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        meta: %{}
+      }
+
+      assert {:ok, %Message{} = m} = Scrollback.persist_event(attrs)
 
       assert %Network{id: id, slug: slug} = m.network
       assert id == net.id
