@@ -78,6 +78,23 @@ describe("socket singleton", () => {
     expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
   });
 
+  it("force-reconnects on token rotation between two non-null values", async () => {
+    // phoenix.js evaluates the `params` callback only at handshake time,
+    // so a live socket stays pinned to the original bearer. A rotation
+    // (Phase 5 token-refresh, admin-driven re-issue) must drop and
+    // reconnect to surface the new bearer on the next handshake.
+    localStorage.setItem("grappa-token", "tok-A");
+    const auth = await import("../lib/auth");
+    await import("../lib/socket");
+    expect(h.mockSocketInstance.connect).toHaveBeenCalledTimes(1);
+    h.mockSocketInstance.isConnected.mockReturnValue(true);
+
+    auth.setToken("tok-B");
+
+    expect(h.mockSocketInstance.disconnect).toHaveBeenCalledTimes(1);
+    expect(h.mockSocketInstance.connect).toHaveBeenCalledTimes(2);
+  });
+
   it("joinChannel builds the topic-vocabulary string and calls channel.join()", async () => {
     localStorage.setItem("grappa-token", "tok-1");
     const socket = await import("../lib/socket");

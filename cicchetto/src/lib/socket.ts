@@ -1,5 +1,5 @@
 import { type Channel, Socket } from "phoenix";
-import { createEffect, createRoot } from "solid-js";
+import { createEffect, createRoot, on } from "solid-js";
 import { token } from "./auth";
 
 // Phoenix Channels singleton. Mirrors `auth.ts`'s module-singleton shape:
@@ -13,13 +13,17 @@ import { token } from "./auth";
 // channel-needing component renders, so the lazy path means we don't
 // even try to open a WS without a bearer.
 //
-// Token-driven connect/disconnect: the Phoenix Socket reads its `params`
-// callback on every (re)connect, so logout-then-login swaps the bearer
-// without a manual token-rotation dance. The createEffect on `token()`
-// disconnects on logout (signal goes null) and reconnects on the next
-// non-null value — covers explicit logout and any 401-driven token
-// clear by the same path. createRoot anchors the effect; module-level
-// effects need an owner.
+// Token-driven lifecycle: phoenix.js evaluates the Socket's `params`
+// callback only at WS-handshake time, so a live connection stays
+// pinned to whatever bearer the handshake captured. Three transitions
+// matter — login (null → t: connect), logout (t → null: disconnect),
+// and rotation (a → b, both non-null and distinct: disconnect+connect
+// to flush the new bearer onto the next handshake). Phase 5
+// token-refresh and admin-driven re-issue both ride this path; without
+// the rotation arm they would silently route under the stale identity.
+// `on(token, fn)` gives us the prev value the rotation check needs;
+// createRoot anchors the effect since module-level effects need an
+// owner.
 //
 // Topic vocabulary mirrors `Grappa.PubSub.Topic` exactly. Don't
 // reformat segment separators or re-encode identifiers — the server's
@@ -37,15 +41,24 @@ function getSocket(): Socket {
 }
 
 createRoot(() => {
-  createEffect(() => {
-    const t = token();
-    if (t === null) {
-      if (_socket?.isConnected()) _socket.disconnect();
-    } else {
+  createEffect(
+    on(token, (t, prev) => {
+      if (t === null) {
+        if (_socket?.isConnected()) _socket.disconnect();
+        return;
+      }
       const s = getSocket();
+      if (prev != null && prev !== t) {
+        // Token rotation: live socket is pinned to `prev`; drop and
+        // reconnect so the params callback returns `t` on the next
+        // handshake.
+        if (s.isConnected()) s.disconnect();
+        s.connect();
+        return;
+      }
       if (!s.isConnected()) s.connect();
-    }
-  });
+    }),
+  );
 });
 
 export function joinUser(userName: string): Channel {
