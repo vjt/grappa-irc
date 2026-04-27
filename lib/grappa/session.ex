@@ -63,7 +63,7 @@ defmodule Grappa.Session do
     deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
     exports: [Server]
 
-  alias Grappa.IRC.{Client, Identifier}
+  alias Grappa.IRC.{AuthFSM, Identifier}
   alias Grappa.Session.Server
 
   require Logger
@@ -92,7 +92,7 @@ defmodule Grappa.Session do
           required(:nick) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
-          required(:auth_method) => Client.auth_method(),
+          required(:auth_method) => AuthFSM.auth_method(),
           required(:password) => String.t() | nil,
           required(:autojoin_channels) => [String.t()],
           required(:host) => String.t(),

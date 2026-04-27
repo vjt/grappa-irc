@@ -32,12 +32,17 @@ defmodule Grappa.Networks.Credential do
 
   alias Grappa.Accounts.User
   alias Grappa.EncryptedBinary
-  alias Grappa.IRC.Identifier
+  alias Grappa.IRC.{AuthFSM, Identifier}
   alias Grappa.Networks.Network
 
+  # The atom literal stays here (Ecto.Enum needs a compile-time literal for
+  # validates_inclusion + DB cast); the @type forwards to AuthFSM so there
+  # is one canonical source for "what does auth_method mean" and Dialyzer
+  # sees a single declaration. Adding a sixth method requires editing
+  # `Grappa.IRC.AuthFSM` (the verb owner) and mirroring the literal here.
   @auth_methods [:auto, :sasl, :server_pass, :nickserv_identify, :none]
 
-  @type auth_method :: :auto | :sasl | :server_pass | :nickserv_identify | :none
+  @type auth_method :: AuthFSM.auth_method()
 
   @type t :: %__MODULE__{
           user_id: Ecto.UUID.t() | nil,

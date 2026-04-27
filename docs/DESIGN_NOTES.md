@@ -920,6 +920,46 @@ sub-modules.
 
 ---
 
+## 2026-04-27 — Pure-FSM extraction prep (CP10 S13, D2/A3 — corollary to D1/A2)
+
+D2 applied the verb-keyed sub-context principle to a state-machine-shaped
+verb (the upstream IRC registration handshake, ~250 lines inside
+`Grappa.IRC.Client`). The verbs extracted into `Grappa.IRC.AuthFSM` as
+a pure module: no process, no Logger, no socket. `step(state, %Message{})`
+returns `{:cont, state, [iodata]} | {:stop, reason, state, [iodata]}`.
+The host GenServer (`IRC.Client`) interprets the `[iodata]` list and
+does the I/O via its existing `transport_send/2`.
+
+The corollary, refining the principle for state-machine-shaped verbs:
+
+> **When the verb is a state machine, extract it as a pure module
+> returning `(state, [side_effect_payload])` from a `step/2` style
+> function. The host GenServer does the I/O.** Two payoffs: (1)
+> isolation tests assert transitions without orchestrating fakes
+> (no Bypass, no IRCServer, no GenServer); (2) the FSM SHAPE is
+> reusable across host shapes — Phase 6's listener facade, Phase 5's
+> reconnect-with-backoff retry helper, a future replay/conformance
+> tool — none of which need the upstream Client GenServer. The FSM
+> does not know what direction the bytes flow OR what process owns
+> the socket.
+
+D1 was the principle's first application (function-shaped verbs:
+slug CRUD, server CRUD, credential lifecycle, session-plan resolution).
+D2 is the second application (FSM-shaped verb: registration handshake).
+Two applications validate the principle; a third surface (Phase 6
+listener facade, A4 cicchetto/lib/networks.ts split) tests it under
+varying input shapes.
+
+The 4-tuple `{:stop, reason, state, [iodata]}` shape is the small
+discovery: the architecture review prescribed the 3-tuple, but the
+SASL `cap_unavailable` case must flush a final `CAP END` before
+stopping. State machines that need to cleanly close out a sub-protocol
+on the way to a stop reason need the trailing flush channel. A future
+listener-facade FSM will likely need the same shape (e.g. emit a
+`421 :Auth required` numeric before stopping on missing CAP REQ).
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
