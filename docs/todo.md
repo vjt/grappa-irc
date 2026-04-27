@@ -29,16 +29,20 @@ into Networks (slug CRUD) + Networks.Servers + Networks.Credentials +
 Networks.SessionPlan; verb-keyed sub-modules under one Boundary
 umbrella; production verified.
 
-**Next — D2 + D3 architectural HIGHs (pre-Phase-4, ~half-session each):**
-- D2 / A3 IRC.Client god-module FSM extraction (~590 lines, FSM +
-  CAP/SASL flow + transport + policy interleaved). Same verb-keyed
-  pattern: schema/state stays on Client GenServer; the FSM phase
-  transitions + cap_buffer extract to `Grappa.IRC.Client.AuthFSM` (or
-  similar). Worktree-per-cluster + orchestrator file-handoff resume.
-- D3 / A4 cicchetto/lib/networks.ts god-module split (9 concerns).
-  Bumps bundle hash → browser-shell verify required after deploy.
+**D2/A3 CLOSED 2026-04-27 (CP10 S13).** IRC.Client god-module split
+into Client (transport + line dispatch + send_* helpers, 334 lines)
++ AuthFSM (pure CAP/SASL/PASS state machine, 343 lines). Pure-FSM
+extraction shape — `step(state, msg) :: {:cont|:stop, state,
+[iodata]}`, host GenServer does I/O — second application of the
+verb-keyed sub-context principle (DESIGN_NOTES corollary entry).
+Production verified at `http://grappa.bad.ass`.
 
-After D1+D2+D3: Phase 4 brainstorm (irssi-shape UI) on clean modules.
+**Next — D3 architectural HIGH (pre-Phase-4, ~half-session):**
+- D3 / A4 cicchetto/lib/networks.ts god-module split (9 concerns).
+  Same verb-keyed pattern; client-side mirror of A2. Bumps bundle
+  hash → browser-shell verify required after deploy.
+
+After D3: Phase 4 brainstorm (irssi-shape UI) on clean modules.
 
 **Phase 4 brainstorm (after D1):** irssi-shape UI redesign. Per
 `superpowers:brainstorming` skill — run a brainstorm BEFORE any
