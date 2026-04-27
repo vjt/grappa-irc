@@ -40,7 +40,7 @@ defmodule GrappaWeb.ChannelsController do
   action only loads the credential's autojoin list.
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
-  def index(conn, _params) do
+  def index(conn, _) do
     user = Accounts.get_user!(conn.assigns.current_user_id)
     network = conn.assigns.network
 

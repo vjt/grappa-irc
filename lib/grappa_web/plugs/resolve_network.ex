@@ -31,7 +31,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   def init(opts), do: opts
 
   @impl Plug
-  def call(conn, _opts) do
+  def call(conn, _) do
     user_id = conn.assigns.current_user_id
     slug = conn.path_params["network_id"]
 
@@ -57,7 +57,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     user = Accounts.get_user!(user_id)
 
     with {:ok, network} <- Networks.get_network_by_slug(slug),
-         {:ok, _credential} <- Networks.get_credential(user, network) do
+         {:ok, _} <- Networks.get_credential(user, network) do
       {:ok, network}
     else
       {:error, :not_found} -> {:error, :not_found}
