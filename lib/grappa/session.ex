@@ -26,7 +26,7 @@ defmodule Grappa.Session do
 
   `start_session/3` takes `(user_id, network_id, opts)` where `opts`
   is the fully-resolved primitive plan — no `Credential` / `Network`
-  / `Server` struct refs cross the Session boundary. `Networks.session_plan/1`
+  / `Server` struct refs cross the Session boundary. `SessionPlan.resolve/1`
   is the canonical producer of that plan; `Bootstrap` threads the
   resolved opts in. The Server's `init/1` is therefore a pure data
   consumer (no `Repo`, no `Networks`, no `Accounts` reads), which
@@ -80,10 +80,10 @@ defmodule Grappa.Session do
   @typedoc """
   Pre-resolved primitive opts consumed by `start_session/3` and
   `Grappa.Session.Server`'s `init/1` callback. Produced canonically by
-  `Grappa.Networks.session_plan/1`; the field set is the single
+  `Grappa.Networks.SessionPlan.resolve/1`; the field set is the single
   source of truth for what the Session boundary needs to start an
   upstream IRC connection — adding a field requires extending this
-  type AND `session_plan/1`'s `build_plan/4` AND the Server state
+  type AND `SessionPlan.resolve/1`'s `build_plan/4` AND the Server state
   struct in lockstep.
   """
   @type start_opts :: %{

@@ -15,7 +15,7 @@ defmodule Grappa.Bootstrap do
 
   `Credentials.list_credentials_for_all_users/0` returns every
   `Credential` with `:network` preloaded; the spawn loop calls
-  `Networks.session_plan/1` per row to flatten the credential +
+  `SessionPlan.resolve/1` per row to flatten the credential +
   picked server into the primitive `Session.start_opts/0` map and
   hands the result to `Session.start_session/3`. Pre-Cluster-2 the
   Session itself reached back into Networks/Accounts/Repo from
@@ -44,7 +44,7 @@ defmodule Grappa.Bootstrap do
       `{:error, {:already_started, pid}}` (idempotent success — the
       session is up under the same Registry key, which is what
       Bootstrap restarts find on every previously-spawned row).
-    * `failed`  — `{:error, _}` from `Networks.session_plan/1`
+    * `failed`  — `{:error, _}` from `SessionPlan.resolve/1`
       (`:no_server`, `:user_not_found`) OR a hard Session-init failure
       (`{:missing_password, _}` from `IRC.Client.init/1`'s validation
       path, propagating up via the linked Client crash inside
@@ -82,8 +82,8 @@ defmodule Grappa.Bootstrap do
 
   use Task, restart: :transient
 
-  alias Grappa.{Networks, Session}
-  alias Grappa.Networks.{Credential, Credentials, Network}
+  alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
+  alias Grappa.Session
 
   require Logger
 
@@ -136,7 +136,7 @@ defmodule Grappa.Bootstrap do
            credential,
          acc
        ) do
-    with {:ok, plan} <- Networks.session_plan(credential),
+    with {:ok, plan} <- SessionPlan.resolve(credential),
          {:ok, _} <- Session.start_session(user_id, network_id, plan) do
       Logger.info("session started", user: user_id, network: slug)
       %{acc | started: acc.started + 1}

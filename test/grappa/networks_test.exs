@@ -25,7 +25,7 @@ defmodule Grappa.NetworksTest do
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.IRC.Identifier
-  alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers}
+  alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
 
   defp user_fixture(name \\ nil) do
     name = name || "vjt-#{System.unique_integer([:positive])}"
@@ -713,7 +713,7 @@ defmodule Grappa.NetworksTest do
   # plan. Session.Server.init/1 is now a pure consumer of this map;
   # the failure-mode tests previously lived on server_test.exs and
   # moved here when the resolution moved into Networks.
-  describe "session_plan/1" do
+  describe "SessionPlan.resolve/1" do
     test "returns the resolved primitive opts for a bound credential" do
       user = user_fixture()
       net = network_fixture()
@@ -728,7 +728,7 @@ defmodule Grappa.NetworksTest do
         })
 
       cred = Credentials.get_credential!(user, net)
-      assert {:ok, plan} = Networks.session_plan(cred)
+      assert {:ok, plan} = SessionPlan.resolve(cred)
 
       assert plan.user_name == user.name
       assert plan.network_slug == net.slug
@@ -758,7 +758,7 @@ defmodule Grappa.NetworksTest do
         })
 
       cred = Credentials.get_credential!(user, net)
-      assert {:error, :no_server} = Networks.session_plan(cred)
+      assert {:error, :no_server} = SessionPlan.resolve(cred)
     end
 
     test "returns {:error, :no_server} when the network has no servers at all" do
@@ -773,7 +773,7 @@ defmodule Grappa.NetworksTest do
         })
 
       cred = Credentials.get_credential!(user, net)
-      assert {:error, :no_server} = Networks.session_plan(cred)
+      assert {:error, :no_server} = SessionPlan.resolve(cred)
     end
 
     test "is a no-op preload when the credential already has :network preloaded (Bootstrap path)" do
@@ -791,7 +791,7 @@ defmodule Grappa.NetworksTest do
       # `list_credentials_for_all_users/0` is the canonical
       # preloaded-:network producer.
       [cred] = Credentials.list_credentials_for_all_users()
-      assert {:ok, plan} = Networks.session_plan(cred)
+      assert {:ok, plan} = SessionPlan.resolve(cred)
       assert plan.host == "h"
     end
   end

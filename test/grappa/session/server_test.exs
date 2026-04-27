@@ -10,7 +10,7 @@ defmodule Grappa.Session.ServerTest do
   `Session.Server.init/1` is a pure data consumer: it takes the
   fully-resolved `Grappa.Session.start_opts/0` plan (host / port /
   tls / nick / realname / sasl_user / password / auth_method /
-  autojoin_channels / user_name / network_slug). `Networks.session_plan/1`
+  autojoin_channels / user_name / network_slug). `SessionPlan.resolve/1`
   is the canonical producer; tests build the DB rows via
   `network_with_server/1` + `credential_fixture/3` then go through
   `start_session_for/2` (in `Grappa.AuthFixtures`) which mirrors
@@ -29,8 +29,8 @@ defmodule Grappa.Session.ServerTest do
   import ExUnit.CaptureLog
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, Networks, PubSub.Topic, Scrollback, Session}
-  alias Grappa.Networks.Credentials
+  alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
+  alias Grappa.Networks.{Credentials, SessionPlan}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -97,9 +97,9 @@ defmodule Grappa.Session.ServerTest do
 
     # Cluster 2 (A2): the "missing credential / missing servers"
     # failure modes moved out of `Session.Server.init/1` and into
-    # `Networks.session_plan/1` (the data resolver). The equivalent
+    # `SessionPlan.resolve/1` (the data resolver). The equivalent
     # invariants now live in `Grappa.NetworksTest` —
-    # `session_plan/1 returns {:error, :no_server}` and friends.
+    # `SessionPlan.resolve/1 returns {:error, :no_server}` and friends.
     # Server boot can still fail at `Client.start_link` (port
     # refused) — covered by the `bootstrap_test.exs` partial-failure
     # path which exercises a refused upstream port end-to-end.
@@ -126,7 +126,7 @@ defmodule Grappa.Session.ServerTest do
       Process.flag(:trap_exit, true)
 
       credential = Credentials.get_credential!(user, network)
-      {:ok, plan} = Networks.session_plan(credential)
+      {:ok, plan} = SessionPlan.resolve(credential)
       init_opts = Map.merge(plan, %{user_id: user.id, network_id: network.id})
 
       # Pre-fix: `Client.start_link/1` returns `{:error, :econnrefused}`

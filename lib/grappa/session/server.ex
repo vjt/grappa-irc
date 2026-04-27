@@ -22,7 +22,7 @@ defmodule Grappa.Session.Server do
   by `Grappa.Session.start_session/3`) and does NO DB reads — no
   `Grappa.Accounts`, no `Grappa.Networks`, no `Grappa.Repo`. The
   server-pick policy + credential resolution live on
-  `Grappa.Networks.session_plan/1` (Networks owns the data, Session
+  `Grappa.Networks.SessionPlan.resolve/1` (Networks owns the data, Session
   owns the connection).
 
   Trade-off: a `:transient` restart replays the SAME cached opts
@@ -353,7 +353,7 @@ defmodule Grappa.Session.Server do
 
   # Build the IRC.Client opts map from the pre-resolved primitive
   # plan. Nick-fallback + Cloak password decryption already happened
-  # in `Grappa.Networks.session_plan/1`'s `build_plan/4` — the
+  # in `Grappa.Networks.SessionPlan.resolve/1`'s `build_plan/4` — the
   # Server is a pass-through here. Same `Client.opts()` shape
   # contract carried in via A23.
   @spec client_opts(init_opts()) :: Client.opts()
