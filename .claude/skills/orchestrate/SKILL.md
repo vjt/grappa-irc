@@ -1,11 +1,21 @@
 ---
 name: orchestrate
-description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /compact is useful, parse, run /compact + send "go on" if yes. Halt on design questions, deploys, or unexpected deviations. Resumes after /clear by reusing the existing Monitor task — user can /clear freely to save tokens.
+description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful, parse, run /clear + paste prompt body if yes. Halt on design questions or unexpected deviations. Resumes after /clear by reusing the existing Monitor task — user can /clear freely to save tokens.
 ---
 
 # Orchestrate
 
-Drive a sibling Claude Code session in another tmux pane through a long-running plan with hands-off compaction. The user `/clear`s the orchestrator freely to save tokens; the Monitor process survives `/clear` so orchestration resumes automatically.
+Drive a sibling Claude Code session in another tmux pane through a long-running plan with hands-off context refresh. The user `/clear`s the orchestrator freely to save tokens; the Monitor process survives `/clear` so orchestration resumes automatically.
+
+## Why /clear, not /compact
+
+Earlier versions of this skill used `/compact <prompt-body>`. Switched to `/clear` because:
+
+- The sibling's prompt bodies (the "first action after clear" paragraphs) are exhaustive — file paths, commit SHAs, full state, ordered next steps. The auto-summary `/compact` adds is mostly redundant.
+- `/compact` keeps the entire prior conversation as a summary on top of the prompt body. Tokens add up across many sub-tasks.
+- `/clear` wipes everything → sibling re-loads CLAUDE.md + active CP + plan from scratch, then acts on the prompt body. Lighter, cleaner restarts.
+
+Tradeoff: no auto-summary safety net. The prompt body MUST be fully self-contained (file paths, commit SHAs, exact next-step). Tell the sibling that explicitly when asking for the prompt.
 
 ## Setup
 
@@ -79,22 +89,23 @@ When IDLE event fires:
 
    | Pane state | Action |
    |------------|--------|
-   | Step landed cleanly + offers next step from plan order | Ask compact |
+   | Step landed cleanly + offers next step from plan order | Ask clear |
    | Session asks design question (X vs Y, which approach?) | **Halt + ping user** |
-   | Live deploy / push to shared infra / real upstream creds | **Halt + ping user** |
-   | Codebase review gate fires (per CLAUDE.md threshold) | **Halt + ping user** |
    | Plan deviation (sub-task skipped or reordered without OK) | **Halt + ping user** |
+   | Codebase review gate fires (per CLAUDE.md threshold) | **Halt + ping user** |
    | Background agents still running (e.g. parallel review agents) | False idle — ignore, wait for next event |
    | User typed in pane directly | Watching only — don't intervene |
 
-3. **Ask compact** path: send to pane:
+   Live deploys / pushes / shared-infra writes default to halt; if the user has explicitly authorized autopilot for the run, treat them as plan-aligned and let sibling proceed.
+
+3. **Ask clear** path: send to pane:
    ```
-   orchestrator: same drill before <next step>. /compact useful? if yes output ONLY the compact prompt body (one paragraph, no preamble). if no answer literally "NO COMPACT".
+   orchestrator: same drill before <next step>. /clear or no? if yes output ONLY the prompt body (one paragraph, no preamble) — fully self-contained for /clear, no auto-summary safety net. include explicit file paths + commit SHAs + first action after clear. if no answer literally "NO CLEAR".
    ```
 
-4. On reply (next idle event):
-   - Reply contains literal `NO COMPACT` → send `go on with <next step> per plan.`
-   - Reply contains compact prompt body → extract, run `/compact`, then on the post-compact idle send `go on with <next step> per plan.`
+4. On reply (next idle event — note Monitor may MISS the busy window for fast replies, see Pitfalls):
+   - Reply contains literal `NO CLEAR` → send `go on with <next step> per plan.`
+   - Reply contains prompt body → extract, run `/clear`, paste body as fresh user message.
 
 ## Sending text to the sibling pane
 
@@ -107,68 +118,74 @@ tmux send-keys -t <PANE_ID> Enter   # second Enter — sometimes needed to actua
 
 The first send-keys often leaves the text queued without submitting; the second `Enter` flushes. Verify with `tmux capture-pane | tail -5` showing a spinner appearing.
 
-## Running /compact with a focus prompt
+## Running /clear with a fresh prompt
 
-**Critical**: `/compact` is a slash command — the `/` MUST be TYPED, not pasted. Pasting `/compact <body>` is treated as a literal message and the session replies in conversational form instead of compacting.
+`/clear` is a slash command — the `/` MUST be TYPED, not pasted. Unlike `/compact`, `/clear` takes no argument: it wipes the conversation, then the next sent message is the new turn-1 user prompt. Two-step send.
 
 ```bash
 # 1. Clear any leftover input first
 tmux send-keys -t <PANE_ID> C-u
 sleep 1
 
-# 2. Load prompt body into tmux paste buffer (single line, no /compact prefix)
-tmux load-buffer /tmp/compact_prompt.txt
+# 2. TYPE the slash command + Enter (wipes the conversation)
+tmux send-keys -t <PANE_ID> '/clear' Enter
+sleep 3
 
-# 3. TYPE the slash command (this triggers Claude Code's command parser)
-tmux send-keys -t <PANE_ID> '/compact '
+# 3. Load prompt body into tmux paste buffer (the entire body, NOT prefixed with /clear or /compact)
+tmux load-buffer /tmp/clear_prompt.txt
 
-# 4. Paste the body
-sleep 1
+# 4. Paste the body as the first message of the fresh conversation
 tmux paste-buffer -t <PANE_ID>
+sleep 1
 
-# 5. Submit
+# 5. Submit (second Enter often needed)
+tmux send-keys -t <PANE_ID> Enter
 sleep 1
 tmux send-keys -t <PANE_ID> Enter
 ```
 
-Verify with `tmux capture-pane | tail -10` showing `Compacting conversation…`. If you see the body echoed back as a regular message instead, slash-command detection failed — clear input (`C-u`) and retry.
+Verify with `tmux capture-pane | tail -10`. Right after `/clear` the status line shows ctx as `🧠 TBD` (fresh, no tokens yet) — that's the signal `/clear` fired. After paste + submit, sibling spinner appears and ctx jumps from 0 to a small percentage.
 
-## Extracting the compact prompt from pane scrollback
+## Extracting the prompt body from pane scrollback
 
 The session's reply is wrapped at pane width with leading `● ` (assistant marker) on first line and `  ` (two-space indent) on continuation lines. To get one continuous paragraph:
 
 ```bash
 tmux capture-pane -t <PANE_ID> -p -S -3000 > /tmp/pane.txt
-# Find the latest "● Resuming Phase" or similar prompt-start
-grep -n "● Resuming\|● Re-resuming" /tmp/pane.txt | tail -1
-# Find the next spinner marker AFTER that line
-grep -n "Crunched\|Worked\|Sautéed\|Churned\|Baked\|Cogitated\|Cooked\|Stewed\|Whipped\|Brewing" /tmp/pane.txt | tail
-# Extract that range, normalize
+# Find first ● after the orchestrator question
+awk '/orchestrator: same drill/{found=1} found && /^● /{print NR; exit}' /tmp/pane.txt
+# Find the next spinner marker AFTER that line — spinner words vary; match the universal `… for Xm Ys` shape
+grep -nE "Crunched|Worked|Sautéed|Churned|Baked|Cogitated|Cooked|Stewed|Whipped|Brewing|Boondoggling|Mulling|Quantumizing|Forging|Spinning|Befuddling|Undulating|Zigzagging|Proofing|Osmosing|Transfiguring|Crystallizing|Reticulating|Billowing|Calculating|Discombobulating|Imagining" /tmp/pane.txt | tail
+# Extract the range between (start) and (spinner-1), normalize
 sed -n '<start>,<end-1>p' /tmp/pane.txt \
   | sed 's/^● //' \
   | sed 's/^  //' \
   | tr '\n' ' ' \
   | sed 's/  */ /g' \
   | sed 's/^ //; s/ $//' \
-  > /tmp/compact_prompt.txt
-wc -c /tmp/compact_prompt.txt
+  > /tmp/clear_prompt.txt
+wc -c /tmp/clear_prompt.txt
 ```
 
-Sanity check: `head -c 100` should start with the prompt's first sentence (e.g. `Resuming Phase 2...`); `tail -c 200` should end with `...First action after compact: ...`.
+Sanity check:
+- `head -c 200` — should start with the prompt's first sentence (e.g. `Resume Phase 3 sub-task 5...`).
+- `tail -c 250` — should end with the explicit "first action" instruction (e.g. `...read /srv/grappa/lib/grappa_web/router.ex, then ...`).
+
+If the tail contains a `<system-reminder>` block, your `<end>` line was too generous — re-grep for the spinner and trim.
 
 ## Halt protocol
 
 When you halt:
 - One-line summary to user: what landed, what's pending, what the Q is.
 - Do not send anything to the sibling pane.
-- Do not run /compact.
+- Do not run /clear.
 - Wait for user direction.
 
 After user direction:
 - Translate into the appropriate send-keys sequence to the sibling pane.
 - Resume normal idle-event handling.
 
-## Resume after /clear
+## Resume after /clear (orchestrator side)
 
 The Monitor process survives `/clear`. The user clears the orchestrator session freely to save tokens. On `/orchestrate` invocation post-`/clear`:
 
@@ -179,11 +196,13 @@ The Monitor process survives `/clear`. The user clears the orchestrator session 
 
 If `/exit` was used instead of `/clear`, the Monitor is gone — re-arm via Step 2 of Setup.
 
-## Pitfalls (learned in S29 of CP07)
+## Pitfalls (learned in S29 of CP07 + CP08/CP09 Phase 2/3)
 
-- **Don't interrupt the session mid-generation.** If the sibling is still writing the compact prompt and you ask another question, you destroy the prompt. Wait for full IDLE.
-- **Spinner words vary.** Cooked, Crunched, Sautéed, Churned, Baked, Cogitated, Worked, Whipped, Brewing, Stewed — match `…` ellipsis, not specific words.
+- **Don't interrupt the session mid-generation.** If the sibling is still writing the prompt body and you ask another question, you destroy the prompt. Wait for full IDLE.
+- **Spinner words vary wildly.** Cooked, Crunched, Sautéed, Churned, Baked, Cogitated, Worked, Whipped, Brewing, Stewed, Boondoggling, Mulling, Quantumizing, Forging, Spinning, Befuddling, Undulating, Zigzagging, Proofing, Osmosing, Transfiguring, Crystallizing, Reticulating, Billowing, Calculating, Discombobulating, Imagining — match `…` ellipsis, not specific words.
 - **`paste again to expand` is just a hint**, not an error. The paste went through.
-- **Ctx % drop confirms compact ran.** Pre-compact 28% → post-compact 6% is the signal. If ctx STAYS at the pre-compact value, /compact didn't fire — the slash was probably pasted instead of typed.
-- **Background agents leave the spinner gone but work continues.** If pane shows `5 local agents` or task list with `◻` items, it's a false idle — don't propose compact, wait.
-- **Live deploy is always a halt point** even if the plan calls for it. Real upstream creds, push to origin, container restarts — operator confirms.
+- **`/clear` confirmed by `🧠 TBD` in status line** (fresh conversation, no tokens). After the prompt body submits, ctx jumps to a small % (e.g. 5–10%), confirming the body landed in turn 1 of a clean session. If you still see the pre-clear ctx %, `/clear` didn't fire — re-run the sequence.
+- **Monitor's 60s poll misses fast NO-CLEAR replies.** When sibling answers in <60s the busy→idle transition completes inside one polling window; no IDLE event fires because `prev_state` was never `busy`. After sending a clear-ask, peek the pane proactively after ~2 min instead of waiting for events.
+- **Background agents leave the spinner gone but work continues.** If pane shows `N local agents` or task list with `◻`/`◼` items including ellipses (`… +12 completed`), it's a false idle. Don't propose clear, wait. The `…` in `… +N completed` ALSO trips the busy regex sometimes — capture the pane and look at the actual state, don't trust transition events alone.
+- **Halt at human-required steps** even on autopilot. iPhone/device tests, explicit user-tagged tasks (`◼ HALT for ...`), real-credential operations the user hasn't pre-authorized.
+- **Self-contained prompts only.** With `/compact` an auto-summary covers gaps. With `/clear`, the prompt body is the ENTIRE context the sibling has after wipe. Bake in: every sub-task SHA so far, file paths, exact first action, all carried-forward state from any "deferred to next sub-task" notes.
