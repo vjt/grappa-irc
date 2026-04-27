@@ -248,6 +248,83 @@ defmodule Grappa.Session.EventRouter do
     {:cont, new_state, effects}
   end
 
+  def route(%Message{command: :topic, params: [channel, body]} = msg, state)
+      when is_binary(channel) and is_binary(body) do
+    {state, eff} = build_persist(state, :topic, channel, Message.sender_nick(msg), body, %{})
+    {:cont, state, [eff]}
+  end
+
+  def route(%Message{command: :kick, params: [channel, target | rest]} = msg, state)
+      when is_binary(channel) and is_binary(target) do
+    sender = Message.sender_nick(msg)
+
+    reason =
+      case rest do
+        [r | _] when is_binary(r) -> r
+        _ -> nil
+      end
+
+    members =
+      case Map.get(state.members, channel) do
+        nil -> state.members
+        ch_members -> Map.put(state.members, channel, Map.delete(ch_members, target))
+      end
+
+    {state, eff} =
+      build_persist(
+        %{state | members: members},
+        :kick,
+        channel,
+        sender,
+        reason,
+        %{target: target}
+      )
+
+    {:cont, state, [eff]}
+  end
+
+  # 353 RPL_NAMREPLY: `:server 353 nick = #channel :@op +voice plain`.
+  # Trailing param is space-separated `[prefix]nick` tokens. Additive
+  # merge into state.members[channel] — multiple 353 lines arrive for
+  # big channels. 366 RPL_ENDOFNAMES marks end; we don't need an
+  # explicit close because each 353 commits its delta immediately.
+  def route(
+        %Message{command: {:numeric, 353}, params: [_, _, channel, names_blob]},
+        state
+      )
+      when is_binary(channel) and is_binary(names_blob) do
+    new_entries =
+      names_blob
+      |> String.split(" ", trim: true)
+      |> Map.new(&split_mode_prefix/1)
+
+    members =
+      Map.update(state.members, channel, new_entries, fn existing ->
+        Map.merge(existing, new_entries)
+      end)
+
+    {:cont, %{state | members: members}, []}
+  end
+
+  # 332 RPL_TOPIC + 333 RPL_TOPICWHOTIME arrive as JOIN-time backfill;
+  # the topic-bar in P4-1 reads live state, not scrollback rows. Pin as
+  # explicit no-ops so a future "let's persist topic backfill" idea
+  # stays out of E1 scope. 366 RPL_ENDOFNAMES is the end-of-NAMES
+  # marker; we don't need to react (each 353 already committed its
+  # delta).
+  def route(%Message{command: {:numeric, code}}, state) when code in [332, 333, 366] do
+    {:cont, state, []}
+  end
+
+  # 001 RPL_WELCOME: first param is the welcomed nick (what upstream
+  # actually registered us as — may differ from requested due to
+  # case-fold normalization, services rename, length truncation).
+  # Reconcile state.nick to upstream's authority.
+  def route(%Message{command: {:numeric, 1}, params: [welcomed_nick | _]}, state)
+      when is_binary(welcomed_nick) do
+    {:cont, %{state | nick: welcomed_nick}, []}
+  end
+
   def route(%Message{} = _, state), do: {:cont, state, []}
 
   # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
@@ -355,6 +432,13 @@ defmodule Grappa.Session.EventRouter do
   end
 
   defp toggle_mode(modes, prefix, :remove), do: List.delete(modes, prefix)
+
+  @spec split_mode_prefix(String.t()) :: {String.t(), [String.t()]}
+  defp split_mode_prefix(<<prefix, rest::binary>>) when prefix in [?@, ?+] do
+    {rest, [<<prefix>>]}
+  end
+
+  defp split_mode_prefix(nick), do: {nick, []}
 
   @spec build_persist(
           state(),
