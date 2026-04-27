@@ -10,22 +10,18 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**Phase 2 + Phase 3 walking skeleton COMPLETE.** Bouncer +
-cicchetto PWA live at `http://grappa.bad.ass` (192.168.53.11 →
-nginx → grappa:4000). iPhone install + login + scrollback + send
-round-trip operator-verified 2026-04-27 (CP09 S3).
+**Phase 2 + Phase 3 walking skeleton + CP10 review-fix campaign
+COMPLETE.** Bouncer + cicchetto PWA live at `http://grappa.bad.ass`
+(192.168.53.11 → nginx → grappa:4000). iPhone install + login +
+scrollback + send round-trip operator-verified 2026-04-27 (CP09 S3).
+CP10 codebase review (2026-04-27) → 4 clusters closed: C1
+(vite-plugin-pwa SW), C2 (init/1 → handle_continue), C3 (MessageKind
+widen + exhaustive switch), C4 (post-Phase-2 hygiene close-out).
 
-**Next session — run `/review codebase` against full repo (server +
-cicchetto):** the `/review` skill was extended in CP09 S4 to cover
-cicchetto/ + cross-cutting compose/nginx/cicchetto-tooling concerns.
-The line-level + architecture passes were deferred to next session
-because skill-update + 6-parallel-agent review on top of this session's
-context would have forced a mid-review compaction. Next session's first
-move: `/review codebase` (Phase 3 trajectory check), then
-`/review architecture` if structural findings warrant.
-
-**Phase 4 — irssi-shape UI redesign (PENDING, not started):**
-The walking-skeleton UI is intentionally rough; Phase 4 owns:
+**Next — Phase 4 brainstorm (PENDING, not started):** Phase 4 is the
+irssi-shape UI redesign. Per `superpowers:brainstorming` skill +
+CP10 review trajectory: run a brainstorm BEFORE any creative work
+to align on scope + non-goals + visual model.
 - Keyboard-first layout (Ctrl-N / Ctrl-P / Alt-1..9 channel switching).
 - Theme system (single global theme, irssi-shape colour palette).
 - Nick list + mode indicators + topic bar + presence per channel.
@@ -34,32 +30,23 @@ The walking-skeleton UI is intentionally rough; Phase 4 owns:
 See README "Roadmap" + DESIGN_NOTES "Mobile is an ergonomics layer
 on irssi-shape, not a different shape."
 
-**Worktree cleanup:** `phase2-auth` worktree at
-`/home/vjt/code/IRC/grappa-phase2` is dead weight post-merge;
-remove via `git worktree remove ~/code/IRC/grappa-phase2`.
-
-**Post-Phase-2 hygiene cluster (carried from S29 + 2j review):**
-- M3 nick-regex consolidation (3 implementations drifting)
-- M5 error-string-casing inconsistency
-- H11 central User wire shape (MeJSON vs AuthJSON)
-- M2 web→Repo dep cleanup (preload via context)
-- M12 `Application.put_env` 6× duplication across mix tasks +
-  Bootstrap (extract `Grappa.MixTaskBoot` helper)
-Combined ~half-session. Land before Phase 3 OR ride naturally as
-Phase 3 surfaces invocation.
+**Correctness carryovers (post-CP10 review, fix campaign in progress):**
+- C5 (security): S14 MessagesController.index probing oracle + S18
+  socket params token rotation timing.
+- C6 (IRC-state): S5 send_pong spec drift, S6 caps_buffer phase
+  escape, S7 Scrollback.insert/1 invariant violation, S13 stale
+  state.nick after upstream NICK collision.
+- C7 (S17 channel-test flake): grappa_channel_test.exs:76 ~1-in-5.
+  Two prior cycles ("may resolve naturally") were wrong — instrument
+  the join handshake, no races.
+- C8 (omnibus): S29 dead `:reason` key + non-Phase-5 LOW catalogue
+  sweep + this todo.md sweep.
 
 ## High
 
-- Investigate flake in
-  `test/grappa_web/channels/grappa_channel_test.exs:76` — `assert_receive
-  %Phoenix.Socket.Message{}` intermittently times out with
-  `{:event, ...}` bare tuple in the mailbox. Race between channel join
-  and PubSub subscribe before broadcast lands. ~1-in-5 hit rate under
-  `mix ci.check` parallelism. Likely fix: re-examine the channel's join
-  handshake — does the broadcast get sent before the subscriber is
-  fully attached? Hit S17. **May resolve naturally during 2h (PubSub
-  topic shape change) or 2i (Channel auth) refactors** — re-evaluate
-  after each.
+- (S17 channel-test flake moved to Immediate § C7. Two prior "may
+  resolve naturally" cycles were wrong; instrumenting the join
+  handshake is the active approach.)
 
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
