@@ -18,6 +18,7 @@ defmodule GrappaWeb.Plugs.Authn do
   import Plug.Conn
 
   alias Grappa.Accounts
+  alias GrappaWeb.FallbackController
 
   require Logger
 
@@ -55,10 +56,12 @@ defmodule GrappaWeb.Plugs.Authn do
     end
   end
 
+  # M5: 401 body shape lives in one module — `FallbackController`.
+  # The plug runs upstream of every controller's `action_fallback`,
+  # so we invoke the fallback directly with `{:error, :unauthorized}`.
   defp unauthorized(conn) do
     conn
-    |> put_resp_content_type("application/json")
-    |> send_resp(401, ~s({"error":"unauthorized"}))
+    |> FallbackController.call({:error, :unauthorized})
     |> halt()
   end
 end
