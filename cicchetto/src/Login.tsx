@@ -1,5 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, Show } from "solid-js";
+import { ApiError } from "./lib/api";
 import * as auth from "./lib/auth";
 
 // Bare credential form. The walking-skeleton login surface is one card,
@@ -24,12 +25,18 @@ const Login: Component = () => {
       await auth.login(name(), password());
       navigate("/", { replace: true });
     } catch (err) {
-      // ApiError.message is `${status} ${code}` — show a friendly line
-      // for the common credential-failure path, fall through to the raw
-      // code for any other (unexpected) failure mode so it's still
-      // visible during development.
-      const code = err instanceof Error ? err.message : "login_failed";
-      setError(code.includes("invalid_credentials") ? "Invalid name or password." : code);
+      // Match strictly on `ApiError.code === "invalid_credentials"` for
+      // the common credential-failure path; fall through to the raw
+      // message for any other (unexpected) failure so it's still
+      // visible during development. Earlier shape used
+      // `code.includes("invalid_credentials")` against the wire token,
+      // which would silently map any unrelated error code that
+      // happened to contain that substring (S47).
+      if (err instanceof ApiError && err.code === "invalid_credentials") {
+        setError("Invalid name or password.");
+      } else {
+        setError(err instanceof Error ? err.message : "login_failed");
+      }
     } finally {
       setSubmitting(false);
     }

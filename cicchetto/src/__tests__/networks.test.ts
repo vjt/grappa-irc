@@ -5,8 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // signals through createEffect/on — exercising the real reactivity is
 // the point of this test.
 
+// phoenix.js's `Channel.join()` returns a Push whose `.receive(...)`
+// returns the same Push for chaining; the production code calls
+// `.join().receive("error", ...).receive("timeout", ...)` (S48). The
+// mock Push must mirror that chain shape so the production call site
+// doesn't crash inside the test.
+const mockJoinPush = {
+  receive: vi.fn(),
+};
+mockJoinPush.receive.mockReturnValue(mockJoinPush);
+
 const mockChannel = {
-  join: vi.fn(),
+  join: vi.fn(() => mockJoinPush),
   on: vi.fn(),
   leave: vi.fn(),
 };
@@ -24,8 +34,6 @@ vi.mock("../lib/api", () => ({
 
 vi.mock("../lib/socket", () => ({
   joinChannel: vi.fn(() => mockChannel),
-  joinNetwork: vi.fn(() => mockChannel),
-  joinUser: vi.fn(() => mockChannel),
 }));
 
 beforeEach(() => {

@@ -69,22 +69,27 @@ createRoot(() => {
   );
 });
 
-export function joinUser(userName: string): Channel {
-  const ch = getSocket().channel(`grappa:user:${userName}`);
-  ch.join();
-  return ch;
-}
-
-export function joinNetwork(userName: string, networkSlug: string): Channel {
-  const ch = getSocket().channel(`grappa:user:${userName}/network:${networkSlug}`);
-  ch.join();
-  return ch;
-}
-
+// `joinUser` / `joinNetwork` were exported in an earlier walking-skeleton
+// pass alongside `joinChannel` for the per-user and per-(user, network)
+// topic shapes. Phase 3 only joins per-channel topics; the other two had
+// zero call sites in `src/**`. Dropped per S49 — bring them back when a
+// real consumer (presence on the per-network topic, MOTD on the
+// per-user topic) needs them.
 export function joinChannel(userName: string, networkSlug: string, channelName: string): Channel {
-  const ch = getSocket().channel(
-    `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`,
-  );
-  ch.join();
+  const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`;
+  const ch = getSocket().channel(topic);
+  // Surface server-side join failures to the console + Phase 5
+  // telemetry hook (the `unknown topic` and `forbidden` shapes the
+  // server returns from `GrappaChannel.join/3` would otherwise vanish
+  // silently). `timeout` is the phoenix.js retry-budget exhaustion
+  // shape; logging it lets a stuck channel show up in operator
+  // browser-console output during diagnosis.
+  ch.join()
+    .receive("error", (err: unknown) => {
+      console.error("[grappa] channel join failed", topic, err);
+    })
+    .receive("timeout", () => {
+      console.error("[grappa] channel join timed out", topic);
+    });
   return ch;
 }
