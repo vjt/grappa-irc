@@ -1,15 +1,9 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, For, Show } from "solid-js";
 import * as auth from "./lib/auth";
-import {
-  channelKey,
-  channelsBySlug,
-  networks,
-  selectedChannel,
-  setSelectedChannel,
-  unreadCounts,
-  user,
-} from "./lib/networks";
+import { channelKey } from "./lib/channelKey";
+import { channelsBySlug, networks, user } from "./lib/networks";
+import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import ScrollbackPane from "./ScrollbackPane";
 
 // Logged-in landing surface. Sub-task 4 wires the network → channel
