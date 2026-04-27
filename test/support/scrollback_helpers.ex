@@ -4,7 +4,7 @@ defmodule Grappa.ScrollbackHelpers do
   arbitrary kinds.
 
   The production `Grappa.Scrollback` API exposes ONLY kind-specific
-  writers (`persist_privmsg/5`) — the moduledoc invariant is "callers
+  writers (`persist_event/1`) — the moduledoc invariant is "callers
   never `Repo.insert/2` directly." Tests need to seed rows of every
   kind (`:join`, `:part`, `:nick_change`, etc.) to exercise
   `fetch/5` + `Scrollback.Wire`; routing those test-only inserts

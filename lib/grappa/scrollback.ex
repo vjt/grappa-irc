@@ -70,42 +70,6 @@ defmodule Grappa.Scrollback do
   def max_page_size, do: @max_limit
 
   @doc """
-  Persists a `:privmsg` row with `server_time` defaulted to the
-  current millisecond. The producing-side defaults (kind, server_time)
-  live here so callers — REST controller, IRC.Session, future Phase 6
-  listener — pass only the domain inputs and stay decoupled from the
-  schema's internal field set.
-
-  The returned row has `:network` preloaded so callers can hand it
-  straight to `Scrollback.Wire.to_json/1` / `Wire.message_event/1`
-  (both pattern-match on `%Network{slug: _}` and crash on unloaded
-  assoc). Folding the preload into the boundary collapses what used
-  to be two parallel `Repo.preload(message, :network)` sites
-  (Session.Server's broadcast path + the REST POST controller's
-  render path) into one — single source for the wire-shape contract.
-  """
-  @spec persist_privmsg(Ecto.UUID.t(), integer(), String.t(), String.t(), String.t()) ::
-          {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
-  def persist_privmsg(user_id, network_id, channel, sender, body)
-      when is_binary(user_id) and is_integer(network_id) do
-    changeset =
-      Message.changeset(%Message{}, %{
-        user_id: user_id,
-        network_id: network_id,
-        channel: channel,
-        server_time: System.system_time(:millisecond),
-        kind: :privmsg,
-        sender: sender,
-        body: body
-      })
-
-    case Repo.insert(changeset) do
-      {:ok, message} -> {:ok, Repo.preload(message, :network)}
-      {:error, _} = err -> err
-    end
-  end
-
-  @doc """
   Persists a scrollback row of arbitrary kind. Takes the full attribute
   map explicitly — no defaulting, no implicit current-time read. Caller
   is responsible for `:server_time` (epoch ms) and `:meta` (`%{}` for
@@ -159,7 +123,7 @@ defmodule Grappa.Scrollback do
   result straight to `Scrollback.Wire.to_json/1` (which pattern-matches
   on `%Network{slug: _}` and crashes on unloaded assoc). Single
   network query per page (Ecto deduplicates the `IN (...)` lookup);
-  identical wire-shape contract as `persist_privmsg/5` (A4 + A26).
+  identical wire-shape contract as `persist_event/1` (A4 + A26).
   """
   @spec fetch(Ecto.UUID.t(), integer(), String.t(), integer() | nil, pos_integer()) ::
           [Message.t()]

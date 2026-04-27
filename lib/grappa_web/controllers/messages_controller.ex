@@ -110,7 +110,7 @@ defmodule GrappaWeb.MessagesController do
     # :invalid_line. Two distinct error tags so client UX can branch.
     with :ok <- validate_channel_name(channel),
          {:ok, message} <- Session.send_privmsg(user_id, network.id, channel, body) do
-      # `:network` is preloaded by `Scrollback.persist_privmsg/5` —
+      # `:network` is preloaded by `Scrollback.persist_event/1` —
       # the Session contract returns a wire-shape-ready row. Don't
       # re-preload here; reaching across to Repo from the controller
       # would re-introduce the cross-boundary dep that A4 closed.

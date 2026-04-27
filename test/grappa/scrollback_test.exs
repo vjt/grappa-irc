@@ -363,7 +363,7 @@ defmodule Grappa.ScrollbackTest do
     # can hand the result straight to `Scrollback.Wire.to_json/1`
     # (which pattern-matches on `%Network{slug: _}` and crashes on
     # unloaded assoc). Mirrors the same wire-shape-ready contract that
-    # `persist_privmsg/5` carries (A4); previously the controller had
+    # `persist_event/1` carries (A4); previously the controller had
     # to do its own `preload_networks/2` post-fetch.
     test "returns rows with :network preloaded so callers can render to wire shape",
          %{user: user, network: net} do
