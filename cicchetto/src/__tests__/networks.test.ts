@@ -45,6 +45,20 @@ beforeEach(() => {
   // so a fresh import gets a fresh Set; nothing to do here.
 });
 
+// Tests reach into both `lib/networks` (the networks/user/channels
+// resources + selection signals) and `lib/scrollback` (the scrollback
+// signal + load/loadMore/send verbs). Pre-A4 split the two were one
+// module; importing networks transitively loads scrollback (the
+// module-load chain still fires scrollback's createRoot), so bare
+// `await import("../lib/networks")` calls keep their meaning.
+// Tests that READ scrollback exports go through the merged-store
+// helper.
+const loadStore = async () => {
+  const networks = await import("../lib/networks");
+  const scrollback = await import("../lib/scrollback");
+  return { ...networks, ...scrollback };
+};
+
 const seedStubs = async () => {
   const api = await import("../lib/api");
   vi.mocked(api.listNetworks).mockResolvedValue([
@@ -91,7 +105,7 @@ describe("networks store", () => {
   it("populates the networks signal from GET /networks", async () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       const n = store.networks();
       expect(n).toBeDefined();
@@ -104,7 +118,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     const api = await import("../lib/api");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       const cbs = store.channelsBySlug();
       expect(cbs).toBeDefined();
@@ -131,7 +145,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -158,7 +172,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -186,7 +200,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -215,7 +229,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -229,7 +243,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -256,7 +270,7 @@ describe("networks store", () => {
       },
     ]);
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -276,7 +290,7 @@ describe("networks store", () => {
     await seedStubs();
     const api = await import("../lib/api");
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -332,7 +346,7 @@ describe("networks store", () => {
       },
     ]);
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -361,7 +375,7 @@ describe("networks store", () => {
       },
     ]);
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -392,7 +406,7 @@ describe("networks store", () => {
     await seedStubs();
     const api = await import("../lib/api");
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -405,7 +419,7 @@ describe("networks store", () => {
     await seedStubs();
     const api = await import("../lib/api");
     await import("../lib/socket");
-    const store = await import("../lib/networks");
+    const store = await loadStore();
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
@@ -434,7 +448,7 @@ describe("networks store", () => {
       await seedStubs();
       const auth = await import("../lib/auth");
       const socket = await import("../lib/socket");
-      const store = await import("../lib/networks");
+      const store = await loadStore();
 
       await vi.waitFor(() => {
         expect(socket.joinChannel).toHaveBeenCalledTimes(2);
@@ -475,7 +489,7 @@ describe("networks store", () => {
       await seedStubs();
       const auth = await import("../lib/auth");
       await import("../lib/socket");
-      const store = await import("../lib/networks");
+      const store = await loadStore();
 
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();

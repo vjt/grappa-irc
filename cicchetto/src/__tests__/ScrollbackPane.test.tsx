@@ -19,7 +19,7 @@ import type { ScrollbackMessage } from "../lib/api";
 
 const [scrollback, setScrollback] = createSignal<Record<string, ScrollbackMessage[]>>({});
 
-vi.mock("../lib/networks", () => ({
+vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
   sendMessage: vi.fn(),
 }));
@@ -28,7 +28,7 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
-import { sendMessage } from "../lib/networks";
+import { sendMessage } from "../lib/scrollback";
 import ScrollbackPane from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
