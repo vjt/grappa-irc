@@ -73,10 +73,13 @@ defmodule GrappaWeb.Router do
     get "/channels", ChannelsController, :index
     post "/channels", ChannelsController, :create
     delete "/channels/:channel_id", ChannelsController, :delete
+    post "/channels/:channel_id/topic", ChannelsController, :topic
 
     get "/channels/:channel_id/messages", MessagesController, :index
     post "/channels/:channel_id/messages", MessagesController, :create
 
     get "/channels/:channel_id/members", MembersController, :index
+
+    post "/nick", NickController, :create
   end
 end

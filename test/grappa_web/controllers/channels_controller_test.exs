@@ -367,5 +367,75 @@ defmodule GrappaWeb.ChannelsControllerTest do
     end
   end
 
+  describe "POST /networks/:network_id/channels/:channel_id/topic" do
+    test "202 + ok body when session accepts the topic", %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      slug = "az-topic-#{u()}"
+      network = setup_network(vjt, port, slug)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => "new topic"})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      {:ok, line} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+      assert line == "TOPIC #italia :new topic\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "400 on missing body", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-mb-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "400 on empty body", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-eb-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => ""})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "404 no session", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-ns-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => "topic"})
+
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    test "400 on malformed channel", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-mc-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/no-prefix/topic", %{"body" => "topic"})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+  end
+
   defp u, do: System.unique_integer([:positive])
 end
