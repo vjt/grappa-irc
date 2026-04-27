@@ -78,7 +78,7 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.IRC.{Client, Message}
+  alias Grappa.IRC.{AuthFSM, Client, Message}
   alias Grappa.{Log, Scrollback}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
@@ -99,7 +99,7 @@ defmodule Grappa.Session.Server do
           required(:nick) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
-          required(:auth_method) => Client.auth_method(),
+          required(:auth_method) => AuthFSM.auth_method(),
           required(:password) => String.t() | nil,
           required(:autojoin_channels) => [String.t()],
           required(:host) => String.t(),

@@ -604,7 +604,7 @@ defmodule Grappa.IRC.ClientTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
       # Wait for 001 to be processed by tailing into the registered phase.
       Process.sleep(50)
-      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+      assert %{fsm: %{phase: :registered, caps_buffer: []}} = :sys.get_state(client)
 
       # Now spam stray CAP LS continuations — would have grown the
       # buffer unbounded prior to the F1 phase guard.
@@ -618,7 +618,7 @@ defmodule Grappa.IRC.ClientTest do
       IRCServer.feed(server, ":server CAP grappa-test LS :tail-cap\r\n")
       Process.sleep(50)
 
-      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+      assert %{fsm: %{phase: :registered, caps_buffer: []}} = :sys.get_state(client)
     end
 
     test "001 during awaiting_cap_ls clears caps_buffer (C6 / S6)" do
@@ -661,7 +661,7 @@ defmodule Grappa.IRC.ClientTest do
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
       Process.sleep(50)
 
-      assert %{phase: :registered, caps_buffer: []} = :sys.get_state(client)
+      assert %{fsm: %{phase: :registered, caps_buffer: []}} = :sys.get_state(client)
     end
 
     test "433 ERR_NICKNAMEINUSE during registration crashes {:nick_rejected, 433, nick}" do
