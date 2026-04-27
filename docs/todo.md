@@ -10,20 +10,30 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**Phase 2 + Phase 3 walking skeleton + CP10 review-fix campaign
-IN PROGRESS.** Bouncer + cicchetto PWA live at `http://grappa.bad.ass`
-(192.168.53.11 → nginx → grappa:4000). iPhone install + login +
-scrollback + send round-trip operator-verified 2026-04-27 (CP09 S3).
-CP10 codebase review (2026-04-27) → 5 clusters closed: C1
-(vite-plugin-pwa SW), C2 (init/1 → handle_continue), C3 (MessageKind
-widen + exhaustive switch), C4 (post-Phase-2 hygiene close-out),
-C5 (security correctness: S14 probing-oracle plug + S18 socket
-token-rotation reconnect).
+**Phase 2 + Phase 3 walking skeleton LIVE; CP10 review-fix campaign
+correctness clusters CLOSED.** Bouncer + cicchetto PWA live at
+`http://grappa.bad.ass` (192.168.53.11 → nginx → grappa:4000). iPhone
+install + login + scrollback + send round-trip operator-verified
+2026-04-27 (CP09 S3). CP10 codebase review (2026-04-27) → eight
+clusters closed: C1 (vite-plugin-pwa SW), C2 (init/1 →
+handle_continue), C3 (MessageKind widen + exhaustive switch), C4
+(post-Phase-2 hygiene close-out), C5 (security correctness — S14
+probing-oracle plug + S18 socket token-rotation reconnect), C6
+(IRC-state correctness — S5 + S6 + S7 + S13), C7 (channel-lifecycle
+correctness — collapsed to A1 cicchetto identity-scoped state
+cleanup; S17 verified resolved upstream), C8 (omnibus housekeeping —
+S29 dead key + LOW catalogue sweep + this todo sweep).
 
-**Next — Phase 4 brainstorm (PENDING, not started):** Phase 4 is the
-irssi-shape UI redesign. Per `superpowers:brainstorming` skill +
-CP10 review trajectory: run a brainstorm BEFORE any creative work
-to align on scope + non-goals + visual model.
+**Next — D1 architectural HIGHs (pre-Phase-4, ~half-session each):**
+- A2 Networks god-context split (7 deps).
+- A3 IRC.Client god-module FSM extraction.
+- A4 cicchetto/lib/networks.ts god-module split (9 concerns).
+Each is its own cluster. May fold into Phase 4 brainstorm if the
+brainstorm surfaces a cleaner refactoring sequence.
+
+**Phase 4 brainstorm (after D1):** irssi-shape UI redesign. Per
+`superpowers:brainstorming` skill — run a brainstorm BEFORE any
+creative work to align on scope + non-goals + visual model.
 - Keyboard-first layout (Ctrl-N / Ctrl-P / Alt-1..9 channel switching).
 - Theme system (single global theme, irssi-shape colour palette).
 - Nick list + mode indicators + topic bar + presence per channel.
@@ -32,22 +42,39 @@ to align on scope + non-goals + visual model.
 See README "Roadmap" + DESIGN_NOTES "Mobile is an ergonomics layer
 on irssi-shape, not a different shape."
 
-**Correctness carryovers (post-CP10 review, fix campaign in progress):**
-- C6 (IRC-state): S5 send_pong spec drift, S6 caps_buffer phase
-  escape, S7 Scrollback.insert/1 invariant violation, S13 stale
-  state.nick after upstream NICK collision.
-- C7 (S17 channel-test flake): grappa_channel_test.exs:76 ~1-in-5.
-  Two prior cycles ("may resolve naturally") were wrong — instrument
-  the join handshake, no races. Folds A1 cicchetto Set leak (same
-  lifecycle question — token-rotation cleanup of `joined` /
-  `loadedChannels` Sets).
-- C8 (omnibus): S29 dead `:reason` key + non-Phase-5 LOW catalogue
-  sweep + this todo.md sweep.
-- D1 (architectural HIGHs, post-correctness, pre-Phase-4): A2 Networks
-  god-context split (7 deps), A3 IRC.Client god-module FSM extraction,
-  A4 cicchetto/lib/networks.ts god-module split (9 concerns). Each
-  ~half-session. May fold into Phase 4 brainstorm if the brainstorm
-  itself surfaces a cleaner refactoring sequence.
+**D-cluster triage backlog (test-suite flakes surfaced during the
+correctness campaign — defer to a dedicated investigation pass, not
+fixed in C8):**
+- `Grappa.BootstrapTest:80` — `on_exit` hits
+  `GenServer.call(Grappa.SessionSupervisor, …, :infinity)` with
+  `{:EXIT, no process: …}` because `SessionSupervisor` exhausted
+  `max_restarts: 3` in <100ms during parallel async tests crashing
+  sessions. Same shape as the C2 cluster's "test-side discipline"
+  warning (C7 S17 verification reproduced ~1-in-15 under
+  suite parallelism). Investigation route: widen
+  `SessionSupervisor.max_restarts` for the test environment, OR
+  add a per-test session-spawn isolation flag.
+- `Grappa.Networks.WireTest` — `network_to_json/1` and
+  `credential_to_json/1` Jason-encodable tests fail intermittently
+  on sqlite "Database busy" during setup under `max_cases: 2`
+  write-heavy parallelism. Documented since CP08 carryover; the
+  C7 verification re-confirmed it's still live.
+- `Grappa.AccountsTest:20` — `create_user/1 rejects a duplicate
+  name` — likely also sqlite contention. Same investigation
+  shape as WireTest (sqlite WAL-mode in test, sandbox shared-mode
+  review).
+- All three are pre-existing test-infra issues. Fix campaign for them
+  is its own cluster (D-cluster naming) sized larger than housekeeping.
+
+## High
+
+- (S17 channel-test flake RESOLVED-UPSTREAM in C7 verification —
+  15 consecutive runs zero failures; the C2 cluster's stop_session
+  race fix almost certainly closed it.)
+
+- Phase 5 hardening: Session.Server should `terminate/2` cleanly —
+  send QUIT to upstream + close socket. Currently :normal exit kills
+  IRC.Client via link, which silently dies; OK for prod but emits
 
 ## High
 
