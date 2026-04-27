@@ -30,6 +30,7 @@ defmodule Grappa.Session.ServerTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
   alias Grappa.{IRCServer, Networks, PubSub.Topic, Scrollback, Session}
+  alias Grappa.Networks.Credentials
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -124,7 +125,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       Process.flag(:trap_exit, true)
 
-      credential = Networks.get_credential!(user, network)
+      credential = Credentials.get_credential!(user, network)
       {:ok, plan} = Networks.session_plan(credential)
       init_opts = Map.merge(plan, %{user_id: user.id, network_id: network.id})
 
@@ -209,21 +210,21 @@ defmodule Grappa.Session.ServerTest do
       assert Session.whereis(user.id, network.id) == nil
     end
 
-    # The integration check: Networks.unbind_credential/2 must call
+    # The integration check: Credentials.unbind_credential/2 must call
     # stop_session/2 BEFORE deleting the credential row so the running
     # GenServer doesn't outlive the FK row it cached. Without the
     # teardown the GenServer's `state.network_id` points at a deleted
     # row; the next outbound PRIVMSG crashes the call handler and
     # the `:transient` restart would loop forever (init can't reload
     # the now-absent credential).
-    test "Networks.unbind_credential/2 tears down the running session" do
+    test "Credentials.unbind_credential/2 tears down the running session" do
       {_, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
       assert Process.alive?(pid)
 
-      assert :ok = Networks.unbind_credential(user, network)
+      assert :ok = Credentials.unbind_credential(user, network)
 
       refute Process.alive?(pid)
       assert Session.whereis(user.id, network.id) == nil

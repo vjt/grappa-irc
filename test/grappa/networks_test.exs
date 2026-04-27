@@ -25,7 +25,7 @@ defmodule Grappa.NetworksTest do
 
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.IRC.Identifier
-  alias Grappa.Networks.{Credential, Network, Server, Servers}
+  alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers}
 
   defp user_fixture(name \\ nil) do
     name = name || "vjt-#{System.unique_integer([:positive])}"
@@ -157,7 +157,7 @@ defmodule Grappa.NetworksTest do
 
     test "persists a credential row and returns it", %{user: user, network: net} do
       assert {:ok, %Credential{} = cred} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt-grappa",
                  password: "secretpw",
                  auth_method: :auto,
@@ -173,7 +173,7 @@ defmodule Grappa.NetworksTest do
 
     test "encrypts the password in the DB column", %{user: user, network: net} do
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           password: "PLAIN-PW",
           auth_method: :auto,
@@ -191,7 +191,7 @@ defmodule Grappa.NetworksTest do
 
     test "auth_method = :none accepts no password", %{user: user, network: net} do
       assert {:ok, %Credential{auth_method: :none}} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  auth_method: :none,
                  autojoin_channels: []
@@ -200,7 +200,7 @@ defmodule Grappa.NetworksTest do
 
     test "auth_method = :sasl without a password fails validation", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  auth_method: :sasl,
                  autojoin_channels: []
@@ -211,7 +211,7 @@ defmodule Grappa.NetworksTest do
 
     test "rejects an invalid nick", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "bad nick with spaces",
                  auth_method: :none,
                  autojoin_channels: []
@@ -280,7 +280,7 @@ defmodule Grappa.NetworksTest do
     # at bind time would inject an arbitrary IRC command at handshake.
     test "rejects realname with embedded CRLF", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  realname: "real\r\nQUIT :pwn",
                  auth_method: :none,
@@ -292,7 +292,7 @@ defmodule Grappa.NetworksTest do
 
     test "rejects sasl_user with embedded LF", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  sasl_user: "user\nQUIT",
                  auth_method: :sasl,
@@ -305,7 +305,7 @@ defmodule Grappa.NetworksTest do
 
     test "rejects password with NUL byte", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  auth_method: :server_pass,
                  password: "secret\x00pwn",
@@ -317,7 +317,7 @@ defmodule Grappa.NetworksTest do
 
     test "rejects autojoin_channels with invalid channel name", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  auth_method: :none,
                  autojoin_channels: ["#good", "#bad\r\nQUIT"]
@@ -328,7 +328,7 @@ defmodule Grappa.NetworksTest do
 
     test "rejects autojoin_channels missing prefix", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  auth_method: :none,
                  autojoin_channels: ["no-prefix"]
@@ -348,7 +348,7 @@ defmodule Grappa.NetworksTest do
     # missing-method case fails loudly at the changeset boundary.
     test "rejects bind_credential when auth_method is missing", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.bind_credential(user, net, %{
+               Credentials.bind_credential(user, net, %{
                  nick: "vjt",
                  autojoin_channels: []
                })
@@ -363,7 +363,7 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "old-nick",
           password: "old-pw",
           auth_method: :auto,
@@ -375,7 +375,7 @@ defmodule Grappa.NetworksTest do
 
     test "preserves password_encrypted on a same-auth_method update", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential!(user, net, %{
+               Credentials.update_credential!(user, net, %{
                  nick: "renamed",
                  autojoin_channels: ["#new"]
                })
@@ -387,14 +387,14 @@ defmodule Grappa.NetworksTest do
 
     test "rejects auth_method change without a fresh password", %{user: user, network: net} do
       assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.update_credential!(user, net, %{auth_method: :sasl})
+               Credentials.update_credential!(user, net, %{auth_method: :sasl})
 
       assert "must be re-supplied when auth_method changes" in errors_on(cs).password
     end
 
     test "accepts auth_method change with a fresh password", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential!(user, net, %{
+               Credentials.update_credential!(user, net, %{
                  auth_method: :sasl,
                  password: "fresh-sasl-pw"
                })
@@ -405,7 +405,7 @@ defmodule Grappa.NetworksTest do
 
     test "accepts auth_method change to :none without a password", %{user: user, network: net} do
       assert {:ok, cred} =
-               Networks.update_credential!(user, net, %{auth_method: :none})
+               Credentials.update_credential!(user, net, %{auth_method: :none})
 
       assert cred.auth_method == :none
     end
@@ -419,7 +419,7 @@ defmodule Grappa.NetworksTest do
       orphan_net = network_fixture()
 
       assert_raise Ecto.NoResultsError, fn ->
-        Networks.update_credential!(orphan_user, orphan_net, %{nick: "x"})
+        Credentials.update_credential!(orphan_user, orphan_net, %{nick: "x"})
       end
     end
   end
@@ -430,10 +430,10 @@ defmodule Grappa.NetworksTest do
       net1 = network_fixture("net-a")
       net2 = network_fixture("net-b")
 
-      {:ok, _} = Networks.bind_credential(user, net1, %{nick: "n", auth_method: :none, autojoin_channels: []})
-      {:ok, _} = Networks.bind_credential(user, net2, %{nick: "n", auth_method: :none, autojoin_channels: []})
+      {:ok, _} = Credentials.bind_credential(user, net1, %{nick: "n", auth_method: :none, autojoin_channels: []})
+      {:ok, _} = Credentials.bind_credential(user, net2, %{nick: "n", auth_method: :none, autojoin_channels: []})
 
-      creds = Networks.list_credentials_for_user(user)
+      creds = Credentials.list_credentials_for_user(user)
       assert length(creds) == 2
       assert Enum.all?(creds, &match?(%Network{}, &1.network))
       slugs = creds |> Enum.map(& &1.network.slug) |> Enum.sort()
@@ -442,13 +442,13 @@ defmodule Grappa.NetworksTest do
 
     test "returns [] for a user with no bindings" do
       user = user_fixture()
-      assert Networks.list_credentials_for_user(user) == []
+      assert Credentials.list_credentials_for_user(user) == []
     end
   end
 
   describe "list_credentials_for_all_users/0" do
     test "returns [] when no credentials exist" do
-      assert Networks.list_credentials_for_all_users() == []
+      assert Credentials.list_credentials_for_all_users() == []
     end
 
     test "returns every credential across users + networks with :network preloaded" do
@@ -458,15 +458,15 @@ defmodule Grappa.NetworksTest do
       net_b = network_fixture("net-b-#{System.unique_integer([:positive])}")
 
       {:ok, _} =
-        Networks.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
 
       {:ok, _} =
-        Networks.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
 
       {:ok, _} =
-        Networks.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
 
-      creds = Networks.list_credentials_for_all_users()
+      creds = Credentials.list_credentials_for_all_users()
       assert length(creds) == 3
       assert Enum.all?(creds, &match?(%Credential{}, &1))
       assert Enum.all?(creds, &match?(%Network{}, &1.network))
@@ -484,16 +484,16 @@ defmodule Grappa.NetworksTest do
       net_b = network_fixture("net-b-#{System.unique_integer([:positive])}")
 
       {:ok, c1} =
-        Networks.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u1, net_a, %{nick: "a", auth_method: :none, autojoin_channels: []})
 
       {:ok, c2} =
-        Networks.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u2, net_a, %{nick: "b", auth_method: :none, autojoin_channels: []})
 
       {:ok, c3} =
-        Networks.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
+        Credentials.bind_credential(u1, net_b, %{nick: "a", auth_method: :none, autojoin_channels: []})
 
       ts =
-        Enum.map(Networks.list_credentials_for_all_users(), &{&1.user_id, &1.network_id, &1.inserted_at})
+        Enum.map(Credentials.list_credentials_for_all_users(), &{&1.user_id, &1.network_id, &1.inserted_at})
 
       # Strictly non-decreasing inserted_at — ties broken by composite key.
       assert ts == Enum.sort_by(ts, fn {u, n, t} -> {t, u, n} end)
@@ -509,14 +509,14 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           password: "ROUND-TRIP",
           auth_method: :auto,
           autojoin_channels: []
         })
 
-      cred = Networks.get_credential!(user, net)
+      cred = Credentials.get_credential!(user, net)
       assert cred.password_encrypted == "ROUND-TRIP"
       assert cred.user_id == user.id
       assert cred.network_id == net.id
@@ -526,7 +526,7 @@ defmodule Grappa.NetworksTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert_raise Ecto.NoResultsError, fn -> Networks.get_credential!(user, net) end
+      assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
     end
   end
 
@@ -536,14 +536,14 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
         })
 
-      assert :ok = Networks.unbind_credential(user, net)
-      assert_raise Ecto.NoResultsError, fn -> Networks.get_credential!(user, net) end
+      assert :ok = Credentials.unbind_credential(user, net)
+      assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
     end
 
     test "cascades the network + servers when no other credentials reference it" do
@@ -552,13 +552,13 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
         })
 
-      assert :ok = Networks.unbind_credential(user, net)
+      assert :ok = Credentials.unbind_credential(user, net)
       assert Repo.get(Network, net.id) == nil
       query = from(s in Server, where: s.network_id == ^net.id)
       assert Repo.all(query) == []
@@ -571,30 +571,30 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
-        Networks.bind_credential(u1, net, %{
+        Credentials.bind_credential(u1, net, %{
           nick: "n1",
           auth_method: :none,
           autojoin_channels: []
         })
 
       {:ok, _} =
-        Networks.bind_credential(u2, net, %{
+        Credentials.bind_credential(u2, net, %{
           nick: "n2",
           auth_method: :none,
           autojoin_channels: []
         })
 
-      assert :ok = Networks.unbind_credential(u1, net)
+      assert :ok = Credentials.unbind_credential(u1, net)
       assert %Network{} = Repo.get(Network, net.id)
       query = from(s in Server, where: s.network_id == ^net.id)
       assert length(Repo.all(query)) == 1
-      assert %Credential{} = Networks.get_credential!(u2, net)
+      assert %Credential{} = Credentials.get_credential!(u2, net)
     end
 
     test "returns :ok when called for a non-existent binding (idempotent)" do
       user = user_fixture()
       net = network_fixture()
-      assert :ok = Networks.unbind_credential(user, net)
+      assert :ok = Credentials.unbind_credential(user, net)
     end
 
     # S29 C2: messages.network_id FK is :restrict (NOT :delete_all) so
@@ -609,7 +609,7 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
@@ -627,16 +627,16 @@ defmodule Grappa.NetworksTest do
           body: "msg keep me"
         })
 
-      assert {:error, :scrollback_present} = Networks.unbind_credential(user, net)
+      assert {:error, :scrollback_present} = Credentials.unbind_credential(user, net)
 
       # Transaction rolled back — credential AND network still present.
       assert %Network{} = Repo.get(Network, net.id)
-      assert %Credential{} = Networks.get_credential!(user, net)
+      assert %Credential{} = Credentials.get_credential!(user, net)
     end
 
     # S29 H5: see Grappa.Session.ServerTest "unbind_credential tears
     # down a running session" for the integration test that proves
-    # `Networks.unbind_credential/2` calls `Grappa.Session.stop_session/2`
+    # `Credentials.unbind_credential/2` calls `Grappa.Session.stop_session/2`
     # before deleting the row. Lives there because that file already
     # carries the IRCServer + sandbox-shared scaffolding for live
     # sessions.
@@ -647,14 +647,14 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "irc.azzurra.chat", port: 6697})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
         })
 
       # No messages → cascade proceeds.
-      assert :ok = Networks.unbind_credential(user, net)
+      assert :ok = Credentials.unbind_credential(user, net)
       assert Repo.get(Network, net.id) == nil
     end
   end
@@ -720,14 +720,14 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "irc.example", port: 6697, tls: true, priority: 0})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt-grappa",
           auth_method: :sasl,
           password: "loadbearing",
           autojoin_channels: ["#sniffo"]
         })
 
-      cred = Networks.get_credential!(user, net)
+      cred = Credentials.get_credential!(user, net)
       assert {:ok, plan} = Networks.session_plan(cred)
 
       assert plan.user_name == user.name
@@ -751,13 +751,13 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, enabled: false})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
         })
 
-      cred = Networks.get_credential!(user, net)
+      cred = Credentials.get_credential!(user, net)
       assert {:error, :no_server} = Networks.session_plan(cred)
     end
 
@@ -766,13 +766,13 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
         })
 
-      cred = Networks.get_credential!(user, net)
+      cred = Credentials.get_credential!(user, net)
       assert {:error, :no_server} = Networks.session_plan(cred)
     end
 
@@ -782,7 +782,7 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "h", port: 6667})
 
       {:ok, _} =
-        Networks.bind_credential(user, net, %{
+        Credentials.bind_credential(user, net, %{
           nick: "vjt",
           auth_method: :none,
           autojoin_channels: []
@@ -790,7 +790,7 @@ defmodule Grappa.NetworksTest do
 
       # `list_credentials_for_all_users/0` is the canonical
       # preloaded-:network producer.
-      [cred] = Networks.list_credentials_for_all_users()
+      [cred] = Credentials.list_credentials_for_all_users()
       assert {:ok, plan} = Networks.session_plan(cred)
       assert plan.host == "h"
     end

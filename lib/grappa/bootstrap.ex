@@ -13,7 +13,7 @@ defmodule Grappa.Bootstrap do
 
   ## DB is the source of truth
 
-  `Networks.list_credentials_for_all_users/0` returns every
+  `Credentials.list_credentials_for_all_users/0` returns every
   `Credential` with `:network` preloaded; the spawn loop calls
   `Networks.session_plan/1` per row to flatten the credential +
   picked server into the primitive `Session.start_opts/0` map and
@@ -83,7 +83,7 @@ defmodule Grappa.Bootstrap do
   use Task, restart: :transient
 
   alias Grappa.{Networks, Session}
-  alias Grappa.Networks.{Credential, Network}
+  alias Grappa.Networks.{Credential, Credentials, Network}
 
   require Logger
 
@@ -105,7 +105,7 @@ defmodule Grappa.Bootstrap do
   """
   @spec run() :: :ok
   def run do
-    case Networks.list_credentials_for_all_users() do
+    case Credentials.list_credentials_for_all_users() do
       [] ->
         Logger.warning("bootstrap: no credentials bound — running web-only")
         :ok

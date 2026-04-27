@@ -25,6 +25,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   import Plug.Conn
 
   alias Grappa.Networks
+  alias Grappa.Networks.Credentials
   alias GrappaWeb.FallbackController
 
   require Logger
@@ -57,7 +58,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
 
   defp resolve(user, slug) do
     with {:ok, network} <- Networks.get_network_by_slug(slug),
-         {:ok, _} <- Networks.get_credential(user, network) do
+         {:ok, _} <- Credentials.get_credential(user, network) do
       {:ok, network}
     else
       {:error, :not_found} -> {:error, :not_found}

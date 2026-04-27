@@ -20,7 +20,7 @@ defmodule Grappa.AuthFixtures do
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session]
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
-  alias Grappa.Networks.{Credential, Network, Server, Servers}
+  alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers}
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -125,7 +125,7 @@ defmodule Grappa.AuthFixtures do
       autojoin_channels: ["#sniffo"]
     }
 
-    {:ok, credential} = Networks.bind_credential(user, network, Map.merge(base, attrs))
+    {:ok, credential} = Credentials.bind_credential(user, network, Map.merge(base, attrs))
     credential
   end
 
@@ -143,7 +143,7 @@ defmodule Grappa.AuthFixtures do
   """
   @spec start_session_for(User.t(), Network.t()) :: pid()
   def start_session_for(%User{} = user, %Network{} = network) do
-    credential = Networks.get_credential!(user, network)
+    credential = Credentials.get_credential!(user, network)
     {:ok, plan} = Networks.session_plan(credential)
     {:ok, pid} = Grappa.Session.start_session(user.id, network.id, plan)
     pid

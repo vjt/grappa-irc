@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
   import ExUnit.CaptureIO
 
   alias Grappa.{Accounts, Networks}
-  alias Grappa.Networks.Servers
+  alias Grappa.Networks.{Credentials, Servers}
   alias Mix.Tasks.Grappa.BindNetwork
 
   setup do
@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
     assert server.port == 6697
     assert server.tls == true
 
-    cred = Networks.get_credential!(user, network)
+    cred = Credentials.get_credential!(user, network)
     assert cred.nick == "vjt-grappa"
     assert cred.auth_method == :auto
     assert cred.autojoin_channels == ["#grappa", "#italy"]

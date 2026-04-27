@@ -16,7 +16,7 @@ defmodule Grappa.Networks.WireTest do
   use Grappa.DataCase, async: true
 
   alias Grappa.{Accounts, Networks, Repo}
-  alias Grappa.Networks.{Credential, Wire}
+  alias Grappa.Networks.{Credential, Credentials, Wire}
 
   setup do
     {:ok, user} =
@@ -35,7 +35,7 @@ defmodule Grappa.Networks.WireTest do
     test "renders the public credential shape (slug under :network)",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           realname: "Marcello",
           sasl_user: "vjt",
@@ -44,7 +44,7 @@ defmodule Grappa.Networks.WireTest do
           autojoin_channels: ["#grappa"]
         })
 
-      cred = user |> Networks.get_credential!(network) |> Repo.preload(:network)
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
 
       json = Wire.credential_to_json(cred)
 
@@ -64,13 +64,13 @@ defmodule Grappa.Networks.WireTest do
     test "NEVER includes :password_encrypted nor :password",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :nickserv_identify,
           password: "leak-canary-please-never-appear"
         })
 
-      cred = user |> Networks.get_credential!(network) |> Repo.preload(:network)
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
 
       # Sanity-check the precondition: post-load Cloak has decrypted
       # the AES-GCM ciphertext into plaintext-in-memory.
@@ -90,12 +90,12 @@ defmodule Grappa.Networks.WireTest do
     test "crashes loudly on unloaded :network assoc",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :none
         })
 
-      cred = Networks.get_credential!(user, network)
+      cred = Credentials.get_credential!(user, network)
       # `get_credential!/2` returns the row WITHOUT preloading :network.
       assert match?(%Ecto.Association.NotLoaded{}, cred.network)
 
@@ -105,12 +105,12 @@ defmodule Grappa.Networks.WireTest do
     test "is Jason-encodable without raising",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :none
         })
 
-      cred = user |> Networks.get_credential!(network) |> Repo.preload(:network)
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
 
       assert is_binary(Jason.encode!(Wire.credential_to_json(cred)))
     end
@@ -135,13 +135,13 @@ defmodule Grappa.Networks.WireTest do
     test "returns the post-Cloak-load plaintext upstream secret",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :server_pass,
           password: "shibboleth"
         })
 
-      cred = Networks.get_credential!(user, network)
+      cred = Credentials.get_credential!(user, network)
 
       assert Credential.upstream_password(cred) == "shibboleth"
     end
@@ -149,12 +149,12 @@ defmodule Grappa.Networks.WireTest do
     test "returns nil for :none credentials with no stored password",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :none
         })
 
-      cred = Networks.get_credential!(user, network)
+      cred = Credentials.get_credential!(user, network)
 
       assert Credential.upstream_password(cred) == nil
     end
@@ -169,13 +169,13 @@ defmodule Grappa.Networks.WireTest do
     test "raw Credential leaks password_encrypted (this is what Wire prevents)",
          %{user: user, network: network} do
       {:ok, _} =
-        Networks.bind_credential(user, network, %{
+        Credentials.bind_credential(user, network, %{
           nick: "vjt",
           auth_method: :sasl,
           password: "DO-NOT-LEAK"
         })
 
-      cred = Networks.get_credential!(user, network)
+      cred = Credentials.get_credential!(user, network)
 
       # Jason can't encode an Ecto schema struct without `@derive` —
       # the raw struct path either raises Protocol.UndefinedError OR,

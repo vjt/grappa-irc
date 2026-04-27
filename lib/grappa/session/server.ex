@@ -29,7 +29,7 @@ defmodule Grappa.Session.Server do
   the supervisor child spec captured at first start — credential
   changes in the DB don't propagate until the operator forces a
   re-spawn through the LIVE BEAM (via `bin/grappa rpc` calling
-  into `Networks.unbind_credential/2`, NOT bare
+  into `Credentials.unbind_credential/2`, NOT bare
   `mix grappa.unbind_network` which runs in a separate BEAM and
   cannot reach the prod registry) or the next deploy. Full
   rationale on `Grappa.Session` moduledoc; Phase 5 may add

@@ -3,7 +3,7 @@ defmodule GrappaWeb.NetworksControllerTest do
   `GET /networks` — lists the authenticated user's bound networks.
 
   Cicchetto (Phase 3 PWA) calls this on app boot to render the
-  network → channel tree. Source-of-truth = `Grappa.Networks.list_credentials_for_user/1`,
+  network → channel tree. Source-of-truth = `Grappa.Networks.Credentials.list_credentials_for_user/1`,
   which gates the response on credential ownership: a user only sees
   networks they have a binding on. Operators sharing a deployment do
   NOT see each other's networks.

@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
   use Mix.Task
 
   alias Grappa.{Accounts, Networks}
-  alias Grappa.Networks.Servers
+  alias Grappa.Networks.{Credentials, Servers}
   alias Mix.Tasks.Grappa.{Boot, OptionParsing, Output}
 
   @switches [
@@ -96,7 +96,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
       sasl_user: Keyword.get(opts, :sasl_user)
     }
 
-    case Networks.bind_credential(user, network, cred_attrs) do
+    case Credentials.bind_credential(user, network, cred_attrs) do
       {:ok, _} -> IO.puts("bound #{user.name} to #{network.slug} (server #{host}:#{port})")
       {:error, cs} -> Output.halt_changeset("binding credential", cs)
     end
