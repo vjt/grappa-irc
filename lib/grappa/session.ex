@@ -283,6 +283,49 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sets the topic on `channel` for the session's `(user_id, network_id)`.
+  Synchronously persists a `:topic` scrollback row, broadcasts on the
+  per-channel PubSub topic, and writes `TOPIC <chan> :<body>` upstream —
+  single-source path, mirror of `send_privmsg/4`.
+
+  Returns `{:ok, message}` with the persisted row, `{:error, :no_session}`
+  if no session is registered, `{:error, :invalid_line}` for CRLF/NUL
+  injection, or `{:error, Ecto.Changeset.t()}` on validation failure.
+  """
+  @spec send_topic(Ecto.UUID.t(), integer(), String.t(), String.t()) ::
+          {:ok, Grappa.Scrollback.Message.t()}
+          | {:error, :no_session | :invalid_line}
+          | {:error, Ecto.Changeset.t()}
+  def send_topic(user_id, network_id, channel, body)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(channel) and
+             is_binary(body) do
+    if Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(body) do
+      call_session(user_id, network_id, {:send_topic, channel, body})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `NICK <new>` upstream for the session's `(user_id, network_id)`.
+  No scrollback row written here — the upstream replays the NICK back
+  and `EventRouter` reconciles `state.nick` + emits per-channel
+  `:nick_change` persist effects.
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`.
+  """
+  @spec send_nick(Ecto.UUID.t(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_nick(user_id, network_id, new_nick)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(new_nick) do
+    if Identifier.safe_line_token?(new_nick) do
+      call_session(user_id, network_id, {:send_nick, new_nick})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
   Returns a snapshot of currently-joined channels for the session at
   `(user_id, network_id)`, sorted alphabetically.
 
