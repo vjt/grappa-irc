@@ -205,6 +205,31 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
+  def route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
+      when is_binary(new_nick) do
+    old_nick = Message.sender_nick(msg)
+    channels = channels_with_member(state.members, old_nick)
+
+    members = rename_member_everywhere(state.members, channels, old_nick, new_nick)
+
+    new_state =
+      if old_nick == state.nick do
+        %{state | nick: new_nick, members: members}
+      else
+        %{state | members: members}
+      end
+
+    effects =
+      for ch <- channels do
+        {_, eff} =
+          build_persist(new_state, :nick_change, ch, old_nick, nil, %{new_nick: new_nick})
+
+        eff
+      end
+
+    {:cont, new_state, effects}
+  end
+
   def route(%Message{} = _, state), do: {:cont, state, []}
 
   # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
@@ -226,6 +251,19 @@ defmodule Grappa.Session.EventRouter do
   defp remove_member_everywhere(members, channels, nick) do
     Enum.reduce(channels, members, fn ch, acc ->
       Map.update!(acc, ch, &Map.delete(&1, nick))
+    end)
+  end
+
+  @spec rename_member_everywhere(members(), [String.t()], String.t(), String.t()) :: members()
+  defp rename_member_everywhere(members, channels, old, new) do
+    Enum.reduce(channels, members, fn ch, acc ->
+      Map.update!(acc, ch, fn ch_members ->
+        modes = Map.fetch!(ch_members, old)
+
+        ch_members
+        |> Map.delete(old)
+        |> Map.put(new, modes)
+      end)
     end)
   end
 

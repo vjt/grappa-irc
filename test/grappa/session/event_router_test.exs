@@ -219,4 +219,74 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
   end
+
+  describe "route/2 — :nick (fan-out per channel where nick was member)" do
+    test "NICK-other emits :persist :nick_change per channel + renames in members" do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => [], "alice" => ["@"]},
+            "#italia.lib" => %{"alice" => ["+"]},
+            "#empty" => %{"vjt" => []}
+          }
+        })
+
+      m = msg(:nick, ["alice_"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      persist_channels =
+        effects
+        |> Enum.map(fn {:persist, :nick_change, a} -> a.channel end)
+        |> Enum.sort()
+
+      assert persist_channels == ["#italia", "#italia.lib"]
+
+      Enum.each(effects, fn {:persist, :nick_change, attrs} ->
+        assert attrs.sender == "alice"
+        assert attrs.body == nil
+        assert attrs.meta == %{new_nick: "alice_"}
+      end)
+
+      # Modes preserved on rename:
+      assert new_state.members["#italia"] == %{"vjt" => [], "alice_" => ["@"]}
+      assert new_state.members["#italia.lib"] == %{"alice_" => ["+"]}
+      assert new_state.members["#empty"] == %{"vjt" => []}
+      # state.nick unchanged for NICK-other:
+      assert new_state.nick == "vjt"
+    end
+
+    test "NICK-self updates state.nick + fan-out persist" do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => ["@"], "alice" => []}
+          }
+        })
+
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :nick_change, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.nick == "vjt_"
+      assert new_state.members["#italia"] == %{"vjt_" => ["@"], "alice" => []}
+      assert attrs.meta == %{new_nick: "vjt_"}
+    end
+
+    test "NICK for nick not in any channel still updates state.nick if self" do
+      state = base_state()
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.nick == "vjt_"
+    end
+
+    test "NICK-other for stranger emits no effects + no mutation" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:nick, ["stranger_"], {:nick, "stranger", "u", "h"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
 end
