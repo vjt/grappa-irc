@@ -244,6 +244,19 @@ defmodule Grappa.Session.Server do
   end
 
   @doc """
+  Returns a snapshot of currently-joined channels (`Map.keys(state.members)`)
+  sorted alphabetically. Public via `Grappa.Session.list_channels/2`.
+
+  The "currently-joined" invariant is preserved by EventRouter's self-JOIN
+  wipe + self-PART/KICK delete (Q1 of P4-1 cluster). A channel appears in
+  `state.members` IFF the operator's session has a live join on it.
+  """
+  def handle_call({:list_channels}, _, state) do
+    channels = state.members |> Map.keys() |> Enum.sort()
+    {:reply, {:ok, channels}, state}
+  end
+
+  @doc """
   Returns a snapshot of `state.members[channel]` in mIRC sort order
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
   Each entry: `%{nick: String.t(), modes: [String.t()]}`. Public via
