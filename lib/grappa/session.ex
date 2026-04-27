@@ -68,6 +68,15 @@ defmodule Grappa.Session do
 
   require Logger
 
+  # `stop_session/2` synchronisation budgets. The `:DOWN` window is the
+  # OTP `terminate_child` round-trip plus a `terminate/2` callback ceiling;
+  # the Registry-unregister window is the BEAM scheduler swap to drain the
+  # Registry process's own `{:DOWN, ...}` mailbox entry. 5s × 100 × 5ms is
+  # generous; in practice the budgets are exhausted in <10ms total.
+  @stop_down_timeout_ms 5_000
+  @registry_unregister_attempts 100
+  @registry_unregister_poll_ms 5
+
   @typedoc """
   Pre-resolved primitive opts consumed by `start_session/3` and
   `Grappa.Session.Server`'s `init/1` callback. Produced canonically by
@@ -158,7 +167,25 @@ defmodule Grappa.Session do
         receive do
           {:DOWN, ^ref, :process, ^pid, _} -> :ok
         after
-          5_000 ->
+          @stop_down_timeout_ms ->
+            # A Session that refuses to die within the budget is a
+            # genuine bug (stuck `terminate/2`, runaway loop, link
+            # cycle). Surface it via Logger.error — silent timeout
+            # would leave the next `start_session/3` racing a zombie
+            # `:already_started` against the Registry. CLAUDE.md "Use
+            # infrastructure, don't bypass it." `:user_id` /
+            # `:network_id` are NOT in the Logger metadata allowlist
+            # (see `config/config.exs`'s memory-pinned constraint —
+            # canonical session context uses `:user` = user_name and
+            # `:network` = network_slug, threaded by
+            # `Log.set_session_context/2`). Inline into message body
+            # so allowlist stays tight.
+            Logger.error(
+              "session refused to die within #{@stop_down_timeout_ms}ms stop budget " <>
+                "(user_id=#{user_id} network_id=#{network_id})",
+              pid: inspect(pid)
+            )
+
             Process.demonitor(ref, [:flush])
             :ok
         end
@@ -170,7 +197,7 @@ defmodule Grappa.Session do
         # gone or the budget expires; without this, callers chaining
         # `stop_session/2` → `start_session/3` race a transient
         # `:already_started` shape backed by a dead pid.
-        wait_until_unregistered(user_id, network_id, 100)
+        wait_until_unregistered(user_id, network_id, @registry_unregister_attempts)
         :ok
     end
   end
@@ -183,7 +210,7 @@ defmodule Grappa.Session do
         :ok
 
       _ ->
-        Process.sleep(5)
+        Process.sleep(@registry_unregister_poll_ms)
         wait_until_unregistered(user_id, network_id, attempts - 1)
     end
   end
