@@ -57,6 +57,10 @@ const loadStore = async () => {
   const networks = await import("../lib/networks");
   const scrollback = await import("../lib/scrollback");
   const selection = await import("../lib/selection");
+  // Side-effect-only: triggers the WS join createRoot. Production
+  // pulls this in via `main.tsx`. Tests that exercise the WS path
+  // need the createRoot to evaluate before resources resolve.
+  await import("../lib/subscribe");
   return { ...networks, ...scrollback, ...selection };
 };
 
@@ -133,7 +137,7 @@ describe("networks store", () => {
     localStorage.setItem("grappa-token", "tok");
     await seedStubs();
     const socket = await import("../lib/socket");
-    await import("../lib/networks");
+    await loadStore();
     await vi.waitFor(() => {
       expect(socket.joinChannel).toHaveBeenCalledTimes(2);
     });

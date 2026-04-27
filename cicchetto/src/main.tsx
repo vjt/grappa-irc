@@ -4,6 +4,12 @@ import { type Component, createEffect, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import Login from "./Login";
 import { isAuthenticated } from "./lib/auth";
+// Side-effect-only: registers the WS subscribe createRoot so per-
+// channel join effects fire once `user()` + `channelsBySlug()` resolve.
+// Pre-A4 this lifecycle was implicit (Shell imported `lib/networks`,
+// which contained the join effect); after the verb-keyed split the
+// app entry has to wire the side-effect module explicitly.
+import "./lib/subscribe";
 import Shell from "./Shell";
 import "./themes/default.css";
 
