@@ -100,6 +100,16 @@ defmodule Grappa.Scrollback.Message do
 
   @body_required_kinds [:privmsg, :notice, :action, :topic]
 
+  @doc """
+  Returns the closed-set list of valid `:kind` values. Exposed so
+  tests can drive coverage assertions over the full enum (e.g.
+  `Grappa.Session.EventRouterTest`'s A6 contract test) without
+  hard-coding the list at the test site (which would drift the moment
+  a new kind lands in the schema).
+  """
+  @spec kinds() :: [kind(), ...]
+  def kinds, do: @kinds
+
   @type kind ::
           :privmsg
           | :notice

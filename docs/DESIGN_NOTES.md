@@ -1019,6 +1019,85 @@ reuse everywhere": never duplicate the mutation logic in the consumer.
 
 ---
 
+## 2026-04-27 — E1 / A6 closure: EventRouter extraction (4th verb-keyed split)
+
+Closes architecture review A6 (wire-shape vs producer divergence).
+The wire (`Scrollback.Wire`), schema (`Scrollback.Message.@kinds`),
+and renderer (cicchetto `MessageKind` switch) all advertised 10
+message kinds; the producer (`Session.Server.handle_info`) only
+persisted `:privmsg`. E1 closes the gap end-to-end with three
+mechanical refactors and one new module:
+
+1. **`Grappa.Scrollback.persist_event/1`** replaces `persist_privmsg/5`.
+   Takes the explicit `:kind` (no `\\` defaults). Single
+   write-side door for all 10 kinds.
+
+2. **`Grappa.Session.EventRouter`** (new pure module, mirrors
+   `Grappa.IRC.AuthFSM` from D2). `route/2` returns
+   `{:cont, new_state, [effect]}`. State mutations (`members`,
+   `nick`) live in `new_state`; effects are side-effects only
+   (`{:persist, kind, attrs} | {:reply, iodata()}`). 10 IRC commands
+   classified, plus 4 informational numerics (001 nick reconcile,
+   332/333 topic backfill, 353/366 names bootstrap).
+
+3. **`Session.Server.handle_info`** delegates to `EventRouter.route/2`.
+   Inline transport clauses preserved: `:ping` (PONG keepalive) and
+   `{:numeric, 1}` (autojoin trigger — reads `state.autojoin` which
+   the router doesn't carry). Server gains `members:
+   %{channel => %{nick => [mode]}}` (Q3-pinned per CP10 S16: nick →
+   modes_list, NOT MapSet — modes survive sort).
+
+4. **`Session.list_members/3`** + `GET /networks/:net/channels/:chan/members`
+   for cicchetto P4-1's right-pane nick list. mIRC sort
+   (@ → + → plain, alphabetical within tier).
+
+This is the **4th application of the verb-keyed sub-context principle**:
+
+| Cluster | Module                           | Split shape                            |
+|---------|----------------------------------|----------------------------------------|
+| D1 / A2 | `Grappa.Networks` god-context    | Servers / Credentials / SessionPlan    |
+| D2 / A3 | `Grappa.IRC.Client` god-module   | Client (transport) + AuthFSM (pure)    |
+| D3 / A4 | `cicchetto/lib/networks.ts`      | networks / scrollback / selection / ws |
+| **E1**  | `Session.Server` god-handle_info | Server (transport) + EventRouter (pure)|
+
+The shape is now a documented pattern (not a heuristic): when a
+GenServer's `handle_info` accumulates per-message-kind logic that
+will only grow with phase, extract a pure classifier module returning
+`{:cont, new_state, [effect]}`. Server applies the effects; pure
+module is unit-test-friendly without DataCase setup; future kind
+addition is a single test+clause pair.
+
+### Why effects + state, not effects-only
+
+Q1 (CP10 S16) surfaced the trade-off: brainstorm spec pinned a narrow
+return shape `:ignore | {:persist, ...} | {:reply, ...}` that didn't
+express member-state delta. Two paths considered:
+
+- (a) Keep narrow shape; Server.handle_info has a SECOND switch over
+  `:irc` for member updates. Two switches drift.
+- (b) Widen to AuthFSM-style `{:cont, new_state, [effect]}`. State
+  derivation (members map mutations) lives in `new_state`; effects
+  remain side-effects only.
+
+Path (b) chosen. The `:reply` effect type is forward-compat in E1
+(no current route emits it); CTCP replies (VERSION, etc.) land in
+Phase 5+. Same shape as `Grappa.IRC.AuthFSM.step/2`, which is now
+the documented template for any future pure-classifier extraction.
+
+### A20 fold-in: deferred
+
+A20 review recommended folding `persist_and_broadcast/4` into a
+`Grappa.Session.Broadcaster` module (Wire + Topic + Scrollback contract
+single-source). E1 deletes `persist_and_broadcast/4` (zero callsites
+post-refactor) but does NOT extract Broadcaster — `apply_effects/2`
+INSIDE Server holds the same logic for the inbound path; the OUTBOUND
+PRIVMSG path (`handle_call({:send_privmsg, ...})`) inlines the same
+shape because the caller needs the persisted `Message.t()` return
+value (different transaction shape). Two paths, same logic — A20's
+extraction stays open as a Phase 5 consolidation candidate.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

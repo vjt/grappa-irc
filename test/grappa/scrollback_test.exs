@@ -72,7 +72,7 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  describe "persist_privmsg/5" do
+  describe "persist_event/1 — :network preloading (was persist_privmsg/5)" do
     test "returns the row with :network preloaded so Wire.to_json/1 doesn't need to",
          %{user: user, network: net} do
       # Wire.to_json/1 pattern-matches on `%Network{slug: slug}` and
@@ -83,12 +83,160 @@ defmodule Grappa.ScrollbackTest do
       # Pushing the preload into the Scrollback boundary collapses the
       # two parallel preload sites into one — the contract is now "the
       # row I hand back is wire-shape-ready".
-      assert {:ok, %Message{} = m} =
-               Scrollback.persist_privmsg(user.id, net.id, "#sniffo", "vjt", "ciao")
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: System.system_time(:millisecond),
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        meta: %{}
+      }
+
+      assert {:ok, %Message{} = m} = Scrollback.persist_event(attrs)
 
       assert %Network{id: id, slug: slug} = m.network
       assert id == net.id
       assert slug == net.slug
+    end
+  end
+
+  describe "persist_event/1" do
+    test "persists :privmsg with body+meta and preloads :network", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        meta: %{}
+      }
+
+      assert {:ok, %Message{kind: :privmsg, body: "ciao", network: %Network{slug: _}} = m} =
+               Scrollback.persist_event(attrs)
+
+      assert m.user_id == user.id
+      assert m.network_id == net.id
+    end
+
+    test "persists :join with body=nil + meta=%{}", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :join,
+        sender: "alice",
+        body: nil,
+        meta: %{}
+      }
+
+      assert {:ok, %Message{kind: :join, body: nil, network: %Network{slug: _}}} =
+               Scrollback.persist_event(attrs)
+    end
+
+    test "persists :nick_change with meta.new_nick", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :nick_change,
+        sender: "vjt",
+        body: nil,
+        meta: %{new_nick: "vjt_"}
+      }
+
+      assert {:ok, %Message{kind: :nick_change, meta: %{new_nick: "vjt_"}}} =
+               Scrollback.persist_event(attrs)
+    end
+
+    test "persists :mode with meta.modes + meta.args", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :mode,
+        sender: "ChanServ",
+        body: nil,
+        meta: %{modes: "+o", args: ["vjt"]}
+      }
+
+      assert {:ok, %Message{kind: :mode, meta: %{modes: "+o", args: ["vjt"]}}} =
+               Scrollback.persist_event(attrs)
+    end
+
+    test "persists :kick with body=reason + meta.target", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :kick,
+        sender: "ChanServ",
+        body: "spam",
+        meta: %{target: "spammer"}
+      }
+
+      assert {:ok, %Message{kind: :kick, body: "spam", meta: %{target: "spammer"}}} =
+               Scrollback.persist_event(attrs)
+    end
+
+    test "persists :quit with body=reason and no meta", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :quit,
+        sender: "alice",
+        body: "Ping timeout",
+        meta: %{}
+      }
+
+      assert {:ok, %Message{kind: :quit, body: "Ping timeout"}} =
+               Scrollback.persist_event(attrs)
+    end
+
+    test "rejects missing :kind (no defaulting)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        sender: "vjt",
+        body: "x",
+        meta: %{}
+      }
+
+      # `apply/3` so Elixir's set-theoretic type analyzer doesn't
+      # flag the deliberately-malformed call at compile time. The
+      # contract under test is the runtime FunctionClauseError —
+      # `def persist_event(%{kind: kind} = attrs) when is_atom(kind)`
+      # has no defaulting fallback by design (CLAUDE.md "No `\\` defaults").
+      assert_raise FunctionClauseError, fn ->
+        apply(Scrollback, :persist_event, [attrs])
+      end
+    end
+
+    test "rejects body=nil for :privmsg (per-kind body validation)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :privmsg,
+        sender: "vjt",
+        body: nil,
+        meta: %{}
+      }
+
+      assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
+      assert "can't be blank" in errors_on(cs).body
     end
   end
 
@@ -215,7 +363,7 @@ defmodule Grappa.ScrollbackTest do
     # can hand the result straight to `Scrollback.Wire.to_json/1`
     # (which pattern-matches on `%Network{slug: _}` and crashes on
     # unloaded assoc). Mirrors the same wire-shape-ready contract that
-    # `persist_privmsg/5` carries (A4); previously the controller had
+    # `persist_event/1` carries (A4); previously the controller had
     # to do its own `preload_networks/2` post-fetch.
     test "returns rows with :network preloaded so callers can render to wire shape",
          %{user: user, network: net} do

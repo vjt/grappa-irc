@@ -418,8 +418,8 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
-  describe "non-PRIVMSG events" do
-    test "JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK are logged but not persisted or broadcast" do
+  describe "non-PRIVMSG events (post-E1: persisted + broadcast via EventRouter)" do
+    test "JOIN + PART are persisted to scrollback + broadcast on PubSub" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
@@ -429,24 +429,19 @@ defmodule Grappa.Session.ServerTest do
           Topic.channel(user.name, network.slug, "#sniffo")
         )
 
-      Logger.put_module_level(Grappa.Session.Server, :info)
-      on_exit(fn -> Logger.delete_module_level(Grappa.Session.Server) end)
-
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
+      IRCServer.feed(server, ":bob!~b@host JOIN #sniffo\r\n")
+      IRCServer.feed(server, ":bob!~b@host PART #sniffo :bye\r\n")
 
-      log =
-        capture_log(fn ->
-          IRCServer.feed(server, ":bob!~b@host JOIN #sniffo\r\n")
-          IRCServer.feed(server, ":bob!~b@host PART #sniffo :bye\r\n")
-          Process.sleep(100)
-        end)
+      assert_receive {:event, %{message: %{kind: :join, sender: "bob"}}}, 1_000
+      assert_receive {:event, %{message: %{kind: :part, sender: "bob", body: "bye"}}}, 1_000
 
-      assert log =~ "irc event"
-
-      refute_receive {:event, _}, 100
-      assert Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10) == []
+      rows = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      kinds = Enum.map(rows, & &1.kind)
+      assert :join in kinds
+      assert :part in kinds
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -588,6 +583,192 @@ defmodule Grappa.Session.ServerTest do
 
       assert log =~ "irc parse failed"
       assert Process.alive?(pid)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "EventRouter delegation — members tracking" do
+    test "Session.Server starts with empty members map" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      state = :sys.get_state(pid)
+      assert state.members == %{}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "JOIN-self resets members[channel] to %{own_nick => []}" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+
+      # PING/PONG flush — same trick as nick-mutation tests above.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.members["#test"] == %{"grappa-test" => []}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "353 RPL_NAMREPLY populates members with mode prefixes parsed" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #test :@grappa-test +alice bob\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #test :End of /NAMES list.\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+
+      assert state.members["#test"] == %{
+               "grappa-test" => ["@"],
+               "alice" => ["+"],
+               "bob" => []
+             }
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "QUIT removes nick from every channel + persists one row per channel" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#a", "#b"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #a"))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #b"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#a\r\n")
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#b\r\n")
+      IRCServer.feed(server, ":alice!u@h JOIN :#a\r\n")
+      IRCServer.feed(server, ":alice!u@h JOIN :#b\r\n")
+      IRCServer.feed(server, ":alice!u@h QUIT :Ping timeout\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.members["#a"], "alice")
+      refute Map.has_key?(state.members["#b"], "alice")
+
+      rows_a = Scrollback.fetch(user.id, network.id, "#a", nil, 10)
+      assert Enum.any?(rows_a, &(&1.kind == :quit and &1.sender == "alice"))
+
+      rows_b = Scrollback.fetch(user.id, network.id, "#b", nil, 10)
+      assert Enum.any?(rows_b, &(&1.kind == :quit and &1.sender == "alice"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "list_members/3 snapshot" do
+    test "returns members in mIRC sort: @ ops first, + voiced second, plain last" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+
+      IRCServer.feed(
+        server,
+        ":irc 353 grappa-test = #test :@op_a +voice_a plain_b @op_b plain_a\r\n"
+      )
+
+      IRCServer.feed(server, ":irc 366 grappa-test #test :End\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      assert {:ok, members} = Session.list_members(user.id, network.id, "#test")
+
+      # mIRC sort: @ ops alphabetical → + voiced alphabetical → plain alphabetical
+      # `grappa-test` is the operator's own nick (added by JOIN-self with no
+      # modes); it sorts under "plain" tier alphabetically before plain_a.
+      assert members == [
+               %{nick: "op_a", modes: ["@"]},
+               %{nick: "op_b", modes: ["@"]},
+               %{nick: "voice_a", modes: ["+"]},
+               %{nick: "grappa-test", modes: []},
+               %{nick: "plain_a", modes: []},
+               %{nick: "plain_b", modes: []}
+             ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no session for (user, network) returns {:error, :no_session}" do
+      assert {:error, :no_session} =
+               Session.list_members(Ecto.UUID.generate(), 999_999_999, "#test")
+    end
+
+    test "channel not in members returns empty list" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      assert {:ok, []} = Session.list_members(user.id, network.id, "#nowhere")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
