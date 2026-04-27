@@ -152,4 +152,30 @@ defmodule GrappaWeb.ChannelsController do
       |> json(%{ok: true})
     end
   end
+
+  @doc """
+  `POST /networks/:network_id/channels/:channel_id/topic` — body
+  `{"body": "new topic"}`. Casts `TOPIC <channel> :<body>` upstream
+  through the session AND persists a `:topic` scrollback row. Returns
+  202 + `{"ok": true}` on success. CRLF / NUL injection in body
+  collapses to `:invalid_line` (400). Missing/non-string body → 400.
+
+  Backs the `/topic` slash command in cicchetto's compose box (P4-1).
+  """
+  @spec topic(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
+  def topic(conn, %{"channel_id" => channel, "body" => body})
+      when is_binary(body) and body != "" do
+    user_id = conn.assigns.current_user_id
+    network = conn.assigns.network
+
+    with :ok <- validate_channel_name(channel),
+         {:ok, _message} <- Session.send_topic(user_id, network.id, channel, body) do
+      conn
+      |> put_status(:accepted)
+      |> json(%{ok: true})
+    end
+  end
+
+  def topic(_, _), do: {:error, :bad_request}
 end
