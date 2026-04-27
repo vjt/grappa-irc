@@ -1,8 +1,8 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, For, Show } from "solid-js";
 import * as auth from "./lib/auth";
+import { channelKey } from "./lib/channelKey";
 import {
-  channelKey,
   channelsBySlug,
   networks,
   selectedChannel,

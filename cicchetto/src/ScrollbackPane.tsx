@@ -1,6 +1,7 @@
 import { type Component, createEffect, createSignal, For, type JSX, on, Show } from "solid-js";
 import type { ScrollbackMessage } from "./lib/api";
-import { channelKey, scrollbackByChannel, sendMessage } from "./lib/networks";
+import { channelKey } from "./lib/channelKey";
+import { scrollbackByChannel, sendMessage } from "./lib/networks";
 
 // Right-pane component: renders the per-channel scrollback list and a
 // compose form. Mounted by `Shell.tsx` only when `selectedChannel()` is

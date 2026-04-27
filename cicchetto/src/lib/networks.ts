@@ -12,6 +12,7 @@ import {
   type ScrollbackMessage,
 } from "./api";
 import { token } from "./auth";
+import { type ChannelKey, channelKey } from "./channelKey";
 import { joinChannel } from "./socket";
 
 // Domain store for the network → channel tree + per-channel unread,
@@ -62,20 +63,6 @@ import { joinChannel } from "./socket";
 // initial-load and the WS broadcast for a recently-sent message can
 // overlap in a small race window — the same row would otherwise appear
 // twice. `id` is monotonic per the schema's auto-increment column.
-
-// Opaque-branded composite key. The `unique symbol` brand makes
-// `ChannelKey` distinct from `string` at the type level — a bare
-// network slug or channel name passed where a ChannelKey is expected
-// is a compile error. The brand is declaration-only (no runtime
-// representation), so a ChannelKey is just a string at runtime; only
-// `channelKey(slug, name)` builds one. The earlier `${string} ${string}`
-// template-literal form looked like a constraint but actually erased
-// to `string` in the type system — both ends were unconstrained.
-declare const channelKeyBrand: unique symbol;
-export type ChannelKey = string & { readonly [channelKeyBrand]: true };
-
-export const channelKey = (slug: string, name: string): ChannelKey =>
-  `${slug} ${name}` as ChannelKey;
 
 export type SelectedChannel = { networkSlug: string; channelName: string } | null;
 

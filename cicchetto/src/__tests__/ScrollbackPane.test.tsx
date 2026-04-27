@@ -21,8 +21,11 @@ const [scrollback, setScrollback] = createSignal<Record<string, ScrollbackMessag
 
 vi.mock("../lib/networks", () => ({
   scrollbackByChannel: () => scrollback(),
-  channelKey: (slug: string, name: string) => `${slug} ${name}`,
   sendMessage: vi.fn(),
+}));
+
+vi.mock("../lib/channelKey", () => ({
+  channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
 import { sendMessage } from "../lib/networks";

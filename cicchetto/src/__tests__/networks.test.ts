@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { channelKey } from "../lib/channelKey";
 
 // Boundary: mock REST (`lib/api`) + the socket helpers (`lib/socket`),
 // leave Solid's reactive primitives real. The store wires resources to
@@ -150,7 +151,7 @@ describe("networks store", () => {
         meta: {},
       },
     });
-    expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBe(1);
+    expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBe(1);
   });
 
   it("does not increment unread when the event arrives on the selected channel", async () => {
@@ -178,7 +179,7 @@ describe("networks store", () => {
         meta: {},
       },
     });
-    expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBeUndefined();
+    expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
   });
 
   it("selecting a channel clears its accumulated unread count", async () => {
@@ -205,9 +206,9 @@ describe("networks store", () => {
         meta: {},
       },
     });
-    expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBe(1);
+    expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBe(1);
     store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
-    expect(store.unreadCounts()[store.channelKey("freenode", "#grappa")]).toBeUndefined();
+    expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
   });
 
   it("incoming PRIVMSG event also appends to scrollbackByChannel for that channel", async () => {
@@ -219,7 +220,7 @@ describe("networks store", () => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
     fireMessageEvent("#grappa", { id: 7, body: "live" });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     expect(store.scrollbackByChannel()[key]).toBeDefined();
     expect(store.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([7]);
   });
@@ -234,7 +235,7 @@ describe("networks store", () => {
     });
     fireMessageEvent("#grappa", { id: 1, server_time: 100, body: "first" });
     fireMessageEvent("#grappa", { id: 2, server_time: 200, body: "second" });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     expect(store.scrollbackByChannel()[key]?.map((m) => m.body)).toEqual(["first", "second"]);
   });
 
@@ -264,7 +265,7 @@ describe("networks store", () => {
     await vi.waitFor(() => {
       expect(api.listMessages).toHaveBeenCalled();
     });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     await vi.waitFor(() => {
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
     });
@@ -336,7 +337,7 @@ describe("networks store", () => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
     store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     await vi.waitFor(() => {
       expect(store.scrollbackByChannel()[key]?.length).toBe(3);
     });
@@ -365,7 +366,7 @@ describe("networks store", () => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
     store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     await vi.waitFor(() => {
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
     });
@@ -413,7 +414,7 @@ describe("networks store", () => {
     await store.sendMessage("freenode", "#grappa", "echo");
     expect(api.sendMessage).toHaveBeenCalled();
     fireMessageEvent("#grappa", { id: 999, server_time: 999, body: "echo", sender: "alice" });
-    const key = store.channelKey("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
     expect(store.scrollbackByChannel()[key]?.length).toBe(1);
     expect(store.scrollbackByChannel()[key]?.[0]?.body).toBe("echo");
   });
@@ -442,7 +443,7 @@ describe("networks store", () => {
 
       // Populate per-channel state under user A.
       fireMessageEvent("#grappa", { id: 1, body: "as A" });
-      const key = store.channelKey("freenode", "#grappa");
+      const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
       expect(store.unreadCounts()[key]).toBe(1);
       store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
@@ -481,7 +482,7 @@ describe("networks store", () => {
       });
 
       fireMessageEvent("#grappa", { id: 1, body: "as A" });
-      const key = store.channelKey("freenode", "#grappa");
+      const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
       expect(store.unreadCounts()[key]).toBe(1);
       store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
