@@ -69,12 +69,24 @@ createRoot(() => {
   );
 });
 
-// `joinUser` / `joinNetwork` were exported in an earlier walking-skeleton
-// pass alongside `joinChannel` for the per-user and per-(user, network)
-// topic shapes. Phase 3 only joins per-channel topics; the other two had
-// zero call sites in `src/**`. Dropped per S49 — bring them back when a
-// real consumer (presence on the per-network topic, MOTD on the
-// per-user topic) needs them.
+// joinUser + joinChannel mirror Topic.user/1 + Topic.channel/3 from the
+// server. `joinNetwork` (per-(user, network) shape) is reserved
+// infrastructure on the server side but has no cicchetto consumer yet —
+// add it back when a real consumer (presence per network, MOTD on the
+// per-user topic, etc.) needs it.
+export function joinUser(userName: string): Channel {
+  const topic = `grappa:user:${userName}`;
+  const ch = getSocket().channel(topic);
+  ch.join()
+    .receive("error", (err: unknown) => {
+      console.error("[grappa] channel join failed", topic, err);
+    })
+    .receive("timeout", () => {
+      console.error("[grappa] channel join timed out", topic);
+    });
+  return ch;
+}
+
 export function joinChannel(userName: string, networkSlug: string, channelName: string): Channel {
   const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`;
   const ch = getSocket().channel(topic);
