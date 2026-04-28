@@ -170,7 +170,7 @@ defmodule GrappaWeb.ChannelsController do
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),
-         {:ok, _message} <- Session.send_topic(user_id, network.id, channel, body) do
+         {:ok, _} <- Session.send_topic(user_id, network.id, channel, body) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
