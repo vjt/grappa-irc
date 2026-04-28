@@ -897,4 +897,136 @@ defmodule Grappa.Session.ServerTest do
                Session.send_nick(Ecto.UUID.generate(), 999_999, "newnick")
     end
   end
+
+  describe "channels_changed broadcast on user topic" do
+    # Server-side half of the cicchetto live-channel-on-/join fix.
+    # Whenever `Map.keys(state.members)` mutates between input + derived
+    # state in `Session.Server.delegate/2`, fire a fan-out
+    # `%{kind: "channels_changed"}` broadcast on `Topic.user(user_name)`
+    # so every connected tab refetches GET /channels and re-subscribes
+    # to per-channel WS topics. Direction-agnostic: self-JOIN, self-PART,
+    # self-KICK collapse to the same heartbeat (channels-list mutation
+    # IS the event; cause is irrelevant to subscribers).
+
+    defp welcome_handler do
+      fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
+    test "self-JOIN broadcasts channels_changed on user topic" do
+      {server, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#newchan\r\n")
+
+      assert_receive {:event, %{kind: "channels_changed"}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-PART broadcasts channels_changed on user topic" do
+      {server, port} = start_server(welcome_handler())
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
+      assert_receive {:event, %{kind: "channels_changed"}}, 1_000
+
+      IRCServer.feed(server, ":grappa-test!u@h PART #existing :bye\r\n")
+      assert_receive {:event, %{kind: "channels_changed"}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-KICK broadcasts channels_changed on user topic" do
+      {server, port} = start_server(welcome_handler())
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
+      assert_receive {:event, %{kind: "channels_changed"}}, 1_000
+
+      IRCServer.feed(server, ":op!u@h KICK #existing grappa-test :reason\r\n")
+      assert_receive {:event, %{kind: "channels_changed"}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "other-user JOIN does NOT broadcast (keyset unchanged)" do
+      {server, port} = start_server(welcome_handler())
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
+
+      # PING/PONG flushes the self-JOIN through before we subscribe,
+      # so we don't see the keyset-grow broadcast for the autojoin.
+      IRCServer.feed(server, "PING :flush1\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush1\r\n"))
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":alice!u@h JOIN :#existing\r\n")
+      IRCServer.feed(server, "PING :flush2\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"))
+
+      refute_receive {:event, %{kind: "channels_changed"}}, 200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "PRIVMSG does NOT broadcast (keyset unchanged)" do
+      {server, port} = start_server(welcome_handler())
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
+      IRCServer.feed(server, "PING :flush1\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush1\r\n"))
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":alice!u@h PRIVMSG #existing :hello\r\n")
+      IRCServer.feed(server, "PING :flush2\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"))
+
+      refute_receive {:event, %{kind: "channels_changed"}}, 200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end
