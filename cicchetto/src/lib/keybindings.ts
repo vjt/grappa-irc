@@ -90,4 +90,9 @@ export function uninstall(): void {
   if (installedListener === null) return;
   window.removeEventListener("keydown", installedListener);
   installedListener = null;
+  // Drop the handler reference so a stale Shell closure can't survive
+  // the unmount. Shell remounts (test setup/teardown, hot-reload) must
+  // re-register; production has only one Shell mount per page so the
+  // null reset is a hygiene guard.
+  handlers = null;
 }
