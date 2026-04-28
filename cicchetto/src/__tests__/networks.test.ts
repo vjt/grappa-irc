@@ -85,4 +85,9 @@ describe("networks resources", () => {
       "#cicchetto",
     ]);
   });
+
+  it("exports refetchChannels as a function", async () => {
+    const networks = await import("../lib/networks");
+    expect(typeof networks.refetchChannels).toBe("function");
+  });
 });
