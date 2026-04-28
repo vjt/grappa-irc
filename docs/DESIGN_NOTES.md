@@ -1255,6 +1255,62 @@ callsites) for Phase 5.
 
 ---
 
+## 2026-04-28 — text-polish: channels_changed user-topic broadcast + iPhone bug sweep
+
+Cluster pinned 2026-04-28 (CP10 S20). Closes the four iPhone-acceptance
+gaps blocking the M2 NickServ-IDP + anon webirc auth-triangle clusters.
+
+### Server-side
+
+- `Grappa.Session.Server.delegate/2` post-route compares
+  `Map.keys(state.members)` between input + derived states. On
+  keyset diff, fires `Phoenix.PubSub.broadcast/3` on
+  `Grappa.PubSub.Topic.user(state.user_name)` with payload
+  `{:event, %{kind: "channels_changed"}}`.
+- First real consumer of the per-user PubSub topic shape (reserved
+  infrastructure since Phase 2 sub-task 2h; broadcast surface
+  starts here).
+- EventRouter remains pure: `@type effect :: {:persist, ...} |
+  {:reply, ...}` unchanged. Keyset-delta detection at the GenServer
+  boundary keeps transport concerns (PubSub, Topic, user_name) out
+  of the pure router.
+- Direction-agnostic: self-JOIN, self-PART, self-KICK all collapse
+  to the same heartbeat. Channels-list mutation IS the event;
+  cause is irrelevant to subscribers.
+- Empty payload: cicchetto refetches `GET /channels` on receipt.
+  REST endpoint stays the single source of truth for the channel
+  list with `{name, joined, source}` envelopes.
+
+### Cicchetto-side
+
+- New `lib/userTopic.ts` module — module-singleton side-effect,
+  joins `grappa:user:{name}` once per identity, calls
+  `networks.refetchChannels()` on `channels_changed` events.
+- `lib/networks.ts` exposes `refetchChannels: () => void` (wraps
+  the createResource refetch callback).
+- `lib/socket.ts` re-exports the previously-dropped `joinUser/1`
+  (S49 marker honored — first real consumer brings it back).
+- `Shell.tsx` empty-state fallback gains an inline ☰ + ⚙
+  navigation header (mobile escape hatch — TopicBar host of these
+  buttons was gated on `selectedChannel()`).
+- `ComposeBox.tsx` drops `disabled={sending()}` from the textarea
+  (kept on the submit button); fixes focus loss across submit.
+
+### Trade-offs accepted
+
+- `channelsBySlug` stays a `createResource` rather than converting
+  to a verb-keyed module with per-channel patches (M-cluster polish).
+  Refetch-on-event is heavier than a direct mutate but uses the
+  REST endpoint as the canonical source — cheaper to reason about.
+- Empty-state toolbar duplicates a few lines of JSX with TopicBar
+  rather than factoring out a reusable `Topbar.tsx` component
+  (M-cluster polish — too much P4-1 surgery for a 4-bug sweep).
+- Multi-tab consistency: every tab refetches on any tab's mutation.
+  Phoenix.PubSub fan-out cost is a few-bytes broadcast + a
+  single-page GET /channels per tab — acceptable.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
