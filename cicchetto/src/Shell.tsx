@@ -152,7 +152,30 @@ const Shell: Component = () => {
       <section class="shell-main">
         <Show
           when={selectedChannel()}
-          fallback={<p class="muted">select a channel to view scrollback</p>}
+          fallback={
+            <>
+              <header class="shell-empty-toolbar">
+                <button
+                  type="button"
+                  class="topic-bar-hamburger"
+                  aria-label="open channel sidebar"
+                  onClick={() => setSidebarOpen((v) => !v)}
+                >
+                  ☰
+                </button>
+                <span class="shell-empty-toolbar-spacer" />
+                <button
+                  type="button"
+                  class="topic-bar-settings"
+                  aria-label="open settings"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  ⚙
+                </button>
+              </header>
+              <p class="muted">select a channel to view scrollback</p>
+            </>
+          }
         >
           {(sel) => (
             <>

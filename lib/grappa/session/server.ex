@@ -400,10 +400,36 @@ defmodule Grappa.Session.Server do
   # state derivation (members map, nick reconcile); Server owns the
   # transport — Client.send_line for `:reply`, Scrollback.persist_event
   # + PubSub.broadcast for `:persist`.
+  #
+  # Channels-list mutation (self-JOIN / self-PART / self-KICK changes the
+  # `state.members` keyset) fires a fan-out broadcast on the per-user
+  # topic so every connected tab refetches GET /channels and re-subscribes
+  # to per-channel WS topics. Direction-agnostic: grow + shrink share the
+  # same heartbeat shape; the cause is irrelevant to subscribers, the
+  # REST endpoint is the source of truth for the new list.
   @spec delegate(Message.t(), state()) :: {:noreply, state()}
   defp delegate(msg, state) do
     {:cont, derived_state, effects} = EventRouter.route(msg, state)
-    {:noreply, apply_effects(effects, derived_state)}
+    next_state = apply_effects(effects, derived_state)
+    maybe_broadcast_channels_changed(state, next_state)
+    {:noreply, next_state}
+  end
+
+  @spec maybe_broadcast_channels_changed(state(), state()) :: :ok
+  defp maybe_broadcast_channels_changed(prev, next) do
+    prev_keys = prev.members |> Map.keys() |> Enum.sort()
+    next_keys = next.members |> Map.keys() |> Enum.sort()
+
+    if prev_keys != next_keys do
+      :ok =
+        Phoenix.PubSub.broadcast(
+          Grappa.PubSub,
+          Topic.user(prev.user_name),
+          {:event, %{kind: "channels_changed"}}
+        )
+    end
+
+    :ok
   end
 
   @spec apply_effects([EventRouter.effect()], state()) :: state()
