@@ -1,5 +1,5 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
-import { postJoin, postNick, postPart, postTopic } from "./api";
+import { ApiError, postJoin, postNick, postPart, postTopic } from "./api";
 import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { membersByChannel } from "./members";
@@ -130,45 +130,52 @@ const exports_ = createRoot(() => {
     if (!t) return { error: "no session" };
 
     let result: SubmitResult;
-    switch (cmd.kind) {
-      case "privmsg":
-        await sendPrivmsg(networkSlug, channelName, cmd.body);
-        result = { ok: true };
-        break;
-      case "me":
-        // CTCP ACTION framing: \x01ACTION <text>\x01
-        await sendPrivmsg(networkSlug, channelName, `\x01ACTION ${cmd.body}\x01`);
-        result = { ok: true };
-        break;
-      case "join":
-        await postJoin(t, networkSlug, cmd.channel);
-        result = { ok: true };
-        break;
-      case "part": {
-        const target = cmd.channel ?? channelName;
-        await postPart(t, networkSlug, target);
-        result = { ok: true };
-        break;
+    try {
+      switch (cmd.kind) {
+        case "privmsg":
+          await sendPrivmsg(networkSlug, channelName, cmd.body);
+          result = { ok: true };
+          break;
+        case "me":
+          // CTCP ACTION framing: \x01ACTION <text>\x01
+          await sendPrivmsg(networkSlug, channelName, `\x01ACTION ${cmd.body}\x01`);
+          result = { ok: true };
+          break;
+        case "join":
+          await postJoin(t, networkSlug, cmd.channel);
+          result = { ok: true };
+          break;
+        case "part": {
+          const target = cmd.channel ?? channelName;
+          await postPart(t, networkSlug, target);
+          result = { ok: true };
+          break;
+        }
+        case "topic":
+          await postTopic(t, networkSlug, channelName, cmd.body);
+          result = { ok: true };
+          break;
+        case "nick":
+          await postNick(t, networkSlug, cmd.nick);
+          result = { ok: true };
+          break;
+        case "msg":
+          await sendPrivmsg(networkSlug, cmd.target, cmd.body);
+          result = { ok: true };
+          break;
+        case "unknown":
+          return { error: `unknown command: /${cmd.verb}` };
+        default: {
+          const _exhaustive: never = cmd;
+          void _exhaustive;
+          return { error: "unhandled" };
+        }
       }
-      case "topic":
-        await postTopic(t, networkSlug, channelName, cmd.body);
-        result = { ok: true };
-        break;
-      case "nick":
-        await postNick(t, networkSlug, cmd.nick);
-        result = { ok: true };
-        break;
-      case "msg":
-        await sendPrivmsg(networkSlug, cmd.target, cmd.body);
-        result = { ok: true };
-        break;
-      case "unknown":
-        return { error: `unknown command: /${cmd.verb}` };
-      default: {
-        const _exhaustive: never = cmd;
-        void _exhaustive;
-        return { error: "unhandled" };
-      }
+    } catch (e) {
+      // REST/PubSub failure surfaces here. Preserve the draft (no
+      // history push, no draft clear) so the user can retry without
+      // re-typing; the {error} arm fires the ComposeBox alert banner.
+      return { error: e instanceof ApiError ? e.code : "send failed" };
     }
 
     // Success: push the original draft (NOT the parsed cmd) onto history,
