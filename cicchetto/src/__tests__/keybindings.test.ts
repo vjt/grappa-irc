@@ -98,4 +98,15 @@ describe("keybindings", () => {
     expect(handlers.cycleNickComplete).toHaveBeenCalledWith(false);
     document.body.removeChild(ta);
   });
+
+  it("uninstall drops the handler reference; post-uninstall keys are no-op", () => {
+    uninstall();
+    dispatch({ key: "1", altKey: true });
+    expect(handlers.selectChannelByIndex).not.toHaveBeenCalled();
+    // Re-install WITHOUT registering — the dropped reference means
+    // the dispatch hits the null guard, no stale closure fires.
+    install();
+    dispatch({ key: "1", altKey: true });
+    expect(handlers.selectChannelByIndex).not.toHaveBeenCalled();
+  });
 });
