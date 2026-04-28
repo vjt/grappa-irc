@@ -89,4 +89,23 @@ describe("ComposeBox", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("textarea retains focus after a successful submit", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    ta.focus();
+    expect(document.activeElement).toBe(ta);
+    fireEvent.keyDown(ta, { key: "Enter" });
+    // Wait for the async submit to settle.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.activeElement).toBe(ta);
+  });
+
+  it("textarea has no `disabled` attribute (regression guard for focus loss)", () => {
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    expect(ta.hasAttribute("disabled")).toBe(false);
+  });
 });

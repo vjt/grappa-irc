@@ -10,6 +10,7 @@ import { isAuthenticated } from "./lib/auth";
 // which contained the join effect); after the verb-keyed split the
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
+import "./lib/userTopic";
 import { applyTheme } from "./lib/theme";
 import Shell from "./Shell";
 import "./themes/default.css";

@@ -154,4 +154,30 @@ describe("Shell — three-pane integration", () => {
     fireEvent.click(screen.getByLabelText(/open settings/i));
     expect(container.querySelector(".settings-drawer")?.classList.contains("open")).toBe(true);
   });
+
+  it("empty-state renders the ☰ open-sidebar button (mobile escape hatch)", () => {
+    render(() => <Shell />);
+    // selectionState set to null in beforeEach — empty state.
+    expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
+  });
+
+  it("empty-state renders the ⚙ settings button", () => {
+    render(() => <Shell />);
+    expect(screen.getByLabelText(/open settings/i)).toBeInTheDocument();
+  });
+
+  it("clicking empty-state ☰ opens the sidebar drawer", () => {
+    const { container } = render(() => <Shell />);
+    const sidebar = container.querySelector(".shell-sidebar");
+    expect(sidebar?.classList.contains("open")).toBe(false);
+    fireEvent.click(screen.getByLabelText(/open channel sidebar/i));
+    expect(sidebar?.classList.contains("open")).toBe(true);
+  });
+
+  it("clicking empty-state ⚙ opens the settings drawer", () => {
+    const { container } = render(() => <Shell />);
+    fireEvent.click(screen.getByLabelText(/open settings/i));
+    const settings = container.querySelector(".settings-drawer");
+    expect(settings?.classList.contains("open")).toBe(true);
+  });
 });

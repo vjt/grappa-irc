@@ -85,7 +85,6 @@ const ComposeBox: Component<Props> = (props) => {
           onKeyDown={onKeyDown}
           placeholder={`message ${props.channelName}`}
           rows={1}
-          disabled={sending()}
           aria-label="compose message"
         />
         <button type="submit" disabled={sending() || getDraft(key()).trim() === ""}>

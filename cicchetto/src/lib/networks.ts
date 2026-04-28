@@ -45,22 +45,27 @@ const exports = createRoot(() => {
     return me(t);
   });
 
-  const [channelsBySlug] = createResource<Record<string, ChannelEntry[]>, Network[]>(
-    networks,
-    async (nets) => {
-      if (!nets || nets.length === 0) return {};
-      const t = token();
-      if (!t) return {};
-      const entries = await Promise.all(
-        nets.map(async (n) => [n.slug, await listChannels(t, n.slug)] as const),
-      );
-      return Object.fromEntries(entries);
-    },
-  );
+  const [channelsBySlug, { refetch: refetchChannelsResource }] = createResource<
+    Record<string, ChannelEntry[]>,
+    Network[]
+  >(networks, async (nets) => {
+    if (!nets || nets.length === 0) return {};
+    const t = token();
+    if (!t) return {};
+    const entries = await Promise.all(
+      nets.map(async (n) => [n.slug, await listChannels(t, n.slug)] as const),
+    );
+    return Object.fromEntries(entries);
+  });
 
-  return { networks, user, channelsBySlug };
+  const refetchChannels = (): void => {
+    void refetchChannelsResource();
+  };
+
+  return { networks, user, channelsBySlug, refetchChannels };
 });
 
 export const networks = exports.networks;
 export const user = exports.user;
 export const channelsBySlug = exports.channelsBySlug;
+export const refetchChannels = exports.refetchChannels;
