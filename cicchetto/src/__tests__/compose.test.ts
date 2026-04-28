@@ -1,13 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 
-vi.mock("../lib/api", () => ({
-  postTopic: vi.fn(),
-  postNick: vi.fn(),
-  postJoin: vi.fn(),
-  postPart: vi.fn(),
-  setOn401Handler: vi.fn(),
-}));
+vi.mock("../lib/api", () => {
+  class ApiError extends Error {
+    readonly status: number;
+    readonly code: string;
+    constructor(status: number, code: string) {
+      super(`${status} ${code}`);
+      this.name = "ApiError";
+      this.status = status;
+      this.code = code;
+    }
+  }
+  return {
+    ApiError,
+    postTopic: vi.fn(),
+    postNick: vi.fn(),
+    postJoin: vi.fn(),
+    postPart: vi.fn(),
+    setOn401Handler: vi.fn(),
+  };
+});
 
 vi.mock("../lib/scrollback", () => ({
   sendMessage: vi.fn(),
@@ -209,6 +222,35 @@ describe("compose submit — slash command dispatch", () => {
     const result = await compose.submit(k, "freenode", "#a");
     expect(result).toEqual({ error: "empty" });
     expect(sb.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("REST failure surfaces ApiError.code as {error}; draft preserved", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.postTopic).mockRejectedValue(new api.ApiError(503, "upstream"));
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic ciao mondo");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ error: "upstream" });
+    // Draft preserved so user can retry without re-typing.
+    expect(compose.getDraft(k)).toBe("/topic ciao mondo");
+  });
+
+  it("non-ApiError rejection surfaces as {error: 'send failed'}", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockRejectedValue(new Error("boom"));
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "hello");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ error: "send failed" });
+    expect(compose.getDraft(k)).toBe("hello");
   });
 });
 
