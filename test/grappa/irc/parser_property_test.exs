@@ -206,9 +206,12 @@ defmodule Grappa.IRC.Parser.PropertyTest do
     ])
   end
 
-  # Numeric reply: tagged tuple in 0..999 range.
+  # Numeric reply: tagged tuple in 1..999. RFC 2812 numerics are
+  # 001..999; "000" round-trips to {:unknown, "000"} per the parser's
+  # documented domain (parser.ex normalize_command/1) so generator must
+  # exclude 0 — otherwise round-trip equality fails on a domain mismatch.
   defp numeric_gen do
-    gen all(n <- StreamData.integer(0..999)) do
+    gen all(n <- StreamData.integer(1..999)) do
       {:numeric, n}
     end
   end

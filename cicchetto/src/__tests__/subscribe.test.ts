@@ -35,6 +35,18 @@ vi.mock("../lib/socket", () => ({
   joinChannel: vi.fn(() => mockChannel),
 }));
 
+vi.mock("../lib/members", () => ({
+  applyPresenceEvent: vi.fn(),
+  loadMembers: vi.fn(),
+  membersByChannel: vi.fn(() => ({})),
+  seedFromTest: vi.fn(),
+}));
+
+vi.mock("../lib/mentions", () => ({
+  bumpMention: vi.fn(),
+  mentionCounts: () => ({}),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -46,7 +58,10 @@ const seedStubs = async () => {
   vi.mocked(api.listNetworks).mockResolvedValue([
     { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
   ]);
-  vi.mocked(api.listChannels).mockResolvedValue([{ name: "#grappa" }, { name: "#cicchetto" }]);
+  vi.mocked(api.listChannels).mockResolvedValue([
+    { name: "#grappa", joined: true, source: "autojoin" },
+    { name: "#cicchetto", joined: true, source: "autojoin" },
+  ]);
   vi.mocked(api.me).mockResolvedValue({ id: "u1", name: "alice", inserted_at: "x" });
   vi.mocked(api.listMessages).mockResolvedValue([]);
   vi.mocked(api.sendMessage).mockResolvedValue({
@@ -240,6 +255,87 @@ describe("subscribe — WS join effect", () => {
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
+    });
+
+    it("PRIVMSG mentioning operator nick on non-selected channel bumps mention badge (P4-1 Task 29)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      // Selection on OTHER channel; mention arrives on #grappa.
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+
+      fireMessageEvent("#grappa", { id: 100, kind: "privmsg", body: "hey alice come look" });
+
+      const key = channelKey("freenode", "#grappa");
+      expect(mentions.bumpMention).toHaveBeenCalledWith(key);
+    });
+
+    it("PRIVMSG mentioning nick on the SELECTED channel does NOT bump mention badge", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      fireMessageEvent("#grappa", { id: 101, kind: "privmsg", body: "hey alice" });
+
+      expect(mentions.bumpMention).not.toHaveBeenCalled();
+    });
+
+    it("PRIVMSG without nick mention does NOT bump mention badge", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const mentions = await import("../lib/mentions");
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+      fireMessageEvent("#grappa", { id: 102, kind: "privmsg", body: "no mention here" });
+
+      expect(mentions.bumpMention).not.toHaveBeenCalled();
+    });
+
+    it("dispatches presence events to members.applyPresenceEvent (P4-1 Q4)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      await seedStubs();
+      const members = await import("../lib/members");
+      await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      fireMessageEvent("#grappa", { id: 10, kind: "join", sender: "newcomer" });
+      fireMessageEvent("#grappa", { id: 11, kind: "part", sender: "newcomer" });
+      fireMessageEvent("#grappa", { id: 12, kind: "quit", sender: "alice" });
+      fireMessageEvent("#grappa", { id: 13, kind: "nick_change", sender: "alice" });
+      fireMessageEvent("#grappa", { id: 14, kind: "mode", sender: "op" });
+      fireMessageEvent("#grappa", { id: 15, kind: "kick", sender: "op" });
+      fireMessageEvent("#grappa", { id: 16, kind: "privmsg", sender: "alice" });
+
+      // applyPresenceEvent is called for ALL events; the filtering by
+      // kind happens inside members.ts itself (privmsg is a no-op there).
+      // Subscribe.ts dispatches every event; members.ts decides what
+      // matters. Assert the call count includes the privmsg too.
+      expect(members.applyPresenceEvent).toHaveBeenCalledTimes(7);
+      const key = channelKey("freenode", "#grappa");
+      expect(members.applyPresenceEvent).toHaveBeenCalledWith(
+        key,
+        expect.objectContaining({ id: 10, kind: "join" }),
+      );
+      expect(members.applyPresenceEvent).toHaveBeenCalledWith(
+        key,
+        expect.objectContaining({ id: 14, kind: "mode" }),
+      );
     });
 
     it("logout (token → null) clears scrollback + unread + selection", async () => {

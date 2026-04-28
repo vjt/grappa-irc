@@ -243,6 +243,71 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Sets the topic on `channel` upstream AND persists a `:topic`
+  # scrollback row + broadcasts to the per-channel PubSub topic — same
+  # atomic-from-caller's-view shape as `:send_privmsg`. Symmetric with
+  # how the operator's own outbound TOPIC should appear in their own
+  # scrollback view alongside everyone else's.
+  def handle_call({:send_topic, channel, body}, _, state)
+      when is_binary(channel) and is_binary(body) do
+    attrs = %{
+      user_id: state.user_id,
+      network_id: state.network_id,
+      channel: channel,
+      server_time: System.system_time(:millisecond),
+      kind: :topic,
+      sender: state.nick,
+      body: body,
+      meta: %{}
+    }
+
+    case Scrollback.persist_event(attrs) do
+      {:ok, message} ->
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.channel(state.user_name, state.network_slug, channel),
+            Wire.message_event(message)
+          )
+
+        case Client.send_topic(state.client, channel, body) do
+          :ok ->
+            {:reply, {:ok, message}, state}
+
+          {:error, :invalid_line} = err ->
+            Logger.error("client rejected topic AFTER persist — facade bypass?",
+              channel: channel
+            )
+
+            {:reply, err, state}
+        end
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  # Sends `NICK <new>` upstream. No scrollback row written here — the
+  # upstream replays the NICK back; EventRouter's NICK handler then
+  # reconciles `state.nick` (state.nick == old_nick path) and emits the
+  # per-channel `:nick_change` persist effects.
+  def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
+    case Client.send_nick(state.client, new_nick) do
+      :ok -> {:reply, :ok, state}
+      {:error, _} = err -> {:reply, err, state}
+    end
+  end
+
+  # Returns a snapshot of currently-joined channels
+  # (`Map.keys(state.members)`) sorted alphabetically. Public via
+  # `Grappa.Session.list_channels/2`. The "currently-joined" invariant
+  # is preserved by EventRouter's self-JOIN wipe + self-PART/KICK
+  # delete (Q1 of P4-1 cluster).
+  def handle_call({:list_channels}, _, state) do
+    channels = state.members |> Map.keys() |> Enum.sort()
+    {:reply, {:ok, channels}, state}
+  end
+
   @doc """
   Returns a snapshot of `state.members[channel]` in mIRC sort order
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).

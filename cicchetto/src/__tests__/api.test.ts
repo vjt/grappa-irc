@@ -89,3 +89,55 @@ describe("api 401 handler", () => {
     }
   });
 });
+
+describe("listChannels (post-A5 wire shape)", () => {
+  it("decodes {name, joined, source} entries", async () => {
+    stubFetch(200, [
+      { name: "#italia", joined: true, source: "autojoin" },
+      { name: "#bnc", joined: true, source: "joined" },
+    ]);
+
+    const result = await api.listChannels("tok", "azzurra");
+
+    expect(result).toEqual([
+      { name: "#italia", joined: true, source: "autojoin" },
+      { name: "#bnc", joined: true, source: "joined" },
+    ]);
+  });
+});
+
+describe("postTopic / postNick", () => {
+  it("postTopic POSTs JSON to /networks/:slug/channels/:chan/topic", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.postTopic("tok", "azzurra", "#italia", "ciao");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/networks/azzurra/channels/%23italia/topic",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ body: "ciao" }),
+      }),
+    );
+  });
+
+  it("postNick POSTs JSON to /networks/:slug/nick", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.postNick("tok", "azzurra", "vjt-away");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/networks/azzurra/nick",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ nick: "vjt-away" }),
+      }),
+    );
+  });
+});

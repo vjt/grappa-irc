@@ -1098,6 +1098,163 @@ extraction stays open as a Phase 5 consolidation candidate.
 
 ---
 
+## 2026-04-27 — P4-1 / A5 closure: three-pane shell + 5th verb-keyed split
+
+Closes architecture review A5 (`ChannelsController.index` returning
+the credential's static autojoin list rather than session-tracked
+joined channels). Closes the Phase 4 first-ship UI scope: cicchetto
+rewrites from two-pane (sidebar + main) to three-pane responsive
+(sidebar + main with topic+scrollback+compose + members aside);
+mIRC-light + irssi-dark themes; irssi keyboard shortcuts; members
+sidebar consuming `/members`; compose with tab-complete + slash
+commands; mention highlight + sidebar mention badge.
+
+### Server-side (A5 close)
+
+`Grappa.Session.EventRouter` extended with self-PART / self-KICK
+semantics: when `sender == state.nick` (PART) or `target == state.nick`
+(KICK), the channel key is `Map.delete`'d from `state.members` —
+symmetric with the existing self-JOIN wipe. Invariant:
+`Map.keys(state.members)` is the live "currently-joined channels"
+set. Other-user PART / KICK keep the existing inner-nick-only
+semantics.
+
+`Grappa.Session.list_channels/2` facade added — bare-name list
+mirror of `list_members/3`. `GrappaWeb.ChannelsController.index/2`
+composes the credential autojoin list ⊕ session-tracked list into
+the new wire shape `{name, joined: bool, source: :autojoin | :joined}`.
+`:autojoin` wins on overlap (operator intent durable; session JOIN
+transient). Three-category merge: in-both ⇒ joined+autojoin; autojoin-
+only ⇒ not-joined+autojoin; session-only ⇒ joined+joined. Sorted
+alphabetically.
+
+Two new outbound endpoints in service of P4-1's slash commands:
+`POST /networks/:net/channels/:chan/topic` (sets channel topic via
+`Session.send_topic/4`, persists `:topic` scrollback row, broadcasts)
++ `POST /networks/:net/nick` (sends `NICK <new>` upstream via
+`Session.send_nick/3`; the server reconciles `state.nick` via the
+existing EventRouter NICK handler when the upstream replays).
+
+### Client-side (5th verb-keyed split)
+
+D3 split cicchetto's god-module `lib/networks.ts` into four verbs:
+`networks`, `scrollback`, `selection`, `subscribe`. P4-1 adds five
+more: `theme` (theming + viewport-mode), `keybindings` (global
+keydown dispatch), `members` (per-channel member list — bootstrap
+via REST, live updates via existing message stream), `compose`
+(per-channel draft + history + slash-dispatch + tab-complete),
+`mentions` (per-channel mention count, paired with `selection`'s
+unread count).
+
+Plus four pure-function helpers (`modeApply`, `slashCommands`,
+`mentionMatch`, `memberTypes`) — DOM-free, fully unit-tested, shared
+between consumers.
+
+| Cluster | Module                           | Split shape                                                              |
+|---------|----------------------------------|--------------------------------------------------------------------------|
+| D1 / A2 | `Grappa.Networks` god-context    | Servers / Credentials / SessionPlan                                      |
+| D2 / A3 | `Grappa.IRC.Client` god-module   | Client (transport) + AuthFSM (pure)                                      |
+| D3 / A4 | `cicchetto/lib/networks.ts`      | networks / scrollback / selection / subscribe                            |
+| E1 / A6 | `Session.Server` god-handle_info | Server (transport) + EventRouter (pure)                                  |
+| **P4-1**| `cicchetto/lib/`                 | + theme / keybindings / members / compose / mentions + pure helpers      |
+
+The 5th application validates the principle further: post-D3 we had
+4 stores, P4-1 adds 5 more — and each new store mirrored the same
+shape (module-singleton + createRoot + on(token) cleanup arm). No
+context provider boilerplate; fine-grained signal subscriptions
+across consumers; identity-rotation cleanup uniform.
+
+Q4 of P4-1 (presence-from-existing-message-stream) was the load-
+bearing reuse decision: rather than introducing a new server-side
+broadcast for member-state deltas, the cicchetto `members.ts` store
+filters the same `MessagesChannel` stream `subscribe.ts` already
+consumes. The persist row IS the wire-level evidence of presence
+change. Implements the "Implement once, reuse everywhere" + "One
+feature, one code path, every door" rules together.
+
+### Three-pane responsive shell
+
+Layout: CSS Grid `grid-template-columns: 16rem 1fr 14rem` on
+desktop. At ≤768px (single source: `--breakpoint-mobile: 768px` on
+`:root`, mirrored in JS via `theme.ts`'s reactive `isMobile()`
+signal) both side panes collapse to fixed-position drawers toggled
+by ☰ hamburger buttons in `TopicBar`. Backdrop overlay captures
+tap-outside; `Esc` closes whichever drawer is open; selecting a
+channel auto-closes the sidebar drawer.
+
+Q7 pinned hamburger-only (no edge-swipe): conflict-free with iOS
+back-swipe; explicit affordance over gesture discoverability.
+Edge-swipe deferred to M-cluster polish.
+
+### Theme system
+
+Q8 pinned single-CSS-file with `:root[data-theme="..."]` blocks:
+both themes ship in the same asset, paint at first frame, no FOUC
+on toggle. `theme.ts` writes `document.documentElement.dataset.theme`;
+`applyTheme()` boot-time entry called from `main.tsx` pre-render
+reads localStorage + `prefers-color-scheme` to pick the initial
+theme. Three-way "auto / mIRC / irssi" radio in `SettingsDrawer`;
+"auto" clears localStorage and re-evaluates `prefers-color-scheme`
+(live OS-level theme changes propagate when in auto).
+
+### Keybindings
+
+Q-resolution: vanilla `window.addEventListener("keydown")` + handler-
+interface dispatch table; no third-party library dep. Bindings:
+`Alt+1..9` (channel switch by index), `Ctrl+N/P` (next/prev unread),
+`/` (focus compose), `Esc` (close drawers), `Tab` / `Shift+Tab`
+(cycle nick complete in compose; gated on typing target). Two-stage
+init via `registerHandlers + install`; Shell.tsx owns the handler
+callbacks. Tab completion is members-only (Q6 pinned).
+
+### Compose surface
+
+`compose.ts` + `slashCommands.ts` + `ComposeBox.tsx` form the
+per-channel input layer. Slash commands shipped: `/me`, `/join`,
+`/part`, `/topic`, `/nick`, `/msg`. Dropped: `/raw` (needs a
+`POST /networks/:net/raw` server endpoint that doesn't exist;
+M-cluster). History walk via Up/Down on first/last line; CTCP ACTION
+framing for `/me`. Empty / unknown commands surface as inline alert
+banners. Tab-complete cycles through alphabetically-sorted matches
+for the original-prefix anchor (continuation detected by matching
+slice at start..cursor against the last chosen nick — keeps cycle
+stable even though the rendered word grows on each tab).
+
+### Mention surface
+
+`mentionMatch.ts` is the shared word-boundary case-insensitive
+matcher; consumed by `ScrollbackPane.tsx` (line highlight class
+`.scrollback-mention`) and `subscribe.ts` (`bumpMention(key)` for
+the sidebar badge — only when channel is NOT currently selected).
+Selection clears both unread + mention counts.
+
+### Trade-offs accepted
+
+- **Topic display in TopicBar is placeholder in P4-1.** A topic store
+  derived from latest `:topic` scrollback row is M-cluster polish
+  (the topic-bar shows the channel name + nick count; topic text
+  empty for now). The ad-hoc shipping of the operator's own
+  `/topic` command via the new POST endpoint persists a `:topic`
+  scrollback row that future-render will pick up — the wire shape
+  is forward-compat.
+- **Tab-completion is members-only** (Q6); recent-sender fallback
+  deferred to M-cluster.
+- **Edge-swipe drawer triggers** deferred (Q7).
+- **PREFIX ISUPPORT-driven mode-prefix table** — both server-side
+  EventRouter + cicchetto modeApply hard-code `(ov)@+`. Phase 5+
+  swaps both at once.
+
+### A20 (Broadcaster fold-in) — still deferred
+
+`Session.Server`'s outbound PRIVMSG (`handle_call({:send_privmsg, ...})`)
+gained `:topic` and `:nick` siblings (`{:send_topic, ...}`,
+`{:send_nick, ...}`) — same persist-then-broadcast-then-send shape,
+three callsites for the same logic. A20's extraction would
+consolidate them; P4-1 leaves the duplication (small, contained, three
+callsites) for Phase 5.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

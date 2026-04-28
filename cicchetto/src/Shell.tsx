@@ -1,92 +1,183 @@
-import { useNavigate } from "@solidjs/router";
-import { type Component, For, Show } from "solid-js";
-import * as auth from "./lib/auth";
+import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import ComposeBox from "./ComposeBox";
 import { channelKey } from "./lib/channelKey";
-import { channelsBySlug, networks, user } from "./lib/networks";
+import { getDraft, setDraft, tabComplete } from "./lib/compose";
+import { install, registerHandlers, uninstall } from "./lib/keybindings";
+import { channelsBySlug, networks } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import MembersPane from "./MembersPane";
 import ScrollbackPane from "./ScrollbackPane";
+import SettingsDrawer from "./SettingsDrawer";
+import Sidebar from "./Sidebar";
+import TopicBar from "./TopicBar";
 
-// Logged-in landing surface. Sub-task 4 wires the network → channel
-// sidebar + the live-event WS subscription that drives unread counts;
-// the right pane is the placeholder for sub-task 5's scrollback +
-// compose. The /me + /networks fetches and the per-channel topic joins
-// all live in `lib/networks.ts` — Shell is a pure read-side
-// projection of those signals.
+// Three-pane responsive shell. Composition root for Sidebar / TopicBar /
+// ScrollbackPane / ComposeBox / MembersPane / SettingsDrawer.
+//
+// Drawer state (mobile, ≤768px) lives here:
+//   * sidebarOpen — left channel-list drawer
+//   * membersOpen — right members-list drawer
+//   * settingsOpen — full-cover settings overlay (desktop+mobile)
+//
+// Keybindings: Shell is the only consumer of `keybindings.registerHandlers`
+// + `install`. Action callbacks drive selection (Alt+1..9, Ctrl+N/P),
+// drawer state (Esc), compose focus (/), and tab-complete (Tab in
+// compose textarea). install() is idempotent; uninstall fires on unmount.
+//
+// Mobile layout follows from CSS media queries against
+// `--breakpoint-mobile: 768px`. Same DOM in both layouts; only display +
+// transform change. The .open classList drives the slide-in transition.
+
 const Shell: Component = () => {
-  const navigate = useNavigate();
+  const [sidebarOpen, setSidebarOpen] = createSignal(false);
+  const [membersOpen, setMembersOpen] = createSignal(false);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
 
-  const handleLogout = async () => {
-    await auth.logout();
-    navigate("/login", { replace: true });
+  // Linear flat list of (slug, channel) tuples for Alt+1..9 + next/prev
+  // unread navigation. Read inside handlers so it picks up fresh state
+  // each call.
+  const flatChannels = (): { slug: string; name: string }[] => {
+    const cbs = channelsBySlug() ?? {};
+    const out: { slug: string; name: string }[] = [];
+    for (const net of networks() ?? []) {
+      for (const ch of cbs[net.slug] ?? []) {
+        out.push({ slug: net.slug, name: ch.name });
+      }
+    }
+    return out;
   };
 
-  const isSelected = (slug: string, name: string): boolean => {
-    const s = selectedChannel();
-    return s !== null && s.networkSlug === slug && s.channelName === name;
-  };
+  registerHandlers({
+    selectChannelByIndex: (idx) => {
+      const list = flatChannels();
+      const target = list[idx];
+      if (target) setSelectedChannel({ networkSlug: target.slug, channelName: target.name });
+    },
+    nextUnread: () => {
+      const list = flatChannels();
+      const counts = unreadCounts();
+      const sel = selectedChannel();
+      const startIdx = sel
+        ? list.findIndex((c) => c.slug === sel.networkSlug && c.name === sel.channelName)
+        : -1;
+      for (let i = 1; i <= list.length; i += 1) {
+        const idx = (startIdx + i) % list.length;
+        const c = list[idx];
+        if (!c) continue;
+        if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
+          setSelectedChannel({ networkSlug: c.slug, channelName: c.name });
+          return;
+        }
+      }
+    },
+    prevUnread: () => {
+      const list = flatChannels();
+      const counts = unreadCounts();
+      const sel = selectedChannel();
+      const startIdx = sel
+        ? list.findIndex((c) => c.slug === sel.networkSlug && c.name === sel.channelName)
+        : list.length;
+      for (let i = 1; i <= list.length; i += 1) {
+        const idx = (startIdx - i + list.length) % list.length;
+        const c = list[idx];
+        if (!c) continue;
+        if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
+          setSelectedChannel({ networkSlug: c.slug, channelName: c.name });
+          return;
+        }
+      }
+    },
+    focusCompose: () => {
+      const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
+      ta?.focus();
+    },
+    closeDrawer: () => {
+      setSidebarOpen(false);
+      setMembersOpen(false);
+      setSettingsOpen(false);
+    },
+    cycleNickComplete: (forward) => {
+      const sel = selectedChannel();
+      if (!sel) return;
+      const ta = document.activeElement as HTMLTextAreaElement | null;
+      if (!ta || ta.tagName.toLowerCase() !== "textarea") return;
+      const key = channelKey(sel.networkSlug, sel.channelName);
+      // Read the current draft from the store (not ta.value) so the
+      // matcher sees the post-store-write text — otherwise typing fast
+      // before the signal flushes back to the textarea misses chars.
+      const current = getDraft(key);
+      const result = tabComplete(key, current, ta.selectionStart, forward);
+      if (!result) return;
+      setDraft(key, result.newInput);
+      // Solid signal write doesn't immediately reflect in the textarea
+      // — schedule the cursor placement on the next microtask.
+      queueMicrotask(() => {
+        ta.setSelectionRange(result.newCursor, result.newCursor);
+      });
+    },
+  });
+  install();
+  onCleanup(uninstall);
+
+  // Auto-close sidebar drawer when the user picks a channel (mobile UX).
+  // `defer: true` skips the initial run so we don't immediately close
+  // a drawer the user just opened with the default selection.
+  createEffect(
+    on(
+      selectedChannel,
+      () => {
+        setSidebarOpen(false);
+      },
+      { defer: true },
+    ),
+  );
 
   return (
-    <main class="shell-app">
-      <header class="shell-header">
-        <Show when={user()} fallback={<span class="muted">loading…</span>}>
-          {(u) => <span>logged in as {u().name}</span>}
-        </Show>
-        <button type="button" onClick={handleLogout}>
-          log out
-        </button>
-      </header>
-      <div class="shell-body">
-        <aside class="sidebar">
-          <Show
-            when={(networks()?.length ?? 0) > 0}
-            fallback={<p class="muted sidebar-empty">no networks</p>}
-          >
-            <For each={networks()}>
-              {(network) => (
-                <section class="network">
-                  <h3>{network.slug}</h3>
-                  <ul>
-                    <For each={channelsBySlug()?.[network.slug] ?? []}>
-                      {(channel) => {
-                        const key = channelKey(network.slug, channel.name);
-                        return (
-                          <li classList={{ selected: isSelected(network.slug, channel.name) }}>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setSelectedChannel({
-                                  networkSlug: network.slug,
-                                  channelName: channel.name,
-                                })
-                              }
-                            >
-                              <span class="channel-name">{channel.name}</span>
-                              <Show when={(unreadCounts()[key] ?? 0) > 0}>
-                                <span class="unread">{unreadCounts()[key]}</span>
-                              </Show>
-                            </button>
-                          </li>
-                        );
-                      }}
-                    </For>
-                  </ul>
-                </section>
-              )}
-            </For>
-          </Show>
-        </aside>
-        <section class="pane">
-          <Show
-            when={selectedChannel()}
-            fallback={<p class="muted">select a channel to view scrollback</p>}
-          >
-            {(sel) => (
+    <div class="shell">
+      <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
+        <Sidebar onSelect={() => setSidebarOpen(false)} />
+      </aside>
+
+      <Show when={sidebarOpen() || membersOpen()}>
+        <div
+          class="shell-drawer-backdrop open"
+          onClick={() => {
+            setSidebarOpen(false);
+            setMembersOpen(false);
+          }}
+          aria-hidden="true"
+        />
+      </Show>
+
+      <section class="shell-main">
+        <Show
+          when={selectedChannel()}
+          fallback={<p class="muted">select a channel to view scrollback</p>}
+        >
+          {(sel) => (
+            <>
+              <TopicBar
+                networkSlug={sel().networkSlug}
+                channelName={sel().channelName}
+                onToggleSidebar={() => setSidebarOpen((v) => !v)}
+                onToggleMembers={() => setMembersOpen((v) => !v)}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
               <ScrollbackPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
-            )}
-          </Show>
-        </section>
-      </div>
-    </main>
+              <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+            </>
+          )}
+        </Show>
+      </section>
+
+      <aside class="shell-members" classList={{ open: membersOpen() }}>
+        <Show when={selectedChannel()}>
+          {(sel) => <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />}
+        </Show>
+      </aside>
+
+      <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+    </div>
   );
 };
 

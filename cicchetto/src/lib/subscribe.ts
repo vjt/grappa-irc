@@ -2,6 +2,9 @@ import { createEffect, createRoot, on, untrack } from "solid-js";
 import type { ChannelEvent } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { applyPresenceEvent } from "./members";
+import { mentionsUser } from "./mentionMatch";
+import { bumpMention } from "./mentions";
 import { channelsBySlug, user } from "./networks";
 import { appendToScrollback } from "./scrollback";
 import { bumpUnread, selectedChannel } from "./selection";
@@ -55,10 +58,31 @@ createRoot(() => {
         const phx = joinChannel(u.name, slug, ch.name);
         phx.on("event", (payload: ChannelEvent) => {
           if (payload.kind !== "message") return;
+          // Scrollback ingestion — every message kind appended.
           appendToScrollback(key, payload.message);
+          // Members presence delta (P4-1 Q4) — applyPresenceEvent
+          // filters by kind: presence kinds (join/part/quit/nick_change/
+          // mode/kick) mutate the per-channel member list; content kinds
+          // (privmsg/notice/action/topic) are no-ops there. Dispatching
+          // every event keeps the routing logic local to members.ts.
+          applyPresenceEvent(key, payload.message);
           const sel = untrack(selectedChannel);
-          if (sel && sel.networkSlug === slug && sel.channelName === ch.name) return;
+          const isSelected =
+            sel !== null && sel.networkSlug === slug && sel.channelName === ch.name;
+          if (isSelected) return;
           bumpUnread(key);
+          // Mention bump (P4-1) — only PRIVMSGs whose body matches the
+          // operator's own nick bump the red mention badge. Gated on
+          // !isSelected so that tabbing INTO a channel clears the count
+          // (selection.bumpMention's selectedChannel-cleared effect)
+          // and incoming mentions on the OPEN channel don't double-
+          // signal (the line itself gets .scrollback-mention highlight).
+          if (payload.message.kind === "privmsg") {
+            const u = untrack(user);
+            if (u && mentionsUser(payload.message.body, u.name)) {
+              bumpMention(key);
+            }
+          }
         });
         joined.add(key);
       }

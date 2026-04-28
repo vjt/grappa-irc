@@ -168,13 +168,24 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
-    # Defensive: persist the audit row even for an unknown channel
-    # (member-state untouched). Lets a renderer recover the PART event
-    # if upstream re-orders relative to a JOIN we haven't seen yet.
+    # Q1: self-PART drops the channel key entirely so `Map.keys(state.members)`
+    # remains a faithful "currently-joined channels" set. Symmetric with
+    # self-JOIN (which wipes-and-reseeds). Other-user PART preserves the
+    # existing inner-nick-only semantics.
     members =
-      case Map.get(state.members, channel) do
-        nil -> state.members
-        ch_members -> Map.put(state.members, channel, Map.delete(ch_members, sender))
+      cond do
+        sender == state.nick ->
+          Map.delete(state.members, channel)
+
+        Map.has_key?(state.members, channel) ->
+          Map.update!(state.members, channel, &Map.delete(&1, sender))
+
+        true ->
+          # Defensive: persist the audit row even for an unknown channel
+          # (member-state untouched). Lets a renderer recover the PART
+          # event if upstream re-orders relative to a JOIN we haven't
+          # seen yet.
+          state.members
       end
 
     {state, eff} = build_persist(%{state | members: members}, :part, channel, sender, reason, %{})
@@ -267,10 +278,19 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
+    # Q1: self-KICK (target == state.nick) drops the channel key entirely.
+    # Symmetric with self-PART. Other-user KICK preserves the inner-nick
+    # delete.
     members =
-      case Map.get(state.members, channel) do
-        nil -> state.members
-        ch_members -> Map.put(state.members, channel, Map.delete(ch_members, target))
+      cond do
+        target == state.nick ->
+          Map.delete(state.members, channel)
+
+        Map.has_key?(state.members, channel) ->
+          Map.update!(state.members, channel, &Map.delete(&1, target))
+
+        true ->
+          state.members
       end
 
     {state, eff} =
