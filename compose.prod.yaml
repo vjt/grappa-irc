@@ -115,7 +115,10 @@ services:
       cicchetto-build:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz >/dev/null || exit 1"]
+      # 127.0.0.1, not localhost: alpine resolves localhost to ::1 first
+      # but nginx.conf only declares `listen 80` (IPv4 wildcard), not
+      # `listen [::]:80`, so the IPv6 connect refuses → healthcheck fails.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 10s
