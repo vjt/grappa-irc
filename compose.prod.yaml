@@ -43,10 +43,11 @@ services:
       RELEASE_COOKIE: ${RELEASE_COOKIE:?missing RELEASE_COOKIE — random hex string for distributed Erlang}
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:?missing GRAPPA_ENCRYPTION_KEY — generate with scripts/mix.sh grappa.gen_encryption_key}
       PHX_HOST: ${PHX_HOST:-grappa.bad.ass}
-      # Sizes BEAM port + process tables (see rel/env.sh.eex). Bump
-      # only if a deploy needs to support more concurrent users than
-      # the default fits.
+      # BEAM resource caps (see rel/env.sh.eex). Bump GRAPPA_MAX_USERS
+      # if a deploy needs more concurrent users than the default fits.
+      # GRAPPA_DIRTY_SCHEDULERS unset → defaults to $(nproc) at boot.
       GRAPPA_MAX_USERS: ${GRAPPA_MAX_USERS:-100}
+      GRAPPA_DIRTY_SCHEDULERS: ${GRAPPA_DIRTY_SCHEDULERS:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 30s
