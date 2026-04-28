@@ -169,6 +169,50 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "PART — self-leave semantics (Q1)" do
+    test "self-PART removes the channel key from state.members entirely" do
+      # State: I'm in #grappa with two members (me + alice).
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => []}}
+        })
+
+      m = msg(:part, ["#grappa", "byebye"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      # Channel key gone from members map entirely (not just my nick).
+      refute Map.has_key?(new_state.members, "#grappa")
+
+      # Persist effect still emitted so audit trail is preserved.
+      assert [{:persist, :part, attrs}] = effects
+      assert attrs.channel == "#grappa"
+      assert attrs.sender == "vjt"
+      assert attrs.body == "byebye"
+    end
+
+    test "other-user PART keeps the channel key, only deletes inner nick" do
+      # State: I'm in #grappa with alice. alice parts.
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => []}}
+        })
+
+      m = msg(:part, ["#grappa", "bbl"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      # Channel key still present; alice gone; vjt still there.
+      assert Map.has_key?(new_state.members, "#grappa")
+      assert Map.has_key?(new_state.members["#grappa"], "vjt")
+      refute Map.has_key?(new_state.members["#grappa"], "alice")
+
+      assert [{:persist, :part, _}] = effects
+    end
+  end
+
   describe "route/2 — :quit (fan-out per channel where nick was member)" do
     test "QUIT emits one :persist :quit per channel + removes nick from all" do
       state =
@@ -404,13 +448,49 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, _, [{:persist, :kick, %{body: nil, meta: %{target: "spammer"}}}]} =
                EventRouter.route(m, state)
     end
+  end
 
-    test "KICK target == own nick still removes (we're being kicked)" do
-      state = base_state(%{nick: "vjt", members: %{"#italia" => %{"vjt" => []}}})
-      m = msg(:kick, ["#italia", "vjt", "rude"], {:nick, "ChanServ", "u", "h"})
+  describe "KICK — self-target semantics (Q1)" do
+    test "self-KICK removes the channel key from state.members entirely" do
+      # State: I'm in #grappa with the channel-op alice. alice kicks me.
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}
+        })
 
-      assert {:cont, new_state, [{:persist, :kick, _}]} = EventRouter.route(m, state)
-      assert new_state.members["#italia"] == %{}
+      m = msg(:kick, ["#grappa", "vjt", "behave"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      # Channel key gone — I'm no longer in any channel state.
+      refute Map.has_key?(new_state.members, "#grappa")
+
+      # Persist effect still emitted with target+reason on meta+body.
+      assert [{:persist, :kick, attrs}] = effects
+      assert attrs.channel == "#grappa"
+      assert attrs.sender == "alice"
+      assert attrs.body == "behave"
+      assert attrs.meta == %{target: "vjt"}
+    end
+
+    test "other-user KICK keeps the channel key, only deletes the target nick" do
+      # State: I'm in #grappa as op; bob is plain. alice kicks bob.
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => ["@"], "alice" => ["@"], "bob" => []}}
+        })
+
+      m = msg(:kick, ["#grappa", "bob", "go away"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+
+      # Channel key still present; bob gone; vjt + alice still there.
+      assert Map.has_key?(new_state.members, "#grappa")
+      refute Map.has_key?(new_state.members["#grappa"], "bob")
+      assert Map.has_key?(new_state.members["#grappa"], "vjt")
+      assert Map.has_key?(new_state.members["#grappa"], "alice")
     end
   end
 

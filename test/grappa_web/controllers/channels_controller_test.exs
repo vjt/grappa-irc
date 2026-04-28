@@ -244,27 +244,102 @@ defmodule GrappaWeb.ChannelsControllerTest do
     end
   end
 
-  # Walking-skeleton (Phase 3) source-of-truth for "channels for this
-  # network" is `credential.autojoin_channels` — the persistent shape
-  # the bouncer auto-joins on connect. POST /channels mutations against
-  # a live session are NOT yet reflected here; session-tracked
-  # membership lands in Phase 5.
-  describe "GET /networks/:network_id/channels" do
-    test "returns the credential's autojoin_channels as channel objects", %{conn: conn, vjt: vjt} do
-      {network, _} = network_with_server(port: 7000, slug: "azzurra-idx-#{u()}")
-      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#sniffo", "#elixir"]})
-
-      conn = get(conn, "/networks/#{network.slug}/channels")
-
-      body = json_response(conn, 200)
-      assert body == [%{"name" => "#sniffo"}, %{"name" => "#elixir"}]
+  # A5 close (P4-1): GET /networks/:net/channels composes the
+  # credential autojoin list with `Grappa.Session.list_channels/2`
+  # (session-tracked currently-joined set) into the wire shape
+  # `[%{name, joined, source}]`. `:autojoin` wins on overlap (Q3).
+  describe "GET /networks/:network_id/channels (A5 close)" do
+    defp inject_members(pid, members) do
+      :sys.replace_state(pid, fn state -> %{state | members: members} end)
     end
 
-    test "returns empty list when credential has no autojoin", %{conn: conn, vjt: vjt} do
-      {network, _} = network_with_server(port: 7001, slug: "azzurra-empty-#{u()}")
+    test "channel in BOTH autojoin AND session: source: autojoin, joined: true",
+         %{conn: conn, vjt: vjt} do
+      {_, port} = start_server()
+      slug = "az-bot-#{u()}"
+      {network, _} = network_with_server(port: port, slug: slug)
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#italia"]})
+      pid = start_session_for(vjt, network)
+
+      inject_members(pid, %{"#italia" => %{"vjt" => []}})
+
+      conn = get(conn, "/networks/#{slug}/channels")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "#italia", "joined" => true, "source" => "autojoin"}
+             ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "channel ONLY in autojoin (no session yet): source: autojoin, joined: false",
+         %{conn: conn, vjt: vjt} do
+      slug = "az-auto-#{u()}"
+      {network, _} = network_with_server(port: 9999, slug: slug)
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#italia", "#azzurra"]})
+      # No session started — Bootstrap not running here.
+
+      conn = get(conn, "/networks/#{slug}/channels")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "#azzurra", "joined" => false, "source" => "autojoin"},
+               %{"name" => "#italia", "joined" => false, "source" => "autojoin"}
+             ]
+    end
+
+    test "channel ONLY in session (joined post-boot, not in autojoin): source: joined, joined: true",
+         %{conn: conn, vjt: vjt} do
+      {_, port} = start_server()
+      slug = "az-sess-#{u()}"
+      {network, _} = network_with_server(port: port, slug: slug)
+      _ = credential_fixture(vjt, network, %{autojoin_channels: []})
+      pid = start_session_for(vjt, network)
+
+      inject_members(pid, %{"#bnc" => %{"vjt" => []}})
+
+      conn = get(conn, "/networks/#{slug}/channels")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "#bnc", "joined" => true, "source" => "joined"}
+             ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "merges autojoin + session: union sorted alphabetically",
+         %{conn: conn, vjt: vjt} do
+      {_, port} = start_server()
+      slug = "az-merge-#{u()}"
+      {network, _} = network_with_server(port: port, slug: slug)
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#italia", "#azzurra"]})
+      pid = start_session_for(vjt, network)
+
+      # #azzurra: in autojoin AND session (autojoin wins, joined: true).
+      # #bnc: session only (source :joined).
+      # #italia: autojoin only (joined: false).
+      inject_members(pid, %{
+        "#azzurra" => %{"vjt" => []},
+        "#bnc" => %{"vjt" => []}
+      })
+
+      conn = get(conn, "/networks/#{slug}/channels")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "#azzurra", "joined" => true, "source" => "autojoin"},
+               %{"name" => "#bnc", "joined" => true, "source" => "joined"},
+               %{"name" => "#italia", "joined" => false, "source" => "autojoin"}
+             ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "returns empty list when credential has no autojoin and no session",
+         %{conn: conn, vjt: vjt} do
+      slug = "az-empty-#{u()}"
+      {network, _} = network_with_server(port: 7001, slug: slug)
       _ = credential_fixture(vjt, network, %{autojoin_channels: []})
 
-      conn = get(conn, "/networks/#{network.slug}/channels")
+      conn = get(conn, "/networks/#{slug}/channels")
       assert json_response(conn, 200) == []
     end
 
@@ -289,6 +364,76 @@ defmodule GrappaWeb.ChannelsControllerTest do
     test "without Bearer returns 401" do
       conn = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels")
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  describe "POST /networks/:network_id/channels/:channel_id/topic" do
+    test "202 + ok body when session accepts the topic", %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      slug = "az-topic-#{u()}"
+      network = setup_network(vjt, port, slug)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => "new topic"})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      {:ok, line} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+      assert line == "TOPIC #italia :new topic\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "400 on missing body", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-mb-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "400 on empty body", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-eb-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => ""})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "404 no session", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-ns-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/%23italia/topic", %{"body" => "topic"})
+
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+
+    test "400 on malformed channel", %{conn: conn, vjt: vjt} do
+      slug = "az-topic-mc-#{u()}"
+      _ = setup_network(vjt, 9999, slug)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/channels/no-prefix/topic", %{"body" => "topic"})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
 
