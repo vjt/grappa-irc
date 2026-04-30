@@ -29,7 +29,7 @@ services:
     pull_policy: never
     container_name: grappa
     hostname: grappa
-    restart: unless-stopped
+    restart: always
     user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
     networks:
       - grappa_internal
@@ -101,7 +101,7 @@ services:
     image: nginx:alpine
     container_name: grappa-nginx
     hostname: grappa-nginx
-    restart: unless-stopped
+    restart: always
     networks:
       vlan53:
         ipv4_address: 192.168.53.11
