@@ -26,6 +26,7 @@ defmodule Grappa.Visitors.Visitor do
   import Ecto.Changeset
 
   alias Grappa.EncryptedBinary
+  alias Grappa.IRC.Identifier
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -44,10 +45,10 @@ defmodule Grappa.Visitors.Visitor do
     field :nick, :string
     field :network_slug, :string
     field :password_encrypted, EncryptedBinary, redact: true
-    field :expires_at, :utc_datetime
+    field :expires_at, :utc_datetime_usec
     field :ip, :string
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   @spec create_changeset(map()) :: Ecto.Changeset.t()
@@ -55,18 +56,42 @@ defmodule Grappa.Visitors.Visitor do
     %__MODULE__{}
     |> cast(attrs, [:nick, :network_slug, :expires_at, :ip])
     |> validate_required([:nick, :network_slug, :expires_at])
-    |> validate_length(:nick, min: 1, max: 30)
+    |> validate_change(:nick, &validate_nick/2)
+    |> validate_change(:network_slug, &validate_network_slug/2)
     |> unique_constraint([:nick, :network_slug])
   end
 
+  @doc """
+  Atomically commit a NickServ password (encrypted at rest by Cloak)
+  and bump expires_at to the registered-user TTL after grappa observed
+  +r MODE on the visitor's nick.
+
+  Caller MUST pass a non-empty binary as `password`. Misuse raises
+  `FunctionClauseError` — the +r MODE observation handler in
+  `Grappa.Session.Server` is the documented (and only) call site, so
+  let-it-crash on a bouncer-internal contract violation is the
+  appropriate OTP shape.
+  """
   @spec commit_password_changeset(t(), binary(), DateTime.t()) :: Ecto.Changeset.t()
   def commit_password_changeset(%__MODULE__{} = visitor, password, expires_at)
-      when is_binary(password) and password != "" do
+      when is_binary(password) and byte_size(password) > 0 do
     change(visitor, %{password_encrypted: password, expires_at: expires_at})
   end
 
   @spec touch_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
   def touch_changeset(%__MODULE__{} = visitor, new_expires_at) do
     change(visitor, %{expires_at: new_expires_at})
+  end
+
+  defp validate_nick(field, value) when is_binary(value) do
+    if Identifier.valid_nick?(value),
+      do: [],
+      else: [{field, "must be a valid IRC nickname"}]
+  end
+
+  defp validate_network_slug(field, value) when is_binary(value) do
+    if Identifier.valid_network_slug?(value),
+      do: [],
+      else: [{field, "must be a valid network slug"}]
   end
 end
