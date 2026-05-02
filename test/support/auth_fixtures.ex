@@ -22,7 +22,7 @@ defmodule Grappa.AuthFixtures do
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
-  alias Grappa.Visitors.Visitor
+  alias Grappa.Visitors.{Visitor, VisitorChannel}
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -222,6 +222,21 @@ defmodule Grappa.AuthFixtures do
       |> Repo.insert()
 
     visitor
+  end
+
+  @doc """
+  Inserts a `%VisitorChannel{}` row pinning `(visitor, network_slug, name)`.
+  Mirrors `Networks.Channel`-shape fixture for user subjects. Used by
+  ChannelsController visitor-branch tests + visitor SessionPlan tests.
+  """
+  @spec visitor_channel_fixture(Visitor.t(), String.t()) :: VisitorChannel.t()
+  def visitor_channel_fixture(%Visitor{} = visitor, name) when is_binary(name) do
+    {:ok, channel} =
+      %{visitor_id: visitor.id, network_slug: visitor.network_slug, name: name}
+      |> VisitorChannel.changeset()
+      |> Repo.insert()
+
+    channel
   end
 
   @doc """

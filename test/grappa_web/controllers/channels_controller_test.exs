@@ -441,5 +441,90 @@ defmodule GrappaWeb.ChannelsControllerTest do
     end
   end
 
+  # Task 30: visitor-subject branch. The Session API takes a subject
+  # tuple already (LANDED in tasks 19/20); this test pins that the
+  # controller actions read `:current_subject` from the conn assigns and
+  # thread it through correctly. The autojoin source for visitors is
+  # `Visitors.list_autojoin_channels/1` — visitor_channels rows pinned
+  # to (visitor.id, network_slug) — mirror of `Credential.autojoin_channels`
+  # for users.
+  describe "visitor subject — channel surface" do
+    test "GET index returns visitor's autojoin channels (no session)",
+         %{conn: _conn} do
+      {visitor, network} = visitor_with_network(7301)
+      _ = visitor_channel_fixture(visitor, "#italia")
+      _ = visitor_channel_fixture(visitor, "#azzurra")
+      session = visitor_session_fixture(visitor)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{network.slug}/channels")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "#azzurra", "joined" => false, "source" => "autojoin"},
+               %{"name" => "#italia", "joined" => false, "source" => "autojoin"}
+             ]
+    end
+
+    test "POST JOIN sends upstream as the visitor session and returns 202",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels", %{"name" => "#sniffo"})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "DELETE PART sends upstream as the visitor session and returns 202",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> delete("/networks/#{network.slug}/channels/%23sniffo")
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "PART #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #sniffo\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "POST against a network the visitor isn't pinned to returns 404 (oracle close)",
+         %{conn: _conn} do
+      {visitor, _own_network} = visitor_with_network(7302)
+      {other_network, _} = network_with_server(port: 7303, slug: "other-#{u()}")
+      session = visitor_session_fixture(visitor)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{other_network.slug}/channels", %{"name" => "#sniffo"})
+
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+  end
+
   defp u, do: System.unique_integer([:positive])
 end

@@ -26,11 +26,9 @@ defmodule Grappa.Visitors.SessionPlan do
   no own boundary either).
   """
 
-  import Ecto.Query
-
-  alias Grappa.{Networks, Repo, Session}
+  alias Grappa.{Networks, Repo, Session, Visitors}
   alias Grappa.Networks.{NoServerError, Servers}
-  alias Grappa.Visitors.{Visitor, VisitorChannel}
+  alias Grappa.Visitors.Visitor
 
   @doc """
   Resolve a `%Visitor{}` row into the primitive `Session.start_opts/0`
@@ -66,12 +64,7 @@ defmodule Grappa.Visitors.SessionPlan do
   end
 
   defp build_plan(%Visitor{} = visitor, network, server) do
-    query =
-      from c in VisitorChannel,
-        where: c.visitor_id == ^visitor.id and c.network_slug == ^visitor.network_slug,
-        select: c.name
-
-    autojoin = Repo.all(query)
+    autojoin = Visitors.list_autojoin_channels(visitor)
 
     %{
       subject: {:visitor, visitor.id},
