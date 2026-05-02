@@ -3325,112 +3325,292 @@ addition + the config/test.exs additions.
 **Files:**
 - Modify: `lib/grappa_web/controllers/auth_controller.ex`
 - Modify: `lib/grappa_web/controllers/auth_json.ex`
-- Test: extend `test/grappa_web/controllers/auth_controller_test.exs`
+- Modify: `test/grappa_web/controllers/auth_controller_test.exs` (extend
+  AND migrate the 5 existing user-side tests to the new wire shape — hard
+  cutover; cicchetto is the only mode-1 client and is updated in Task 24).
+
+> **S7 amendment (2026-05-02).** Original Task 10 plan body drifted
+> against post-S6 reality on ~7 axes. Items rewritten for current shape:
+>
+> - **Login signature**: post-Task-9 LANDED is
+>   `Visitors.Login.login(input :: %{nick, password, ip, user_agent,
+>   token}, opts :: keyword())` — 2-arity with named-field map, NOT
+>   `login(nick, password, ip, ua)` 4-arity.
+> - **Bearer-on-login**: visitor case-3 (anon collision token reuse) needs
+>   the inbound Authorization header. `/auth/login` is NOT behind
+>   `:authn`, so AuthController extracts the bearer inline (mirrors
+>   `Plugs.Authn`'s extractor — `["Bearer " <> token]` head only).
+> - **HTTP status mapping**: matches `Login.login_error/0` shape exactly:
+>   `:malformed_nick`/no-identifier → 400; `:password_required`,
+>   `:password_mismatch`, `:invalid_credentials` → 401;
+>   `:anon_collision` → 409 with `Retry-After`; `:ip_cap_exceeded` →
+>   429; `:upstream_unreachable` → 502; `:timeout` → 504;
+>   `:no_server`/`:network_unconfigured`/other → 500. NO
+>   `:visitor_network_unconfigured` atom — that name doesn't exist.
+> - **mode-1 lookup**: `Accounts.get_user_by_credentials/2` is name-keyed,
+>   not email-keyed. Email path extracts the local-part for the lookup.
+>   Phase 5 hardening adds a real email column.
+> - **Test fixtures**: drop ExMachina `insert/2` (codebase has no
+>   ExMachina). Use `auth_fixtures.ex` shape — `network_with_server/1`,
+>   `user_fixture_with_password/1`. Mirror `login_test.exs`'s canonical
+>   `start_server/0` + `feed_001/2` + `await_handshake/1` helpers.
+> - **Application.put_env removal**: `config/test.exs` already sets
+>   `visitor_network: "azzurra"` + `max_visitors_per_ip: 2` (compile-env
+>   reads in `Visitors.Login`). Test-time `Application.put_env` does
+>   nothing for `compile_env` reads anyway. The ip-cap test provisions 2
+>   anons first (config default = 2), then attempts the 3rd → 429.
+> - **Existing user-side login tests (5)**: hard cutover means
+>   `{"name", _, "password", _}` body shape no longer matches the
+>   controller. Migrate each to `{"identifier" => "<name>@example.com",
+>   "password" => ...}` with the same expectations.
+> - **AuthJSON**: existing `Wire.user_to_credential_json/1` returns
+>   `%{id, name}` — keep using it for the user branch so the wire
+>   payload allowlist stays single-source. Visitor branch emits the
+>   inline subject shape directly.
 
 - [ ] **Step 10.1: Failing tests**
 
+Test file imports + setup helper module-level (mirrors `login_test.exs`):
+
 ```elixir
-# test/grappa_web/controllers/auth_controller_test.exs — add describes
-describe "POST /auth/login dispatches by IdentifierClassifier" do
-  setup do
-    {:ok, fake_irc} = IRCServer.start_link()
+# test/grappa_web/controllers/auth_controller_test.exs
+defmodule GrappaWeb.AuthControllerTest do
+  @moduledoc """
+  REST surface for `POST /auth/login` + `DELETE /auth/logout`.
 
-    network = insert(:network, slug: "azzurra")
+  `login` dispatches via `Grappa.Auth.IdentifierClassifier` — `@`-bearing
+  identifiers route to mode-1 (admin, password required, name-keyed
+  Accounts lookup against the local-part); plain nicks route to the
+  visitor path (`Grappa.Visitors.Login.login/2`, password optional,
+  bearer reused on anon-collision retry per W13).
 
-    insert(:network_server,
-      network: network,
-      host: "127.0.0.1",
-      port: IRCServer.port(fake_irc),
-      tls: false,
-      enabled: true,
-      priority: 0
-    )
+  Response shape: `{token, subject: {kind: :user|:visitor, ...}}`.
 
-    # `:visitor_network` + `:max_visitors_per_ip` are read at compile time
-    # (Application.compile_env) by the controller; per-test overrides go
-    # through the test-only Application.put_env shim that the controller's
-    # @visitor_network module attribute reads as a fallback. See
-    # `lib/grappa_web/controllers/auth_controller.ex` test-config branch.
-    Application.put_env(:grappa, :visitor_network, "azzurra")
-    Application.put_env(:grappa, :max_visitors_per_ip, 5)
+  `async: false` because the visitor describe spawns Session.Server
+  under the singleton supervisor — same constraint as `login_test.exs`.
+  """
+  use GrappaWeb.ConnCase, async: false
 
-    on_exit(fn ->
-      Application.delete_env(:grappa, :visitor_network)
-      Application.delete_env(:grappa, :max_visitors_per_ip)
-    end)
+  import Grappa.AuthFixtures
 
-    {:ok, fake_irc: fake_irc, network: network}
+  alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo}
+  alias Grappa.Visitors.Visitor
+
+  defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
+
+  defp start_server(handler \\ passthrough_handler()) do
+    {:ok, server} = IRCServer.start_link(handler)
+    {server, IRCServer.port(server)}
   end
 
-  test "email identifier → mode-1 path → {token, subject: {kind: :user, ...}}",
-       %{conn: conn} do
-    # Mode-1 today is name-keyed. The `@` discriminator routes here but
-    # Accounts.get_user_by_credentials still looks up BY name (local-part).
-    # Phase 5 adds a proper email column; for now the test uses a name-only
-    # account whose `name` happens to match the local-part of the identifier.
-    insert(:user, name: "vjt", password: "secret")
-
-    conn =
-      post(conn, ~p"/auth/login", %{"identifier" => "vjt@bad.ass", "password" => "secret"})
-
-    body = json_response(conn, 200)
-    assert is_binary(body["token"])
-    assert body["subject"]["kind"] == "user"
-    assert body["subject"]["name"] == "vjt"
+  defp pick_unused_port do
+    {:ok, l} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(l)
+    :gen_tcp.close(l)
+    port
   end
 
-  test "nick identifier → visitor path → {token, subject: {kind: :visitor, ...}}",
-       %{conn: conn, fake_irc: fake_irc} do
-    IRCServer.auto_accept(fake_irc)
+  defp setup_visitor_network(port), do: network_with_server(port: port, slug: "azzurra")
 
-    conn = post(conn, ~p"/auth/login", %{"identifier" => "vjt"})
+  defp feed_001(server, nick),
+    do: IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
 
-    body = json_response(conn, 200)
-    assert is_binary(body["token"])
-    assert body["subject"]["kind"] == "visitor"
-    assert body["subject"]["nick"] == "vjt"
-    assert body["subject"]["network_slug"] == "azzurra"
+  defp await_handshake(server) do
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    :ok
   end
 
-  test "malformed identifier → 400", %{conn: conn} do
-    conn = post(conn, ~p"/auth/login", %{"identifier" => "9bad nick"})
-    assert json_response(conn, 400)["error"] == "bad_request"
+  defp stop_visitor_session(visitor_id, network_id),
+    do: :ok = Grappa.Session.stop_session({:visitor, visitor_id}, network_id)
+
+  describe "POST /auth/login (mode-1 admin via email)" do
+    test "valid credentials → 200 + token + subject{kind: user}", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/auth/login", %{
+          "identifier" => "#{user.name}@example.com",
+          "password" => password
+        })
+
+      body = json_response(conn, 200)
+      assert is_binary(body["token"])
+      assert {:ok, _} = Ecto.UUID.cast(body["token"])
+      assert body["subject"]["kind"] == "user"
+      assert body["subject"]["id"] == user.id
+      assert body["subject"]["name"] == user.name
+
+      session = Repo.get(Session, body["token"])
+      assert session.user_id == user.id
+      assert is_nil(session.revoked_at)
+    end
+
+    test "wrong password → 401 invalid_credentials, no session", %{conn: conn} do
+      {user, _} = user_fixture_with_password()
+
+      conn =
+        post(conn, "/auth/login", %{
+          "identifier" => "#{user.name}@example.com",
+          "password" => "WRONG"
+        })
+
+      assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
+      assert session_count() == 0
+    end
+
+    test "unknown user → 401 invalid_credentials", %{conn: conn} do
+      conn =
+        post(conn, "/auth/login", %{
+          "identifier" => "no-such-user@example.com",
+          "password" => "whatever-12345"
+        })
+
+      assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
+      assert session_count() == 0
+    end
+
+    test "missing password (mode-1) → 401 invalid_credentials", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt@example.com"})
+      assert json_response(conn, 401)["error"] == "invalid_credentials"
+    end
+
+    test "non-string identifier → 400 bad_request", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => 42, "password" => "x"})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "missing identifier → 400 bad_request", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"password" => "x"})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
   end
 
-  test "ip cap exceeded → 429", %{conn: conn, fake_irc: fake_irc} do
-    IRCServer.auto_accept(fake_irc)
-    Application.put_env(:grappa, :max_visitors_per_ip, 1)
+  describe "POST /auth/login (visitor via nick)" do
+    test "anon (case 1) → 200 + subject{kind: visitor}", %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
 
-    {:ok, _first} = Visitors.find_or_provision_anon("first", "azzurra", "1.2.3.4")
+      task = Task.async(fn -> post(conn, "/auth/login", %{"identifier" => "vjt"}) end)
 
-    conn =
-      %{conn | remote_ip: {1, 2, 3, 4}}
-      |> post(~p"/auth/login", %{"identifier" => "second"})
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
 
-    assert json_response(conn, 429)["error"] == "ip_cap_exceeded"
+      result = Task.await(task, 10_000)
+      body = json_response(result, 200)
+
+      assert is_binary(body["token"])
+      assert body["subject"]["kind"] == "visitor"
+      assert body["subject"]["nick"] == "vjt"
+      assert body["subject"]["network_slug"] == "azzurra"
+
+      v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "malformed nick → 400 malformed_nick", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => "9bad"})
+      assert json_response(conn, 400)["error"] == "malformed_nick"
+    end
+
+    test "ip cap exceeded → 429 ip_cap_exceeded", %{conn: conn} do
+      # config/test.exs: max_visitors_per_ip = 2. Provision 2 → 3rd 429s.
+      {_, port} = start_server()
+      setup_visitor_network(port)
+
+      {:ok, _} = Grappa.Visitors.find_or_provision_anon("a", "azzurra", "127.0.0.1")
+      {:ok, _} = Grappa.Visitors.find_or_provision_anon("b", "azzurra", "127.0.0.1")
+
+      conn = post(conn, "/auth/login", %{"identifier" => "c"})
+      assert json_response(conn, 429)["error"] == "ip_cap_exceeded"
+    end
+
+    test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do
+      port = pick_unused_port()
+      setup_visitor_network(port)
+
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
+      assert json_response(conn, 502)["error"] == "upstream_unreachable"
+      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+    end
+
+    test "anon collision (no bearer) → 409 anon_collision + Retry-After",
+         %{conn: conn} do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Grappa.Visitors.find_or_provision_anon("vjt", "azzurra", "5.6.7.8")
+
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
+
+      assert json_response(conn, 409)["error"] == "anon_collision"
+      [retry_after] = get_resp_header(conn, "retry-after")
+      assert {ra, ""} = Integer.parse(retry_after)
+      assert ra > 0 and ra <= 48 * 3600
+
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "anon collision token reuse → 200 + rotated token", %{conn: conn} do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Grappa.Visitors.find_or_provision_anon("vjt", "azzurra", "5.6.7.8")
+      {:ok, prior} = Accounts.create_session({:visitor, v.id}, "5.6.7.8", "ua")
+
+      conn =
+        conn
+        |> put_bearer(prior.id)
+        |> post("/auth/login", %{"identifier" => "vjt"})
+
+      body = json_response(conn, 200)
+      assert is_binary(body["token"])
+      refute body["token"] == prior.id
+      assert body["subject"]["kind"] == "visitor"
+
+      stop_visitor_session(v.id, network.id)
+    end
   end
 
-  test "upstream unreachable → 502", %{conn: conn, network: network} do
-    # Repoint the network's enabled server to a refused port (1) so connect
-    # fails fast. The fake IRC server in setup is unused for this test.
-    Repo.update_all(
-      from(s in Grappa.Networks.Server, where: s.network_id == ^network.id),
-      set: [port: 1]
-    )
+  # NOTE: 504 timeout is exercised in `login_test.exs` against
+  # `Visitors.Login.login/2` directly with a compressed `:login_timeout_ms`.
+  # 500 :no_server / :network_unconfigured ditto.
 
-    conn = post(conn, ~p"/auth/login", %{"identifier" => "vjt"})
+  describe "DELETE /auth/logout" do
+    test "with valid Bearer revokes session and returns 204", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = conn |> put_bearer(session.id) |> delete("/auth/logout")
+      assert response(conn, 204) == ""
+      reloaded = Repo.get(Session, session.id)
+      refute is_nil(reloaded.revoked_at)
+    end
 
-    assert json_response(conn, 502)["error"] == "upstream_unreachable"
+    test "subsequent authenticate/1 on revoked token returns :revoked", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn |> put_bearer(session.id) |> delete("/auth/logout")
+      assert {:error, :revoked} = Accounts.authenticate(session.id)
+    end
+
+    test "without Bearer returns 401", %{conn: conn} do
+      conn = delete(conn, "/auth/logout")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "with revoked Bearer returns 401", %{conn: conn} do
+      {_, session} = user_and_session()
+      :ok = Accounts.revoke_session(session.id)
+      conn = conn |> put_bearer(session.id) |> delete("/auth/logout")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
   end
-
-  # NOTE: 504 timeout (no 001 within budget) is exercised in
-  # `test/grappa/visitors/login_test.exs` against `Visitors.Login.login/5`
-  # directly with a compressed `:timeout_ms` opt — the controller-level
-  # roundtrip would burn the full 8s production budget per run.
 end
 ```
 
-**Important:** The wire shape changes from `{name, password}` to `{identifier, password?}`. cicchetto must be updated in Task 26. Existing mode-1 callers using `{name, password}` need a transition path — recommend: support both for one release, deprecate `name`. **For this cluster: hard cutover** (cicchetto is the only mode-1 client today, updated in same cluster). Keep new shape only.
+**Wire-shape note.** Hard cutover from `{name, password}` to
+`{identifier, password?}`. cicchetto is the only existing mode-1 client
+and is updated in Task 24 inside the same cluster, so no transition window
+is needed.
 
 - [ ] **Step 10.2: Update controller**
 
@@ -3440,101 +3620,190 @@ defmodule GrappaWeb.AuthController do
   @moduledoc """
   REST authentication endpoints.
 
-  POST /auth/login — `{identifier, password?}` → `{token, subject}`.
-    The identifier is dispatched by `Grappa.Auth.IdentifierClassifier`:
-    - `@` present → mode-1 admin path → `Accounts.get_user_by_credentials/2`
-      (password REQUIRED).
-    - else → visitor path → `Visitors.Login.login/4` (password OPTIONAL).
+    * `POST /auth/login` — `{identifier, password?}` →
+      `{token, subject: {kind, id, ...}}`. Dispatched by
+      `Grappa.Auth.IdentifierClassifier`:
+      - `@` present → mode-1 admin → name-keyed lookup against the
+        local-part via `Accounts.get_user_by_credentials/2` (password
+        REQUIRED). Phase 5 adds a real email column.
+      - else → visitor path → `Grappa.Visitors.Login.login/2` (password
+        OPTIONAL — required only for registered visitors).
+    * `DELETE /auth/logout` — revokes the session bound to the bearer
+      token. Idempotent.
+
+  IP + user-agent are recorded on the session row for audit. IP comes
+  from `conn.remote_ip`; Phase 5 adds a configurable trusted-proxy list.
   """
 
   use GrappaWeb, :controller
 
   alias Grappa.Accounts
   alias Grappa.Auth.IdentifierClassifier
-  alias Grappa.Visitors.Login, as: VisitorLogin
+  alias Grappa.Repo
+  alias Grappa.Visitors
+  alias Grappa.Visitors.{Login, Visitor}
 
   require Logger
 
+  @anon_retry_after_ceiling_seconds 48 * 3600
+
+  @doc """
+  `POST /auth/login` — `{identifier, password?}` →
+  `{token, subject: {kind, id, ...}}`.
+  """
   @spec login(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
 
     case IdentifierClassifier.classify(id) do
-      {:email, _email} -> mode1_login(conn, id, password)
+      {:email, email} -> mode1_login(conn, email, password)
       {:nick, nick} -> visitor_login(conn, nick, password)
-      {:error, :malformed} -> send_error(conn, 400, "bad_request")
+      {:error, :malformed} -> send_error(conn, 400, "malformed_nick")
     end
   end
 
   def login(conn, _), do: send_error(conn, 400, "bad_request")
 
-  defp mode1_login(conn, _email, nil), do: send_error(conn, 400, "password_required")
+  @doc """
+  `DELETE /auth/logout` — revokes the session whose token was just
+  validated by `GrappaWeb.Plugs.Authn`. Returns 204 + empty body.
+  """
+  @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def logout(conn, _) do
+    :ok = Accounts.revoke_session(conn.assigns.current_session_id)
+    send_resp(conn, :no_content, "")
+  end
+
+  defp mode1_login(conn, _email, nil), do: send_error(conn, 401, "invalid_credentials")
 
   defp mode1_login(conn, email, password) when is_binary(password) do
-    # Mode-1 today is name-keyed. Email-keyed lookup is Phase 5 hardening.
-    # For now the dispatch routes by `@` presence but the actual lookup
-    # uses the local-part as the user `name`. Adjust as Accounts gains
-    # `get_user_by_email/1`.
-    case Accounts.get_user_by_credentials(email, password) do
-      {:ok, user} ->
-        {:ok, session} = Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
-        render_login(conn, session.id, %{kind: :user, id: user.id, name: user.name})
+    # Mode-1 today is name-keyed. Phase 5 hardening adds get_user_by_email/1.
+    name = email |> String.split("@", parts: 2) |> List.first()
 
-      {:error, :invalid_credentials} ->
-        send_error(conn, 401, "invalid_credentials")
+    with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
+      {:ok, session} =
+        Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
+
+      conn
+      |> put_status(:ok)
+      |> render(:login, token: session.id, subject: {:user, user})
     end
   end
 
   defp visitor_login(conn, nick, password) do
-    case VisitorLogin.login(nick, password, format_ip(conn), user_agent(conn)) do
-      {:ok, %{visitor: v, token: token}} ->
-        render_login(conn, token, %{
-          kind: :visitor,
-          id: v.id,
-          nick: v.nick,
-          network_slug: v.network_slug
-        })
+    input = %{
+      nick: nick,
+      password: password,
+      ip: format_ip(conn),
+      user_agent: user_agent(conn),
+      token: extract_bearer(conn)
+    }
+
+    case Login.login(input, []) do
+      {:ok, %{visitor: %Visitor{} = v, token: token}} ->
+        conn
+        |> put_status(:ok)
+        |> render(:login, token: token, subject: {:visitor, v})
 
       {:error, :malformed_nick} -> send_error(conn, 400, "malformed_nick")
+      {:error, :password_required} -> send_error(conn, 401, "password_required")
+      {:error, :password_mismatch} -> send_error(conn, 401, "password_mismatch")
       {:error, :ip_cap_exceeded} -> send_error(conn, 429, "ip_cap_exceeded")
+      {:error, :anon_collision} -> anon_collision_response(conn, nick)
       {:error, :upstream_unreachable} -> send_error(conn, 502, "upstream_unreachable")
       {:error, :timeout} -> send_error(conn, 504, "timeout")
-      {:error, :visitor_network_unconfigured} -> send_error(conn, 503, "visitor_disabled")
       {:error, _other} -> send_error(conn, 500, "internal")
     end
   end
 
-  defp render_login(conn, token, subject) do
+  defp anon_collision_response(conn, nick) do
+    # Look up the colliding visitor for Retry-After hint. The lookup is
+    # cheap (indexed unique key); no race because (nick, network_slug)
+    # is unique-constrained and the collider exists by definition.
+    seconds =
+      case Repo.get_by(Visitor, nick: nick, network_slug: visitor_network_slug()) do
+        %Visitor{expires_at: expires_at} ->
+          expires_at
+          |> DateTime.diff(DateTime.utc_now())
+          |> max(1)
+          |> min(@anon_retry_after_ceiling_seconds)
+
+        nil ->
+          @anon_retry_after_ceiling_seconds
+      end
+
     conn
-    |> put_status(:ok)
-    |> render(:login, token: token, subject: subject)
+    |> put_resp_header("retry-after", Integer.to_string(seconds))
+    |> send_error(409, "anon_collision")
   end
+
+  defp visitor_network_slug, do: Application.compile_env(:grappa, :visitor_network)
 
   defp send_error(conn, status, code) do
     conn |> put_status(status) |> json(%{error: code})
   end
 
-  # ... existing logout/2 unchanged ...
-  # ... existing format_ip/1, user_agent/1 unchanged ...
+  defp extract_bearer(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] when token != "" -> token
+      _ -> nil
+    end
+  end
+
+  @spec format_ip(Plug.Conn.t()) :: String.t() | nil
+  defp format_ip(%Plug.Conn{remote_ip: nil}), do: nil
+  defp format_ip(%Plug.Conn{remote_ip: ip}), do: ip |> :inet.ntoa() |> to_string()
+
+  @spec user_agent(Plug.Conn.t()) :: String.t() | nil
+  defp user_agent(conn) do
+    case get_req_header(conn, "user-agent") do
+      [ua | _] -> ua
+      [] -> nil
+    end
+  end
 end
 ```
+
+**FallbackController.** The mode-1 path's `with` falls through on
+`{:error, :invalid_credentials}` from `Accounts.get_user_by_credentials/2`
+— the existing `GrappaWeb.FallbackController` already maps that to
+`401 invalid_credentials`, no change needed.
 
 - [ ] **Step 10.3: Update auth_json.ex**
 
 ```elixir
 # lib/grappa_web/controllers/auth_json.ex
 defmodule GrappaWeb.AuthJSON do
-  @spec login(map()) :: map()
-  def login(%{token: token, subject: subject}) do
-    %{token: token, subject: subject_to_wire(subject)}
+  @moduledoc """
+  Phoenix view layer for `GrappaWeb.AuthController`.
+
+  `login/1` renders `{token, subject: {kind, id, ...}}` for both mode-1
+  and visitor branches per Q-E. The user variant delegates to
+  `Grappa.Accounts.Wire.user_to_credential_json/1` so the User → JSON
+  allowlist (excluding `:password_hash` + virtual `:password`) stays in
+  one place. The visitor variant emits the inline shape (no separate
+  Wire module — Visitor is fully internal to this cluster).
+  """
+  alias Grappa.Accounts.{User, Wire}
+  alias Grappa.Visitors.Visitor
+
+  @type subject_wire ::
+          %{kind: String.t(), id: String.t(), name: String.t()}
+          | %{kind: String.t(), id: String.t(), nick: String.t(), network_slug: String.t()}
+
+  @doc "Renders the `:login` action — `{token, subject}`."
+  @spec login(%{token: String.t(), subject: {:user, User.t()} | {:visitor, Visitor.t()}}) ::
+          %{token: String.t(), subject: subject_wire()}
+  def login(%{token: token, subject: {:user, %User{} = user}}) do
+    %{id: id, name: name} = Wire.user_to_credential_json(user)
+    %{token: token, subject: %{kind: "user", id: id, name: name}}
   end
 
-  defp subject_to_wire(%{kind: :user, id: id, name: name}) do
-    %{kind: "user", id: id, name: name}
-  end
-
-  defp subject_to_wire(%{kind: :visitor, id: id, nick: nick, network_slug: slug}) do
-    %{kind: "visitor", id: id, nick: nick, network_slug: slug}
+  def login(%{token: token, subject: {:visitor, %Visitor{} = v}}) do
+    %{
+      token: token,
+      subject: %{kind: "visitor", id: v.id, nick: v.nick, network_slug: v.network_slug}
+    }
   end
 end
 ```
@@ -3545,7 +3814,13 @@ end
 scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs
 ```
 
-- [ ] **Step 10.5: Commit**
+Then full gate:
+
+```bash
+scripts/check.sh
+```
+
+- [ ] **Step 10.5: Commit on cluster branch**
 
 ```bash
 git add lib/grappa_web/controllers/auth_controller.ex \
@@ -3554,19 +3829,28 @@ git add lib/grappa_web/controllers/auth_controller.ex \
 git commit -m "$(cat <<'EOF'
 feat(auth): dispatch POST /auth/login by IdentifierClassifier
 
-Hybrid email/nick discriminator routes mode-1 (admin, requires password)
-vs visitor (NickServ-as-IDP or anon, password optional). Single response
-shape: {token, subject: {kind: :user|:visitor, ...}} per Q-E.
+Hybrid email/nick discriminator routes mode-1 (admin, requires password,
+name-keyed lookup against the local-part) vs visitor (anon or
+NickServ-as-IDP, password optional). Single response shape:
+{token, subject: {kind: :user|:visitor, ...}} per Q-E.
 
 Wire-shape change: request body now {identifier, password?} (was
-{name, password}). cicchetto updated in same cluster.
+{name, password}). Hard cutover — cicchetto, the only mode-1 client,
+is updated in Task 24 (same cluster).
 
-Error mapping:
-- malformed identifier → 400
-- ip cap exceeded     → 429
-- visitor disabled    → 503
-- upstream refused    → 502
-- 8s timeout no 001   → 504
+Error mapping (matches Visitors.Login.login_error/0):
+- malformed identifier        → 400 malformed_nick / bad_request
+- mode-1 invalid credentials  → 401 invalid_credentials
+- visitor password mismatch   → 401 password_mismatch
+- visitor password required   → 401 password_required
+- ip cap exceeded             → 429 ip_cap_exceeded
+- anon collision              → 409 anon_collision + Retry-After
+- upstream refused            → 502 upstream_unreachable
+- 8s timeout no 001           → 504 timeout
+- other internal              → 500 internal
+
+Visitor case-3 (anon-collision) reuses the inbound Authorization Bearer
+to rotate the holder's token without preempting the live Session.Server.
 EOF
 )"
 ```
