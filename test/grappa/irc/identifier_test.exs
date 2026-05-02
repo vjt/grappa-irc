@@ -29,7 +29,10 @@ defmodule Grappa.IRC.IdentifierTest do
     end
 
     property "rejects any nick with a leading dash, regardless of tail" do
-      check all(tail <- StreamData.string(:ascii, max_length: 30)) do
+      # Total cap is 30 chars (1 leading + 29 trailing); cap `tail` at 29
+      # so the property tests the leading-dash rule on otherwise-valid
+      # inputs, not the length rule.
+      check all(tail <- StreamData.string(:ascii, max_length: 29)) do
         refute Identifier.valid_nick?("-" <> tail)
       end
     end
