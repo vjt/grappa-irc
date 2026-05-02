@@ -1135,8 +1135,14 @@ scripts/test.sh test/grappa/visitors_test.exs
 
 - [ ] **Step 6.3: Implement Visitors context**
 
+`Grappa.Visitors` already exists as a stub created in Task 2 (it
+hosts the Boundary annotation that the `Grappa.Visitors.Visitor`
+schema's cross-call to `Grappa.IRC.Identifier` requires). Task 6
+**expands** the stub — replace the moduledoc + deps + add the
+function bodies. Resulting shape:
+
 ```elixir
-# lib/grappa/visitors.ex
+# lib/grappa/visitors.ex (expanded from Task 2 stub)
 defmodule Grappa.Visitors do
   @moduledoc """
   Self-service visitor identity context — collapsed M2 (NickServ-as-IDP)
@@ -1157,13 +1163,15 @@ defmodule Grappa.Visitors do
     * `delete/1` — Reaper + operator path. CASCADE wipes session rows,
       visitor_channels, messages.
 
-  Boundary deps: `Grappa.Repo`, `Grappa.Accounts` (sessions),
-  `Grappa.Networks` (slug existence checks at boot).
+  Boundary deps: `Grappa.IRC` (Identifier validators on the schema),
+  `Grappa.Repo`, `Grappa.Accounts` (sessions), `Grappa.Networks`
+  (slug existence checks at boot).
   """
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Repo, Grappa.Accounts, Grappa.Networks]
+    deps: [Grappa.IRC, Grappa.Repo, Grappa.Accounts, Grappa.Networks],
+    exports: [Visitor]
 
   import Ecto.Query
 
