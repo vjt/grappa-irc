@@ -4448,115 +4448,356 @@ EOF
 
 ---
 
-### Task 14: Session.Server — wire NSInterceptor + pending_auth state + 10s timeout
+### Task 14: Session.Server — wire NSInterceptor + pending_auth + 10s timeout + *Serv scrollback skip
+
+**Dispatch-time amendment (S9):** Plan body had multiple drift items
+versus the current code shape (`Client.send_privmsg/3` not
+`Client.send_line/2`; state is a plain map, not a `%State{}` struct;
+`server_test.exs` builds session per-test inline, no shared
+`%{session_pid: pid}` context). More importantly, the existing
+`handle_call({:send_privmsg, ...})` ALWAYS persists the body to
+`scrollback.messages` and PubSub-broadcasts it — meaning any outbound
+PRIVMSG to NickServ today would land the cleartext password into the
+DB regardless of NSInterceptor staging, defeating W12. vjt's
+direction (S9 chat): **don't persist any PRIVMSG to *Serv targets.**
+Universal suffix-`serv` rule (case-insensitive), broader than the
+NSInterceptor's NickServ-only regex. Pre-existing scrubbing of old
+rows: out of scope (vjt: "i'm the only user").
+
+The *Serv-skip path needs a non-`{:ok, message}` reply since no row
+exists. Sole caller of the service-target path today is
+`Visitors.Login.send_post_login_identify/3` which uses `{:ok, _} ->
+:ok` — extending the `Session.send_privmsg/4` spec to add `{:ok,
+:no_persist}` keeps the tagged-`:ok` shape compatible. The
+`MessagesController` caller cannot reach service targets at all
+because `validate_channel_name/1` requires `^[#&+!]` start — so the
+new return shape never reaches the user-facing JSON renderer.
 
 **Files:**
-- Modify: `lib/grappa/session/server.ex`
-- Test: extend `test/grappa/session/server_test.exs`
+- Modify: `lib/grappa/session/server.ex` — *Serv-skip + NSInterceptor
+  + pending_auth state + timer + handle_info handler.
+- Modify: `lib/grappa/session.ex` — extend `@spec send_privmsg/4`
+  return type to add `{:ok, :no_persist}`. Update `@doc` to mention
+  *Serv suffix skip.
+- Test: extend `test/grappa/session/server_test.exs` — new describe
+  blocks for *Serv scrollback skip + NS capture into pending_auth +
+  10s timeout + latest-wins.
 
-- [ ] **Step 14.1: Failing tests**
+- [ ] **Step 14.1: Failing tests** (inline per-test setup matching
+  the existing `setup_user_and_network/2` + `start_session_for/2`
+  pattern; no shared `%{session_pid: pid}` context).
 
 ```elixir
-# test/grappa/session/server_test.exs — add describe
-describe "outbound NS verb capture into pending_auth" do
-  test "send_privmsg NickServ IDENTIFY stages password", %{session_pid: pid} do
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY s3cret"})
+# test/grappa/session/server_test.exs — append to file
+
+describe "*Serv-targeted PRIVMSG skips scrollback + PubSub (W12 privacy)" do
+  test "NickServ target: no scrollback row, no broadcast, returns {:ok, :no_persist}" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    session = start_session_for({:user, user.id}, network)
+
+    Phoenix.PubSub.subscribe(
+      Grappa.PubSub,
+      Topic.channel("user:#{user.name}", network.slug, "NickServ")
+    )
+
+    assert {:ok, :no_persist} =
+             Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+    refute_receive _, 100
+
+    assert [] =
+             Scrollback.list_for_channel(network.id, "NickServ", limit: 10)
+
+    Session.stop_session({:user, user.id}, network.id)
+  end
+
+  test "ChanServ target: skipped same as NickServ (suffix rule)" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    _session = start_session_for({:user, user.id}, network)
+
+    assert {:ok, :no_persist} =
+             Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
+
+    assert [] = Scrollback.list_for_channel(network.id, "ChanServ", limit: 10)
+
+    Session.stop_session({:user, user.id}, network.id)
+  end
+
+  test "non-*Serv channel target: persists + broadcasts as before" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#italia"]})
+    _session = start_session_for({:user, user.id}, network)
+
+    Phoenix.PubSub.subscribe(
+      Grappa.PubSub,
+      Topic.channel("user:#{user.name}", network.slug, "#italia")
+    )
+
+    assert {:ok, %Scrollback.Message{body: "ciao"}} =
+             Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
+
+    assert_receive %{event: "message", payload: %{body: "ciao"}}, 500
+
+    Session.stop_session({:user, user.id}, network.id)
+  end
+end
+
+describe "outbound NickServ verb capture into pending_auth" do
+  test "send_privmsg NickServ IDENTIFY stages password in pending_auth" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    pid = start_session_for({:user, user.id}, network)
+
+    Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
 
     state = :sys.get_state(pid)
     assert match?({"s3cret", _deadline}, state.pending_auth)
+    assert is_reference(state.pending_auth_timer)
+
+    Session.stop_session({:user, user.id}, network.id)
   end
 
-  test "10s timeout discards pending_auth without commit", %{session_pid: pid} do
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY s3cret"})
+  test "10s :pending_auth_timeout discards pending_auth + clears timer" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    pid = start_session_for({:user, user.id}, network)
 
-    Process.send(pid, :pending_auth_timeout, [])
-    Process.sleep(50)
+    Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+    send(pid, :pending_auth_timeout)
+    :sys.get_state(pid)  # synchronizes — handle_info has run
 
     state = :sys.get_state(pid)
     assert is_nil(state.pending_auth)
+    assert is_nil(state.pending_auth_timer)
+
+    Session.stop_session({:user, user.id}, network.id)
   end
 
-  test "second IDENTIFY overwrites first (latest-wins via mailbox FIFO)", %{session_pid: pid} do
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY old"})
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY new"})
+  test "second IDENTIFY overwrites first (latest-wins via mailbox FIFO, W8)" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    pid = start_session_for({:user, user.id}, network)
+
+    Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY old")
+    Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY new")
 
     state = :sys.get_state(pid)
     assert match?({"new", _}, state.pending_auth)
+
+    Session.stop_session({:user, user.id}, network.id)
   end
 
-  test "non-NS PRIVMSG does not stage", %{session_pid: pid} do
-    GenServer.call(pid, {:send_privmsg, "#italia", "ciao"})
+  test "non-NickServ *Serv PRIVMSG (e.g. ChanServ) does NOT stage pending_auth" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port)
+    pid = start_session_for({:user, user.id}, network)
+
+    Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
 
     state = :sys.get_state(pid)
     assert is_nil(state.pending_auth)
+
+    Session.stop_session({:user, user.id}, network.id)
+  end
+
+  test "non-*Serv channel PRIVMSG does NOT stage pending_auth" do
+    {:ok, port} = IRCServer.start_link(&IRCServer.welcome_handler/2)
+    {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#italia"]})
+    pid = start_session_for({:user, user.id}, network)
+
+    Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
+
+    state = :sys.get_state(pid)
+    assert is_nil(state.pending_auth)
+
+    Session.stop_session({:user, user.id}, network.id)
   end
 end
 ```
 
+Test fixture imports already in scope: `Grappa.{Session, Scrollback}`,
+`Grappa.IRCServer`, `Grappa.AuthFixtures.{setup_user_and_network,
+start_session_for}`, `GrappaWeb.Topic`. Verify against the actual
+`server_test.exs` head to confirm aliases — add if missing.
+
 - [ ] **Step 14.2: Implement**
 
-```elixir
-# lib/grappa/session/server.ex — modify state struct, add pending_auth field
-defmodule State do
-  @type t :: %__MODULE__{
-    # ... existing fields
-    pending_auth: nil | {String.t(), integer()},  # {password, monotonic_deadline_ms}
-    pending_auth_timer: reference() | nil
-  }
-end
+In `lib/grappa/session/server.ex`:
 
-# In handle_call({:send_privmsg, target, body}, _, state):
-def handle_call({:send_privmsg, target, body}, _from, state) do
-  line = "PRIVMSG #{target} :#{body}"
+1. Extend the state map built in `init/1` with two new fields:
 
-  state =
-    case Grappa.Session.NSInterceptor.intercept(line) do
-      {:capture, password} -> stage_pending_auth(state, password)
-      :passthrough -> state
-    end
+   ```elixir
+   state = %{
+     # ... existing fields ...
+     pending_auth: nil,
+     pending_auth_timer: nil
+   }
+   ```
 
-  Client.send_line(state.client_pid, line)
-  # ... existing reply path
-  {:reply, :ok, state}
-end
+   Update the `@type t :: %{...}` typedoc above to include the new
+   fields:
 
-@pending_auth_timeout_ms 10_000
+   ```elixir
+   pending_auth: nil | {String.t(), integer()},
+   pending_auth_timer: reference() | nil
+   ```
 
-defp stage_pending_auth(state, password) do
-  if state.pending_auth_timer, do: Process.cancel_timer(state.pending_auth_timer)
+2. Add a private `service_target?/1` helper near the other top-of-file
+   helpers. Suffix-`serv` (case-insensitive) covers NickServ, ChanServ,
+   MemoServ, OperServ, BotServ, HostServ, HelpServ, etc.:
 
-  timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
-  deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
+   ```elixir
+   # *Serv suffix is the universal IRC services nick convention. Any
+   # PRIVMSG to one is a credential / control command, not a chat
+   # message — never persist body to scrollback (passwords leak per
+   # W12) and never broadcast over PubSub (other tabs of same user
+   # shouldn't see the password).
+   defp service_target?(target) when is_binary(target) do
+     target |> String.downcase() |> String.ends_with?("serv")
+   end
+   ```
 
-  %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
-end
+3. Replace the body of `handle_call({:send_privmsg, target, body},
+   _, state)`. Branch on `service_target?/1`. Both branches run
+   `NSInterceptor.intercept/1` and `Client.send_privmsg/3`; only the
+   non-service branch persists + broadcasts:
 
-def handle_info(:pending_auth_timeout, state) do
-  Logger.debug("pending_auth discarded after #{@pending_auth_timeout_ms}ms without +r")
-  {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
-end
-```
+   ```elixir
+   def handle_call({:send_privmsg, target, body}, _, state)
+       when is_binary(target) and is_binary(body) do
+     line = "PRIVMSG #{target} :#{body}"
+
+     state =
+       case NSInterceptor.intercept(line) do
+         {:capture, password} -> stage_pending_auth(state, password)
+         :passthrough -> state
+       end
+
+     if service_target?(target) do
+       handle_service_target_send(target, body, state)
+     else
+       handle_persisting_send(target, body, state)
+     end
+   end
+   ```
+
+   `handle_persisting_send/3` is the existing body (Scrollback.persist
+   + PubSub.broadcast + Client.send_privmsg + reply
+   `{:ok, message}` / `{:error, _}`) extracted as a private helper.
+   `handle_service_target_send/3` is the new path:
+
+   ```elixir
+   defp handle_service_target_send(target, body, state) do
+     case Client.send_privmsg(state.client, target, body) do
+       :ok ->
+         {:reply, {:ok, :no_persist}, state}
+
+       {:error, :invalid_line} = err ->
+         Logger.error("client rejected service-target privmsg",
+           target: target
+         )
+         {:reply, err, state}
+     end
+   end
+   ```
+
+4. Add the timer + timeout machinery near the bottom of the module:
+
+   ```elixir
+   # Wrong passwords are wiped after 10s of no +r MODE confirmation
+   # (Task 15 lands the +r observer + atomic commit). 10s is generous
+   # for upstream NickServ → +r round-trip; even a sluggish ircd should
+   # confirm in <2s. The timer is a fail-safe, not a SLA.
+   @pending_auth_timeout_ms 10_000
+
+   defp stage_pending_auth(state, password) do
+     if is_reference(state.pending_auth_timer) do
+       Process.cancel_timer(state.pending_auth_timer)
+     end
+
+     timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
+     deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
+
+     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
+   end
+
+   def handle_info(:pending_auth_timeout, state) do
+     Logger.debug("pending_auth discarded — no +r MODE within #{@pending_auth_timeout_ms}ms")
+     {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
+   end
+   ```
+
+   Place `handle_info(:pending_auth_timeout, _)` BEFORE the catch-all
+   `handle_info({:irc, ...}, _)` clauses — handle_info pattern-match
+   order matters for atom messages.
+
+5. Add `alias Grappa.Session.NSInterceptor` near the top (siblings of
+   the existing `alias Grappa.Session.{...}` block).
+
+In `lib/grappa/session.ex`:
+
+1. Update `@spec send_privmsg/4` to add `{:ok, :no_persist}` return:
+
+   ```elixir
+   @spec send_privmsg(subject(), integer(), String.t(), String.t()) ::
+           {:ok, Grappa.Scrollback.Message.t()}
+           | {:ok, :no_persist}
+           | {:error, :no_session | :invalid_line}
+           | {:error, Ecto.Changeset.t()}
+   ```
+
+2. Update the `@doc` paragraph to note: "PRIVMSG to *Serv-suffixed
+   targets (NickServ/ChanServ/etc.) returns `{:ok, :no_persist}` —
+   the body is sent upstream but NOT persisted to scrollback and NOT
+   broadcast over PubSub. This avoids leaking passwords (W12) and
+   keeps services traffic out of scrollback DB."
 
 - [ ] **Step 14.3: Run tests**
 
 ```bash
 scripts/test.sh test/grappa/session/server_test.exs
+scripts/check.sh
+scripts/dialyzer.sh   # standalone, per S8 protocol
 ```
 
 - [ ] **Step 14.4: Commit**
 
 ```bash
-git add lib/grappa/session/server.ex test/grappa/session/server_test.exs
+git add lib/grappa/session/server.ex lib/grappa/session.ex test/grappa/session/server_test.exs
 git commit -m "$(cat <<'EOF'
-feat(session): wire NSInterceptor on send_privmsg, stage pending_auth
+feat(session): wire NSInterceptor + skip *Serv scrollback + 10s pending_auth timer
 
-State gains pending_auth :: nil | {pwd, deadline_ms} + a 10s
-Process.send_after timer that sends :pending_auth_timeout to clear.
+State gains pending_auth :: nil | {pwd, deadline_ms} +
+pending_auth_timer :: nil | reference. Outbound PRIVMSG flow:
 
-Send path: every outbound PRIVMSG runs through NSInterceptor; capture
-overwrites pending_auth (latest-wins via mailbox FIFO per W8). Wrong
-passwords never reach the DB — atomic commit lands in next task on +r
-MODE observation.
+  1. NSInterceptor.intercept on the synthesized wire-line; on
+     {:capture, pwd} the helper cancels any in-flight timer, starts
+     a fresh 10s Process.send_after, and writes pending_auth.
+  2. Branch on service_target?/1 (case-insensitive suffix-"serv"
+     match — covers all *Serv services). Service path skips
+     Scrollback.persist_event AND PubSub.broadcast, then sends the
+     wire line. Non-service path keeps the existing
+     persist+broadcast+send chain.
+  3. handle_info(:pending_auth_timeout, _) clears pending_auth +
+     pending_auth_timer if no +r MODE arrived in 10s. Wrong
+     passwords never touch the visitor DB (Task 15 will land the
+     atomic commit on +r observation).
+
+The *Serv-skip rule closes a pre-existing privacy gap: any user
+typing /msg NickServ IDENTIFY pwd was writing the cleartext
+password into scrollback.messages. Per W12 + CLAUDE.md "credentials
+never logged."
+
+Session.send_privmsg/4 spec extended with `{:ok, :no_persist}` for
+the service-target case. Sole caller via the service path today is
+Visitors.Login.send_post_login_identify which already matches
+`{:ok, _}`. MessagesController cannot reach service targets
+(channel regex requires `^[#&+!]`).
+
+Latest-wins serialization for concurrent IDENTIFYs is automatic via
+Session.Server mailbox FIFO (W8).
 EOF
 )"
 ```
