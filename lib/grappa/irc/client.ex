@@ -254,19 +254,6 @@ defmodule Grappa.IRC.Client do
         {:noreply, %{connected | fsm: fsm}}
 
       {:error, reason} ->
-        # Rate-limit the supervisor restart loop. `gen_tcp.connect` on a
-        # refused TCP port (RST) returns within microseconds — so an
-        # unconnectable upstream causes the linked Session.Server crash
-        # → DynamicSupervisor `:transient` restart cycle to spin at ~2000
-        # crashes/sec until SessionSupervisor's `max_restarts` budget is
-        # exhausted (taking down every other Session in the tree). Sleeping
-        # 1s before the abnormal exit caps the restart rate at ~1/sec, so
-        # the supervisor budget (100/60s) absorbs a real upstream-down
-        # scenario for ~100s before tripping. The 30s connect_timeout above
-        # ALREADY paces black-holed SYNs; this paces fast refusals.
-        # Phase 5 per-session reconnect/backoff replaces this hack with
-        # proper exponential retry inside the Client itself.
-        Process.sleep(1_000)
         {:stop, {:connect_failed, reason}, state}
     end
   end
