@@ -171,6 +171,17 @@ Expected: `(UndefinedFunctionError)` or compile error.
 
 - [ ] **Step 1.3: Implement**
 
+The classifier delegates the nick-validity check to the canonical
+`Grappa.IRC.Identifier.valid_nick?/1` rather than duplicating the
+regex (CLAUDE.md "Implement once, reuse everywhere"). In the same
+commit, tighten `Grappa.IRC.Identifier`'s `@nick_regex` from
+`{0,30}` to `{0,29}` so the codebase has a single 30-char cap
+across all callers (Networks.Credential changeset, IRC line guard,
+IdentifierClassifier). Flip the corresponding 31-char-accept /
+32-char-reject assertions in `test/grappa/irc/identifier_test.exs`
+and `test/grappa/networks_test.exs` to 30-char-accept /
+31-char-reject.
+
 ```elixir
 # lib/grappa/auth/identifier_classifier.ex
 defmodule Grappa.Auth.IdentifierClassifier do
@@ -180,17 +191,25 @@ defmodule Grappa.Auth.IdentifierClassifier do
   boundary.
 
   Single discriminator: `String.contains?(id, "@")`. RFC2812 forbids
-  `@` in nicks → unambiguous. Email path requires minimal RFC5322-light
-  shape (`x@y.z`); nick path requires full RFC2812 nick regex.
+  `@` in nicks → unambiguous. Email path requires a minimal
+  RFC5322-light shape (`x@y.z`); nick path delegates to
+  `Grappa.IRC.Identifier.valid_nick?/1` so the codebase has a single
+  source for the nick rule.
+
+  Dispatch-only — actual email deliverability is checked downstream
+  when the activation flow is invoked. Anything `x@y.z`-shaped routes
+  to the email path; the email path itself is responsible for stricter
+  validation.
 
   Used by `GrappaWeb.AuthController.login/2` to dispatch to either
-  `Grappa.Accounts.get_user_by_credentials/2` or `Grappa.Visitors.login/4`.
+  `Grappa.Accounts.get_user_by_credentials/2` or
+  `Grappa.Visitors.login/4`.
   """
 
-  use Boundary, top_level?: true, deps: []
+  use Boundary, top_level?: true, deps: [Grappa.IRC]
 
-  # Total nick length cap is 30: 1 leading char + up to 29 trailing.
-  @nick_re ~r/^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,29}$/
+  alias Grappa.IRC.Identifier
+
   @email_re ~r/^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
   @type result :: {:email, String.t()} | {:nick, String.t()} | {:error, :malformed}
@@ -199,9 +218,11 @@ defmodule Grappa.Auth.IdentifierClassifier do
   Classifies a login identifier as an email or RFC2812 nick.
 
   Returns `{:email, id}` if the identifier contains `@` and matches a
-  minimal RFC5322-light pattern (`x@y.z`). Returns `{:nick, id}` if the
-  identifier is a valid RFC2812 nick. Returns `{:error, :malformed}`
-  otherwise (leading digit, invalid email format, length > 30, etc.).
+  minimal RFC5322-light pattern (`x@y.z`). Returns `{:nick, id}` if
+  the identifier is a valid RFC2812 nick (delegated to
+  `Grappa.IRC.Identifier.valid_nick?/1`). Returns
+  `{:error, :malformed}` otherwise (leading digit, leading dash,
+  invalid email format, length > 30, non-binary input, etc.).
 
   ## Examples
 
@@ -213,16 +234,28 @@ defmodule Grappa.Auth.IdentifierClassifier do
 
       iex> Grappa.Auth.IdentifierClassifier.classify("9invalid")
       {:error, :malformed}
+
+      iex> Grappa.Auth.IdentifierClassifier.classify(nil)
+      {:error, :malformed}
   """
-  @spec classify(String.t()) :: result()
+  @spec classify(term()) :: result()
   def classify(id) when is_binary(id) do
     cond do
       String.contains?(id, "@") and Regex.match?(@email_re, id) -> {:email, id}
-      not String.contains?(id, "@") and Regex.match?(@nick_re, id) -> {:nick, id}
+      Identifier.valid_nick?(id) -> {:nick, id}
       true -> {:error, :malformed}
     end
   end
+
+  def classify(_), do: {:error, :malformed}
 end
+```
+
+```elixir
+# lib/grappa/irc/identifier.ex — tighten cap from {0,30} (1+30=31) to
+# {0,29} (1+29=30); update the comment from "Total length ≤ 31" to
+# "Total length ≤ 30".
+@nick_regex ~r/^[A-Za-z\[\]\\`_^{|}][\w\[\]\\`_^{|}\-]{0,29}$/
 ```
 
 - [ ] **Step 1.4: Run, expect pass**
@@ -235,31 +268,41 @@ Expected: 7 passes.
 
 - [ ] **Step 1.5: Property tests via StreamData**
 
+The classifier-only logic to property-test is the email-shape
+dispatch. The nick-validity properties live upstream in
+`test/grappa/irc/identifier_test.exs:31-44` and cover the nick path
+through `valid_nick?/1` already; duplicating them here would test
+delegation, not behavior.
+
 ```elixir
 # Append to test/grappa/auth/identifier_classifier_test.exs
   describe "property: classify/1" do
     use ExUnitProperties
 
-    property "valid nick generators always classify as :nick" do
+    property "any x@y.z-shaped string classifies as :email" do
       check all(
-              first <- StreamData.string([?A..?Z, ?a..?z, ?_], length: 1),
-              rest <- StreamData.string([?A..?Z, ?a..?z, ?0..?9, ?_, ?-], min_length: 0, max_length: 29)
+              local <- StreamData.string([?a..?z, ?A..?Z, ?0..?9, ?_], min_length: 1, max_length: 20),
+              domain <- StreamData.string([?a..?z, ?A..?Z, ?0..?9], min_length: 1, max_length: 20),
+              tld <- StreamData.string([?a..?z], min_length: 2, max_length: 6)
             ) do
-        nick = first <> rest
-        assert {:nick, ^nick} = Grappa.Auth.IdentifierClassifier.classify(nick)
-      end
-    end
-
-    property "any string with leading digit → :malformed" do
-      check all(
-              digit <- StreamData.string([?0..?9], length: 1),
-              rest <- StreamData.string(:alphanumeric, min_length: 0, max_length: 20)
-            ) do
-        bad = digit <> rest
-        refute match?({:nick, _}, Grappa.Auth.IdentifierClassifier.classify(bad))
+        addr = "#{local}@#{domain}.#{tld}"
+        assert {:email, ^addr} = IdentifierClassifier.classify(addr)
       end
     end
   end
+```
+
+The test file's preamble adds a `doctest` macro so the `@doc`
+examples are exercised at compile-time:
+
+```elixir
+defmodule Grappa.Auth.IdentifierClassifierTest do
+  use ExUnit.Case, async: true
+  doctest Grappa.Auth.IdentifierClassifier
+  alias Grappa.Auth.IdentifierClassifier
+
+  # …
+end
 ```
 
 - [ ] **Step 1.6: Run all gates**
