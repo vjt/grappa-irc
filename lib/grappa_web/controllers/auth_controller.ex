@@ -26,7 +26,7 @@ defmodule GrappaWeb.AuthController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, Visitors}
+  alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.Visitors.{Login, Visitor}
 
@@ -59,12 +59,46 @@ defmodule GrappaWeb.AuthController do
 
   @doc """
   `DELETE /auth/logout` — revokes the session whose token was just
-  validated by `GrappaWeb.Plugs.Authn`. Returns 204 + empty body.
+  validated by `GrappaWeb.Plugs.Authn`. For visitor sessions, also
+  tears down the live `Session.Server` and purges the anon visitor
+  row per W11 ("anon visitor lifecycle co-terminus with
+  accounts_sessions row"). Registered visitors stay automatically —
+  `Visitors.purge_if_anon/1` short-circuits when `password_encrypted`
+  is set. Returns 204 + empty body.
+
+  Order matters: stop the Session.Server BEFORE purging the visitor
+  row so the GenServer's mailbox drains via `terminate/2` without any
+  in-flight scrollback persist tripping the `messages.visitor_id` FK.
   """
   @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def logout(conn, _) do
+    :ok = maybe_terminate_visitor(conn.assigns)
     :ok = Accounts.revoke_session(conn.assigns.current_session_id)
     send_resp(conn, :no_content, "")
+  end
+
+  @spec maybe_terminate_visitor(map()) :: :ok
+  defp maybe_terminate_visitor(%{current_visitor: %Visitor{} = visitor}) do
+    :ok = stop_visitor_session(visitor)
+    :ok = Visitors.purge_if_anon(visitor.id)
+  end
+
+  defp maybe_terminate_visitor(_), do: :ok
+
+  @spec stop_visitor_session(Visitor.t()) :: :ok
+  defp stop_visitor_session(%Visitor{} = visitor) do
+    case Networks.get_network_by_slug(visitor.network_slug) do
+      {:ok, %Networks.Network{id: network_id}} ->
+        :ok = Session.stop_session({:visitor, visitor.id}, network_id)
+
+      {:error, :not_found} ->
+        Logger.warning("visitor logout but network not found",
+          visitor_id: visitor.id,
+          network: visitor.network_slug
+        )
+
+        :ok
+    end
   end
 
   defp mode1_login(conn, _, nil), do: send_error(conn, 401, "invalid_credentials")

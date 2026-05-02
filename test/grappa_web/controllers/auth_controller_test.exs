@@ -246,5 +246,116 @@ defmodule GrappaWeb.AuthControllerTest do
 
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
+
+    test "visitor logout (anon) kills Session.Server AND purges visitor row per W11",
+         %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task =
+        Task.async(fn ->
+          Visitors.Login.login(%{
+            nick: "vjt",
+            password: nil,
+            ip: "1.2.3.4",
+            user_agent: "ua",
+            token: nil
+          })
+        end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+
+      assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
+
+      conn
+      |> put_bearer(token)
+      |> delete("/auth/logout")
+      |> response(204)
+
+      assert is_nil(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
+
+      # W11: anon visitor purged co-terminus with accounts_sessions revoke.
+      assert is_nil(Repo.get(Visitor, visitor.id))
+    end
+
+    test "visitor logout (registered) kills Session.Server but keeps visitor row",
+         %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task =
+        Task.async(fn ->
+          Visitors.Login.login(%{
+            nick: "vjt",
+            password: nil,
+            ip: "1.2.3.4",
+            user_agent: "ua",
+            token: nil
+          })
+        end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+      {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+
+      conn
+      |> put_bearer(token)
+      |> delete("/auth/logout")
+      |> response(204)
+
+      assert is_nil(Grappa.Session.whereis({:visitor, visitor.id}, network.id))
+
+      # Registered visitor's row stays — purge_if_anon/1 short-circuits
+      # on password_encrypted set. Privacy promise: registered visitor's
+      # data persists past logout, gated on next-login password match.
+      assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
+      assert is_binary(pwd)
+    end
+
+    test "visitor logout when network row deleted mid-session logs warning + 204",
+         %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task =
+        Task.async(fn ->
+          Visitors.Login.login(%{
+            nick: "vjt",
+            password: nil,
+            ip: "1.2.3.4",
+            user_agent: "ua",
+            token: nil
+          })
+        end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+
+      # Tear the live session manually before pulling the network row —
+      # the controller's degenerate-case handling is what this test
+      # asserts, not the live-session teardown.
+      stop_visitor_session(visitor.id, network.id)
+      Repo.delete!(network)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          conn
+          |> put_bearer(token)
+          |> delete("/auth/logout")
+          |> response(204)
+        end)
+
+      assert log =~ "visitor logout but network not found"
+
+      # W11 still applies — anon visitor row purged regardless of network state.
+      assert is_nil(Repo.get(Visitor, visitor.id))
+    end
   end
 end
