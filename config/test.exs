@@ -38,6 +38,12 @@ config :phoenix, :json_library, Jason
 config :grappa, :visitor_network, "azzurra"
 config :grappa, :max_visitors_per_ip, 2
 
+# IRC.Client connect-failure pre-crash sleep — shrunk so the C2
+# init-non-blocking failure-surfaces-async assertion stays under its 1s
+# `assert_receive` window AND so per-test connect-refused tear-downs
+# (Visitors.Login case 1 :upstream_unreachable) don't drag.
+config :grappa, :irc_client_connect_failure_sleep_ms, 50
+
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite
 # is wiped per-run via Sandbox.
