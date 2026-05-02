@@ -459,7 +459,7 @@ defmodule Grappa.ScrollbackTest do
         kind: :privmsg,
         sender: "vjt",
         body: "ciao",
-        server_time: System.os_time(:millisecond),
+        server_time: System.system_time(:millisecond),
         meta: %{}
       }
 
@@ -481,7 +481,7 @@ defmodule Grappa.ScrollbackTest do
         kind: :privmsg,
         sender: "vjt",
         body: "ciao",
-        server_time: System.os_time(:millisecond),
+        server_time: System.system_time(:millisecond),
         meta: %{}
       }
 
@@ -498,7 +498,7 @@ defmodule Grappa.ScrollbackTest do
         kind: :privmsg,
         sender: "vjt",
         body: "ciao",
-        server_time: System.os_time(:millisecond),
+        server_time: System.system_time(:millisecond),
         meta: %{}
       }
 

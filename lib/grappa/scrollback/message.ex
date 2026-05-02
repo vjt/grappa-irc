@@ -187,10 +187,10 @@ defmodule Grappa.Scrollback.Message do
       :meta
     ])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
+    |> validate_subject_xor()
     |> validate_identifier(:channel, &Identifier.valid_channel?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
-    |> validate_subject_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
