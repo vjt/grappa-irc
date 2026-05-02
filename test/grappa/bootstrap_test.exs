@@ -25,7 +25,7 @@ defmodule Grappa.BootstrapTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Bootstrap, IRCServer, Networks, Session}
+  alias Grappa.{Bootstrap, IRCServer, Networks, Session, Visitors}
   alias Grappa.Networks.{Credentials, Servers}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -55,6 +55,13 @@ defmodule Grappa.BootstrapTest do
 
   defp stop_session(user_id, network_id) when is_integer(network_id) do
     case Session.whereis({:user, user_id}, network_id) do
+      nil -> :ok
+      pid -> DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+    end
+  end
+
+  defp stop_visitor_session(visitor_id, network_id) when is_integer(network_id) do
+    case Session.whereis({:visitor, visitor_id}, network_id) do
       nil -> :ok
       pid -> DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end
@@ -175,6 +182,55 @@ defmodule Grappa.BootstrapTest do
       assert log =~ "started=2"
       assert log =~ "failed=0"
       assert is_pid(Session.whereis({:user, vjt.id}, ok_net.id))
+    end
+  end
+
+  describe "run/0 with active visitors" do
+    test "spawns Session.Server per active visitor row" do
+      {_, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+
+      on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert :ok = Bootstrap.run() end)
+
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+      assert log =~ "bootstrap visitors done"
+      assert log =~ "started=1"
+      assert log =~ "failed=0"
+    end
+
+    test "registered visitor (password set) respawns alongside anon visitors" do
+      {_, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+
+      on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+      assert :ok = Bootstrap.run()
+
+      assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+    end
+
+    test "expired visitor row is skipped (list_active filters)" do
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+      visitor = visitor_fixture(expires_at: past)
+
+      assert :ok = Bootstrap.run()
+
+      # No session row should exist for an expired visitor regardless
+      # of which network they were pinned to. Match against the
+      # Registry key shape from `Server.registry_key/2`:
+      # `{:session, subject, network_id}`.
+      keys =
+        Registry.select(Grappa.SessionRegistry, [
+          {{{:session, {:visitor, :"$1"}, :_}, :_, :_}, [{:==, :"$1", visitor.id}], [:"$_"]}
+        ])
+
+      assert keys == []
     end
   end
 end

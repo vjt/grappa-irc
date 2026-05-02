@@ -78,12 +78,14 @@ defmodule Grappa.Bootstrap do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Grappa.Session]
+    deps: [Grappa.Networks, Grappa.Session, Grappa.Visitors]
 
   use Task, restart: :transient
 
+  alias Grappa.{Networks, Session, Visitors}
   alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
-  alias Grappa.Session
+  alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
+  alias Grappa.Visitors.Visitor
 
   require Logger
 
@@ -108,12 +110,13 @@ defmodule Grappa.Bootstrap do
     case Credentials.list_credentials_for_all_users() do
       [] ->
         Logger.warning("bootstrap: no credentials bound — running web-only")
-        :ok
 
       credentials ->
         spawn_all(credentials)
-        :ok
     end
+
+    spawn_visitors()
+    :ok
   end
 
   @spec spawn_all([Credential.t()]) :: :ok
@@ -159,6 +162,54 @@ defmodule Grappa.Bootstrap do
         Logger.error("session start failed",
           user: user_id,
           network: slug,
+          error: inspect(reason)
+        )
+
+        %{acc | failed: acc.failed + 1}
+    end
+  end
+
+  @spec spawn_visitors() :: :ok
+  defp spawn_visitors do
+    visitors = Visitors.list_active()
+    stats = Enum.reduce(visitors, %{started: 0, failed: 0}, &spawn_visitor/2)
+
+    Logger.info("bootstrap visitors done",
+      visitors: length(visitors),
+      started: stats.started,
+      failed: stats.failed
+    )
+
+    :ok
+  end
+
+  @spec spawn_visitor(Visitor.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
+          %{started: non_neg_integer(), failed: non_neg_integer()}
+  defp spawn_visitor(%Visitor{} = visitor, acc) do
+    with {:ok, plan} <- VisitorSessionPlan.resolve(visitor),
+         {:ok, %Network{} = network} <- Networks.get_network_by_slug(plan.network_slug),
+         {:ok, _} <- Session.start_session({:visitor, visitor.id}, network.id, plan) do
+      Logger.info("visitor session started",
+        visitor_id: visitor.id,
+        network: plan.network_slug
+      )
+
+      %{acc | started: acc.started + 1}
+    else
+      {:error, {:already_started, _}} ->
+        # Mirror `spawn_one/2`'s F3 idempotency: on Bootstrap restart
+        # the session is still alive under the same Registry key.
+        Logger.debug("visitor session already started",
+          visitor_id: visitor.id,
+          network: visitor.network_slug
+        )
+
+        %{acc | started: acc.started + 1}
+
+      {:error, reason} ->
+        Logger.error("visitor session start failed",
+          visitor_id: visitor.id,
+          network: visitor.network_slug,
           error: inspect(reason)
         )
 
