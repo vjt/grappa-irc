@@ -219,6 +219,24 @@ defmodule Grappa.Visitors do
   def get!(visitor_id) when is_binary(visitor_id), do: Repo.get!(Visitor, visitor_id)
 
   @doc """
+  Bulk-delete every visitor row pinned to `network_slug`. Returns
+  `{:ok, count}` with the deleted-row count. Operator path —
+  surfaces through `mix grappa.reap_visitors --network=<slug>` to
+  unblock the `Grappa.Bootstrap` W7 hard-error path (Task 20) when
+  the operator has intentionally dropped a network from the DB.
+
+  CASCADE: the `visitor_id` FKs on `visitor_channels`, `messages`,
+  and `accounts_sessions` all carry `ON DELETE CASCADE`; the bulk
+  delete fires those at the DB layer in a single transaction.
+  """
+  @spec reap_by_network_slug(String.t()) :: {:ok, non_neg_integer()}
+  def reap_by_network_slug(slug) when is_binary(slug) do
+    query = from(v in Visitor, where: v.network_slug == ^slug)
+    {count, _} = Repo.delete_all(query)
+    {:ok, count}
+  end
+
+  @doc """
   Lookup a visitor by `(nick, network_slug)`. Returns the row or `nil`.
   Used by `GrappaWeb.AuthController` to compute the `Retry-After` hint
   on `:anon_collision` responses without exposing `Repo` to the web
