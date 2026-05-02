@@ -12,5 +12,5 @@ defmodule Grappa.Visitors do
   `Grappa.Accounts`, and `Grappa.Networks` accordingly.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Visitor]
+  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Visitor, VisitorChannel]
 end

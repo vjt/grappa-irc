@@ -27,6 +27,7 @@ defmodule Grappa.Visitors.Visitor do
 
   alias Grappa.EncryptedBinary
   alias Grappa.IRC.Identifier
+  alias Grappa.Visitors.VisitorChannel
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -35,6 +36,7 @@ defmodule Grappa.Visitors.Visitor do
           password_encrypted: binary() | nil,
           expires_at: DateTime.t() | nil,
           ip: String.t() | nil,
+          channels: [VisitorChannel.t()] | Ecto.Association.NotLoaded.t(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -47,6 +49,8 @@ defmodule Grappa.Visitors.Visitor do
     field :password_encrypted, EncryptedBinary, redact: true
     field :expires_at, :utc_datetime_usec
     field :ip, :string
+
+    has_many :channels, VisitorChannel, foreign_key: :visitor_id
 
     timestamps(type: :utc_datetime_usec)
   end
