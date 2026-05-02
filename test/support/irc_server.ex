@@ -88,8 +88,22 @@ defmodule Grappa.IRCServer do
     {:ok, port} = :inet.port(listen)
     me = self()
 
+    # 30s accept budget. Sized for cluster-wide test contention: the
+    # `IRCServer` is `start_link`'d at the top of a test, the test then
+    # does its setup work (DB inserts via Sandbox, credential binding,
+    # `Bootstrap.run/0` or `Session.start_session/3`) before the
+    # `Session.Server`'s `handle_continue(:connect, _)` reaches this
+    # acceptor. Under parallel-test load on slower hardware (Raspberry Pi
+    # 5 host, container-virtualized BEAM), that setup can stretch past
+    # the original 5s budget, causing the acceptor to timeout silently;
+    # the subsequent `Client` connect then hits `:econnrefused`, the
+    # session crashes, and the test's `wait_for_line` for any expected
+    # client→server line times out with `{:error, :timeout}`. Bumping
+    # to 30s absorbs the contention without masking real bugs (a test
+    # that genuinely never reaches the connect path will still timeout
+    # — just at 30s instead of 5s, which is fine for a CI gate).
     spawn_link(fn ->
-      case :gen_tcp.accept(listen, 5_000) do
+      case :gen_tcp.accept(listen, 30_000) do
         {:ok, sock} ->
           :ok = :gen_tcp.controlling_process(sock, me)
           send(me, {:accepted, sock})
