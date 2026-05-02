@@ -244,7 +244,6 @@ defmodule Grappa.Visitors.Login do
 
   defp error_tag(%Ecto.Changeset{}), do: :scrollback_insert_failed
   defp error_tag(atom) when is_atom(atom), do: atom
-  defp error_tag(_), do: :unknown
 
   defp rotate_token(visitor, input) do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
