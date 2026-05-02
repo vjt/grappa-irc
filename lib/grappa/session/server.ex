@@ -84,9 +84,16 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.EventRouter
+  alias Grappa.Session.{EventRouter, NSInterceptor}
 
   require Logger
+
+  # 10s is generous for an upstream NickServ → +r MODE round-trip; even
+  # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
+  # an unconfirmed password doesn't sit on the heap forever, NOT an SLA.
+  # Wrong passwords get wiped after this window, so the visitor DB
+  # never sees them (Task 15 lands the +r observer + atomic commit).
+  @pending_auth_timeout_ms 10_000
 
   @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
@@ -123,7 +130,9 @@ defmodule Grappa.Session.Server do
           autojoin: [String.t()],
           client: pid() | nil,
           notify_pid: pid() | nil,
-          notify_ref: reference() | nil
+          notify_ref: reference() | nil,
+          pending_auth: nil | {String.t(), integer()},
+          pending_auth_timer: reference() | nil
         }
 
   ## API
@@ -176,7 +185,9 @@ defmodule Grappa.Session.Server do
       autojoin: opts.autojoin_channels,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
-      notify_ref: Map.get(opts, :notify_ref)
+      notify_ref: Map.get(opts, :notify_ref),
+      pending_auth: nil,
+      pending_auth_timer: nil
     }
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
@@ -208,51 +219,18 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
-    attrs =
-      Session.put_subject_id(
-        %{
-          network_id: state.network_id,
-          channel: target,
-          server_time: System.system_time(:millisecond),
-          kind: :privmsg,
-          sender: state.nick,
-          body: body,
-          meta: %{}
-        },
-        state.subject
-      )
+    line = "PRIVMSG #{target} :#{body}"
 
-    case Scrollback.persist_event(attrs) do
-      {:ok, message} ->
-        :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
-            Topic.channel(state.subject_label, state.network_slug, target),
-            Wire.message_event(message)
-          )
+    state =
+      case NSInterceptor.intercept(line) do
+        {:capture, password} -> stage_pending_auth(state, password)
+        :passthrough -> state
+      end
 
-        # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
-        # since S29 C1. The Session facade pre-validates so the error
-        # branch is unreachable on the documented path; the case below
-        # is forward-compat insurance against a future caller that
-        # bypasses the facade. If it ever fires, surface the typed
-        # error to the caller — a MatchError here would crash the
-        # session GenServer + trip the transient restart loop, much
-        # worse than a 400-shaped error tuple.
-        case Client.send_privmsg(state.client, target, body) do
-          :ok ->
-            {:reply, {:ok, message}, state}
-
-          {:error, :invalid_line} = err ->
-            Logger.error("client rejected privmsg AFTER persist — facade bypass?",
-              channel: target
-            )
-
-            {:reply, err, state}
-        end
-
-      {:error, _} = err ->
-        {:reply, err, state}
+    if service_target?(target) do
+      handle_service_target_send(target, body, state)
+    else
+      handle_persisting_send(target, body, state)
     end
   end
 
@@ -394,9 +372,114 @@ defmodule Grappa.Session.Server do
     delegate(msg, state)
   end
 
+  # Cleared 10s after the last NSInterceptor capture if no +r MODE
+  # confirmation arrived (Task 15 lands the +r observer + atomic commit).
+  # Wrong passwords never reach the visitor DB by virtue of this clear.
+  def handle_info(:pending_auth_timeout, state) do
+    Logger.debug("pending_auth discarded — no +r MODE within #{@pending_auth_timeout_ms}ms")
+    {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
+  end
+
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
   ## Internals
+
+  # *Serv suffix is the universal IRC services nick convention
+  # (NickServ / ChanServ / MemoServ / OperServ / BotServ / HostServ /
+  # HelpServ). Any PRIVMSG to one is a credential or control command,
+  # not a chat message — never persist body to scrollback (cleartext
+  # password leak, W12) and never broadcast over PubSub (other tabs
+  # of the same user shouldn't see the password). Generic rule, not
+  # NSInterceptor-specific: NSInterceptor's regex matches NickServ
+  # only; this scrollback skip is broader.
+  defp service_target?(target) when is_binary(target) do
+    target |> String.downcase() |> String.ends_with?("serv")
+  end
+
+  # Existing behavior — persist scrollback row, broadcast on per-channel
+  # PubSub topic, send the wire line. Reply carries the persisted row.
+  # Symmetric with the pre-S9 send_privmsg body.
+  defp handle_persisting_send(target, body, state) do
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: target,
+          server_time: System.system_time(:millisecond),
+          kind: :privmsg,
+          sender: state.nick,
+          body: body,
+          meta: %{}
+        },
+        state.subject
+      )
+
+    case Scrollback.persist_event(attrs) do
+      {:ok, message} ->
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.channel(state.subject_label, state.network_slug, target),
+            Wire.message_event(message)
+          )
+
+        # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
+        # since S29 C1. The Session facade pre-validates so the error
+        # branch is unreachable on the documented path; the case below
+        # is forward-compat insurance against a future caller that
+        # bypasses the facade.
+        case Client.send_privmsg(state.client, target, body) do
+          :ok ->
+            {:reply, {:ok, message}, state}
+
+          {:error, :invalid_line} = err ->
+            Logger.error("client rejected privmsg AFTER persist — facade bypass?",
+              channel: target
+            )
+
+            {:reply, err, state}
+        end
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  # Service-target path — wire-only, no Scrollback row, no PubSub
+  # broadcast. Reply tag `{:ok, :no_persist}` keeps callers' `{:ok, _}`
+  # match-shape working (Visitors.Login.send_post_login_identify).
+  defp handle_service_target_send(target, body, state) do
+    case Client.send_privmsg(state.client, target, body) do
+      :ok ->
+        {:reply, {:ok, :no_persist}, state}
+
+      {:error, :invalid_line} = err ->
+        Logger.error("client rejected service-target privmsg",
+          target: target
+        )
+
+        {:reply, err, state}
+    end
+  end
+
+  # Latest-wins serialization for concurrent IDENTIFYs is automatic via
+  # Session.Server mailbox FIFO (W8): if a second IDENTIFY arrives
+  # before the first's +r confirmation, the second overwrites and the
+  # first's password is lost (correct — the user changed their mind
+  # between the two send_privmsg calls). Cancel the in-flight timer
+  # before arming a fresh one so timeouts always reflect the most-recent
+  # capture.
+  defp stage_pending_auth(state, password) do
+    _ =
+      if is_reference(state.pending_auth_timer) do
+        Process.cancel_timer(state.pending_auth_timer)
+      end
+
+    timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
+    deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
+
+    %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
+  end
 
   # Build the IRC.Client opts map from the pre-resolved primitive
   # plan. Nick-fallback + Cloak password decryption already happened
