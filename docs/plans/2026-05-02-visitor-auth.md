@@ -6209,9 +6209,203 @@ EOF
 - Modify: `lib/grappa/bootstrap.ex`
 - Test: extend `test/grappa/bootstrap_test.exs`
 
-- [ ] **Step 19.1: Failing test**
+**Dispatch-time amendments (S14):**
+
+- **D1 — No ExMachina:** plan body uses `insert(:network)` /
+  `insert(:network_server)` / `insert(:visitor)`. Codebase has no
+  ExMachina dep. Use `network_with_server/1` + `visitor_fixture/1`
+  from `test/support/auth_fixtures.ex`, plus
+  `IRCServer.start_link(passthrough_handler())` for the listener
+  the spawned `Session.Server` connects to.
+- **D2 — `Application.put_env/3` runtime ban:** plan body sets
+  `:visitor_network` in test setup. CLAUDE.md bans runtime
+  `Application.put_env/2`. Bootstrap doesn't read `:visitor_network`
+  anyway — it iterates `Visitors.list_active/0` and respawns each row
+  unconditionally; only `Visitors.Login` (POST /auth/login default-host
+  branch) consumes `:visitor_network`. Drop the put_env line.
+- **D3 — No `eventually/1`:** plan test uses `eventually(fn -> ... end)`.
+  Helper does not exist. `Bootstrap.run/0` is synchronous; immediately
+  after it returns, `Session.whereis(...)` is reachable. No async wait
+  needed.
+- **D4 — Plan map shape:** plan body uses `plan.network_id`. The visitor
+  `SessionPlan.build_plan/3` does NOT include `:network_id` — it only
+  has `:network_slug` (mirror of `Networks.SessionPlan.build_plan/4`).
+  Bootstrap must fetch the network row separately to get the integer
+  FK that `Session.start_session/3` requires. Use
+  `Networks.get_network_by_slug!(plan.network_slug)` (operator-side
+  loud-fail surface — should always succeed because Task 20's
+  `validate_visitor_networks!()` runs first).
+- **D5 — Logger metadata key `:visitor_id`, not `:visitor`:** S10
+  added `:visitor_id` to the `config/config.exs` Logger metadata
+  allowlist. Plan body uses `visitor: visitor.id`. Use
+  `visitor_id: visitor.id` to match the allowlist.
+- **D6 — Boundary deps:** `Grappa.Bootstrap` boundary currently
+  declares `deps: [Grappa.Networks, Grappa.Session]`. Adding
+  `spawn_visitors/0` requires `Grappa.Visitors` (for `list_active/0`
+  + `SessionPlan.resolve/1`). Append `Grappa.Visitors` to the deps
+  list. No cycle: `Visitors` deps `Session` (not Bootstrap).
+- **D7 — Mirror existing reduce+counter shape:** plan body uses
+  naked `Enum.each` with no aggregation. Existing `spawn_all/1`
+  (mode-1 credentials) does `Enum.reduce` into `%{started, failed}`
+  and emits one structured summary line. `spawn_visitors/0` should
+  match: separate accumulator, separate `Logger.info("bootstrap
+  visitors done", visitors: N, started: N, failed: N)` summary line.
+  Two summary lines, one per spawn class — operators read both.
+- **D8 — Task 19 omits `validate_visitor_networks!()`:** plan body
+  for Task 19 calls it inside `run/0`, but the function definition
+  belongs to Task 20. Task 19 commit drops the call (`run/0` adds
+  only `spawn_visitors()` after `spawn_all/1`). Task 20 commit
+  inserts the validate call BEFORE `spawn_visitors()` (validate
+  then spawn).
+- **D9 — Idempotent `:already_started` on Bootstrap restart:**
+  mirror existing `spawn_one/2` shape: `{:error, {:already_started,
+  _}}` is success (counts as `started`, logged at `:debug`). Plan
+  body's `:ok` clause silently swallows it without counting; align
+  with existing telemetry expectation (S6 carryover from F3 fix).
 
 ```elixir
+# REVISED test (post-S14 amend) — append to test/grappa/bootstrap_test.exs
+
+describe "run/0 with active visitors" do
+  test "spawns Session.Server per active visitor row" do
+    {_, port} = start_server()
+    {visitor, network} = visitor_with_network(port)
+
+    on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+    Logger.put_module_level(Grappa.Bootstrap, :info)
+    on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+    log = capture_log(fn -> assert :ok = Bootstrap.run() end)
+
+    assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
+    assert log =~ "bootstrap visitors done"
+    assert log =~ "started=1"
+    assert log =~ "failed=0"
+  end
+
+  test "registered visitor (password set) respawns with :nickserv_identify" do
+    {_, port} = start_server()
+    {visitor, network} = visitor_with_network(port)
+    {:ok, _} = Visitors.commit_password(visitor.id, "s3cret")
+
+    on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+    assert :ok = Bootstrap.run()
+
+    pid = Session.whereis({:visitor, visitor.id}, network.id)
+    assert is_pid(pid)
+  end
+
+  test "expired visitor row is skipped (list_active filters)" do
+    past = DateTime.add(DateTime.utc_now(), -1, :hour)
+    visitor = visitor_fixture(expires_at: past)
+
+    assert :ok = Bootstrap.run()
+
+    # network_id is irrelevant — no session row should exist for an
+    # expired visitor regardless of which network they were pinned to.
+    assert [] =
+             Registry.select(Grappa.SessionRegistry, [
+               {{{:visitor, :"$1"}, :_, :_}, [{:==, :"$1", visitor.id}], [:"$_"]}
+             ])
+  end
+end
+
+# Mirror `stop_session/2` for the {:visitor, _} subject tuple — placed
+# alongside the existing user-side helper at the top of the test module.
+defp stop_visitor_session(visitor_id, network_id) when is_integer(network_id) do
+  case Session.whereis({:visitor, visitor_id}, network_id) do
+    nil -> :ok
+    pid -> DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+  end
+end
+```
+
+```elixir
+# REVISED impl (post-S14 amend) — lib/grappa/bootstrap.ex
+
+# 1. Boundary: add Grappa.Visitors to deps list.
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Networks, Grappa.Session, Grappa.Visitors]
+
+# 2. Aliases — append next to existing Networks alias group.
+alias Grappa.Networks
+alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
+alias Grappa.Session
+alias Grappa.Visitors
+alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
+
+# 3. run/0 orchestrates two spawn classes, each with its own
+#    summary line. `spawn_visitors/0` runs AFTER credentials so a
+#    visitor-side bug never blocks mode-1 user spawns.
+@spec run() :: :ok
+def run do
+  case Credentials.list_credentials_for_all_users() do
+    [] ->
+      Logger.warning("bootstrap: no credentials bound — running web-only")
+
+    credentials ->
+      spawn_all(credentials)
+  end
+
+  spawn_visitors()
+  :ok
+end
+
+# 4. Mirror spawn_all/1's reduce+counter shape.
+@spec spawn_visitors() :: :ok
+defp spawn_visitors do
+  visitors = Visitors.list_active()
+  stats = Enum.reduce(visitors, %{started: 0, failed: 0}, &spawn_visitor/2)
+
+  Logger.info("bootstrap visitors done",
+    visitors: length(visitors),
+    started: stats.started,
+    failed: stats.failed
+  )
+
+  :ok
+end
+
+@spec spawn_visitor(Visitors.Visitor.t(), %{started: non_neg_integer(), failed: non_neg_integer()}) ::
+        %{started: non_neg_integer(), failed: non_neg_integer()}
+defp spawn_visitor(visitor, acc) do
+  with {:ok, plan} <- VisitorSessionPlan.resolve(visitor),
+       network = Networks.get_network_by_slug!(plan.network_slug),
+       {:ok, _pid} <- Session.start_session({:visitor, visitor.id}, network.id, plan) do
+    Logger.info("visitor session started",
+      visitor_id: visitor.id,
+      network: plan.network_slug
+    )
+
+    %{acc | started: acc.started + 1}
+  else
+    {:error, {:already_started, _}} ->
+      Logger.debug("visitor session already started",
+        visitor_id: visitor.id,
+        network: visitor.network_slug
+      )
+
+      %{acc | started: acc.started + 1}
+
+    {:error, reason} ->
+      Logger.error("visitor session start failed",
+        visitor_id: visitor.id,
+        network: visitor.network_slug,
+        error: inspect(reason)
+      )
+
+      %{acc | failed: acc.failed + 1}
+  end
+end
+```
+
+**Original plan body (superseded by S14 amend above) — kept for audit:**
+
+```elixir
+# Original Step 19.1 plan body (pre-amend — DO NOT IMPLEMENT)
 describe "Bootstrap respawns active visitors" do
   test "spawns Session.Server per active visitor with cached password" do
     network = insert(:network, slug: "azzurra")
@@ -6230,21 +6424,13 @@ describe "Bootstrap respawns active visitors" do
       assert {:ok, _pid} = Session.lookup({:visitor, v.id}, network.id)
     end)
   end
-
-  test "skips expired visitors" do
-    insert(:visitor, expires_at: DateTime.utc_now() |> DateTime.add(-1, :hour))
-    Bootstrap.run()
-    # ... assert no spawn
-  end
 end
 ```
 
-- [ ] **Step 19.2: Extend Bootstrap.run/0**
-
 ```elixir
-# lib/grappa/bootstrap.ex
+# Original Step 19.2 plan body (pre-amend — DO NOT IMPLEMENT)
 def run do
-  validate_visitor_networks!()  # W7 hard-error path — Task 20
+  validate_visitor_networks!()
   spawn_credentials()
   spawn_visitors()
   :ok
@@ -6298,24 +6484,103 @@ EOF
 - Modify: `lib/grappa/bootstrap.ex`
 - Test: extend `test/grappa/bootstrap_test.exs`
 
-- [ ] **Step 20.1: Failing test**
+**Dispatch-time amendments (S14):**
+
+- **D1 — `Networks.list/0` does NOT exist:** plan body uses
+  `Networks.list() |> Enum.map(& &1.slug)`. The Networks context API
+  is slug CRUD only — `find_or_create_network/1`,
+  `get_network_by_slug/1`, `get_network_by_slug!/1`, `get_network!/1`.
+  No `list/0`. Two options:
+    (a) Add a public `Networks.list_networks/0` returning `[%Network{}]`.
+    (b) Iterate per visitor slug via `Networks.get_network_by_slug/1`
+        and treat `:not_found` as the orphan signal.
+  Pick **(b)** — no new public surface, fewer queries when the slug set
+  is small (typical: <5 unique visitor slugs vs. all networks). Per-slug
+  `get_by` hits the unique index; cost is negligible. Keep
+  `Networks.list_networks/0` deferred until a second caller justifies
+  it.
+- **D2 — Validate sequence in `run/0`:** the validate call goes
+  BEFORE `spawn_visitors()` (not in the plan-body position, which
+  was inside Task 19's superseded body). Final `run/0` shape after
+  Task 20:
+
+  ```elixir
+  def run do
+    case Credentials.list_credentials_for_all_users() do
+      [] -> Logger.warning("bootstrap: no credentials bound — running web-only")
+      credentials -> spawn_all(credentials)
+    end
+
+    validate_visitor_networks!()
+    spawn_visitors()
+    :ok
+  end
+  ```
+
+  Mode-1 credentials spawn even if visitor validation raises —
+  the bouncer for already-bound users stays useful while the
+  operator handles the orphan-visitor situation.
+- **D3 — Test isolation: assert ON RAISE, not on Bootstrap state
+  side-effects:** plan test is correct as-written (assert_raise around
+  `Bootstrap.run()`). Use `visitor_fixture(network_slug:
+  "ghosted-#{unique}")` to build the orphan row WITHOUT inserting a
+  matching `Networks.Network` row.
 
 ```elixir
-describe "W7 hard-error on visitor pinned to unconfigured network" do
-  test "raises with operator instructions when visitor.network_slug not configured" do
-    {:ok, _} = Visitors.find_or_provision_anon("orphan", "ghosted_network", nil)
+# REVISED test (post-S14 amend) — append to test/grappa/bootstrap_test.exs
 
-    assert_raise RuntimeError, ~r/visitor rows pinned to .*ghosted_network.*reap_visitors/, fn ->
+describe "run/0 W7 hard-error on visitor pinned to unconfigured network" do
+  test "raises with operator instructions when visitor.network_slug not configured" do
+    orphan_slug = "ghosted-#{System.unique_integer([:positive])}"
+    _visitor = visitor_fixture(network_slug: orphan_slug)
+
+    assert_raise RuntimeError, ~r/visitor rows pinned.*#{orphan_slug}.*reap_visitors/, fn ->
       Bootstrap.run()
     end
+  end
+
+  test "does not raise when every visitor's network_slug is configured" do
+    {_, port} = start_server()
+    {visitor, network} = visitor_with_network(port)
+    on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+    assert :ok = Bootstrap.run()
   end
 end
 ```
 
-- [ ] **Step 20.2: Implement**
+```elixir
+# REVISED impl (post-S14 amend) — lib/grappa/bootstrap.ex
+
+@spec validate_visitor_networks!() :: :ok
+defp validate_visitor_networks! do
+  orphans =
+    Visitors.list_active()
+    |> Enum.map(& &1.network_slug)
+    |> Enum.uniq()
+    |> Enum.reject(fn slug ->
+      match?({:ok, _}, Networks.get_network_by_slug(slug))
+    end)
+
+  case orphans do
+    [] ->
+      :ok
+
+    slugs ->
+      msg =
+        "visitor rows pinned to network(s) not in current config: " <>
+          "#{inspect(slugs)}. Either restore the network in DB or run: " <>
+          Enum.map_join(slugs, " ; ", &"mix grappa.reap_visitors --network=#{&1}")
+
+      raise RuntimeError, msg
+  end
+end
+```
+
+**Original plan body (superseded by S14 amend above) — kept for audit:**
 
 ```elixir
-# lib/grappa/bootstrap.ex
+# Original Step 20.2 plan body (pre-amend — DO NOT IMPLEMENT)
 defp validate_visitor_networks! do
   visitor_slugs = Visitors.list_active() |> Enum.map(& &1.network_slug) |> Enum.uniq()
   configured_slugs = Networks.list() |> Enum.map(& &1.slug) |> MapSet.new()
