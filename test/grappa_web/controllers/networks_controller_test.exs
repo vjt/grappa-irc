@@ -98,7 +98,7 @@ defmodule GrappaWeb.NetworksControllerTest do
     test "returns the single bound network for the visitor", %{conn: conn} do
       slug = "azzurra-vis-#{u()}"
       {:ok, network} = Networks.find_or_create_network(%{slug: slug})
-      {_visitor, session} = visitor_and_session(network_slug: slug)
+      {_, session} = visitor_and_session(network_slug: slug)
 
       conn =
         conn
@@ -118,8 +118,8 @@ defmodule GrappaWeb.NetworksControllerTest do
       {:ok, _} = Networks.find_or_create_network(%{slug: vjt_slug})
       {:ok, _} = Networks.find_or_create_network(%{slug: alice_slug})
 
-      {_vjt, session} = visitor_and_session(network_slug: vjt_slug)
-      _alice = visitor_fixture(network_slug: alice_slug)
+      {_, session} = visitor_and_session(network_slug: vjt_slug)
+      _ = visitor_fixture(network_slug: alice_slug)
 
       conn =
         conn
