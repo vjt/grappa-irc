@@ -17,10 +17,11 @@ defmodule Grappa.AuthFixtures do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session]
+    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session, Grappa.Visitors]
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
+  alias Grappa.Visitors.Visitor
 
   @doc """
   Inserts a `%User{}` directly with `password_hash: "x"` — does NOT
@@ -147,5 +148,37 @@ defmodule Grappa.AuthFixtures do
     {:ok, plan} = SessionPlan.resolve(credential)
     {:ok, pid} = Grappa.Session.start_session(user.id, network.id, plan)
     pid
+  end
+
+  @doc """
+  Inserts a `%Visitor{}` directly via `Visitor.create_changeset/1` —
+  exercises the canonical-validator path so a malformed nick/slug
+  default would surface here rather than in the test that uses it.
+  """
+  @spec visitor_fixture(keyword()) :: Visitor.t()
+  def visitor_fixture(attrs \\ []) do
+    nick = Keyword.get(attrs, :nick, "v#{System.unique_integer([:positive])}")
+    network_slug = Keyword.get(attrs, :network_slug, "azzurra")
+    expires_at = Keyword.get(attrs, :expires_at, DateTime.add(DateTime.utc_now(), 48, :hour))
+    ip = Keyword.get(attrs, :ip)
+
+    {:ok, visitor} =
+      %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
+      |> Visitor.create_changeset()
+      |> Repo.insert()
+
+    visitor
+  end
+
+  @doc """
+  Inserts a `%Network{}` row (no servers attached). For tests that
+  need a `network_id` FK target without spinning up an `IRCServer`
+  fake (`network_with_server/1` is the with-server variant).
+  """
+  @spec network_fixture(keyword()) :: Network.t()
+  def network_fixture(attrs \\ []) do
+    slug = Keyword.get(attrs, :slug, "net-#{System.unique_integer([:positive])}")
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+    network
   end
 end
