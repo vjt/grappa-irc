@@ -31,6 +31,7 @@ defmodule GrappaWeb.FallbackController do
           Plug.Conn.t(),
           {:error,
            :bad_request
+           | :forbidden
            | :not_found
            | :no_session
            | :invalid_credentials
@@ -69,6 +70,17 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not_found"})
+  end
+
+  # Subject is authenticated but the action is not available to its kind
+  # (Task 30: visitor `POST /networks/:slug/nick`). Distinct from
+  # `:unauthorized` (no/invalid bearer) — the bearer is fine, the verb
+  # isn't allowed for this subject. Wire body distinguishes so the SPA
+  # can render "this account can't do that" vs "log in again."
+  def call(conn, {:error, :forbidden}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "forbidden"})
   end
 
   # S14 oracle close: `:no_session` collapses to the same wire body as
