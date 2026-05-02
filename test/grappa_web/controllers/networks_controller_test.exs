@@ -1,12 +1,15 @@
 defmodule GrappaWeb.NetworksControllerTest do
   @moduledoc """
-  `GET /networks` — lists the authenticated user's bound networks.
+  `GET /networks` — lists the authenticated subject's bound networks.
 
   Cicchetto (Phase 3 PWA) calls this on app boot to render the
-  network → channel tree. Source-of-truth = `Grappa.Networks.Credentials.list_credentials_for_user/1`,
-  which gates the response on credential ownership: a user only sees
-  networks they have a binding on. Operators sharing a deployment do
-  NOT see each other's networks.
+  network → channel tree. User branch:
+  `Grappa.Networks.Credentials.list_credentials_for_user/1` gates on
+  credential ownership — a user sees only networks they bind to.
+  Visitor branch: returns the single network the visitor is row-pinned
+  to (`visitor.network_slug` resolved via `Networks.get_network_by_slug/1`).
+  Two operators on the same deployment do NOT see each other's
+  networks; a visitor sees exactly one.
 
   Wire shape comes from `Grappa.Networks.Wire.network_to_json/1`
   (single source of truth across REST + future Phoenix Channels +
@@ -20,7 +23,9 @@ defmodule GrappaWeb.NetworksControllerTest do
 
   import Grappa.AuthFixtures
 
-  describe "GET /networks" do
+  alias Grappa.Networks
+
+  describe "GET /networks — user subject" do
     test "with valid Bearer returns 200 + list of bound networks", %{conn: conn} do
       vjt = user_fixture(name: "vjt-list")
       session = session_fixture(vjt)
@@ -86,6 +91,45 @@ defmodule GrappaWeb.NetworksControllerTest do
     test "without Bearer returns 401", %{conn: conn} do
       conn = get(conn, "/networks")
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  describe "GET /networks — visitor subject" do
+    test "returns the single bound network for the visitor", %{conn: conn} do
+      slug = "azzurra-vis-#{u()}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      {_visitor, session} = visitor_and_session(network_slug: slug)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/networks")
+
+      body = json_response(conn, 200)
+      assert is_list(body)
+      assert length(body) == 1
+      assert hd(body)["slug"] == network.slug
+      assert hd(body)["id"] == network.id
+    end
+
+    test "does not include other visitors' networks (per-visitor iso)", %{conn: conn} do
+      vjt_slug = "azzurra-iso-#{u()}"
+      alice_slug = "libera-iso-#{u()}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: vjt_slug})
+      {:ok, _} = Networks.find_or_create_network(%{slug: alice_slug})
+
+      {_vjt, session} = visitor_and_session(network_slug: vjt_slug)
+      _alice = visitor_fixture(network_slug: alice_slug)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/networks")
+
+      body = json_response(conn, 200)
+      slugs = Enum.map(body, & &1["slug"])
+      assert vjt_slug in slugs
+      refute alice_slug in slugs
     end
   end
 
