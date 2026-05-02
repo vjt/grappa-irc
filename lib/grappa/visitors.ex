@@ -237,6 +237,25 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
+  Visitor-side autojoin channel list — names of `visitor_channels` rows
+  pinned to `(visitor.id, visitor.network_slug)`. Mirror of
+  `Networks.Credential.autojoin_channels` for user subjects (single
+  source consumed by `Grappa.Visitors.SessionPlan` for Bootstrap-respawn
+  rejoin AND `GrappaWeb.ChannelsController.index/2` for the cicchetto
+  sidebar render).
+  """
+  @spec list_autojoin_channels(Visitor.t()) :: [String.t()]
+  def list_autojoin_channels(%Visitor{id: visitor_id, network_slug: slug})
+      when is_binary(visitor_id) and is_binary(slug) do
+    query =
+      from c in Grappa.Visitors.VisitorChannel,
+        where: c.visitor_id == ^visitor_id and c.network_slug == ^slug,
+        select: c.name
+
+    Repo.all(query)
+  end
+
+  @doc """
   Lookup a visitor by `(nick, network_slug)`. Returns the row or `nil`.
   Used by `GrappaWeb.AuthController` to compute the `Retry-After` hint
   on `:anon_collision` responses without exposing `Repo` to the web
