@@ -438,6 +438,14 @@ defmodule Grappa.Visitors.Visitor do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @doc """
+  Builds an anon-visitor create changeset. Required fields: `:nick`,
+  `:network_slug`, `:expires_at`. `:ip` is optional. Validates `:nick`
+  against `Identifier.valid_nick?/1` and `:network_slug` against
+  `Identifier.valid_network_slug?/1` — both are wire-bound (PubSub
+  topics + IRC handshake), so syntactic hygiene is enforced at the
+  boundary. Uniqueness on `(nick, network_slug)` per W2.
+  """
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
     %__MODULE__{}
@@ -465,6 +473,12 @@ defmodule Grappa.Visitors.Visitor do
     change(visitor, %{password_encrypted: password, expires_at: expires_at})
   end
 
+  @doc """
+  Slides `expires_at` forward on user-initiated REST/WS verbs. Caller
+  enforces the ≥1h cadence (no-op if last touch <1h) — see
+  `Grappa.Visitors.touch/1`. Pure schema-level concern: just bumps the
+  column.
+  """
   @spec touch_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
   def touch_changeset(%__MODULE__{} = visitor, new_expires_at) do
     change(visitor, %{expires_at: new_expires_at})
@@ -588,6 +602,15 @@ defmodule Grappa.Visitors.VisitorChannel do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @doc """
+  Builds a create changeset for a visitor's joined-channel record.
+  Required fields: `:visitor_id`, `:network_slug`, `:name`. Both
+  `:network_slug` (`Identifier.valid_network_slug?/1`) and `:name`
+  (`Identifier.valid_channel?/1`) are validated against canonical
+  IRC identifier predicates — channel names go on the wire as JOIN
+  arguments, so syntactic hygiene matters. Uniqueness on
+  `(visitor_id, network_slug, name)` prevents duplicate JOINs.
+  """
   @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(attrs) do
     %__MODULE__{}
