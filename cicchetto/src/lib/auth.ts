@@ -62,9 +62,45 @@ export async function login(identifier: string, password: string | null): Promis
   setToken(t);
 }
 
+// C3 — localStorage is mutated by the user (devtools), browser
+// extensions, and any successful XSS. JSON.parse without runtime
+// narrowing would let a tampered {"kind":"user"} (missing id/name)
+// type as Subject and crash downstream consumers reading
+// `subject.name` as `string`. Narrow on `unknown` + per-kind shape
+// predicate; on any failure, treat the slot as poisoned (clear it
+// and return null) so the next login refreshes the canonical shape.
 export function getSubject(): api.Subject | null {
   const raw = localStorage.getItem(SUBJECT_KEY);
-  return raw === null ? null : (JSON.parse(raw) as api.Subject);
+  if (raw === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    localStorage.removeItem(SUBJECT_KEY);
+    return null;
+  }
+
+  if (!isValidSubject(parsed)) {
+    localStorage.removeItem(SUBJECT_KEY);
+    return null;
+  }
+
+  return parsed;
+}
+
+function isValidSubject(v: unknown): v is api.Subject {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  if (r.kind === "user") {
+    return typeof r.id === "string" && typeof r.name === "string";
+  }
+  if (r.kind === "visitor") {
+    return (
+      typeof r.id === "string" && typeof r.nick === "string" && typeof r.network_slug === "string"
+    );
+  }
+  return false;
 }
 
 export async function logout(): Promise<void> {

@@ -74,6 +74,86 @@ describe("auth signal store", () => {
     expect(localStorage.getItem("grappa-token")).toBeNull();
   });
 
+  // C3 — localStorage is mutated by the user (devtools), browser
+  // extensions, and any successful XSS. `getSubject()` MUST narrow on
+  // `unknown` and reject malformed payloads, otherwise a tampered
+  // {"kind":"user"} (missing id/name) types as Subject and downstream
+  // consumers reading `subject.name` get `undefined` typed as `string`.
+  describe("getSubject() validation", () => {
+    it("returns null when no key present", async () => {
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+    });
+
+    it("returns valid user subject", async () => {
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      const auth = await import("../lib/auth");
+      const s = auth.getSubject();
+      expect(s).toEqual({ kind: "user", id: "u1", name: "alice" });
+    });
+
+    it("returns valid visitor subject", async () => {
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({
+          kind: "visitor",
+          id: "v1",
+          nick: "vjt",
+          network_slug: "azzurra",
+        }),
+      );
+      const auth = await import("../lib/auth");
+      const s = auth.getSubject();
+      expect(s).toEqual({
+        kind: "visitor",
+        id: "v1",
+        nick: "vjt",
+        network_slug: "azzurra",
+      });
+    });
+
+    it("returns null + clears key on tampered user (missing fields)", async () => {
+      localStorage.setItem("grappa-subject", JSON.stringify({ kind: "user" }));
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+      expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+
+    it("returns null + clears key on tampered visitor (missing network_slug)", async () => {
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "visitor", id: "v1", nick: "vjt" }),
+      );
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+      expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+
+    it("returns null + clears key on unknown kind", async () => {
+      localStorage.setItem("grappa-subject", JSON.stringify({ kind: "robot", id: "r1" }));
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+      expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+
+    it("returns null + clears key on non-JSON gibberish", async () => {
+      localStorage.setItem("grappa-subject", "not-json{{");
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+      expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+
+    it("returns null + clears key on non-object payload (string)", async () => {
+      localStorage.setItem("grappa-subject", JSON.stringify("hello"));
+      const auth = await import("../lib/auth");
+      expect(auth.getSubject()).toBeNull();
+      expect(localStorage.getItem("grappa-subject")).toBeNull();
+    });
+  });
+
   it("registers an api 401 handler at module load that clears the token", async () => {
     // We mock the api module's setOn401Handler to capture whatever
     // auth.ts hands it. Then we invoke that captured handler and assert
