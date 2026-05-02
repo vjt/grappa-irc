@@ -106,5 +106,36 @@ defmodule GrappaWeb.MembersControllerTest do
 
       assert json_response(conn, 404) == %{"error" => "not_found"}
     end
+
+    # Task 30: visitor session reads members through the same Session API
+    # via :current_subject dispatch. Pin the controller threads
+    # {:visitor, _} correctly — handshake + session interaction is the
+    # same Session.list_members boundary user-side already exercises.
+    test "visitor subject — returns members for visitor's network", %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+
+      IRCServer.feed(server, ":#{visitor.nick}!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 #{visitor.nick} = #test :@#{visitor.nick} +alice\r\n")
+      IRCServer.feed(server, ":irc 366 #{visitor.nick} #test :End\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{network.slug}/channels/%23test/members")
+
+      body = json_response(conn, 200)
+      nicks = Enum.map(body["members"], & &1["nick"])
+      assert visitor.nick in nicks
+      assert "alice" in nicks
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 end
