@@ -46,7 +46,18 @@ defmodule Grappa.Accounts do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Repo, Grappa.Visitors],
+    deps: [Grappa.Repo],
+    # `Visitors.Visitor` is referenced by `Accounts.Session`
+    # (`belongs_to :visitor` + `Visitor.t()` type) and by the
+    # `validate_subject_exists/1` existence check (`from row in
+    # Visitor`). Mirror of the `Networks.Network` dirty_xref in
+    # `Grappa.Scrollback`: schema-only access whose only purpose is
+    # to break the visitor-auth cycle inversion (Visitors → Networks
+    # opens otherwise-transitive cycles via Accounts → Visitors and
+    # Scrollback → Visitors). The cost — losing Boundary checks on
+    # struct-shape access Boundary couldn't gate anyway — is
+    # intentional.
+    dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [User, Session, Wire]
 
   import Ecto.Query

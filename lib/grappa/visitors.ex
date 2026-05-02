@@ -41,8 +41,8 @@ defmodule Grappa.Visitors do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.IRC, Grappa.Repo],
-    exports: [Visitor, VisitorChannel]
+    deps: [Grappa.IRC, Grappa.Networks, Grappa.Repo],
+    exports: [SessionPlan, Visitor, VisitorChannel]
 
   import Ecto.Query
 
