@@ -276,11 +276,11 @@ defmodule GrappaWeb.MessagesControllerTest do
     test "GET against a network the visitor isn't pinned to returns 404 (oracle close)",
          %{conn: _conn} do
       slug = "azzurra-iso-#{System.unique_integer([:positive])}"
-      {:ok, _own} = Networks.find_or_create_network(%{slug: slug})
-      {_visitor, session} = visitor_and_session(network_slug: slug)
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+      {_, session} = visitor_and_session(network_slug: slug)
 
       other_slug = "other-#{System.unique_integer([:positive])}"
-      {:ok, _other} = Networks.find_or_create_network(%{slug: other_slug})
+      {:ok, _} = Networks.find_or_create_network(%{slug: other_slug})
 
       conn =
         Phoenix.ConnTest.build_conn()
