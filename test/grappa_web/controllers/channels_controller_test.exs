@@ -30,8 +30,12 @@ defmodule GrappaWeb.ChannelsControllerTest do
   # S14: body-validation tests target /networks/azzurra/... without
   # building a per-test IRCServer; `Plugs.ResolveNetwork` requires a
   # credential first, so provision the binding without a real server.
+  # `System.unique_integer/1` is monotonic across the whole BEAM run, so
+  # under a full-suite run the counter blows past 65535 and the
+  # `Networks.Server` port validation rejects the row. Clamp into the
+  # ephemeral range with an offset that keeps unique-per-test behavior.
   defp ensure_azzurra_credential(vjt) do
-    setup_network(vjt, System.unique_integer([:positive]), "azzurra")
+    setup_network(vjt, 1024 + rem(System.unique_integer([:positive]), 60_000), "azzurra")
   end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
