@@ -4821,154 +4821,437 @@ EOF
 **Files:**
 - Modify: `lib/grappa/session/event_router.ex`
 - Modify: `lib/grappa/session/server.ex`
+- Modify: `config/config.exs` (compile-time visitor_committer indirection)
+- Modify: `test/support/auth_fixtures.ex` (visitor session helper)
 - Test: `test/grappa/session/event_router_test.exs`, `test/grappa/session/server_test.exs`
 
-- [ ] **Step 15.1: Failing test (EventRouter)**
+#### Dispatch-time amendments (S10)
 
-```elixir
-# test/grappa/session/event_router_test.exs — add describe
-describe "+r MODE on session's own nick → :visitor_r_observed" do
-  test "MODE <my_nick> +r emits :visitor_r_observed effect" do
-    state = %Session.Server.State{
-      nick: "vjt",
-      subject: {:visitor, "uuid-1"},
-      pending_auth: {"s3cret", System.monotonic_time(:millisecond) + 10_000}
-    }
+S10 dispatch-time drift sweep caught a substantial set of mismatches
+between the original plan body and the post-S9 cluster state. Captured
+here so the implementation step works against the corrected shape.
 
-    msg = parse_irc("MODE vjt +r")
+1. **Boundary cycle (CRITICAL).** The original plan body has
+   `Grappa.Session.Server` calling `Grappa.Visitors.commit_password/2`
+   directly. `Grappa.Visitors` already deps `Grappa.Session` (via
+   `Visitors.Login` → `Session.start_session/3` etc), so a literal
+   alias from Session → Visitors closes a cycle Boundary will reject.
+   Resolution: compile-time-config indirection. Add
+   `@visitor_committer Application.compile_env!(:grappa, :visitor_committer)`
+   to `Grappa.Session.Server` and call `@visitor_committer.commit_password(vid, pwd)`.
+   `config :grappa, :visitor_committer, Grappa.Visitors` lives in
+   `config/config.exs` (Boundary does not parse config files). Same
+   mechanism already in production for `Visitors.Login`'s
+   `@visitor_network` / `@max_per_ip`.
 
-    {effects, _next_state} = EventRouter.route(msg, state)
-    assert {:visitor_r_observed, "s3cret"} in effects
-  end
+2. **State shape — no `Session.Server.State` struct.** Plan body has
+   `state = %Session.Server.State{...}`. `Grappa.Session.Server` state
+   is a plain map built inline in `init/1` with the typedoc
+   `@type state :: %{...}` above the API as the type discipline (S9
+   added `:pending_auth` + `:pending_auth_timer` fields, Task 6.5
+   added `:subject` + `:subject_label`). Test code uses `%{...}`
+   literals. `event_router_test.exs`'s existing `base_state(overrides
+   \\\\ %{})` helper already produces the right shape — extend it via
+   the `overrides` arg, do not invent a struct.
 
-  test "MODE <my_nick> +r without pending_auth → no effect" do
-    state = %Session.Server.State{
-      nick: "vjt",
-      subject: {:visitor, "uuid-1"},
-      pending_auth: nil
-    }
+3. **Test constructor — no `parse_irc/1` helper.** Existing
+   `event_router_test.exs` builds `%Grappa.IRC.Message{}` structs
+   directly via `alias Grappa.IRC.Message` + the local `msg(command,
+   params, prefix \\\\ nil)` helper. New tests must use that.
 
-    msg = parse_irc("MODE vjt +r")
-    {effects, _} = EventRouter.route(msg, state)
-    refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
-  end
+4. **`EventRouter.route/2` return shape.** Plan body destructures as
+   `{effects, _next_state}` — wrong. Actual return is `{:cont, state,
+   [effect]}`. Test assertions match `{:cont, _state, effects}`.
 
-  test "MODE on different nick → no effect" do
-    state = %Session.Server.State{nick: "vjt", subject: {:visitor, "uuid-1"}, pending_auth: {"x", 0}}
+5. **No `defp handle_mode/2`.** `:mode` is a top-level
+   `def route(%Message{command: :mode, ...}, state)` clause at
+   `event_router.ex:230` (post-S9 line numbers). Add a NEW
+   `def route(%Message{command: :mode, params: [target, modes | _]} = msg, state)
+   when target == state.nick` clause BEFORE the existing one
+   (Elixir clause ordering). The new clause handles user-MODE-on-self
+   only; the existing clause continues to handle channel-MODE.
 
-    msg = parse_irc("MODE other +r")
-    {effects, _} = EventRouter.route(msg, state)
-    refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
-  end
+6. **Pre-existing user-MODE-on-self bogus persist (now in scope).**
+   The existing `:mode` clause matches `MODE vjt +r` (params =
+   `["vjt", "+r"]`) AND runs `apply_mode_string` against
+   `state.members["vjt"]` (returns members unchanged because there's
+   no channel "vjt") AND persists a `:mode` scrollback row in a
+   non-existent channel called "vjt". Pre-existing bug. The new
+   clause Task 15 adds in front of it short-circuits the
+   user-MODE-on-self case → no persist. Channel-MODE path
+   (`MODE #italia +o vjt`) is unaffected.
 
-  test "user-mode without +r → no effect" do
-    state = %Session.Server.State{nick: "vjt", subject: {:visitor, "uuid-1"}, pending_auth: {"x", 0}}
+7. **`String.contains?(modes_str, "+r")` is semantically wrong.** IRC
+   mode strings have sticky-sign semantics: `"+ir"` means "set i AND
+   set r" (one `+` block, two modes). `String.contains?("+ir", "+r")`
+   returns false. Worse, `"+i-r"` means "set i, unset r" but
+   `String.contains?("+i-r", "+r")` also returns false. We need a
+   sign-walking parser. Add a private helper `set_r_mode?/1` mirroring
+   the existing `walk_modes/4` shape:
 
-    msg = parse_irc("MODE vjt +i")
-    {effects, _} = EventRouter.route(msg, state)
-    refute Enum.any?(effects, &match?({:visitor_r_observed, _}, &1))
-  end
-end
-```
+   ```elixir
+   defp set_r_mode?(modes), do: walk_for_set_r(modes, :add)
+   defp walk_for_set_r("", _), do: false
+   defp walk_for_set_r("+" <> rest, _), do: walk_for_set_r(rest, :add)
+   defp walk_for_set_r("-" <> rest, _), do: walk_for_set_r(rest, :remove)
+   defp walk_for_set_r("r" <> _, :add), do: true
+   defp walk_for_set_r(<<_::utf8, rest::binary>>, dir),
+     do: walk_for_set_r(rest, dir)
+   ```
 
-- [ ] **Step 15.2: EventRouter wiring**
+   Tail-recursive, declarative, matches the codebase's
+   recursive-pattern-match convention (CLAUDE.md "Recursive pattern
+   match over `Enum.reduce_while/3`").
 
-```elixir
-# lib/grappa/session/event_router.ex — extend :mode handler
-defp handle_mode(%Message{params: [target, modes_str | _]}, state)
-     when target == state.nick do
-  effects =
-    if String.contains?(modes_str, "+r") and not is_nil(state.pending_auth) do
-      {pwd, _deadline} = state.pending_auth
-      [{:visitor_r_observed, pwd}]
-    else
-      []
+8. **`Process.cancel_timer/1` dialyzer guard.** Same `_ = if
+   is_reference(...) do Process.cancel_timer(...) end` shape S9
+   established in `Session.Server.stage_pending_auth/2`. Plan body's
+   `if state.pending_auth_timer, do: Process.cancel_timer(...)` would
+   trip dialyzer's `unmatched_return` because the if-expression's
+   `non_neg_integer() | false | nil` return is discarded.
+
+9. **Effect type union extension.** Add `{:visitor_r_observed,
+   String.t()}` to `EventRouter`'s `@type effect`. The Server's
+   `apply_effects/2` clause-list pattern-matches the new shape; type
+   discipline at the boundary keeps dialyzer + Boundary happy.
+
+10. **Integration test fixtures.** Plan body uses shared `%{session_pid:
+    pid, visitor: visitor}` context + `eventually(fn -> ... end)`
+    helper + `parse_irc/1`. None exist. Real pattern is inline
+    per-test setup. For visitor sessions, add a new
+    `start_visitor_session_for/2` helper to `test/support/auth_fixtures.ex`
+    mirroring the existing `start_session_for/2` shape (takes
+    `%Visitor{}` + `%Network{}`, returns pid). For sync, use
+    `:sys.get_state(pid)` after `send(pid, {:irc, msg})` — the
+    GenServer's serial mailbox guarantees the inbound is fully
+    processed by the time `:sys.get_state` returns. For DB
+    verification, `Repo.reload!(visitor)` after the sync-point.
+
+11. **Visitor-session integration test prerequisite.** The integration
+    test needs a visitor `Session.Server` running against a fake
+    upstream. `Visitors.SessionPlan.resolve/1` is the canonical plan
+    producer. Helper signature:
+
+    ```elixir
+    @spec start_visitor_session_for(Visitor.t(), Network.t()) :: pid()
+    def start_visitor_session_for(%Visitor{} = visitor, %Network{} = network) do
+      {:ok, plan} = Grappa.Visitors.SessionPlan.resolve(%{visitor: visitor, network: network})
+      {:ok, pid} = Grappa.Session.start_session({:visitor, visitor.id}, network.id, plan)
+      pid
     end
+    ```
 
-  # ... fold existing mode-tracking effects
-  {effects, state}
+    If `SessionPlan.resolve/1` shape diverges from this, adapt to
+    actual contract — read it before calling.
+
+#### Implementation steps (post-amendment)
+
+- [ ] **Step 15.1: Failing tests (EventRouter, pure)**
+
+Add to `test/grappa/session/event_router_test.exs` — uses existing
+`base_state/1` + `msg/3` helpers, no struct, no `parse_irc`:
+
+```elixir
+describe "route/2 — :mode user-MODE on own nick" do
+  test "+r with pending_auth set emits :visitor_r_observed" do
+    deadline = System.monotonic_time(:millisecond) + 10_000
+
+    state =
+      base_state(%{
+        nick: "vjt",
+        subject: {:visitor, "uuid-1"},
+        pending_auth: {"s3cret", deadline}
+      })
+
+    m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, effects} = EventRouter.route(m, state)
+    assert effects == [{:visitor_r_observed, "s3cret"}]
+  end
+
+  test "+r without pending_auth → no effect" do
+    state = base_state(%{nick: "vjt", subject: {:visitor, "uuid-1"}, pending_auth: nil})
+    m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, []} = EventRouter.route(m, state)
+  end
+
+  test "+i (no +r) with pending_auth → no effect" do
+    state =
+      base_state(%{
+        nick: "vjt",
+        subject: {:visitor, "uuid-1"},
+        pending_auth: {"x", 0}
+      })
+
+    m = msg(:mode, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, []} = EventRouter.route(m, state)
+  end
+
+  test "+ir mixed mode block detects r set" do
+    state =
+      base_state(%{
+        nick: "vjt",
+        subject: {:visitor, "uuid-1"},
+        pending_auth: {"s3cret", 0}
+      })
+
+    m = msg(:mode, ["vjt", "+ir"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, [{:visitor_r_observed, "s3cret"}]} =
+             EventRouter.route(m, state)
+  end
+
+  test "+i-r (set i, unset r) does NOT emit" do
+    state =
+      base_state(%{
+        nick: "vjt",
+        subject: {:visitor, "uuid-1"},
+        pending_auth: {"x", 0}
+      })
+
+    m = msg(:mode, ["vjt", "+i-r"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, []} = EventRouter.route(m, state)
+  end
+
+  test "user-MODE-on-self does NOT persist a scrollback row" do
+    # Pre-existing bug fix: the old :mode clause persisted a bogus
+    # row in a non-existent channel named after the nick.
+    state = base_state(%{nick: "vjt", subject: {:user, "uuid-u"}, pending_auth: nil})
+    m = msg(:mode, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
+
+    assert {:cont, ^state, []} = EventRouter.route(m, state)
+  end
+
+  test "channel-MODE on a real channel still hits the existing :mode clause" do
+    state = base_state(%{nick: "vjt", members: %{"#italia" => %{"vjt" => [], "alice" => []}}})
+    m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "op", "u", "h"})
+
+    assert {:cont, new_state, [{:persist, :mode, _attrs}]} =
+             EventRouter.route(m, state)
+
+    assert new_state.members["#italia"]["alice"] == ["@"]
+  end
 end
 ```
 
-- [ ] **Step 15.3: Session.Server applies the effect → Visitors.commit_password/2**
+- [ ] **Step 15.2: EventRouter implementation**
+
+In `lib/grappa/session/event_router.ex`:
+
+1. Extend `@type effect` with the new variant:
+   ```elixir
+   @type effect ::
+           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
+           | {:reply, iodata()}
+           | {:visitor_r_observed, String.t()}
+   ```
+
+2. Add a NEW clause BEFORE the existing `:mode` clause (which lives
+   at line 230 post-S9):
+
+   ```elixir
+   # User-MODE on session's own nick. Distinct from channel-MODE
+   # (the next clause handles `MODE #italia +o vjt`). User-MODEs are
+   # not channel events — no scrollback row. The +r case is special:
+   # NickServ-as-IDP confirms identity by setting +r after a
+   # successful IDENTIFY. When pending_auth is staged, +r is the
+   # cryptographic-proof signal that the password we sent earlier
+   # was accepted; emit :visitor_r_observed so Server can commit it
+   # to the visitors row atomically.
+   def route(%Message{command: :mode, params: [target, modes | _]}, state)
+       when is_binary(target) and is_binary(modes) and target == state.nick do
+     effects =
+       case {set_r_mode?(modes), state.pending_auth} do
+         {true, {pwd, _deadline}} -> [{:visitor_r_observed, pwd}]
+         _ -> []
+       end
+
+     {:cont, state, effects}
+   end
+   ```
+
+3. Add the sign-walking helper (see drift item 7 for shape).
+
+- [ ] **Step 15.3: Session.Server.apply_effects clause + compile_env**
+
+In `lib/grappa/session/server.ex`:
+
+1. Add module attribute (top of module, alongside other attrs):
+   ```elixir
+   @visitor_committer Application.compile_env!(:grappa, :visitor_committer)
+   ```
+
+2. Add `apply_effects/2` clause AFTER the existing `:reply` clause:
+   ```elixir
+   defp apply_effects([{:visitor_r_observed, password} | rest], state) do
+     case state.subject do
+       {:visitor, visitor_id} ->
+         case @visitor_committer.commit_password(visitor_id, password) do
+           {:ok, _visitor} ->
+             Logger.info("visitor +r observed → password committed",
+               visitor_id: visitor_id
+             )
+
+           {:error, reason} ->
+             Logger.error("visitor +r observed but commit failed",
+               visitor_id: visitor_id,
+               reason: inspect(reason)
+             )
+         end
+
+       {:user, _} ->
+         # Defensive: a registered user with +r MODE never has
+         # pending_auth set (NSInterceptor's capture path runs only
+         # on outbound NickServ verbs, but EventRouter's emit-guard
+         # already filters via state.pending_auth). Log and ignore.
+         Logger.warning("visitor_r_observed effect on user session — ignored")
+     end
+
+     _ =
+       if is_reference(state.pending_auth_timer) do
+         Process.cancel_timer(state.pending_auth_timer)
+       end
+
+     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
+   end
+   ```
+
+- [ ] **Step 15.4: Compile-time config**
+
+In `config/config.exs`, add alongside `:visitor_network` /
+`:max_visitors_per_ip`:
 
 ```elixir
-# lib/grappa/session/server.ex — extend apply_effects/2
-defp apply_effects([{:visitor_r_observed, password} | rest], state) do
-  case state.subject do
-    {:visitor, visitor_id} ->
-      case Grappa.Visitors.commit_password(visitor_id, password) do
-        {:ok, _visitor} ->
-          Logger.info("visitor +r observed, password committed", visitor: visitor_id)
+config :grappa, visitor_committer: Grappa.Visitors
+```
 
-        {:error, reason} ->
-          Logger.error("visitor +r observed but commit failed", visitor: visitor_id, reason: inspect(reason))
-      end
+(Default also lives in `config/config.exs` per S8 dialyzer-baseline
+precursor lesson — never `config/test.exs`-only.)
 
-    _ ->
-      :ok  # mode-1 sessions ignore visitor commit
-  end
+- [ ] **Step 15.5: Visitor session test helper**
 
-  if state.pending_auth_timer, do: Process.cancel_timer(state.pending_auth_timer)
-  apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
+Add to `test/support/auth_fixtures.ex`:
+
+```elixir
+@doc """
+Spawns a `Grappa.Session.Server` for the given visitor + network via
+the canonical `Visitors.SessionPlan.resolve/1` → `Session.start_session/3`
+path. Mirrors `start_session_for/2` (the user-side counterpart) so
+integration tests don't need to thread plan-resolution boilerplate.
+"""
+@spec start_visitor_session_for(Visitor.t(), Network.t()) :: pid()
+def start_visitor_session_for(%Visitor{} = visitor, %Network{} = network) do
+  {:ok, plan} = Grappa.Visitors.SessionPlan.resolve(%{visitor: visitor, network: network})
+  {:ok, pid} = Grappa.Session.start_session({:visitor, visitor.id}, network.id, plan)
+  pid
 end
 ```
 
-- [ ] **Step 15.4: Integration test (full path)**
+(Adapt to actual `SessionPlan.resolve/1` arity / arg shape if the
+above diverges — read `lib/grappa/visitors/session_plan.ex` first.)
+
+- [ ] **Step 15.6: Failing integration test (Server)**
+
+In `test/grappa/session/server_test.exs`:
 
 ```elixir
-# test/grappa/session/server_test.exs
-describe "full path: outbound IDENTIFY → +r observation → visitor row updated" do
-  test "happy path commits password atomically", %{session_pid: pid, visitor: visitor} do
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY s3cret"})
+describe "+r MODE on own nick → atomic password commit (Task 15)" do
+  test "happy path: send IDENTIFY → upstream replies +r → visitor row updated" do
+    {server, port} = start_server()
+    visitor = visitor_fixture(nick: "vjt")
+    {:ok, network} = some_visitor_network_for(port)
+    pid = start_visitor_session_for(visitor, network)
 
-    # Simulate upstream sending MODE +r on our nick
-    Process.send(pid, {:irc, parse_irc("MODE #{visitor.nick} +r")}, [])
+    :ok = await_handshake(server)
 
-    eventually(fn ->
-      reloaded = Repo.reload!(visitor)
-      assert reloaded.password_encrypted != nil
-      assert DateTime.compare(reloaded.expires_at, visitor.expires_at) == :gt
-    end)
+    {:ok, _} = GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY s3cret"})
+    refute is_nil(:sys.get_state(pid).pending_auth)
+
+    # Simulate upstream MODE +r on our nick
+    mode_msg = %Grappa.IRC.Message{
+      command: :mode,
+      params: ["vjt", "+r"],
+      prefix: {:server, "irc.example.test"},
+      tags: %{}
+    }
+
+    send(pid, {:irc, mode_msg})
+    state = :sys.get_state(pid)
+    assert is_nil(state.pending_auth)
+    assert is_nil(state.pending_auth_timer)
+
+    reloaded = Grappa.Repo.reload!(visitor)
+    assert reloaded.password_encrypted != nil
+    assert DateTime.compare(reloaded.expires_at, visitor.expires_at) == :gt
   end
 
-  test "wrong password (no +r in 10s) does NOT commit", %{session_pid: pid, visitor: visitor} do
-    GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY wrong"})
+  test "no +r within 10s → pending_auth times out, no commit" do
+    {server, port} = start_server()
+    visitor = visitor_fixture(nick: "vjt")
+    {:ok, network} = some_visitor_network_for(port)
+    pid = start_visitor_session_for(visitor, network)
 
-    # Simulate timeout
-    Process.send(pid, :pending_auth_timeout, [])
-    Process.sleep(100)
+    :ok = await_handshake(server)
 
-    reloaded = Repo.reload!(visitor)
+    {:ok, _} = GenServer.call(pid, {:send_privmsg, "NickServ", "IDENTIFY wrong"})
+
+    send(pid, :pending_auth_timeout)
+    state = :sys.get_state(pid)
+    assert is_nil(state.pending_auth)
+
+    reloaded = Grappa.Repo.reload!(visitor)
     assert is_nil(reloaded.password_encrypted)
   end
 end
 ```
 
-- [ ] **Step 15.5: Run all tests**
+(`some_visitor_network_for/1` is shorthand — use whatever
+network-fixture the existing visitor-side server tests use, or
+extend the per-test inline `setup_user_and_network/2` shape with a
+`setup_visitor_network/2` sibling. Read existing server_test.exs
+visitor-touching tests before naming.)
+
+- [ ] **Step 15.7: Run all tests + dialyzer standalone**
 
 ```bash
 scripts/test.sh test/grappa/session/event_router_test.exs test/grappa/session/server_test.exs
+scripts/check.sh
+scripts/dialyzer.sh   # PLT-staleness baseline integrity per S8/S9
 ```
 
-- [ ] **Step 15.6: Commit**
+- [ ] **Step 15.8: Commit on cluster**
 
 ```bash
 git add lib/grappa/session/event_router.ex lib/grappa/session/server.ex \
-        test/grappa/session/event_router_test.exs test/grappa/session/server_test.exs
+        config/config.exs test/support/auth_fixtures.ex \
+        test/grappa/session/event_router_test.exs \
+        test/grappa/session/server_test.exs
 git commit -m "$(cat <<'EOF'
 feat(session): observe +r MODE → atomic visitor password+TTL commit
 
-EventRouter detects +r in MODE on session's own nick when pending_auth
-is staged → emits {:visitor_r_observed, pwd} effect. Session.Server's
-apply_effects calls Visitors.commit_password/2 which atomically writes
-encrypted password and bumps expires_at to now+7d.
+EventRouter detects +r set in MODE on session's own nick when
+pending_auth is staged → emits {:visitor_r_observed, pwd} effect.
+Session.Server's apply_effects calls @visitor_committer.commit_password/2
+(compile-time-config indirection breaks the Visitors↔Session Boundary
+cycle — same pattern as Visitors.Login's @visitor_network).
+commit_password atomically writes the encrypted password and bumps
+expires_at to now+7d (registered-visitor TTL).
 
-Wrong passwords + 10s timeout → pending_auth discarded, no commit.
-Mode-1 sessions ignore the effect (subject != visitor).
+Wrong passwords + 10s pending_auth timeout → state cleared, no commit.
+User-MODE-on-self previously persisted a bogus :mode scrollback row in
+a non-existent channel named after the nick — Task 15's new clause
+short-circuits the user-MODE-on-self case (channel-MODE path
+unaffected). Pre-existing bug fix piggybacked.
 
-Closes the wrong-password-stays-anon design (memory pin) — DB only sees
-verified-against-NickServ passwords.
+Sign-walking +r detection (set_r_mode?/1) handles +ir / +i+r / +i-r
+correctly — String.contains? was semantically wrong on sticky-sign
+mode blocks.
+
+Closes the wrong-password-stays-anon design (memory pin) — the
+visitors DB only ever sees passwords that NickServ confirmed via +r.
 EOF
 )"
 ```
