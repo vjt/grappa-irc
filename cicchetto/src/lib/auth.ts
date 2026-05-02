@@ -24,6 +24,7 @@ import * as api from "./api";
 // in `main.tsx` redirects on unauthenticated state via `createEffect`.
 
 const STORAGE_KEY = "grappa-token";
+const SUBJECT_KEY = "grappa-subject";
 
 const [tokenSignal, setTokenSignal] = createSignal<string | null>(
   localStorage.getItem(STORAGE_KEY),
@@ -53,9 +54,17 @@ export function isAuthenticated(): boolean {
   return tokenSignal() !== null;
 }
 
-export async function login(name: string, password: string): Promise<void> {
-  const { token: t } = await api.login({ name, password });
+export async function login(identifier: string, password: string | null): Promise<void> {
+  const req: api.LoginRequest =
+    password !== null && password !== "" ? { identifier, password } : { identifier };
+  const { token: t, subject } = await api.login(req);
+  localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
   setToken(t);
+}
+
+export function getSubject(): api.Subject | null {
+  const raw = localStorage.getItem(SUBJECT_KEY);
+  return raw === null ? null : (JSON.parse(raw) as api.Subject);
 }
 
 export async function logout(): Promise<void> {
@@ -72,5 +81,6 @@ export async function logout(): Promise<void> {
       // intentional: see comment above.
     }
   }
+  localStorage.removeItem(SUBJECT_KEY);
   setToken(null);
 }

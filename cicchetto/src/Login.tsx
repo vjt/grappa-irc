@@ -11,7 +11,7 @@ import * as auth from "./lib/auth";
 // inside a `<Router>` route component, not from a free module.
 
 const Login: Component = () => {
-  const [name, setName] = createSignal("");
+  const [identifier, setIdentifier] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
@@ -22,7 +22,8 @@ const Login: Component = () => {
     setError(null);
     setSubmitting(true);
     try {
-      await auth.login(name(), password());
+      const pwd = password();
+      await auth.login(identifier(), pwd === "" ? null : pwd);
       navigate("/", { replace: true });
     } catch (err) {
       // Match strictly on `ApiError.code === "invalid_credentials"` for
@@ -46,23 +47,22 @@ const Login: Component = () => {
     <main class="login">
       <form class="login-form" onSubmit={onSubmit}>
         <h1>cicchetto</h1>
-        <label for="login-name">Name</label>
+        <label for="login-identifier">Nick or email</label>
         <input
-          id="login-name"
+          id="login-identifier"
           type="text"
           autocomplete="username"
-          value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
+          value={identifier()}
+          onInput={(e) => setIdentifier(e.currentTarget.value)}
           required
         />
-        <label for="login-password">Password</label>
+        <label for="login-password">Password (optional for visitors)</label>
         <input
           id="login-password"
           type="password"
           autocomplete="current-password"
           value={password()}
           onInput={(e) => setPassword(e.currentTarget.value)}
-          required
         />
         <button type="submit" disabled={submitting()}>
           Log in

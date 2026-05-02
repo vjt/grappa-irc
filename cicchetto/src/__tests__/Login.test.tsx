@@ -32,7 +32,7 @@ afterEach(() => {
 describe("Login", () => {
   it("renders name + password fields and a submit button", () => {
     renderLogin();
-    expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/nick or email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /log in/i })).toBeInTheDocument();
   });
@@ -40,7 +40,7 @@ describe("Login", () => {
   it("calls auth.login with form values on submit", async () => {
     vi.mocked(auth.login).mockResolvedValue(undefined);
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/name/i), {
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
       target: { value: "alice" },
     });
     fireEvent.input(screen.getByLabelText(/password/i), {
@@ -55,7 +55,7 @@ describe("Login", () => {
   it("displays a friendly error when ApiError code is invalid_credentials (S47)", async () => {
     vi.mocked(auth.login).mockRejectedValue(new ApiError(401, "invalid_credentials"));
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/name/i), {
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
       target: { value: "alice" },
     });
     fireEvent.input(screen.getByLabelText(/password/i), {
@@ -75,7 +75,7 @@ describe("Login", () => {
     // historically have collided.
     vi.mocked(auth.login).mockRejectedValue(new ApiError(500, "some_invalid_credentials_thing"));
     renderLogin();
-    fireEvent.input(screen.getByLabelText(/name/i), {
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
       target: { value: "alice" },
     });
     fireEvent.input(screen.getByLabelText(/password/i), {
