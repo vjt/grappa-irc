@@ -1,6 +1,6 @@
 import { createEffect, createRoot } from "solid-js";
-import { token } from "./auth";
-import { refetchChannels, user } from "./networks";
+import { socketUserName, token } from "./auth";
+import { refetchChannels } from "./networks";
 import { joinUser } from "./socket";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -21,17 +21,27 @@ import { joinUser } from "./socket";
 
 createRoot(() => {
   let joined = false;
+  let joinedFor: string | null = null;
 
   createEffect(() => {
-    // Track the bearer + user identity; on rotation Solid re-runs this
-    // effect against fresh resources.
+    // Track the bearer; identity is derived from the persisted
+    // Subject via socketUserName() (see auth.ts). Visitor sessions
+    // get the `"visitor:<uuid>"` prefix the server-side
+    // UserSocket.assign_subject expects; user sessions get the
+    // user.name. On token rotation re-derive and re-join.
     const t = token();
-    const u = user();
-    if (!t || !u) return;
-    if (joined) return;
+    if (!t) {
+      joined = false;
+      joinedFor = null;
+      return;
+    }
+    const name = socketUserName();
+    if (name === null) return;
+    if (joined && joinedFor === name) return;
     joined = true;
+    joinedFor = name;
 
-    const channel = joinUser(u.name);
+    const channel = joinUser(name);
     channel.on("event", (payload: { kind?: string }) => {
       if (payload.kind === "channels_changed") {
         refetchChannels();

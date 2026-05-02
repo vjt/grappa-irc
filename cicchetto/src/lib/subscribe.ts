@@ -1,6 +1,6 @@
 import { createEffect, createRoot, on, untrack } from "solid-js";
 import type { ChannelEvent } from "./api";
-import { token } from "./auth";
+import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { applyPresenceEvent } from "./members";
 import { mentionsUser } from "./mentionMatch";
@@ -48,14 +48,27 @@ createRoot(() => {
   );
 
   createEffect(() => {
-    const u = user();
+    // Channel topics are addressed by the server's socket-side
+    // user_name (set by UserSocket.assign_subject — `"visitor:<uuid>"`
+    // for visitors, `User.name` for users). Read via socketUserName()
+    // so the visitor topic prefix matches the server-side
+    // GrappaChannel.authorize check; pre-C4 cicchetto sent `user.name`
+    // for visitors which the server rejected as forbidden — silent
+    // root cause of "no networks sidebar for visitors."
+    //
+    // Track token() explicitly so identity rotation re-runs the
+    // effect (socketUserName itself is sync over localStorage and
+    // doesn't track on its own).
+    const t = token();
     const cbs = channelsBySlug();
-    if (!u || !cbs) return;
+    if (!t) return;
+    const name = socketUserName();
+    if (!name || !cbs) return;
     for (const [slug, list] of Object.entries(cbs)) {
       for (const ch of list) {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
-        const phx = joinChannel(u.name, slug, ch.name);
+        const phx = joinChannel(name, slug, ch.name);
         phx.on("event", (payload: ChannelEvent) => {
           if (payload.kind !== "message") return;
           // Scrollback ingestion — every message kind appended.

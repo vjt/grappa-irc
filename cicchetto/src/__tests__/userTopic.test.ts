@@ -32,6 +32,7 @@ vi.mock("../lib/networks", () => ({
 
 vi.mock("../lib/auth", () => ({
   token: vi.fn(() => "t1"),
+  socketUserName: vi.fn(() => "vjt"),
 }));
 
 describe("userTopic", () => {
