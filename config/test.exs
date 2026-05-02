@@ -28,6 +28,16 @@ config :grappa, :start_bootstrap, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 
+# Visitor self-service config (cluster visitor-auth, Task 9). The slug
+# matches the test fixture network created by `network_with_server/1`
+# in `Grappa.AuthFixtures` when no slug override is given to test
+# helpers that assume the visitor-default network. The per-IP cap is
+# kept low so the cap-exceeded test path stays cheap (provision 2 →
+# 3rd fails). Production values land in `config/runtime.exs`; bootstrap
+# (Task 20 W7) is the boot-time gate that rejects an unconfigured slug.
+config :grappa, :visitor_network, "azzurra"
+config :grappa, :max_visitors_per_ip, 2
+
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite
 # is wiped per-run via Sandbox.
