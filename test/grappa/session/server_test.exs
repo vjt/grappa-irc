@@ -1069,4 +1069,65 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "notify_pid/notify_ref synchronous login readiness (Task 8)" do
+    # Task 8 / W5 — Visitors.Login (Task 9) blocks the synchronous
+    # POST /auth/login until upstream registration completes. The
+    # block is implemented by passing a `notify_pid` + `notify_ref`
+    # pair into `start_opts` so the spawning request handler can
+    # `receive` the readiness signal once the Session.Server observes
+    # `001 RPL_WELCOME`. One-shot so a future reconnect-001 doesn't
+    # re-fire to a long-dead login probe.
+
+    test "caller receives {:session_ready, ref} on first 001 RPL_WELCOME" do
+      {server, port} = start_server()
+      {user, network, credential} = setup_user_and_network(port)
+
+      parent = self()
+      ref = make_ref()
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.merge(base_plan, %{notify_pid: parent, notify_ref: ref})
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert_receive {:session_ready, ^ref}, 5_000
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "notify is one-shot — second 001 does NOT re-fire" do
+      {server, port} = start_server()
+      {user, network, credential} = setup_user_and_network(port)
+
+      parent = self()
+      ref = make_ref()
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.merge(base_plan, %{notify_pid: parent, notify_ref: ref})
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      assert_receive {:session_ready, ^ref}, 5_000
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome again\r\n")
+      refute_receive {:session_ready, ^ref}, 200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no notify opts — Session.Server runs normally without firing" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      refute_receive {:session_ready, _}, 200
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

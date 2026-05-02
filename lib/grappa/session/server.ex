@@ -108,7 +108,9 @@ defmodule Grappa.Session.Server do
           required(:autojoin_channels) => [String.t()],
           required(:host) => String.t(),
           required(:port) => :inet.port_number(),
-          required(:tls) => boolean()
+          required(:tls) => boolean(),
+          optional(:notify_pid) => pid(),
+          optional(:notify_ref) => reference()
         }
 
   @type state :: %{
@@ -119,7 +121,9 @@ defmodule Grappa.Session.Server do
           nick: String.t(),
           members: %{String.t() => %{String.t() => [String.t()]}},
           autojoin: [String.t()],
-          client: pid() | nil
+          client: pid() | nil,
+          notify_pid: pid() | nil,
+          notify_ref: reference() | nil
         }
 
   ## API
@@ -170,7 +174,9 @@ defmodule Grappa.Session.Server do
       nick: opts.nick,
       members: %{},
       autojoin: opts.autojoin_channels,
-      client: nil
+      client: nil,
+      notify_pid: Map.get(opts, :notify_pid),
+      notify_ref: Map.get(opts, :notify_ref)
     }
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
@@ -355,6 +361,13 @@ defmodule Grappa.Session.Server do
   # reads `state.autojoin` and writes via `state.client` — both are
   # transport-side concerns the pure router doesn't carry. Nick
   # reconciliation (state.nick = welcomed_nick) lives in EventRouter.
+  #
+  # Task 8 — `maybe_fire_notify/1` is the single source of truth for
+  # "we just got 001." When `notify_pid` + `notify_ref` were threaded
+  # through `start_opts` (the synchronous `Visitors.Login` probe-connect
+  # path, W5), send `{:session_ready, ref}` to the waiter and clear
+  # the notify fields. One-shot — a future reconnect-001 will not
+  # re-fire to a long-dead login probe.
   def handle_info(
         {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]} = msg},
         state
@@ -377,6 +390,7 @@ defmodule Grappa.Session.Server do
       )
     end
 
+    state = maybe_fire_notify(state)
     delegate(msg, state)
   end
 
@@ -479,6 +493,18 @@ defmodule Grappa.Session.Server do
     :ok = Client.send_line(state.client, line)
     apply_effects(rest, state)
   end
+
+  # One-shot send + clear of the synchronous-login readiness signal
+  # (Task 8). Pattern-matches both fields populated to avoid
+  # half-state misuse — caller MUST set both opts together.
+  @spec maybe_fire_notify(state()) :: state()
+  defp maybe_fire_notify(%{notify_pid: pid, notify_ref: ref} = state)
+       when is_pid(pid) and is_reference(ref) do
+    send(pid, {:session_ready, ref})
+    %{state | notify_pid: nil, notify_ref: nil}
+  end
+
+  defp maybe_fire_notify(state), do: state
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,
   # alphabetical by nick (caller `Enum.sort_by` does the secondary).
