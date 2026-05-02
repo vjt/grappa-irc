@@ -100,18 +100,30 @@ defmodule Grappa.IRC.Client do
   @enforce_keys [:transport, :dispatch_to, :fsm]
   defstruct [:socket, :transport, :dispatch_to, :fsm]
 
-  # Cluster visitor-auth hotfix: pre-crash sleep when do_connect/3 fails
-  # (ECONNREFUSED, ECONNRESET, ssl handshake :closed, etc.). Without it,
-  # the DynamicSupervisor's :transient restart cycle spins at full CPU
-  # speed (~2000 attempts/sec for refused TCP) and DoS-pummels upstream
-  # IRC servers — azzurra k-lined the bouncer's IP during cluster smoke
-  # before this landed. With this 5s pre-crash sleep, retry rate is
-  # bounded to ~12/minute per session. Tests override via `config/test.exs`
-  # to keep `init/1`-non-blocking-failure assertions snappy. Phase 5
-  # replaces the blunt sleep with proper exponential backoff +
-  # per-session health tracking. Module-attribute MUST be defined
-  # BEFORE `handle_continue/2` references it — mis-ordering silently
-  # bakes `nil` into the attribute (recurring CLAUDE.md vigilance item).
+  # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/3
+  # fails (ECONNREFUSED, ECONNRESET, ssl handshake :closed, etc.).
+  # Without it, the DynamicSupervisor's :transient restart cycle spins
+  # at full CPU speed (~2000 attempts/sec for refused TCP) and
+  # DoS-pummels upstream IRC servers — azzurra k-lined the bouncer's
+  # IP during cluster smoke before this landed.
+  #
+  # H1 (S17 review): the throttle uses `Process.send_after/3` + a
+  # deferred `{:stop, ...}` from a `handle_info` callback rather than
+  # `Process.sleep/1` inline in `handle_continue/2`. Pre-H1 the inline
+  # sleep blocked the GenServer mailbox for the entire throttle window
+  # — operator-issued `DynamicSupervisor.terminate_child` waited up to
+  # the full sleep per child (3 sessions = 90s for the documented S16
+  # mitigation cascade). The `send_after` pattern bounds the same
+  # restart rate (next start happens after the timer fires + the
+  # `:stop` exit signal) without holding the mailbox hostage; an
+  # operator-issued exit signal terminates the process immediately.
+  # Phase 5 replaces this throttle with proper exponential backoff +
+  # per-session health tracking + jitter (`docs/todo.md`).
+  #
+  # Tests override via `config/test.exs` to keep `init/1`-non-blocking
+  # assertions snappy. Module-attribute MUST be defined BEFORE
+  # `handle_continue/2` references it — mis-ordering silently bakes
+  # `nil` into the attribute (recurring CLAUDE.md vigilance item).
   @connect_failure_sleep_ms Application.compile_env(
                               :grappa,
                               :irc_client_connect_failure_sleep_ms,
@@ -272,8 +284,8 @@ defmodule Grappa.IRC.Client do
         {:noreply, %{connected | fsm: fsm}}
 
       {:error, reason} ->
-        Process.sleep(@connect_failure_sleep_ms)
-        {:stop, {:connect_failed, reason}, state}
+        Process.send_after(self(), {:connect_failed_giveup, reason}, @connect_failure_sleep_ms)
+        {:noreply, state}
     end
   end
 
@@ -282,6 +294,12 @@ defmodule Grappa.IRC.Client do
   def handle_info({:ssl, _, line}, state), do: process_line(line, state)
   def handle_info({:tcp_closed, _}, state), do: {:stop, :tcp_closed, state}
   def handle_info({:ssl_closed, _}, state), do: {:stop, :ssl_closed, state}
+
+  # H1 — connect-fail throttle deferred-stop. See @connect_failure_sleep_ms
+  # docstring for the rationale. Pairs with handle_continue's send_after.
+  def handle_info({:connect_failed_giveup, reason}, state) do
+    {:stop, {:connect_failed, reason}, state}
+  end
 
   def handle_info(msg, state) do
     Logger.warning("unexpected mailbox message", unexpected: inspect(msg))

@@ -826,6 +826,39 @@ defmodule Grappa.IRC.ClientTest do
       # Connect failure now arrives via process EXIT (handle_continue → :stop).
       assert_receive {:EXIT, ^client, {:connect_failed, :econnrefused}}, 1_000
     end
+
+    # H1 (S17 review) — connect-fail throttle uses Process.send_after +
+    # deferred-stop instead of inline Process.sleep, so the GenServer
+    # mailbox stays responsive during the throttle window. Pre-H1 a
+    # `DynamicSupervisor.terminate_child` waited up to the full sleep
+    # per child; the new pattern lets the exit signal terminate the
+    # process immediately.
+    test "mailbox responds during connect-fail throttle window (H1)" do
+      port = pick_unused_port()
+      Process.flag(:trap_exit, true)
+
+      assert {:ok, client} =
+               Client.start_link(%{
+                 host: "127.0.0.1",
+                 port: port,
+                 tls: false,
+                 dispatch_to: self(),
+                 logger_metadata: [],
+                 nick: "grappa-test",
+                 realname: "grappa-test",
+                 sasl_user: "grappa-test",
+                 auth_method: :none
+               })
+
+      # `:sys.get_state/2` proves the mailbox is reachable: pre-H1 the
+      # call would queue behind Process.sleep and return only after the
+      # throttle ended. Post-H1 it returns immediately while the
+      # send_after timer is pending.
+      assert %Grappa.IRC.Client{socket: nil} = :sys.get_state(client, 1_000)
+
+      # The deferred {:stop, ...} still arrives once the timer fires.
+      assert_receive {:EXIT, ^client, {:connect_failed, :econnrefused}}, 1_000
+    end
   end
 
   describe "init/1 contract enforcement" do
