@@ -21,6 +21,12 @@ defmodule Grappa.Visitors do
     * `delete/1` — Reaper + operator path. The DB-level FK ON DELETE
       CASCADE on `visitor_channels`, `messages`, and `sessions` wipes
       the dependent rows in a single transaction.
+    * `purge_if_anon/1` — co-terminus-with-session deletion verb (W11).
+      Anon visitor → `Repo.delete` → CASCADE wipes everything.
+      Registered visitor → no-op (password gate keeps the data alive
+      across logouts). Missing row → no-op. Called from every
+      accounts_sessions deletion site (Login preempt in Task 9,
+      logout in Task 25.5, expiry in Plugs.Authn).
     * `get!/1` — bang-style fetch for invariant-violation paths.
 
   ## Boundary
@@ -192,4 +198,32 @@ defmodule Grappa.Visitors do
   """
   @spec get!(Ecto.UUID.t()) :: Visitor.t()
   def get!(visitor_id) when is_binary(visitor_id), do: Repo.get!(Visitor, visitor_id)
+
+  @doc """
+  Anon-only co-terminus delete (W11). If the visitor exists and
+  `password_encrypted` is nil, delete the row — CASCADE wipes the
+  associated accounts_sessions, visitor_channels, and messages in a
+  single transaction. Registered visitor (`password_encrypted` set):
+  no-op, the NickServ-password identity persists across logouts.
+  Missing row: no-op (idempotent under concurrent deletion).
+
+  Called from every accounts_sessions deletion site. Anon visitors'
+  data dies with their session row; registered visitors' data
+  persists past session death and is gated on the next login by the
+  `Visitors.Login` password match.
+  """
+  @spec purge_if_anon(Ecto.UUID.t()) :: :ok
+  def purge_if_anon(visitor_id) when is_binary(visitor_id) do
+    case Repo.get(Visitor, visitor_id) do
+      nil ->
+        :ok
+
+      %Visitor{password_encrypted: nil} = visitor ->
+        {:ok, _} = Repo.delete(visitor)
+        :ok
+
+      %Visitor{} ->
+        :ok
+    end
+  end
 end
