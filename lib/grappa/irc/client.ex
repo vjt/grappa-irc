@@ -115,7 +115,7 @@ defmodule Grappa.IRC.Client do
   @connect_failure_sleep_ms Application.compile_env(
                               :grappa,
                               :irc_client_connect_failure_sleep_ms,
-                              5_000
+                              30_000
                             )
 
   ## API

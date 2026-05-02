@@ -19,12 +19,14 @@ config :grappa, :max_visitors_per_ip, 5
 
 # Cluster visitor-auth hotfix: pre-crash throttle for `Grappa.IRC.Client`'s
 # `handle_continue({:connect, _})` failure path. Read at compile-time via
-# `Application.compile_env/3`; production default is 5_000 ms (~12 restart
-# attempts per minute per session, enough headroom that azzurra-style
-# rate-limiters don't k-line the bouncer's IP). `config/test.exs` shrinks
+# `Application.compile_env/3`; production default is 30_000 ms (~2 restart
+# attempts per minute per session). The original 5_000 ms still autokilled
+# under multi-session load (3 sessions × 0.2/s = 0.6/s sustained tripped
+# azzurra's connection-rate filter), so 30_000 is the floor for safety
+# margin even under cluster-restart cycling. `config/test.exs` shrinks
 # this to 50 ms so the C2 init-non-blocking test stays snappy. Phase 5
 # replaces with proper exponential backoff + per-session health.
-config :grappa, :irc_client_connect_failure_sleep_ms, 5_000
+config :grappa, :irc_client_connect_failure_sleep_ms, 30_000
 
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
