@@ -189,11 +189,31 @@ defmodule Grappa.Auth.IdentifierClassifier do
 
   use Boundary, top_level?: true, deps: []
 
-  @nick_re ~r/^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,30}$/
+  # Total nick length cap is 30: 1 leading char + up to 29 trailing.
+  @nick_re ~r/^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,29}$/
   @email_re ~r/^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
   @type result :: {:email, String.t()} | {:nick, String.t()} | {:error, :malformed}
 
+  @doc """
+  Classifies a login identifier as an email or RFC2812 nick.
+
+  Returns `{:email, id}` if the identifier contains `@` and matches a
+  minimal RFC5322-light pattern (`x@y.z`). Returns `{:nick, id}` if the
+  identifier is a valid RFC2812 nick. Returns `{:error, :malformed}`
+  otherwise (leading digit, invalid email format, length > 30, etc.).
+
+  ## Examples
+
+      iex> Grappa.Auth.IdentifierClassifier.classify("user@example.com")
+      {:email, "user@example.com"}
+
+      iex> Grappa.Auth.IdentifierClassifier.classify("vjt")
+      {:nick, "vjt"}
+
+      iex> Grappa.Auth.IdentifierClassifier.classify("9invalid")
+      {:error, :malformed}
+  """
   @spec classify(String.t()) :: result()
   def classify(id) when is_binary(id) do
     cond do
