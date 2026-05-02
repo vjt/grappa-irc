@@ -3860,58 +3860,154 @@ EOF
 ### Task 11: Plugs.Authn — visitor session branch + touch/1
 
 **Files:**
-- Modify: `lib/grappa_web/plugs/authn.ex`
-- Test: extend `test/grappa_web/plugs/authn_test.exs`
+- Modify: `lib/grappa/visitors.ex` — `touch/1` returns `{:error, :expired}` on expired rows.
+- Modify: `test/grappa/visitors_test.exs` — extend the touch tests with the
+  expired branch.
+- Modify: `lib/grappa_web/plugs/authn.ex` — branch on session FK.
+- Modify: `test/grappa_web/plugs/authn_test.exs` — visitor describes.
 
-- [ ] **Step 11.1: Failing tests**
+> **S7 amendment (2026-05-02).** Original plan body assumed `Visitors.touch/1`
+> could return an expired visitor for the plug to gate on. As LANDED in
+> Task 6 / S3, `touch/1`'s `maybe_bump/1` rolls `expires_at` forward
+> unconditionally on every cadence-clearing call (`extension` is 48h
+> for anon and 7d for registered, vs `@touch_cadence_seconds = 3600`),
+> so `touch/1` of an EXPIRED row resurrects it before the plug ever
+> sees the timestamp — the post-touch `DateTime.compare(exp, now)`
+> in the original plan body is dead code.
+>
+> Fix: `Visitors.touch/1` early-returns `{:error, :expired}` when
+> `expires_at <= now`, BEFORE bumping. The Reaper (Task 22) is still the
+> deletion verb; touch is just the read+slide gate. This means
+> `Visitors.touch/1`'s return type grows the `:expired` atom; only call
+> sites today are tests + the new plug, so no migration needed.
+>
+> Test fixture: drop the `insert(:visitor)` ExMachina shape — codebase
+> has none. Use `visitor_fixture/1` from `auth_fixtures.ex`.
+
+- [ ] **Step 11.1: Modify `Visitors.touch/1`**
 
 ```elixir
-# test/grappa_web/plugs/authn_test.exs — add describes
-describe "visitor session branch" do
-  test "valid visitor token assigns :current_visitor (not :current_user)", %{conn: conn} do
-    visitor = insert(:visitor)
-    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+# lib/grappa/visitors.ex — replace touch/1 head + add :expired branch
+@spec touch(Ecto.UUID.t()) ::
+        {:ok, Visitor.t()} | {:error, :not_found | :expired | Ecto.Changeset.t()}
+def touch(visitor_id) when is_binary(visitor_id) do
+  case Repo.get(Visitor, visitor_id) do
+    nil ->
+      {:error, :not_found}
 
-    conn = conn |> put_req_header("authorization", "Bearer #{session.id}") |> Authn.call([])
+    %Visitor{expires_at: exp} = visitor ->
+      now = DateTime.utc_now()
 
-    assert conn.assigns[:current_visitor].id == visitor.id
-    refute Map.has_key?(conn.assigns, :current_user)
-    assert conn.assigns[:current_session_id] == session.id
-  end
-
-  test "visitor token bumps expires_at via Visitors.touch/1", %{conn: conn} do
-    visitor = insert(:visitor, expires_at: DateTime.utc_now() |> DateTime.add(46, :hour))
-    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
-
-    conn |> put_req_header("authorization", "Bearer #{session.id}") |> Authn.call([])
-
-    bumped = Repo.reload!(visitor)
-    assert DateTime.compare(bumped.expires_at, visitor.expires_at) == :gt
-  end
-
-  test "expired visitor returns 401 (touch checks expires_at)", %{conn: conn} do
-    visitor = insert(:visitor, expires_at: DateTime.utc_now() |> DateTime.add(-1, :hour))
-    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
-
-    conn = conn |> put_req_header("authorization", "Bearer #{session.id}") |> Authn.call([])
-
-    assert conn.status == 401
-    assert conn.halted
+      if DateTime.compare(exp, now) == :gt do
+        maybe_bump(visitor)
+      else
+        {:error, :expired}
+      end
   end
 end
 ```
 
-- [ ] **Step 11.2: Update plug**
+`maybe_bump/1` body unchanged — once we know the row is live, the
+existing cadence-gated bump is correct.
+
+- [ ] **Step 11.2: Extend `Visitors` tests with expired-touch case**
 
 ```elixir
-# lib/grappa_web/plugs/authn.ex — replace call/2 body
+# test/grappa/visitors_test.exs — add to the touch describe
+test "expired visitor returns {:error, :expired} (no resurrection)" do
+  past = DateTime.add(DateTime.utc_now(), -1, :hour)
+  v = visitor_fixture(expires_at: past)
+
+  assert {:error, :expired} = Visitors.touch(v.id)
+
+  reloaded = Repo.reload!(v)
+  # No bump → row's expires_at unchanged. Reaper (Task 22) is the
+  # deletion verb; touch's job is to gate REST/WS reads.
+  assert DateTime.compare(reloaded.expires_at, past) == :eq
+end
+```
+
+- [ ] **Step 11.3: Failing plug tests**
+
+```elixir
+# test/grappa_web/plugs/authn_test.exs — add describes
+describe "visitor session branch" do
+  setup %{conn: conn} do
+    visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
+    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+    {:ok, conn: conn, visitor: visitor, session: session}
+  end
+
+  test "valid visitor token assigns :current_visitor + :current_visitor_id, NOT current_user",
+       %{conn: conn, visitor: visitor, session: session} do
+    result =
+      conn
+      |> put_req_header("authorization", "Bearer #{session.id}")
+      |> Authn.call(Authn.init([]))
+
+    refute result.halted
+    assert result.assigns.current_visitor_id == visitor.id
+    assert %Visitor{id: vid} = result.assigns.current_visitor
+    assert vid == visitor.id
+    assert result.assigns.current_session_id == session.id
+    refute Map.has_key?(result.assigns, :current_user)
+    refute Map.has_key?(result.assigns, :current_user_id)
+  end
+
+  test "visitor authn bumps expires_at via Visitors.touch/1",
+       %{conn: conn, session: session} do
+    # visitor_fixture defaults to expires_at = now + 48h. Wind it back
+    # so the cadence gate (1h) lets the bump through.
+    older = DateTime.add(DateTime.utc_now(), 46, :hour)
+    {1, _} =
+      Repo.update_all(
+        from(v in Visitor, where: v.id == ^session.visitor_id),
+        set: [expires_at: older]
+      )
+
+    conn
+    |> put_req_header("authorization", "Bearer #{session.id}")
+    |> Authn.call(Authn.init([]))
+
+    bumped = Repo.get!(Visitor, session.visitor_id)
+    assert DateTime.compare(bumped.expires_at, older) == :gt
+  end
+
+  test "expired visitor → 401 + halt (no resurrection)",
+       %{conn: conn, session: session} do
+    past = DateTime.add(DateTime.utc_now(), -1, :hour)
+    {1, _} =
+      Repo.update_all(
+        from(v in Visitor, where: v.id == ^session.visitor_id),
+        set: [expires_at: past]
+      )
+
+    result =
+      conn
+      |> put_req_header("authorization", "Bearer #{session.id}")
+      |> Authn.call(Authn.init([]))
+
+    assert result.halted
+    assert result.status == 401
+    assert result.resp_body =~ "unauthorized"
+
+    reloaded = Repo.get!(Visitor, session.visitor_id)
+    assert DateTime.compare(reloaded.expires_at, past) == :eq
+  end
+end
+```
+
+- [ ] **Step 11.4: Update plug**
+
+```elixir
+# lib/grappa_web/plugs/authn.ex
 @impl Plug
 def call(conn, _) do
   with {:ok, token} <- get_token(conn),
        {:ok, session} <- Accounts.authenticate(token),
        {:ok, conn} <- assign_subject(conn, session) do
-    conn
-    |> assign(:current_session_id, session.id)
+    assign(conn, :current_session_id, session.id)
   else
     {:error, reason} ->
       Logger.info("authn rejected", authn_failure: reason)
@@ -3923,46 +4019,76 @@ def call(conn, _) do
   end
 end
 
-defp assign_subject(conn, %Accounts.Session{user_id: user_id, visitor_id: nil}) when is_binary(user_id) do
+defp assign_subject(conn, %Accounts.Session{user_id: user_id, visitor_id: nil})
+     when is_binary(user_id) do
   user = Accounts.get_user!(user_id)
-  {:ok, conn |> assign(:current_user_id, user_id) |> assign(:current_user, user)}
+
+  conn =
+    conn
+    |> assign(:current_user_id, user_id)
+    |> assign(:current_user, user)
+
+  {:ok, conn}
 end
 
-defp assign_subject(conn, %Accounts.Session{user_id: nil, visitor_id: visitor_id}) when is_binary(visitor_id) do
+defp assign_subject(conn, %Accounts.Session{user_id: nil, visitor_id: visitor_id})
+     when is_binary(visitor_id) do
   case Visitors.touch(visitor_id) do
-    {:ok, %{expires_at: exp} = visitor} ->
-      now = DateTime.utc_now()
-      if DateTime.compare(exp, now) == :gt do
-        {:ok, conn |> assign(:current_visitor_id, visitor_id) |> assign(:current_visitor, visitor)}
-      else
-        {:error, :expired_visitor}
-      end
+    {:ok, %Visitor{} = visitor} ->
+      conn =
+        conn
+        |> assign(:current_visitor_id, visitor_id)
+        |> assign(:current_visitor, visitor)
 
-    {:error, reason} ->
-      {:error, {:visitor_load_failed, reason}}
+      {:ok, conn}
+
+    {:error, :expired} ->
+      {:error, :expired_visitor}
+
+    {:error, :not_found} ->
+      # Session row exists, visitor row doesn't — the FK is ON DELETE
+      # CASCADE (Q-H), so this is an invariant violation worth surfacing
+      # rather than silently 401ing. Authenticate already gated on
+      # session liveness; if the visitor row vanished mid-request we
+      # want to know.
+      {:error, :visitor_missing}
   end
 end
 ```
 
-- [ ] **Step 11.3: Run tests**
+- [ ] **Step 11.5: Run tests**
 
 ```bash
-scripts/test.sh test/grappa_web/plugs/authn_test.exs
+scripts/test.sh test/grappa_web/plugs/authn_test.exs test/grappa/visitors_test.exs
+scripts/check.sh
 ```
 
-- [ ] **Step 11.4: Commit**
+- [ ] **Step 11.6: Commit**
 
 ```bash
-git add lib/grappa_web/plugs/authn.ex test/grappa_web/plugs/authn_test.exs
+git add lib/grappa/visitors.ex \
+        lib/grappa_web/plugs/authn.ex \
+        test/grappa/visitors_test.exs \
+        test/grappa_web/plugs/authn_test.exs
 git commit -m "$(cat <<'EOF'
 feat(authn): branch on session FK to assign current_user xor current_visitor
 
-Single Authorization-bearer transport per Q-A/C. Plug calls
-Accounts.authenticate/1 unchanged, then dispatches on session.user_id
-vs session.visitor_id presence. Visitor branch invokes Visitors.touch/1
-for sliding-TTL refresh (W9 — ≥1h cadence handled inside touch/1).
+Single Authorization-bearer transport per Q-A/C. The plug calls
+Accounts.authenticate/1 unchanged, then dispatches on the session row's
+user_id vs visitor_id presence (XOR enforced at the schema level).
 
-Expired visitor → 401 (touch returns row but expires_at < now).
+User branch keeps the prior contract — :current_user_id + :current_user
++ :current_session_id. Visitor branch assigns :current_visitor_id +
+:current_visitor, and runs Visitors.touch/1 for the W9 sliding-TTL
+refresh.
+
+`Visitors.touch/1` learns an :expired early return — guards against the
+resurrection bug where touch would unconditionally bump expires_at to
+now + 48h on a row whose expires_at was already in the past. The Reaper
+(Task 22) is still the deletion verb; touch's job is to gate REST/WS
+reads.
+
+Expired visitor → 401. Visitor row vanished mid-request → 401 (logged).
 EOF
 )"
 ```
