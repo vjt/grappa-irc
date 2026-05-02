@@ -224,15 +224,27 @@ defmodule Grappa.Visitors.Login do
         # just means the user has to re-IDENTIFY manually via
         # cicchetto, which the existing PRIVMSG surface already
         # supports.
+        #
+        # H8 (S17 review): NEVER inspect/1 the raw reason — the
+        # `{:error, %Ecto.Changeset{}}` shape from a Scrollback insert
+        # validation failure carries the full row including the
+        # `body: "IDENTIFY <plaintext>"` field. inspect/1 would print
+        # the password to stdout (Phoenix `:filter_parameters`
+        # filters HTTP params only, not Logger metadata). Only the
+        # error tag is loggable.
         Logger.warning(
           "post-login IDENTIFY failed",
           visitor_id: visitor.id,
-          reason: inspect(reason)
+          reason: error_tag(reason)
         )
 
         :ok
     end
   end
+
+  defp error_tag(%Ecto.Changeset{}), do: :scrollback_insert_failed
+  defp error_tag(atom) when is_atom(atom), do: atom
+  defp error_tag(_), do: :unknown
 
   defp rotate_token(visitor, input) do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
