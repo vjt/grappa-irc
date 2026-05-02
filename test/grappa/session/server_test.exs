@@ -393,7 +393,7 @@ defmodule Grappa.Session.ServerTest do
 
       refute_received {:event, _}
 
-      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
       assert row.body == "hello"
       assert row.sender == "alice"
       assert row.kind == :privmsg
@@ -480,7 +480,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive {:event, %{message: %{kind: :join, sender: "bob"}}}, 1_000
       assert_receive {:event, %{message: %{kind: :part, sender: "bob", body: "bye"}}}, 1_000
 
-      rows = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      rows = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
       kinds = Enum.map(rows, & &1.kind)
       assert :join in kinds
       assert :part in kinds
@@ -537,7 +537,7 @@ defmodule Grappa.Session.ServerTest do
         meta: %{}
       )
 
-      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
       assert row.sender == "grappa-actual"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -574,7 +574,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:ok, msg} = Session.send_privmsg({:user, user.id}, network.id, "#sniffo", "post-rename")
       assert msg.sender == "renamed-vjt"
 
-      [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
       assert row.sender == "renamed-vjt"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -741,10 +741,10 @@ defmodule Grappa.Session.ServerTest do
       refute Map.has_key?(state.members["#a"], "alice")
       refute Map.has_key?(state.members["#b"], "alice")
 
-      rows_a = Scrollback.fetch(user.id, network.id, "#a", nil, 10)
+      rows_a = Scrollback.fetch({:user, user.id}, network.id, "#a", nil, 10)
       assert Enum.any?(rows_a, &(&1.kind == :quit and &1.sender == "alice"))
 
-      rows_b = Scrollback.fetch(user.id, network.id, "#b", nil, 10)
+      rows_b = Scrollback.fetch({:user, user.id}, network.id, "#b", nil, 10)
       assert Enum.any?(rows_b, &(&1.kind == :quit and &1.sender == "alice"))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -1151,7 +1151,7 @@ defmodule Grappa.Session.ServerTest do
                Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
 
       refute_receive {:event, _}, 100
-      assert [] = Scrollback.fetch(user.id, network.id, "NickServ", nil, 10)
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "NickServ", nil, 10)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1166,7 +1166,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
 
-      assert [] = Scrollback.fetch(user.id, network.id, "ChanServ", nil, 10)
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "ChanServ", nil, 10)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1181,7 +1181,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "nickserv", "IDENTIFY pwd")
 
-      assert [] = Scrollback.fetch(user.id, network.id, "nickserv", nil, 10)
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "nickserv", nil, 10)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

@@ -61,7 +61,7 @@ defmodule Grappa.Scrollback.WireTest do
       {:ok, _} =
         ScrollbackHelpers.insert(sample(user, network, 0, %{kind: :nick_change, body: nil, meta: %{new_nick: "vjt2"}}))
 
-      [fetched] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
+      [fetched] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
       wire = fetched |> Repo.preload(:network) |> Wire.to_json()
 
       assert wire.kind == :nick_change

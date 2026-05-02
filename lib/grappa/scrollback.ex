@@ -112,10 +112,15 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
-  Fetches up to `limit` messages for `(user_id, network_id, channel)`,
+  Fetches up to `limit` messages for `(subject, network_id, channel)`,
   ordered by `server_time` DESC then `id` DESC (stable inside same-ms
-  ties). The `user_id` filter is the central per-user iso boundary —
+  ties). The subject filter is the central per-subject iso boundary —
   see moduledoc.
+
+  `subject` discriminated union (Task 4 + 30):
+
+    * `{:user, user_id}` — partitions on `m.user_id == ^user_id`.
+    * `{:visitor, visitor_id}` — partitions on `m.visitor_id == ^visitor_id`.
 
   When `before` is an integer, only rows with `server_time < before` are
   returned. When `nil`, returns the latest page.
@@ -131,23 +136,29 @@ defmodule Grappa.Scrollback do
   network query per page (Ecto deduplicates the `IN (...)` lookup);
   identical wire-shape contract as `persist_event/1` (A4 + A26).
   """
-  @spec fetch(Ecto.UUID.t(), integer(), String.t(), integer() | nil, pos_integer()) ::
+  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
+
+  @spec fetch(subject(), integer(), String.t(), integer() | nil, pos_integer()) ::
           [Message.t()]
-  def fetch(user_id, network_id, channel, before, limit)
-      when is_binary(user_id) and is_integer(network_id) and is_integer(limit) and limit > 0 do
+  def fetch(subject, network_id, channel, before, limit)
+      when is_integer(network_id) and is_integer(limit) and limit > 0 do
     capped = min(limit, @max_limit)
 
     Message
-    |> where(
-      [m],
-      m.user_id == ^user_id and m.network_id == ^network_id and m.channel == ^channel
-    )
+    |> subject_where(subject)
+    |> where([m], m.network_id == ^network_id and m.channel == ^channel)
     |> maybe_before(before)
     |> order_by([m], desc: m.server_time, desc: m.id)
     |> limit(^capped)
     |> preload(:network)
     |> Repo.all()
   end
+
+  defp subject_where(query, {:user, user_id}) when is_binary(user_id),
+    do: where(query, [m], m.user_id == ^user_id)
+
+  defp subject_where(query, {:visitor, visitor_id}) when is_binary(visitor_id),
+    do: where(query, [m], m.visitor_id == ^visitor_id)
 
   defp maybe_before(query, nil), do: query
 
