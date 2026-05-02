@@ -1103,35 +1103,136 @@ EOF
 
 ---
 
-### Task 5: accounts.sessions.visitor_id additive migration
+### Task 5: sessions.visitor_id additive migration
 
 **Files:**
-- Create: `priv/repo/migrations/<ts>_add_visitor_id_to_accounts_sessions.exs`
+- Create: `priv/repo/migrations/<ts>_add_visitor_id_to_sessions.exs`
 - Modify: `lib/grappa/accounts/session.ex`
-- Modify: `lib/grappa/accounts.ex`
-- Test: extend `test/grappa/accounts_test.exs`
+- Modify: `lib/grappa/accounts.ex` (boundary `deps:` + `create_session/3` contract)
+- Modify: `test/support/auth_fixtures.ex` (`session_fixture/1` callsite)
+- Modify: `test/grappa_web/plugs/authn_test.exs` (1 callsite)
+- Modify: `test/grappa/accounts/sessions_test.exs` (5 callsites + add visitor cases)
+- Modify: `lib/grappa_web/controllers/auth_controller.ex` (1 callsite — temporary; full dispatch lands in Task 10)
+
+**Drift notes (caught pre-dispatch — original plan body had drift on every dimension):**
+1. Real table name is `:sessions`, NOT `:accounts_sessions` (per
+   `priv/repo/migrations/20260426000001_create_sessions.exs` and
+   `Grappa.Accounts.Session` `schema "sessions"`).
+2. ecto_sqlite3 supports neither `alter table ... modify` nor
+   `create constraint` (ALTER TABLE in sqlite only supports ADD COLUMN).
+   Use the rename → recreate → copy → drop pattern from Task 4
+   (`priv/repo/migrations/20260502085339_add_visitor_id_to_messages.exs`).
+3. Existing `Session` schema has `created_at`, `last_seen_at`,
+   `revoked_at`, `user_agent`, `ip` fields the recreated `CREATE TABLE`
+   must preserve. Existing indexes are `[:user_id]` and `[:last_seen_at]`.
+4. `Grappa.Accounts` Boundary on `lib/grappa/accounts.ex:47` lists
+   `deps: [Grappa.Repo]` only. Adding `Grappa.Visitors` is required so
+   `assoc_constraint(:visitor)` and any pre-flight FK check resolve.
+5. Plan's original `validate_subject_xor` body was tangled. Mirror
+   Task 4's `Scrollback.Message.validate_subject_xor/1` shape exactly
+   — clean tuple pattern match, three clauses, placed BEFORE
+   per-field validators in the changeset pipeline.
+6. Plan's `validate_user_exists/1` pre-flight already exists in
+   `Accounts` (s29 H4) — generalize to `validate_subject_exists/1`
+   that branches on whichever side of the XOR is set.
+7. Test scenarios live in `test/grappa/accounts/sessions_test.exs`,
+   NOT `test/grappa/accounts_test.exs` (the latter has user CRUD only).
+8. No ExMachina `insert(:visitor)` — use `visitor_fixture/0` from
+   `test/support/auth_fixtures.ex`. No `insert(:user)` — use the
+   inline `Repo.insert(%User{name: ..., password_hash: "x"})` pattern
+   the existing sessions tests already use.
+9. Three XOR test cases per Task 4 precedent: user-only (positive),
+   visitor-only (positive), both-set (rejected), neither-set (rejected).
 
 - [ ] **Step 5.1: Migration**
 
 ```bash
-scripts/mix.sh ecto.gen.migration add_visitor_id_to_accounts_sessions
+scripts/mix.sh ecto.gen.migration add_visitor_id_to_sessions
 ```
 
+Migration body — full rename+recreate+copy dance (mirror of Task 4).
+The XOR CHECK is table-level so it must live in the `CREATE TABLE`
+body; `user_id` becomes nullable; `visitor_id` is a new nullable FK.
+
 ```elixir
-defmodule Grappa.Repo.Migrations.AddVisitorIdToAccountsSessions do
+defmodule Grappa.Repo.Migrations.AddVisitorIdToSessions do
+  @moduledoc """
+  visitor_id additive migration on sessions (cluster visitor-auth Q-A).
+
+  Adds a nullable `visitor_id` FK to `Grappa.Visitors.Visitor` and makes
+  `user_id` nullable so a session row binds to either an authenticated
+  user OR a visitor — never both, never neither. The XOR invariant is
+  enforced at the DB level (CHECK constraint) and at the application
+  layer (`Session.changeset/2` calls `validate_subject_xor/1`).
+
+  ## SQLite limitations
+
+  ecto_sqlite3 does not support `modify` (ALTER COLUMN) or
+  `create constraint` (ALTER TABLE ADD CONSTRAINT). Making `user_id`
+  nullable and adding a table-level XOR CHECK requires a full
+  table-recreate via raw SQL — same pattern as Task 4's messages
+  migration (20260502085339).
+  """
   use Ecto.Migration
 
-  def change do
-    alter table(:accounts_sessions) do
-      add :visitor_id, references(:visitors, type: :binary_id, on_delete: :delete_all)
-      modify :user_id, :binary_id, null: true,
-             from: {:binary_id, null: false}
-    end
+  def up do
+    execute("ALTER TABLE sessions RENAME TO sessions_old")
 
-    create constraint(:accounts_sessions, :sessions_subject_xor,
-             check: "(user_id IS NULL) <> (visitor_id IS NULL)")
+    execute("""
+    CREATE TABLE "sessions" (
+      "id" TEXT PRIMARY KEY,
+      "user_id" TEXT NULL CONSTRAINT "sessions_user_id_fkey" REFERENCES "users"("id") ON DELETE CASCADE,
+      "visitor_id" TEXT NULL CONSTRAINT "sessions_visitor_id_fkey" REFERENCES "visitors"("id") ON DELETE CASCADE,
+      "created_at" TEXT NOT NULL,
+      "last_seen_at" TEXT NOT NULL,
+      "revoked_at" TEXT NULL,
+      "user_agent" TEXT NULL,
+      "ip" TEXT NULL,
+      CONSTRAINT "sessions_subject_xor" CHECK ((user_id IS NULL) <> (visitor_id IS NULL))
+    )
+    """)
 
-    create index(:accounts_sessions, [:visitor_id])
+    # Existing rows are all user-bound (visitor_id NULL satisfies XOR).
+    execute("""
+    INSERT INTO sessions (id, user_id, created_at, last_seen_at, revoked_at, user_agent, ip)
+    SELECT id, user_id, created_at, last_seen_at, revoked_at, user_agent, ip
+    FROM sessions_old
+    """)
+
+    execute("DROP TABLE sessions_old")
+
+    create index(:sessions, [:user_id])
+    create index(:sessions, [:last_seen_at])
+    create index(:sessions, [:visitor_id])
+  end
+
+  def down do
+    execute("ALTER TABLE sessions RENAME TO sessions_new")
+
+    execute("""
+    CREATE TABLE "sessions" (
+      "id" TEXT PRIMARY KEY,
+      "user_id" TEXT NOT NULL CONSTRAINT "sessions_user_id_fkey" REFERENCES "users"("id") ON DELETE CASCADE,
+      "created_at" TEXT NOT NULL,
+      "last_seen_at" TEXT NOT NULL,
+      "revoked_at" TEXT NULL,
+      "user_agent" TEXT NULL,
+      "ip" TEXT NULL
+    )
+    """)
+
+    # Visitor-bound sessions are dropped on rollback (no user_id to project to).
+    execute("""
+    INSERT INTO sessions (id, user_id, created_at, last_seen_at, revoked_at, user_agent, ip)
+    SELECT id, user_id, created_at, last_seen_at, revoked_at, user_agent, ip
+    FROM sessions_new
+    WHERE user_id IS NOT NULL
+    """)
+
+    execute("DROP TABLE sessions_new")
+
+    create index(:sessions, [:user_id])
+    create index(:sessions, [:last_seen_at])
   end
 end
 ```
@@ -1146,41 +1247,85 @@ scripts/mix.sh ecto.migrate
 
 ```elixir
 # lib/grappa/accounts/session.ex
-schema "accounts_sessions" do
-  belongs_to :user, Grappa.Accounts.User, type: :binary_id
-  belongs_to :visitor, Grappa.Visitors.Visitor, type: :binary_id
-  # ... rest unchanged
+alias Grappa.Accounts.User
+alias Grappa.Visitors.Visitor
+
+@type t :: %__MODULE__{
+        id: Ecto.UUID.t() | nil,
+        user_id: Ecto.UUID.t() | nil,
+        user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+        visitor_id: Ecto.UUID.t() | nil,
+        visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
+        created_at: DateTime.t() | nil,
+        last_seen_at: DateTime.t() | nil,
+        revoked_at: DateTime.t() | nil,
+        user_agent: String.t() | nil,
+        ip: String.t() | nil
+      }
+
+@primary_key {:id, :binary_id, autogenerate: true}
+schema "sessions" do
+  belongs_to :user, User, type: :binary_id
+  belongs_to :visitor, Visitor, type: :binary_id
+
+  field :created_at, :utc_datetime_usec
+  field :last_seen_at, :utc_datetime_usec
+  field :revoked_at, :utc_datetime_usec
+  field :user_agent, :string
+  field :ip, :string
 end
 
-# Update changeset for XOR
-@spec create_changeset(map()) :: Ecto.Changeset.t()
-def create_changeset(attrs) do
-  %__MODULE__{}
-  |> cast(attrs, [:user_id, :visitor_id, :ip, :user_agent])
+@cast_fields [:user_id, :visitor_id, :created_at, :last_seen_at, :ip, :user_agent]
+@required_fields [:created_at, :last_seen_at]
+
+@spec changeset(t(), map()) :: Ecto.Changeset.t()
+def changeset(session, attrs) do
+  session
+  |> cast(attrs, @cast_fields)
+  |> validate_required(@required_fields)
   |> validate_subject_xor()
   |> assoc_constraint(:user)
   |> assoc_constraint(:visitor)
 end
 
+# Mirror of Grappa.Scrollback.Message.validate_subject_xor/1.
+# Run BEFORE per-field validators so the XOR error surfaces first.
 defp validate_subject_xor(changeset) do
   case {get_field(changeset, :user_id), get_field(changeset, :visitor_id)} do
-    {nil, nil} -> add_error(changeset, :user_id, "must set user_id or visitor_id")
-    {_, _} when not is_nil(elem({get_field(changeset, :user_id), get_field(changeset, :visitor_id)}, 0))
-            and not is_nil(elem({get_field(changeset, :user_id), get_field(changeset, :visitor_id)}, 1)) ->
-      add_error(changeset, :user_id, "mutually exclusive")
-    _ -> changeset
+    {nil, nil} ->
+      add_error(changeset, :user_id, "must set user_id or visitor_id")
+
+    {uid, vid} when not is_nil(uid) and not is_nil(vid) ->
+      add_error(changeset, :user_id, "user_id and visitor_id are mutually exclusive")
+
+    _ ->
+      changeset
   end
 end
 ```
 
-(Cleaner version using pattern match on the tuple — let the engineer choose. The test enforces the contract.)
+The moduledoc / `assoc_constraint(:user)` rationale paragraph that
+was already in the file extends to `:visitor` — same sqlite-FK-quirk
+backstop story; update the moduledoc text to mention both sides.
 
-- [ ] **Step 5.4: Update Accounts.create_session/3 → /1**
+- [ ] **Step 5.4: Update Accounts.create_session/3 contract**
 
-Currently `create_session/3` takes `(user_id, ip, user_agent)`. New shape takes a single subject param:
+Arity stays `/3` — the first argument changes from a raw `user_id`
+binary to a tagged subject tuple. `validate_user_exists/1` is
+generalized to `validate_subject_exists/1` that branches on whichever
+side is set.
 
 ```elixir
 # lib/grappa/accounts.ex
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Repo, Grappa.Visitors],
+  exports: [User, Session, Wire]
+
+alias Grappa.Accounts.{Session, User}
+alias Grappa.Repo
+alias Grappa.Visitors.Visitor
+
 @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
 
 @spec create_session(subject(), String.t() | nil, String.t() | nil) ::
@@ -1194,84 +1339,180 @@ def create_session({:visitor, visitor_id}, ip, user_agent) when is_binary(visito
 end
 
 defp do_create_session(attrs) do
-  attrs
-  |> Session.create_changeset()
+  now = DateTime.utc_now()
+
+  %Session{}
+  |> Session.changeset(Map.merge(attrs, %{created_at: now, last_seen_at: now}))
+  |> validate_subject_exists()
   |> Repo.insert()
 end
-```
 
-Update existing callsite in `AuthController.login/2` to use `{:user, user.id}` shape (Task 11 will adjust further).
+# Pre-flight FK existence check — sqlite-quirk backstop. Generalized
+# from S29 H4's `validate_user_exists/1` to branch on whichever side
+# of the subject XOR is set.
+defp validate_subject_exists(changeset) do
+  cond do
+    user_id = Ecto.Changeset.get_change(changeset, :user_id) ->
+      check_exists(changeset, User, user_id, :user)
+
+    visitor_id = Ecto.Changeset.get_change(changeset, :visitor_id) ->
+      check_exists(changeset, Visitor, visitor_id, :visitor)
+
+    true ->
+      changeset
+  end
+end
+
+defp check_exists(changeset, schema, id, field) do
+  query = from(row in schema, where: row.id == ^id)
+
+  if Repo.exists?(query) do
+    changeset
+  else
+    Ecto.Changeset.add_error(changeset, field, "does not exist")
+  end
+end
+```
 
 - [ ] **Step 5.5: Update Accounts.authenticate/1**
 
-`authenticate/1` already returns the `Session.t()`. No code change needed; the struct now exposes `visitor_id` field for plug to read.
+No code change. The returned `Session.t()` now exposes `visitor_id`
+alongside `user_id`; downstream callers (`Plugs.Authn` in Task 11)
+branch on whichever FK is set.
 
-- [ ] **Step 5.6: Test**
+- [ ] **Step 5.6: Update existing callsites (5 sites + 1 fixture)**
+
+The signature change cascades. Update each callsite to pass the
+tagged subject:
+
+- `lib/grappa_web/controllers/auth_controller.ex:46` —
+  `Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))`.
+  Temporary; Task 10 replaces this with classifier-based dispatch.
+- `test/support/auth_fixtures.ex:64` (`session_fixture/1`) —
+  `Accounts.create_session({:user, user.id}, nil, nil)`.
+- `test/grappa/accounts/sessions_test.exs` — 5 sites at lines 23,
+  41, 56, 65, 129. Each becomes `{:user, user.id}` (or
+  `{:user, stale_uuid}` at line 56 for the FK-miss test).
+- `test/grappa_web/plugs/authn_test.exs:22` —
+  `Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")`.
+
+- [ ] **Step 5.7: Add visitor session test cases**
+
+Append to `test/grappa/accounts/sessions_test.exs` — same file,
+new `describe` blocks. Use `Grappa.AuthFixtures.visitor_fixture/0`
+(already exists; created by Task 4):
 
 ```elixir
-# test/grappa/accounts_test.exs — add cases
+import Grappa.AuthFixtures, only: [visitor_fixture: 0]
+
 describe "create_session/3 with visitor subject" do
-  test "creates session with visitor_id, no user_id" do
-    visitor = insert(:visitor)
+  test "creates session bound to visitor (no user_id)" do
+    visitor = visitor_fixture()
 
-    assert {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
-    assert session.visitor_id == visitor.id
-    assert is_nil(session.user_id)
+    assert {:ok, %Session{} = s} =
+             Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+    assert s.visitor_id == visitor.id
+    assert is_nil(s.user_id)
+    assert s.ip == "1.2.3.4"
+    assert s.user_agent == "ua"
   end
 
-  test "rejects neither side set" do
-    # Direct schema invocation since create_session/3 enforces subject tuple
-    assert {:error, changeset} = Session.create_changeset(%{ip: "1.2.3.4"}) |> Repo.insert()
-    assert errors_on(changeset).user_id
+  test "returns {:error, %Ecto.Changeset{}} for a stale visitor_id (FK miss)" do
+    stale_uuid = Ecto.UUID.generate()
+
+    assert {:error, %Ecto.Changeset{} = cs} =
+             Accounts.create_session({:visitor, stale_uuid}, nil, nil)
+
+    refute cs.valid?
+    assert {"does not exist", _} = cs.errors[:visitor]
   end
 end
 
-describe "authenticate/1 returns session with either FK" do
-  test "user-bound session returns user_id" do
-    user = insert(:user)
-    {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
-    assert {:ok, returned} = Accounts.authenticate(session.id)
-    assert returned.user_id == user.id
-    assert is_nil(returned.visitor_id)
+describe "Session.changeset/2 XOR enforcement" do
+  test "rejects neither user_id nor visitor_id set" do
+    now = DateTime.utc_now()
+
+    cs =
+      Session.changeset(%Session{}, %{
+        created_at: now,
+        last_seen_at: now
+      })
+
+    refute cs.valid?
+    assert "must set user_id or visitor_id" in errors_on(cs).user_id
   end
 
-  test "visitor-bound session returns visitor_id" do
-    visitor = insert(:visitor)
+  test "rejects both user_id and visitor_id set", %{user: user} do
+    visitor = visitor_fixture()
+    now = DateTime.utc_now()
+
+    cs =
+      Session.changeset(%Session{}, %{
+        user_id: user.id,
+        visitor_id: visitor.id,
+        created_at: now,
+        last_seen_at: now
+      })
+
+    refute cs.valid?
+    assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).user_id
+  end
+end
+
+describe "authenticate/1 visitor-bound sessions" do
+  test "returns visitor-bound session with visitor_id, no user_id" do
+    visitor = visitor_fixture()
     {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil)
-    assert {:ok, returned} = Accounts.authenticate(session.id)
-    assert returned.visitor_id == visitor.id
-    assert is_nil(returned.user_id)
+
+    assert {:ok, %Session{visitor_id: vid, user_id: nil}} =
+             Accounts.authenticate(session.id)
+
+    assert vid == visitor.id
   end
 end
 ```
 
-- [ ] **Step 5.7: Run tests, fix existing AuthController callsite**
+The existing user-bound `authenticate/1` tests already cover the
+positive user case; no need to duplicate.
 
-`scripts/test.sh` will fail at `auth_controller.ex:login/2` calling `create_session(user.id, ...)`. Fix:
-
-```elixir
-# lib/grappa_web/controllers/auth_controller.ex — temporary, full dispatch lands in Task 11
-{:ok, session} = Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
-```
-
-- [ ] **Step 5.8: Commit**
+- [ ] **Step 5.8: Run full check.sh**
 
 ```bash
-git add priv/repo/migrations/*_add_visitor_id_to_accounts_sessions.exs \
-        lib/grappa/accounts/session.ex lib/grappa/accounts.ex \
+scripts/check.sh
+```
+
+Expected: green modulo the known sqlite-busy ~20% flake. If any
+failure is NEW (not user-row-busy), HALT.
+
+- [ ] **Step 5.9: Commit**
+
+```bash
+git add priv/repo/migrations/*_add_visitor_id_to_sessions.exs \
+        lib/grappa/accounts/session.ex \
+        lib/grappa/accounts.ex \
         lib/grappa_web/controllers/auth_controller.ex \
-        test/grappa/accounts_test.exs
+        test/support/auth_fixtures.ex \
+        test/grappa/accounts/sessions_test.exs \
+        test/grappa_web/plugs/authn_test.exs
 git commit -m "$(cat <<'EOF'
 feat(accounts): sessions table accepts visitor subject (XOR with user)
 
 Additive nullable visitor_id FK + sqlite CHECK constraint
 ((user_id IS NULL) <> (visitor_id IS NULL)). create_session/3 now
 takes a subject :: {:user, id} | {:visitor, id} tuple — single auth
-scheme per Q-A/C, single token namespace. authenticate/1 returns
-the Session struct with whichever FK is set; caller branches.
+scheme per cluster decision Q-A/C, single token namespace.
+authenticate/1 returns the Session struct with whichever FK is set;
+Plugs.Authn (Task 11) will branch.
+
+Migration uses the sqlite rename+recreate+copy pattern (Task 4
+precedent) since ecto_sqlite3 supports neither `modify` nor
+`create constraint`. validate_subject_exists/1 generalizes the S29
+H4 sqlite-FK pre-flight to either subject side.
 
 AuthController updated to pass {:user, id} explicitly; full visitor
-dispatch lands in a later task.
+dispatch lands in Task 10. Test fixtures + 5 existing test sites +
+authn_test.exs follow the same shape change.
 EOF
 )"
 ```
