@@ -88,4 +88,36 @@ defmodule GrappaWeb.UserSocketTest do
                Phoenix.ChannelTest.subscribe_and_join(socket, Topic.user(vjt_name), %{})
     end
   end
+
+  describe "connect/3 visitor token path" do
+    test "visitor token assigns :user_name = visitor:<id> + :current_visitor_id" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+      assert {:ok, socket} = connect_with(%{"token" => session.id})
+      assert socket.assigns.user_name == "visitor:" <> visitor.id
+      assert socket.assigns.current_visitor_id == visitor.id
+      assert socket.assigns.current_visitor.id == visitor.id
+      assert socket.assigns.current_session_id == session.id
+      refute Map.has_key?(socket.assigns, :current_user_id)
+    end
+
+    test "expired visitor session rejects with :error" do
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+      visitor = visitor_fixture(expires_at: past)
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+      assert :error = connect_with(%{"token" => session.id})
+    end
+  end
+
+  describe "id/1 visitor branch" do
+    test "scopes the per-socket id by visitor:<id>" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+      {:ok, socket} = connect_with(%{"token" => session.id})
+
+      assert UserSocket.id(socket) == "user_socket:visitor:" <> visitor.id
+    end
+  end
 end
