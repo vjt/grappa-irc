@@ -3,7 +3,14 @@ defmodule Grappa.Application do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Bootstrap, Grappa.PubSub, Grappa.Repo, Grappa.Vault, GrappaWeb]
+    deps: [
+      Grappa.Bootstrap,
+      Grappa.PubSub,
+      Grappa.Repo,
+      Grappa.Vault,
+      Grappa.Visitors.Reaper,
+      GrappaWeb
+    ]
 
   use Application
 
@@ -57,7 +64,18 @@ defmodule Grappa.Application do
 
         # Endpoint after PubSub + Registry — HTTP requests (REST controller,
         # WS Channel join) reach into both at request time.
-        GrappaWeb.Endpoint
+        GrappaWeb.Endpoint,
+
+        # Reaper after Repo (it queries Visitors via Repo) and after
+        # Endpoint (so a slow boot doesn't sweep before the public
+        # surface is up — Reaper's sweep deletes rows that REST/WS
+        # might reach for; ordering it after Endpoint keeps the
+        # "everything visible to clients is also visible to Reaper"
+        # invariant honest). The default 60s interval is far longer
+        # than boot, so the first sweep waits anyway — ordering is
+        # belt-and-braces. Reaper consumes Grappa.Visitors; the
+        # Application boundary has it listed in deps for that reason.
+        Grappa.Visitors.Reaper
 
         # Bootstrap is appended LAST below: it depends on Registry +
         # SessionSupervisor existing so it can spawn sessions. Conditional
