@@ -3,21 +3,32 @@ defmodule GrappaWeb.Plugs.Authn do
   Bearer-token authn plug for the JSON REST surface.
 
   On a valid `Authorization: Bearer <uuid>` header backed by a live
-  session, assigns `:current_user_id`, `:current_session_id`, and
-  `:current_user` (the loaded `%Accounts.User{}`) and passes the conn
-  through. Loading the user here costs one DB round-trip per
-  authenticated request but eliminates the `Accounts.get_user!/1`
-  re-fetch each user-aware controller used to perform — net one query
-  saved per Me/Networks/Channels-index call, plus controllers stay
-  thin. The session FK is `ON DELETE CASCADE`, so a missing user is an
-  invariant violation and `get_user!/1` raising is the right shape
-  (S42).
+  session, the plug branches on the session row's FK (per Q-A's XOR
+  shape — `user_id` xor `visitor_id` always exactly one populated):
+
+    * **User session** → assigns `:current_user_id`,
+      `:current_user` (the loaded `%Accounts.User{}`), and
+      `:current_session_id`.
+    * **Visitor session** → assigns `:current_visitor_id`,
+      `:current_visitor` (the loaded `%Visitors.Visitor{}`), and
+      `:current_session_id`. The plug ALSO calls `Visitors.touch/1`
+      for the W9 sliding-TTL refresh — visitor activity over the REST
+      surface counts as user-initiated traffic. Cadence (≥1h) is
+      handled inside `touch/1`.
+
+  Loading the subject here costs one DB round-trip per authenticated
+  request but eliminates the `Accounts.get_user!/1` re-fetch each
+  user-aware controller used to perform. The session FK is
+  `ON DELETE CASCADE`, so a missing subject row is an invariant
+  violation: `Accounts.get_user!/1` raises; the visitor branch returns
+  `:visitor_missing` so the violation surfaces in the operator log
+  rather than silently 401ing.
 
   On any failure (missing header, wrong scheme, malformed token,
-  unknown / revoked / expired session) the plug halts with a 401 JSON
-  body — no leak of which failure mode triggered it (deliberate,
-  mirrors the `get_user_by_credentials/2` oracle posture in
-  `Grappa.Accounts`).
+  unknown / revoked / expired session, expired visitor, vanished
+  subject row) the plug halts with a 401 JSON body — no leak of which
+  failure mode triggered it (deliberate, mirrors the
+  `get_user_by_credentials/2` oracle posture in `Grappa.Accounts`).
 
   Channels do their own auth in `UserSocket.connect/3` — this plug is
   HTTP-only.
@@ -26,7 +37,9 @@ defmodule GrappaWeb.Plugs.Authn do
 
   import Plug.Conn
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, Visitors}
+  alias Grappa.Accounts.Session
+  alias Grappa.Visitors.Visitor
   alias GrappaWeb.FallbackController
 
   require Logger
@@ -36,28 +49,57 @@ defmodule GrappaWeb.Plugs.Authn do
 
   @impl Plug
   def call(conn, _) do
-    case get_token(conn) do
-      {:ok, token} ->
-        case Accounts.authenticate(token) do
-          {:ok, session} ->
-            user = Accounts.get_user!(session.user_id)
-
-            conn
-            |> assign(:current_user_id, session.user_id)
-            |> assign(:current_session_id, session.id)
-            |> assign(:current_user, user)
-
-          {:error, reason} ->
-            # Reason stays in operator logs (greppable) but never reaches
-            # the wire — the 401 body is uniform on purpose so the plug
-            # doesn't leak token-state to a probing attacker.
-            Logger.info("authn rejected", authn_failure: reason)
-            unauthorized(conn)
-        end
+    with {:ok, token} <- get_token(conn),
+         {:ok, session} <- Accounts.authenticate(token),
+         {:ok, conn} <- assign_subject(conn, session) do
+      assign(conn, :current_session_id, session.id)
+    else
+      {:error, reason} ->
+        # Reason stays in operator logs (greppable) but never reaches
+        # the wire — the 401 body is uniform on purpose so the plug
+        # doesn't leak token-state to a probing attacker.
+        Logger.info("authn rejected", authn_failure: reason)
+        unauthorized(conn)
 
       :error ->
         Logger.info("authn rejected", authn_failure: :no_bearer)
         unauthorized(conn)
+    end
+  end
+
+  defp assign_subject(conn, %Session{user_id: user_id, visitor_id: nil})
+       when is_binary(user_id) do
+    user = Accounts.get_user!(user_id)
+
+    conn =
+      conn
+      |> assign(:current_user_id, user_id)
+      |> assign(:current_user, user)
+
+    {:ok, conn}
+  end
+
+  defp assign_subject(conn, %Session{user_id: nil, visitor_id: visitor_id})
+       when is_binary(visitor_id) do
+    case Visitors.touch(visitor_id) do
+      {:ok, %Visitor{} = visitor} ->
+        conn =
+          conn
+          |> assign(:current_visitor_id, visitor_id)
+          |> assign(:current_visitor, visitor)
+
+        {:ok, conn}
+
+      {:error, :expired} ->
+        {:error, :expired_visitor}
+
+      {:error, :not_found} ->
+        # Session row exists, visitor row vanished — the FK is
+        # ON DELETE CASCADE (Q-H), so this is an invariant violation.
+        # `Accounts.authenticate/1` already gated on session liveness;
+        # if the visitor row disappeared mid-request we want the
+        # operator log to flag it.
+        {:error, :visitor_missing}
     end
   end
 

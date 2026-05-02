@@ -85,6 +85,19 @@ defmodule Grappa.VisitorsTest do
     test "returns {:error, :not_found} for unknown visitor_id" do
       assert {:error, :not_found} = Visitors.touch(Ecto.UUID.generate())
     end
+
+    test "expired visitor → {:error, :expired} (no resurrection)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+
+      query = from(x in Visitor, where: x.id == ^v.id)
+      Repo.update_all(query, set: [expires_at: past])
+
+      assert {:error, :expired} = Visitors.touch(v.id)
+
+      reloaded = Repo.reload!(v)
+      assert DateTime.compare(reloaded.expires_at, past) == :eq
+    end
   end
 
   describe "count_active_for_ip/1" do

@@ -125,11 +125,23 @@ defmodule Grappa.Visitors do
   traffic.
   """
   @spec touch(Ecto.UUID.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, Visitor.t()} | {:error, :not_found | :expired | Ecto.Changeset.t()}
   def touch(visitor_id) when is_binary(visitor_id) do
     case Repo.get(Visitor, visitor_id) do
-      nil -> {:error, :not_found}
-      visitor -> maybe_bump(visitor)
+      nil ->
+        {:error, :not_found}
+
+      %Visitor{expires_at: exp} = visitor ->
+        # Without this gate, `maybe_bump/1` would slide an EXPIRED row
+        # 48h into the future on the next REST/WS verb — silently
+        # resurrecting a visitor the Reaper hadn't yet purged. The
+        # Reaper (Task 22) remains the deletion verb; `touch/1`'s job
+        # is to gate read access.
+        if DateTime.compare(exp, DateTime.utc_now()) == :gt do
+          maybe_bump(visitor)
+        else
+          {:error, :expired}
+        end
     end
   end
 
