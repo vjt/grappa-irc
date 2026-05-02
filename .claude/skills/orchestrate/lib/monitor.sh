@@ -6,16 +6,19 @@
 #   BOOT state=<idle|busy> ctx=NN%
 #   IDLE ctx=NN%             (busy → idle)
 #   BUSY ctx=NN%             (idle → busy)
-#   CTX-BUMP NN% state=<...> (every new 10%-bucket, ≥70%)
+#   CTX-BUMP NN% state=<...> (every new 10%-bucket, ≥30%)
 #   HEARTBEAT state=<...>    (every 1800s if no other event)
 #   PANE-MISSING             (and exits — pane is gone)
 #
 # Busy detector: a line in the last 15 carries `…` AND a spinner timer
-# `(NNs` / `(Nm Ms` (active spinner), OR an explicit interrupt prompt
-# (`Press up to edit` / `esc to interrupt`). Bare `…` (truncated task
-# descriptions like `tok…`, list-compaction `… +N completed`) is
-# treated as IDLE — it tripped the old detector for ~30 minutes during
-# CP10 S6 and produced confusing HEARTBEAT-busy events.
+# `(NNs` / `(Nm Ms` / `(Nh Mm Ss` (active spinner), OR an explicit
+# interrupt prompt (`Press up to edit` / `esc to interrupt`). Bare `…`
+# (truncated task descriptions like `tok…`, list-compaction
+# `… +N completed`) is treated as IDLE — it tripped the old detector
+# for ~30 minutes during CP10 S6 and produced confusing HEARTBEAT-busy
+# events. `h` was added to the timer-unit alternation after a Task 4
+# sibling spun for >1h and emitted `(1h 0m 30s`, which the old `[ms]`
+# class missed → false IDLE during long generations.
 #
 # Usage: monitor.sh <SIBLING_PANE_ID>   e.g. monitor.sh %119
 #
@@ -36,7 +39,7 @@ while true; do
   [ -z "$out" ] && { echo "PANE-MISSING"; break; }
 
   tail=$(echo "$out" | tail -15)
-  if echo "$tail" | awk '/…/ && /\([0-9]+[ms]/{f=1} END{exit !f}' \
+  if echo "$tail" | awk '/…/ && /\([0-9]+[hms]/{f=1} END{exit !f}' \
      || echo "$tail" | grep -qE 'Press up to edit|esc to interrupt'; then
     state="busy"
   else
@@ -59,7 +62,7 @@ while true; do
     last_emit=$now
   fi
 
-  if [ -n "$ctx" ] && [ -n "$bucket" ] && [ "$bucket" -ge 70 ] && [ "$bucket" != "$prev_bucket" ]; then
+  if [ -n "$ctx" ] && [ -n "$bucket" ] && [ "$bucket" -ge 30 ] && [ "$bucket" != "$prev_bucket" ]; then
     echo "CTX-BUMP ${ctx}% state=${state}"
     prev_bucket="$bucket"
     last_emit=$now
