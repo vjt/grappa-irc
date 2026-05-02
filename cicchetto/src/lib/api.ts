@@ -12,13 +12,17 @@
 // from login both surface here as `ApiError`.
 
 export type LoginRequest = {
-  name: string;
-  password: string;
+  identifier: string;
+  password?: string;
 };
+
+export type Subject =
+  | { kind: "user"; id: string; name: string }
+  | { kind: "visitor"; id: string; nick: string; network_slug: string };
 
 export type LoginResponse = {
   token: string;
-  user: { id: string; name: string };
+  subject: Subject;
 };
 
 export type MeResponse = {

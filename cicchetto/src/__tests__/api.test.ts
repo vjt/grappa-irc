@@ -71,7 +71,9 @@ describe("api 401 handler", () => {
     const handler = vi.fn();
     api.setOn401Handler(handler);
     stubFetch(401, { error: "invalid_credentials" });
-    await expect(api.login({ name: "x", password: "wrong" })).rejects.toBeInstanceOf(api.ApiError);
+    await expect(api.login({ identifier: "x", password: "wrong" })).rejects.toBeInstanceOf(
+      api.ApiError,
+    );
     expect(handler).toHaveBeenCalledTimes(1);
   });
 

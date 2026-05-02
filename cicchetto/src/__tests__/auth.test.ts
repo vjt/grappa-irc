@@ -54,11 +54,11 @@ describe("auth signal store", () => {
     const api = await import("../lib/api");
     vi.mocked(api.login).mockResolvedValue({
       token: "tok-123",
-      user: { id: "u1", name: "alice" },
+      subject: { kind: "user", id: "u1", name: "alice" },
     });
     const auth = await import("../lib/auth");
     await auth.login("alice", "secret");
-    expect(api.login).toHaveBeenCalledWith({ name: "alice", password: "secret" });
+    expect(api.login).toHaveBeenCalledWith({ identifier: "alice", password: "secret" });
     expect(auth.token()).toBe("tok-123");
     expect(localStorage.getItem("grappa-token")).toBe("tok-123");
   });
