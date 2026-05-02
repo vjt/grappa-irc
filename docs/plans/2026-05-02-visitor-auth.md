@@ -410,6 +410,7 @@ defmodule Grappa.Visitors.Visitor do
 
   alias Grappa.EncryptedBinary
   alias Grappa.IRC.Identifier
+  alias Grappa.Visitors.VisitorChannel
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
@@ -418,6 +419,7 @@ defmodule Grappa.Visitors.Visitor do
           password_encrypted: binary() | nil,
           expires_at: DateTime.t() | nil,
           ip: String.t() | nil,
+          channels: [VisitorChannel.t()] | Ecto.Association.NotLoaded.t(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -430,6 +432,8 @@ defmodule Grappa.Visitors.Visitor do
     field :password_encrypted, EncryptedBinary, redact: true
     field :expires_at, :utc_datetime_usec
     field :ip, :string
+
+    has_many :channels, VisitorChannel, foreign_key: :visitor_id
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -609,16 +613,47 @@ defmodule Grappa.Visitors.VisitorChannel do
 end
 ```
 
-- [ ] **Step 3.4: Commit**
+- [ ] **Step 3.4: Bidirectional association + Boundary export**
+
+VisitorChannel ↔ Visitor needs a bidirectional Ecto association so
+`Repo.preload(visitor, :channels)` works for Bootstrap-respawn
+enumeration (Tasks 8 + 19) and so the schema shape mirrors the
+documented CASCADE in `Visitor`'s moduledoc. The Visitor schema's
+`alias` + `@type t` + `has_many` were added in Task 2's amended spec —
+verify they landed.
+
+The `Grappa.Visitors` Boundary stub (created opportunistically during
+Task 2 to host the `alias Grappa.IRC.Identifier` cross-call from the
+Visitor schema) currently exports only `[Visitor]`. Cross-boundary
+callers in Tasks 6 + 8 + 19 will reference `VisitorChannel` directly
+(Bootstrap pattern-matches `%VisitorChannel{}` on respawn rejoin
+enumeration; Session.Server's join/part handler constructs them).
+Sibling pattern in `Grappa.Networks` (`networks.ex:36`) exports every
+cross-referenced child schema. Apply the same shape:
+
+```elixir
+# lib/grappa/visitors.ex — expand exports
+use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Visitor, VisitorChannel]
+```
+
+(The Task 6 expansion at the bottom of this plan also reflects this
+shape — see "exports: [Visitor, VisitorChannel]" there.)
+
+- [ ] **Step 3.5: Commit**
 
 ```bash
-git add priv/repo/migrations/*_create_visitor_channels.exs lib/grappa/visitors/visitor_channel.ex
+git add priv/repo/migrations/*_create_visitor_channels.exs lib/grappa/visitors/visitor_channel.ex lib/grappa/visitors/visitor.ex lib/grappa/visitors.ex
 git commit -m "$(cat <<'EOF'
 feat(visitors): add visitor_channels schema + migration
 
 Tracks joined channels per visitor for Bootstrap-respawn rejoin.
 Separate table from Networks.Channel per W1 — distinct lifecycles,
 no cross-mode FK on Networks.Channel.
+
+Visitor schema gets a bidirectional has_many :channels association
+mirroring Networks.Network → Server/Credential. Visitors boundary
+exports VisitorChannel so Bootstrap + Session.Server can pattern-match
+on it from outside the boundary.
 EOF
 )"
 ```
@@ -1171,7 +1206,7 @@ defmodule Grappa.Visitors do
   use Boundary,
     top_level?: true,
     deps: [Grappa.IRC, Grappa.Repo, Grappa.Accounts, Grappa.Networks],
-    exports: [Visitor]
+    exports: [Visitor, VisitorChannel]
 
   import Ecto.Query
 
