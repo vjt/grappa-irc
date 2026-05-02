@@ -7642,10 +7642,10 @@ In a real browser at `http://grappa.bad.ass`:
 | 3 | Wrong-password login — type nick + wrong password → submit | Connects (HTTP 200), stays anon (no +r ever), `password_encrypted` stays null in DB after 10s, no failure-path UX |
 | 4 | Reconnect with cached password + nick collision | First /quit + reconnect path: NICK 433 → underscore-append + GHOST + WHOIS → 401 → /nick + IDENTIFY succeeds |
 | 5 | Sliding TTL bump | Every HTTP request bumps expires_at if ≥1h since last bump (verify in DB) |
-| 6 | Per-IP cap | Set `GRAPPA_MAX_VISITORS_PER_IP=2`, attempt 3rd login from same IP → 429 |
+| 6 | Per-IP cap | Compiled default is 5 (`config/config.exs`); provision 5 visitors from same IP → 6th login → 429. NOT env-var-tunable post-S16 — `:max_visitors_per_ip` is `Application.compile_env`-baked; runtime override invisible. To smoke a smaller cap, rebuild image with `config/prod.exs` override + redeploy. |
 | 7 | `mix grappa.reap_visitors --network=ghosted` | Removes orphaned rows; Bootstrap stops complaining |
 | 8 | Reaper sweep | Manually set a visitor's expires_at to past → wait 60s → row gone, scrollback wiped |
-| 9 | Visitor logout | Click logout → DELETE /auth/logout returns 204 → Session.Server gone (verify via `scripts/observer.sh`) → visitor row STAYS in DB → re-login with same nick reattaches existing scrollback |
+| 9 | Visitor logout (anon) — W11 | Click logout → DELETE /auth/logout returns 204 → Session.Server gone (verify via `scripts/observer.sh`) → **anon visitor row PURGED from DB** (W11 co-terminus rule; `purge_if_anon/1` deletes when `password_encrypted` is nil) → re-login with same nick provisions a FRESH anon row, fresh scrollback. Registered visitor logout: row STAYS (purge_if_anon no-op when password_encrypted set), session.server gone, re-login with correct password reattaches existing visitor row + scrollback. |
 
 - [ ] **Step 26.3: Document any deviations as W-cluster wrinkles in this file**
 
