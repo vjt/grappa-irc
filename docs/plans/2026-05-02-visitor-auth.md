@@ -6840,8 +6840,78 @@ EOF
 
 **Files:**
 - Create: `lib/grappa/visitors/reaper.ex`
-- Modify: `lib/grappa/application.ex` (add to supervision tree)
+- Modify: `lib/grappa/application.ex` (add to supervision tree + Boundary deps)
 - Test: `test/grappa/visitors/reaper_test.exs`
+
+**Dispatch-time amendments (S15):**
+
+- **D1 — Logger metadata key drift.** Plan body uses `visitor: v.id`.
+  Allowlist key is `:visitor_id` (set in S10 + reaffirmed S14); the
+  S10/S11 convention is `visitor_id:` everywhere. Use `visitor_id:`.
+- **D2 — `if cond, do: side_effect` flagged by `unmatched_return`.**
+  Plan body's `handle_info(:tick, _)` has
+  `if n > 0, do: Logger.info(...)`. Per S13/S14 vigilance: wrap the
+  expression with `_ = if ... do ... end` OR rewrite as case. Use the
+  case form here — it's cleaner with the `n == 0` skip path explicit.
+- **D3 — Application.ex insertion slot + Boundary deps update.** Plan
+  body comment says "AFTER Repo + Bootstrap" which is wrong:
+  `Grappa.Bootstrap` is appended last conditionally via
+  `bootstrap_child()`. Slot Reaper between `GrappaWeb.Endpoint` and
+  the `++ bootstrap_child()` join — Reaper depends only on Repo (up
+  early) and is logically alongside Endpoint as a long-running
+  service. Also: `Grappa.Application`'s `use Boundary, deps: [...]`
+  must add `Grappa.Visitors.Reaper`. Alphabetize: insert between
+  `Grappa.Vault` and `GrappaWeb`.
+- **D4 — `async: false` for the GenServer-tick test is correct.**
+  `Grappa.DataCase` sets `shared: not tags[:async]`, so `async: false`
+  flips sandbox into shared mode — the spawned Reaper sees the
+  test's inserts. Plan body has `async: false`. ✓ no drift.
+- **D5 — Reaper boundary slot.** Reaper lives at
+  `Grappa.Visitors.Reaper` (sibling of `Login`, `SessionPlan`,
+  `Visitor`, `VisitorChannel`). Plan declares
+  `use Boundary, top_level?: true` — opts OUT of `Grappa.Visitors`'s
+  boundary. Intentional: Reaper is a top-level supervised service
+  that consumes the Visitors context. Do NOT add Reaper to
+  `Grappa.Visitors`'s `exports` list.
+
+```elixir
+# REVISED handle_info clause (post-S15 amend) — log-on-nonzero via case.
+@impl true
+def handle_info(:tick, state) do
+  {:ok, n} = sweep()
+
+  case n do
+    0 -> :ok
+    _ -> Logger.info("reaper swept #{n} expired visitor(s)")
+  end
+
+  schedule_tick(state.interval_ms)
+  {:noreply, state}
+end
+```
+
+```elixir
+# REVISED sweep/0 Logger key (post-S15 amend).
+Enum.each(expired, fn v ->
+  case Visitors.delete(v.id) do
+    :ok -> :ok
+    {:error, reason} ->
+      Logger.error("reaper delete failed",
+        visitor_id: v.id,
+        error: inspect(reason)
+      )
+  end
+end)
+```
+
+```elixir
+# REVISED Application supervision tree slot (post-S15 amend).
+# In `lib/grappa/application.ex`:
+#   1) Insert `Grappa.Visitors.Reaper` between `GrappaWeb.Endpoint`
+#      and the `++ bootstrap_child()` join.
+#   2) Add `Grappa.Visitors.Reaper` to the `use Boundary, deps: [...]`
+#      list, alphabetically between `Grappa.Vault` and `GrappaWeb`.
+```
 
 - [ ] **Step 22.1: Failing tests**
 
