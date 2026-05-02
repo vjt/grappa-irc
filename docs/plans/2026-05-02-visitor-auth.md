@@ -2562,63 +2562,146 @@ EOF
 ### Task 8: Session.Server — synchronous login readiness signal
 
 **Files:**
-- Modify: `lib/grappa/session/server.ex`
+- Modify: `lib/grappa/session/server.ex`, `lib/grappa/session.ex` (`start_opts/0` type extension)
 - Test: extend `test/grappa/session/server_test.exs`
 
-The login flow needs a way to await `001 RPL_WELCOME` synchronously. Add a `notify_pid` start_opt — when set, Session.Server sends `{:session_ready, ref}` on first 001 from upstream.
+The login flow needs a way to await `001 RPL_WELCOME` synchronously. Add `notify_pid` + `notify_ref` start_opts — when both set, Session.Server sends `{:session_ready, ref}` to `notify_pid` on first 001 from upstream. One-shot: clears the notify fields after firing so a subsequent reconnect-001 doesn't re-fire to a long-dead login probe.
+
+**S6 dispatch-time corrections** (drift caught against worktree HEAD `51af256`):
+- The plan body originally used `insert(:user)` / `insert(:network)` ExMachina shape — codebase has NO ExMachina dep. Canonical fixture is `auth_fixtures.ex`'s `setup_user_and_network/2` + `start_session_for/2`. The notify-fields test extends the latter pattern with an explicit `SessionPlan.resolve/1` + `Session.start_session/3` so the override map can carry the new opts.
+- The plan body originally referenced `Session.start_session(insert(:user).id, insert(:network).id, ...)` (pre-Task-6.5 shape). Post-Task-6.5 the signature is `Session.start_session({:user, user.id}, network.id, opts)` — the subject is a tagged tuple. Test below is amended.
+- The plan body originally referenced an undefined `plan_opts_for(fake_server)` helper. Replaced with explicit `SessionPlan.resolve(credential)` + `Map.merge`.
+- The plan body originally referenced `IRCServer.start_link()` / `expect_register` / `send_001` — those helpers do NOT exist in `test/support/irc_server.ex`. Canonical surface is `start_link(handler)` (2-arity), `feed/2` for server→client lines, `wait_for_line/3`. Test below uses the same shape as the existing autojoin tests in this file.
+- The plan body originally referenced `defmodule State` with a `%State{...}` struct. The current `Server.state()` is a plain `map()` (see `lib/grappa/session/server.ex:114`). Implementation below extends the existing map shape + `state()` type.
+- The plan body originally pattern-matched `:"001"` command tags. The IRC parser surfaces RFC numerics as `{:numeric, 1}` (see `lib/grappa/irc/parser.ex:153`), and `Server.handle_info/2` already has a 001 clause for autojoin. Implementation below INTERLEAVES the notify-firing into that existing clause rather than adding a separate handler — one source of truth for "we just got 001."
 
 - [ ] **Step 8.1: Failing test**
 
 ```elixir
-# test/grappa/session/server_test.exs — add describe
-describe "notify_pid wakes caller on 001 RPL_WELCOME" do
-  test "caller receives :session_ready when 001 arrives" do
-    # Use IRCServer test helper
-    {:ok, fake_server} = IRCServer.start_link()
-    IRCServer.expect_register(fake_server)
+# test/grappa/session/server_test.exs — append a new describe block
+describe "notify_pid/notify_ref synchronous login readiness" do
+  test "caller receives {:session_ready, ref} on first 001 RPL_WELCOME" do
+    {server, port} = start_server()
+    {user, network, credential} = setup_user_and_network(port)
 
     parent = self()
     ref = make_ref()
 
-    {:ok, _pid} = Session.start_session(insert(:user).id, insert(:network).id,
-      Map.merge(plan_opts_for(fake_server), %{notify_pid: parent, notify_ref: ref}))
+    {:ok, plan} = SessionPlan.resolve(credential)
+    plan = Map.merge(plan, %{notify_pid: parent, notify_ref: ref})
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
-    IRCServer.send_001(fake_server)
+    :ok = await_handshake(server)
+    IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
     assert_receive {:session_ready, ^ref}, 5_000
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  test "notify is one-shot — second 001 does NOT re-fire" do
+    {server, port} = start_server()
+    {user, network, credential} = setup_user_and_network(port)
+
+    parent = self()
+    ref = make_ref()
+
+    {:ok, plan} = SessionPlan.resolve(credential)
+    plan = Map.merge(plan, %{notify_pid: parent, notify_ref: ref})
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+    :ok = await_handshake(server)
+    IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+    assert_receive {:session_ready, ^ref}, 5_000
+
+    IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome again\r\n")
+    refute_receive {:session_ready, ^ref}, 200
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  test "no notify opts — Session.Server runs normally without firing" do
+    {server, port} = start_server()
+    {user, network, _} = setup_user_and_network(port)
+    pid = start_session_for(user, network)
+
+    :ok = await_handshake(server)
+    IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+    refute_receive {:session_ready, _}, 200
+    :ok = GenServer.stop(pid, :normal, 1_000)
   end
 end
 ```
 
-- [ ] **Step 8.2: Add notify state field + 001 hook**
+- [ ] **Step 8.2: Extend `start_opts/0` + `init_opts/0` types**
 
 ```elixir
-# lib/grappa/session/server.ex — extend state struct
-defmodule State do
-  @type t :: %__MODULE__{
-    # ... existing fields
-    notify_pid: pid() | nil,
-    notify_ref: reference() | nil,
-    # ... existing
-  }
-end
-
-# In init/1, accept the new opts
-def init(%{notify_pid: nil, notify_ref: nil} = opts), do: # passthrough
-def init(%{notify_pid: pid, notify_ref: ref} = opts) when is_pid(pid) and is_reference(ref) do
-  # ... existing init logic
-  {:ok, %State{state | notify_pid: pid, notify_ref: ref}, {:continue, {:start_client, client_opts}}}
-end
-
-# In handle_info for 001:
-def handle_info({:irc, %Message{command: :"001", _rest_}}, %State{notify_pid: pid, notify_ref: ref} = state)
-    when is_pid(pid) do
-  send(pid, {:session_ready, ref})
-  {:noreply, %State{state | notify_pid: nil, notify_ref: nil}}  # one-shot
-end
+# lib/grappa/session.ex — extend start_opts/0
+@type start_opts :: %{
+        # ... existing required fields
+        optional(:notify_pid) => pid(),
+        optional(:notify_ref) => reference()
+      }
 ```
 
-(Requires existing IRC parser to surface `:001` command. Verify in `Grappa.IRC.Parser`. If not surfaced today, add the numeric → `:welcome` mapping.)
+```elixir
+# lib/grappa/session/server.ex — extend init_opts/0 + state()
+@type init_opts :: %{
+        # ... existing required fields
+        optional(:notify_pid) => pid(),
+        optional(:notify_ref) => reference()
+      }
+
+@type state :: %{
+        # ... existing fields
+        notify_pid: pid() | nil,
+        notify_ref: reference() | nil
+      }
+```
+
+- [ ] **Step 8.3: Wire init/1 + 001 handler**
+
+```elixir
+# lib/grappa/session/server.ex — init/1 reads optional notify fields
+def init(opts) do
+  :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
+
+  state = %{
+    # ... existing fields
+    notify_pid: Map.get(opts, :notify_pid),
+    notify_ref: Map.get(opts, :notify_ref)
+  }
+
+  {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
+end
+
+# Existing 001 handler gains notify firing — single source of truth for
+# "we just got 001." Uses maybe_fire_notify/1 helper to one-shot-clear.
+def handle_info(
+      {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]} = msg},
+      state
+    )
+    when is_binary(welcomed_nick) do
+  Enum.each(state.autojoin, fn channel -> ... end)
+
+  if welcomed_nick != state.nick do
+    Logger.info("nick reconciled at registration", from: state.nick, to: welcomed_nick)
+  end
+
+  state = maybe_fire_notify(state)
+  delegate(msg, state)
+end
+
+defp maybe_fire_notify(%{notify_pid: pid, notify_ref: ref} = state)
+     when is_pid(pid) and is_reference(ref) do
+  send(pid, {:session_ready, ref})
+  %{state | notify_pid: nil, notify_ref: nil}
+end
+
+defp maybe_fire_notify(state), do: state
+```
+
+(Parser already surfaces 001 as `{:numeric, 1}` per `lib/grappa/irc/parser.ex:153` — no parser change needed.)
 
 - [ ] **Step 8.3: Run tests**
 
