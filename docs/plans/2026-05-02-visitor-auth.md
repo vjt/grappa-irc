@@ -5301,77 +5301,236 @@ EOF
 
 ---
 
-### Task 16: Session.Server — auto-issue IDENTIFY post-001 if pending_password set
+### Task 16: Session.Server — stage pending_auth at 001 for `:nickserv_identify` (mirrors AuthFSM auto-IDENTIFY)
 
 **Files:**
 - Modify: `lib/grappa/session/server.ex`
+- Test: `test/grappa/session/server_test.exs`
 
-When Visitors.Login passed `pending_password` in plan opts, Session.Server queues an outbound `PRIVMSG NickServ :IDENTIFY <pwd>` immediately after 001. NSInterceptor stages it; +r observation commits.
+**Dispatch-time amendments (S11)** — large drift sweep against plan body.
+Original plan body assumed Server emits the wire IDENTIFY itself. **Wrong.**
+`Grappa.IRC.AuthFSM.step/2` already emits `PRIVMSG NickServ :IDENTIFY <pw>\r\n`
+on `{:numeric, 1}` for `auth_method: :nickserv_identify` (auth_fsm.ex
+~line 343–346). That emission goes through `IRC.Client`'s socket — it
+NEVER passes through Session.Server's `handle_call({:send_privmsg, ...})`,
+so NSInterceptor doesn't fire and `pending_auth` stays nil. Then the
++r MODE arrives, `EventRouter` emits `:visitor_r_observed` → no commit
+because nothing was staged. **Bug.**
 
-- [ ] **Step 16.1: Failing test**
+Server's job for this task is **staging-only**: at 001, if the plan
+indicates `auth_method == :nickserv_identify` and a password is on hand,
+stage `pending_auth` so the +r observer (Task 15) finds it ready. No
+wire emission — AuthFSM owns that. One-shot semantics — clear after
+first 001 so a Phase-5 reconnect-001 doesn't re-stage.
+
+Drift items captured below + folded into the canonical body:
+
+- `%State{...}` struct does not exist — Server state is a plain map
+  built inline in `init/1`. Pattern-match via `%{...}` literals.
+- Plan body `command: :"001"` — actual is `command: {:numeric, 1}`.
+- `client_pid` field name — actual is `client`.
+- `plan_opts_for(fake)` test helper does not exist. Use
+  `start_visitor_session_for/2` + `visitor_with_network/2` +
+  `Visitors.commit_password/2` for fixture state.
+- `IRCServer.send_001/1` does not exist. Use the canonical
+  `rfc_handler` shape (handler replies `:server 001 <nick> :Welcome\r\n`
+  on `USER` line) — see `server_test.exs` "self-NICK rename" test.
+- AuthFSM-already-emits insight — Server stages, AuthFSM emits. The
+  rendezvous on +r MODE is what completes the loop. Plan body's
+  self-call / direct-send choice is moot — drop both.
+- New state field `pending_password :: nil | String.t()` — source from
+  `opts.password` at `init/1` when `opts.auth_method ==
+  :nickserv_identify`, else nil. Add to `@type state`.
+- One-shot — after the first 001 stages `pending_auth`, set
+  `pending_password: nil` so reconnect-001 isn't a stale re-trigger.
+- Test sync — use the PING/PONG flush trick (canonical for
+  cross-process pipeline drains, see "self-NICK rename" test) so the
+  Server has handled the inbound 001 before `:sys.get_state`.
+
+- [ ] **Step 16.1: Failing test (TDD)**
+
+Visitor with a committed NickServ password reconnects; on 001 the
+Server stages `pending_auth` from the carried `pending_password` and
+clears the field (one-shot).
 
 ```elixir
-describe "pending_password from plan auto-issues IDENTIFY post-001" do
-  test "session sends NickServ IDENTIFY after 001", %{server: fake} do
-    plan = plan_opts_for(fake) |> Map.put(:pending_password, "s3cret")
+# test/grappa/session/server_test.exs — new describe block
 
-    {:ok, _pid} = Session.start_session({:visitor, "uuid-1"}, network_id, plan)
-    IRCServer.send_001(fake)
+describe "001 RPL_WELCOME stages pending_auth for :nickserv_identify visitors" do
+  test "registered visitor: 001 stages pending_auth + clears one-shot field" do
+    nick = "v_t16_#{System.unique_integer([:positive])}"
 
-    assert_receive {:ircserver_received, "PRIVMSG NickServ :IDENTIFY s3cret"}, 1_000
+    rfc_handler = fn state, line ->
+      if String.starts_with?(line, "USER ") do
+        {:reply, ":server 001 #{nick} :Welcome\r\n", state}
+      else
+        {:reply, nil, state}
+      end
+    end
+
+    {server, port} = start_server(rfc_handler)
+    {visitor, network} = visitor_with_network(port, nick: nick)
+    {:ok, _} = Grappa.Visitors.commit_password(visitor.id, "s3cret")
+    visitor = Grappa.Repo.reload!(visitor)
+
+    pid = start_visitor_session_for(visitor, network)
+
+    # Proof AuthFSM (inside Client) saw 001 and emitted IDENTIFY.
+    {:ok, _} =
+      IRCServer.wait_for_line(
+        server,
+        &String.starts_with?(&1, "PRIVMSG NickServ :IDENTIFY")
+      )
+
+    # Flush cross-process pipeline so Server has processed inbound 001.
+    IRCServer.feed(server, "PING :flush\r\n")
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+    state = :sys.get_state(pid)
+    assert match?({"s3cret", _deadline}, state.pending_auth)
+    assert is_reference(state.pending_auth_timer)
+    assert is_nil(state.pending_password)
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  test "anon visitor (auth_method :none): 001 does NOT stage pending_auth" do
+    nick = "v_t16a_#{System.unique_integer([:positive])}"
+
+    rfc_handler = fn state, line ->
+      if String.starts_with?(line, "USER ") do
+        {:reply, ":server 001 #{nick} :Welcome\r\n", state}
+      else
+        {:reply, nil, state}
+      end
+    end
+
+    {server, port} = start_server(rfc_handler)
+    {visitor, network} = visitor_with_network(port, nick: nick)
+    pid = start_visitor_session_for(visitor, network)
+
+    :ok = await_handshake(server)
+    IRCServer.feed(server, "PING :flush\r\n")
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+    state = :sys.get_state(pid)
+    assert is_nil(state.pending_auth)
+    assert is_nil(state.pending_password)
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
   end
 end
 ```
 
-- [ ] **Step 16.2: Implement**
+- [ ] **Step 16.2: Implement (state field + 001 hook)**
+
+State map in `init/1` gains `pending_password` (source from opts when
+`auth_method == :nickserv_identify`):
 
 ```elixir
-# lib/grappa/session/server.ex — handle_info for 001 already in Task 8
-def handle_info({:irc, %Message{command: :"001"} = msg}, state) do
-  state = maybe_notify_ready(state)
-  state = maybe_issue_pending_identify(state)
-  # ... existing 001 handling
-  {:noreply, state}
-end
+# lib/grappa/session/server.ex — @type state
 
-defp maybe_issue_pending_identify(%State{pending_password: nil} = state), do: state
+@type state :: %{
+        # ...existing fields...
+        pending_auth: nil | {String.t(), integer()},
+        pending_auth_timer: reference() | nil,
+        pending_password: String.t() | nil,
+        visitor_committer: visitor_committer() | nil
+      }
 
-defp maybe_issue_pending_identify(%State{pending_password: pwd, client_pid: client} = state)
-     when is_binary(pwd) do
-  Client.send_line(client, "PRIVMSG NickServ :IDENTIFY #{pwd}")
-  # NSInterceptor will fire on the send path and stage pending_auth.
-  # Actually — Client.send_line bypasses our handle_call(:send_privmsg);
-  # call NSInterceptor.intercept directly here OR route through
-  # GenServer.call(self(), {:send_privmsg, ...}).
-  # Cleanest: route through self-call:
-  GenServer.call(self(), {:send_privmsg, "NickServ", "IDENTIFY #{pwd}"})
-  # NB: self-call from handle_info is generally fine in OTP — same process,
-  # but message queue ordering matters. Alternative: stage pending_auth
-  # inline + direct Client.send_line:
-  state = stage_pending_auth(state, pwd)
-  Client.send_line(state.client_pid, "PRIVMSG NickServ :IDENTIFY #{pwd}")
+# init/1 state map gains:
 
-  %{state | pending_password: nil}
-end
+state = %{
+  # ...existing fields...
+  pending_auth: nil,
+  pending_auth_timer: nil,
+  pending_password: pending_password_from_opts(opts),
+  visitor_committer: Map.get(opts, :visitor_committer)
+}
+
+# AuthFSM already emits the wire IDENTIFY at 001 (see
+# `Grappa.IRC.AuthFSM.maybe_nickserv_identify/1`); Server only carries
+# the password forward so the 001 handler can stage `pending_auth`,
+# meeting the +r observer (Task 15) at the rendezvous.
+@spec pending_password_from_opts(init_opts()) :: String.t() | nil
+defp pending_password_from_opts(%{auth_method: :nickserv_identify, password: pw})
+     when is_binary(pw),
+     do: pw
+
+defp pending_password_from_opts(_), do: nil
 ```
 
-(Self-call from `handle_info` is a code smell — go with the inline `stage_pending_auth` + direct `Client.send_line` path. Single place: NSInterceptor stages either via the public `:send_privmsg` API path or directly via `stage_pending_auth/2`.)
+001 handler stages, then clears (one-shot):
+
+```elixir
+def handle_info(
+      {:irc, %Message{command: {:numeric, 1}, params: [welcomed_nick | _]} = msg},
+      state
+    )
+    when is_binary(welcomed_nick) do
+  Enum.each(state.autojoin, fn channel ->
+    # ...existing autojoin loop unchanged...
+  end)
+
+  if welcomed_nick != state.nick do
+    Logger.info("nick reconciled at registration",
+      from: state.nick,
+      to: welcomed_nick
+    )
+  end
+
+  state =
+    state
+    |> maybe_fire_notify()
+    |> maybe_stage_pending_password()
+
+  delegate(msg, state)
+end
+
+# AuthFSM (inside `Grappa.IRC.Client`) emits the wire IDENTIFY at 001
+# for `:nickserv_identify` plans — that emission bypasses
+# `handle_call({:send_privmsg, ...})`, so NSInterceptor doesn't see it.
+# This helper stages `pending_auth` directly so the +r observer
+# (`apply_effects/2 → :visitor_r_observed`) can commit. One-shot —
+# `pending_password` is cleared after first 001 to prevent a
+# reconnect-001 from re-staging stale credentials.
+@spec maybe_stage_pending_password(state()) :: state()
+defp maybe_stage_pending_password(%{pending_password: nil} = state), do: state
+
+defp maybe_stage_pending_password(%{pending_password: pwd} = state)
+     when is_binary(pwd) do
+  state
+  |> stage_pending_auth(pwd)
+  |> Map.put(:pending_password, nil)
+end
+```
 
 - [ ] **Step 16.3: Run tests + commit**
 
 ```bash
 scripts/test.sh test/grappa/session/server_test.exs
+scripts/check.sh
+scripts/dialyzer.sh   # PLT-staleness paranoia per S10 lesson
+
 git add lib/grappa/session/server.ex test/grappa/session/server_test.exs
 git commit -m "$(cat <<'EOF'
-feat(session): auto-issue NickServ IDENTIFY post-001 when pending_password set
+feat(session): stage pending_auth at 001 for :nickserv_identify visitors
 
-Plan opts can carry pending_password (from Visitors.Login). On 001
-RPL_WELCOME, Session.Server stages the password via stage_pending_auth/2
-and emits PRIVMSG NickServ :IDENTIFY <pwd>. Atomic commit follows on +r
-MODE observation per Task 15.
+`Grappa.IRC.AuthFSM.step/2` already emits `PRIVMSG NickServ :IDENTIFY <pw>`
+on `{:numeric, 1}` for `auth_method: :nickserv_identify` plans (auth_fsm.ex
+maybe_nickserv_identify/1) — the line goes out via `IRC.Client`, NOT through
+`Session.Server.handle_call({:send_privmsg, _, _}, _, _)`. NSInterceptor's
+capture path therefore does not fire, leaving `pending_auth` empty. The +r
+MODE observer (Task 15) then sees `:visitor_r_observed` with nothing
+staged → no commit, registered visitor stays anon.
 
-Same code path as cicchetto-typed `/ns identify` — one feature, one code
-path per CLAUDE.md.
+Server now carries `pending_password :: String.t() | nil` in state,
+populated from `opts.password` when `opts.auth_method ==
+:nickserv_identify`. The 001 handler stages `pending_auth` directly via
+`stage_pending_auth/2`, then clears `pending_password` (one-shot — a
+Phase-5 reconnect-001 must not re-stage stale credentials). AuthFSM owns
+the wire emission; Server owns the staging rendezvous. One feature, one
+code path per CLAUDE.md.
 EOF
 )"
 ```
