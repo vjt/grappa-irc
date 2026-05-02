@@ -4101,18 +4101,90 @@ EOF
 - Modify: `lib/grappa_web/channels/user_socket.ex`
 - Test: extend `test/grappa_web/channels/user_socket_test.exs`
 
+**S8 dispatch-time amendment** — pre-implementation drift sweep against
+the post-S6/S7 surface caught seven items vs. the original Task 12 body.
+The plan body below is the corrected canonical form:
+
+1. **Test fixture pattern** — codebase has no ExMachina dep. Use
+   `visitor_fixture/1` from `test/support/auth_fixtures.ex` (already
+   imported as `import Grappa.AuthFixtures` at the top of the test
+   file).
+2. **`:user_name` assign is load-bearing** —
+   `GrappaWeb.GrappaChannel.authorize/2` compares
+   `socket.assigns.user_name` against the topic's first user segment
+   (`Topic.user_of/1`); `UserSocket.id/1` interpolates `:user_name`
+   into the per-socket id string. The user-side branch MUST keep
+   assigning `:user_name = user.name`. (Original plan body dropped it
+   in favor of `:current_user_id`, which would break every existing
+   user-side join + the per-socket id used for force-disconnect.)
+3. **Visitor `:user_name` mirrors `subject_label`** —
+   `Session.Server` broadcasts visitor events under
+   `Topic.channel("visitor:" <> visitor.id, network_slug, channel)`
+   per `Grappa.Visitors.SessionPlan.build/1`'s subject_label rule
+   (Q1=a). For a visitor socket to subscribe to its own events,
+   `socket.assigns.user_name` must equal that prefix. Visitor branch
+   sets `:user_name = "visitor:" <> visitor.id` inline. (Future
+   cleanup TODO: lift the prefix into a shared
+   `Grappa.Session.subject_label/1` helper if Tasks 13+ duplicate
+   the construction.)
+4. **`Visitors.touch/1` `{:error, :expired}` is a hard reject** —
+   the REST plug (`GrappaWeb.Plugs.Authn`, Task 11) returns 401 on
+   `:expired`. Socket connect must mirror — return `:error` (Phoenix
+   WS rejection), NOT silently proceed without `:current_visitor_id`.
+   `{:error, :not_found}` (CASCADE invariant violation) is also a
+   reject — same uniform failure surface as the REST plug.
+5. **`is_binary(token)` guard + fallback `connect(_, _, _)` clause**
+   stay — they reject malformed param shapes before hitting
+   `Accounts.authenticate/1`. Existing user-side test cases assert
+   `:error` on `%{}` and `%{"token" => "not-a-uuid"}`; visitor
+   branch reuses the same gate.
+6. **`:current_session_id`** is assigned in `connect/3` itself, not
+   inside the per-FK dispatch. Single-source — one assign at the
+   join boundary, not duplicated per dispatch arm. (Original plan
+   body's `socket.assigns[:current_session_id] || nil` is also dead
+   code on first connect.)
+7. **`Accounts.create_session/3` subject-tuple shape** post-Task-6.5
+   — `{:user, user_id}` / `{:visitor, visitor_id}`, both with
+   `is_binary` guards. Already in plan body; included here for
+   completeness.
+
 - [ ] **Step 12.1: Failing test**
 
 ```elixir
-# test/grappa_web/channels/user_socket_test.exs
+# test/grappa_web/channels/user_socket_test.exs — extend the existing
+# describe blocks with a visitor-token path. The file already has
+# `use GrappaWeb.ChannelCase, async: false`, `import Grappa.AuthFixtures`,
+# and a `connect_with/1` helper — reuse them.
+
 describe "connect/3 visitor token path" do
-  test "visitor session token connects + assigns visitor_id" do
-    visitor = insert(:visitor)
+  test "visitor token assigns :user_name = visitor:<id> + :current_visitor_id" do
+    visitor = visitor_fixture()
     {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
 
-    assert {:ok, socket} = connect(GrappaWeb.UserSocket, %{"token" => session.id})
+    assert {:ok, socket} = connect_with(%{"token" => session.id})
+    assert socket.assigns.user_name == "visitor:" <> visitor.id
     assert socket.assigns.current_visitor_id == visitor.id
+    assert socket.assigns.current_visitor.id == visitor.id
+    assert socket.assigns.current_session_id == session.id
     refute Map.has_key?(socket.assigns, :current_user_id)
+  end
+
+  test "expired visitor session rejects with :error" do
+    past = DateTime.add(DateTime.utc_now(), -1, :hour)
+    visitor = visitor_fixture(expires_at: past)
+    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+    assert :error = connect_with(%{"token" => session.id})
+  end
+end
+
+describe "id/1 visitor branch" do
+  test "scopes the per-socket id by visitor:<id>" do
+    visitor = visitor_fixture()
+    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+    {:ok, socket} = connect_with(%{"token" => session.id})
+
+    assert UserSocket.id(socket) == "user_socket:visitor:" <> visitor.id
   end
 end
 ```
@@ -4121,29 +4193,71 @@ end
 
 ```elixir
 # lib/grappa_web/channels/user_socket.ex
-def connect(%{"token" => token}, socket, _connect_info) do
-  with {:ok, session} <- Accounts.authenticate(token) do
-    {:ok, assign_subject(socket, session)}
-  else
-    _ -> :error
+defmodule GrappaWeb.UserSocket do
+  use Phoenix.Socket
+
+  alias Grappa.{Accounts, Visitors}
+  alias Grappa.Accounts.Session
+  alias Grappa.Visitors.Visitor
+
+  channel "grappa:user:*", GrappaWeb.GrappaChannel
+
+  @impl Phoenix.Socket
+  def connect(%{"token" => token}, socket, _) when is_binary(token) do
+    with {:ok, session} <- Accounts.authenticate(token),
+         {:ok, socket} <- assign_subject(socket, session) do
+      {:ok, assign(socket, :current_session_id, session.id)}
+    else
+      _ -> :error
+    end
   end
-end
 
-defp assign_subject(socket, %{user_id: user_id, visitor_id: nil}) when is_binary(user_id) do
-  socket
-  |> assign(:current_user_id, user_id)
-  |> assign(:current_session_id, socket.assigns[:current_session_id] || nil)
-end
+  def connect(_, _, _), do: :error
 
-defp assign_subject(socket, %{user_id: nil, visitor_id: visitor_id}) when is_binary(visitor_id) do
-  case Visitors.touch(visitor_id) do
-    {:ok, _} ->
-      assign(socket, :current_visitor_id, visitor_id)
-    _ ->
-      socket  # connect proceeds; channel join can fail later if needed
+  @impl Phoenix.Socket
+  def id(socket), do: "user_socket:#{socket.assigns.user_name}"
+
+  defp assign_subject(socket, %Session{user_id: user_id, visitor_id: nil})
+       when is_binary(user_id) do
+    # FK guarantees the user row exists (ON DELETE CASCADE);
+    # `Ecto.NoResultsError` here would be an invariant violation
+    # worth crashing on.
+    user = Accounts.get_user!(user_id)
+    {:ok, assign(socket, :user_name, user.name)}
+  end
+
+  defp assign_subject(socket, %Session{user_id: nil, visitor_id: visitor_id})
+       when is_binary(visitor_id) do
+    case Visitors.touch(visitor_id) do
+      {:ok, %Visitor{} = visitor} ->
+        socket =
+          socket
+          |> assign(:user_name, "visitor:" <> visitor.id)
+          |> assign(:current_visitor_id, visitor.id)
+          |> assign(:current_visitor, visitor)
+
+        {:ok, socket}
+
+      {:error, _reason} ->
+        # `:expired` (W9 sliding TTL elapsed) and `:not_found`
+        # (FK CASCADE invariant violation) both reject the connect
+        # — uniform failure surface mirrors `Plugs.Authn` (Task 11).
+        :error
+    end
   end
 end
 ```
+
+The `:user_name` assign serves two consumers, both load-bearing:
+- `GrappaWeb.GrappaChannel.authorize/2` — cross-subject join authz.
+  Visitor topic shape `grappa:user:visitor:<uuid>/network:<slug>/channel:<chan>`
+  parses to `{:channel, "visitor:<uuid>", slug, chan}` via
+  `Topic.parse/1`'s existing `String.split(rest, "/", parts: 3)`
+  rule; `Topic.user_of/1` returns the first segment verbatim
+  (`"visitor:<uuid>"`). Match against `:user_name` succeeds.
+- `id/1` — the per-socket id used by Phoenix to disconnect a
+  socket on session revocation. `"user_socket:visitor:<uuid>"`
+  is unique per visitor.
 
 - [ ] **Step 12.3: Run tests**
 
@@ -4156,12 +4270,26 @@ scripts/test.sh test/grappa_web/channels/user_socket_test.exs
 ```bash
 git add lib/grappa_web/channels/user_socket.ex test/grappa_web/channels/user_socket_test.exs
 git commit -m "$(cat <<'EOF'
-feat(channels): UserSocket connect branches on session FK
+feat(channels): UserSocket connect branches on session FK XOR
 
-Visitor token assigns :current_visitor_id (not :current_user_id).
-Touches sliding TTL on connect; subsequent handle_in callbacks rely on
-authenticated socket without re-touching (handle_in is the user-initiated
-verb that bumps — added in next task on per-channel handlers if needed).
+`Accounts.authenticate/1` returns the live `Session` row. The connect
+callback now dispatches on the FK XOR (`user_id` vs `visitor_id`) and
+assigns subject-specific socket state:
+
+  * user branch — `:user_name = user.name` (unchanged), backing the
+    existing `id/1` and `GrappaChannel.authorize/2` consumers.
+  * visitor branch — `:user_name = "visitor:" <> visitor.id` mirrors
+    `Session.Server`'s `subject_label` so `GrappaChannel.authorize/2`
+    routes the same topic-shape predicate uniformly across subjects;
+    `:current_visitor_id` + `:current_visitor` for downstream channel
+    handlers; `Visitors.touch/1` runs the W9 sliding-TTL refresh and
+    its `:expired` / `:not_found` returns reject the connect with
+    `:error`, mirroring `Plugs.Authn`'s 401 posture from Task 11.
+
+`:current_session_id` is assigned at the connect boundary (single
+source) regardless of subject. The `is_binary(token)` guard +
+fallback `connect(_, _, _)` clause stay to gate malformed param
+shapes before any DB lookup.
 EOF
 )"
 ```
