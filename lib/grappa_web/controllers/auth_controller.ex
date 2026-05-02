@@ -43,7 +43,8 @@ defmodule GrappaWeb.AuthController do
       # invariant violation (DB constraint blew up, sandbox died, ...)
       # and "let it crash" is the correct response — wrapping in a
       # 422 would hide the bug.
-      {:ok, session} = Accounts.create_session(user.id, format_ip(conn), user_agent(conn))
+      {:ok, session} =
+        Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
 
       conn
       |> put_status(:ok)

@@ -44,14 +44,20 @@ defmodule Grappa.Accounts do
   cost negligible, `last_seen_at` is bumped at most once every 60 s
   (`@last_seen_bump_threshold_seconds`).
   """
-  use Boundary, top_level?: true, deps: [Grappa.Repo], exports: [User, Session, Wire]
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Repo, Grappa.Visitors],
+    exports: [User, Session, Wire]
 
   import Ecto.Query
 
   alias Grappa.Accounts.{Session, User}
   alias Grappa.Repo
+  alias Grappa.Visitors.Visitor
 
   require Logger
+
+  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
 
   @idle_timeout_seconds 7 * 24 * 3600
   @last_seen_bump_threshold_seconds 60
@@ -118,51 +124,68 @@ defmodule Grappa.Accounts do
   def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
 
   @doc """
-  Creates a new bearer-token session for `user_id`.
+  Creates a new bearer-token session for the given `subject`.
+
+  `subject` is a tagged tuple — `{:user, user_id}` for an
+  operator-managed account login, `{:visitor, visitor_id}` for an
+  anonymous-IRC visitor session (cluster `visitor-auth` decisions
+  Q-A / Q-C: a single `sessions` table with an XOR FK so the
+  Authorization-bearer transport stays a single token namespace).
 
   `ip` and `user_agent` are recorded for audit; both may be `nil`
   (mix tasks bypass the HTTP surface and have neither). The returned
   `Session.t().id` IS the bearer token to hand back to the client.
   """
-  @spec create_session(Ecto.UUID.t(), String.t() | nil, String.t() | nil) ::
+  @spec create_session(subject(), String.t() | nil, String.t() | nil) ::
           {:ok, Session.t()} | {:error, Ecto.Changeset.t()}
-  def create_session(user_id, ip, user_agent) when is_binary(user_id) do
+  def create_session({:user, user_id}, ip, user_agent) when is_binary(user_id) do
+    do_create_session(%{user_id: user_id, ip: ip, user_agent: user_agent})
+  end
+
+  def create_session({:visitor, visitor_id}, ip, user_agent) when is_binary(visitor_id) do
+    do_create_session(%{visitor_id: visitor_id, ip: ip, user_agent: user_agent})
+  end
+
+  defp do_create_session(attrs) do
     now = DateTime.utc_now()
 
     %Session{}
-    |> Session.changeset(%{
-      user_id: user_id,
-      created_at: now,
-      last_seen_at: now,
-      ip: ip,
-      user_agent: user_agent
-    })
-    |> validate_user_exists()
+    |> Session.changeset(Map.merge(attrs, %{created_at: now, last_seen_at: now}))
+    |> validate_subject_exists()
     |> Repo.insert()
   end
 
-  # `Session.changeset/2` carries `assoc_constraint(:user)` for engines
-  # that surface FK violations by name (PostgreSQL etc.), but
-  # `ecto_sqlite3` returns the constraint name as `nil` so the
-  # built-in handling cannot match — the FK violation would surface
-  # as a raw `Ecto.ConstraintError` exception. Pre-flight existence
-  # check converts the miss to a clean changeset error before the
-  # insert. Race window between check and insert is narrow + benign
-  # — a concurrently-deleted user would still trip the DB FK as a
-  # backstop.
-  defp validate_user_exists(changeset) do
-    case Ecto.Changeset.get_change(changeset, :user_id) do
-      nil ->
+  # `Session.changeset/2` carries `assoc_constraint(:user)` and
+  # `assoc_constraint(:visitor)` for engines that surface FK
+  # violations by name (PostgreSQL etc.), but `ecto_sqlite3` returns
+  # the constraint name as `nil` so the built-in handling cannot
+  # match — the FK violation would surface as a raw
+  # `Ecto.ConstraintError` exception. Pre-flight existence check
+  # converts the miss to a clean changeset error before the insert,
+  # generalized from S29 H4's `validate_user_exists/1` to either
+  # subject side. Race window between check and insert is narrow +
+  # benign — a concurrently-deleted user / visitor would still trip
+  # the DB FK as a backstop.
+  defp validate_subject_exists(changeset) do
+    cond do
+      user_id = Ecto.Changeset.get_change(changeset, :user_id) ->
+        check_subject_exists(changeset, User, user_id, :user)
+
+      visitor_id = Ecto.Changeset.get_change(changeset, :visitor_id) ->
+        check_subject_exists(changeset, Visitor, visitor_id, :visitor)
+
+      true ->
         changeset
+    end
+  end
 
-      user_id ->
-        query = from(u in User, where: u.id == ^user_id)
+  defp check_subject_exists(changeset, schema, id, field) do
+    query = from(row in schema, where: row.id == ^id)
 
-        if Repo.exists?(query) do
-          changeset
-        else
-          Ecto.Changeset.add_error(changeset, :user, "does not exist")
-        end
+    if Repo.exists?(query) do
+      changeset
+    else
+      Ecto.Changeset.add_error(changeset, field, "does not exist")
     end
   end
 

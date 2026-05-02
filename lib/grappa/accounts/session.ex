@@ -38,11 +38,14 @@ defmodule Grappa.Accounts.Session do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Visitors.Visitor
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
           user_id: Ecto.UUID.t() | nil,
           user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+          visitor_id: Ecto.UUID.t() | nil,
+          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
           created_at: DateTime.t() | nil,
           last_seen_at: DateTime.t() | nil,
           revoked_at: DateTime.t() | nil,
@@ -53,6 +56,7 @@ defmodule Grappa.Accounts.Session do
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "sessions" do
     belongs_to :user, User, type: :binary_id
+    belongs_to :visitor, Visitor, type: :binary_id
 
     field :created_at, :utc_datetime_usec
     field :last_seen_at, :utc_datetime_usec
@@ -61,24 +65,28 @@ defmodule Grappa.Accounts.Session do
     field :ip, :string
   end
 
-  @cast_fields [:user_id, :created_at, :last_seen_at, :ip, :user_agent]
-  @required_fields [:user_id, :created_at, :last_seen_at]
+  @cast_fields [:user_id, :visitor_id, :created_at, :last_seen_at, :ip, :user_agent]
+  @required_fields [:created_at, :last_seen_at]
 
   @doc """
   Changeset for inserting a new session row.
 
-  Validates that `user_id`, `created_at`, and `last_seen_at` are
-  present (the other fields — `ip`, `user_agent` — are optional;
-  mix-task callers have neither).
+  Validates that `created_at` and `last_seen_at` are present (the
+  other fields — `ip`, `user_agent` — are optional; mix-task callers
+  have neither). Exactly one of `user_id` / `visitor_id` must be set —
+  the XOR constraint is enforced by `validate_subject_xor/1` and at
+  the DB level (CHECK constraint `sessions_subject_xor`).
 
-  `assoc_constraint(:user)` is a forward-compat hook: PostgreSQL +
-  MySQL surface FK violations with the constraint name attached so
-  Ecto can map them to `{:user, "does not exist"}`. `ecto_sqlite3`
-  returns the constraint name as `nil` (sqlite quirk), so the
-  built-in handler can't match — the actual stale-FK guard for
-  Grappa lives at `Accounts.create_session/3`'s `validate_user_exists/1`
-  pre-flight (S29 H4 + review-fix #5). Kept here so a future
-  PostgreSQL swap doesn't silently lose the FK validation.
+  `assoc_constraint(:user)` and `assoc_constraint(:visitor)` are
+  forward-compat hooks: PostgreSQL + MySQL surface FK violations with
+  the constraint name attached so Ecto can map them to
+  `{:user, "does not exist"}` / `{:visitor, "does not exist"}`.
+  `ecto_sqlite3` returns the constraint name as `nil` (sqlite quirk),
+  so the built-in handler can't match — the actual stale-FK guard for
+  Grappa lives at `Accounts.create_session/3`'s
+  `validate_subject_exists/1` pre-flight (S29 H4 + review-fix #5).
+  Both constraints are kept here so a future PostgreSQL swap doesn't
+  silently lose FK validation on either subject side.
 
   S29 H4: prior to this changeset, `Accounts.create_session/3` used
   `Ecto.Changeset.change/2` (no validation) and let the DB layer
@@ -90,6 +98,23 @@ defmodule Grappa.Accounts.Session do
     session
     |> cast(attrs, @cast_fields)
     |> validate_required(@required_fields)
+    |> validate_subject_xor()
     |> assoc_constraint(:user)
+    |> assoc_constraint(:visitor)
+  end
+
+  # Mirror of Grappa.Scrollback.Message.validate_subject_xor/1.
+  # Run BEFORE per-field validators so the XOR error surfaces first.
+  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_subject_xor(changeset) do
+    user_id = get_field(changeset, :user_id)
+    visitor_id = get_field(changeset, :visitor_id)
+
+    case {user_id, visitor_id} do
+      {nil, nil} -> add_error(changeset, :user_id, "must set user_id or visitor_id")
+      {_, nil} -> changeset
+      {nil, _} -> changeset
+      {_, _} -> add_error(changeset, :user_id, "user_id and visitor_id are mutually exclusive")
+    end
   end
 end
