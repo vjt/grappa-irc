@@ -92,8 +92,22 @@ defmodule Grappa.Session.Server do
   # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
   # an unconfirmed password doesn't sit on the heap forever, NOT an SLA.
   # Wrong passwords get wiped after this window, so the visitor DB
-  # never sees them (Task 15 lands the +r observer + atomic commit).
+  # never sees them.
   @pending_auth_timeout_ms 10_000
+
+  @typedoc """
+  Optional opaque callback the visitor-side `SessionPlan` injects into
+  every visitor plan. Invoked by `apply_effects/2` when EventRouter
+  emits `:visitor_r_observed` so the captured NickServ password can
+  land on the visitors row atomically. The function shape mirrors
+  `Grappa.Visitors.commit_password/2` exactly. Carried as an opaque
+  function reference (not a module name) to avoid a static
+  `Session → Visitors` boundary alias — Visitors already deps Session
+  via `Visitors.Login`, so a literal alias would close a cycle.
+  """
+  @type visitor_committer ::
+          (Ecto.UUID.t(), String.t() ->
+             {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
 
   @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
@@ -117,7 +131,8 @@ defmodule Grappa.Session.Server do
           required(:port) => :inet.port_number(),
           required(:tls) => boolean(),
           optional(:notify_pid) => pid(),
-          optional(:notify_ref) => reference()
+          optional(:notify_ref) => reference(),
+          optional(:visitor_committer) => visitor_committer()
         }
 
   @type state :: %{
@@ -132,7 +147,8 @@ defmodule Grappa.Session.Server do
           notify_pid: pid() | nil,
           notify_ref: reference() | nil,
           pending_auth: nil | {String.t(), integer()},
-          pending_auth_timer: reference() | nil
+          pending_auth_timer: reference() | nil,
+          visitor_committer: visitor_committer() | nil
         }
 
   ## API
@@ -187,7 +203,8 @@ defmodule Grappa.Session.Server do
       notify_pid: Map.get(opts, :notify_pid),
       notify_ref: Map.get(opts, :notify_ref),
       pending_auth: nil,
-      pending_auth_timer: nil
+      pending_auth_timer: nil,
+      visitor_committer: Map.get(opts, :visitor_committer)
     }
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
@@ -575,6 +592,51 @@ defmodule Grappa.Session.Server do
   defp apply_effects([{:reply, line} | rest], state) do
     :ok = Client.send_line(state.client, line)
     apply_effects(rest, state)
+  end
+
+  # Task 15: NickServ-as-IDP confirmed our pending IDENTIFY by setting
+  # +r on our nick. Invoke the opaque `visitor_committer` callback
+  # (`Grappa.Visitors.commit_password/2`, injected by
+  # `Grappa.Visitors.SessionPlan` into every visitor plan) so the
+  # captured password lands on the visitors row + bumps `expires_at`
+  # to the registered TTL. Then clear pending state + cancel the
+  # fail-safe timer. The function-reference indirection keeps Session
+  # free of a static `Grappa.Visitors` alias — Visitors deps Session
+  # via `Visitors.Login`, so a literal alias would close a Boundary
+  # cycle. User sessions don't carry a committer; if a {:user, _}
+  # somehow staged pending_auth (e.g. operator manually issued
+  # NickServ IDENTIFY), the +r is logged and dropped.
+  defp apply_effects([{:visitor_r_observed, password} | rest], state) do
+    case {state.subject, state.visitor_committer} do
+      {{:visitor, visitor_id}, committer} when is_function(committer, 2) ->
+        case committer.(visitor_id, password) do
+          {:ok, _} ->
+            Logger.info("visitor +r observed → password committed",
+              visitor_id: visitor_id
+            )
+
+          {:error, reason} ->
+            Logger.error("visitor +r observed but commit failed",
+              visitor_id: visitor_id,
+              reason: inspect(reason)
+            )
+        end
+
+      {{:visitor, visitor_id}, nil} ->
+        Logger.error("visitor +r observed but no committer in plan — drop",
+          visitor_id: visitor_id
+        )
+
+      {{:user, _}, _} ->
+        Logger.warning("visitor_r_observed effect on user session — ignored")
+    end
+
+    _ =
+      if is_reference(state.pending_auth_timer) do
+        Process.cancel_timer(state.pending_auth_timer)
+      end
+
+    apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
   end
 
   # One-shot send + clear of the synchronous-login readiness signal
