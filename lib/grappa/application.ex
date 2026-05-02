@@ -35,19 +35,24 @@ defmodule Grappa.Application do
         # itself under {:session, user, network_id} via this Registry,
         # and lookups happen in DynamicSupervisor's start_child cascade.
         {Registry, keys: :unique, name: Grappa.SessionRegistry},
-        # max_restarts: 100, max_seconds: 60 — DynamicSupervisor's default
-        # (3 restarts in 5s) is GLOBAL across all children; one upstream
-        # network-wide outage causing several Session.Server retries blows
-        # the budget and the supervisor itself exits :shutdown, torching
-        # every OTHER session under it. The default tolerates ~0.6
-        # crashes/sec; bump to ~1.6/sec sustained over a minute to absorb
-        # cluster-wide flap (test-suite IRCServer-fake teardowns, prod
-        # upstream-IRCd network blips). Phase 5's per-session
-        # reconnect/backoff replaces the exhaust-and-give-up shape with
-        # proper session-health tracking — these limits become
-        # genuinely-defensive failsafes rather than the front-line
-        # tolerance. See DESIGN_NOTES 2026-05-02.
-        {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 100, max_seconds: 60},
+        # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
+        # default (3 restarts in 5s) is GLOBAL across all children; one
+        # upstream network-wide outage causing several Session.Server
+        # retries blows the budget and the supervisor itself exits
+        # :shutdown, torching every OTHER session under it. Cluster
+        # visitor-auth flake characterization measured ~2000 restarts/sec
+        # for a single session against a refused TCP port (RST returns
+        # immediately, so the `:transient` restart cycle spins at full
+        # CPU speed). Bumping the budget to 10_000 in 60s gives ~167/sec
+        # sustained — enough to absorb 5s of full-rate restart-loop
+        # before tripping, while still catching genuinely catastrophic
+        # loops (10k restarts/min from one session is wildly abnormal).
+        # Phase 5's per-session reconnect/backoff replaces the
+        # exhaust-and-give-up shape with proper session-health tracking
+        # + telemetry — these limits become genuinely-defensive failsafes
+        # rather than the front-line tolerance. See DESIGN_NOTES
+        # 2026-05-02.
+        {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60},
 
         # Endpoint after PubSub + Registry — HTTP requests (REST controller,
         # WS Channel join) reach into both at request time.

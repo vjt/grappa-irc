@@ -1348,16 +1348,36 @@ unit tests). `BootstrapTest` can't follow that rule — `Bootstrap.run/0`'s
 contract IS to spawn under the supervisor, so the supervisor path is the
 only valid surface. The fix had to move into the supervisor itself.
 
-Bumping to `max_restarts: 100, max_seconds: 60` raises sustained tolerance
-from ~0.6 crashes/sec to ~1.6/sec while still catching genuine
-catastrophic loops (continuous 100% crash for >1 minute). The new limits
-absorb both test-suite IRCServer-fake teardown cascades and prod
+Initial bump to `max_restarts: 100, max_seconds: 60` (commit a4a56ae)
+absorbed the BootstrapTest on_exit cascade but left a residual ~30%
+test-flake rate when other tests deliberately spawned dead-port sessions
+(BootstrapTest's "all sessions counted as started; upstream-connect
+failures surface async (C2)" at line 143 binds port 1, which the
+container refuses immediately with RST). Captured logs showed >25
+Session.Server crashes in 12 milliseconds for a single dead-port
+session — the cycle runs at ~2000 restarts/sec because `gen_tcp.connect`
+on a refused port returns within microseconds, so each restart→connect→
+crash→restart cycle is sub-millisecond.
+
+Brief detour into rate-limiting at the source (1s `Process.sleep` in
+`Client.handle_continue` before `{:stop, {:connect_failed, _}, state}`,
+commit ef4bf62) broke the C2 contract test's `assert_receive {:EXIT,
+^client, {:connect_failed, :econnrefused}}, 1_000` — the timeout
+budget assumes async failure surfaces within a second; the sleep
+made the race tight and consistently failed. Reverted.
+
+Final shape: `max_restarts: 10_000, max_seconds: 60` raises sustained
+tolerance to ~167 crashes/sec — enough to absorb 5 seconds of
+full-rate restart-loop (10000 / 2000 ≈ 5s) before tripping, while
+still catching genuinely catastrophic loops (10k restarts/min from one
+session is wildly abnormal). Test-suite teardown cascades and prod
 upstream-IRCd network blips (whole-network outage causing dozens of
-sessions to flap simultaneously). Phase 5's per-session reconnect/backoff
-will replace the exhaust-and-give-up shape with proper session-health
-tracking + per-Session telemetry; at that point the supervisor limits
-become genuinely-defensive failsafes against a runaway crash loop rather
-than the front-line tolerance for normal flap.
+sessions to flap simultaneously) both fit comfortably under the budget.
+Phase 5's per-session reconnect/backoff will replace the
+exhaust-and-give-up shape with proper session-health tracking +
+per-Session telemetry; at that point the supervisor limits become
+genuinely-defensive failsafes against a runaway crash loop rather than
+the front-line tolerance for normal flap.
 
 The change is per-supervisor (`SessionSupervisor` only); other
 DynamicSupervisors keep the conservative default.
