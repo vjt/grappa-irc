@@ -79,7 +79,7 @@ defmodule GrappaWeb.Plugs.Authn do
     {:ok, conn}
   end
 
-  defp assign_subject(conn, %Session{user_id: nil, visitor_id: visitor_id})
+  defp assign_subject(conn, %Session{id: session_id, user_id: nil, visitor_id: visitor_id})
        when is_binary(visitor_id) do
     case Visitors.touch(visitor_id) do
       {:ok, %Visitor{} = visitor} ->
@@ -91,6 +91,15 @@ defmodule GrappaWeb.Plugs.Authn do
         {:ok, conn}
 
       {:error, :expired} ->
+        # C1: W11 invariant — anon visitor lifecycle is co-terminus with
+        # its accounts_sessions row. Synchronously revoke + purge so a
+        # concurrent re-login by the same nick doesn't trip the
+        # `(nick, network_slug)` uniqueness constraint against a
+        # tombstone while waiting for the Reaper's 60s tick. Registered
+        # visitors keep their row (purge_if_anon is a no-op) but the
+        # session still revokes.
+        :ok = Accounts.revoke_session(session_id)
+        :ok = Visitors.purge_if_anon(visitor_id)
         {:error, :expired_visitor}
 
       {:error, :not_found} ->
@@ -98,7 +107,9 @@ defmodule GrappaWeb.Plugs.Authn do
         # ON DELETE CASCADE (Q-H), so this is an invariant violation.
         # `Accounts.authenticate/1` already gated on session liveness;
         # if the visitor row disappeared mid-request we want the
-        # operator log to flag it.
+        # operator log to flag it AND revoke the orphan session so the
+        # bearer dies immediately.
+        :ok = Accounts.revoke_session(session_id)
         {:error, :visitor_missing}
     end
   end
