@@ -697,29 +697,89 @@ EOF
 scripts/mix.sh ecto.gen.migration add_visitor_id_to_messages
 ```
 
+ecto_sqlite3 does NOT support `alter table ... modify` (sqlite has no
+`ALTER COLUMN`) or `create constraint` (sqlite has no `ALTER TABLE ADD
+CONSTRAINT` for CHECK). Use the rename + recreate + copy + drop pattern
+in raw SQL via `execute/1` — same shape as
+`priv/repo/migrations/20260426000003_messages_per_user_iso.exs` and
+`20260426000004_messages_network_fk_restrict.exs`. Define
+explicit `up/0` + `down/0` (not `change/0`) since auto-rollback can't
+introspect raw SQL:
+
 ```elixir
 defmodule Grappa.Repo.Migrations.AddVisitorIdToMessages do
   use Ecto.Migration
 
-  def change do
-    alter table(:messages) do
-      add :visitor_id, references(:visitors, type: :binary_id, on_delete: :delete_all)
-    end
+  def up do
+    execute("ALTER TABLE messages RENAME TO messages_old")
 
-    # Make existing user_id nullable. (sqlite: emulated via table rebuild
-    # in the underlying adapter; on Postgres this would be a plain ALTER.)
-    alter table(:messages) do
-      modify :user_id, :binary_id, null: true,
-             from: {:binary_id, null: false}
-    end
+    execute("""
+    CREATE TABLE "messages" (
+      "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+      "channel" TEXT NOT NULL,
+      "server_time" INTEGER NOT NULL,
+      "kind" TEXT NOT NULL,
+      "sender" TEXT NOT NULL,
+      "body" TEXT NULL,
+      "meta" TEXT NOT NULL,
+      "inserted_at" TEXT NOT NULL,
+      "user_id" TEXT NULL CONSTRAINT "messages_user_id_fkey" REFERENCES "users"("id") ON DELETE CASCADE,
+      "visitor_id" TEXT NULL CONSTRAINT "messages_visitor_id_fkey" REFERENCES "visitors"("id") ON DELETE CASCADE,
+      "network_id" INTEGER NOT NULL CONSTRAINT "messages_network_id_fkey" REFERENCES "networks"("id") ON DELETE RESTRICT,
+      CONSTRAINT "messages_subject_xor" CHECK ((user_id IS NULL) <> (visitor_id IS NULL))
+    )
+    """)
 
-    create constraint(:messages, :messages_subject_xor,
-             check: "(user_id IS NULL) <> (visitor_id IS NULL)")
+    execute("""
+    INSERT INTO messages (id, channel, server_time, kind, sender, body, meta, inserted_at, user_id, network_id)
+    SELECT id, channel, server_time, kind, sender, body, meta, inserted_at, user_id, network_id
+    FROM messages_old
+    """)
 
+    execute("DROP TABLE messages_old")
+
+    create index(:messages, [:user_id, :network_id, :channel, :server_time])
     create index(:messages, [:visitor_id])
+  end
+
+  def down do
+    execute("ALTER TABLE messages RENAME TO messages_new")
+
+    execute("""
+    CREATE TABLE "messages" (
+      "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+      "channel" TEXT NOT NULL,
+      "server_time" INTEGER NOT NULL,
+      "kind" TEXT NOT NULL,
+      "sender" TEXT NOT NULL,
+      "body" TEXT NULL,
+      "meta" TEXT NOT NULL,
+      "inserted_at" TEXT NOT NULL,
+      "user_id" TEXT NOT NULL CONSTRAINT "messages_user_id_fkey" REFERENCES "users"("id") ON DELETE CASCADE,
+      "network_id" INTEGER NOT NULL CONSTRAINT "messages_network_id_fkey" REFERENCES "networks"("id") ON DELETE RESTRICT
+    )
+    """)
+
+    execute("""
+    INSERT INTO messages (id, channel, server_time, kind, sender, body, meta, inserted_at, user_id, network_id)
+    SELECT id, channel, server_time, kind, sender, body, meta, inserted_at, user_id, network_id
+    FROM messages_new
+    WHERE user_id IS NOT NULL
+    """)
+
+    execute("DROP TABLE messages_new")
+
+    create index(:messages, [:user_id, :network_id, :channel, :server_time])
   end
 end
 ```
+
+The `down/0` filter `WHERE user_id IS NOT NULL` is load-bearing: if any
+visitor-owned rows existed, they'd violate the restored `user_id NOT
+NULL` constraint and the rollback would fail. Dropping them is the only
+safe rollback semantic — operator must be aware visitor scrollback is
+lost on downgrade. Phase 1 walking-skeleton dev DB has zero rows so
+this is moot; documenting for Phase 5 onward.
 
 - [ ] **Step 4.2: Run migration**
 
@@ -794,15 +854,22 @@ def changeset(message, attrs) do
     :meta
   ])
   |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
+  |> validate_subject_xor()
   |> validate_identifier(:channel, &Identifier.valid_channel?/1)
   |> validate_identifier(:sender, &Identifier.valid_sender?/1)
   |> validate_body_for_kind()
-  |> validate_subject_xor()
   |> assoc_constraint(:user)
   |> assoc_constraint(:visitor)
   |> assoc_constraint(:network)
 end
 ```
+
+`validate_subject_xor()` runs IMMEDIATELY after `validate_required`,
+BEFORE the per-field validators. The XOR is a structural invariant —
+without a subject the row is uncreatable regardless of body/identifier
+shape, so the structural error should surface first. This mirrors the
+pipeline-ordering convention in every other changeset in the codebase
+(structural checks before per-field validators).
 
 - [ ] **Step 4.4: Update Scrollback.persist_event/1**
 
@@ -837,13 +904,55 @@ end
 NOT `DateTime.t()`. `meta` is `Meta.t()` (the typed map alias), NOT
 plain `map()`.
 
+`Grappa.Scrollback`'s Boundary `deps` grows `Grappa.Visitors` — the
+`belongs_to :visitor, Visitor, type: :binary_id` reference in the
+schema crosses that boundary. Without the dep declaration, Boundary
+fails compile with a cross-boundary call violation. Verified
+acyclic: `Grappa.Visitors` deps only `Grappa.IRC` (does not reference
+`Grappa.Scrollback`).
+
+```elixir
+# lib/grappa/scrollback.ex — Boundary deps line
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Visitors],
+  dirty_xrefs: [Grappa.Networks.Network],
+  exports: [Message, Wire]
+```
+
+A pre-existing test in `scrollback_test.exs` ("rejects missing required
+fields (user_id/network_id/channel/server_time/kind/sender)") asserts
+`"can't be blank" in errors.user_id` — that error no longer fires
+because `user_id` was dropped from `validate_required`. Update the test
+name + the assertion to reflect the new contract:
+
+```elixir
+test "rejects missing required fields (network_id/channel/server_time/kind/sender) and XOR subject" do
+  assert {:error, %Ecto.Changeset{} = cs} =
+           ScrollbackHelpers.insert(%{channel: "#x"})
+
+  errors = errors_on(cs)
+  # user_id is no longer validate_required — XOR validation fires instead
+  assert "must set user_id or visitor_id" in errors.user_id
+  assert "can't be blank" in errors.network_id
+  # ... rest of the assertion list unchanged
+end
+```
+
+This is an honest update — the contract genuinely changed. NOT a
+test-weakened-to-make-it-pass case (CLAUDE.md "Never weaken production
+code to make tests pass" applies the other direction too: never
+weaken a test to mask a contract change; rewrite the test to assert
+the new contract precisely).
+
 - [ ] **Step 4.5: Test extension**
 
 The codebase uses fixture-style helpers in `test/support/auth_fixtures.ex`,
 NOT ExMachina factories. Tests use `visitor_fixture/1` + `network_fixture/1`
 (both added in Step 4.5a) plus direct attribute maps. `server_time`
-is an integer (epoch ms via `System.os_time(:millisecond)`); `meta`
-defaults to `%{}`.
+is an integer (epoch ms via `System.system_time(:millisecond)` —
+matches the sibling pattern at `scrollback_test.exs` line ~93);
+`meta` defaults to `%{}`.
 
 ```elixir
 # test/grappa/scrollback_test.exs — add visitor branch
@@ -859,7 +968,7 @@ describe "persist_event/1 with visitor_id" do
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: System.os_time(:millisecond),
+      server_time: System.system_time(:millisecond),
       meta: %{}
     }
 
@@ -881,7 +990,7 @@ describe "persist_event/1 with visitor_id" do
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: System.os_time(:millisecond),
+      server_time: System.system_time(:millisecond),
       meta: %{}
     }
 
@@ -897,7 +1006,7 @@ describe "persist_event/1 with visitor_id" do
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: System.os_time(:millisecond),
+      server_time: System.system_time(:millisecond),
       meta: %{}
     }
 
