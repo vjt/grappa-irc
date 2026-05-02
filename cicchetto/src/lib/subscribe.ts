@@ -1,5 +1,5 @@
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import type { ChannelEvent } from "./api";
+import { type ChannelEvent, displayNick } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { applyPresenceEvent } from "./members";
@@ -92,7 +92,7 @@ createRoot(() => {
           // signal (the line itself gets .scrollback-mention highlight).
           if (payload.message.kind === "privmsg") {
             const u = untrack(user);
-            if (u && mentionsUser(payload.message.body, u.name)) {
+            if (u && mentionsUser(payload.message.body, displayNick(u))) {
               bumpMention(key);
             }
           }

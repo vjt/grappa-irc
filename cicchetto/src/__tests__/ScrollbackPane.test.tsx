@@ -27,7 +27,7 @@ vi.mock("../lib/scrollback", () => ({
 vi.mock("../lib/networks", () => ({
   user: () => {
     const n = userNick();
-    return n === null ? null : { id: "u1", name: n, inserted_at: "x" };
+    return n === null ? null : { kind: "user", id: "u1", name: n, inserted_at: "x" };
   },
 }));
 

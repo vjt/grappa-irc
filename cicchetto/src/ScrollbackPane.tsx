@@ -1,5 +1,5 @@
 import { type Component, createEffect, createSignal, For, type JSX, on, Show } from "solid-js";
-import type { ScrollbackMessage } from "./lib/api";
+import { displayNick, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
@@ -178,7 +178,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   const [atBottom, setAtBottom] = createSignal(true);
 
   const messages = () => scrollbackByChannel()[channelKey(props.networkSlug, props.channelName)];
-  const userNick = (): string | null => user()?.name ?? null;
+  const userNick = (): string | null => {
+    const me = user();
+    return me ? displayNick(me) : null;
+  };
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
   // was at the bottom before the update. The effect tracks
