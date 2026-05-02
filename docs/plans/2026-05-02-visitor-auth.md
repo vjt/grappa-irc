@@ -2235,6 +2235,72 @@ implementation.
 emits both verbatim. `Networks.SessionPlan` is the canonical sibling
 to mirror; rescue-on-NoServerError pattern is reused.
 
+**S5 amendment — Boundary cycle resolution (`dirty_xrefs`):** Adding
+`Grappa.Visitors → Grappa.Networks` (real function calls into
+`Networks.get_network_by_slug/1` + `Networks.Servers.pick_server!/1` +
+`Networks.NoServerError` rescue) closes THREE Boundary cycles via the
+existing reverse edges from Networks back into Visitors:
+
+```
+Cycle 1: Networks → Accounts → Visitors → Networks
+Cycle 2: Scrollback → Visitors → Networks → Scrollback
+Cycle 3: Session → Scrollback → Visitors → Networks → Session
+```
+
+The reverse edges are Accounts → Visitors (Task 5 — `belongs_to :visitor`
+on `Accounts.Session` + `validate_subject_exists` Ecto query that uses
+`Visitor` as a queryable schema) and Scrollback → Visitors (Task 4 —
+`belongs_to :visitor` + `Visitor.t()` type ref on `Scrollback.Message`).
+Both edges are pure schema/type references — no function calls into
+Visitors module bodies. The Boundary library's `dirty_xrefs:` option,
+already used in `Grappa.Scrollback` for the parallel Cluster-2 cycle
+inversion (Networks → Session) where `Networks.Network` was demoted to
+a schema-only ref, is the precedent.
+
+Resolution lands inside Task 7's commit (bundled with the SessionPlan
+implementation; one commit, atomic):
+
+```elixir
+# lib/grappa/accounts.ex
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Repo],
+  # `Visitors.Visitor` is referenced by `Accounts.Session`
+  # (`belongs_to :visitor` + `Visitor.t()` type) and by the
+  # `validate_subject_exists/1` existence check (`from row in
+  # Visitor`). Mirror of the `Networks.Network` dirty_xref in
+  # `Grappa.Scrollback`: schema-only access whose only purpose is
+  # to break the visitor-auth cycle inversion (Visitors → Networks
+  # opens otherwise-transitive cycles via Accounts → Visitors and
+  # Scrollback → Visitors). The cost — losing Boundary checks on
+  # struct-shape access Boundary couldn't gate anyway — is
+  # intentional.
+  dirty_xrefs: [Grappa.Visitors.Visitor],
+  exports: [User, Session, Wire]
+```
+
+```elixir
+# lib/grappa/scrollback.ex — extend existing dirty_xrefs
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo],
+  # ... (extended comment captures both Network + Visitor refs)
+  dirty_xrefs: [Grappa.Networks.Network, Grappa.Visitors.Visitor],
+  exports: [Message, Wire]
+```
+
+Verified empirically pre-amendment: `scripts/mix.sh compile` cleanly
+emits all three cycle warnings before the change, zero warnings after.
+No production-code call sites change — only Boundary annotations move.
+The struct-only nature of both reverse edges means Boundary couldn't
+have gated them in the first place (struct field access doesn't go
+through any function call we'd want to enforce against).
+
+Trade-off: future drift where someone adds a real `Accounts → Visitors`
+or `Scrollback → Visitors` function call won't be caught by Boundary
+— the dirty_xref masks it. Mitigation: code review checks at the touch
+sites; the comment block explicitly names the schema-only contract.
+
 **Files:**
 - Create: `lib/grappa/visitors/session_plan.ex`
 - Test: `test/grappa/visitors/session_plan_test.exs`
