@@ -39,9 +39,8 @@ defmodule GrappaWeb.ChannelsController do
 
   import GrappaWeb.Validation, only: [validate_channel_name: 1]
 
+  alias Grappa.{Session, Visitors}
   alias Grappa.Networks.Credentials
-  alias Grappa.Session
-  alias Grappa.Visitors
 
   @doc """
   `GET /networks/:network_id/channels` — lists the subject's channels
@@ -77,7 +76,7 @@ defmodule GrappaWeb.ChannelsController do
 
   defp subject_autojoin(
          %{assigns: %{current_subject: {:visitor, _}, current_visitor: visitor}},
-         _network
+         _
        ) do
     {:ok, Visitors.list_autojoin_channels(visitor)}
   end

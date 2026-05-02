@@ -512,7 +512,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
     test "POST against a network the visitor isn't pinned to returns 404 (oracle close)",
          %{conn: _conn} do
-      {visitor, _own_network} = visitor_with_network(7302)
+      {visitor, _} = visitor_with_network(7302)
       {other_network, _} = network_with_server(port: 7303, slug: "other-#{u()}")
       session = visitor_session_fixture(visitor)
 
