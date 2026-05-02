@@ -225,7 +225,8 @@ defmodule Grappa.Visitors.Login do
         # cicchetto, which the existing PRIVMSG surface already
         # supports.
         Logger.warning(
-          "post-login IDENTIFY failed (visitor_id=#{visitor.id})",
+          "post-login IDENTIFY failed",
+          visitor_id: visitor.id,
           reason: inspect(reason)
         )
 

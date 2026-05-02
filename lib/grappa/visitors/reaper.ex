@@ -88,7 +88,7 @@ defmodule Grappa.Visitors.Reaper do
 
     case n do
       0 -> :ok
-      _ -> Logger.info("reaper swept #{n} expired visitor(s)")
+      _ -> Logger.info("reaper swept expired visitors", affected: n)
     end
 
     schedule_tick(state.interval_ms)
