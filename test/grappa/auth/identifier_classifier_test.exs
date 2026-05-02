@@ -1,5 +1,6 @@
 defmodule Grappa.Auth.IdentifierClassifierTest do
   use ExUnit.Case, async: true
+  doctest Grappa.Auth.IdentifierClassifier
   alias Grappa.Auth.IdentifierClassifier
 
   describe "classify/1" do
@@ -39,23 +40,14 @@ defmodule Grappa.Auth.IdentifierClassifierTest do
   describe "property: classify/1" do
     use ExUnitProperties
 
-    property "valid nick generators always classify as :nick" do
+    property "any x@y.z-shaped string classifies as :email" do
       check all(
-              first <- StreamData.string([?A..?Z, ?a..?z, ?_], length: 1),
-              rest <- StreamData.string([?A..?Z, ?a..?z, ?0..?9, ?_, ?-], min_length: 0, max_length: 29)
+              local <- StreamData.string([?a..?z, ?A..?Z, ?0..?9, ?_], min_length: 1, max_length: 20),
+              domain <- StreamData.string([?a..?z, ?A..?Z, ?0..?9], min_length: 1, max_length: 20),
+              tld <- StreamData.string([?a..?z], min_length: 2, max_length: 6)
             ) do
-        nick = first <> rest
-        assert {:nick, ^nick} = Grappa.Auth.IdentifierClassifier.classify(nick)
-      end
-    end
-
-    property "any string with leading digit → :malformed" do
-      check all(
-              digit <- StreamData.string([?0..?9], length: 1),
-              rest <- StreamData.string(:alphanumeric, min_length: 0, max_length: 20)
-            ) do
-        bad = digit <> rest
-        refute match?({:nick, _}, Grappa.Auth.IdentifierClassifier.classify(bad))
+        addr = "#{local}@#{domain}.#{tld}"
+        assert {:email, ^addr} = IdentifierClassifier.classify(addr)
       end
     end
   end

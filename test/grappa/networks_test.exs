@@ -228,10 +228,10 @@ defmodule Grappa.NetworksTest do
     # Repo.insert is exercised by the surrounding tests.
     test "accepts every nick Identifier.valid_nick?/1 accepts", %{user: user, network: net} do
       # Sample of edge cases Identifier explicitly permits:
-      # leading bracket, full 31-char length, embedded IRC special
+      # leading bracket, full 30-char length, embedded IRC special
       # chars. RFC 2812 §2.3.1 forbids leading dash (tail-only) — see
       # the rejection test below.
-      for nick <- ["[bot]", "v|t", "v_jt", "v-jt", String.duplicate("a", 31)] do
+      for nick <- ["[bot]", "v|t", "v_jt", "v-jt", String.duplicate("a", 30)] do
         assert Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should accept #{inspect(nick)}"
 
@@ -251,10 +251,10 @@ defmodule Grappa.NetworksTest do
 
     test "rejects every nick Identifier.valid_nick?/1 rejects", %{user: user, network: net} do
       # Sample of inputs Identifier explicitly rejects: contains space,
-      # leading digit, control byte, over 31 chars. Empty string is
+      # leading digit, control byte, over 30 chars. Empty string is
       # tested separately via `validate_required` below — here we want
       # nicks that pass `validate_required` but fail the syntax rule.
-      for nick <- ["has space", "9leading", "-leading-dash", "ctl\x01char", String.duplicate("a", 32)] do
+      for nick <- ["has space", "9leading", "-leading-dash", "ctl\x01char", String.duplicate("a", 31)] do
         refute Identifier.valid_nick?(nick),
                "test fixture invariant: Identifier should reject #{inspect(nick)}"
 

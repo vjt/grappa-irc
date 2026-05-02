@@ -55,9 +55,9 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_nick?(:atom)
     end
 
-    test "rejects nicks longer than 31 chars" do
-      refute Identifier.valid_nick?(String.duplicate("a", 32))
-      assert Identifier.valid_nick?(String.duplicate("a", 31))
+    test "rejects nicks longer than 30 chars" do
+      refute Identifier.valid_nick?(String.duplicate("a", 31))
+      assert Identifier.valid_nick?(String.duplicate("a", 30))
     end
   end
 
