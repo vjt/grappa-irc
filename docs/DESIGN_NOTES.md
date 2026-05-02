@@ -612,10 +612,10 @@ prior precache automatically. (CP10 review HIGH S2/S3.)
 ## 2026-04-27 — `init/1` defers connect via `handle_continue` (CP10 S3, C2)
 
 CP10 codebase review caught two coupled OTP-discipline bugs in the
-upstream-IRC stack: `Grappa.IRC.Client.init/1` did blocking
+upstream-IRC stack: Grappa.IRC.Client.init/1 did blocking
 `:gen_tcp.connect/3` + `:ssl.connect/3` + `PASS/CAP/NICK/USER`
 handshake synchronously inside the GenServer init callback, and
-`Grappa.Session.Server.init/1` synchronously called
+Grappa.Session.Server.init/1 synchronously called
 `Client.start_link/1` from its own init. Both are textbook CLAUDE.md
 "blocking work in `init/1` without `{:continue, _}`" — a flapping or
 black-holed upstream froze `Bootstrap`'s sequential `Enum.reduce` over
@@ -802,7 +802,7 @@ mechanism**, not a runtime IPC channel. Two timeframes, two postures:
   put_env in mix tasks is allowed. The two CP10-review-proposed
   alternatives both lost: option (a) "exempt this site" reduces to a
   growing exemption list, which is the discipline failure mode CLAUDE.md
-  warns against; option (b) "refactor `Grappa.Application.start/2` to
+  warns against; option (b) "refactor Grappa.Application.start/2 to
   accept `:bootstrap?` injected at start-time" requires either replacing
   `mix.exs`'s `mod` args (compile-time, not boot-time injection — same
   shape under a different name) OR hand-rolling a child list in the
@@ -1262,7 +1262,7 @@ gaps blocking the M2 NickServ-IDP + anon webirc auth-triangle clusters.
 
 ### Server-side
 
-- `Grappa.Session.Server.delegate/2` post-route compares
+- Grappa.Session.Server.delegate/2 post-route compares
   `Map.keys(state.members)` between input + derived states. On
   keyset diff, fires `Phoenix.PubSub.broadcast/3` on
   `Grappa.PubSub.Topic.user(state.user_name)` with payload
