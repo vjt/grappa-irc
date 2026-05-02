@@ -445,8 +445,7 @@ defmodule Grappa.Visitors.Visitor do
   @spec commit_password_changeset(t(), binary(), DateTime.t()) :: Ecto.Changeset.t()
   def commit_password_changeset(%__MODULE__{} = visitor, password, expires_at)
       when is_binary(password) and password != "" do
-    visitor
-    |> change(%{password_encrypted: password, expires_at: expires_at})
+    change(visitor, %{password_encrypted: password, expires_at: expires_at})
   end
 
   @spec touch_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
