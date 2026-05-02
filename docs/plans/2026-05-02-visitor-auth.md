@@ -2373,7 +2373,8 @@ end
 
 - [ ] **Step 7.2: Implement**
 
-Two amendments vs S2 plan body:
+Five amendments vs S2 plan body (last 3 are S5 retro-amendments after
+the implementation landed and credo flagged them):
 
 1. **No `use Boundary` line.** `Grappa.Visitors.SessionPlan` is INSIDE
    the `Grappa.Visitors` boundary (mirror of `Grappa.Networks.SessionPlan`
@@ -2385,6 +2386,46 @@ Two amendments vs S2 plan body:
    field. Cloak's `EncryptedBinary` returns plaintext on Repo load —
    the field IS the decrypted value. Inline as `visitor.password_encrypted`
    in the resolve body.
+
+3. **Multi-alias by parent module** (credo `Consistency.MultiAlias`).
+   The naive 6-line single-alias block triggers "Most of the time you
+   are using the multi-alias/require/import/use syntax, but here you
+   are using multiple single directives." Mirror the canonical sibling
+   `Networks.SessionPlan` shape: group by parent module —
+
+   ```elixir
+   alias Grappa.{Networks, Repo, Session}
+   alias Grappa.Networks.{NoServerError, Servers}
+   alias Grappa.Visitors.{Visitor, VisitorChannel}
+   ```
+
+4. **Bind query to variable, then plain `Repo.all/1`** (credo
+   `Refactor.PipeChainStart` collides with `Refactor.SinglePipe`).
+   `Repo.all(from c in VisitorChannel, where: ...)` is "nested function
+   calls"; piping `from(...) |> Repo.all()` is "single-pipe chain."
+   The codebase convention per CLAUDE.md is bind-then-call —
+
+   ```elixir
+   query =
+     from c in VisitorChannel,
+       where: c.visitor_id == ^visitor.id and c.network_slug == ^visitor.network_slug,
+       select: c.name
+
+   autojoin = Repo.all(query)
+   ```
+
+5. **Bare fixture call in tests, no `_var =` prefix** (credo
+   `Consistency.UnusedVariableNames` — codebase convention is `_`
+   for anonymous unused, not `_named`). When a test only needs a
+   fixture's side-effect (creating the row), drop the bind:
+
+   ```elixir
+   network_with_server(slug: "azzurra", port: 6667)
+   ```
+
+   not `_network = network_with_server(...)`. Distinct from `{net, _}`
+   destructuring, which is the right shape when you DO use part of
+   the return.
 
 ```elixir
 # lib/grappa/visitors/session_plan.ex
