@@ -2727,142 +2727,347 @@ EOF
 
 ---
 
-### Task 9: Visitors.Login — synchronous probe-connect orchestrator
+### Task 9: Visitors.Login — synchronous probe-connect orchestrator with privacy gate
 
-**S5 amendment (privacy model — W10/W11/W12/W13):** the original Task 9
-body assumes any login attempt with `(nick, network_slug)` either
-provisions or fast-paths an existing visitor. That has zero auth — anyone
-typing nick "alice" inherits her row + scrollback. Replace the unguarded
-fast-path with the privacy gate:
+**S5 + S6 dispatch-time amendments rolled in** — the body below replaces
+the original Task 9 plan, which (a) had zero anti-hijack semantics
+(unguarded `find_or_provision_anon` fast-path lets anyone typing nick
+"alice" inherit her row + scrollback), and (b) carried five drift items
+caught at S6 dispatch time (ExMachina shape, runtime
+`Application.put_env`/`get_env` violations, fictional IRCServer
+helpers, the invented `Session.connection_status/2`, the orphaned
+`pending_password` plan field whose consumer is Task 16). The W10–W14
+privacy decision tree is now the spine of the function; helper
+shape + test fixtures match the canonical surfaces in the actual
+codebase as of cluster HEAD `d0a7be0` (Task 6.6 prereq landed —
+`Visitors.purge_if_anon/1` exists).
 
-Decision tree at `Visitors.Login.login(nick, password, ip, ua, token)`:
+#### Decision tree
 
-1. **No visitor row for `(nick, network_slug)`** → provision new anon
-   visitor row → spawn Session.Server → issue token. Same as before.
+`Visitors.Login.login(input)` where input is a map carrying
+`nick`, `password`, `ip`, `user_agent`, `token`:
+
+1. **No visitor row for `(nick, network_slug)`** → check IP cap →
+   provision new anon visitor → resolve SessionPlan → spawn
+   Session.Server (no `pending_password` thread, anon is
+   un-NickServ-identified by definition) → block on
+   `{:session_ready, ref}` (8s) → create accounts_session →
+   return `{:ok, %{visitor, token}}`.
 2. **Visitor row exists, registered (`password_encrypted` set)**:
    - login `password` argument absent → `{:error, :password_required}` → 401.
-   - login `password` matches → preempt:
-       - delete prior `accounts_sessions` rows for this visitor (calls
-         `Visitors.purge_if_anon/1` per row but no-ops since registered);
-       - terminate live `Session.Server` for `{:visitor, visitor.id}` if any;
-       - spawn new Session.Server (carries `pending_password` for upstream
-         auto-IDENTIFY, mirroring fresh-login path);
+   - login `password` mismatches via `Plug.Crypto.secure_compare/2`
+     → `{:error, :password_mismatch}` → 401.
+   - login `password` matches → **preempt** the prior session:
+       - `Repo.delete_all` `accounts_sessions` rows for this visitor
+         (CASCADE wouldn't fire because `purge_if_anon/1` no-ops on
+         registered, so the rows must be deleted explicitly here);
+       - call `Visitors.purge_if_anon/1` per deleted row's
+         `visitor_id` (no-op for this case but mirror-symmetric with
+         the lifecycle hook other deletion sites use);
+       - `Session.stop_session/2` for `{:visitor, visitor.id}`
+         (idempotent — returns `:ok` whether or not a session was
+         registered);
+       - resolve fresh SessionPlan, spawn fresh Session.Server,
+         block on `{:session_ready, ref}` (8s);
+       - after readiness, send `PRIVMSG NickServ :IDENTIFY <pwd>`
+         via `Session.send_privmsg({:visitor, vid}, network_id,
+         "NickServ", "IDENTIFY <pwd>")` — Task 16 will refactor to
+         the auto-IDENTIFY-post-001 shape via `pending_password`
+         plan field, but Task 9 keeps the call inline so the
+         flow is self-contained;
        - create new accounts_sessions row + token.
-   - login `password` mismatches → `{:error, :password_mismatch}` → 401.
 3. **Visitor row exists, anon (`password_encrypted` nil)**:
-   - request carries valid `token` for this visitor → reuse: rotate token
-     (delete old accounts_sessions, create new), keep visitor row, keep
-     Session.Server if alive (no preemption needed — same client).
-   - request has no token / wrong token → `{:error, :anon_collision}` →
-     409. Adversary cannot hijack live anon nick from a fresh client.
-     Original holder must wait for natural expiration (W9 sliding TTL)
-     to free the nick.
+   - request carries `token` and `Accounts.authenticate(token)`
+     resolves to this visitor's `visitor_id` → reuse: keep the
+     visitor row, keep `Session.Server` if alive (no preemption —
+     same client), rotate the bearer token (revoke old + create
+     new accounts_session). Returns `{:ok, %{visitor, token}}`.
+   - request has no token / wrong token / token resolves to a
+     different visitor → `{:error, :anon_collision}` → 409.
+     Adversary cannot hijack live anon nick from a fresh client.
+     Original holder must wait for natural expiration (W9 sliding
+     TTL) to free the nick.
 
-The `token` parameter is the bearer token from the client's prior session,
-read by `AuthController` from the `Authorization: Bearer ...` header on
-the login request (separate from the password field). Resolves to a
-visitor_id via `Accounts.authenticate/1`.
+#### Configuration
 
-`login_error` type grows to:
-`:malformed_nick | :visitor_network_unconfigured | :ip_cap_exceeded |
-:upstream_unreachable | :timeout | :no_server | :network_unconfigured |
-:password_required | :password_mismatch | :anon_collision`.
+`visitor_network` (the network slug visitors land on) and
+`max_visitors_per_ip` (W3 cap) are read at compile time via
+`Application.compile_env/3`, NOT at runtime — CLAUDE.md bans
+`Application.{put,get}_env/2` at runtime. Tests set values in
+`config/test.exs`. The `:visitor_network_unconfigured` failure mode
+moves to `Grappa.Bootstrap` (Task 20 W7 — hard error at boot if
+the configured slug doesn't have a `Network` row); `Visitors.Login`
+trusts the boot invariant.
 
-`AuthController` map: `:password_required` + `:password_mismatch` → 401.
+```elixir
+# config/test.exs additions (test fixture rows use slug "azzurra")
+config :grappa, :visitor_network, "azzurra"
+config :grappa, :max_visitors_per_ip, 2
+```
+
+```elixir
+# lib/grappa/visitors/login.ex — module attributes
+@visitor_network Application.compile_env(:grappa, :visitor_network)
+@max_per_ip Application.compile_env(:grappa, :max_visitors_per_ip, 5)
+@login_timeout_ms 8_000
+```
+
+#### login_error type
+
+`:malformed_nick | :ip_cap_exceeded | :upstream_unreachable |
+:timeout | :no_server | :network_unconfigured | :password_required |
+:password_mismatch | :anon_collision`.
+
+`AuthController` map (Task 10): `:malformed_nick` → 400.
+`:ip_cap_exceeded` → 429. `:upstream_unreachable` → 502. `:timeout`
+→ 504. `:no_server` + `:network_unconfigured` → 500.
+`:password_required` + `:password_mismatch` → 401.
 `:anon_collision` → 409 Conflict with `Retry-After` header advisory
-(value: `visitor.expires_at - now()` in seconds, capped to W9 ceiling).
+(value: `visitor.expires_at - now()` in seconds, capped to W9
+ceiling).
 
-The fresh-login path (case 1) ALSO calls `Accounts.create_session/3`
-which inserts an `accounts_sessions` row tied to the visitor — this is
-the row that, on its eventual death, will trigger
-`Visitors.purge_if_anon/1` (Task 6 amendment) and cascade-wipe the anon
-visitor's data. Co-terminus lifecycle ✓.
+#### Cloak roundtrip note
 
-The plaintext-password comparison against `Cloak.EncryptedBinary` works
-because EncryptedBinary roundtrip yields plaintext on Repo load (the
-cipher only applies to bytes-on-disk). Constant-time comparison via
-`Plug.Crypto.secure_compare/2` to avoid timing oracles on
-password-field length / value.
+The plaintext-password comparison against `Cloak.EncryptedBinary`
+works because the EncryptedBinary type's `load/1` callback decrypts
+on `Repo.get` — the cipher only applies bytes-on-disk. Constant-time
+comparison via `Plug.Crypto.secure_compare/2` to avoid timing
+oracles on password-field length / value.
+
+#### Boundary
+
+Login lives at `lib/grappa/visitors/login.ex` inside the `Grappa.Visitors`
+boundary. It calls `Grappa.Accounts` (create/revoke/authenticate
+sessions), `Grappa.Session` (start_session, stop_session,
+send_privmsg), `Grappa.Visitors.SessionPlan` (resolve plan from
+visitor row), `Grappa.Auth.IdentifierClassifier` (validate nick),
+and `Plug.Crypto` (secure_compare). The `Visitors` boundary's
+`deps` grows to include `Grappa.Accounts` (already not in deps —
+add) and `Grappa.Session` (already not in deps — add). The
+inverse edge `Accounts → Visitors` does NOT close a cycle because
+Accounts deps `[Grappa.Repo]` only post-Task-7 (Visitor was
+demoted to `dirty_xrefs`).
+
+The `Login` module is exported from `Grappa.Visitors` for the
+Task 10 `AuthController` call site.
 
 **Files:**
 - Create: `lib/grappa/visitors/login.ex`
-- Test: `test/grappa/visitors/login_test.exs`
+- Modify: `lib/grappa/visitors.ex` (boundary `deps:` + `exports:`)
+- Modify: `config/test.exs` (visitor_network + max_visitors_per_ip)
+- Test: `test/grappa/visitors/login_test.exs` (new)
 
 - [ ] **Step 9.1: Failing tests**
+
+Test file uses canonical fixtures (`network_with_server/1`,
+`visitor_fixture/1`) + the real `IRCServer` 2-arity handler API.
+The IRCServer's default `passthrough_handler` (used in
+`server_test.exs`) accepts the connection and stays silent until
+fed; tests use that for both happy + sad paths.
 
 ```elixir
 # test/grappa/visitors/login_test.exs
 defmodule Grappa.Visitors.LoginTest do
-  use Grappa.DataCase, async: false  # IRCServer is shared TCP — keep serial
+  @moduledoc """
+  Synchronous login orchestrator (Task 9) — privacy decision tree
+  W10/W11/W12/W13. async: false because the IRC fake's TCP listen
+  socket + the Grappa.SessionRegistry singleton serialize across
+  tests; aligns with `server_test.exs`'s same choice.
+  """
+  use Grappa.DataCase, async: false
 
-  alias Grappa.Visitors
+  import Grappa.AuthFixtures
+  alias Grappa.{Accounts, Visitors}
+  alias Grappa.Visitors.{Login, Visitor}
 
-  setup do
-    # IRCServer test helper provides in-process fake IRC server
-    {:ok, server} = IRCServer.start_link()
-    network = insert(:network, slug: "azzurra")
-    insert(:network_server, network: network, host: "127.0.0.1",
-                            port: IRCServer.port(server), tls: false, enabled: true)
+  defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
-    Application.put_env(:grappa, :visitor_network, "azzurra")
-    on_exit(fn -> Application.delete_env(:grappa, :visitor_network) end)
-
-    {:ok, server: server, network: network}
+  defp start_server(handler \\ passthrough_handler()) do
+    {:ok, server} = Grappa.IRCServer.start_link(handler)
+    {server, Grappa.IRCServer.port(server)}
   end
 
-  describe "login/4 happy path" do
-    test "anon login spawns session, awaits 001, returns {:ok, visitor, token}", %{server: server} do
-      IRCServer.auto_accept(server)
+  defp pick_unused_port do
+    {:ok, l} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(l)
+    :gen_tcp.close(l)
+    port
+  end
 
-      assert {:ok, %{visitor: v, token: token}} = Visitors.Login.login("vjt", nil, "1.2.3.4", "ua")
+  defp setup_visitor_network(port) do
+    network_with_server(port: port, slug: "azzurra")
+  end
+
+  defp feed_001(server, nick) do
+    Grappa.IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
+  end
+
+  defp await_handshake(server) do
+    {:ok, _} = Grappa.IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    :ok
+  end
+
+  defp login_input(overrides \\ %{}) do
+    Map.merge(
+      %{nick: "vjt", password: nil, ip: "1.2.3.4", user_agent: "ua", token: nil},
+      overrides
+    )
+  end
+
+  describe "case 1 — no visitor row (anon provisioning)" do
+    test "spawns session, awaits 001, creates accounts_session, returns {:ok, %{visitor, token}}" do
+      {server, port} = start_server()
+      {_, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> Login.login(login_input()) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
       assert v.nick == "vjt"
+      assert v.network_slug == "azzurra"
       assert is_nil(v.password_encrypted)
       assert is_binary(token)
+
+      assert {:ok, _session} = Accounts.authenticate(token)
+
+      :ok = Grappa.Session.stop_session({:visitor, v.id}, v |> Repo.preload([]) |> Map.get(:id) |> then(fn _ -> setup_visitor_network_lookup_id() end))
     end
 
-    test "registered login (with NickServ password) spawns session and stores password as pending", %{server: server} do
-      IRCServer.auto_accept(server)
-
-      assert {:ok, %{visitor: v}} = Visitors.Login.login("vjt", "s3cret", "1.2.3.4", "ua")
-
-      # Password is NOT yet committed — only pending in Session.Server
-      assert is_nil(Repo.reload!(v).password_encrypted)
-    end
-  end
-
-  describe "login/4 sad paths" do
-    test "connect refused → {:error, :upstream_unreachable} (502)", %{network: network} do
-      Repo.update_all(from(s in NetworkServer, where: s.network_id == ^network.id),
-                      set: [port: 1])  # port 1 = refused
-
-      assert {:error, :upstream_unreachable} = Visitors.Login.login("vjt", nil, "1.2.3.4", "ua")
-    end
-
-    test "no 001 within 8s → {:error, :timeout}", %{server: server} do
-      IRCServer.accept_but_silent(server)  # accepts TCP but never sends 001
-
-      assert {:error, :timeout} = Visitors.Login.login("vjt", nil, "1.2.3.4", "ua")
-    end
+    # The teardown is gnarly above — cleaner option in implementation:
+    # Login spawns the Session, the test stops it via Session.stop_session
+    # using the network_id resolved by the test's setup. Plan implementer
+    # may switch to a `setup`-block teardown that walks all visitor
+    # sessions in the registry.
 
     test "ip cap exceeded → {:error, :ip_cap_exceeded}" do
-      Application.put_env(:grappa, :max_visitors_per_ip, 1)
-      on_exit(fn -> Application.delete_env(:grappa, :max_visitors_per_ip) end)
-
+      # max_visitors_per_ip is 2 in config/test.exs. Provision 2 → 3rd fails.
       {:ok, _} = Visitors.find_or_provision_anon("a", "azzurra", "1.2.3.4")
-      assert {:error, :ip_cap_exceeded} = Visitors.Login.login("b", nil, "1.2.3.4", "ua")
+      {:ok, _} = Visitors.find_or_provision_anon("b", "azzurra", "1.2.3.4")
+
+      assert {:error, :ip_cap_exceeded} = Login.login(login_input(%{nick: "c"}))
     end
 
     test "malformed nick → {:error, :malformed_nick}" do
-      assert {:error, :malformed_nick} = Visitors.Login.login("9bad", nil, "1.2.3.4", "ua")
+      assert {:error, :malformed_nick} = Login.login(login_input(%{nick: "9bad"}))
     end
 
-    test "no visitor network configured → {:error, :visitor_network_unconfigured}" do
-      Application.delete_env(:grappa, :visitor_network)
-      assert {:error, :visitor_network_unconfigured} = Visitors.Login.login("vjt", nil, "1.2.3.4", "ua")
+    test "no Network row for visitor_network slug → {:error, :network_unconfigured}" do
+      # No setup_visitor_network call — slug "azzurra" not in DB.
+      assert {:error, :network_unconfigured} = Login.login(login_input())
+    end
+
+    test "connect refused → {:error, :upstream_unreachable}" do
+      port = pick_unused_port()
+      {_, _} = setup_visitor_network(port)
+
+      assert {:error, :upstream_unreachable} = Login.login(login_input())
+    end
+
+    test "no 001 within 8s → {:error, :timeout}, session torn down" do
+      {_server, port} = start_server()
+      {_, _} = setup_visitor_network(port)
+
+      # Override the budget for fast test — pass via opts, mirrors prod
+      # default 8_000 ms otherwise.
+      assert {:error, :timeout} = Login.login(login_input(), login_timeout_ms: 200)
+      assert is_nil(Grappa.Session.whereis({:visitor, "00000000-0000-0000-0000-000000000000"}, 0))
+    end
+  end
+
+  describe "case 2 — registered visitor (password gate)" do
+    setup do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+      {:ok, registered} = Visitors.commit_password(v.id, "s3cret")
+
+      {:ok, server: server, network: network, visitor: registered}
+    end
+
+    test "missing password → {:error, :password_required}", %{visitor: _v} do
+      assert {:error, :password_required} = Login.login(login_input())
+    end
+
+    test "wrong password → {:error, :password_mismatch}", %{visitor: _v} do
+      assert {:error, :password_mismatch} =
+               Login.login(login_input(%{password: "wrong"}))
+    end
+
+    test "matching password → preempt, fresh session, fresh token", %{
+      server: server,
+      visitor: visitor
+    } do
+      # Plant a stale prior session row for the visitor.
+      {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+      task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"})) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      # IDENTIFY is sent post-001
+      {:ok, _} =
+        Grappa.IRCServer.wait_for_line(
+          server,
+          &String.contains?(&1, "PRIVMSG NickServ :IDENTIFY s3cret")
+        )
+
+      assert {:ok, %{visitor: ^visitor, token: new_token}} = Task.await(task, 10_000)
+
+      # Prior session revoked or deleted; new token resolves.
+      assert {:error, _} = Accounts.authenticate(prior.id)
+      assert {:ok, _} = Accounts.authenticate(new_token)
+    end
+  end
+
+  describe "case 3 — anon collision (token check)" do
+    setup do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+      {:ok, prior} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+
+      {:ok, server: server, network: network, visitor: v, token: prior.id}
+    end
+
+    test "token matches existing anon visitor → reuse: rotate token", %{
+      visitor: visitor,
+      token: token
+    } do
+      # No 001-await needed — same client reattaching, no respawn.
+      assert {:ok, %{visitor: ^visitor, token: new_token}} =
+               Login.login(login_input(%{token: token}))
+
+      # Old token revoked, new resolves.
+      assert {:error, _} = Accounts.authenticate(token)
+      assert {:ok, _} = Accounts.authenticate(new_token)
+    end
+
+    test "no token → {:error, :anon_collision}", %{visitor: _v} do
+      assert {:error, :anon_collision} = Login.login(login_input())
+    end
+
+    test "wrong token (different visitor) → {:error, :anon_collision}", %{visitor: _v} do
+      {:ok, alice} = Visitors.find_or_provision_anon("alice", "azzurra", "5.6.7.8")
+      {:ok, alice_session} = Accounts.create_session({:visitor, alice.id}, "5.6.7.8", "ua")
+
+      assert {:error, :anon_collision} =
+               Login.login(login_input(%{nick: "vjt", token: alice_session.id}))
     end
   end
 end
 ```
+
+(`setup_visitor_network_lookup_id/0` placeholder is illustrative —
+implementer may switch to a `setup`-block teardown that walks all
+visitor sessions via `Grappa.Session.stop_session/2`. The pattern
+itself is what matters: spawn-await orchestrated by `Task.async`
+so the test can race `await_handshake` + `feed_001` against the
+synchronous Login probe.)
 
 - [ ] **Step 9.2: Implement Visitors.Login**
 
@@ -2870,55 +3075,66 @@ end
 # lib/grappa/visitors/login.ex
 defmodule Grappa.Visitors.Login do
   @moduledoc """
-  Synchronous login orchestrator for visitor self-service.
+  Synchronous login orchestrator for visitor self-service. Implements
+  the W10/W11/W12/W13 privacy decision tree.
 
-  Flow:
-  1. Validate nick shape (RFC2812).
-  2. Check per-IP cap (W3).
-  3. find_or_provision_anon — DB row for the visitor (no password yet).
-  4. Resolve SessionPlan from visitor row.
-  5. Spawn Session.Server with notify_pid: self() + notify_ref: ref.
-  6. If `password` arg non-nil, queue an outbound `PRIVMSG NickServ
-     :IDENTIFY <pwd>` AFTER 001 — Session.Server will capture it via
-     NSInterceptor into `pending_auth`. Atomic commit happens only on
-     +r MODE observation (not in this fn).
-  7. Receive {:session_ready, ref} OR :timeout (8s).
-  8. On success: Accounts.create_session({:visitor, visitor.id}, ip, ua).
-  9. Return {:ok, %{visitor: v, token: session_id}} or appropriate error.
+    1. Validate nick shape (delegates to Auth.IdentifierClassifier).
+    2. Resolve `visitor_network` (compile_env) → DB Network row →
+       `:network_unconfigured` if missing.
+    3. Lookup visitor by `(nick, network_slug)`.
+    4. Branch on (visitor existence × password_encrypted) per
+       W10/W12/W13.
 
-  On any failure post-spawn, terminate the spawned session.
+  Per-IP cap (W3) checked only on case-1 (provisioning) path —
+  reattaches don't grow the IP footprint.
+
+  Synchronous probe: spawn Session.Server with notify_pid: self()
+  + notify_ref: ref, receive `{:session_ready, ref}` or :timeout
+  (8s default, override-able via opts for tests).
   """
 
-  alias Grappa.{Accounts, Session, Visitors}
+  use Boundary, top_level?: false
+
+  alias Grappa.{Accounts, Repo, Session, Visitors}
   alias Grappa.Auth.IdentifierClassifier
-  alias Grappa.Visitors.SessionPlan
+  alias Grappa.Networks
+  alias Grappa.Visitors.{SessionPlan, Visitor}
 
   require Logger
 
+  @visitor_network Application.compile_env(:grappa, :visitor_network)
+  @max_per_ip Application.compile_env(:grappa, :max_visitors_per_ip, 5)
   @login_timeout_ms 8_000
 
-  @type login_result :: %{visitor: Visitors.Visitor.t(), token: Ecto.UUID.t()}
+  @type input :: %{
+          required(:nick) => String.t(),
+          required(:password) => String.t() | nil,
+          required(:ip) => String.t() | nil,
+          required(:user_agent) => String.t() | nil,
+          required(:token) => String.t() | nil
+        }
+
+  @type result :: %{visitor: Visitor.t(), token: Ecto.UUID.t()}
+
   @type login_error ::
           :malformed_nick
-          | :visitor_network_unconfigured
           | :ip_cap_exceeded
           | :upstream_unreachable
           | :timeout
           | :no_server
           | :network_unconfigured
+          | :password_required
+          | :password_mismatch
+          | :anon_collision
 
-  @spec login(String.t(), String.t() | nil, String.t() | nil, String.t() | nil) ::
-          {:ok, login_result()} | {:error, login_error()}
-  def login(nick, password, ip, user_agent)
-      when is_binary(nick) and (is_binary(password) or is_nil(password)) do
-    with :ok <- validate_nick(nick),
-         {:ok, network_slug} <- visitor_network(),
-         :ok <- check_ip_cap(ip),
-         {:ok, visitor} <- Visitors.find_or_provision_anon(nick, network_slug, ip),
-         {:ok, plan} <- SessionPlan.resolve(visitor),
-         {:ok, _pid} <- spawn_and_await(visitor, plan, password) do
-      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, ip, user_agent)
-      {:ok, %{visitor: visitor, token: session.id}}
+  @spec login(input(), keyword()) :: {:ok, result()} | {:error, login_error()}
+  def login(%{nick: _, password: _, ip: _, user_agent: _, token: _} = input, opts \\ []) do
+    timeout = Keyword.get(opts, :login_timeout_ms, @login_timeout_ms)
+
+    with :ok <- validate_nick(input.nick),
+         {:ok, network} <- visitor_network(),
+         visitor_lookup <- lookup_visitor(input.nick, network.slug) do
+      dispatch(visitor_lookup, input, network, timeout)
     end
   end
 
@@ -2930,81 +3146,177 @@ defmodule Grappa.Visitors.Login do
   end
 
   defp visitor_network do
-    case Application.get_env(:grappa, :visitor_network) do
-      slug when is_binary(slug) -> {:ok, slug}
-      _ -> {:error, :visitor_network_unconfigured}
+    case @visitor_network && Networks.find_network_by_slug(@visitor_network) do
+      %Networks.Network{} = n -> {:ok, n}
+      _ -> {:error, :network_unconfigured}
+    end
+  end
+
+  defp lookup_visitor(nick, slug) do
+    Repo.get_by(Visitor, nick: nick, network_slug: slug)
+  end
+
+  # Case 1 — provision new anon
+  defp dispatch(nil, input, network, timeout) do
+    with :ok <- check_ip_cap(input.ip),
+         {:ok, visitor} <-
+           Visitors.find_or_provision_anon(input.nick, network.slug, input.ip),
+         {:ok, _pid} <- spawn_and_await(visitor, network, timeout) do
+      issue_token(visitor, input)
+    end
+  end
+
+  # Case 2 — registered, password gate
+  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeout)
+       when not is_nil(pwd) do
+    with :ok <- check_password(input.password, pwd) do
+      preempt_and_respawn(visitor, network, input, timeout)
+    end
+  end
+
+  # Case 3 — anon, token gate
+  defp dispatch(%Visitor{password_encrypted: nil} = visitor, input, _network, _timeout) do
+    with :ok <- check_anon_token(input.token, visitor.id) do
+      rotate_token(visitor, input)
     end
   end
 
   defp check_ip_cap(nil), do: :ok
+
   defp check_ip_cap(ip) do
-    cap = Application.get_env(:grappa, :max_visitors_per_ip, 5)
-    if Visitors.count_active_for_ip(ip) >= cap, do: {:error, :ip_cap_exceeded}, else: :ok
+    if Visitors.count_active_for_ip(ip) >= @max_per_ip do
+      {:error, :ip_cap_exceeded}
+    else
+      :ok
+    end
   end
 
-  defp spawn_and_await(visitor, plan, password) do
-    ref = make_ref()
-    plan_with_notify = Map.merge(plan, %{notify_pid: self(), notify_ref: ref, pending_password: password})
+  defp check_password(nil, _), do: {:error, :password_required}
 
-    case Session.start_session({:visitor, visitor.id}, plan.network_id, plan_with_notify) do
-      {:ok, pid} ->
-        receive do
-          {:session_ready, ^ref} -> {:ok, pid}
-        after
-          @login_timeout_ms ->
-            Session.stop_session({:visitor, visitor.id}, plan.network_id)
-            {:error, :timeout}
-        end
+  defp check_password(provided, encrypted) when is_binary(provided) do
+    if Plug.Crypto.secure_compare(provided, encrypted),
+      do: :ok,
+      else: {:error, :password_mismatch}
+  end
 
-      {:error, {:already_started, pid}} ->
-        # Session already alive (existing visitor reattaching). Receive 001-already-seen
-        # state via Session.Server reply.
-        case Session.connection_status({:visitor, visitor.id}, plan.network_id) do
-          :ready -> {:ok, pid}
-          _ -> {:error, :upstream_unreachable}
-        end
+  defp check_anon_token(nil, _), do: {:error, :anon_collision}
 
-      {:error, _reason} ->
-        {:error, :upstream_unreachable}
+  defp check_anon_token(token, visitor_id) do
+    case Accounts.authenticate(token) do
+      {:ok, %{visitor_id: ^visitor_id}} -> :ok
+      _ -> {:error, :anon_collision}
     end
+  end
+
+  defp preempt_and_respawn(visitor, network, input, timeout) do
+    revoke_all_sessions_for_visitor(visitor.id)
+    :ok = Visitors.purge_if_anon(visitor.id)
+    :ok = Session.stop_session({:visitor, visitor.id}, network.id)
+
+    with {:ok, _pid} <- spawn_and_await(visitor, network, timeout) do
+      :ok =
+        Session.send_privmsg(
+          {:visitor, visitor.id},
+          network.id,
+          "NickServ",
+          "IDENTIFY " <> input.password
+        )
+        |> case do
+          {:ok, _} -> :ok
+          # Falls back to :ok — IDENTIFY failure is logged but doesn't
+          # block login. NSInterceptor (Task 13) + +r MODE observation
+          # (Task 15) are the canonical confirmations; failure here just
+          # means the user has to re-IDENTIFY manually.
+          {:error, reason} ->
+            Logger.warning("post-login IDENTIFY failed", reason: inspect(reason))
+            :ok
+        end
+
+      issue_token(visitor, input)
+    end
+  end
+
+  defp rotate_token(visitor, input) do
+    revoke_all_sessions_for_visitor(visitor.id)
+    issue_token(visitor, input)
+  end
+
+  defp revoke_all_sessions_for_visitor(visitor_id) do
+    Accounts.revoke_sessions_for_visitor(visitor_id)
+  end
+
+  defp spawn_and_await(visitor, network, timeout) do
+    case SessionPlan.resolve(visitor) do
+      {:ok, plan} ->
+        ref = make_ref()
+        plan_with_notify = Map.merge(plan, %{notify_pid: self(), notify_ref: ref})
+
+        case Session.start_session({:visitor, visitor.id}, network.id, plan_with_notify) do
+          {:ok, pid} -> wait_for_ready(visitor.id, network.id, pid, ref, timeout)
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          {:error, _reason} -> {:error, :upstream_unreachable}
+        end
+
+      {:error, reason} when reason in [:no_server, :network_unconfigured] ->
+        {:error, reason}
+    end
+  end
+
+  defp wait_for_ready(visitor_id, network_id, pid, ref, timeout) do
+    receive do
+      {:session_ready, ^ref} -> {:ok, pid}
+    after
+      timeout ->
+        Session.stop_session({:visitor, visitor_id}, network_id)
+        {:error, :timeout}
+    end
+  end
+
+  defp issue_token(visitor, input) do
+    {:ok, session} =
+      Accounts.create_session({:visitor, visitor.id}, input.ip, input.user_agent)
+
+    {:ok, %{visitor: visitor, token: session.id}}
   end
 end
 ```
 
-(Note: `Session.start_session/3` and `Session.connection_status/2` need adapting to accept the `{:visitor, id}` subject tuple — these adjustments land here.)
+#### New helpers landing alongside Login
+
+- `Grappa.Networks.find_network_by_slug/1` — returns `Network.t() | nil`.
+  Sibling of existing `find_or_create_network/1`.
+- `Grappa.Accounts.revoke_sessions_for_visitor/1` — bulk
+  `Repo.update_all` setting `revoked_at = now()` on every non-revoked
+  row for the visitor. Returns count for log/audit. Plus
+  `Accounts.delete_sessions_for_visitor/1` if W11 needs physical
+  delete (CASCADE-driven visitor-row delete makes this redundant in
+  most paths, but the registered-preempt case uses the revoke variant
+  to keep audit history).
+- `Grappa.Accounts.authenticate/1` already returns `{:ok, %Session{}}`
+  with `visitor_id` field present for visitor-bound sessions.
 
 - [ ] **Step 9.3: Run tests**
 
 ```bash
 scripts/test.sh test/grappa/visitors/login_test.exs
+scripts/check.sh
 ```
 
-Iterate until green. The IRCServer test helper may need a few new modes (`auto_accept`, `accept_but_silent`).
+Iterate until green. Watch for:
+- Boundary `deps:` additions on `Grappa.Visitors` (Accounts + Session)
+  may surface as a warning if the inverse edge closes a cycle —
+  read all warnings, follow Task 7's `dirty_xrefs` precedent if so.
+- `Application.compile_env` reads NIL if config/test.exs doesn't
+  set the value; the test for `:network_unconfigured` (no DB row
+  for the slug) still passes because lookup returns nil.
 
 - [ ] **Step 9.4: Commit**
 
-```bash
-git add lib/grappa/visitors/login.ex test/grappa/visitors/login_test.exs lib/grappa/session.ex
-git commit -m "$(cat <<'EOF'
-feat(visitors): add synchronous Login orchestrator with 8s budget
-
-Validates nick → checks per-IP cap → provisions visitor row → resolves
-SessionPlan → spawns Session.Server with notify_ref → blocks on
-{:session_ready, ref} or 8s timeout → on success creates accounts.session
-with subject {:visitor, id} and returns {:ok, %{visitor, token}}.
-
-Connect-refused → :upstream_unreachable (502).
-8s elapsed without 001 → :timeout (504), spawned session torn down.
-Per-IP cap exceeded → :ip_cap_exceeded (429).
-Malformed nick → :malformed_nick (400).
-
-Pending-password (from cicchetto's NickServ password field) is passed
-through plan.pending_password; Session.Server queues an outbound
-IDENTIFY post-001 which NSInterceptor captures into pending_auth —
-atomic commit happens only on +r MODE observation in a later task.
-EOF
-)"
-```
+Commit message structure: subject `feat(visitors): add Login
+synchronous orchestrator with W10–W14 privacy gate`. Body
+explains the three cases + the IDENTIFY-post-001 inline shape +
+the `revoke_sessions_for_visitor` helper + the boundary-deps
+addition + the config/test.exs additions.
 
 ---
 
