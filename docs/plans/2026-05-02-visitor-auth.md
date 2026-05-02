@@ -5850,116 +5850,352 @@ EOF
 ### Task 18: Session.Server wires GhostRecovery hooks
 
 **Files:**
+- Modify: `lib/grappa/irc/auth_fsm.ex` (NEW — Step 18.0)
 - Modify: `lib/grappa/session/server.ex`
-- Test: extend integration tests
+- Modify: `test/grappa/irc/auth_fsm_test.exs`
+- Modify: `test/grappa/session/server_test.exs`
 
-- [ ] **Step 18.1: Failing test**
+**Dispatch-time amendments (S12 — substantial scope expansion):**
+
+- **D0 — AuthFSM 432/433 split (NEW STEP 18.0):** discovered post-Task-17:
+  Client (`lib/grappa/irc/client.ex:303-319`) dispatches each parsed
+  line to Server's mailbox via async `send/2`, then synchronously
+  feeds `AuthFSM.step/2`. AuthFSM unconditionally `:stop`s on 432/433
+  (auth_fsm.ex:230-233, with foreshadowing comment "Phase 5 may add
+  nick-mangling fallback (append `_`) here"). Server's GhostRecovery
+  emissions cannot outrace Client's synchronous crash. AuthFSM MUST
+  be modified to `:cont` on 432/433 when `auth_method ==
+  :nickserv_identify` so the connection stays alive long enough for
+  Server to drive ghost recovery. Mode-1 (sasl / server_pass / none)
+  retains the operator-must-fix `:nick_rejected` stop. Cluster
+  scope expands by one AuthFSM file edit + 3 AuthFSM test cases.
+  Orchestrator-blessed Option A per CLAUDE.md "don't design for
+  hypothetical future requirements" — `auth_method ==
+  :nickserv_identify` is the only current discriminator.
+- **D1 — State is a plain map, not `defmodule State do defstruct end`:**
+  S10 lesson, recurring. Plan body's `%State{ghost_recovery: gr} = state`
+  → use `%{ghost_recovery: gr} = state`.
+- **D2 — `:"433"` atom does NOT exist:** parser produces `{:numeric, 433}`
+  with INTEGER. Same applies to `:"401"` / `:"311"`. Same drift as
+  Task 17 D2.
+- **D3 — `step/2` input is `Message.t() | :timeout`, not opaque tagged
+  tuple:** Task 17 already settled this — pass the actual `%Message{}`
+  to `GhostRecovery.step/2`, not a synthetic `{:numeric, "433",
+  params}` tuple.
+- **D4 — NickServ NOTICE matches via `Message.sender_nick/1`:** prefix
+  is `{:nick, "NickServ", _, _}` tuple, NOT a string. Plan body's
+  `String.starts_with?(prefix || "", "NickServ!")` is wrong on two
+  counts (prefix shape + parser convention). Use the public accessor
+  per the A5 architecture review note.
+- **D5 — `state.client_pid` → `state.client`:** S11 confirmed.
+  Server state has `client: pid() | nil`, not `client_pid`.
+- **D6 — `state.cached_password` does NOT exist:** S11 added
+  `pending_password :: String.t() | nil`, populated from
+  `opts.password` only when `opts.auth_method == :nickserv_identify`,
+  cleared one-shot at first 001. **Reuse it** — 433 fires PRE-001
+  during handshake (the only window where ghost recovery applies to
+  a fresh connection), so `pending_password` is still set at 433
+  time. No new field needed.
+- **D7 — `extract_state(next)` is plan-author placeholder:** just
+  store the FSM struct directly. `next` is already
+  `GhostRecovery.t()`.
+- **D8 — `delegate(msg, state)` references unbound `msg`:** plan body
+  used `delegate(msg, state)` in a clause where `msg` isn't pattern-
+  bound. Use `delegate(msg, state)` after binding the pattern as
+  `msg = %Message{...}` OR fall through to the next clause. Cleaner
+  to use a separate clause head with the pattern bound.
+- **D9 — IDENTIFY emission from GhostRecovery bypasses NSInterceptor:**
+  The `:succeeded` flush emits `["NICK orig\r\n", "PRIVMSG NickServ
+  :IDENTIFY pwd\r\n"]` directly via `Client.send_line/2`. That
+  bypasses Server's `send_privmsg` handler where NSInterceptor would
+  fire. Without NSInterceptor running, `pending_auth` is NOT staged
+  and the +r MODE rendezvous (Task 15) won't commit. **Solution:**
+  introduce a `flush_lines/2` private helper that runs each line
+  through `NSInterceptor.intercept/1` and stages `pending_auth` on
+  capture, then emits via `Client.send_line`. Call from
+  `advance_ghost/2`. Keeps "one feature, one code path" — wherever
+  an IDENTIFY-shaped line emerges from Server, NSInterceptor processes
+  it.
+- **D10 — Test fixtures `IRCServer.send_433/2` / `send_nickserv_notice/2`
+  / `send_401/2` and `plan_opts_for/1` and `eventually/1` do NOT exist:**
+  recurring drift since S6. Use `IRCServer.feed/2` with a raw line
+  for inbound; use `start_visitor_session_for/2` +
+  `visitor_with_network/2` from `auth_fixtures.ex` for setup. For
+  Server-level state-wiring tests, use direct `send(pid, {:irc,
+  %Message{}})` then `:sys.get_state(pid)` to inspect — bypasses the
+  Client entirely and tests Server clauses in isolation. Reserve
+  end-to-end fake-server tests for the smoke phase (Task 26).
+- **D11 — New state fields:** `ghost_recovery: GhostRecovery.t() | nil`
+  and `ghost_timer: reference() | nil`. Initialize to nil in `init/1`.
+  Update `@type state` typedoc + `init/1` map literal.
+- **D12 — 8s timeout:** `Process.send_after(self(), :ghost_timeout,
+  8_000)` armed when GhostRecovery enters non-terminal phase;
+  cancelled (per S9 `_ = if is_reference(...) do Process.cancel_timer
+  end` shape) when transitioning to terminal phase OR when a fresh
+  433 re-arms.
+- **D13 — Boundary deps:** `Grappa.Session.GhostRecovery` is a sibling
+  submodule of `Grappa.Session` — same parent boundary. No deps
+  growth on `Grappa.Session`'s `use Boundary, deps: [...]` list.
+
+---
+
+- [ ] **Step 18.0: AuthFSM 432/433 split for `:nickserv_identify` mode**
 
 ```elixir
-describe "GhostRecovery integration" do
-  test "433 with cached password → GHOST sent → 401 → /nick + IDENTIFY", %{server: fake, visitor: visitor} do
-    {:ok, registered} = Visitors.commit_password(visitor.id, "s3cret")
-    plan = plan_opts_for(fake) |> Map.put(:nick, registered.nick) |> Map.put(:auth_method, :nickserv_identify) |> Map.put(:password, "s3cret")
+# lib/grappa/irc/auth_fsm.ex — add a more-specific clause BEFORE the
+# existing 432/433 stop clause. Order matters: pattern-match dispatch
+# walks top-to-bottom.
 
-    {:ok, _pid} = Session.start_session({:visitor, registered.id}, plan.network_id, plan)
+# 432/433 during :nickserv_identify mode — keep the connection alive
+# so Grappa.Session.Server can drive Grappa.Session.GhostRecovery (the
+# host owns the nick-mangling + GHOST + IDENTIFY recovery flow). Mode-1
+# (sasl / server_pass / none) retains the original :nick_rejected stop
+# below: the operator-supplied credential's nick is wrong, no recovery
+# is possible without manual intervention.
+def step(%__MODULE__{auth_method: :nickserv_identify} = state,
+         %Message{command: {:numeric, code}})
+    when code in [432, 433] do
+  {:cont, state, []}
+end
 
-    # Server returns 433 (nick in use) on initial NICK
-    IRCServer.send_433(fake, registered.nick)
+# 432 ERR_ERRONEUSNICKNAME / 433 ERR_NICKNAMEINUSE during registration.
+# (existing clause, retained verbatim — moved BELOW the new clause.)
+def step(state, %Message{command: {:numeric, code}})
+    when code in [432, 433] do
+  {:stop, {:nick_rejected, code, state.nick}, state, []}
+end
+```
 
-    # Expect GHOST + underscore-NICK
-    assert_receive {:ircserver_received, "NICK " <> _underscore_variant}, 1_000
-    assert_receive {:ircserver_received, "PRIVMSG NickServ :GHOST " <> _}, 1_000
+Tests in `test/grappa/irc/auth_fsm_test.exs`:
 
-    # Server replies with NickServ NOTICE
-    IRCServer.send_nickserv_notice(fake, "Ghost killed.")
-    assert_receive {:ircserver_received, "WHOIS " <> _}, 1_000
+```elixir
+describe "step/2 432/433 — :nickserv_identify mode" do
+  test ":nickserv_identify continues on 433 instead of stopping" do
+    state = %AuthFSM{auth_method: :nickserv_identify, nick: "vjt", password: "s3cret"}
+    msg = %Message{command: {:numeric, 433}, params: ["*", "vjt", "Nickname is already in use."]}
 
-    # Server replies with 401 (no such nick — ghost succeeded)
-    IRCServer.send_401(fake, registered.nick)
-    assert_receive {:ircserver_received, "NICK " <> nick}, 1_000
-    assert nick == registered.nick
-    assert_receive {:ircserver_received, "PRIVMSG NickServ :IDENTIFY s3cret"}, 1_000
+    assert {:cont, ^state, []} = AuthFSM.step(state, msg)
+  end
+
+  test ":nickserv_identify continues on 432 (erroneous nick) too" do
+    state = %AuthFSM{auth_method: :nickserv_identify, nick: "vjt", password: "s3cret"}
+    msg = %Message{command: {:numeric, 432}, params: ["*", "vjt", "Erroneous Nickname"]}
+
+    assert {:cont, ^state, []} = AuthFSM.step(state, msg)
+  end
+
+  test "non-:nickserv_identify modes still stop with :nick_rejected" do
+    for method <- [:sasl, :server_pass, :none, :auto] do
+      state = %AuthFSM{auth_method: method, nick: "operator-bot"}
+      msg = %Message{command: {:numeric, 433}, params: ["*", "operator-bot"]}
+
+      assert {:stop, {:nick_rejected, 433, "operator-bot"}, ^state, []} =
+               AuthFSM.step(state, msg)
+    end
   end
 end
 ```
 
-- [ ] **Step 18.2: Implement**
+---
+
+- [ ] **Step 18.1: Server-side failing tests (state-wiring level)**
 
 ```elixir
-# lib/grappa/session/server.ex — add ghost_recovery field to State
-# State :: %State{..., ghost_recovery: GhostRecovery.t() | nil, ghost_timer: ref | nil}
+# test/grappa/session/server_test.exs — describe block
 
-# In handle_info({:irc, %Message{command: :"433", ...}}, state):
-def handle_info({:irc, %Message{command: :"433", params: params}}, state) do
-  case state.subject do
-    {:visitor, _} ->
-      pwd = state.cached_password  # set from plan.password during init
-      gr = GhostRecovery.init(state.nick, pwd)
-      {next, lines} = GhostRecovery.step(gr, {:numeric, "433", params})
-      send_lines(state.client_pid, lines)
+describe "GhostRecovery wiring on 433" do
+  test "visitor with cached password: 433 stages ghost_recovery + 8s timer + emits NICK_ + GHOST" do
+    {visitor, network} = visitor_with_network(fake_server_port)
+    {:ok, registered} = Visitors.commit_password(visitor.id, "s3cret")
+
+    pid = start_visitor_session_for(registered, network)
+    await_handshake(pid)  # standard handshake-completion wait
+
+    msg = %Message{command: {:numeric, 433}, params: ["*", registered.nick]}
+    send(pid, {:irc, msg})
+
+    state = :sys.get_state(pid)
+    assert %GhostRecovery{phase: :awaiting_ghost_notice, orig_nick: nick, password: "s3cret"} =
+             state.ghost_recovery
+    assert nick == registered.nick
+    assert is_reference(state.ghost_timer)
+
+    # Verify wire emissions arrived at fake server (PING/PONG flush)
+    expect_lines(fake, [
+      "NICK #{registered.nick}_",
+      "PRIVMSG NickServ :GHOST #{registered.nick} s3cret"
+    ])
+  end
+
+  test "visitor without cached password (anon path): 433 → :failed terminal, no GHOST emitted" do
+    {visitor, network} = visitor_with_network(fake_server_port)
+    pid = start_visitor_session_for(visitor, network)  # anon — auth_method :none
+    await_handshake(pid)
+
+    # Anon visitors run with auth_method :none and pending_password = nil; the
+    # AuthFSM-433 clause routes through the original :nick_rejected stop, NOT
+    # GhostRecovery. So Client crashes, Session restarts. This test verifies
+    # that ghost_recovery is NOT armed for anon — the wiring discriminator
+    # is `state.pending_password != nil`, not `subject = visitor`.
+    msg = %Message{command: {:numeric, 433}, params: ["*", visitor.nick]}
+    send(pid, {:irc, msg})
+
+    state = :sys.get_state(pid)
+    assert state.ghost_recovery == nil
+    assert state.ghost_timer == nil
+  end
+
+  test "GhostRecovery success: 401 advances to :succeeded, stages pending_auth, fires NICK + IDENTIFY" do
+    # ... build registered visitor + session as above; manually transition
+    # ghost_recovery state by sending {:irc, ...} for 433 → notice → 401.
+    # Assert state.pending_auth is staged (so +r rendezvous fires).
+  end
+
+  test "GhostRecovery 8s timeout: ghost_timer fires → :failed terminal, ghost_recovery cleared" do
+    # ... arm ghost_recovery via 433, then send :ghost_timeout to pid,
+    # assert state.ghost_recovery and state.ghost_timer both nil.
+  end
+
+  test "non-NickServ NOTICE during :awaiting_ghost_notice does not advance the FSM" do
+    # ... arm ghost_recovery; send NOTICE from {:nick, "alice", _, _};
+    # assert ghost_recovery.phase still :awaiting_ghost_notice.
+  end
+end
+```
+
+(The implementer should fill in the helper invocations using existing
+test fixtures: `start_visitor_session_for/2`, `await_handshake/1`,
+the canonical PING/PONG flush for cross-process emission verification
+per `server_test.exs:544 self-NICK rename test`.)
+
+---
+
+- [ ] **Step 18.2: Implement Server wiring**
+
+```elixir
+# lib/grappa/session/server.ex
+
+# Add to @type state typedoc:
+#   ghost_recovery: GhostRecovery.t() | nil,
+#   ghost_timer: reference() | nil,
+
+alias Grappa.Session.{EventRouter, GhostRecovery, NSInterceptor}
+
+# In init/1, add to the state map literal:
+#   ghost_recovery: nil,
+#   ghost_timer: nil,
+
+# 433 handler — gate on pending_password (set only for :nickserv_identify
+# visitors; anon visitors and mode-1 sessions both have nil here so they
+# fall through to the catch-all and AuthFSM's :nick_rejected stop OR the
+# Server's existing inbound passthrough).
+def handle_info(
+      {:irc, %Message{command: {:numeric, 433}} = _msg},
+      %{pending_password: pwd, ghost_recovery: nil} = state
+    )
+    when is_binary(pwd) do
+  fsm = GhostRecovery.init(state.nick, pwd)
+  msg = %Message{command: {:numeric, 433}, params: []}
+  {next, lines} = GhostRecovery.step(fsm, msg)
+  state = flush_lines(state, lines)
+
+  case next.phase do
+    terminal when terminal in [:succeeded, :failed] ->
+      {:noreply, %{state | ghost_recovery: nil}}
+
+    _ongoing ->
       timer = Process.send_after(self(), :ghost_timeout, 8_000)
-      {:noreply, %{state | ghost_recovery: extract_state(next), ghost_timer: timer}}
-
-    _ ->
-      # mode-1 keeps existing 433 behavior (currently: log + sit on _ nick)
-      # ... existing handling
-      {:noreply, state}
+      {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
   end
 end
 
-# Wire NickServ NOTICE / 401 / 311 / timeout into ghost_recovery if non-nil
-def handle_info({:irc, %Message{command: :notice, prefix: prefix, params: [_target, body]}}, state)
-    when not is_nil(state.ghost_recovery) do
-  if String.starts_with?(prefix || "", "NickServ!") do
-    advance_ghost(state, {:nickserv_notice, body})
-  else
-    delegate(msg, state)
-  end
+# NickServ NOTICE — only intercept when ghost_recovery is armed.
+def handle_info(
+      {:irc, %Message{command: :notice} = msg},
+      %{ghost_recovery: gr} = state
+    )
+    when not is_nil(gr) do
+  advance_ghost(state, msg)
 end
 
-def handle_info({:irc, %Message{command: cmd, params: params}}, state)
-    when not is_nil(state.ghost_recovery) and cmd in [:"401", :"311"] do
-  advance_ghost(state, {:numeric, to_string(cmd), params})
+# 401 / 311 — only intercept when ghost_recovery is armed.
+def handle_info(
+      {:irc, %Message{command: {:numeric, code}} = msg},
+      %{ghost_recovery: gr} = state
+    )
+    when not is_nil(gr) and code in [401, 311] do
+  advance_ghost(state, msg)
 end
 
-def handle_info(:ghost_timeout, %State{ghost_recovery: gr} = state) when not is_nil(gr) do
+def handle_info(:ghost_timeout, %{ghost_recovery: gr} = state) when not is_nil(gr) do
   {next, lines} = GhostRecovery.step(gr, :timeout)
-  send_lines(state.client_pid, lines)
+  state = flush_lines(state, lines)
   {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
 end
 
+def handle_info(:ghost_timeout, state), do: {:noreply, state}
+
 defp advance_ghost(state, input) do
   {next, lines} = GhostRecovery.step(state.ghost_recovery, input)
-  send_lines(state.client_pid, lines)
+  state = flush_lines(state, lines)
 
-  case next do
-    %{phase: :succeeded} -> {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
-    %{phase: :failed} -> {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
-    cont -> {:noreply, %{state | ghost_recovery: cont}}
+  case next.phase do
+    terminal when terminal in [:succeeded, :failed] ->
+      _ = if is_reference(state.ghost_timer), do: Process.cancel_timer(state.ghost_timer)
+      {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
+
+    _ongoing ->
+      {:noreply, %{state | ghost_recovery: next}}
   end
 end
 
-defp send_lines(client_pid, lines) do
-  Enum.each(lines, &Client.send_line(client_pid, &1))
+# Per D9: lines emitted from GhostRecovery bypass send_privmsg, so manually
+# run NSInterceptor over each emitted line and stage pending_auth on
+# capture. Keeps the +r MODE rendezvous (Task 15) firing for the IDENTIFY
+# that GhostRecovery emits on :succeeded.
+defp flush_lines(state, lines) do
+  Enum.reduce(lines, state, fn line, acc ->
+    acc =
+      case NSInterceptor.intercept(line) do
+        :passthrough -> acc
+        {:capture, password} -> stage_pending_auth(acc, password)
+      end
+
+    :ok = Client.send_line(acc.client, line)
+    acc
+  end)
 end
 ```
+
+---
 
 - [ ] **Step 18.3: Tests + commit**
 
 ```bash
+scripts/test.sh test/grappa/irc/auth_fsm_test.exs
 scripts/test.sh test/grappa/session/server_test.exs
-git add lib/grappa/session/server.ex test/grappa/session/server_test.exs
+scripts/check.sh
+git add lib/grappa/irc/auth_fsm.ex lib/grappa/session/server.ex \
+        test/grappa/irc/auth_fsm_test.exs test/grappa/session/server_test.exs
 git commit -m "$(cat <<'EOF'
 feat(session): wire GhostRecovery FSM for visitor nick-collision reconnect
 
-Visitor sessions with cached password run GhostRecovery on 433. State
-field :ghost_recovery holds the FSM struct; 8s timeout via
-Process.send_after sends :ghost_timeout. NickServ NOTICE / 401 / 311 are
-fed into step/2; emitted lines are flushed via Client.send_line.
+AuthFSM gains a :nickserv_identify-specific 432/433 :cont clause so
+the connection stays alive long enough for Session.Server to drive
+Grappa.Session.GhostRecovery's mangled-NICK + GHOST + WHOIS + IDENTIFY
+flow. Mode-1 sessions (sasl / server_pass / none) keep the existing
+:nick_rejected stop — operator must fix the credential.
 
-Mode-1 sessions keep existing 433 behavior unchanged. The IDENTIFY
-emitted on success goes through NSInterceptor (latest-wins) and
-participates in +r MODE observation just like a cicchetto-typed
+Server.handle_info adds three ghost-recovery clauses (433 init,
+NickServ NOTICE / 401 / 311 advance, :ghost_timeout) all gated on
+state.pending_password (set only for :nickserv_identify visitors) and
+state.ghost_recovery (the FSM struct). 8s timer via Process.send_after
+mirrors the S9 pending_auth_timer cancel-shape.
+
+Lines emitted by GhostRecovery flow through a new flush_lines/2
+helper that runs NSInterceptor over each line and stages pending_auth
+on capture, so the IDENTIFY emitted on :succeeded rendezvous with
+the Task 15 +r MODE observer just like a cicchetto-typed
 /ns identify — one feature, one code path.
 EOF
 )"
