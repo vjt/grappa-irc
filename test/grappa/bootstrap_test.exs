@@ -233,4 +233,33 @@ defmodule Grappa.BootstrapTest do
       assert keys == []
     end
   end
+
+  describe "run/0 W7 hard-error on visitor pinned to unconfigured network" do
+    # W7 invariant: every active visitor's `network_slug` must resolve
+    # to a configured `Networks.Network` row at boot. A visitor pinned
+    # to a slug that the operator has since dropped from the DB is an
+    # orphan — `Visitors.Login` and `Visitors.SessionPlan` both trust
+    # the slug → network resolution to succeed at runtime, so the only
+    # safe thing at boot is to refuse to start the app and tell the
+    # operator how to recover. Silent reap would lose user data on a
+    # config typo; a noisy raise puts the choice in the operator's
+    # hands (restore the network row OR explicitly run
+    # `mix grappa.reap_visitors --network=<slug>`).
+    test "raises with operator instructions when visitor.network_slug not configured" do
+      orphan_slug = "ghosted-#{System.unique_integer([:positive])}"
+      _ = visitor_fixture(network_slug: orphan_slug)
+
+      assert_raise RuntimeError, ~r/visitor rows pinned.*#{orphan_slug}.*reap_visitors/, fn ->
+        Bootstrap.run()
+      end
+    end
+
+    test "does not raise when every visitor's network_slug is configured" do
+      {_, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
+
+      assert :ok = Bootstrap.run()
+    end
+  end
 end
