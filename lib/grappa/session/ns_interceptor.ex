@@ -31,6 +31,16 @@ defmodule Grappa.Session.NSInterceptor do
 
   @ns_re ~r/^PRIVMSG\s+NickServ\s+:(IDENTIFY|GHOST|REGISTER)\s+(.+?)\s*$/i
 
+  @doc """
+  Inspects one outbound IRC wire line and returns either `:passthrough`
+  (no NickServ identity verb detected) or `{:capture, password}` with
+  the cleartext password lifted out for the host to stage in
+  `pending_auth`.
+
+  Pure: no side effects. The host (`Grappa.Session.Server`) decides
+  whether to commit, discard on +r-MODE-not-observed timeout, or
+  overwrite on a subsequent capture.
+  """
   @spec intercept(String.t()) :: result()
   def intercept(line) when is_binary(line) do
     case Regex.run(@ns_re, line, capture: :all_but_first) do
