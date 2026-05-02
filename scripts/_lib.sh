@@ -124,14 +124,25 @@ in_oneshot() {
         run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
 }
 
-# Prefer exec into the live container when on main and it's up; otherwise
-# oneshot. From a worktree, ALWAYS oneshot — the live container has main's
-# source mounted, not the worktree's, so exec there would run the wrong code.
+# Prefer exec into the live container when on main and it's up AND it's a
+# dev container (has `mix`); otherwise oneshot. From a worktree, ALWAYS
+# oneshot — the live container has main's source mounted, not the
+# worktree's, so exec there would run the wrong code.
+#
+# The `mix`-probe guards against prod-container squat: compose.yaml and
+# compose.prod.yaml both default to project=grappa + service=grappa, so
+# `ps -q grappa` under compose.yaml returns the prod release container
+# when prod is the only stack running. Prod release has no `mix` — exec
+# would die with "executable file not found". Probe falls through to
+# oneshot in that case (and any future wrong-image-running case).
 in_container_or_oneshot() {
-    if [ "$SRC_ROOT" = "$REPO_ROOT" ] \
-       && docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null | grep -q .; then
-        docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
-    else
-        in_oneshot "$@"
+    if [ "$SRC_ROOT" = "$REPO_ROOT" ]; then
+        local cid
+        cid="$(docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null || true)"
+        if [ -n "$cid" ] && docker exec "$cid" sh -c 'command -v mix >/dev/null 2>&1'; then
+            docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
+            return
+        fi
     fi
+    in_oneshot "$@"
 }
