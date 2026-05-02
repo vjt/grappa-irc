@@ -1,6 +1,8 @@
 defmodule Grappa.Accounts.SessionsTest do
   use Grappa.DataCase, async: true
 
+  import Grappa.AuthFixtures, only: [visitor_fixture: 0]
+
   alias Grappa.Accounts
   alias Grappa.Accounts.{Session, User}
 
@@ -20,7 +22,7 @@ defmodule Grappa.Accounts.SessionsTest do
       before = DateTime.utc_now()
 
       assert {:ok, %Session{} = s} =
-               Accounts.create_session(user.id, "127.0.0.1", "test-ua")
+               Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
 
       assert s.user_id == user.id
       assert s.ip == "127.0.0.1"
@@ -38,7 +40,7 @@ defmodule Grappa.Accounts.SessionsTest do
     test "accepts nil ip / user_agent (mix-task-driven session has no conn)",
          %{user: user} do
       assert {:ok, %Session{ip: nil, user_agent: nil}} =
-               Accounts.create_session(user.id, nil, nil)
+               Accounts.create_session({:user, user.id}, nil, nil)
     end
 
     # S29 H4: Session was the only schema in the project without a
@@ -53,16 +55,71 @@ defmodule Grappa.Accounts.SessionsTest do
       stale_uuid = Ecto.UUID.generate()
 
       assert {:error, %Ecto.Changeset{} = cs} =
-               Accounts.create_session(stale_uuid, "127.0.0.1", "test-ua")
+               Accounts.create_session({:user, stale_uuid}, "127.0.0.1", "test-ua")
 
       refute cs.valid?
       assert {"does not exist", _} = cs.errors[:user]
     end
   end
 
+  describe "create_session/3 with visitor subject" do
+    test "creates session bound to visitor (no user_id)" do
+      visitor = visitor_fixture()
+
+      assert {:ok, %Session{} = s} =
+               Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+      assert s.visitor_id == visitor.id
+      assert is_nil(s.user_id)
+      assert s.ip == "1.2.3.4"
+      assert s.user_agent == "ua"
+    end
+
+    test "returns {:error, %Ecto.Changeset{}} for a stale visitor_id (FK miss)" do
+      stale_uuid = Ecto.UUID.generate()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Accounts.create_session({:visitor, stale_uuid}, nil, nil)
+
+      refute cs.valid?
+      assert {"does not exist", _} = cs.errors[:visitor]
+    end
+  end
+
+  describe "Session.changeset/2 XOR enforcement" do
+    test "rejects neither user_id nor visitor_id set" do
+      now = DateTime.utc_now()
+
+      cs =
+        Session.changeset(%Session{}, %{
+          created_at: now,
+          last_seen_at: now
+        })
+
+      refute cs.valid?
+      assert "must set user_id or visitor_id" in errors_on(cs).user_id
+    end
+
+    test "rejects both user_id and visitor_id set", %{user: user} do
+      visitor = visitor_fixture()
+      now = DateTime.utc_now()
+
+      cs =
+        Session.changeset(%Session{}, %{
+          user_id: user.id,
+          visitor_id: visitor.id,
+          created_at: now,
+          last_seen_at: now
+        })
+
+      refute cs.valid?
+      assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).user_id
+    end
+  end
+
   describe "authenticate/1" do
     setup %{user: user} do
-      {:ok, session} = Accounts.create_session(user.id, "127.0.0.1", "test-ua")
+      {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
       %{session: session}
     end
 
@@ -123,10 +180,22 @@ defmodule Grappa.Accounts.SessionsTest do
     end
   end
 
+  describe "authenticate/1 visitor-bound sessions" do
+    test "returns visitor-bound session with visitor_id, no user_id" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil)
+
+      assert {:ok, %Session{visitor_id: vid, user_id: nil}} =
+               Accounts.authenticate(session.id)
+
+      assert vid == visitor.id
+    end
+  end
+
   describe "revoke_session/1" do
     test "is idempotent — revoking twice is :ok and the row stays revoked",
          %{user: user} do
-      {:ok, session} = Accounts.create_session(user.id, nil, nil)
+      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
 
       assert :ok = Accounts.revoke_session(session.id)
       assert :ok = Accounts.revoke_session(session.id)

@@ -19,7 +19,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
         password_hash: "x"
       })
 
-    {:ok, session} = Accounts.create_session(user.id, "127.0.0.1", "test-ua")
+    {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
     %{user: user, session: session}
   end
 
