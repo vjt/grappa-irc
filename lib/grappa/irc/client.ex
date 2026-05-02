@@ -100,6 +100,24 @@ defmodule Grappa.IRC.Client do
   @enforce_keys [:transport, :dispatch_to, :fsm]
   defstruct [:socket, :transport, :dispatch_to, :fsm]
 
+  # Cluster visitor-auth hotfix: pre-crash sleep when do_connect/3 fails
+  # (ECONNREFUSED, ECONNRESET, ssl handshake :closed, etc.). Without it,
+  # the DynamicSupervisor's :transient restart cycle spins at full CPU
+  # speed (~2000 attempts/sec for refused TCP) and DoS-pummels upstream
+  # IRC servers — azzurra k-lined the bouncer's IP during cluster smoke
+  # before this landed. With this 5s pre-crash sleep, retry rate is
+  # bounded to ~12/minute per session. Tests override via `config/test.exs`
+  # to keep `init/1`-non-blocking-failure assertions snappy. Phase 5
+  # replaces the blunt sleep with proper exponential backoff +
+  # per-session health tracking. Module-attribute MUST be defined
+  # BEFORE `handle_continue/2` references it — mis-ordering silently
+  # bakes `nil` into the attribute (recurring CLAUDE.md vigilance item).
+  @connect_failure_sleep_ms Application.compile_env(
+                              :grappa,
+                              :irc_client_connect_failure_sleep_ms,
+                              5_000
+                            )
+
   ## API
 
   @doc """
@@ -254,6 +272,7 @@ defmodule Grappa.IRC.Client do
         {:noreply, %{connected | fsm: fsm}}
 
       {:error, reason} ->
+        Process.sleep(@connect_failure_sleep_ms)
         {:stop, {:connect_failed, reason}, state}
     end
   end
