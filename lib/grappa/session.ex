@@ -109,7 +109,9 @@ defmodule Grappa.Session do
           required(:autojoin_channels) => [String.t()],
           required(:host) => String.t(),
           required(:port) => :inet.port_number(),
-          required(:tls) => boolean()
+          required(:tls) => boolean(),
+          optional(:notify_pid) => pid(),
+          optional(:notify_ref) => reference()
         }
 
   @doc """
