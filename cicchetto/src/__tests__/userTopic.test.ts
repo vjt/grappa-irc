@@ -24,7 +24,7 @@ vi.mock("../lib/socket", () => ({
 }));
 
 vi.mock("../lib/networks", () => ({
-  user: vi.fn(() => ({ id: "u1", name: "vjt", inserted_at: "x" })),
+  user: vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" })),
   refetchChannels: vi.fn(),
   networks: vi.fn(() => []),
   channelsBySlug: vi.fn(() => ({})),

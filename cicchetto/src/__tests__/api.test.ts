@@ -48,7 +48,7 @@ describe("api 401 handler", () => {
   it("does not invoke the handler on 2xx success", async () => {
     const handler = vi.fn();
     api.setOn401Handler(handler);
-    stubFetch(200, { id: "u1", name: "alice", inserted_at: "x" });
+    stubFetch(200, { kind: "user", id: "u1", name: "alice", inserted_at: "x" });
     await expect(api.me("good-token")).resolves.toBeDefined();
     expect(handler).not.toHaveBeenCalled();
   });

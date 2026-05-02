@@ -25,11 +25,39 @@ export type LoginResponse = {
   subject: Subject;
 };
 
-export type MeResponse = {
-  id: string;
-  name: string;
-  inserted_at: string;
-};
+// Mirror of `GrappaWeb.MeJSON.show/1` (Task 30). Discriminated union
+// over subject kind — extends the `Subject` shape from `LoginResponse`
+// with a per-kind timestamp the SPA needs for surface rendering:
+//
+//   * user    → `inserted_at` (account-creation time, "member since").
+//   * visitor → `expires_at`  (session-end UTC, drives countdown).
+//
+// Both encoded as ISO-8601 strings (server-side `:utc_datetime` /
+// `:utc_datetime_usec` round-trip via Jason).
+//
+// Pre-Task-30 this was user-only `{id, name, inserted_at}` with no
+// kind discriminator — visitor sessions 500'd at `/me`. The kind
+// discriminator lets every consumer (Shell header, mention-match,
+// ScrollbackPane self-highlight) dispatch on a single field instead
+// of probing for `name` vs `nick`.
+export type MeResponse =
+  | { kind: "user"; id: string; name: string; inserted_at: string }
+  | {
+      kind: "visitor";
+      id: string;
+      nick: string;
+      network_slug: string;
+      expires_at: string;
+    };
+
+// Display-nick for a `MeResponse` — `user.name` for users,
+// `visitor.nick` for visitors. Centralizes the discriminant so
+// callers (ScrollbackPane self-highlight, mention-match) don't
+// repeat the per-kind branch. Mirror of server-side
+// `auth.socketUserName()` selection at the rendering layer.
+export function displayNick(me: MeResponse): string {
+  return me.kind === "user" ? me.name : me.nick;
+}
 
 // Mirror of `Grappa.Networks.Wire.network_json/0`. The integer `id` is
 // the Ecto FK; the `slug` is the topic-vocabulary identifier — every

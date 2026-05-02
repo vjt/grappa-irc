@@ -29,6 +29,8 @@ vi.mock("../lib/api", () => ({
   login: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
+  displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
+    me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
 }));
 
 vi.mock("../lib/socket", () => ({
@@ -62,7 +64,7 @@ const seedStubs = async () => {
     { name: "#grappa", joined: true, source: "autojoin" },
     { name: "#cicchetto", joined: true, source: "autojoin" },
   ]);
-  vi.mocked(api.me).mockResolvedValue({ id: "u1", name: "alice", inserted_at: "x" });
+  vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "alice", inserted_at: "x" });
   vi.mocked(api.listMessages).mockResolvedValue([]);
   vi.mocked(api.sendMessage).mockResolvedValue({
     id: 999,
@@ -271,7 +273,12 @@ describe("subscribe — WS join effect", () => {
       expect(store.selectedChannel()).not.toBeNull();
 
       const api = await import("../lib/api");
-      vi.mocked(api.me).mockResolvedValue({ id: "u2", name: "bob", inserted_at: "x" });
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u2",
+        name: "bob",
+        inserted_at: "x",
+      });
       vi.mocked(socket.joinChannel).mockClear();
 
       localStorage.setItem(
