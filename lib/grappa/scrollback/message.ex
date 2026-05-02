@@ -84,6 +84,7 @@ defmodule Grappa.Scrollback.Message do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
+  alias Grappa.Visitors.Visitor
 
   @kinds [
     :privmsg,
@@ -126,6 +127,8 @@ defmodule Grappa.Scrollback.Message do
           id: integer() | nil,
           user_id: Ecto.UUID.t() | nil,
           user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+          visitor_id: Ecto.UUID.t() | nil,
+          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
           network_id: integer() | nil,
           network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
           channel: String.t(),
@@ -139,6 +142,7 @@ defmodule Grappa.Scrollback.Message do
 
   schema "messages" do
     belongs_to :user, User, type: :binary_id
+    belongs_to :visitor, Visitor, type: :binary_id
     belongs_to :network, Network
     field :channel, :string
     field :server_time, :integer
@@ -153,9 +157,11 @@ defmodule Grappa.Scrollback.Message do
   @doc """
   Builds an insert changeset.
 
-  Universally required: `:user_id`, `:network_id`, `:channel`,
-  `:server_time`, `:kind`, `:sender`. The `:kind` field is validated
-  against the `Ecto.Enum` value set at cast time.
+  Exactly one of `:user_id` / `:visitor_id` is required — never both,
+  never neither. The XOR constraint is enforced both here (via
+  `validate_subject_xor/1`) and at the DB layer (CHECK constraint
+  `messages_subject_xor`). `:network_id`, `:channel`, `:server_time`,
+  `:kind`, `:sender` are universally required.
 
   `:body` is required only for content-bearing kinds
   (`:privmsg`, `:notice`, `:action`, `:topic`). Presence-event kinds
@@ -171,6 +177,7 @@ defmodule Grappa.Scrollback.Message do
     message
     |> cast(attrs, [
       :user_id,
+      :visitor_id,
       :network_id,
       :channel,
       :server_time,
@@ -179,12 +186,27 @@ defmodule Grappa.Scrollback.Message do
       :body,
       :meta
     ])
-    |> validate_required([:user_id, :network_id, :channel, :server_time, :kind, :sender])
+    |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> validate_identifier(:channel, &Identifier.valid_channel?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
+    |> validate_subject_xor()
     |> assoc_constraint(:user)
+    |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
+  end
+
+  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_subject_xor(changeset) do
+    user_id = get_field(changeset, :user_id)
+    visitor_id = get_field(changeset, :visitor_id)
+
+    case {user_id, visitor_id} do
+      {nil, nil} -> add_error(changeset, :user_id, "must set user_id or visitor_id")
+      {_, nil} -> changeset
+      {nil, _} -> changeset
+      {_, _} -> add_error(changeset, :user_id, "user_id and visitor_id are mutually exclusive")
+    end
   end
 
   @spec validate_body_for_kind(Ecto.Changeset.t()) :: Ecto.Changeset.t()

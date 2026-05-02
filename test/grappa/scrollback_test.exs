@@ -14,6 +14,8 @@ defmodule Grappa.ScrollbackTest do
   """
   use Grappa.DataCase, async: false
 
+  import Grappa.AuthFixtures
+
   alias Grappa.{Accounts, Networks, Repo, Scrollback, ScrollbackHelpers}
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.{Message, Wire}
@@ -58,12 +60,13 @@ defmodule Grappa.ScrollbackTest do
       assert "is invalid" in errors_on(cs).kind
     end
 
-    test "rejects missing required fields (user_id/network_id/channel/server_time/kind/sender)" do
+    test "rejects missing required fields (network_id/channel/server_time/kind/sender) and XOR subject" do
       assert {:error, %Ecto.Changeset{} = cs} =
                ScrollbackHelpers.insert(%{channel: "#x"})
 
       errors = errors_on(cs)
-      assert "can't be blank" in errors.user_id
+      # user_id is no longer validate_required — XOR validation fires instead
+      assert "must set user_id or visitor_id" in errors.user_id
       assert "can't be blank" in errors.network_id
       assert "can't be blank" in errors.server_time
       assert "can't be blank" in errors.kind
@@ -441,6 +444,66 @@ defmodule Grappa.ScrollbackTest do
       preloaded = Repo.preload(message, :network)
       assert %Network{slug: slug} = preloaded.network
       assert slug == net.slug
+    end
+  end
+
+  describe "persist_event/1 with visitor_id" do
+    test "persists with visitor_id, no user_id" do
+      visitor = visitor_fixture()
+      network = network_fixture()
+
+      attrs = %{
+        visitor_id: visitor.id,
+        network_id: network.id,
+        channel: "#italia",
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        server_time: System.os_time(:millisecond),
+        meta: %{}
+      }
+
+      assert {:ok, msg} = Scrollback.persist_event(attrs)
+      assert msg.visitor_id == visitor.id
+      assert is_nil(msg.user_id)
+    end
+
+    test "rejects when both user_id and visitor_id set" do
+      user = user_fixture()
+      visitor = visitor_fixture()
+      network = network_fixture()
+
+      attrs = %{
+        user_id: user.id,
+        visitor_id: visitor.id,
+        network_id: network.id,
+        channel: "#italia",
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        server_time: System.os_time(:millisecond),
+        meta: %{}
+      }
+
+      assert {:error, changeset} = Scrollback.persist_event(attrs)
+      assert "user_id and visitor_id are mutually exclusive" in errors_on(changeset).user_id
+    end
+
+    test "rejects when neither user_id nor visitor_id set" do
+      network = network_fixture()
+
+      attrs = %{
+        network_id: network.id,
+        channel: "#italia",
+        kind: :privmsg,
+        sender: "vjt",
+        body: "ciao",
+        server_time: System.os_time(:millisecond),
+        meta: %{}
+      }
+
+      assert {:error, changeset} = Scrollback.persist_event(attrs)
+      assert "must set user_id or visitor_id" in errors_on(changeset).user_id
     end
   end
 end

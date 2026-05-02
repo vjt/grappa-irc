@@ -34,7 +34,7 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Visitors],
     # `Networks.Network` is referenced by `Scrollback.Message` (the
     # `belongs_to :network` association) and `Scrollback.Wire` (the
     # `%Network{slug: _}` pattern that A1+A26 made the wire-shape
@@ -87,7 +87,8 @@ defmodule Grappa.Scrollback do
   `body: nil` (presence kinds + state changes).
   """
   @spec persist_event(%{
-          required(:user_id) => Ecto.UUID.t(),
+          optional(:user_id) => Ecto.UUID.t(),
+          optional(:visitor_id) => Ecto.UUID.t(),
           required(:network_id) => integer(),
           required(:channel) => String.t(),
           required(:server_time) => integer(),
