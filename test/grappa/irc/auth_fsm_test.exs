@@ -293,6 +293,40 @@ defmodule Grappa.IRC.AuthFSMTest do
       msg = %Message{command: {:numeric, 421}}
       assert {:cont, ^state, []} = AuthFSM.step(state, msg)
     end
+
+    test ":nickserv_identify -> 433 is :cont (host drives ghost recovery)" do
+      state = new!(%{auth_method: :nickserv_identify, password: "s3cret"})
+      msg = %Message{command: {:numeric, 433}, params: ["*", "vjt", "Nickname is already in use."]}
+
+      assert {:cont, ^state, []} = AuthFSM.step(state, msg)
+    end
+
+    test ":nickserv_identify -> 432 is :cont (host drives ghost recovery)" do
+      state = new!(%{auth_method: :nickserv_identify, password: "s3cret"})
+      msg = %Message{command: {:numeric, 432}, params: ["*", "vjt", "Erroneous Nickname"]}
+
+      assert {:cont, ^state, []} = AuthFSM.step(state, msg)
+    end
+
+    test "non-:nickserv_identify modes still :stop on 432/433" do
+      msg_433 = %Message{command: {:numeric, 433}, params: ["*", "vjt"]}
+      msg_432 = %Message{command: {:numeric, 432}, params: ["*", "vjt"]}
+
+      for {method, opts} <- [
+            {:none, %{auth_method: :none}},
+            {:sasl, %{auth_method: :sasl, password: "s3cret"}},
+            {:server_pass, %{auth_method: :server_pass, password: "s3cret"}},
+            {:auto, %{auth_method: :auto, password: "s3cret"}}
+          ] do
+        state = new!(opts)
+
+        assert {:stop, {:nick_rejected, 433, "vjt"}, _, []} = AuthFSM.step(state, msg_433),
+               "expected mode #{inspect(method)} to stop on 433"
+
+        assert {:stop, {:nick_rejected, 432, "vjt"}, _, []} = AuthFSM.step(state, msg_432),
+               "expected mode #{inspect(method)} to stop on 432"
+      end
+    end
   end
 
   describe "step/2 — Bahamut/Azzurra: 001 before any CAP reply" do

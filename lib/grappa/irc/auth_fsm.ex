@@ -221,12 +221,25 @@ defmodule Grappa.IRC.AuthFSM do
     {:stop, {:sasl_failed, code}, state, []}
   end
 
+  # 432/433 during :nickserv_identify mode — keep the connection alive
+  # so `Grappa.Session.Server` can drive `Grappa.Session.GhostRecovery`'s
+  # mangled-NICK + GHOST + WHOIS + IDENTIFY recovery flow. The host owns
+  # the wire emission; AuthFSM's role is reduced to "stay alive long
+  # enough for the host to recover." Mode-1 (sasl / server_pass / none /
+  # auto) retains the operator-must-fix `:nick_rejected` stop below.
+  def step(
+        %__MODULE__{auth_method: :nickserv_identify} = state,
+        %Message{command: {:numeric, code}}
+      )
+      when code in [432, 433] do
+    {:cont, state, []}
+  end
+
   # 432 ERR_ERRONEUSNICKNAME / 433 ERR_NICKNAMEINUSE during registration.
   # Without an explicit handler the FSM would sit in `:pre_register` /
   # `:awaiting_cap_*` forever; surface as a structured stop reason so
   # the supervised Session restart fails again identically (correct —
   # the credential nick is wrong, an operator must intervene).
-  # Phase 5 may add nick-mangling fallback (append "_") here.
   def step(state, %Message{command: {:numeric, code}})
       when code in [432, 433] do
     {:stop, {:nick_rejected, code, state.nick}, state, []}

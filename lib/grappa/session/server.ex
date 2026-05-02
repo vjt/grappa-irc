@@ -84,7 +84,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{EventRouter, NSInterceptor}
+  alias Grappa.Session.{EventRouter, GhostRecovery, NSInterceptor}
 
   require Logger
 
@@ -94,6 +94,12 @@ defmodule Grappa.Session.Server do
   # Wrong passwords get wiped after this window, so the visitor DB
   # never sees them.
   @pending_auth_timeout_ms 10_000
+
+  # 8s is the GhostRecovery 4-step round-trip budget (NICK_ → GHOST →
+  # NickServ NOTICE → WHOIS → 401-vs-311). NickServ acknowledgements
+  # are typically sub-second; an 8s ceiling protects against an upstream
+  # services outage holding the FSM open indefinitely.
+  @ghost_recovery_timeout_ms 8_000
 
   @typedoc """
   Optional opaque callback the visitor-side `SessionPlan` injects into
@@ -149,7 +155,9 @@ defmodule Grappa.Session.Server do
           pending_auth: nil | {String.t(), integer()},
           pending_auth_timer: reference() | nil,
           pending_password: String.t() | nil,
-          visitor_committer: visitor_committer() | nil
+          visitor_committer: visitor_committer() | nil,
+          ghost_recovery: GhostRecovery.t() | nil,
+          ghost_timer: reference() | nil
         }
 
   ## API
@@ -206,7 +214,9 @@ defmodule Grappa.Session.Server do
       pending_auth: nil,
       pending_auth_timer: nil,
       pending_password: pending_password_from_opts(opts),
-      visitor_committer: Map.get(opts, :visitor_committer)
+      visitor_committer: Map.get(opts, :visitor_committer),
+      ghost_recovery: nil,
+      ghost_timer: nil
     }
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
@@ -419,6 +429,62 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
   end
 
+  # Task 18 — visitor 433 with cached NickServ password starts ghost
+  # recovery. AuthFSM's `:nickserv_identify`-specific 432/433 :cont
+  # clause keeps the connection alive long enough for this handler to
+  # drive the underscore-NICK + GHOST + WHOIS + IDENTIFY flow. The
+  # `pending_password` discriminator is stricter than the subject —
+  # mode-1 sessions and anon visitors both have nil here so they fall
+  # through to the catch-all and AuthFSM's :nick_rejected stop (mode-1)
+  # OR a benign no-op delegate (anon visitor — AuthFSM stops Client and
+  # the supervisor restarts).
+  def handle_info(
+        {:irc, %Message{command: {:numeric, 433}} = msg},
+        %{pending_password: pwd, ghost_recovery: nil} = state
+      )
+      when is_binary(pwd) do
+    fsm = GhostRecovery.init(state.nick, pwd)
+
+    case GhostRecovery.step(fsm, msg) do
+      {:cont, next, lines} ->
+        state = flush_lines(state, lines)
+        timer = Process.send_after(self(), :ghost_timeout, @ghost_recovery_timeout_ms)
+        {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
+
+      {:stop, _, lines} ->
+        state = flush_lines(state, lines)
+        {:noreply, state}
+    end
+  end
+
+  # NickServ NOTICE while ghost recovery is armed — feed into the FSM.
+  # GhostRecovery's own clauses guard against non-NickServ sources and
+  # off-phase notices, so any benign NOTICE that doesn't belong to the
+  # ghost flow is a no-op there.
+  def handle_info(
+        {:irc, %Message{command: :notice} = msg},
+        %{ghost_recovery: %GhostRecovery{}} = state
+      ) do
+    advance_ghost(state, msg)
+  end
+
+  # 401 / 311 while ghost recovery is armed — feed into the FSM.
+  def handle_info(
+        {:irc, %Message{command: {:numeric, code}} = msg},
+        %{ghost_recovery: %GhostRecovery{}} = state
+      )
+      when code in [401, 311] do
+    advance_ghost(state, msg)
+  end
+
+  def handle_info(:ghost_timeout, %{ghost_recovery: %GhostRecovery{} = gr} = state) do
+    {_, _, lines} = GhostRecovery.step(gr, :timeout)
+    state = flush_lines(state, lines)
+    {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
+  end
+
+  def handle_info(:ghost_timeout, state), do: {:noreply, state}
+
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
   ## Internals
@@ -535,6 +601,47 @@ defmodule Grappa.Session.Server do
     deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
 
     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
+  end
+
+  # Drive the GhostRecovery FSM forward by one input. Terminal phases
+  # (`:succeeded`, `:failed`) cancel the 8s timer and wipe both ghost
+  # fields; non-terminal transitions just update the FSM struct.
+  defp advance_ghost(state, input) do
+    {_, next, lines} = GhostRecovery.step(state.ghost_recovery, input)
+    state = flush_lines(state, lines)
+
+    case next.phase do
+      terminal when terminal in [:succeeded, :failed] ->
+        _ =
+          if is_reference(state.ghost_timer) do
+            Process.cancel_timer(state.ghost_timer)
+          end
+
+        {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
+
+      _ ->
+        {:noreply, %{state | ghost_recovery: next}}
+    end
+  end
+
+  # Lines emitted by GhostRecovery bypass `handle_call({:send_privmsg,
+  # ...})`, so manually run NSInterceptor over each line and stage
+  # `pending_auth` on capture. This is what keeps the +r MODE rendezvous
+  # (Task 15) firing for the `IDENTIFY` GhostRecovery emits on
+  # `:succeeded` — same one-feature-one-code-path discipline as the
+  # AuthFSM-emitted IDENTIFY at 001 (handled via
+  # `maybe_stage_pending_password/1`).
+  defp flush_lines(state, lines) do
+    Enum.reduce(lines, state, fn line, acc ->
+      acc =
+        case NSInterceptor.intercept(line) do
+          :passthrough -> acc
+          {:capture, password} -> stage_pending_auth(acc, password)
+        end
+
+      :ok = Client.send_line(acc.client, line)
+      acc
+    end)
   end
 
   # Build the IRC.Client opts map from the pre-resolved primitive

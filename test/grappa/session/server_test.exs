@@ -29,8 +29,10 @@ defmodule Grappa.Session.ServerTest do
   import ExUnit.CaptureLog
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
+  alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
+  alias Grappa.Session.GhostRecovery
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -1291,7 +1293,6 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "+r MODE on own nick → atomic visitor password commit (Task 15)" do
-    alias Grappa.IRC.Message
     alias Grappa.Repo
 
     test "visitor session: send IDENTIFY → simulate +r → password_encrypted + expires_at bumped" do
@@ -1472,6 +1473,178 @@ defmodule Grappa.Session.ServerTest do
       state = :sys.get_state(pid)
       assert is_nil(state.pending_auth)
       assert is_nil(state.pending_password)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "GhostRecovery wiring on 433 (Task 18)" do
+    # Handler that returns 433 on the FIRST NICK observed, then 001 on the
+    # SECOND NICK (the underscore variant Server sends after ghost recovery
+    # arms). USER lines are no-ops; everything else is silent.
+    defp ghost_handler(welcomed_nick) do
+      counter = :counters.new(1, [])
+
+      fn state, line ->
+        if String.starts_with?(line, "NICK ") do
+          {:reply, nick_response(counter, welcomed_nick), state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
+    defp nick_response(counter, welcomed_nick) do
+      n = :counters.get(counter, 1)
+      :counters.add(counter, 1, 1)
+
+      case n do
+        0 -> ":server 433 * #{welcomed_nick} :Nickname is already in use.\r\n"
+        _ -> ":server 001 #{welcomed_nick}_ :Welcome\r\n"
+      end
+    end
+
+    test "registered visitor 433 → arms ghost_recovery + emits NICK_ + GHOST + 8s timer" do
+      nick = "v_t18_#{System.unique_integer([:positive])}"
+
+      {server, port} = start_server(ghost_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"))
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n")
+        )
+
+      state = :sys.get_state(pid)
+
+      assert %GhostRecovery{phase: :awaiting_ghost_notice, orig_nick: ^nick, password: "s3cret"} =
+               state.ghost_recovery
+
+      assert is_reference(state.ghost_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "anon visitor (no cached password) 433 does NOT arm ghost_recovery" do
+      nick = "v_t18a_#{System.unique_integer([:positive])}"
+
+      {server, port} = start_server(ghost_handler(nick))
+      {visitor, network} = visitor_with_network(port, nick: nick)
+
+      # Anon visitor has auth_method :none; AuthFSM stops on 433 with
+      # :nick_rejected, killing Client. Session restarts under the
+      # transient supervisor and the cycle repeats — capturing the log
+      # noise keeps it out of the test output. The wire-side assertion
+      # is the negative one: the underscore-variant NICK never appears,
+      # because Server doesn't run GhostRecovery for nil-password.
+      capture_log(fn ->
+        _ = start_visitor_session_for(visitor, network)
+        :ok = await_handshake(server)
+
+        assert {:error, :timeout} =
+                 IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"), 200)
+      end)
+    end
+
+    test "GhostRecovery success path: NickServ NOTICE → 401 → :succeeded + pending_auth staged + IDENTIFY emitted" do
+      nick = "v_t18s_#{System.unique_integer([:positive])}"
+
+      {server, port} = start_server(ghost_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+
+      # Wait for ghost recovery to arm (433 dispatched, NICK_ + GHOST emitted).
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"))
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n")
+        )
+
+      # NickServ NOTICE → Server should emit WHOIS.
+      IRCServer.feed(server, ":NickServ!services@services.azzurra.org NOTICE #{nick}_ :#{nick} has been ghosted.\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WHOIS #{nick}\r\n"))
+
+      # 401 → Server emits NICK back + IDENTIFY + stages pending_auth.
+      IRCServer.feed(server, ":server 401 #{nick}_ #{nick} :No such nick\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}\r\n"))
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cret\r\n")
+        )
+
+      # Flush so the success-path state mutation is visible.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.ghost_recovery)
+      assert is_nil(state.ghost_timer)
+      assert match?({"s3cret", _deadline}, state.pending_auth)
+      assert is_reference(state.pending_auth_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test ":ghost_timeout in :awaiting_ghost_notice clears ghost_recovery + ghost_timer" do
+      nick = "v_t18t_#{System.unique_integer([:positive])}"
+
+      {server, port} = start_server(ghost_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"))
+
+      send(pid, :ghost_timeout)
+
+      # Sync via :sys.get_state — handle_info(:ghost_timeout, ...) fully
+      # serializes the clear before this returns.
+      state = :sys.get_state(pid)
+      assert is_nil(state.ghost_recovery)
+      assert is_nil(state.ghost_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "non-NickServ NOTICE during :awaiting_ghost_notice does NOT advance the FSM" do
+      nick = "v_t18n_#{System.unique_integer([:positive])}"
+
+      {server, port} = start_server(ghost_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"))
+
+      # NOTICE from a regular user — must NOT advance ghost_recovery.
+      noise =
+        %Message{
+          command: :notice,
+          prefix: {:nick, "alice", "u", "host"},
+          params: ["#{nick}_", "stop pretending you got ghosted"]
+        }
+
+      send(pid, {:irc, noise})
+
+      state = :sys.get_state(pid)
+      assert %GhostRecovery{phase: :awaiting_ghost_notice} = state.ghost_recovery
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
