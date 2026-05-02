@@ -5545,72 +5545,163 @@ EOF
 - Create: `lib/grappa/session/ghost_recovery.ex`
 - Test: `test/grappa/session/ghost_recovery_test.exs`
 
+**Dispatch-time amendments (S12):**
+
+- **D1 — Boundary:** drop `use Boundary, top_level?: true, deps: []`.
+  Sibling-submodule pattern established by `Grappa.Session.NSInterceptor`
+  (S9) + `Grappa.Session.EventRouter`: submodules of a context inherit
+  the parent's boundary. No `use Boundary` here.
+- **D2 — `{:numeric, INTEGER}`:** parser produces integers, not strings.
+  All clauses + tests use `{:numeric, 433}`, `{:numeric, 401}`,
+  `{:numeric, 311}` etc.
+- **D3 — Mirror AuthFSM shape:** `step/2` takes `Message.t() | :timeout`,
+  not opaque tagged tuples. Plan-author abstraction
+  `{:numeric, "433", [...]}` is convenience-pseudocode; canonical input
+  for inbound-driven pure FSM in this codebase is `%Grappa.IRC.Message{}`
+  (`AuthFSM.step/2` is the precedent). Tests construct `%Message{}`
+  structs directly via `alias Grappa.IRC.Message`.
+- **D4 — `:nickserv_notice` does NOT exist:** there is no parser-side
+  classification of NickServ notices. Inbound NOTICE arrives as
+  `%Message{command: :notice, prefix: {:nick, "NickServ", _, _}, params: [_target, text]}`.
+  Pattern-match on `:notice` + `Message.sender_nick(prefix)`
+  (downcased == `"nickserv"`).
+- **D5 — `Message.sender_nick/1` accessor:** per architecture review A5
+  comment in `lib/grappa/irc/message.ex`, consumers must NOT pattern
+  match on the prefix tuple shape directly. Use the public accessor.
+- **D6 — Wire `\r\n` suffix on emitted lines:** AuthFSM canonical
+  convention emits `["NICK #{nick}\r\n"]`. `Client.send_line/2` expects
+  iodata WITH `\r\n`. Match the convention so Task 18 wiring just calls
+  `Client.send_line` per emitted line.
+- **D7 — WHOIS response param shape (documentation):** RFC 2812 says
+  `401 <client_nick> <queried_nick> :No such nick` and
+  `311 <client_nick> <queried_nick> <user> <host> * :<realname>`. We
+  match on params[1] (queried nick) == `orig_nick` to confirm the
+  response belongs to our WHOIS. Other 401/311 responses are ignored.
+- **D8 — `:idle` is the canonical name for the pre-433 init phase
+  (NOT `:armed` / `:waiting_433` / etc):** kept per plan-body intent.
+
 - [ ] **Step 17.1: Failing tests**
 
 ```elixir
 defmodule Grappa.Session.GhostRecoveryTest do
   use ExUnit.Case, async: true
 
+  alias Grappa.IRC.Message
   alias Grappa.Session.GhostRecovery
 
   describe "step/2 state transitions" do
     test ":idle on 433 with cached password → :awaiting_ghost_notice + GHOST emitted" do
       state = GhostRecovery.init("vjt", "s3cret")
+      msg = %Message{command: {:numeric, 433}, params: ["*", "vjt", "Nickname is already in use."]}
 
-      assert {:cont, next, lines} =
-               GhostRecovery.step(state, {:numeric, "433", ["*", "vjt"]})
+      assert {:cont, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :awaiting_ghost_notice
       assert next.try_nick == "vjt_"
-      assert "NICK vjt_" in lines
-      assert "PRIVMSG NickServ :GHOST vjt s3cret" in lines
+      assert "NICK vjt_\r\n" in lines
+      assert "PRIVMSG NickServ :GHOST vjt s3cret\r\n" in lines
     end
 
     test ":idle on 433 without cached password → :failed + only NICK underscore" do
       state = GhostRecovery.init("vjt", nil)
+      msg = %Message{command: {:numeric, 433}, params: ["*", "vjt", "Nickname is already in use."]}
 
-      assert {:cont, next, lines} =
-               GhostRecovery.step(state, {:numeric, "433", ["*", "vjt"]})
+      assert {:stop, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :failed
-      assert "NICK vjt_" in lines
-      refute Enum.any?(lines, &String.starts_with?(&1, "PRIVMSG NickServ :GHOST"))
+      assert lines == ["NICK vjt_\r\n"]
     end
 
     test ":awaiting_ghost_notice on NickServ NOTICE → :awaiting_whois + WHOIS emitted" do
-      state = %GhostRecovery{phase: :awaiting_ghost_notice, orig_nick: "vjt", try_nick: "vjt_", password: "s3cret"}
+      state = %GhostRecovery{
+        phase: :awaiting_ghost_notice,
+        orig_nick: "vjt",
+        try_nick: "vjt_",
+        password: "s3cret"
+      }
 
-      assert {:cont, next, lines} =
-               GhostRecovery.step(state, {:nickserv_notice, "Ghost killed."})
+      msg = %Message{
+        command: :notice,
+        prefix: {:nick, "NickServ", "services", "services.azzurra.org"},
+        params: ["vjt_", "vjt has been ghosted."]
+      }
+
+      assert {:cont, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :awaiting_whois
-      assert "WHOIS vjt" in lines
+      assert lines == ["WHOIS vjt\r\n"]
     end
 
-    test ":awaiting_whois on 401 (no such nick) → :succeeded + NICK + IDENTIFY emitted" do
-      state = %GhostRecovery{phase: :awaiting_whois, orig_nick: "vjt", try_nick: "vjt_", password: "s3cret"}
+    test ":awaiting_ghost_notice ignores NOTICE from non-NickServ source" do
+      state = %GhostRecovery{phase: :awaiting_ghost_notice, orig_nick: "vjt"}
 
-      assert {:stop, next, lines} =
-               GhostRecovery.step(state, {:numeric, "401", ["vjt_", "vjt", "No such nick"]})
+      msg = %Message{
+        command: :notice,
+        prefix: {:nick, "alice", nil, nil},
+        params: ["vjt_", "hi"]
+      }
+
+      assert {:cont, ^state, []} = GhostRecovery.step(state, msg)
+    end
+
+    test ":awaiting_whois on 401 for our queried nick → :succeeded + NICK + IDENTIFY" do
+      state = %GhostRecovery{
+        phase: :awaiting_whois,
+        orig_nick: "vjt",
+        try_nick: "vjt_",
+        password: "s3cret"
+      }
+
+      msg = %Message{command: {:numeric, 401}, params: ["vjt_", "vjt", "No such nick"]}
+
+      assert {:stop, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :succeeded
-      assert "NICK vjt" in lines
-      assert "PRIVMSG NickServ :IDENTIFY s3cret" in lines
+      assert "NICK vjt\r\n" in lines
+      assert "PRIVMSG NickServ :IDENTIFY s3cret\r\n" in lines
     end
 
-    test ":awaiting_whois on 311 (still there) → :failed" do
+    test ":awaiting_whois on 311 for our queried nick → :failed" do
       state = %GhostRecovery{phase: :awaiting_whois, orig_nick: "vjt"}
 
-      assert {:stop, next, lines} =
-               GhostRecovery.step(state, {:numeric, "311", ["vjt_", "vjt", "user", "host", "*", "Real"]})
+      msg = %Message{
+        command: {:numeric, 311},
+        params: ["vjt_", "vjt", "user", "host", "*", "Real"]
+      }
+
+      assert {:stop, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :failed
       assert lines == []
     end
 
-    test "8s timeout in any phase → :failed" do
-      state = %GhostRecovery{phase: :awaiting_ghost_notice}
-      assert {:stop, %{phase: :failed}, []} = GhostRecovery.step(state, :timeout)
+    test ":awaiting_whois ignores 401/311 for unrelated queried nick" do
+      state = %GhostRecovery{phase: :awaiting_whois, orig_nick: "vjt"}
+
+      unrelated_401 = %Message{command: {:numeric, 401}, params: ["vjt_", "alice", "No such nick"]}
+      assert {:cont, ^state, []} = GhostRecovery.step(state, unrelated_401)
+    end
+
+    test ":timeout in any non-terminal phase → :failed" do
+      for phase <- [:idle, :awaiting_ghost_notice, :awaiting_whois] do
+        state = %GhostRecovery{phase: phase, orig_nick: "vjt"}
+        assert {:stop, %{phase: :failed}, []} = GhostRecovery.step(state, :timeout)
+      end
+    end
+
+    test "terminal phases pass any input through with no effect" do
+      for phase <- [:succeeded, :failed] do
+        state = %GhostRecovery{phase: phase, orig_nick: "vjt"}
+        msg = %Message{command: {:numeric, 433}, params: ["*", "vjt"]}
+        assert {:cont, ^state, []} = GhostRecovery.step(state, msg)
+        assert {:cont, ^state, []} = GhostRecovery.step(state, :timeout)
+      end
+    end
+
+    test "unrelated inbound message is a no-op" do
+      state = GhostRecovery.init("vjt", "s3cret")
+      msg = %Message{command: :privmsg, params: ["#room", "hi"]}
+      assert {:cont, ^state, []} = GhostRecovery.step(state, msg)
     end
   end
 end
@@ -5626,7 +5717,7 @@ defmodule Grappa.Session.GhostRecovery do
   visitors with a cached NickServ password.
 
   Mirrors `Grappa.IRC.AuthFSM` shape — pure step function returning
-  `{:cont | :stop, state, [lines]}`. Host (`Session.Server`) wraps the
+  `{:cont | :stop, state, [iodata]}`. Host (`Session.Server`) wraps the
   FSM, owns I/O, applies an 8s timeout via `Process.send_after`.
 
   Flow:
@@ -5641,9 +5732,13 @@ defmodule Grappa.Session.GhostRecovery do
 
   No cached password OR :failed terminal = visitor stays on `<nick>_`
   (anon-shape until next session restart).
+
+  Boundary: inherits the parent `Grappa.Session` boundary — same
+  pattern as sibling submodules `Server`, `EventRouter`, `NSInterceptor`.
+  No `use Boundary` here.
   """
 
-  use Boundary, top_level?: true, deps: []
+  alias Grappa.IRC.Message
 
   defstruct phase: :idle, orig_nick: nil, try_nick: nil, password: nil
 
@@ -5656,46 +5751,63 @@ defmodule Grappa.Session.GhostRecovery do
           password: String.t() | nil
         }
 
-  @type input ::
-          {:numeric, String.t(), [String.t()]}
-          | {:nickserv_notice, String.t()}
-          | :timeout
-
   @spec init(String.t(), String.t() | nil) :: t()
   def init(orig_nick, password) when is_binary(orig_nick) do
     %__MODULE__{phase: :idle, orig_nick: orig_nick, password: password}
   end
 
-  @spec step(t(), input()) :: {:cont, t(), [String.t()]} | {:stop, t(), [String.t()]}
+  @spec step(t(), Message.t() | :timeout) ::
+          {:cont, t(), [String.t()]} | {:stop, t(), [String.t()]}
 
   # 433 + cached password → GHOST + try underscore-appended nick
-  def step(%__MODULE__{phase: :idle, orig_nick: orig, password: pwd} = s, {:numeric, "433", _})
+  def step(
+        %__MODULE__{phase: :idle, orig_nick: orig, password: pwd} = s,
+        %Message{command: {:numeric, 433}}
+      )
       when is_binary(pwd) do
     try_nick = orig <> "_"
+
     {:cont, %{s | phase: :awaiting_ghost_notice, try_nick: try_nick},
-     ["NICK #{try_nick}", "PRIVMSG NickServ :GHOST #{orig} #{pwd}"]}
+     ["NICK #{try_nick}\r\n", "PRIVMSG NickServ :GHOST #{orig} #{pwd}\r\n"]}
   end
 
   # 433 + no cached password → just append underscore, give up on ghost
-  def step(%__MODULE__{phase: :idle, orig_nick: orig, password: nil} = s, {:numeric, "433", _}) do
+  def step(
+        %__MODULE__{phase: :idle, orig_nick: orig, password: nil} = s,
+        %Message{command: {:numeric, 433}}
+      ) do
     try_nick = orig <> "_"
-    {:cont, %{s | phase: :failed, try_nick: try_nick}, ["NICK #{try_nick}"]}
+    {:stop, %{s | phase: :failed, try_nick: try_nick}, ["NICK #{try_nick}\r\n"]}
   end
 
-  # GHOST sent → wait for NickServ NOTICE → WHOIS original
-  def step(%__MODULE__{phase: :awaiting_ghost_notice, orig_nick: orig} = s, {:nickserv_notice, _}) do
-    {:cont, %{s | phase: :awaiting_whois}, ["WHOIS #{orig}"]}
+  # NickServ NOTICE during awaiting_ghost_notice → WHOIS original
+  def step(
+        %__MODULE__{phase: :awaiting_ghost_notice, orig_nick: orig} = s,
+        %Message{command: :notice, prefix: prefix} = _msg
+      ) do
+    if nickserv?(prefix) do
+      {:cont, %{s | phase: :awaiting_whois}, ["WHOIS #{orig}\r\n"]}
+    else
+      {:cont, s, []}
+    end
   end
 
-  # WHOIS 401 (no such nick) → original is gone → /nick + IDENTIFY
-  def step(%__MODULE__{phase: :awaiting_whois, orig_nick: orig, password: pwd} = s,
-           {:numeric, "401", _}) do
+  # WHOIS 401 (no such nick) for our queried nick → /nick + IDENTIFY
+  def step(
+        %__MODULE__{phase: :awaiting_whois, orig_nick: orig, password: pwd} = s,
+        %Message{command: {:numeric, 401}, params: [_, queried | _]}
+      )
+      when queried == orig do
     {:stop, %{s | phase: :succeeded},
-     ["NICK #{orig}", "PRIVMSG NickServ :IDENTIFY #{pwd}"]}
+     ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
   end
 
-  # WHOIS 311 (still there) → bail
-  def step(%__MODULE__{phase: :awaiting_whois} = s, {:numeric, "311", _}) do
+  # WHOIS 311 (still there) for our queried nick → bail
+  def step(
+        %__MODULE__{phase: :awaiting_whois, orig_nick: orig} = s,
+        %Message{command: {:numeric, 311}, params: [_, queried | _]}
+      )
+      when queried == orig do
     {:stop, %{s | phase: :failed}, []}
   end
 
@@ -5705,8 +5817,12 @@ defmodule Grappa.Session.GhostRecovery do
     {:stop, %{s | phase: :failed}, []}
   end
 
-  # No-op fallthrough for unrelated input
+  # Catch-all: terminal phases, unrelated input, off-target WHOIS responses,
+  # NOTICE from non-NickServ source, etc.
   def step(state, _), do: {:cont, state, []}
+
+  defp nickserv?({:nick, nick, _, _}), do: String.downcase(nick) == "nickserv"
+  defp nickserv?(_), do: false
 end
 ```
 
@@ -5714,6 +5830,7 @@ end
 
 ```bash
 scripts/test.sh test/grappa/session/ghost_recovery_test.exs
+scripts/check.sh
 git add lib/grappa/session/ghost_recovery.ex test/grappa/session/ghost_recovery_test.exs
 git commit -m "$(cat <<'EOF'
 feat(session): add GhostRecovery pure FSM for nick-collision reconnect
