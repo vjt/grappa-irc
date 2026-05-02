@@ -7,10 +7,10 @@ defmodule Grappa.Repo.Migrations.CreateVisitors do
       add :nick, :string, null: false
       add :network_slug, :string, null: false
       add :password_encrypted, :binary
-      add :expires_at, :utc_datetime, null: false
+      add :expires_at, :utc_datetime_usec, null: false
       add :ip, :string
 
-      timestamps(type: :utc_datetime)
+      timestamps(type: :utc_datetime_usec)
     end
 
     create unique_index(:visitors, [:nick, :network_slug])
