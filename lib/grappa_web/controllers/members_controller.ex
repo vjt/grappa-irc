@@ -34,10 +34,10 @@ defmodule GrappaWeb.MembersController do
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :no_session}
   def index(conn, %{"channel_id" => channel}) do
-    user_id = conn.assigns.current_user_id
+    subject = conn.assigns.current_subject
     network = conn.assigns.network
 
-    case Session.list_members({:user, user_id}, network.id, channel) do
+    case Session.list_members(subject, network.id, channel) do
       {:ok, members} ->
         render(conn, :index, members: members)
 
