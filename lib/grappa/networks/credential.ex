@@ -121,7 +121,7 @@ defmodule Grappa.Networks.Credential do
     # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
     # parser already use — single regex, single source. The local
     # `@nick_format` + `validate_length(:nick, ...)` pair was retired
-    # in favor of Identifier's RFC-aligned 31-char cap.
+    # in favor of Identifier's RFC-aligned 30-char cap.
     |> validate_change(:nick, &validate_nick/2)
     |> validate_password_for_auth_method()
     # S29 C1 review-fix #1: every text field that ends up interpolated
