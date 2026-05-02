@@ -1413,4 +1413,67 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "001 RPL_WELCOME stages pending_auth for :nickserv_identify visitors (Task 16)" do
+    test "registered visitor: 001 stages pending_auth + clears one-shot field" do
+      nick = "v_t16_#{System.unique_integer([:positive])}"
+
+      rfc_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 #{nick} :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(rfc_handler)
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &String.starts_with?(&1, "PRIVMSG NickServ :IDENTIFY")
+        )
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert match?({"s3cret", _deadline}, state.pending_auth)
+      assert is_reference(state.pending_auth_timer)
+      assert is_nil(state.pending_password)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "anon visitor (auth_method :none): 001 does NOT stage pending_auth" do
+      nick = "v_t16a_#{System.unique_integer([:positive])}"
+
+      rfc_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 #{nick} :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(rfc_handler)
+      {visitor, network} = visitor_with_network(port, nick: nick)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_password)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

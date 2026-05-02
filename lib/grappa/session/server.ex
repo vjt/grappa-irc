@@ -148,6 +148,7 @@ defmodule Grappa.Session.Server do
           notify_ref: reference() | nil,
           pending_auth: nil | {String.t(), integer()},
           pending_auth_timer: reference() | nil,
+          pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil
         }
 
@@ -204,11 +205,28 @@ defmodule Grappa.Session.Server do
       notify_ref: Map.get(opts, :notify_ref),
       pending_auth: nil,
       pending_auth_timer: nil,
+      pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer)
     }
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
   end
+
+  # `Grappa.IRC.AuthFSM.step/2` already emits the wire `PRIVMSG NickServ
+  # :IDENTIFY <pw>` on `{:numeric, 1}` for `auth_method:
+  # :nickserv_identify` — that emission goes through `IRC.Client`'s
+  # socket and bypasses `handle_call({:send_privmsg, _, _}, _, _)`, so
+  # `NSInterceptor` never sees it. Server therefore must carry the
+  # password forward in state and stage `pending_auth` at 001 itself
+  # so the +r MODE observer (Task 15) finds it ready when NickServ
+  # confirms. Anon visitors (`auth_method: :none`) and SASL/server-pass
+  # users keep `pending_password = nil`.
+  @spec pending_password_from_opts(init_opts()) :: String.t() | nil
+  defp pending_password_from_opts(%{auth_method: :nickserv_identify, password: pw})
+       when is_binary(pw),
+       do: pw
+
+  defp pending_password_from_opts(_), do: nil
 
   @impl GenServer
   def handle_continue({:start_client, client_opts}, state) do
@@ -385,7 +403,11 @@ defmodule Grappa.Session.Server do
       )
     end
 
-    state = maybe_fire_notify(state)
+    state =
+      state
+      |> maybe_fire_notify()
+      |> maybe_stage_pending_password()
+
     delegate(msg, state)
   end
 
@@ -486,6 +508,23 @@ defmodule Grappa.Session.Server do
   # between the two send_privmsg calls). Cancel the in-flight timer
   # before arming a fresh one so timeouts always reflect the most-recent
   # capture.
+  # AuthFSM (inside `Grappa.IRC.Client`) emits the wire IDENTIFY at 001
+  # for `:nickserv_identify` plans — that emission bypasses
+  # `handle_call({:send_privmsg, ...})`, so NSInterceptor doesn't fire.
+  # This helper stages `pending_auth` directly so the +r observer
+  # (`apply_effects/2 → :visitor_r_observed`) can commit when NickServ
+  # confirms. One-shot — `pending_password` is cleared after first 001
+  # to prevent a Phase-5 reconnect-001 from re-staging stale credentials.
+  @spec maybe_stage_pending_password(state()) :: state()
+  defp maybe_stage_pending_password(%{pending_password: nil} = state), do: state
+
+  defp maybe_stage_pending_password(%{pending_password: pwd} = state)
+       when is_binary(pwd) do
+    state
+    |> stage_pending_auth(pwd)
+    |> Map.put(:pending_password, nil)
+  end
+
   defp stage_pending_auth(state, password) do
     _ =
       if is_reference(state.pending_auth_timer) do
