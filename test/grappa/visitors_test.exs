@@ -163,4 +163,33 @@ defmodule Grappa.VisitorsTest do
       end
     end
   end
+
+  describe "purge_if_anon/1 (W11 co-terminus delete)" do
+    test "anon visitor → row deleted + CASCADE wipes accounts_sessions" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+
+      assert is_nil(v.password_encrypted)
+      assert :ok = Visitors.purge_if_anon(v.id)
+
+      assert is_nil(Repo.get(Visitor, v.id))
+      assert is_nil(Repo.get(Session, session.id))
+    end
+
+    test "registered visitor → no-op (row preserved)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      {:ok, registered} = Visitors.commit_password(v.id, "s3cret")
+      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+
+      refute is_nil(registered.password_encrypted)
+      assert :ok = Visitors.purge_if_anon(v.id)
+
+      assert %Visitor{} = Repo.get(Visitor, v.id)
+      assert %Session{} = Repo.get(Session, session.id)
+    end
+
+    test "missing row → no-op (idempotent)" do
+      assert :ok = Visitors.purge_if_anon(Ecto.UUID.generate())
+    end
+  end
 end
