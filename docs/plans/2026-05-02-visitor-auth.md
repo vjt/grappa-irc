@@ -4703,19 +4703,31 @@ In `lib/grappa/session/server.ex`:
    end
    ```
 
-4. Add the timer + timeout machinery near the bottom of the module:
+4. Add the timer + timeout machinery. The `@pending_auth_timeout_ms`
+   module attribute MUST be declared near the top of the module
+   (alongside `use GenServer` + aliases) — Elixir module attributes
+   must be defined before they are read at compile time, and the
+   `handle_info(:pending_auth_timeout, _)` clause references it.
+   Defining the attribute below `handle_info` triggers an
+   `undefined module attribute` warning that `--warnings-as-errors`
+   promotes to a build failure.
 
    ```elixir
-   # Wrong passwords are wiped after 10s of no +r MODE confirmation
-   # (Task 15 lands the +r observer + atomic commit). 10s is generous
-   # for upstream NickServ → +r round-trip; even a sluggish ircd should
-   # confirm in <2s. The timer is a fail-safe, not a SLA.
+   # near top of module, after `require Logger`
    @pending_auth_timeout_ms 10_000
 
+   # ... handle_call / handle_info clauses ...
+
    defp stage_pending_auth(state, password) do
-     if is_reference(state.pending_auth_timer) do
-       Process.cancel_timer(state.pending_auth_timer)
-     end
+     # `Process.cancel_timer/1` returns `non_neg_integer() | false`.
+     # The if-expression in turn returns that or `nil` when the
+     # condition is false. `_ = if ...` discards the if's return so
+     # dialyzer doesn't flag `unmatched_return` on the
+     # `non_neg_integer() | false | nil` union.
+     _ =
+       if is_reference(state.pending_auth_timer) do
+         Process.cancel_timer(state.pending_auth_timer)
+       end
 
      timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
      deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
