@@ -64,7 +64,7 @@ defmodule GrappaWeb.MessagesController do
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request}
   def index(conn, %{"channel_id" => channel} = params) do
-    user_id = conn.assigns.current_user_id
+    subject = conn.assigns.current_subject
     network = conn.assigns.network
 
     # Reject malformed channel-name shape with 400 — same boundary the
@@ -79,7 +79,7 @@ defmodule GrappaWeb.MessagesController do
       # post-fetch preload helper here; A26 collapsed the
       # controller's `preload_networks/2` into the Scrollback
       # boundary so the contract is single-sourced.
-      messages = Scrollback.fetch(user_id, network.id, channel, cursor, limit)
+      messages = Scrollback.fetch(subject, network.id, channel, cursor, limit)
 
       render(conn, :index, messages: messages)
     end
@@ -102,14 +102,14 @@ defmodule GrappaWeb.MessagesController do
           | {:error, Ecto.Changeset.t()}
   def create(conn, %{"channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    user_id = conn.assigns.current_user_id
+    subject = conn.assigns.current_subject
     network = conn.assigns.network
 
     # Channel-name shape check is :bad_request; the body's CRLF/NUL
     # check happens inside Session.send_privmsg and surfaces as
     # :invalid_line. Two distinct error tags so client UX can branch.
     with :ok <- validate_channel_name(channel),
-         {:ok, message} <- Session.send_privmsg({:user, user_id}, network.id, channel, body) do
+         {:ok, message} <- Session.send_privmsg(subject, network.id, channel, body) do
       # `:network` is preloaded by `Scrollback.persist_event/1` —
       # the Session contract returns a wire-shape-ready row. Don't
       # re-preload here; reaching across to Repo from the controller

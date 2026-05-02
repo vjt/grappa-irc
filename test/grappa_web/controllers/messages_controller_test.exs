@@ -228,4 +228,66 @@ defmodule GrappaWeb.MessagesControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
   end
+
+  # Task 30: visitor scrollback partition. `Scrollback.fetch/5` was
+  # widened to take a `subject :: {:user, id} | {:visitor, id}` tuple;
+  # the controller threads `:current_subject` (plumbed by Plugs.Authn
+  # S18 C2) so visitor sessions read their visitor-id-partitioned rows.
+  describe "visitor subject — read partition" do
+    test "GET returns visitor's own rows; never another visitor's", %{conn: _conn} do
+      slug = "azzurra-vis-msg-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+      {visitor, session} = visitor_and_session(network_slug: slug)
+      other_visitor = visitor_fixture(network_slug: slug)
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(%{
+          visitor_id: visitor.id,
+          network_id: network.id,
+          channel: "#sniffo",
+          server_time: 1,
+          kind: :privmsg,
+          sender: visitor.nick,
+          body: "mine"
+        })
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(%{
+          visitor_id: other_visitor.id,
+          network_id: network.id,
+          channel: "#sniffo",
+          server_time: 2,
+          kind: :privmsg,
+          sender: other_visitor.nick,
+          body: "not-mine"
+        })
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{slug}/channels/%23sniffo/messages")
+
+      body = json_response(conn, 200)
+      assert length(body) == 1
+      assert hd(body)["body"] == "mine"
+    end
+
+    test "GET against a network the visitor isn't pinned to returns 404 (oracle close)",
+         %{conn: _conn} do
+      slug = "azzurra-iso-#{System.unique_integer([:positive])}"
+      {:ok, _own} = Networks.find_or_create_network(%{slug: slug})
+      {_visitor, session} = visitor_and_session(network_slug: slug)
+
+      other_slug = "other-#{System.unique_integer([:positive])}"
+      {:ok, _other} = Networks.find_or_create_network(%{slug: other_slug})
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> get("/networks/#{other_slug}/channels/%23sniffo/messages")
+
+      assert json_response(conn, 404)["error"] == "not_found"
+    end
+  end
 end

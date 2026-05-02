@@ -115,7 +115,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
 
-      [row] = Scrollback.fetch(vjt.id, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch({:user, vjt.id}, network.id, "#sniffo", nil, 10)
       assert row.body == "ciao raga"
       assert row.sender == "grappa-test"
       assert row.kind == :privmsg
