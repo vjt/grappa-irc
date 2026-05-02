@@ -75,6 +75,7 @@ defmodule GrappaWeb.Plugs.Authn do
       conn
       |> assign(:current_user_id, user_id)
       |> assign(:current_user, user)
+      |> assign(:current_subject, {:user, user_id})
 
     {:ok, conn}
   end
@@ -87,6 +88,7 @@ defmodule GrappaWeb.Plugs.Authn do
           conn
           |> assign(:current_visitor_id, visitor_id)
           |> assign(:current_visitor, visitor)
+          |> assign(:current_subject, {:visitor, visitor_id})
 
         {:ok, conn}
 
