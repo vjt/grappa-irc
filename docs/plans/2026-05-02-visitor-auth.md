@@ -6629,11 +6629,152 @@ EOF
 
 **Files:**
 - Create: `lib/mix/tasks/grappa.reap_visitors.ex`
-- Test: `test/mix/tasks/grappa.reap_visitors_test.exs`
+- Modify: `lib/grappa/visitors.ex` (add `reap_by_network_slug/1`)
+- Test: `test/mix/tasks/grappa/reap_visitors_test.exs`
 
-- [ ] **Step 21.1: Failing test**
+**Dispatch-time amendments (S15):**
+
+- **D1 — `Application.ensure_all_started/2` raw call is wrong.** Plan
+  body uses `Application.ensure_all_started(:grappa, :temporary)`.
+  But Task 20 just made `Bootstrap` RAISE on visitor orphans pinned
+  to unconfigured networks — which is exactly the state the operator
+  runs `reap_visitors` to fix. Without `Bootstrap` suppression, the
+  mix task can't start the app to do its work (chicken-and-egg). The
+  codebase pattern is `Mix.Tasks.Grappa.Boot.start_app_silent/0`, which
+  sets `:start_bootstrap = false` BEFORE
+  `Application.ensure_all_started/1` per the CLAUDE.md "operator-task
+  suppression of `Grappa.Bootstrap`" exception. Six other grappa.*
+  mix tasks already use it. Use it here too.
+- **D2 — Boundary annotation missing.** All grappa.* mix tasks declare
+  `use Boundary, top_level?: true, deps: [...]`. Plan body has none.
+  Required deps: `Grappa.Visitors` + `Mix.Tasks.Grappa.Boot`.
+- **D3 — Schema bypass violates context-ownership invariant.** Plan
+  body has the mix task call `Repo.delete_all(from v in Visitor, ...)`
+  directly. CLAUDE.md: "Contexts at `lib/grappa/<context>.ex`. Public
+  API on the context module; schemas internal." Mirror the existing
+  `Visitors.delete/1` shape and add a bulk verb
+  `Visitors.reap_by_network_slug/1 :: {:ok, non_neg_integer()}`. Mix
+  task delegates to context, which keeps the FK CASCADE behaviour
+  + slug-validation single-sourced.
+- **D4 — Test file path drift.** Plan body says
+  `test/mix/tasks/grappa.reap_visitors_test.exs`. Codebase convention
+  (six existing tests) is `test/mix/tasks/grappa/<task>_test.exs`
+  — i.e. tests for `Mix.Tasks.Grappa.X` live under the `grappa/`
+  subdir. File at `test/mix/tasks/grappa/reap_visitors_test.exs`.
+- **D5 — Test header drift.** Plan body's test omits
+  `import ExUnit.CaptureIO`, the `Visitors` alias, and `async`
+  setting. `Grappa.DataCase` re-exports `Repo` via `using` quote,
+  but `capture_io` requires the explicit `import`. Match the
+  `create_user_test.exs` header shape: `use Grappa.DataCase,
+  async: true` (sandbox per test isolates the Visitor inserts).
 
 ```elixir
+# REVISED test (post-S15 amend) — test/mix/tasks/grappa/reap_visitors_test.exs
+
+defmodule Mix.Tasks.Grappa.ReapVisitorsTest do
+  use Grappa.DataCase, async: true
+
+  import ExUnit.CaptureIO
+
+  alias Grappa.Visitors
+  alias Mix.Tasks.Grappa.ReapVisitors
+
+  test "deletes visitors matching --network=<slug>, leaves others" do
+    keep_slug = "keep-#{System.unique_integer([:positive])}"
+    drop_slug = "drop-#{System.unique_integer([:positive])}"
+    {:ok, keep} = Visitors.find_or_provision_anon("a#{System.unique_integer([:positive])}", keep_slug, nil)
+    {:ok, drop} = Visitors.find_or_provision_anon("b#{System.unique_integer([:positive])}", drop_slug, nil)
+
+    output = capture_io(fn -> ReapVisitors.run(["--network=#{drop_slug}"]) end)
+
+    assert output =~ "Reaped 1 visitor(s)"
+    assert output =~ drop_slug
+    assert Repo.reload(keep)
+    refute Repo.reload(drop)
+  end
+
+  test "rejects --network missing" do
+    assert_raise Mix.Error, ~r/--network=<slug>/, fn -> ReapVisitors.run([]) end
+  end
+end
+```
+
+```elixir
+# REVISED context surface (post-S15 amend) — lib/grappa/visitors.ex
+
+@doc """
+Bulk-delete every visitor row pinned to `network_slug`. Returns the
+deleted-row count. Operator path — surfaces through
+`mix grappa.reap_visitors --network=<slug>` to unblock the
+`Grappa.Bootstrap` W7 hard-error (Task 20) when the operator has
+intentionally dropped a network from the DB.
+
+CASCADE: the `visitor_id` FKs on `visitor_channels`, `messages`,
+and `accounts_sessions` all carry `ON DELETE CASCADE`; the bulk
+delete fires those at the DB layer in a single transaction.
+"""
+@spec reap_by_network_slug(String.t()) :: {:ok, non_neg_integer()}
+def reap_by_network_slug(slug) when is_binary(slug) do
+  {count, _} = Repo.delete_all(from v in Visitor, where: v.network_slug == ^slug)
+  {:ok, count}
+end
+```
+
+```elixir
+# REVISED impl (post-S15 amend) — lib/mix/tasks/grappa.reap_visitors.ex
+
+defmodule Mix.Tasks.Grappa.ReapVisitors do
+  @shortdoc "Reap visitors pinned to a given network slug"
+
+  @moduledoc """
+  Operator-side recovery — deletes every visitor row pinned to a
+  given `network_slug`. Used to unblock the `Grappa.Bootstrap` W7
+  hard-error path (Task 20): when a network is removed from DB and
+  orphaned visitor rows remain, this task drains them so the next
+  boot succeeds.
+
+  ## Usage
+
+      scripts/mix.sh grappa.reap_visitors --network=azzurra
+
+  CASCADE: the visitor row's deletion wipes `visitor_channels`,
+  `messages`, and `accounts_sessions` in the same transaction (FK
+  ON DELETE CASCADE on all three).
+
+  Boots with `Grappa.Bootstrap` suppressed via
+  `Mix.Tasks.Grappa.Boot.start_app_silent/0` — the whole point of
+  this task is recovering from a state that makes Bootstrap raise.
+  """
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Visitors, Mix.Tasks.Grappa.Boot]
+
+  use Mix.Task
+
+  alias Grappa.Visitors
+  alias Mix.Tasks.Grappa.Boot
+
+  @impl Mix.Task
+  def run(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [network: :string])
+    slug = opts[:network] || Mix.raise("--network=<slug> required")
+
+    Boot.start_app_silent()
+
+    {:ok, count} = Visitors.reap_by_network_slug(slug)
+
+    Mix.shell().info(
+      "Reaped #{count} visitor(s) pinned to '#{slug}' " <>
+        "(CASCADE wiped sessions + channels + messages)."
+    )
+  end
+end
+```
+
+**Original plan body (superseded by S15 amend above) — kept for audit:**
+
+```elixir
+# Original Step 21.1 + 21.2 (pre-amend — DO NOT IMPLEMENT)
 defmodule Mix.Tasks.Grappa.ReapVisitorsTest do
   use Grappa.DataCase, async: false
   alias Mix.Tasks.Grappa.ReapVisitors
@@ -6652,22 +6793,8 @@ defmodule Mix.Tasks.Grappa.ReapVisitorsTest do
     assert_raise Mix.Error, ~r/--network=<slug>/, fn -> ReapVisitors.run([]) end
   end
 end
-```
 
-- [ ] **Step 21.2: Implement**
-
-```elixir
 defmodule Mix.Tasks.Grappa.ReapVisitors do
-  @moduledoc """
-  Operator task — deletes all visitor rows pinned to a given network slug.
-
-  Used when a network is removed from the DB and Bootstrap raises W7
-  hard-error. This task is the unblocker.
-
-  Usage: `scripts/mix.sh grappa.reap_visitors --network=azzurra`
-
-  CASCADE wipes visitor_channels + accounts_sessions + messages.
-  """
   use Mix.Task
   import Ecto.Query
 
@@ -6679,13 +6806,10 @@ defmodule Mix.Tasks.Grappa.ReapVisitors do
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, strict: [network: :string])
-
     slug = opts[:network] || Mix.raise("--network=<slug> required")
-
     Application.ensure_all_started(:grappa, :temporary)
-
     {count, _} = Repo.delete_all(from v in Visitor, where: v.network_slug == ^slug)
-    Mix.shell().info("Reaped #{count} visitor(s) pinned to '#{slug}' (CASCADE wiped sessions + channels + messages).")
+    Mix.shell().info("Reaped #{count} visitor(s) pinned to '#{slug}' ...")
   end
 end
 ```
