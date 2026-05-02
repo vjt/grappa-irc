@@ -1311,6 +1311,59 @@ gaps blocking the M2 NickServ-IDP + anon webirc auth-triangle clusters.
 
 ---
 
+## 2026-05-02 — `SessionSupervisor` `max_restarts` bump for cluster-wide flap tolerance
+
+Closes test-suite flake first surfaced during the visitor-auth cluster
+(Task 3 fix-pass): `Grappa.BootstrapTest` `on_exit` callbacks intermittently
+exit with `GenServer.call(Grappa.SessionSupervisor, {:terminate_child, pid},
+:infinity) ** (EXIT) shutdown` — the supervisor was already gone by the time
+cleanup tried to terminate its child.
+
+Pre-fix `Grappa.SessionSupervisor` started with the default
+`DynamicSupervisor` budget (`max_restarts: 3, max_seconds: 5`). That budget
+is GLOBAL across all children, not per-child. Crash chain on test teardown:
+
+1. Test process exits → linked `Grappa.IRCServer` fake dies.
+2. Listening + accepted sockets close.
+3. `Grappa.IRC.Client` receives `{:tcp_closed, _}` → GenServer crashes.
+4. `Session.Server` linked to the Client crashes with the same reason.
+5. `SessionSupervisor` (`:transient`) restarts the Session.
+6. Restart's `init/1` spawns a fresh `Client.start_link` → `:econnrefused`
+   against the dead port → crash.
+7. Repeat. Each test contributes a few crashes; with several Session-using
+   tests in flight the cumulative restart count crosses 3 in 5s.
+8. `SessionSupervisor` exits `:shutdown`. `Grappa.Supervisor` (`:one_for_one`)
+   restarts it — but the new instance has no children. Subsequent
+   `terminate_child` calls from late `on_exit` hooks find a freshly-spawned
+   supervisor with no record of the original pid → `(EXIT) shutdown`.
+
+The 2026-04-27 P4-1 design note (line 676 region) already flagged this
+shape: "Session-level non-blocking-init test uses `Server.start_link/1`
+directly... `Session.start_session/3` via `DynamicSupervisor`... would
+trigger the connect-refused crash → `:transient` restart cycle, which
+exhausts `SessionSupervisor`'s `max_restarts: 3` budget in <100ms and
+crashes the supervisor — torching every other Session in the test run."
+That note prescribed test-side discipline (skip the supervisor path for
+unit tests). `BootstrapTest` can't follow that rule — `Bootstrap.run/0`'s
+contract IS to spawn under the supervisor, so the supervisor path is the
+only valid surface. The fix had to move into the supervisor itself.
+
+Bumping to `max_restarts: 100, max_seconds: 60` raises sustained tolerance
+from ~0.6 crashes/sec to ~1.6/sec while still catching genuine
+catastrophic loops (continuous 100% crash for >1 minute). The new limits
+absorb both test-suite IRCServer-fake teardown cascades and prod
+upstream-IRCd network blips (whole-network outage causing dozens of
+sessions to flap simultaneously). Phase 5's per-session reconnect/backoff
+will replace the exhaust-and-give-up shape with proper session-health
+tracking + per-Session telemetry; at that point the supervisor limits
+become genuinely-defensive failsafes against a runaway crash loop rather
+than the front-line tolerance for normal flap.
+
+The change is per-supervisor (`SessionSupervisor` only); other
+DynamicSupervisors keep the conservative default.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
