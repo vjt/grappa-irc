@@ -7,7 +7,11 @@ defmodule GrappaWeb.Plugs.AuthnTest do
   """
   use GrappaWeb.ConnCase, async: true
 
+  import Ecto.Query
+  import Grappa.AuthFixtures
+
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Repo}
+  alias Grappa.Visitors.Visitor
   alias GrappaWeb.{FallbackController, Plugs.Authn}
 
   setup do
@@ -109,8 +113,6 @@ defmodule GrappaWeb.Plugs.AuthnTest do
     test "expired session token → 401 + halt", %{conn: conn, session: session} do
       eight_days_ago = DateTime.add(DateTime.utc_now(), -8 * 24 * 3600, :second)
 
-      import Ecto.Query
-
       query = from(s in Session, where: s.id == ^session.id)
       {1, _} = Repo.update_all(query, set: [last_seen_at: eight_days_ago])
 
@@ -121,6 +123,66 @@ defmodule GrappaWeb.Plugs.AuthnTest do
 
       assert result.halted
       assert result.status == 401
+    end
+  end
+
+  describe "visitor session branch" do
+    setup %{conn: conn} do
+      visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+
+      {:ok, conn: conn, visitor: visitor, session: session}
+    end
+
+    test "valid visitor token assigns :current_visitor + :current_visitor_id, NOT current_user",
+         %{conn: conn, visitor: visitor, session: session} do
+      result =
+        conn
+        |> put_req_header("authorization", "Bearer #{session.id}")
+        |> Authn.call(Authn.init([]))
+
+      refute result.halted
+      assert result.assigns.current_visitor_id == visitor.id
+      assert %Visitor{id: vid} = result.assigns.current_visitor
+      assert vid == visitor.id
+      assert result.assigns.current_session_id == session.id
+      refute Map.has_key?(result.assigns, :current_user)
+      refute Map.has_key?(result.assigns, :current_user_id)
+    end
+
+    test "visitor authn bumps expires_at via Visitors.touch/1",
+         %{conn: conn, session: session} do
+      # visitor_fixture defaults to expires_at = now + 48h. Wind it back
+      # so the cadence gate (1h) lets the bump through.
+      older = DateTime.add(DateTime.utc_now(), 46, :hour)
+      query = from(v in Visitor, where: v.id == ^session.visitor_id)
+      {1, _} = Repo.update_all(query, set: [expires_at: older])
+
+      conn
+      |> put_req_header("authorization", "Bearer #{session.id}")
+      |> Authn.call(Authn.init([]))
+
+      bumped = Repo.get!(Visitor, session.visitor_id)
+      assert DateTime.compare(bumped.expires_at, older) == :gt
+    end
+
+    test "expired visitor → 401 + halt (no resurrection)",
+         %{conn: conn, session: session} do
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+      query = from(v in Visitor, where: v.id == ^session.visitor_id)
+      {1, _} = Repo.update_all(query, set: [expires_at: past])
+
+      result =
+        conn
+        |> put_req_header("authorization", "Bearer #{session.id}")
+        |> Authn.call(Authn.init([]))
+
+      assert result.halted
+      assert result.status == 401
+      assert result.resp_body =~ "unauthorized"
+
+      reloaded = Repo.get!(Visitor, session.visitor_id)
+      assert DateTime.compare(reloaded.expires_at, past) == :eq
     end
   end
 
