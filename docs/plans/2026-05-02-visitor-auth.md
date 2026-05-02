@@ -4836,13 +4836,33 @@ here so the implementation step works against the corrected shape.
    directly. `Grappa.Visitors` already deps `Grappa.Session` (via
    `Visitors.Login` → `Session.start_session/3` etc), so a literal
    alias from Session → Visitors closes a cycle Boundary will reject.
-   Resolution: compile-time-config indirection. Add
-   `@visitor_committer Application.compile_env!(:grappa, :visitor_committer)`
-   to `Grappa.Session.Server` and call `@visitor_committer.commit_password(vid, pwd)`.
-   `config :grappa, :visitor_committer, Grappa.Visitors` lives in
-   `config/config.exs` (Boundary does not parse config files). Same
-   mechanism already in production for `Visitors.Login`'s
-   `@visitor_network` / `@max_per_ip`.
+
+   **First-attempt resolution (rejected by Boundary):** compile-time-
+   config indirection — `@visitor_committer
+   Application.compile_env!(:grappa, :visitor_committer)` reading
+   `Grappa.Visitors` from `config/config.exs`. Boundary's static
+   analysis still detects the resolved literal in the Server bytecode
+   and flags `lib/grappa/session/server.ex` for "forbidden reference
+   to Grappa.Visitors". Compile-time config does NOT hide the literal
+   from Boundary the way it hides it from a config-file scan.
+
+   **Adopted resolution:** function-reference indirection injected
+   per-plan. Extend `Session.start_opts/0` + `Session.Server.init_opts/0`
+   + `state` with an optional `:visitor_committer` field typed as
+   `(Ecto.UUID.t(), String.t() -> {:ok, struct()} | {:error, term()})`.
+   `Grappa.Visitors.SessionPlan.resolve/1`'s `build_plan/3` injects
+   `&Grappa.Visitors.commit_password/2` into every visitor plan; user
+   plans don't carry it. `Session.Server.apply_effects/2` calls
+   `state.visitor_committer.(vid, pwd)` — opaque function
+   reference, no module-name literal in the Session boundary. The
+   capture lives in `lib/grappa/visitors/session_plan.ex` (inside the
+   Visitors boundary, where alias-to-self is fine).
+
+   Trade-off vs the rejected compile_env shape: plan map carries one
+   extra field. Not a runtime concern (function refs are cheap), but
+   the contract is now wider — `start_opts/0` admits an optional
+   committer that user-side `Networks.SessionPlan` simply doesn't
+   populate. The wider type is the cost of clean Boundary discipline.
 
 2. **State shape — no `Session.Server.State` struct.** Plan body has
    `state = %Session.Server.State{...}`. `Grappa.Session.Server` state
@@ -5075,22 +5095,35 @@ In `lib/grappa/session/event_router.ex`:
 
 3. Add the sign-walking helper (see drift item 7 for shape).
 
-- [ ] **Step 15.3: Session.Server.apply_effects clause + compile_env**
+- [ ] **Step 15.3: Session.Server.apply_effects clause + state field**
 
 In `lib/grappa/session/server.ex`:
 
-1. Add module attribute (top of module, alongside other attrs):
+1. Add a `@type visitor_committer` typedoc near the module attrs:
    ```elixir
-   @visitor_committer Application.compile_env!(:grappa, :visitor_committer)
+   @type visitor_committer ::
+           (Ecto.UUID.t(), String.t() ->
+              {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
    ```
 
-2. Add `apply_effects/2` clause AFTER the existing `:reply` clause:
+2. Extend `init_opts` + `state` typespecs with the new optional field:
+   ```elixir
+   # init_opts:
+   optional(:visitor_committer) => visitor_committer()
+   # state:
+   visitor_committer: visitor_committer() | nil
+   ```
+
+3. `init/1`'s state map gains `visitor_committer:
+   Map.get(opts, :visitor_committer)`.
+
+4. Add `apply_effects/2` clause AFTER the existing `:reply` clause:
    ```elixir
    defp apply_effects([{:visitor_r_observed, password} | rest], state) do
-     case state.subject do
-       {:visitor, visitor_id} ->
-         case @visitor_committer.commit_password(visitor_id, password) do
-           {:ok, _visitor} ->
+     case {state.subject, state.visitor_committer} do
+       {{:visitor, visitor_id}, committer} when is_function(committer, 2) ->
+         case committer.(visitor_id, password) do
+           {:ok, _} ->
              Logger.info("visitor +r observed → password committed",
                visitor_id: visitor_id
              )
@@ -5102,11 +5135,12 @@ In `lib/grappa/session/server.ex`:
              )
          end
 
-       {:user, _} ->
-         # Defensive: a registered user with +r MODE never has
-         # pending_auth set (NSInterceptor's capture path runs only
-         # on outbound NickServ verbs, but EventRouter's emit-guard
-         # already filters via state.pending_auth). Log and ignore.
+       {{:visitor, visitor_id}, nil} ->
+         Logger.error("visitor +r observed but no committer in plan — drop",
+           visitor_id: visitor_id
+         )
+
+       {{:user, _}, _} ->
          Logger.warning("visitor_r_observed effect on user session — ignored")
      end
 
@@ -5119,17 +5153,26 @@ In `lib/grappa/session/server.ex`:
    end
    ```
 
-- [ ] **Step 15.4: Compile-time config**
+- [ ] **Step 15.4: Plan-map injection**
 
-In `config/config.exs`, add alongside `:visitor_network` /
-`:max_visitors_per_ip`:
+In `lib/grappa/session.ex`, extend `start_opts/0` with
+`optional(:visitor_committer) => Server.visitor_committer()`.
+
+In `lib/grappa/visitors/session_plan.ex`, `build_plan/3` adds the
+field to the plan map:
 
 ```elixir
-config :grappa, visitor_committer: Grappa.Visitors
+visitor_committer: &Grappa.Visitors.commit_password/2
 ```
 
-(Default also lives in `config/config.exs` per S8 dialyzer-baseline
-precursor lesson — never `config/test.exs`-only.)
+The capture lives inside the Visitors boundary where alias-to-self
+is fine. User-side `Networks.SessionPlan` does not populate the
+field — `Map.get(opts, :visitor_committer)` in `Server.init/1`
+gracefully returns nil for user sessions.
+
+Add `:visitor_id` to the Logger metadata allowlist in
+`config/config.exs` so `Logger.{info,error}(..., visitor_id: ...)`
+doesn't get filtered.
 
 - [ ] **Step 15.5: Visitor session test helper**
 
