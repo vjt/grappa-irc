@@ -2,57 +2,60 @@ defmodule GrappaWeb.AuthController do
   @moduledoc """
   REST authentication endpoints.
 
-    * `POST /auth/login`   — exchange `{name, password}` for a bearer
-      token. Returns `200 {token, user: {id, name}}` on success;
-      `401 {error: "invalid_credentials"}` on either wrong username or
-      wrong password (uniform response — see
-      `Grappa.Accounts.get_user_by_credentials/2` for the timing-oracle
-      rationale).
+    * `POST /auth/login` — `{identifier, password?}` →
+      `{token, subject: {kind, id, ...}}`. Dispatched by
+      `Grappa.Auth.IdentifierClassifier`:
+      - `@` present → mode-1 admin → name-keyed lookup against the
+        local-part via `Accounts.get_user_by_credentials/2` (password
+        REQUIRED). Phase 5 hardening adds a real email column.
+      - else → visitor path → `Grappa.Visitors.Login.login/2` (password
+        OPTIONAL — required only for registered visitors).
     * `DELETE /auth/logout` — revokes the session bound to the bearer
-      token via the `:authn` pipeline. Idempotent: calling it twice
-      with the same (already-revoked) token would 401 on the second
-      attempt because the plug rejects revoked sessions before this
-      action runs.
+      token via the `:authn` pipeline. Idempotent.
 
   Login records the requesting `ip` + `user-agent` on the session row
   for audit (`Accounts.create_session/3`). The IP is read directly from
   `conn.remote_ip` — Phase 5 will add a configurable trusted-proxy
-  list before honoring `x-forwarded-for`. Trusting the header on
-  Phase 2 would let an unauthenticated client forge audit metadata.
+  list before honoring `x-forwarded-for`.
+
+  Visitor case-3 (anon collision token reuse, W13) consumes the inbound
+  `Authorization: Bearer <uuid>` header to rotate the holder's token
+  without preempting the live `Session.Server`. The header is extracted
+  inline because `/auth/login` is NOT behind `:authn` (login is the
+  surface that mints the token in the first place).
   """
   use GrappaWeb, :controller
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, Visitors}
+  alias Grappa.Auth.IdentifierClassifier
+  alias Grappa.Visitors.{Login, Visitor}
+
+  require Logger
+
+  @anon_retry_after_ceiling_seconds 48 * 3600
+  @visitor_network_slug Application.compile_env(:grappa, :visitor_network)
 
   @doc """
-  `POST /auth/login` — `{name, password}` → `{token, user: {id, name}}`.
+  `POST /auth/login` — `{identifier, password?}` →
+  `{token, subject: {kind, id, ...}}`.
 
-  Validates the input shape at the boundary (both keys present, both
-  strings) and returns 400 otherwise — matches the rest of the JSON
-  surface's malformed-body handling.
+  Validates the input shape at the boundary (identifier present + binary)
+  and returns 400 otherwise. Dispatch is delegated to
+  `IdentifierClassifier`; per-branch failures map to canonical HTTP
+  statuses (see moduledoc + `visitor_login/3`).
   """
-  @spec login(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | :invalid_credentials}
-  def login(conn, %{"name" => name, "password" => password})
-      when is_binary(name) and is_binary(password) do
-    with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
-      # `create_session/3` returns `{:ok, session} | {:error, changeset}`,
-      # but here `user_id` is freshly fetched and `ip` / `user_agent`
-      # are server-derived — there's no user-supplied input that could
-      # produce an Ecto validation failure. A non-`:ok` here is an
-      # invariant violation (DB constraint blew up, sandbox died, ...)
-      # and "let it crash" is the correct response — wrapping in a
-      # 422 would hide the bug.
-      {:ok, session} =
-        Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
+  @spec login(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
+  def login(conn, %{"identifier" => id} = params) when is_binary(id) do
+    password = Map.get(params, "password")
 
-      conn
-      |> put_status(:ok)
-      |> render(:login, token: session.id, user: user)
+    case IdentifierClassifier.classify(id) do
+      {:email, email} -> mode1_login(conn, email, password)
+      {:nick, nick} -> visitor_login(conn, nick, password)
+      {:error, :malformed} -> send_error(conn, 400, "malformed_nick")
     end
   end
 
-  def login(_, _), do: {:error, :bad_request}
+  def login(conn, _), do: send_error(conn, 400, "bad_request")
 
   @doc """
   `DELETE /auth/logout` — revokes the session whose token was just
@@ -62,6 +65,97 @@ defmodule GrappaWeb.AuthController do
   def logout(conn, _) do
     :ok = Accounts.revoke_session(conn.assigns.current_session_id)
     send_resp(conn, :no_content, "")
+  end
+
+  defp mode1_login(conn, _, nil), do: send_error(conn, 401, "invalid_credentials")
+
+  defp mode1_login(conn, email, password) when is_binary(password) do
+    # Mode-1 today is name-keyed. Phase 5 hardening adds a real email
+    # column; for now the dispatch routes by `@` presence but the lookup
+    # uses the local-part as the user `name`.
+    name = email |> String.split("@", parts: 2) |> List.first()
+
+    with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
+      {:ok, session} =
+        Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
+
+      conn
+      |> put_status(:ok)
+      |> render(:login, token: session.id, subject: {:user, user})
+    end
+  end
+
+  defp visitor_login(conn, nick, password) do
+    input = %{
+      nick: nick,
+      password: password,
+      ip: format_ip(conn),
+      user_agent: user_agent(conn),
+      token: extract_bearer(conn)
+    }
+
+    case Login.login(input, []) do
+      {:ok, %{visitor: %Visitor{} = v, token: token}} ->
+        conn
+        |> put_status(:ok)
+        |> render(:login, token: token, subject: {:visitor, v})
+
+      {:error, reason} ->
+        visitor_error_response(conn, nick, reason)
+    end
+  end
+
+  defp visitor_error_response(conn, _, :malformed_nick),
+    do: send_error(conn, 400, "malformed_nick")
+
+  defp visitor_error_response(conn, _, :password_required),
+    do: send_error(conn, 401, "password_required")
+
+  defp visitor_error_response(conn, _, :password_mismatch),
+    do: send_error(conn, 401, "password_mismatch")
+
+  defp visitor_error_response(conn, _, :ip_cap_exceeded),
+    do: send_error(conn, 429, "ip_cap_exceeded")
+
+  defp visitor_error_response(conn, nick, :anon_collision),
+    do: anon_collision_response(conn, nick)
+
+  defp visitor_error_response(conn, _, :upstream_unreachable),
+    do: send_error(conn, 502, "upstream_unreachable")
+
+  defp visitor_error_response(conn, _, :timeout),
+    do: send_error(conn, 504, "timeout")
+
+  defp visitor_error_response(conn, _, _),
+    do: send_error(conn, 500, "internal")
+
+  defp anon_collision_response(conn, nick) do
+    seconds =
+      case Visitors.get_by_nick_and_network(nick, @visitor_network_slug) do
+        %Visitor{expires_at: expires_at} ->
+          expires_at
+          |> DateTime.diff(DateTime.utc_now())
+          |> max(1)
+          |> min(@anon_retry_after_ceiling_seconds)
+
+        nil ->
+          @anon_retry_after_ceiling_seconds
+      end
+
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(seconds))
+    |> send_error(409, "anon_collision")
+  end
+
+  defp send_error(conn, status, code) do
+    conn |> put_status(status) |> json(%{error: code})
+  end
+
+  defp extract_bearer(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] when token != "" -> token
+      _ -> nil
+    end
   end
 
   @spec format_ip(Plug.Conn.t()) :: String.t() | nil

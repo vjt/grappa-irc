@@ -2,95 +2,208 @@ defmodule GrappaWeb.AuthControllerTest do
   @moduledoc """
   REST surface for `POST /auth/login` + `DELETE /auth/logout`.
 
-  `login` exercises the real Argon2 verification path
-  (`Grappa.Accounts.get_user_by_credentials/2`) and returns
-  `{token, user: {id, name}}` on success. The token IS the session
-  PK — no token-hash, no JWT (see `Grappa.Accounts` moduledoc +
-  Phase 2 plan Decision A).
+  `login` dispatches via `Grappa.Auth.IdentifierClassifier`: `@`-bearing
+  identifiers route to mode-1 (admin, password REQUIRED, name-keyed
+  Accounts lookup against the local-part); plain nicks route to the
+  visitor path (`Grappa.Visitors.Login.login/2`, password OPTIONAL,
+  bearer reused on anon-collision retry per W13).
 
-  `logout` requires authn (it must know which session to revoke), so
-  the route lives behind the `:authn` pipeline. A revoke is
-  idempotent + fire-and-forget; the response is 204 with no body.
+  Response shape: `{token, subject: {kind: :user|:visitor, ...}}`.
 
-  `async: true` — each test owns its sandbox checkout. Login tests
-  pay the ~100 ms Argon2 cost on purpose; the rest go via
-  `AuthFixtures.user_fixture/1` which bypasses the hash.
+  `async: false` because the visitor describe spawns Session.Server
+  under the singleton supervisor — same constraint as `login_test.exs`.
   """
-  use GrappaWeb.ConnCase, async: true
+  use GrappaWeb.ConnCase, async: false
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Accounts.Session, Repo}
+  alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
+  alias Grappa.Visitors.Visitor
 
-  describe "POST /auth/login" do
-    test "with valid credentials returns 200 + token + user", %{conn: conn} do
+  defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
+
+  defp start_server(handler \\ passthrough_handler()) do
+    {:ok, server} = IRCServer.start_link(handler)
+    {server, IRCServer.port(server)}
+  end
+
+  defp pick_unused_port do
+    {:ok, l} = :gen_tcp.listen(0, [])
+    {:ok, port} = :inet.port(l)
+    :gen_tcp.close(l)
+    port
+  end
+
+  defp setup_visitor_network(port),
+    do: network_with_server(port: port, slug: "azzurra")
+
+  defp feed_001(server, nick),
+    do: IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
+
+  defp await_handshake(server) do
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    :ok
+  end
+
+  defp stop_visitor_session(visitor_id, network_id),
+    do: :ok = Grappa.Session.stop_session({:visitor, visitor_id}, network_id)
+
+  describe "POST /auth/login (mode-1 admin via email)" do
+    test "valid credentials → 200 + token + subject{kind: user}", %{conn: conn} do
       {user, password} = user_fixture_with_password()
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"name" => user.name, "password" => password})
+        |> post("/auth/login", %{
+          "identifier" => "#{user.name}@example.com",
+          "password" => password
+        })
 
       body = json_response(conn, 200)
       assert is_binary(body["token"])
       assert {:ok, _} = Ecto.UUID.cast(body["token"])
-      assert body["user"]["id"] == user.id
-      assert body["user"]["name"] == user.name
+      assert body["subject"]["kind"] == "user"
+      assert body["subject"]["id"] == user.id
+      assert body["subject"]["name"] == user.name
 
       session = Repo.get(Session, body["token"])
       assert session.user_id == user.id
       assert is_nil(session.revoked_at)
     end
 
-    test "with wrong password returns 401 + invalid_credentials, no session created", %{conn: conn} do
+    test "wrong password → 401 invalid_credentials, no session", %{conn: conn} do
       {user, _} = user_fixture_with_password()
 
       conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"name" => user.name, "password" => "WRONG"})
+        post(conn, "/auth/login", %{
+          "identifier" => "#{user.name}@example.com",
+          "password" => "WRONG"
+        })
 
       assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
       assert session_count() == 0
     end
 
-    test "with unknown user returns 401 + invalid_credentials", %{conn: conn} do
+    test "unknown user → 401 invalid_credentials", %{conn: conn} do
       conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"name" => "no-such-user", "password" => "whatever-12345"})
+        post(conn, "/auth/login", %{
+          "identifier" => "no-such-user@example.com",
+          "password" => "whatever-12345"
+        })
 
       assert json_response(conn, 401) == %{"error" => "invalid_credentials"}
       assert session_count() == 0
     end
 
-    test "with missing name returns 400", %{conn: conn} do
-      conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"password" => "x"})
+    test "missing password (mode-1) → 401 invalid_credentials", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt@example.com"})
+      assert json_response(conn, 401)["error"] == "invalid_credentials"
+    end
 
+    test "non-string identifier → 400 bad_request", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => 42, "password" => "x"})
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    test "with missing password returns 400", %{conn: conn} do
-      conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"name" => "vjt"})
-
-      assert json_response(conn, 400)["error"] == "bad_request"
-    end
-
-    test "with non-string name returns 400", %{conn: conn} do
-      conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> post("/auth/login", %{"name" => 42, "password" => "x"})
-
+    test "missing identifier → 400 bad_request", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"password" => "x"})
       assert json_response(conn, 400)["error"] == "bad_request"
     end
   end
+
+  describe "POST /auth/login (visitor via nick)" do
+    test "anon (case 1) → 200 + subject{kind: visitor}", %{conn: conn} do
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task = Task.async(fn -> post(conn, "/auth/login", %{"identifier" => "vjt"}) end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      result = Task.await(task, 10_000)
+      body = json_response(result, 200)
+
+      assert is_binary(body["token"])
+      assert body["subject"]["kind"] == "visitor"
+      assert body["subject"]["nick"] == "vjt"
+      assert body["subject"]["network_slug"] == "azzurra"
+
+      v = Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra")
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "malformed nick → 400 malformed_nick", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => "9bad"})
+      assert json_response(conn, 400)["error"] == "malformed_nick"
+    end
+
+    test "ip cap exceeded → 429 ip_cap_exceeded", %{conn: conn} do
+      # config/test.exs: max_visitors_per_ip = 2. Provision 2 → 3rd 429s.
+      # Phoenix.ConnTest default remote_ip is {127, 0, 0, 1}.
+      {_, port} = start_server()
+      setup_visitor_network(port)
+
+      {:ok, _} = Visitors.find_or_provision_anon("aa", "azzurra", "127.0.0.1")
+      {:ok, _} = Visitors.find_or_provision_anon("bb", "azzurra", "127.0.0.1")
+
+      conn = post(conn, "/auth/login", %{"identifier" => "cc"})
+      assert json_response(conn, 429)["error"] == "ip_cap_exceeded"
+    end
+
+    test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do
+      port = pick_unused_port()
+      setup_visitor_network(port)
+
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
+      assert json_response(conn, 502)["error"] == "upstream_unreachable"
+      assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
+    end
+
+    test "anon collision (no bearer) → 409 anon_collision + Retry-After",
+         %{conn: conn} do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", "azzurra", "5.6.7.8")
+
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
+
+      assert json_response(conn, 409)["error"] == "anon_collision"
+      assert [retry_after] = get_resp_header(conn, "retry-after")
+      assert {ra, ""} = Integer.parse(retry_after)
+      assert ra > 0 and ra <= 48 * 3600
+
+      stop_visitor_session(v.id, network.id)
+    end
+
+    test "anon collision token reuse → 200 + rotated token", %{conn: conn} do
+      {_, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", "azzurra", "5.6.7.8")
+      {:ok, prior} = Accounts.create_session({:visitor, v.id}, "5.6.7.8", "ua")
+
+      conn =
+        conn
+        |> put_bearer(prior.id)
+        |> post("/auth/login", %{"identifier" => "vjt"})
+
+      body = json_response(conn, 200)
+      assert is_binary(body["token"])
+      refute body["token"] == prior.id
+      assert body["subject"]["kind"] == "visitor"
+
+      stop_visitor_session(v.id, network.id)
+    end
+  end
+
+  # NOTE: 504 timeout is exercised in `test/grappa/visitors/login_test.exs`
+  # against `Visitors.Login.login/2` directly with a compressed
+  # `:login_timeout_ms` opt — the controller-level roundtrip would burn
+  # the full 8s production budget per run. 500 :no_server /
+  # :network_unconfigured ditto.
 
   describe "DELETE /auth/logout" do
     test "with valid Bearer revokes session and returns 204", %{conn: conn} do

@@ -2,22 +2,51 @@ defmodule GrappaWeb.AuthJSON do
   @moduledoc """
   Phoenix view layer for `GrappaWeb.AuthController`.
 
-  `login/1` renders the success body for `POST /auth/login` —
-  `{token, user: {id, name}}`. The user payload deliberately uses
-  the minimal credential-exchange shape (no `inserted_at`, no
-  other profile fields) — login is a credential-exchange surface,
-  not a profile lookup. Clients that want the full profile call
-  `GET /me` after login. The `User` → JSON conversion delegates to
-  `Grappa.Accounts.Wire.user_to_credential_json/1` so the allowlist
-  (excluding `:password_hash` + virtual `:password`) lives in one
-  place — see that module's moduledoc.
+  `login/1` renders the success body for `POST /auth/login` per Q-E:
+
+      %{token, subject: %{kind: "user" | "visitor", id, ...}}
+
+  The user variant delegates to
+  `Grappa.Accounts.Wire.user_to_credential_json/1` so the User → JSON
+  allowlist (excluding `:password_hash` + virtual `:password`) lives in
+  one place. The visitor variant emits the inline shape directly —
+  `Grappa.Visitors.Visitor` is fully internal to the
+  `cluster/visitor-auth` work and has no separate Wire module yet.
+
+  Login is a credential-exchange surface, not a profile lookup. Clients
+  that want the full profile call `GET /me` after login.
   """
   alias Grappa.Accounts.{User, Wire}
+  alias Grappa.Visitors.Visitor
 
-  @doc "Renders the `:login` action — `{token, user: {id, name}}`."
-  @spec login(%{token: String.t(), user: User.t()}) ::
-          %{token: String.t(), user: Wire.credential_json()}
-  def login(%{token: token, user: %User{} = user}) do
-    %{token: token, user: Wire.user_to_credential_json(user)}
+  @type subject_wire ::
+          %{kind: String.t(), id: Ecto.UUID.t(), name: String.t()}
+          | %{
+              kind: String.t(),
+              id: Ecto.UUID.t(),
+              nick: String.t(),
+              network_slug: String.t()
+            }
+
+  @doc "Renders the `:login` action — `{token, subject}`."
+  @spec login(%{
+          token: String.t(),
+          subject: {:user, User.t()} | {:visitor, Visitor.t()}
+        }) :: %{token: String.t(), subject: subject_wire()}
+  def login(%{token: token, subject: {:user, %User{} = user}}) do
+    %{id: id, name: name} = Wire.user_to_credential_json(user)
+    %{token: token, subject: %{kind: "user", id: id, name: name}}
+  end
+
+  def login(%{token: token, subject: {:visitor, %Visitor{} = v}}) do
+    %{
+      token: token,
+      subject: %{
+        kind: "visitor",
+        id: v.id,
+        nick: v.nick,
+        network_slug: v.network_slug
+      }
+    }
   end
 end
