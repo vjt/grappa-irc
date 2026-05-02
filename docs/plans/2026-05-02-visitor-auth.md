@@ -4380,9 +4380,12 @@ defmodule Grappa.Session.NSInterceptor do
 
   Mirrors `Grappa.IRC.AuthFSM` shape: pure step function, no side
   effects, host GenServer applies the capture.
-  """
 
-  use Boundary, top_level?: true, deps: []
+  Boundary: inherits the parent `Grappa.Session` boundary — same pattern
+  as sibling submodules (`Server`, `EventRouter`, `AuthFSM`-in-IRC). No
+  `use Boundary` here; consumed by `Session.Server` (same boundary), so
+  no `exports:` entry needed in `Grappa.Session` either.
+  """
 
   @type result :: :passthrough | {:capture, String.t()}
 
