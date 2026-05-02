@@ -84,6 +84,28 @@ defmodule Grappa.AuthFixtures do
   end
 
   @doc """
+  Mints a live session for `visitor`. Counterpart to `session_fixture/1`
+  for visitor subjects — used by REST tests that traverse `:authn`'s
+  visitor branch (Task 30 controller surface).
+  """
+  @spec visitor_session_fixture(Visitor.t()) :: Session.t()
+  def visitor_session_fixture(%Visitor{} = visitor) do
+    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil)
+    session
+  end
+
+  @doc """
+  Convenience: builds a visitor + session in one call and returns
+  `{visitor, session}`. Mirrors `user_and_session/1`.
+  """
+  @spec visitor_and_session(keyword()) :: {Visitor.t(), Session.t()}
+  def visitor_and_session(attrs \\ []) do
+    visitor = visitor_fixture(attrs)
+    session = visitor_session_fixture(visitor)
+    {visitor, session}
+  end
+
+  @doc """
   Total `sessions` row count. Used by login tests to assert the
   failure paths do NOT mint a session row, without leaking a raw
   `Repo.aggregate/3` call into the test body.
