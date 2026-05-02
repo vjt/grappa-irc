@@ -1534,6 +1534,10 @@ EOF
 defmodule Grappa.VisitorsTest do
   use Grappa.DataCase, async: true
 
+  import Ecto.Query
+
+  alias Grappa.Accounts
+  alias Grappa.Accounts.Session
   alias Grappa.Visitors
   alias Grappa.Visitors.Visitor
 
@@ -1636,7 +1640,7 @@ defmodule Grappa.VisitorsTest do
 
       assert :ok = Visitors.delete(v.id)
       assert is_nil(Repo.get(Visitor, v.id))
-      assert is_nil(Repo.get(Accounts.Session, session.id))
+      assert is_nil(Repo.get(Session, session.id))
     end
   end
 end
@@ -1678,14 +1682,17 @@ defmodule Grappa.Visitors do
     * `delete/1` — Reaper + operator path. CASCADE wipes session rows,
       visitor_channels, messages.
 
-  Boundary deps: `Grappa.IRC` (Identifier validators on the schema),
-  `Grappa.Repo`, `Grappa.Accounts` (sessions), `Grappa.Networks`
-  (slug existence checks at boot).
+  Boundary deps: `Grappa.IRC` (Identifier validators on the child
+  schema) + `Grappa.Repo` (CRUD). `Grappa.Accounts` is NOT a dep —
+  CASCADE wipes session rows at the DB level (FK ON DELETE CASCADE
+  per Task 5 migration), no application-layer call needed.
+  `Grappa.Networks` is NOT a dep — slug existence checks at boot
+  live in `Grappa.Bootstrap`, not in this context.
   """
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.IRC, Grappa.Repo, Grappa.Accounts, Grappa.Networks],
+    deps: [Grappa.IRC, Grappa.Repo],
     exports: [Visitor, VisitorChannel]
 
   import Ecto.Query
@@ -1697,10 +1704,8 @@ defmodule Grappa.Visitors do
   @registered_ttl_seconds 7 * 24 * 3600
   @touch_cadence_seconds 3600
 
-  @type provision_error :: :network_unconfigured | :ip_cap_exceeded | Ecto.Changeset.t()
-
   @spec find_or_provision_anon(String.t(), String.t(), String.t() | nil) ::
-          {:ok, Visitor.t()} | {:error, provision_error()}
+          {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
   def find_or_provision_anon(nick, network_slug, ip)
       when is_binary(nick) and is_binary(network_slug) do
     case Repo.get_by(Visitor, nick: nick, network_slug: network_slug) do
@@ -1717,8 +1722,10 @@ defmodule Grappa.Visitors do
     |> Repo.insert()
   end
 
-  @spec commit_password(Ecto.UUID.t(), String.t()) :: {:ok, Visitor.t()} | {:error, term()}
-  def commit_password(visitor_id, password) when is_binary(visitor_id) and is_binary(password) and password != "" do
+  @spec commit_password(Ecto.UUID.t(), String.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def commit_password(visitor_id, password)
+      when is_binary(visitor_id) and is_binary(password) and password != "" do
     expires_at = DateTime.utc_now() |> DateTime.add(@registered_ttl_seconds, :second) |> DateTime.truncate(:second)
 
     case Repo.get(Visitor, visitor_id) do
@@ -1730,7 +1737,8 @@ defmodule Grappa.Visitors do
     end
   end
 
-  @spec touch(Ecto.UUID.t()) :: {:ok, Visitor.t()} | {:error, term()}
+  @spec touch(Ecto.UUID.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def touch(visitor_id) when is_binary(visitor_id) do
     case Repo.get(Visitor, visitor_id) do
       nil -> {:error, :not_found}
