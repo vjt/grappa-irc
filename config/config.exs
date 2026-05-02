@@ -61,8 +61,10 @@ config :logger, :console,
     :pid,
     :unexpected,
     # Bootstrap summary: how many credentials we enumerated and how
-    # many session starts succeeded vs. failed.
+    # many session starts succeeded vs. failed. `:visitors` is the
+    # parallel count for the visitor-respawn pass (Task 19).
     :credentials,
+    :visitors,
     :started,
     :failed,
     # Per-IRC-event context: who/what an event refers to (KICK target,
