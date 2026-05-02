@@ -7050,109 +7050,72 @@ EOF
 
 ---
 
-### Task 23: Per-IP cap configuration wiring
+### Task 23: Per-IP cap configuration wiring — LANDED-by-prior-work (retro-amend S16)
 
-**Files:**
-- Modify: `config/config.exs`
-- Modify: `config/runtime.exs`
+**Status: LANDED via S5 + S9 + S10 prior-work — no new code in S16.**
 
-- [ ] **Step 23.1: Add config keys**
+The original plan body proposed (a) adding config keys to
+`config/config.exs`, (b) wiring `config/runtime.exs` env-var override
+for prod, and (c) refactoring `Login.login/4` → `login/5` with opts
+threading from `AuthController`. S5/S9/S10 implementation already
+satisfied (a) and (c) via a different path — `Application.compile_env/2`
+module attributes at the consumption sites. Path (b) — `runtime.exs`
+env-var override — is **incompatible with the compile_env baseline**
+and was dropped.
 
-```elixir
-# config/config.exs — add
-config :grappa,
-  visitor_network: nil,
-  max_visitors_per_ip: 5
-```
+#### Verified-landed surfaces (S16)
 
-```elixir
-# config/runtime.exs — add at runtime block
-if config_env() == :prod do
-  config :grappa,
-    visitor_network: System.get_env("GRAPPA_VISITOR_NETWORK"),
-    max_visitors_per_ip: String.to_integer(System.get_env("GRAPPA_MAX_VISITORS_PER_IP", "5"))
-end
-```
+| Plan prescription | Reality | Verdict |
+|---|---|---|
+| `config/config.exs`: `visitor_network` + `max_visitors_per_ip` defaults | `:visitor_network "azzurra"` + `:max_visitors_per_ip 5` (lines 17–18, S10) — `nil` default rejected because it narrows `Login.login/2`'s success typing and cascades dialyzer "pattern can never match" warnings into `auth_controller.ex` | LANDED — `"azzurra"` is the better default |
+| `config/test.exs`: per-env override for cap test | `:max_visitors_per_ip 2` (line 39, S6) — keeps cap-exceeded test path cheap (provision 2 → 3rd fails) | LANDED |
+| `Login.login/4` opts-threading refactor | `Application.compile_env` module attributes at `lib/grappa/visitors/login.ex:64-65` (`@visitor_network` + `@max_per_ip`) and `lib/grappa_web/controllers/auth_controller.ex:36` (`@visitor_network_slug`) | LANDED via plan-body's own EXCEPTION clause — see "Why compile_env wins" below |
+| Cap enforcement at request path | `Login.check_ip_cap/1` at `lib/grappa/visitors/login.ex:169-177` composes `Visitors.count_active_for_ip/1` (the W3 primitive, S6) against `@max_per_ip`; gated only on case-1 (provisioning), not on reattach | LANDED |
+| Cap-exceeded test coverage | `test/grappa/visitors/login_test.exs:92` — `"ip cap exceeded → {:error, :ip_cap_exceeded}, no session spawned"` — relies on `config/test.exs`'s `max_visitors_per_ip = 2` | LANDED |
 
-- [ ] **Step 23.2: Run tests**
+#### Why compile_env wins (and runtime.exs prescription was dropped)
 
-```bash
-scripts/check.sh
-```
+`Application.compile_env/2` reads at compile time and BAKES the literal
+into the bytecode at the call site. `runtime.exs` runs post-compile at
+boot. **A `runtime.exs` block setting `:visitor_network` /
+`:max_visitors_per_ip` would be invisible to Login + AuthController
+because the compile_env literal was already frozen.** The plan body's
+Step 23.1 prescription ("`config :grappa, visitor_network:
+System.get_env(...)`" inside `if config_env() == :prod`) is dead code
+under the compile_env baseline — and would mislead operators into
+expecting env-var tuning that does not work.
 
-Note: `Visitors.Login` already reads `:visitor_network` and `:max_visitors_per_ip` from `Application.get_env`. CLAUDE.md says runtime `Application.get_env` is banned BUT visitor-network + max-per-IP are configuration values, read once at request time. Pin: keep these as `Application.get_env` reads — they're config, not state, and `start_link` wiring is overkill for two config values that don't change post-boot. **EXCEPTION**: if Boundary or test infra forces injection, lift to module-attribute reads via `Application.compile_env/2` for compile-time config.
+CLAUDE.md compliance: `compile_env` is NOT the banned runtime
+`get_env`. The CLAUDE.md ban targets RUNTIME reads from request paths
+(GenServer callbacks, controller actions, context functions, plug
+bodies, release tasks). `compile_env` is a compile-time literal —
+fully compliant. The plan body's own EXCEPTION clause anticipated
+this: "lift to module-attribute reads via `Application.compile_env/2`
+for compile-time config." S9 took that path.
 
-Actually re-reading CLAUDE.md: "`Application.{put,get}_env/2`: boot-time only, runtime banned. ... Banned at runtime — neither read nor written from any GenServer callback, controller, context function, plug body, or release task. Pass config via `start_link/1` opts; the supervisor reads env at boot and injects."
+#### Operator tuning model
 
-This binds. Refactor:
-- `Visitors.Login` reads config at module-attribute level via `Application.compile_env/2` — this is allowed (compile-time, not runtime).
-- Test override pattern: `Application.put_env` in test setup is allowed (`:start_bootstrap` exception precedent), but reads from `Application.get_env` are runtime → banned.
+For these two keys, operators tune via per-env config files
+(`config/{dev,test,prod}.exs`) and rebuild the release. `scripts/
+deploy.sh` rebuilds the prod image on every deploy anyway, so no
+operational pain — a config edit + deploy is one round-trip,
+identical to env-var-driven config under a containerized release.
+Per CLAUDE.md "don't design for hypothetical future requirements":
+runtime env-var tuning of these two keys is a use case that does
+not exist; the compile_env baseline is correct.
 
-Rewrite Login config access:
+#### What did NOT change in S16
 
-```elixir
-# lib/grappa/visitors/login.ex (top of module)
-@visitor_network Application.compile_env(:grappa, :visitor_network)
-@max_per_ip Application.compile_env(:grappa, :max_visitors_per_ip, 5)
-```
+No code changes. `git diff` between cluster `bc98af5` and the
+post-Task-23 retro-amend is **empty for code**; only this plan
+section + the matching CP11 S16 entry change.
 
-But `compile_env` is fixed at compile time — tests can't change it per-test. Alternative: pass network_slug + cap_per_ip into `Visitors.Login.login/4` via start_opts, OR have a `Visitors.Config` GenServer holding env at boot.
+#### Bookkeeping
 
-Cleanest pattern: Visitors.Config (Agent or named GenServer) holds `:visitor_network` + `:max_per_ip`, read at boot from `Application.get_env` (boot-time = allowed), public API is `Visitors.Config.get/1`. Tests reset via direct GenServer.cast.
-
-This is a non-trivial detour. **Pin alternate**: use `Application.compile_env` and accept that tests use `Application.put_env` only in setup-once shape (boot-time semantics). For multi-config-state per test: spin up a per-test Visitors.Config instance.
-
-Actually — re-reading CLAUDE.md more carefully: "Banned at runtime — neither read nor written from any GenServer callback, controller, context function, plug body, or release task."
-
-`Visitors.Login.login/4` is a context function. `Application.get_env` from inside it is banned. Must use start_link injection or compile_env.
-
-**Decision:** Visitors.Login takes `visitor_network` + `max_per_ip` as opts in a per-call shape, OR the controller threads them in. The controller in turn reads from a module-level `compile_env`. Tests override via `Application.put_env` BEFORE module compile (test harness setup) OR pass explicit overrides at call site.
-
-For this plan: **lift to function arguments, controller reads compile_env, tests use Application.put_env only for boot-time shape.** Adjust:
-
-```elixir
-# lib/grappa_web/controllers/auth_controller.ex
-@visitor_network_default Application.compile_env(:grappa, :visitor_network)
-@max_per_ip_default Application.compile_env(:grappa, :max_visitors_per_ip, 5)
-
-defp visitor_login(conn, nick, password) do
-  case VisitorLogin.login(nick, password, format_ip(conn), user_agent(conn),
-                          network_slug: @visitor_network_default,
-                          max_per_ip: @max_per_ip_default) do
-    # ...
-  end
-end
-```
-
-```elixir
-# lib/grappa/visitors/login.ex
-@spec login(String.t(), String.t() | nil, String.t() | nil, String.t() | nil, keyword()) ::
-        {:ok, login_result()} | {:error, login_error()}
-def login(nick, password, ip, user_agent, opts) when is_list(opts) do
-  network_slug = Keyword.fetch!(opts, :network_slug)
-  max_per_ip = Keyword.fetch!(opts, :max_per_ip)
-  # ... rest reads from these locals
-end
-```
-
-This is mechanically intrusive — touches every test that calls `Visitors.Login.login/4`. Worth the rule compliance.
-
-- [ ] **Step 23.3: Refactor Login.login signature + commit**
-
-```bash
-git add config/config.exs config/runtime.exs lib/grappa_web/controllers/auth_controller.ex \
-        lib/grappa/visitors/login.ex test/grappa/visitors/login_test.exs \
-        test/grappa_web/controllers/auth_controller_test.exs
-git commit -m "$(cat <<'EOF'
-chore(config): wire :visitor_network + :max_visitors_per_ip via env
-
-Per CLAUDE.md "Application.get_env is boot-time only, runtime banned":
-- compile_env reads at controller module level
-- Login.login/5 takes :network_slug + :max_per_ip as opts
-- Tests setup via Application.put_env at boot-time (init compile pass)
-EOF
-)"
-```
+- Plan retro-amended (this section).
+- CP11 S16 entry documents the retro-LANDED decision + drift analysis.
+- TODO: none — Task 23 fully closed.
+- No dialyzer / credo / format re-run needed (no code touched).
 
 ---
 
