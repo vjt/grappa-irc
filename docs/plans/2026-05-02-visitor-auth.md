@@ -7293,173 +7293,324 @@ EOF
 
 ---
 
-### Task 25.5: Visitor logout terminates Session.Server
+### Task 25.5: Visitor logout terminates Session.Server + W11 anon-purge — amended S16
 
 **Files:**
 - Modify: `lib/grappa_web/controllers/auth_controller.ex` (extend `logout/2`)
 - Test: extend `test/grappa_web/controllers/auth_controller_test.exs`
 
-Memory pin: "Visitor logout: clear cookie + kill Session.Server. Visitor row STAYS for scrollback preservation." Cookie part is moot (Reading C — no cookies). Kill-Session.Server part lands here. Visitor row deletion remains Reaper-only — re-login with same nick reattaches existing scrollback within sliding TTL.
+#### S16 dispatch-time amend — drift items resolved
 
-- [ ] **Step 25.5.1: Failing test**
+Pre-S16 plan body had EIGHT drift items vs. the current cluster surface
++ ONE HALT-class privacy contradiction. Vjt blessing on 2026-05-02
+fixed all of them; rewritten body below is the canonical shape.
+
+**HALT-class — W11 wins on anon-purge.** Pre-S16 plan body said
+"Visitor row STAYS for scrollback preservation per memory pin." That
+contradicts pinned **W11**: "Anon visitor lifecycle co-terminus with
+`accounts_sessions` row. `Visitors.purge_if_anon/1` is the deletion
+verb." Per CLAUDE.md "the spec inherited a bug — bad return type
+doesn't become good by being in the spec," W11 is the privacy promise
+and supersedes the pre-S16 memory pin. Anon visitors are purged on
+logout (re-login = fresh anon row, fresh scrollback). Registered
+visitors stay automatically — `purge_if_anon/1` is a no-op when
+`password_encrypted` is set.
+
+**Mechanical drift items resolved:**
+
+| Pre-S16 plan body | Reality | Fix |
+|---|---|---|
+| `Visitors.Login.login("vjt", nil, "1.2.3.4", "ua", opts)` 4-arg+opts | `Login.login(input_map, opts)`; `input_map = %{nick:, password:, ip:, user_agent:, token:}` | use existing `login_input/1` builder pattern from `login_test.exs:48` shape |
+| `insert(:network, ...)` + `insert(:network_server, ...)` ExMachina | NO ExMachina dep | use `network_with_server(port: port, slug: "azzurra")` from `auth_fixtures.ex:104` (matches `login_test.exs`'s `setup_visitor_network/1` private helper) |
+| `Networks.get_by_slug(slug) -> %Network{} \| nil` | `Networks.get_network_by_slug(slug) -> {:ok, %Network{}} \| {:error, :not_found}` | rewrite controller helper to match |
+| `Logger.warning(..., visitor: visitor.id, slug: ...)` | Allowlist key is `:visitor_id` (S10/S14); `:slug` not in allowlist; closest allowed is `:network` | use `visitor_id:` + `network:` (NOT `:slug`) |
+| `timeout_ms: 5_000` opt | Real opt is `:login_timeout_ms` | use `:login_timeout_ms` |
+| `Application.put_env(:grappa, :visitor_network, "azzurra")` test setup | `@visitor_network` baked at compile via `compile_env`; runtime put_env invisible (S16 lesson). `config/test.exs` already pins `"azzurra"` | drop the put_env + on_exit block entirely |
+| `eventually/1` helper | Per S15 vigilance: NONE EXIST | `Session.stop_session/2` returns `:ok` synchronously, so direct assertion works |
+| `IRCServer.start_link()` (no handler) + `IRCServer.auto_accept/1` | `IRCServer.start_link/1` requires handler arg; `auto_accept/1` not a thing — feed 001 manually via `feed_001/2` private helper | follow `login_test.exs` pattern: `start_server/0` + `feed_001/2` after `await_handshake/1` |
+| `conn.assigns.current_visitor` | Confirmed via `lib/grappa_web/plugs/authn.ex:88-89`: `:current_visitor_id` + `:current_visitor` (full struct) | use `:current_visitor` directly |
+
+#### Implementation steps (post-amendment)
+
+- [ ] **Step 25.5.1: Failing tests** — append to existing
+      `describe "DELETE /auth/logout"` block in
+      `test/grappa_web/controllers/auth_controller_test.exs`. The
+      file already has `setup_visitor_network/1`, `start_server/0`,
+      `feed_001/2`, `await_handshake/1`, `stop_visitor_session/2`,
+      `pick_unused_port/0` private helpers from the visitor-login
+      describe — reuse them.
 
 ```elixir
-# test/grappa_web/controllers/auth_controller_test.exs — add describe
-describe "DELETE /auth/logout for visitor" do
-  setup do
-    {:ok, fake_irc} = IRCServer.start_link()
-    network = insert(:network, slug: "azzurra")
+# Visitor-side cases — append to existing "DELETE /auth/logout" describe
+test "visitor logout (anon) kills Session.Server AND purges visitor row per W11",
+     %{conn: conn} do
+  {server, port} = start_server()
+  {network, _} = setup_visitor_network(port)
 
-    insert(:network_server,
-      network: network,
-      host: "127.0.0.1",
-      port: IRCServer.port(fake_irc),
-      tls: false,
-      enabled: true,
-      priority: 0
-    )
-
-    Application.put_env(:grappa, :visitor_network, "azzurra")
-    on_exit(fn -> Application.delete_env(:grappa, :visitor_network) end)
-
-    {:ok, fake_irc: fake_irc, network: network}
-  end
-
-  test "kills Session.Server but visitor row stays for scrollback",
-       %{conn: conn, fake_irc: fake_irc, network: network} do
-    IRCServer.auto_accept(fake_irc)
-
-    {:ok, %{visitor: visitor, token: token}} =
-      Visitors.Login.login("vjt", nil, "1.2.3.4", "ua",
-        network_slug: "azzurra",
-        max_per_ip: 5,
-        timeout_ms: 5_000
-      )
-
-    assert {:ok, pid} = Session.lookup({:visitor, visitor.id}, network.id)
-    assert Process.alive?(pid)
-
-    conn
-    |> put_req_header("authorization", "Bearer #{token}")
-    |> delete(~p"/auth/logout")
-    |> response(:no_content)
-
-    eventually(fn ->
-      assert :error = Session.lookup({:visitor, visitor.id}, network.id)
+  task =
+    Task.async(fn ->
+      Visitors.Login.login(%{
+        nick: "vjt",
+        password: nil,
+        ip: "1.2.3.4",
+        user_agent: "ua",
+        token: nil
+      })
     end)
 
-    # Visitor row stays — scrollback preservation per memory pin.
-    assert Repo.reload!(visitor)
-  end
+  :ok = await_handshake(server)
+  feed_001(server, "vjt")
 
-  test "mode-1 logout does NOT touch any Session.Server", %{conn: conn} do
-    user = insert(:user)
-    {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", "ua")
+  {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
 
-    conn
-    |> put_req_header("authorization", "Bearer #{session.id}")
-    |> delete(~p"/auth/logout")
-    |> response(:no_content)
+  assert {:ok, _pid} = Grappa.Session.lookup({:visitor, visitor.id}, network.id)
 
-    # Session row revoked.
-    assert is_nil(Repo.get(Accounts.Session, session.id))
-  end
+  conn
+  |> put_bearer(token)
+  |> delete("/auth/logout")
+  |> response(204)
 
-  test "visitor logout when network slug no longer configured logs + 204",
-       %{conn: conn, fake_irc: fake_irc, network: network} do
-    IRCServer.auto_accept(fake_irc)
+  # Session.stop_session/2 is synchronous — no eventually/1 needed.
+  assert :error = Grappa.Session.lookup({:visitor, visitor.id}, network.id)
 
-    {:ok, %{visitor: visitor, token: token}} =
-      Visitors.Login.login("vjt", nil, "1.2.3.4", "ua",
-        network_slug: "azzurra",
-        max_per_ip: 5,
-        timeout_ms: 5_000
-      )
+  # W11: anon visitor purged co-terminus with accounts_sessions revoke.
+  assert is_nil(Repo.get(Visitor, visitor.id))
+end
 
-    # Drop the network row mid-session (degenerate case)
-    Repo.delete!(network)
+test "visitor logout (registered) kills Session.Server but keeps visitor row",
+     %{conn: conn} do
+  {server, port} = start_server()
+  {network, _} = setup_visitor_network(port)
 
-    log =
-      ExUnit.CaptureLog.capture_log(fn ->
-        conn
-        |> put_req_header("authorization", "Bearer #{token}")
-        |> delete(~p"/auth/logout")
-        |> response(:no_content)
-      end)
+  # Provision anon, then commit a password to flip to registered.
+  task =
+    Task.async(fn ->
+      Visitors.Login.login(%{
+        nick: "vjt",
+        password: nil,
+        ip: "1.2.3.4",
+        user_agent: "ua",
+        token: nil
+      })
+    end)
 
-    assert log =~ "visitor logout but network not found"
-    assert Repo.reload!(visitor)
-  end
+  :ok = await_handshake(server)
+  feed_001(server, "vjt")
+
+  {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+  {:ok, _registered} = Visitors.commit_password(visitor.id, "s3cret")
+
+  conn
+  |> put_bearer(token)
+  |> delete("/auth/logout")
+  |> response(204)
+
+  assert :error = Grappa.Session.lookup({:visitor, visitor.id}, network.id)
+
+  # Registered: row stays — purge_if_anon/1 short-circuits on
+  # password_encrypted set. Privacy promise: registered visitor's
+  # data persists past logout, gated on next-login password match.
+  assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
+  assert is_binary(pwd)
+end
+
+test "mode-1 logout does NOT touch any Session.Server or visitor surface",
+     %{conn: conn} do
+  {_, session} = user_and_session()
+
+  conn
+  |> put_bearer(session.id)
+  |> delete("/auth/logout")
+  |> response(204)
+
+  # Existing mode-1 invariant: session row revoked. No new behavior.
+  reloaded = Repo.get(Session, session.id)
+  refute is_nil(reloaded.revoked_at)
+end
+
+test "visitor logout when network row deleted mid-session logs warning + 204",
+     %{conn: conn} do
+  {server, port} = start_server()
+  {network, _} = setup_visitor_network(port)
+
+  task =
+    Task.async(fn ->
+      Visitors.Login.login(%{
+        nick: "vjt",
+        password: nil,
+        ip: "1.2.3.4",
+        user_agent: "ua",
+        token: nil
+      })
+    end)
+
+  :ok = await_handshake(server)
+  feed_001(server, "vjt")
+
+  {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+
+  # Tear the session manually before the network row goes — without this
+  # the FK CASCADE (visitor → network via slug) plus the live Session.Server's
+  # registry entry would fight each other. The test exercises the controller's
+  # handling of the missing-network case; the live-session teardown is not
+  # what this test asserts.
+  stop_visitor_session(visitor.id, network.id)
+  Repo.delete!(network)
+
+  log =
+    ExUnit.CaptureLog.capture_log(fn ->
+      conn
+      |> put_bearer(token)
+      |> delete("/auth/logout")
+      |> response(204)
+    end)
+
+  assert log =~ "visitor logout but network not found"
+
+  # W11 still applies — anon visitor row purged regardless of network state.
+  assert is_nil(Repo.get(Visitor, visitor.id))
 end
 ```
+
+Test imports / aliases (already in scope per existing file head;
+verify `Visitor` alias is exposed — currently
+`alias Grappa.Visitors.Visitor` at file top covers it):
+
+- `Grappa.Visitors` — alias already in scope.
+- `Grappa.Visitors.Visitor` — alias already in scope.
+- `Grappa.Repo` — alias already in scope.
+- `Grappa.Session` — referenced as `Grappa.Session` (no alias yet);
+  the existing `stop_visitor_session/2` helper does this. Either
+  add `alias Grappa.Session` to file head OR keep fully qualified
+  per existing pattern. **Keep fully qualified** — matches
+  `stop_visitor_session/2`'s shape; avoids a new alias for two refs.
+- `ExUnit.CaptureLog` — verify import; if not already imported via
+  `ConnCase`, add `import ExUnit.CaptureLog` to file head.
 
 - [ ] **Step 25.5.2: Implement logout extension**
 
 ```elixir
 # lib/grappa_web/controllers/auth_controller.ex
-alias Grappa.{Networks, Session, Visitors}
+# At file head, add to existing aliases:
+alias Grappa.{Accounts, Networks, Session, Visitors}
+alias Grappa.Visitors.Visitor
 
+# Replace existing logout/2:
+@doc """
+`DELETE /auth/logout` — revokes the session whose token was just
+validated by `GrappaWeb.Plugs.Authn`. For visitor sessions, also
+tears down the live `Session.Server` and purges the anon visitor
+row per W11 (registered visitors stay; `purge_if_anon/1` is a no-op
+when `password_encrypted` is set). Returns 204 + empty body.
+"""
 @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
 def logout(conn, _) do
-  :ok = maybe_kill_visitor_session(conn.assigns)
+  :ok = maybe_terminate_visitor(conn.assigns)
   :ok = Accounts.revoke_session(conn.assigns.current_session_id)
   send_resp(conn, :no_content, "")
 end
 
-@spec maybe_kill_visitor_session(map()) :: :ok
-defp maybe_kill_visitor_session(%{current_visitor: %Visitors.Visitor{} = visitor}) do
-  case Networks.get_by_slug(visitor.network_slug) do
-    %Networks.Network{id: network_id} ->
-      _ = Session.stop_session({:visitor, visitor.id}, network_id)
-      :ok
+@spec maybe_terminate_visitor(map()) :: :ok
+defp maybe_terminate_visitor(%{current_visitor: %Visitor{} = visitor}) do
+  :ok = stop_visitor_session(visitor)
+  :ok = Visitors.purge_if_anon(visitor.id)
+end
 
-    nil ->
+defp maybe_terminate_visitor(_assigns), do: :ok
+
+@spec stop_visitor_session(Visitor.t()) :: :ok
+defp stop_visitor_session(%Visitor{} = visitor) do
+  case Networks.get_network_by_slug(visitor.network_slug) do
+    {:ok, %Networks.Network{id: network_id}} ->
+      :ok = Session.stop_session({:visitor, visitor.id}, network_id)
+
+    {:error, :not_found} ->
       Logger.warning("visitor logout but network not found",
-        visitor: visitor.id,
-        slug: visitor.network_slug
+        visitor_id: visitor.id,
+        network: visitor.network_slug
       )
 
       :ok
   end
 end
-
-defp maybe_kill_visitor_session(_assigns), do: :ok
 ```
 
-`Session.stop_session/2` already exists (used by `Visitors.Login` for timeout teardown in Task 9). Verify return contract — should be `:ok | {:error, :not_found}`. The `_ =` discard is intentional: a stopped-or-already-gone session is fine; the visitor row stays regardless.
+Notes on the implementation:
 
-- [ ] **Step 25.5.3: Run tests**
+- `Session.stop_session/2` returns `:ok` per `lib/grappa/session.ex:171-172`.
+  No `_ =` discard needed — the bind matches per CLAUDE.md "no
+  underscore for known returns." If the session is already gone,
+  `stop_session/2`'s implementation is idempotent (uses
+  `:ok = DynamicSupervisor.terminate_child` with `:ok | {:error, :not_found}`
+  swallowed inside).
+- `Networks.get_network_by_slug/1` returns `{:ok, %Network{}} | {:error, :not_found}`,
+  NOT `nil` per `lib/grappa/networks.ex` (S14 confirmed surface). The
+  `case` shape mirrors `Login.visitor_network/0`'s pattern at
+  `lib/grappa/visitors/login.ex:117-122`.
+- Logger metadata uses `:visitor_id` + `:network` — both in the
+  allowlist (`config/config.exs:67-70` for `:visitors`, `:visitor_id`
+  at line 89, `:network` at line 52).
+- `Visitors.purge_if_anon/1` returns `:ok` unconditionally — see
+  `lib/grappa/visitors.ex:264-277`. For anon: deletes + returns `:ok`.
+  For registered: short-circuits + returns `:ok`. Calling site does
+  not need to branch on visitor kind.
+- Order matters: stop the Session.Server BEFORE purging the visitor
+  row. The Session.Server holds `subject = {:visitor, visitor.id}`;
+  if the row is purged first, any in-flight scrollback persist could
+  trip the `messages.visitor_id` FK constraint. Stopping first
+  drains the mailbox (`GenServer.stop` is synchronous via terminate
+  callback) so no further persists happen.
+
+- [ ] **Step 25.5.3: Run targeted tests**
 
 ```bash
 scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs
 ```
 
-Expected: 3 passes for the new describe.
+Expected: 4 new tests pass (anon-purge, registered-stay, mode-1
+unchanged, missing-network warning) + all existing logout / login
+describes still green.
 
-- [ ] **Step 25.5.4: Run all gates**
+- [ ] **Step 25.5.4: Full gates**
 
 ```bash
 scripts/check.sh
+scripts/dialyzer.sh   # standalone re-run for PLT-staleness check
 ```
 
-- [ ] **Step 25.5.5: Commit**
+Expected: zero warnings, zero credo issues, zero dialyzer warnings.
+Server.test cascade flake remains category-tolerable (single
+isolation-passing failure attributable to known flake).
+
+- [ ] **Step 25.5.5: Commit on cluster worktree**
 
 ```bash
+cd /home/vjt/code/IRC/grappa-task-visitor-auth
 git add lib/grappa_web/controllers/auth_controller.ex \
         test/grappa_web/controllers/auth_controller_test.exs
 git commit -m "$(cat <<'EOF'
-feat(auth): visitor logout terminates Session.Server
+feat(auth): visitor logout terminates Session.Server + W11 anon-purge
 
-DELETE /auth/logout for a visitor session now also calls
-Session.stop_session({:visitor, id}, network_id) so the upstream IRC
-connection drops cleanly. The visitor row STAYS — scrollback
-preservation per pinned design (re-login with same nick within sliding
-TTL reattaches to existing scrollback).
+DELETE /auth/logout for a visitor session now:
+  1. Stops the upstream Session.Server (Session.stop_session/2 keyed
+     on {:visitor, id} + network_id resolved via Networks.get_network_by_slug/1).
+  2. Purges the visitor row IF anon (Visitors.purge_if_anon/1 is a
+     no-op when password_encrypted is set — registered visitors stay).
+  3. Revokes the accounts_sessions row (existing logout behavior).
 
-Mode-1 logout unchanged — still revokes only the accounts.session row.
-Degenerate case (network row deleted between login and logout) logs a
-warning + still returns 204; the visitor row is left for the Reaper /
-operator's `mix grappa.reap_visitors` recovery path.
+Per pinned W11 ("anon visitor lifecycle co-terminus with
+accounts_sessions row"): re-login with the same nick after logout
+provisions a fresh anon row + fresh scrollback. Registered visitors'
+data persists past logout, gated on next-login password match.
+
+Mode-1 logout unchanged: still revokes only the accounts.session row,
+no Session.Server interaction.
+
+Degenerate case (network row deleted between login and logout): log
+"visitor logout but network not found" with visitor_id + network
+metadata, fall through to revoke + 204. The orphan visitor row still
+gets purged-if-anon — operator can clean up registered-row orphans
+via mix grappa.reap_visitors.
 EOF
 )"
 ```
