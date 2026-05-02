@@ -85,7 +85,14 @@ defmodule Grappa.Visitors.SessionPlan do
       autojoin_channels: autojoin,
       host: server.host,
       port: server.port,
-      tls: server.tls
+      tls: server.tls,
+      # Task 15: opaque function-reference indirection. Session.Server
+      # cannot statically alias Grappa.Visitors (closes a Boundary
+      # cycle — Visitors deps Session via Login). Every visitor plan
+      # carries the commit-callback so the +r-MODE-observed effect
+      # path can reach commit_password/2 without a module reference
+      # in the Session boundary.
+      visitor_committer: &Grappa.Visitors.commit_password/2
     }
   end
 

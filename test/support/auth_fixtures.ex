@@ -21,6 +21,7 @@ defmodule Grappa.AuthFixtures do
 
   alias Grappa.{Accounts, Accounts.Session, Accounts.User, Networks, Repo}
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
+  alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
 
   @doc """
@@ -148,6 +149,37 @@ defmodule Grappa.AuthFixtures do
     {:ok, plan} = SessionPlan.resolve(credential)
     {:ok, pid} = Grappa.Session.start_session({:user, user.id}, network.id, plan)
     pid
+  end
+
+  @doc """
+  Visitor-side counterpart to `start_session_for/2`. Resolves the
+  visitor's plan via `Grappa.Visitors.SessionPlan.resolve/1` and
+  spawns the `Session.Server` under the singleton supervisor.
+  Visitor's `network_slug` MUST match `network.slug`; the
+  `visitor_with_network/2` helper does both in one call.
+  """
+  @spec start_visitor_session_for(Visitor.t(), Network.t()) :: pid()
+  def start_visitor_session_for(%Visitor{} = visitor, %Network{} = network) do
+    {:ok, plan} = VisitorSessionPlan.resolve(visitor)
+    {:ok, pid} = Grappa.Session.start_session({:visitor, visitor.id}, network.id, plan)
+    pid
+  end
+
+  @doc """
+  Visitor-side counterpart to `setup_user_and_network/2` (in
+  `server_test.exs`). Builds a network row + IRC-fake server endpoint
+  on `port` and inserts a visitor whose `network_slug` matches the
+  generated network slug. Returns `{visitor, network}`.
+  """
+  @spec visitor_with_network(:inet.port_number(), keyword()) :: {Visitor.t(), Network.t()}
+  def visitor_with_network(port, attrs \\ []) do
+    slug = "azzurra-#{System.unique_integer([:positive])}"
+    {network, _} = network_with_server(port: port, slug: slug)
+
+    visitor =
+      visitor_fixture(Keyword.merge([nick: "v#{System.unique_integer([:positive])}", network_slug: slug], attrs))
+
+    {visitor, network}
   end
 
   @doc """

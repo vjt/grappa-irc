@@ -392,19 +392,112 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{modes: "+b", args: ["*!*@spammer.net"]}
     end
 
-    test "MODE on user (not channel) — params shape still matches; persist row written" do
-      # IRC user-MODE: `:vjt MODE vjt +i` — first param is the nick, not
-      # a channel name. Identifier.valid_channel? would reject; the
-      # changeset rejects the row at the boundary. Skip user-MODE for
-      # now: the handler matches `params: [channel | _]` regardless,
-      # but persist will fail validation. Test that we still pass through
-      # without crashing — caller logs the changeset error.
+    test "MODE on user's own nick (not channel) does NOT persist a row" do
+      # IRC user-MODE: `:vjt MODE vjt +i` — first param is the nick,
+      # not a channel name. Pre-Task-15 the channel-MODE clause matched
+      # this and persisted a bogus :mode row in a non-existent channel
+      # named "vjt"; Task 15's user-MODE-on-self clause (matching
+      # `target == state.nick`) short-circuits BEFORE the channel-MODE
+      # clause and emits no effect for plain user-modes. The +r case
+      # is covered in the dedicated describe block below.
       state = base_state(%{nick: "vjt"})
       m = msg(:mode, ["vjt", "+i"], {:nick, "vjt", "u", "h"})
 
-      # We still emit :persist; the persistence layer validates and
-      # rejects (changeset error logged by Server.apply_effects).
-      assert {:cont, _, [{:persist, :mode, _}]} = EventRouter.route(m, state)
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+  end
+
+  describe "route/2 — :mode user-MODE-on-own-nick +r observation (Task 15)" do
+    # NickServ-as-IDP: when a visitor's IDENTIFY is accepted, upstream
+    # responds by setting +r on the nick. The Server's pending_auth
+    # state holds the in-flight password (S9 Task 14); when EventRouter
+    # observes +r MODE on the session's own nick it emits
+    # :visitor_r_observed carrying the password so the Server can
+    # commit it atomically into the visitors row.
+
+    test "+r set with pending_auth emits :visitor_r_observed" do
+      deadline = System.monotonic_time(:millisecond) + 10_000
+
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: {"s3cret", deadline}
+        })
+
+      m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:visitor_r_observed, "s3cret"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "+r set without pending_auth → no effect" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: nil
+        })
+
+      m = msg(:mode, ["vjt", "+r"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "+i (no +r) with pending_auth → no effect" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: {"s3cret", 0}
+        })
+
+      m = msg(:mode, ["vjt", "+i"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "+ir mixed mode block detects r set" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: {"s3cret", 0}
+        })
+
+      m = msg(:mode, ["vjt", "+ir"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:visitor_r_observed, "s3cret"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "+i-r (set i, unset r) does NOT emit" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          subject: {:visitor, "00000000-0000-0000-0000-000000000099"},
+          pending_auth: {"s3cret", 0}
+        })
+
+      m = msg(:mode, ["vjt", "+i-r"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "+r MODE on a different nick (channel-MODE path) does NOT emit observed effect" do
+      # Channel-MODE on a real channel should still hit the existing
+      # channel-MODE clause and produce :persist :mode. The
+      # user-MODE-on-self short-circuit must not catch it.
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#italia" => %{"vjt" => [], "alice" => []}}
+        })
+
+      m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, _}]} =
+               EventRouter.route(m, state)
     end
   end
 

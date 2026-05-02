@@ -81,6 +81,10 @@ config :logger, :console,
     :session_id,
     :affected,
     :authn_failure,
+    # Visitor identity (Phase 4 — Task 15): visitor_id rides the
+    # +r-observed → commit_password log lines so operator can grep
+    # the visitor lifecycle across login + first-IDENTIFY.
+    :visitor_id,
     # IRC client (Phase 2 sub-task 2f): SASL handshake numerics
     # (904 / 905 failures, etc.) ride this key so operator log search
     # can grep "sasl" + numeric in a single pass. `:sasl_user` is the

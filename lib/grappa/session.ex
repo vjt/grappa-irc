@@ -111,7 +111,8 @@ defmodule Grappa.Session do
           required(:port) => :inet.port_number(),
           required(:tls) => boolean(),
           optional(:notify_pid) => pid(),
-          optional(:notify_ref) => reference()
+          optional(:notify_ref) => reference(),
+          optional(:visitor_committer) => Server.visitor_committer()
         }
 
   @doc """

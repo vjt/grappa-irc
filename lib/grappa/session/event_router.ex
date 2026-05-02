@@ -122,6 +122,7 @@ defmodule Grappa.Session.EventRouter do
   @type effect ::
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
+          | {:visitor_r_observed, String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -225,6 +226,30 @@ defmodule Grappa.Session.EventRouter do
 
         {:cont, new_state, effects}
     end
+  end
+
+  # User-MODE-on-self short-circuit (Task 15). Distinct from the
+  # channel-MODE clause that follows: user-modes on the session's own
+  # nick are not channel events — no scrollback row, no member-map
+  # mutation. The +r case is special: when NickServ-as-IDP confirms a
+  # visitor's IDENTIFY it sets +r on the nick. If `pending_auth` is
+  # staged (from the outbound IDENTIFY captured by NSInterceptor),
+  # +r is the cryptographic-proof signal that the password was
+  # accepted; emit `:visitor_r_observed` carrying the captured
+  # password so `Session.Server.apply_effects/2` can commit it
+  # atomically into the visitors row.
+  def route(%Message{command: :mode, params: [target, modes | _]}, state)
+      when is_binary(target) and is_binary(modes) and target == state.nick do
+    # `pending_auth` is set on `Session.Server` state but is optional
+    # from the pure router's POV (the typespec admits `optional(any())
+    # => any()`); pure unit tests on user sessions skip it.
+    effects =
+      case {set_r_mode?(modes), Map.get(state, :pending_auth)} do
+        {true, {pwd, _}} -> [{:visitor_r_observed, pwd}]
+        _ -> []
+      end
+
+    {:cont, state, effects}
   end
 
   def route(%Message{command: :mode, params: [channel, modes | args]} = msg, state)
@@ -439,6 +464,24 @@ defmodule Grappa.Session.EventRouter do
 
   defp pop_arg([h | t]), do: {h, t}
   defp pop_arg([]), do: {nil, []}
+
+  # Sign-walking +r detector for user-MODE strings. IRC mode blocks
+  # have sticky-sign semantics: `"+ir"` means "set i AND set r" in
+  # one block, `"+i-r"` means "set i, unset r". `String.contains?` is
+  # semantically wrong on both shapes (the second would even false-
+  # positive on naive `"+r"` substring search). Mirrors the
+  # `walk_modes/4` recursive-pattern-match shape (CLAUDE.md
+  # "Recursive pattern match over `Enum.reduce_while/3`").
+  @spec set_r_mode?(String.t()) :: boolean()
+  defp set_r_mode?(modes), do: walk_for_set_r(modes, :add)
+
+  defp walk_for_set_r("", _), do: false
+  defp walk_for_set_r("+" <> rest, _), do: walk_for_set_r(rest, :add)
+  defp walk_for_set_r("-" <> rest, _), do: walk_for_set_r(rest, :remove)
+  defp walk_for_set_r("r" <> _, :add), do: true
+
+  defp walk_for_set_r(<<_::utf8, rest::binary>>, dir),
+    do: walk_for_set_r(rest, dir)
 
   defp update_member_mode(ch_members, nil, _, _), do: ch_members
 

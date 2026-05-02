@@ -1289,4 +1289,128 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "+r MODE on own nick → atomic visitor password commit (Task 15)" do
+    alias Grappa.IRC.Message
+    alias Grappa.Repo
+
+    test "visitor session: send IDENTIFY → simulate +r → password_encrypted + expires_at bumped" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:visitor, visitor.id},
+                 network.id,
+                 "NickServ",
+                 "IDENTIFY s3cret"
+               )
+
+      assert match?({"s3cret", _}, :sys.get_state(pid).pending_auth)
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+
+      reloaded = Repo.reload!(visitor)
+      assert reloaded.password_encrypted != nil
+
+      # Cloak EncryptedBinary roundtrip — accessing the virtual field
+      # decrypts. Anon TTL was 48h; registered TTL is 7d, so expires_at
+      # should jump forward.
+      assert DateTime.compare(reloaded.expires_at, visitor.expires_at) == :gt
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor session: :pending_auth_timeout → no commit, password_encrypted stays nil" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY wrong")
+      send(pid, :pending_auth_timeout)
+      Process.sleep(50)
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+
+      reloaded = Repo.reload!(visitor)
+      assert is_nil(reloaded.password_encrypted)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor session: +r without staged pending_auth → no commit" do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = await_handshake(server)
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [visitor.nick, "+r"],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, mode_msg})
+      _ = :sys.get_state(pid)
+
+      reloaded = Repo.reload!(visitor)
+      assert is_nil(reloaded.password_encrypted)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session with staged pending_auth: +r logs warning + clears state, no commit" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+      assert match?({"s3cret", _}, :sys.get_state(pid).pending_auth)
+
+      mode_msg = %Message{
+        command: :mode,
+        params: [
+          # User-side state.nick is whatever credential.nick resolved to
+          # — read it from live state so the test stays nick-agnostic.
+          :sys.get_state(pid).nick,
+          "+r"
+        ],
+        prefix: {:server, "irc.example.test"},
+        tags: %{}
+      }
+
+      log =
+        capture_log(fn ->
+          send(pid, {:irc, mode_msg})
+          state = :sys.get_state(pid)
+          assert is_nil(state.pending_auth)
+          assert is_nil(state.pending_auth_timer)
+        end)
+
+      assert log =~ "visitor_r_observed effect on user session"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end
