@@ -729,15 +729,37 @@ scripts/mix.sh ecto.migrate
 
 - [ ] **Step 4.3: Update Message schema**
 
-```elixir
-# lib/grappa/scrollback/message.ex — add to schema block
-schema "messages" do
-  belongs_to :user, Grappa.Accounts.User, type: :binary_id
-  belongs_to :visitor, Grappa.Visitors.Visitor, type: :binary_id
-  # ... rest unchanged
-end
+The current `Grappa.Scrollback.Message` schema (post-Task-3) uses the
+two-arity `changeset(message, attrs)` shape called from 7+ sites
+(`Scrollback.persist_event/1`, `ScrollbackHelpers.insert/1`, plus
+direct test calls). PRESERVE the two-arity signature — do NOT change to
+`changeset(attrs)`.
 
-# Add validation in changeset
+Schema block changes — add `belongs_to :visitor` next to `belongs_to :user`:
+
+```elixir
+schema "messages" do
+  belongs_to :user, User, type: :binary_id
+  belongs_to :visitor, Grappa.Visitors.Visitor, type: :binary_id
+  belongs_to :network, Network
+  # ... rest unchanged (channel, server_time, kind, sender, body, meta, timestamps)
+end
+```
+
+`@type t` grows two entries (place near the existing `:user` /
+`:user_id` lines for visual symmetry):
+
+```elixir
+visitor_id: Ecto.UUID.t() | nil,
+visitor: Grappa.Visitors.Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
+```
+
+Add `alias Grappa.Visitors.Visitor` near the existing `alias Grappa.Accounts.User`.
+
+XOR-validation helper, placed alongside the existing `validate_body_for_kind/1`:
+
+```elixir
+@spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
 defp validate_subject_xor(changeset) do
   user_id = get_field(changeset, :user_id)
   visitor_id = get_field(changeset, :visitor_id)
@@ -751,48 +773,84 @@ defp validate_subject_xor(changeset) do
 end
 ```
 
-Wire into existing `changeset/2`:
+Wire into the existing two-arity `changeset/2` — extend the cast list,
+DROP `:user_id` from `validate_required` (now must be one xor the other,
+enforced by `validate_subject_xor`), add the XOR check, add
+`assoc_constraint(:visitor)` next to the existing `:user` constraint:
 
 ```elixir
-def changeset(attrs) do
-  %__MODULE__{}
-  |> cast(attrs, [:user_id, :visitor_id, :network_id, :channel, :body, :kind,
-                  :sender, :server_time, :meta])
-  |> validate_required([:network_id, :channel, :body, :kind, :sender, :server_time])
+@spec changeset(t() | %__MODULE__{}, map()) :: Ecto.Changeset.t()
+def changeset(message, attrs) do
+  message
+  |> cast(attrs, [
+    :user_id,
+    :visitor_id,
+    :network_id,
+    :channel,
+    :server_time,
+    :kind,
+    :sender,
+    :body,
+    :meta
+  ])
+  |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
+  |> validate_identifier(:channel, &Identifier.valid_channel?/1)
+  |> validate_identifier(:sender, &Identifier.valid_sender?/1)
+  |> validate_body_for_kind()
   |> validate_subject_xor()
+  |> assoc_constraint(:user)
+  |> assoc_constraint(:visitor)
+  |> assoc_constraint(:network)
 end
 ```
 
 - [ ] **Step 4.4: Update Scrollback.persist_event/1**
 
+The internal call shape (`Message.changeset(%Message{}, attrs)`)
+stays — only the `@spec` widens. Move `:user_id` from `required` to
+`optional`, add `:visitor_id` as `optional`. The XOR is enforced in
+the changeset; the spec just allows either input shape.
+
 ```elixir
-# lib/grappa/scrollback.ex — extend persist_event/1 to accept :visitor_id
 @spec persist_event(%{
-        required(:network_id) => integer(),
-        required(:channel) => String.t(),
-        required(:kind) => Message.kind(),
-        required(:sender) => String.t(),
-        required(:body) => String.t(),
-        required(:server_time) => DateTime.t(),
         optional(:user_id) => Ecto.UUID.t(),
         optional(:visitor_id) => Ecto.UUID.t(),
-        optional(:meta) => map()
+        required(:network_id) => integer(),
+        required(:channel) => String.t(),
+        required(:server_time) => integer(),
+        required(:kind) => Message.kind(),
+        required(:sender) => String.t(),
+        required(:body) => String.t() | nil,
+        required(:meta) => Meta.t()
       }) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
 def persist_event(%{kind: kind} = attrs) when is_atom(kind) do
-  attrs
-  |> Message.changeset()
-  |> Repo.insert()
+  changeset = Message.changeset(%Message{}, attrs)
+
+  case Repo.insert(changeset) do
+    {:ok, message} -> {:ok, Repo.preload(message, :network)}
+    {:error, _} = err -> err
+  end
 end
 ```
 
+`server_time` stays `integer()` (epoch ms — see Message moduledoc),
+NOT `DateTime.t()`. `meta` is `Meta.t()` (the typed map alias), NOT
+plain `map()`.
+
 - [ ] **Step 4.5: Test extension**
+
+The codebase uses fixture-style helpers in `test/support/auth_fixtures.ex`,
+NOT ExMachina factories. Tests use `visitor_fixture/1` + `network_fixture/1`
+(both added in Step 4.5a) plus direct attribute maps. `server_time`
+is an integer (epoch ms via `System.os_time(:millisecond)`); `meta`
+defaults to `%{}`.
 
 ```elixir
 # test/grappa/scrollback_test.exs — add visitor branch
 describe "persist_event/1 with visitor_id" do
   test "persists with visitor_id, no user_id" do
-    visitor = insert(:visitor)  # ExMachina factory — Task 4.5a below
-    network = insert(:network)
+    visitor = visitor_fixture()
+    network = network_fixture()
 
     attrs = %{
       visitor_id: visitor.id,
@@ -801,7 +859,8 @@ describe "persist_event/1 with visitor_id" do
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: DateTime.utc_now()
+      server_time: System.os_time(:millisecond),
+      meta: %{}
     }
 
     assert {:ok, msg} = Scrollback.persist_event(attrs)
@@ -810,9 +869,9 @@ describe "persist_event/1 with visitor_id" do
   end
 
   test "rejects when both user_id and visitor_id set" do
-    user = insert(:user)
-    visitor = insert(:visitor)
-    network = insert(:network)
+    user = user_fixture()
+    visitor = visitor_fixture()
+    network = network_fixture()
 
     attrs = %{
       user_id: user.id,
@@ -822,7 +881,8 @@ describe "persist_event/1 with visitor_id" do
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: DateTime.utc_now()
+      server_time: System.os_time(:millisecond),
+      meta: %{}
     }
 
     assert {:error, changeset} = Scrollback.persist_event(attrs)
@@ -830,57 +890,104 @@ describe "persist_event/1 with visitor_id" do
   end
 
   test "rejects when neither user_id nor visitor_id set" do
-    network = insert(:network)
+    network = network_fixture()
     attrs = %{
       network_id: network.id,
       channel: "#italia",
       kind: :privmsg,
       sender: "vjt",
       body: "ciao",
-      server_time: DateTime.utc_now()
+      server_time: System.os_time(:millisecond),
+      meta: %{}
     }
 
     assert {:error, changeset} = Scrollback.persist_event(attrs)
-    assert "must set" in (errors_on(changeset).user_id |> Enum.join(" "))
+    assert "must set user_id or visitor_id" in errors_on(changeset).user_id
   end
 end
 ```
 
-- [ ] **Step 4.5a: Add Visitor factory**
+The test module already imports `Grappa.AuthFixtures` (or should — add
+the import if missing). `errors_on/1` comes from `Grappa.DataCase`.
+
+- [ ] **Step 4.5a: Add visitor + network fixtures**
+
+Extend `test/support/auth_fixtures.ex` (NOT a new `factories.ex` —
+codebase has no ExMachina dep, sibling pattern is keyword-arg fixture
+fns). Boundary `deps` grows `Grappa.Visitors`; alias chain grows
+`Grappa.Visitors.Visitor`.
 
 ```elixir
-# test/support/factories.ex — add factory
-def visitor_factory do
-  %Grappa.Visitors.Visitor{
-    nick: sequence(:visitor_nick, &"visitor#{&1}"),
-    network_slug: "azzurra",
-    expires_at: DateTime.utc_now() |> DateTime.add(48, :hour),
-    password_encrypted: nil
-  }
+# test/support/auth_fixtures.ex — additions
+
+# In the alias block:
+alias Grappa.Visitors.Visitor
+
+# Boundary deps line — add Grappa.Visitors:
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Session, Grappa.Visitors]
+
+@doc """
+Inserts a `%Visitor{}` directly via `Visitor.create_changeset/1` —
+exercises the canonical-validator path so a malformed nick/slug
+default would surface here rather than in the test that uses it.
+"""
+@spec visitor_fixture(keyword()) :: Visitor.t()
+def visitor_fixture(attrs \\ []) do
+  nick = Keyword.get(attrs, :nick, "v#{System.unique_integer([:positive])}")
+  network_slug = Keyword.get(attrs, :network_slug, "azzurra")
+  expires_at = Keyword.get(attrs, :expires_at, DateTime.utc_now() |> DateTime.add(48, :hour))
+  ip = Keyword.get(attrs, :ip)
+
+  {:ok, visitor} =
+    %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
+    |> Visitor.create_changeset()
+    |> Repo.insert()
+
+  visitor
+end
+
+@doc """
+Inserts a `%Network{}` row (no servers attached). For tests that
+need a `network_id` FK target without spinning up an `IRCServer`
+fake (`network_with_server/1` is the with-server variant).
+"""
+@spec network_fixture(keyword()) :: Network.t()
+def network_fixture(attrs \\ []) do
+  slug = Keyword.get(attrs, :slug, "net-#{System.unique_integer([:positive])}")
+  {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+  network
 end
 ```
 
 - [ ] **Step 4.6: Run all tests**
 
 ```bash
-scripts/test.sh
+scripts/check.sh
 ```
 
-Expected: green. Existing scrollback tests unaffected (user_id branch unchanged).
+Expected: green. Existing scrollback tests unaffected (user_id branch
+unchanged); new XOR tests pass; doctor + dialyzer + sobelow + format
+all pass.
 
 - [ ] **Step 4.7: Commit**
 
 ```bash
 git add priv/repo/migrations/*_add_visitor_id_to_messages.exs \
         lib/grappa/scrollback/message.ex lib/grappa/scrollback.ex \
-        test/grappa/scrollback_test.exs test/support/factories.ex
+        test/grappa/scrollback_test.exs test/support/auth_fixtures.ex
 git commit -m "$(cat <<'EOF'
 feat(scrollback): add visitor_id XOR user_id on messages
 
 Additive nullable visitor_id FK + sqlite CHECK constraint
 ((user_id IS NULL) <> (visitor_id IS NULL)) per W2. Scrollback.persist_event/1
 accepts either FK; Message.changeset enforces XOR at the application
-boundary as well. Scrollback wire shape unchanged for user_id path.
+boundary as well. assoc_constraint(:visitor) catches FK violations at
+insert time. Scrollback wire shape unchanged for user_id path.
+
+Visitor + network fixtures land in auth_fixtures.ex (sibling pattern),
+not a new factories.ex — codebase has no ExMachina dep.
 EOF
 )"
 ```
