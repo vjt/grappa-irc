@@ -12,11 +12,13 @@ defmodule GrappaWeb do
     top_level?: true,
     deps: [
       Grappa.Accounts,
+      Grappa.Auth.IdentifierClassifier,
       Grappa.IRC,
       Grappa.Networks,
       Grappa.PubSub,
       Grappa.Scrollback,
-      Grappa.Session
+      Grappa.Session,
+      Grappa.Visitors
     ],
     exports: [Endpoint]
 

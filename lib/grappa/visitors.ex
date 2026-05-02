@@ -207,6 +207,18 @@ defmodule Grappa.Visitors do
   def get!(visitor_id) when is_binary(visitor_id), do: Repo.get!(Visitor, visitor_id)
 
   @doc """
+  Lookup a visitor by `(nick, network_slug)`. Returns the row or `nil`.
+  Used by `GrappaWeb.AuthController` to compute the `Retry-After` hint
+  on `:anon_collision` responses without exposing `Repo` to the web
+  boundary.
+  """
+  @spec get_by_nick_and_network(String.t(), String.t()) :: Visitor.t() | nil
+  def get_by_nick_and_network(nick, network_slug)
+      when is_binary(nick) and is_binary(network_slug) do
+    Repo.get_by(Visitor, nick: nick, network_slug: network_slug)
+  end
+
+  @doc """
   Anon-only co-terminus delete (W11). If the visitor exists and
   `password_encrypted` is nil, delete the row — CASCADE wipes the
   associated accounts_sessions, visitor_channels, and messages in a
