@@ -166,7 +166,12 @@ defmodule GrappaWeb.Plugs.AuthnTest do
       assert DateTime.compare(bumped.expires_at, older) == :gt
     end
 
-    test "expired visitor → 401 + halt (no resurrection)",
+    # C1: visitor TTL expiry is a W11 purge boundary. The anon visitor
+    # row + its session row MUST be cleaned synchronously on rejection
+    # so a concurrent re-login by the same nick doesn't trip the
+    # `(nick, network_slug)` uniqueness constraint against a tombstone
+    # while waiting for the Reaper's 60s tick.
+    test "expired ANON visitor → 401 + halt + visitor row purged + session revoked",
          %{conn: conn, session: session} do
       past = DateTime.add(DateTime.utc_now(), -1, :hour)
       query = from(v in Visitor, where: v.id == ^session.visitor_id)
@@ -181,8 +186,35 @@ defmodule GrappaWeb.Plugs.AuthnTest do
       assert result.status == 401
       assert result.resp_body =~ "unauthorized"
 
+      assert Repo.get(Visitor, session.visitor_id) == nil
+      reloaded_session = Repo.get(Session, session.id)
+      assert reloaded_session == nil or reloaded_session.revoked_at != nil
+    end
+
+    test "expired REGISTERED visitor → 401 + halt + visitor row STAYS + session revoked",
+         %{conn: conn, session: session} do
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+      query = from(v in Visitor, where: v.id == ^session.visitor_id)
+
+      {1, _} =
+        Repo.update_all(query,
+          set: [expires_at: past, password_encrypted: "ns-pass"]
+        )
+
+      result =
+        conn
+        |> put_req_header("authorization", "Bearer #{session.id}")
+        |> Authn.call(Authn.init([]))
+
+      assert result.halted
+      assert result.status == 401
+      assert result.resp_body =~ "unauthorized"
+
       reloaded = Repo.get!(Visitor, session.visitor_id)
-      assert DateTime.compare(reloaded.expires_at, past) == :eq
+      assert reloaded.password_encrypted == "ns-pass"
+
+      reloaded_session = Repo.get!(Session, session.id)
+      assert reloaded_session.revoked_at != nil
     end
   end
 
