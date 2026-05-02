@@ -115,6 +115,7 @@ defmodule Grappa.Bootstrap do
         spawn_all(credentials)
     end
 
+    validate_visitor_networks!()
     spawn_visitors()
     :ok
   end
@@ -166,6 +167,40 @@ defmodule Grappa.Bootstrap do
         )
 
         %{acc | failed: acc.failed + 1}
+    end
+  end
+
+  # W7 invariant: every active visitor's `network_slug` must resolve
+  # to a `Networks.Network` row at boot. Visitor sessions trust the
+  # slug → network resolution to succeed at runtime
+  # (`Visitors.Login` + `Visitors.SessionPlan` both depend on it), so
+  # if the operator drops a network from the DB while visitor rows
+  # still point at it, those visitors are orphaned. The choice between
+  # silent reap (lose user data on a config typo) and explicit
+  # operator intervention (require a deliberate cleanup or restore)
+  # is intentionally biased toward the latter — better to refuse to
+  # boot loudly than to drop scrollback on a misconfiguration.
+  @spec validate_visitor_networks!() :: :ok
+  defp validate_visitor_networks! do
+    orphans =
+      Visitors.list_active()
+      |> Enum.map(& &1.network_slug)
+      |> Enum.uniq()
+      |> Enum.reject(fn slug ->
+        match?({:ok, _}, Networks.get_network_by_slug(slug))
+      end)
+
+    case orphans do
+      [] ->
+        :ok
+
+      slugs ->
+        msg =
+          "visitor rows pinned to network(s) not in current config: " <>
+            "#{inspect(slugs)}. Either restore the network in DB or run: " <>
+            Enum.map_join(slugs, " ; ", &"mix grappa.reap_visitors --network=#{&1}")
+
+        raise RuntimeError, msg
     end
   end
 
