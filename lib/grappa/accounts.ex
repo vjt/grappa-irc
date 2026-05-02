@@ -266,7 +266,8 @@ defmodule Grappa.Accounts do
     {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
 
     Logger.info(
-      "visitor sessions revoked (visitor_id=#{visitor_id})",
+      "visitor sessions revoked",
+      visitor_id: visitor_id,
       affected: affected
     )
 

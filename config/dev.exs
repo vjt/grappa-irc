@@ -25,6 +25,5 @@ config :grappa, Grappa.Vault,
        tag: "AES.GCM.V1", key: Base.decode64!("zHwj0qQ8nqXvDIcSIGlqjOIMtQ8aPnSNqSc8MVhQbkY="), iv_length: 12}
   ]
 
-config :logger, :console, format: "[$level] $message\n"
 config :phoenix, :stacktrace_depth, 20
 config :phoenix, :plug_init_mode, :runtime

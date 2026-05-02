@@ -425,7 +425,7 @@ defmodule Grappa.Session.Server do
   # confirmation arrived (Task 15 lands the +r observer + atomic commit).
   # Wrong passwords never reach the visitor DB by virtue of this clear.
   def handle_info(:pending_auth_timeout, state) do
-    Logger.debug("pending_auth discarded — no +r MODE within #{@pending_auth_timeout_ms}ms")
+    Logger.debug("pending_auth discarded — +r MODE timeout")
     {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
   end
 
