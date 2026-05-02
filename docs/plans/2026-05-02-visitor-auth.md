@@ -7121,7 +7121,37 @@ section + the matching CP11 S16 entry change.
 
 ## Phase 7 — UI
 
-### Task 24: cicchetto Login.tsx — single identifier + optional password
+### Task 24: cicchetto Login.tsx — single identifier + optional password — LANDED S16
+
+**Status:** LANDED on main `2fa7232` during S16 smoke (commit message
+`feat(cicchetto): Tasks 24+25 — single-identifier login + subject persist`).
+
+The pre-S16 plan body below prescribed an entire-file rewrite of
+`auth.ts` that would have lost the `setOn401Handler` + reactive token
+signal patterns. **The minimal-correct patch shape that actually
+landed preserves those load-bearing patterns** and is functionally
+equivalent for the wire shape:
+
+- `api.ts`: `LoginRequest` `{name, password}` → `{identifier,
+  password?}`; `LoginResponse` `{token, user}` → `{token, subject}`
+  with `Subject = {kind: "user"; id; name} | {kind: "visitor"; id;
+  nick; network_slug}` matching `GrappaWeb.AuthJSON` exactly.
+- `lib/auth.ts`: `login(identifier, password|null)`; password omitted
+  from request body when null/empty (visitor anon path); `subject`
+  stored in localStorage under `SUBJECT_KEY` for boot-time branching;
+  cleared on logout alongside the token. New `getSubject/0` exposes
+  `{kind, ...}` for app-level routing.
+- `Login.tsx`: "Name" → "Nick or email"; password input no longer
+  `required` (visitor anon allowed).
+- Tests updated: `auth.test.ts` mocks new `{token, subject}` shape +
+  asserts new `{identifier, password}` request body;
+  `Login.test.tsx` retargets `getByLabelText` to "nick or email".
+  All 175/175 cicchetto tests green; biome + tsc clean.
+
+The pre-S16 plan body's rewrite-from-scratch shape is OBE — kept
+below for historical context only.
+
+#### Pre-S16 plan body (OBE)
 
 **Files:**
 - Modify: `cicchetto/src/Login.tsx`
@@ -7255,7 +7285,28 @@ EOF
 
 ---
 
-### Task 25: cicchetto subject-aware UI elements (visitor expires_at badge optional)
+### Task 25: cicchetto subject-aware UI elements — DEFERRED via Task 30 (S16)
+
+**Status:** S16 smoke surfaced that subject-aware cicchetto UI is
+gated on a backend-side surface gap that pre-S16 plan body did not
+anticipate: `NetworksController`, `ChannelsController`,
+`MessagesController`, and `MeController` all assume `current_user` /
+`current_user_id` and 500 for visitor sessions. cicchetto's "no
+networks" sidebar for logged-in visitors is the visible symptom — but
+the deeper gap is that visitors have NO REST surface beyond `/auth/*`.
+
+The cluster ships with visitor authentication + W11 lifecycle + IRC
+session up + Reaper + Bootstrap respawn (Tasks 1–25.5) FUNCTIONALLY
+COMPLETE. The visitor-end-to-end UX (chat, scrollback, channels)
+needs the deferred backend refactor described in **Task 30** below.
+
+The minimal subject-persist part of pre-S16 Task 25 (boot reads
+`getSubject()` from localStorage) landed alongside Task 24 — see
+that section's S16 LANDED note. The pre-S16 plan body referenced
+`App.tsx` boot-routing which already worked unchanged because
+cicchetto routes to `/login` on null token regardless of subject.
+
+#### Pre-S16 plan body (OBE — superseded by Task 30 follow-up)
 
 **Files:**
 - Modify: `cicchetto/src/App.tsx` (only if visitor-specific UI is in scope)
@@ -7725,6 +7776,107 @@ Append a new SXX entry to `docs/checkpoints/2026-04-27-cp10.md` (or rotate to CP
 git worktree remove ~/code/IRC/grappa-task-visitor-auth
 git branch -d cluster/visitor-auth
 ```
+
+---
+
+## Phase 9 — Follow-up cluster
+
+### Task 30: Visitor REST surface — deferred S16 (NEW)
+
+**Status:** Deferred from this cluster. Tracked here for visibility;
+implement as its own cluster when the visitor PWA UX work scopes up.
+
+#### Why this exists
+
+S16 smoke surfaced that **every REST controller besides
+`AuthController` assumes `conn.assigns.current_user` /
+`current_user_id`** and crashes for visitor sessions. cicchetto's "no
+networks" sidebar for logged-in visitors is the visible symptom; the
+deeper gap is that visitors have NO usable REST surface beyond the
+`/auth/*` login/logout exchange. The cluster ships visitor auth + IRC
+session connectivity + W11 lifecycle whole, but visitor-driven UX
+(chat, scrollback, channel list, member list, topic edit) requires
+the backend changes described below to actually serve traffic.
+
+The cluster's stated goal was Phase 4 visitor-auth INFRA. Tasks
+26-28 ship gate did not anticipate this multi-controller surface
+gap. Per CLAUDE.md "no half-finished implementations": shipping
+this cluster as visitor-auth-only is whole at the auth/lifecycle
+boundary; visitor REST UX is a distinct surface that needs its own
+cluster.
+
+#### Surface to refactor
+
+Each controller listed below currently keys lookups on
+`conn.assigns.current_user_id` and renders `current_user`. They need
+to branch on subject and key on `Session.subject = {:user, id} |
+{:visitor, id}`, mirroring the pattern already established in
+`Plugs.Authn` (which does set `:current_visitor` and
+`:current_visitor_id` for visitor sessions — those assigns just
+aren't consumed downstream).
+
+| Controller | Action | Today | Visitor extension |
+|---|---|---|---|
+| `NetworksController.index` | `GET /networks` | `Credentials.list_credentials_for_user/1` | For visitor: return `[Networks.get_network_by_slug!(visitor.network_slug)]` |
+| `ChannelsController.index` | `GET /networks/:slug/channels` | `(current_user_id, network.id)` keying | For visitor: `(current_visitor_id, network.id)` keyed via `Session.subject = {:visitor, id}` |
+| `ChannelsController.{join,part,topic,nick}` | POST surfaces | user_id-keyed Session lookup | Subject-tuple-keyed Session lookup |
+| `MessagesController.{index,create}` | scrollback | `(current_user_id, network.id)` | Subject-tuple-keyed |
+| `MeController.show` | `GET /me` | renders `%User{}` only | branch on assigns: render `%User{}` OR `%Visitor{}` (new MeJSON visitor variant) |
+
+Plus matching JSON view modules (`MeJSON.show` for visitor variant —
+mirrors the `AuthJSON.login/1` visitor branch shape).
+
+#### Task list (estimated 6-8 commits)
+
+- [ ] **Step 30.1: Subject helper** — `GrappaWeb.Plugs.Authn` already
+  sets `current_subject = {:user, id} | {:visitor, id}`. If not yet
+  exposed (verify), add it. All controllers consume that one assigns
+  key going forward.
+- [ ] **Step 30.2: NetworksController + NetworksJSON** — visitor branch
+  returns single-element list of pinned network. Test:
+  `test/grappa_web/controllers/networks_controller_test.exs` adds
+  visitor-side describe.
+- [ ] **Step 30.3: ChannelsController + ChannelsJSON** — five actions
+  to update. The `assigns.network` resolver plug can stay
+  user/visitor-agnostic; just don't gate access on user_id. Per-action
+  authorization (you can only see your own subject's session) lives
+  in the Session lookup.
+- [ ] **Step 30.4: MessagesController + MessagesJSON** — same shape
+  refactor. Scrollback is already `(network_id, channel)` indexed +
+  visitor_id-FK XOR, so the query just changes the join filter.
+- [ ] **Step 30.5: MeController + MeJSON** — visitor variant returns
+  `{kind, id, nick, network_slug, expires_at}`. Mirrors AuthJSON's
+  visitor branch.
+- [ ] **Step 30.6: Test sweep** — every controller test gains a
+  visitor-side describe. Existing user-side describes stay.
+- [ ] **Step 30.7: cicchetto polish** — once backend serves visitor
+  REST, any cicchetto sidebar/route guards that branch on subject.kind
+  can render. Likely small (existing components already accept the
+  data; just stop hiding the network on empty `/networks` for
+  visitors).
+- [ ] **Step 30.8: Smoke S2-S4 + S9 (browser-driven)** — re-run the
+  Task 26 chat-driven smoke scenarios that S16 deferred. Validates the
+  full visitor product end-to-end at the prod URL.
+
+#### Out of scope (defer further)
+
+- Visitor expires_at countdown badge UI (Task 25's original "decision
+  pin: defer to polish PR if user testing surfaces a need" still
+  applies).
+- Multi-network visitor support (visitors are single-network by
+  design — `network_slug` pin in `Visitors.Visitor` schema).
+- Phase 5 hardening (TLS verify, X-Forwarded-For trust list,
+  reconnect/backoff, HSM Cloak, prod LiveDashboard auth) — separate
+  cluster.
+
+#### Estimated effort
+
+6-8 commits, ~1-2 days focused work. Smaller than visitor-auth
+cluster (no new schema, no new IRC parser work, no new GenServer).
+Largely mechanical assigns + JSON-view sweeps. The heaviest part is
+the test sweep — every controller gets a visitor-side describe.
+
+---
 
 - [ ] **Step 28.9: Update todo.md**
 
