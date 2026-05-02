@@ -70,7 +70,7 @@ defmodule GrappaWeb.ChannelsController do
 
     with {:ok, credential} <- Credentials.get_credential(user, network) do
       session_channels =
-        case Session.list_channels(user.id, network.id) do
+        case Session.list_channels({:user, user.id}, network.id) do
           {:ok, list} -> list
           {:error, :no_session} -> []
         end
@@ -126,7 +126,7 @@ defmodule GrappaWeb.ChannelsController do
     # it as :bad_request rather than :invalid_line so client error
     # UX can branch correctly.
     with :ok <- validate_channel_name(name),
-         :ok <- Session.send_join(user_id, network.id, name) do
+         :ok <- Session.send_join({:user, user_id}, network.id, name) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -146,7 +146,7 @@ defmodule GrappaWeb.ChannelsController do
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),
-         :ok <- Session.send_part(user_id, network.id, channel) do
+         :ok <- Session.send_part({:user, user_id}, network.id, channel) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -170,7 +170,7 @@ defmodule GrappaWeb.ChannelsController do
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),
-         {:ok, _} <- Session.send_topic(user_id, network.id, channel, body) do
+         {:ok, _} <- Session.send_topic({:user, user_id}, network.id, channel, body) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})

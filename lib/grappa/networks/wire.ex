@@ -109,7 +109,7 @@ defmodule Grappa.Networks.Wire do
   Renders a single channel entry to its public JSON shape, given the
   channel `name`, the live `joined` state, and the `source` of the
   list entry. Caller is responsible for the source-merge logic
-  (`GrappaWeb.ChannelsController.merge_channel_sources/2`).
+  (private `merge_channel_sources/2` in `GrappaWeb.ChannelsController`).
   """
   @spec channel_to_json(String.t(), boolean(), :autojoin | :joined) :: channel_json()
   def channel_to_json(name, joined, source)

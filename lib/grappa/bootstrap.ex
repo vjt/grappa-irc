@@ -137,7 +137,7 @@ defmodule Grappa.Bootstrap do
          acc
        ) do
     with {:ok, plan} <- SessionPlan.resolve(credential),
-         {:ok, _} <- Session.start_session(user_id, network_id, plan) do
+         {:ok, _} <- Session.start_session({:user, user_id}, network_id, plan) do
       Logger.info("session started", user: user_id, network: slug)
       %{acc | started: acc.started + 1}
     else

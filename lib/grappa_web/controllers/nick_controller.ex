@@ -27,7 +27,7 @@ defmodule GrappaWeb.NickController do
     user_id = conn.assigns.current_user_id
     network = conn.assigns.network
 
-    with :ok <- Session.send_nick(user_id, network.id, nick) do
+    with :ok <- Session.send_nick({:user, user_id}, network.id, nick) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})

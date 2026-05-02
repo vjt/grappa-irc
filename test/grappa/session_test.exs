@@ -23,58 +23,58 @@ defmodule Grappa.SessionTest do
   describe "send_privmsg/4 CRLF guard" do
     test "rejects \\r\\n in body before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_privmsg(@user_id, @network_id, "#chan", "hi\r\nQUIT :pwn")
+               Session.send_privmsg({:user, @user_id}, @network_id, "#chan", "hi\r\nQUIT :pwn")
     end
 
     test "rejects \\r\\n in target before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_privmsg(@user_id, @network_id, "#chan\r\nQUIT", "hi")
+               Session.send_privmsg({:user, @user_id}, @network_id, "#chan\r\nQUIT", "hi")
     end
 
     test "rejects bare \\n in body" do
       assert {:error, :invalid_line} =
-               Session.send_privmsg(@user_id, @network_id, "#chan", "hi\nbye")
+               Session.send_privmsg({:user, @user_id}, @network_id, "#chan", "hi\nbye")
     end
 
     test "rejects NUL byte in body" do
       assert {:error, :invalid_line} =
-               Session.send_privmsg(@user_id, @network_id, "#chan", "hi\x00bye")
+               Session.send_privmsg({:user, @user_id}, @network_id, "#chan", "hi\x00bye")
     end
 
     test "valid input falls through to :no_session for unknown session" do
       assert {:error, :no_session} =
-               Session.send_privmsg(@user_id, @network_id, "#chan", "hi raga")
+               Session.send_privmsg({:user, @user_id}, @network_id, "#chan", "hi raga")
     end
   end
 
   describe "send_join/3 CRLF guard" do
     test "rejects \\r\\n in channel before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_join(@user_id, @network_id, "#chan\r\nQUIT")
+               Session.send_join({:user, @user_id}, @network_id, "#chan\r\nQUIT")
     end
 
     test "valid input falls through to :no_session for unknown session" do
       assert {:error, :no_session} =
-               Session.send_join(@user_id, @network_id, "#chan")
+               Session.send_join({:user, @user_id}, @network_id, "#chan")
     end
   end
 
   describe "send_part/3 CRLF guard" do
     test "rejects \\r\\n in channel before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_part(@user_id, @network_id, "#chan\r\nQUIT")
+               Session.send_part({:user, @user_id}, @network_id, "#chan\r\nQUIT")
     end
 
     test "valid input falls through to :no_session for unknown session" do
       assert {:error, :no_session} =
-               Session.send_part(@user_id, @network_id, "#chan")
+               Session.send_part({:user, @user_id}, @network_id, "#chan")
     end
   end
 
   describe "list_channels/2" do
     test "returns {:error, :no_session} when no session is registered" do
       assert {:error, :no_session} =
-               Session.list_channels(@user_id, @network_id)
+               Session.list_channels({:user, @user_id}, @network_id)
     end
   end
 end

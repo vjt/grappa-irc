@@ -146,7 +146,7 @@ defmodule Grappa.AuthFixtures do
   def start_session_for(%User{} = user, %Network{} = network) do
     credential = Credentials.get_credential!(user, network)
     {:ok, plan} = SessionPlan.resolve(credential)
-    {:ok, pid} = Grappa.Session.start_session(user.id, network.id, plan)
+    {:ok, pid} = Grappa.Session.start_session({:user, user.id}, network.id, plan)
     pid
   end
 

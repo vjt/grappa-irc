@@ -730,7 +730,8 @@ defmodule Grappa.NetworksTest do
       cred = Credentials.get_credential!(user, net)
       assert {:ok, plan} = SessionPlan.resolve(cred)
 
-      assert plan.user_name == user.name
+      assert plan.subject == {:user, user.id}
+      assert plan.subject_label == user.name
       assert plan.network_slug == net.slug
       assert plan.nick == "vjt-grappa"
       # effective_realname / effective_sasl_user fall back to nick

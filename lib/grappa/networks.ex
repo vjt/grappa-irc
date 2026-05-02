@@ -17,7 +17,7 @@ defmodule Grappa.Networks do
       lifecycle including the cascade-on-empty `unbind_credential/2`
       transaction (Session/Scrollback orchestration).
     * `Grappa.Networks.SessionPlan` — pure resolver: credential →
-      primitive `Grappa.Session.start_opts/0` map.
+      primitive `t:Grappa.Session.start_opts/0` map.
 
   Boundary deps + exports remain at this umbrella; sub-modules share
   the same Boundary contract by default.
