@@ -89,6 +89,25 @@ export function getSubject(): api.Subject | null {
   return parsed;
 }
 
+// C4 — server-side `UserSocket.assign_subject/2` sets
+// `socket.assigns.user_name = "visitor:" <> visitor.id` for visitor
+// sessions and `User.name` for user sessions. The Phoenix Channel
+// `authorize/2` check compares the topic's user prefix to that
+// assigns key, so cicchetto MUST construct topics using the same
+// prefix or every visitor join is rejected as `forbidden`.
+//
+// Returns the canonical socket-side identifier for the current
+// subject. Read from the persisted Subject (the canonical identity
+// store) rather than the `user()` resource so the visitor path
+// works without depending on `/me` (which the cluster's controller
+// surface doesn't yet support for visitors — Task 30).
+export function socketUserName(): string | null {
+  const s = getSubject();
+  if (s === null) return null;
+  if (s.kind === "visitor") return `visitor:${s.id}`;
+  return s.name;
+}
+
 function isValidSubject(v: unknown): v is api.Subject {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Record<string, unknown>;

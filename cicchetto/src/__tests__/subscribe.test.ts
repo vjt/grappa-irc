@@ -109,6 +109,10 @@ const loadStores = async () => {
 describe("subscribe — WS join effect", () => {
   it("joins the channel-shape topic for every channel and installs an event handler", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const socket = await import("../lib/socket");
     await loadStores();
@@ -122,6 +126,10 @@ describe("subscribe — WS join effect", () => {
 
   it("incoming PRIVMSG event increments unread for non-selected channel", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
@@ -133,6 +141,10 @@ describe("subscribe — WS join effect", () => {
 
   it("does not increment unread when the event arrives on the selected channel", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
@@ -145,6 +157,10 @@ describe("subscribe — WS join effect", () => {
 
   it("incoming PRIVMSG event appends to scrollbackByChannel for that channel", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
@@ -157,6 +173,10 @@ describe("subscribe — WS join effect", () => {
 
   it("two events on the same channel append in arrival order", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
@@ -170,6 +190,10 @@ describe("subscribe — WS join effect", () => {
 
   it("duplicate id from REST + WS overlap is deduped (single entry kept)", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const api = await import("../lib/api");
     vi.mocked(api.listMessages).mockResolvedValue([
@@ -201,6 +225,10 @@ describe("subscribe — WS join effect", () => {
 
   it("send round-trip: REST POST + WS broadcast → scrollback shows the row exactly once", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
     await seedStubs();
     const api = await import("../lib/api");
     const store = await loadStores();
@@ -221,6 +249,10 @@ describe("subscribe — WS join effect", () => {
   describe("identity-transition state cleanup", () => {
     it("token rotation A→B clears scrollback + unread + selection and re-joins channels under the new identity", async () => {
       localStorage.setItem("grappa-token", "tokA");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const auth = await import("../lib/auth");
       const socket = await import("../lib/socket");
@@ -242,6 +274,10 @@ describe("subscribe — WS join effect", () => {
       vi.mocked(api.me).mockResolvedValue({ id: "u2", name: "bob", inserted_at: "x" });
       vi.mocked(socket.joinChannel).mockClear();
 
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u2", name: "bob" }),
+      );
       auth.setToken("tokB");
 
       await vi.waitFor(() => {
@@ -259,6 +295,10 @@ describe("subscribe — WS join effect", () => {
 
     it("PRIVMSG mentioning operator nick on non-selected channel bumps mention badge (P4-1 Task 29)", async () => {
       localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const mentions = await import("../lib/mentions");
       const store = await loadStores();
@@ -277,6 +317,10 @@ describe("subscribe — WS join effect", () => {
 
     it("PRIVMSG mentioning nick on the SELECTED channel does NOT bump mention badge", async () => {
       localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const mentions = await import("../lib/mentions");
       const store = await loadStores();
@@ -292,6 +336,10 @@ describe("subscribe — WS join effect", () => {
 
     it("PRIVMSG without nick mention does NOT bump mention badge", async () => {
       localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const mentions = await import("../lib/mentions");
       const store = await loadStores();
@@ -307,6 +355,10 @@ describe("subscribe — WS join effect", () => {
 
     it("dispatches presence events to members.applyPresenceEvent (P4-1 Q4)", async () => {
       localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const members = await import("../lib/members");
       await loadStores();
@@ -340,6 +392,10 @@ describe("subscribe — WS join effect", () => {
 
     it("logout (token → null) clears scrollback + unread + selection", async () => {
       localStorage.setItem("grappa-token", "tokA");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
       await seedStubs();
       const auth = await import("../lib/auth");
       const store = await loadStores();
