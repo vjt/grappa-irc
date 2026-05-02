@@ -115,9 +115,9 @@ defmodule Grappa.Visitors.Login do
   end
 
   defp visitor_network do
-    case @visitor_network && Networks.get_network_by_slug(@visitor_network) do
+    case Networks.get_network_by_slug(@visitor_network) do
       {:ok, %Networks.Network{} = network} -> {:ok, network}
-      _ -> {:error, :network_unconfigured}
+      {:error, :not_found} -> {:error, :network_unconfigured}
     end
   end
 

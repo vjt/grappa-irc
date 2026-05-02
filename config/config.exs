@@ -4,6 +4,19 @@ config :grappa,
   ecto_repos: [Grappa.Repo],
   generators: [timestamp_type: :utc_datetime_usec]
 
+# Visitor-auth cluster (Phase 4) defaults. `visitor_network` is the
+# slug of the upstream IRC network anonymous visitors land on; W3
+# `max_visitors_per_ip` is the per-source-IP active-visitor cap. Both
+# are read via `Application.compile_env/2` from `Grappa.Visitors.Login`
+# and `Grappa.Visitors.Reaper` (Task 22), so they MUST be defined at
+# every compile env — `config/test.exs` overrides
+# `max_visitors_per_ip` to 2 for the cap-exceeded test path. A `nil`
+# `@visitor_network` at compile time narrows `Login.login/2`'s success
+# typing to only `:network_unconfigured`, cascading "pattern can never
+# match" warnings across `auth_controller.ex`'s error mapper.
+config :grappa, :visitor_network, "azzurra"
+config :grappa, :max_visitors_per_ip, 5
+
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: "runtime/grappa_dev.db"
