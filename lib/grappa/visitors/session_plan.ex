@@ -32,6 +32,17 @@ defmodule Grappa.Visitors.SessionPlan do
   alias Grappa.Networks.{NoServerError, Servers}
   alias Grappa.Visitors.{Visitor, VisitorChannel}
 
+  @doc """
+  Resolve a `%Visitor{}` row into the primitive `Session.start_opts/0`
+  plan. Looks up the matching `Networks.Network` by slug, picks the
+  lowest-priority enabled server, and threads the visitor's identity
+  fields (subject, subject_label, nick, sasl_user, auth_method,
+  password) into the plan.
+
+  Returns `{:error, :network_unconfigured}` if the slug doesn't have
+  a `Network` row, or `{:error, :no_server}` if the network has no
+  enabled server endpoints.
+  """
   @spec resolve(Visitor.t()) ::
           {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
   def resolve(%Visitor{} = visitor) do

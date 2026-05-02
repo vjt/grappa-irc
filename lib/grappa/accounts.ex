@@ -246,6 +246,33 @@ defmodule Grappa.Accounts do
     :ok
   end
 
+  @doc """
+  Bulk-revoke every non-revoked `Session` row tied to the given
+  visitor. Used by `Grappa.Visitors.Login`'s case-2 (registered
+  password match → preempt) and case-3 (anon token rotation) paths
+  to invalidate every prior bearer for the visitor before issuing a
+  fresh one.
+
+  Idempotent — a subsequent call finds no candidate rows and updates
+  zero. The affected count rides the audit log so a visitor with
+  zero prior sessions stays distinguishable from one whose sessions
+  were all already revoked.
+  """
+  @spec revoke_sessions_for_visitor(Ecto.UUID.t()) :: :ok
+  def revoke_sessions_for_visitor(visitor_id) when is_binary(visitor_id) do
+    query =
+      from(s in Session, where: s.visitor_id == ^visitor_id and is_nil(s.revoked_at))
+
+    {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
+
+    Logger.info(
+      "visitor sessions revoked (visitor_id=#{visitor_id})",
+      affected: affected
+    )
+
+    :ok
+  end
+
   defp check_idle(session) do
     now = DateTime.utc_now()
     idle = DateTime.diff(now, session.last_seen_at, :second)
