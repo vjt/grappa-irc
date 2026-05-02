@@ -103,5 +103,22 @@ defmodule GrappaWeb.NickControllerTest do
 
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
+
+    # Task 30 / Q2(a): visitor subjects are forbidden from changing nick.
+    # Row-immutable identity invariant per W2 + Mode-3 NickServ binding;
+    # uniform 403 across both anon and registered visitors.
+    test "visitor subject — 403 forbidden", %{conn: _conn} do
+      slug = "az-nick-vis-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+      {_, session} = visitor_and_session(network_slug: slug)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{slug}/nick", %{"nick" => "newnick"})
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
   end
 end
