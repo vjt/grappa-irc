@@ -1830,49 +1830,392 @@ EOF
 
 ---
 
+### Task 6.5: Session subject-tuple refactor (prereq for Task 7)
+
+**Why this exists:** Task 7's plan body assumed `Session.start_opts/0`
+already carried a `subject:` tagged tuple. It does not — the existing
+shape is keyed on `user_id` (UUID) + `user_name` (PubSub topic root +
+Logger metadata). Q-A's downstream consequence: visitors and users
+share the `sessions` table (XOR FK) AND the SessionRegistry AND the
+PubSub topology, so the Session boundary needs subject-aware
+identifiers BEFORE either visitor SessionPlan (Task 7) or visitor
+Session.Server wiring (Task 8) can land.
+
+This is a pure mechanical rename + signature-shape change. Zero new
+behavior. Existing test suite green after the refactor = done.
+
+**Files:**
+
+| File | Why |
+|---|---|
+| `lib/grappa/session.ex` | facade signatures + `start_opts` type |
+| `lib/grappa/session/server.ex` | `state` + `via` + `init_opts` shape |
+| `lib/grappa/networks/session_plan.ex` | emit subject in `build_plan` |
+| `lib/grappa/networks/credentials.ex` | `stop_session` call site |
+| `lib/grappa/bootstrap.ex` | `start_session` call site |
+| `lib/grappa_web/controllers/channels_controller.ex` | derive subject from `current_user` |
+| `lib/grappa_web/controllers/nick_controller.ex` | same |
+| `lib/grappa_web/controllers/messages_controller.ex` (or wherever PRIVMSG lives) | same |
+| `test/support/auth_fixtures.ex` | `start_session_for/2` produces subject |
+| `test/grappa/bootstrap_test.exs` | `whereis` calls |
+| `test/grappa/session/server_test.exs` | `whereis` / `stop_session` calls |
+| `test/grappa_web/controllers/*` | as needed |
+
+~14-16 files. Mechanical translation. NO new visitor logic.
+
+**Shape decisions (from S3 design discussion):**
+
+- **`subject` type**: `{:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}`.
+  Defined on `Grappa.Session` as the canonical type — the Session
+  boundary owns "who can spawn an IRC session" semantically.
+- **`subject_label` derivation** (W-decision Q1=a):
+    - `{:user, _}` → pass `user.name` verbatim from the User row.
+    - `{:visitor, vid}` → `"visitor:" <> vid` (UUID stable, never
+      drifts on NickServ rename, can't collide with a real user.name
+      since `:` is invalid in user names per `Accounts.User`'s slug
+      validator).
+- **`sasl_user` for visitors** (W-decision Q2=c): pass `visitor.nick`.
+  Field stays required-but-non-nullable. SASL never fires for
+  visitors (their `auth_method` is `:none | :nickserv_identify`),
+  but keeping the field populated avoids changing the type from
+  required to optional and matches the convention "sasl_user is the
+  SASL identity, even if SASL isn't selected by `auth_method`".
+- **`Session.start_opts/0` type changes:**
+    - REMOVE `user_name: String.t()`
+    - ADD `subject: subject()`
+    - ADD `subject_label: String.t()`
+    - Other fields unchanged
+- **Public facade signature changes** (first param tagged tuple
+  instead of bare UUID):
+    - `start_session(subject, network_id, opts)` — was `(user_id, …)`
+    - `whereis(subject, network_id)` — same
+    - `stop_session(subject, network_id)` — same
+    - `send_privmsg(subject, network_id, target, body)` — same
+    - `send_join(subject, network_id, channel)` — same
+    - `send_part(subject, network_id, channel)` — same
+    - `send_topic(subject, network_id, channel, body)` — same
+    - `send_nick(subject, network_id, new_nick)` — same
+    - `list_channels(subject, network_id)` — same
+    - `list_members(subject, network_id, channel)` — same
+- **`Server.registry_key/2`** returns `{:session, subject, network_id}`.
+  Subject tuple as discriminator means user-side and visitor-side
+  sessions share one registry without key collision (different first
+  element of the tuple guarantees uniqueness even if `network_id` and
+  the two UUIDs happen to coincide in some adversarial test).
+- **`Session.Server.state` changes:**
+    - REMOVE `user_id: UUID`
+    - ADD `subject: subject()`
+    - RENAME `user_name` → `subject_label`
+- **`Session.Server.init_opts` type** mirrors `start_opts/0` plus
+  `network_id` (already merged by `start_session/3` — `subject` is
+  ALREADY in `start_opts`, so `init_opts` no longer needs to merge
+  any subject identifier in. Simplify `start_session/3` to
+  `Map.merge(opts, %{network_id: network_id})` — the `subject` field
+  comes pre-set in `opts`, the second positional param is just the
+  network FK.
+
+  Actually re-think: `start_session(subject, network_id, opts)` —
+  the `subject` positional is redundant with `opts.subject`. Two
+  options:
+    - (i) Drop the positional, take only `(network_id, opts)` —
+      caller must put subject in opts. Cleaner, but breaks the
+      symmetry with all the `whereis(subject, network_id)` /
+      `send_*(subject, network_id, ...)` callers that don't have
+      an opts map.
+    - (ii) Keep `(subject, network_id, opts)` and validate
+      `opts.subject == subject` in a `match?/2` guard. Defensive,
+      catches caller bugs at the boundary.
+
+  Pick (ii) — symmetry with the rest of the facade beats one-time
+  positional cleanliness, and the `match?` is a free runtime check.
+  `Networks.SessionPlan.resolve/1` produces opts WITH the subject
+  embedded; `Bootstrap` extracts and passes both.
+
+- **`Grappa.PubSub.Topic` — NO API change.**
+  All `Topic.user/1` / `Topic.network/2` / `Topic.channel/3` keep
+  their current signatures. The string parameter is renamed from
+  `user_name` to `subject_label` in the moduledoc + arg names but
+  the value is opaque — for users it's `user.name`, for visitors
+  it's `"visitor:" <> uuid`. `Topic.user_of/1` still returns the
+  opaque label. GrappaChannel's cross-subject authz check
+  (`Topic.user_of(parsed) == conn.assigns.subject_label`) stays a
+  one-line predicate.
+
+  Why this works: existing topic shape `grappa:user:<label>/...`
+  doesn't care what `<label>` looks like as long as it's
+  collision-free. `:` in `"visitor:<uuid>"` is fine — `:` isn't
+  valid in user.name (Accounts.User's name validator rejects it),
+  so a visitor topic can never collide with a user topic even if
+  some adversarial test crafted a user named "visitor".
+
+- [ ] **Step 6.5.1: Type + Server scaffolding (no callers updated yet)**
+
+Update `lib/grappa/session.ex` `@type start_opts` to add `subject` +
+`subject_label`, REMOVE `user_name`. Define `@type subject` at
+top of module. Update facade `@spec`s to take `subject()` instead of
+`Ecto.UUID.t()` as first positional arg.
+
+Update `lib/grappa/session/server.ex`:
+- Add `@type subject` aliased from `Grappa.Session.subject` if
+  Boundary allows (else duplicate the typedef).
+- Update `init_opts` type: drop `user_id`, drop `user_name`, add
+  `subject`, add `subject_label`. (The `network_id` stays — that's
+  the second positional.)
+- Update `state` type: drop `user_id`, drop `user_name`, add
+  `subject`, add `subject_label` (stored verbatim from opts; never
+  re-derived since the topic root is fixed at session start).
+- Update `start_link/1` `is_binary(user_id)` guard → `is_tuple(subject)`
+  + `match?({:user, <<_::288>>} or {:visitor, <<_::288>>}, subject)`
+  pattern (UUID is 36 chars; do this with explicit `is_binary` after
+  pattern match).
+- Update `registry_key(subject, network_id)` signature.
+- Update `via/2` signature.
+- Inside `init/1`:
+    - Replace `state.user_name` reads with `state.subject_label` (5
+      sites: PubSub topic builds in `handle_call({:send_privmsg, …})`,
+      `handle_call({:send_topic, …})`, `EventRouter` event broadcasts;
+      Logger metadata at the top of `init/1`).
+
+Run targeted test that compiles `Grappa.Session` + `Grappa.Session.Server`
+without warnings, no existing test runs yet:
+```bash
+scripts/mix.sh compile --warnings-as-errors
+```
+Expect: success.
+
+- [ ] **Step 6.5.2: Cascade callers + tests in atomic edit pass**
+
+In one focused edit pass (don't try to compile partway — the
+intermediate states are red):
+
+1. `lib/grappa/networks/session_plan.ex` `build_plan/4`:
+   - REMOVE `user_name: user.name`
+   - ADD `subject: {:user, user.id}`
+   - ADD `subject_label: user.name`
+
+2. `lib/grappa/bootstrap.ex` line 140:
+   - `Session.start_session(user_id, network_id, plan)` →
+     `Session.start_session({:user, user_id}, network_id, plan)`.
+     The `plan` already carries the matching `subject` field from
+     SessionPlan; the positional is redundant-but-validated per
+     decision (ii) above.
+
+3. `lib/grappa/networks/credentials.ex` line 147:
+   - `Session.stop_session(user_id, network_id)` →
+     `Session.stop_session({:user, user_id}, network_id)`.
+
+4. Each REST controller that calls `Session.send_*` /
+   `Session.list_*`: replace `current_user.id` first param with
+   `{:user, current_user.id}` second-arg shape. Today
+   `current_user` is the only auth subject; visitor branching lands
+   in Tasks 10/11. So this is purely the rename:
+   - `lib/grappa_web/controllers/channels_controller.ex`
+   - `lib/grappa_web/controllers/nick_controller.ex`
+   - any other `Session.send_*` call site
+
+5. `lib/grappa_web/channels/grappa_channel.ex` (if it uses
+   `Session.whereis` or similar) — same translation.
+
+6. `test/support/auth_fixtures.ex` `start_session_for/2`:
+   - Build subject as `{:user, user.id}`
+   - Build subject_label as `user.name`
+   - Inject into the plan map BEFORE
+     `Grappa.Session.start_session/3`
+   - Pass `{:user, user.id}` as first positional
+
+7. `test/grappa/session/server_test.exs`:
+   - `Session.whereis(user.id, …)` → `Session.whereis({:user, user.id}, …)`
+   - `Session.stop_session(user.id, …)` → `Session.stop_session({:user, user.id}, …)`
+   - `Session.whereis(Ecto.UUID.generate(), …)` → `Session.whereis({:user, Ecto.UUID.generate()}, …)`
+   - All ~10 sites
+
+8. `test/grappa/bootstrap_test.exs`:
+   - All `Session.whereis(user_id, network_id)` → `Session.whereis({:user, user_id}, network_id)`
+   - All ~6 sites
+
+9. `test/grappa_web/controllers/channels_controller_test.exs`,
+   `test/grappa_web/controllers/nick_controller_test.exs`,
+   `test/grappa_web/controllers/messages_controller_test.exs` (if any
+   touches `Session.whereis` directly) — same translation.
+
+10. Run full test:
+    ```bash
+    scripts/test.sh
+    ```
+    Expect: GREEN. Same suite, same behavior, just new signatures.
+
+- [ ] **Step 6.5.3: Add one new test for subject-tuple isolation**
+
+In `test/grappa/session/server_test.exs`, add:
+
+```elixir
+test "two sessions for the same network_id but different subject kinds coexist" do
+  user = user_fixture()
+  network = network_with_server(slug: "test-net")
+
+  user_pid = start_session_for(user, network)
+
+  # Spawn a synthetic visitor session by hand-crafting opts (since
+  # Visitors.SessionPlan lands in Task 7). Production callers will
+  # use the resolver — this test is just isolating the registry-key
+  # behavior at the Session boundary level.
+  visitor_id = Ecto.UUID.generate()
+  visitor_subject = {:visitor, visitor_id}
+
+  visitor_plan = %{
+    subject: visitor_subject,
+    subject_label: "visitor:" <> visitor_id,
+    network_slug: network.slug,
+    nick: "vsh",
+    realname: "Grappa Visitor",
+    sasl_user: "vsh",
+    auth_method: :none,
+    password: nil,
+    autojoin_channels: [],
+    host: "127.0.0.1",
+    port: 6667,
+    tls: false
+  }
+
+  # No real upstream — Session.Server's IRC.Client will fail to
+  # connect, but that's fine for this test: we just need both
+  # registry entries to coexist briefly. Trap exits to avoid
+  # killing the test process.
+  Process.flag(:trap_exit, true)
+  {:ok, visitor_pid} = Grappa.Session.start_session(visitor_subject, network.id, visitor_plan)
+
+  assert Grappa.Session.whereis({:user, user.id}, network.id) == user_pid
+  assert Grappa.Session.whereis(visitor_subject, network.id) == visitor_pid
+  assert user_pid != visitor_pid
+
+  Grappa.Session.stop_session(visitor_subject, network.id)
+end
+```
+
+Run + see green:
+```bash
+scripts/test.sh test/grappa/session/server_test.exs
+```
+
+- [ ] **Step 6.5.4: Type-check + format + credo + commit**
+
+```bash
+scripts/format.sh
+scripts/credo.sh --strict
+scripts/dialyzer.sh
+scripts/check.sh
+```
+
+Expect: all green (modulo known sqlite-busy flake on Users INSERTs
+~20% rate per CP11 S2/S3 notes). Re-run flake-failed test once.
+
+- [ ] **Step 6.5.5: Commit on cluster branch**
+
+```bash
+cd ~/code/IRC/grappa-task-visitor-auth
+git add lib/grappa/session.ex lib/grappa/session/server.ex \
+        lib/grappa/networks/session_plan.ex \
+        lib/grappa/networks/credentials.ex \
+        lib/grappa/bootstrap.ex \
+        lib/grappa_web/controllers/ \
+        lib/grappa_web/channels/ \
+        test/support/auth_fixtures.ex \
+        test/grappa/session/server_test.exs \
+        test/grappa/bootstrap_test.exs \
+        test/grappa_web/
+git commit -m "$(cat <<'EOF'
+refactor(session): subject-tuple identifier (user|visitor)
+
+Prereq for visitor-auth cluster Tasks 7+8. Replaces the bare
+user_id (UUID) keying scheme on Grappa.Session with a tagged-tuple
+subject — {:user, uuid} | {:visitor, uuid}. SessionRegistry,
+Session.Server.state, all facade signatures (start_session/3,
+whereis/2, stop_session/2, send_*/N, list_*/N), and
+Networks.SessionPlan all updated to thread the subject. PubSub
+topic root is generalized via subject_label (user.name for users,
+"visitor:<uuid>" for visitors); Topic module API unchanged.
+
+Pure mechanical rename, zero new behavior. Q-A's downstream
+consequence — visitors and users share the sessions table (XOR
+FK), SessionRegistry, and PubSub topology, so subject-aware
+identifiers must exist before visitor-side SessionPlan (Task 7)
+or visitor-side Server wiring (Task 8) can land.
+
+Decisions captured in plan §Task 6.5:
+- subject_label for visitors: "visitor:" <> visitor.id (Q1=a)
+- sasl_user for visitors: visitor.nick (Q2=c)
+EOF
+)"
+```
+
+Done. Task 7's plan body now references real types. Resume Task 7
+implementation.
+
+---
+
 ### Task 7: Visitors.SessionPlan (mirror of Networks.SessionPlan for visitor input)
+
+**Prereq landed:** Task 6.5 — `Grappa.Session.subject` type +
+`subject_label` field exist on `start_opts`. Visitors.SessionPlan
+emits both verbatim. `Networks.SessionPlan` is the canonical sibling
+to mirror; rescue-on-NoServerError pattern is reused.
 
 **Files:**
 - Create: `lib/grappa/visitors/session_plan.ex`
 - Test: `test/grappa/visitors/session_plan_test.exs`
+- Modify: `lib/grappa/visitors.ex` — Boundary `deps` adds
+  `Grappa.Networks`, `exports` adds `SessionPlan`.
 
 - [ ] **Step 7.1: Failing tests**
 
 ```elixir
 # test/grappa/visitors/session_plan_test.exs
 defmodule Grappa.Visitors.SessionPlanTest do
-  use Grappa.DataCase, async: true
+  # async: false — visitor INSERTs + network INSERTs + sqlite
+  # contention behavior under full-suite parallelism observed in
+  # CP11 S3 (visitors_test.exs same mitigation). Per-test cost
+  # negligible (~300ms total).
+  use Grappa.DataCase, async: false
+
+  import Grappa.AuthFixtures
 
   alias Grappa.Visitors
   alias Grappa.Visitors.SessionPlan
 
   describe "resolve/1" do
-    test "anon visitor → opts with auth_method=:none" do
-      network = insert(:network, slug: "azzurra")
-      _server = insert(:network_server, network: network, enabled: true, priority: 0)
+    test "anon visitor → opts with auth_method=:none + visitor subject" do
+      _network = network_with_server(slug: "azzurra")
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
 
       assert {:ok, opts} = SessionPlan.resolve(visitor)
+      assert opts.subject == {:visitor, visitor.id}
+      assert opts.subject_label == "visitor:" <> visitor.id
       assert opts.nick == "vjt"
+      assert opts.realname == "Grappa Visitor"
+      assert opts.sasl_user == "vjt"
       assert opts.auth_method == :none
       assert is_nil(opts.password)
       assert opts.network_slug == "azzurra"
+      assert opts.autojoin_channels == []
     end
 
-    test "registered visitor → opts with auth_method=:nickserv_identify + decrypted password" do
-      network = insert(:network, slug: "azzurra")
-      _server = insert(:network_server, network: network, enabled: true, priority: 0)
+    test "registered visitor → opts with auth_method=:nickserv_identify + plaintext password" do
+      _network = network_with_server(slug: "azzurra")
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
       {:ok, registered} = Visitors.commit_password(visitor.id, "s3cret")
 
       assert {:ok, opts} = SessionPlan.resolve(registered)
       assert opts.nick == "vjt"
       assert opts.auth_method == :nickserv_identify
+      # Cloak EncryptedBinary roundtrip is symmetric — in-memory value
+      # after Repo.update is plaintext (the cipher only applies to the
+      # bytes on disk in the column). Encryption-at-rest verified via
+      # the EncryptedBinary property test, not here.
       assert opts.password == "s3cret"
     end
 
     test "no enabled server → {:error, :no_server}" do
-      _network = insert(:network, slug: "azzurra")
+      _network = network_fixture(slug: "azzurra")
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
 
       assert {:error, :no_server} = SessionPlan.resolve(visitor)
@@ -1889,114 +2232,143 @@ end
 
 - [ ] **Step 7.2: Implement**
 
+Two amendments vs S2 plan body:
+
+1. **No `use Boundary` line.** `Grappa.Visitors.SessionPlan` is INSIDE
+   the `Grappa.Visitors` boundary (mirror of `Grappa.Networks.SessionPlan`
+   inside `Grappa.Networks` — sibling has no own boundary either).
+   Visitors umbrella's boundary `deps` grows by `Grappa.Networks` +
+   `exports` grows by `SessionPlan` instead.
+
+2. **No `decrypt_password/1` defp.** Both clauses just return the
+   field. Cloak's `EncryptedBinary` returns plaintext on Repo load —
+   the field IS the decrypted value. Inline as `visitor.password_encrypted`
+   in the resolve body.
+
 ```elixir
 # lib/grappa/visitors/session_plan.ex
 defmodule Grappa.Visitors.SessionPlan do
   @moduledoc """
-  Mirror of `Grappa.Networks.SessionPlan` for visitor-row input. Resolves
-  a `%Visitor{}` + the matching network's first enabled server into the
-  primitive `Grappa.Session.start_opts/0` map for `Session.start_session/3`.
+  Mirror of `Grappa.Networks.SessionPlan` for visitor-row input.
+  Resolves a `%Visitor{}` + the matching network's lowest-priority
+  enabled server into the primitive `Grappa.Session.start_opts/0`
+  map for `Grappa.Session.start_session/3`.
 
   Visitor-specific shape:
-  - `auth_method = :none` if `password_encrypted` is nil (anon)
-  - `auth_method = :nickserv_identify` + decrypted password if registered
+
+    * `subject = {:visitor, visitor.id}`
+    * `subject_label = "visitor:" <> visitor.id` (Q1=a — UUID stable
+      across NickServ rename, no collision with user.name since `:`
+      is invalid in user names)
+    * `sasl_user = visitor.nick` (Q2=c — populated even though SASL
+      never fires for visitors)
+    * `auth_method = :none` if `password_encrypted` is nil (anon)
+    * `auth_method = :nickserv_identify` + plaintext password from
+      EncryptedBinary roundtrip if registered
 
   Used by `Grappa.Bootstrap` (visitor respawn at boot) and
-  `Grappa.Visitors.Login` (synchronous login probe-connect).
+  `Grappa.Visitors.Login` (synchronous login probe-connect, Task 9).
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Networks, Grappa.Visitors, Grappa.Vault]
-
-  alias Grappa.Networks
-  alias Grappa.Visitors.{Visitor, VisitorChannel}
-  alias Grappa.Repo
   import Ecto.Query
 
-  @type plan_opts :: %{
-          subject: {:visitor, Ecto.UUID.t()},
-          network_id: integer(),
-          network_slug: String.t(),
-          nick: String.t(),
-          realname: String.t(),
-          auth_method: :none | :nickserv_identify,
-          password: String.t() | nil,
-          autojoin: [String.t()],
-          host: String.t(),
-          port: pos_integer(),
-          tls: boolean()
-        }
+  alias Grappa.Networks
+  alias Grappa.Networks.NoServerError
+  alias Grappa.Networks.Servers
+  alias Grappa.Repo
+  alias Grappa.Session
+  alias Grappa.Visitors.{Visitor, VisitorChannel}
 
-  @spec resolve(Visitor.t()) :: {:ok, plan_opts()} | {:error, atom()}
+  @spec resolve(Visitor.t()) ::
+          {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
   def resolve(%Visitor{} = visitor) do
-    with {:ok, network} <- fetch_network(visitor.network_slug),
-         {:ok, server} <- fetch_first_enabled_server(network) do
-      autojoin =
-        Repo.all(
-          from c in VisitorChannel,
-            where: c.visitor_id == ^visitor.id and c.network_slug == ^visitor.network_slug,
-            select: c.name
-        )
+    with {:ok, network} <- fetch_network(visitor.network_slug) do
+      network = Repo.preload(network, :servers)
 
-      {:ok,
-       %{
-         subject: {:visitor, visitor.id},
-         network_id: network.id,
-         network_slug: network.slug,
-         nick: visitor.nick,
-         realname: "Grappa Visitor",
-         auth_method: auth_method(visitor),
-         password: decrypt_password(visitor),
-         autojoin: autojoin,
-         host: server.host,
-         port: server.port,
-         tls: server.tls
-       }}
+      try do
+        server = Servers.pick_server!(network)
+        {:ok, build_plan(visitor, network, server)}
+      rescue
+        NoServerError -> {:error, :no_server}
+      end
     end
   end
 
   defp fetch_network(slug) do
-    case Networks.get_by_slug(slug) do
-      nil -> {:error, :network_unconfigured}
-      network -> {:ok, network}
+    case Networks.get_network_by_slug(slug) do
+      {:ok, network} -> {:ok, network}
+      {:error, :not_found} -> {:error, :network_unconfigured}
     end
   end
 
-  defp fetch_first_enabled_server(network) do
-    case Networks.Servers.first_enabled(network.id) do
-      nil -> {:error, :no_server}
-      server -> {:ok, server}
-    end
+  defp build_plan(%Visitor{} = visitor, network, server) do
+    autojoin =
+      Repo.all(
+        from c in VisitorChannel,
+          where: c.visitor_id == ^visitor.id and c.network_slug == ^visitor.network_slug,
+          select: c.name
+      )
+
+    %{
+      subject: {:visitor, visitor.id},
+      subject_label: "visitor:" <> visitor.id,
+      network_slug: network.slug,
+      nick: visitor.nick,
+      realname: "Grappa Visitor",
+      sasl_user: visitor.nick,
+      auth_method: auth_method(visitor),
+      password: visitor.password_encrypted,
+      autojoin_channels: autojoin,
+      host: server.host,
+      port: server.port,
+      tls: server.tls
+    }
   end
 
   defp auth_method(%Visitor{password_encrypted: nil}), do: :none
   defp auth_method(%Visitor{password_encrypted: _}), do: :nickserv_identify
-
-  defp decrypt_password(%Visitor{password_encrypted: nil}), do: nil
-  defp decrypt_password(%Visitor{password_encrypted: pwd}), do: pwd
-  # NOTE: EncryptedBinary returns plaintext on Repo load. Field is the
-  # decrypted value. Keep this defp as the explicit boundary.
 end
 ```
 
-- [ ] **Step 7.3: Run tests, fix Networks API gaps if any**
+Visitors umbrella update — `lib/grappa/visitors.ex`:
+
+```elixir
+use Boundary,
+  top_level?: true,
+  deps: [Grappa.IRC, Grappa.Networks, Grappa.Repo],
+  exports: [SessionPlan, Visitor, VisitorChannel]
+```
+
+- [ ] **Step 7.3: Run tests**
 
 ```bash
 scripts/test.sh test/grappa/visitors/session_plan_test.exs
 ```
 
-`Networks.get_by_slug/1` and `Networks.Servers.first_enabled/1` may need adding if not present. Check + add minimal helpers in those contexts if missing.
+Expect: 4 tests pass.
+
+`Networks.get_network_by_slug/1` already exists. `Networks.Servers.pick_server!/1`
+already exists (raises `NoServerError`); the rescue mirrors
+`Networks.SessionPlan.resolve/1`'s pattern.
 
 - [ ] **Step 7.4: Commit**
 
 ```bash
-git add lib/grappa/visitors/session_plan.ex test/grappa/visitors/session_plan_test.exs
+git add lib/grappa/visitors.ex \
+        lib/grappa/visitors/session_plan.ex \
+        test/grappa/visitors/session_plan_test.exs
 git commit -m "$(cat <<'EOF'
 feat(visitors): add SessionPlan.resolve/1 for visitor input
 
-Mirrors Networks.SessionPlan shape — resolves visitor row + first
-enabled server of pinned network into Session.start_opts. auth_method
-:none for anon, :nickserv_identify for registered. Used by Bootstrap
-respawn + synchronous login probe-connect.
+Mirrors Networks.SessionPlan shape — resolves visitor row + lowest-
+priority enabled server of pinned network into Session.start_opts.
+auth_method :none for anon, :nickserv_identify for registered.
+EncryptedBinary roundtrip yields plaintext on Repo load, no separate
+decrypt step. NoServerError rescued at the boundary, mirror of
+Networks.SessionPlan precedent.
+
+Used by Bootstrap visitor-respawn (Task 19) + Visitors.Login
+synchronous probe-connect (Task 9).
 EOF
 )"
 ```
