@@ -52,7 +52,8 @@ defmodule Grappa.Application do
         # + telemetry — these limits become genuinely-defensive failsafes
         # rather than the front-line tolerance. See DESIGN_NOTES
         # 2026-05-02.
-        {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60},
+        {DynamicSupervisor,
+         name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60},
 
         # Endpoint after PubSub + Registry — HTTP requests (REST controller,
         # WS Channel join) reach into both at request time.
