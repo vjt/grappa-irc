@@ -36,6 +36,25 @@ From 2026-05-01 + 2026-05-02 brainstorm with vjt:
 | **Actor abstraction** | Rejected — over-engineering for 2 modes. CLAUDE.md: "shared data model with type flag = boundary violation." |
 | **HttpOnly cookies** | Deferred to Phase 5 hardening (XSS posture / untrusted-browser scenarios). Logged in `docs/todo.md`. |
 
+S5 amendment — privacy model wave (mid-cluster realisation that
+the original plan never specified anti-hijack semantics):
+
+| # | Decision |
+|---|----------|
+| **W10** | **Token = identity. Source IP is NOT trusted.** NAT, mobile rotation, VPN/Tor, X-Forwarded-For tampering at edge all break IP-as-identity. The bearer token in `accounts_sessions.token` (already issued by `Accounts.create_session/3` per Q-A) is the sole proof — `Plugs.Authn` + `UserSocket` gate every read. `visitors.ip` stays as metadata for the W3 per-IP cap (statistical anti-abuse, not auth). |
+| **W11** | **Anon visitor lifecycle co-terminus with `accounts_sessions` row.** When an `accounts_sessions` row dies (logout, lazy 8d-idle TTL expiry in `Accounts.authenticate/1`, login-preemption swap), if the linked visitor row has `password_encrypted IS NULL`, delete it. CASCADE wipes `visitor_channels` + `messages`. Tomorrow's anon "alice" login = fresh row, fresh scrollback, fresh everything. Implementation: explicit `Visitors.purge_if_anon/1` called from every `accounts_sessions` deletion site (Task 6 amendment), not a schema-level FK cascade — keeps the conditional logic visible in app code. **Boundary constraint:** `Grappa.Accounts` cannot deps on `Grappa.Visitors` as a real function-call dep (would close `Networks → Accounts → Visitors → Networks` cycle once Task 7 lands `Visitors → Networks`). Possible call-site placements without a cycle: (a) `Plugs.Authn` / `AuthController` (already deps on both Accounts + Visitors) dispatches `purge_if_anon` after observing the `:expired` tag from `Accounts.authenticate/1` — implies extending the return shape to surface the deleted-session's visitor_id; (b) `Accounts.delete_session/2` accepts an explicit `on_delete` callback function the caller binds to `&Visitors.purge_if_anon/1` (no module ref in Accounts); (c) a dedicated `Grappa.Visitors.SessionWatcher` Reaper that owns expired-accounts_sessions purging — moves the lazy-expiry side effect out of `Accounts.authenticate/1` entirely. Pick at Task 9 dispatch time. |
+| **W12** | **Registered visitor (`password_encrypted IS NOT NULL`) persists.** Visitor row + scrollback + `visitor_channels` survive `accounts_sessions` deletion. Each new login REQUIRES password match against `password_encrypted`. Match → preempt any live session (kill old `Session.Server` + delete old `accounts_sessions`) + issue new token. Mismatch / missing → 401, no token, scrollback unreachable (Plugs.Authn rejects). The password check IS the privacy gate — no separate "locked scrollback" mechanism. |
+| **W13** | **Anon-nick collision (different client claiming live anon `(nick, network_slug)`)** → `409 Conflict`. No preemption is possible (no password to verify). Adversary must wait for natural expiration (W9 sliding TTL, capped via Reaper). Anon clients keep their nick by holding their token. |
+| **W14** | **Externally-changed NickServ password = lockout until visitor expiry.** If a registered visitor changes their NickServ password directly on the network (outside grappa), `visitors.password_encrypted` is now stale. Login attempts: stale password matches stored row → grappa accepts, but upstream IDENTIFY fails. Fresh password → grappa rejects 401. No recovery code path — user waits for visitor row to expire (W9 7d TTL post-+r, sliding). Documented limitation, not a bug. |
+
+The privacy model's interaction with each task:
+
+- **Task 6 (Visitors context)**: gains `Visitors.purge_if_anon/1` — conditional delete keyed on `password_encrypted IS NULL`.
+- **Task 9 (Login orchestrator)**: gains the password-match gate for registered (W12) + token-presence gate for anon (W10) + 401/409 emission + preemption flow (W12).
+- **Task 11 (Plugs.Authn)**: no functional change — already token-gated (Q-C). The privacy model RELIES on this; verification at Task 11 lands.
+- **Task 19 (Bootstrap respawn)**: respawns both anon and registered visitors with `expires_at > now()`. Anon visitors at boot imply a live `accounts_sessions` row (co-terminus per W11), so a respawn is correctness-safe.
+- **Task 22 (Reaper)**: unchanged — sweeps expired visitor rows; CASCADE handles the rest. Note that `Accounts.authenticate/1`'s lazy expiry deletes accounts_sessions inline, which must call `Visitors.purge_if_anon/1` (Task 6 amendment landing site).
+
 ---
 
 ## File Structure
@@ -1523,6 +1542,15 @@ EOF
 
 ### Task 6: Visitors context core CRUD
 
+**S5 amendment (privacy model — W10/W11/W12):** add
+`Visitors.purge_if_anon/1` to the public surface. Conditional delete:
+no-op if `password_encrypted IS NOT NULL` (registered visitor — survives
+session deletion, keeps scrollback for password-gated re-claim);
+deletes the row if `password_encrypted IS NIL` (anon — co-terminus with
+the just-deleted `accounts_sessions` row, CASCADE wipes channels +
+messages). Called from `Accounts.authenticate/1`'s lazy-expiry path,
+explicit logout (Task 25.5), and login-preemption swap (Task 9).
+
 **Files:**
 - Create: `lib/grappa/visitors.ex`
 - Test: `test/grappa/visitors_test.exs`
@@ -1641,6 +1669,27 @@ defmodule Grappa.VisitorsTest do
       assert :ok = Visitors.delete(v.id)
       assert is_nil(Repo.get(Visitor, v.id))
       assert is_nil(Repo.get(Session, session.id))
+    end
+  end
+
+  describe "purge_if_anon/1" do
+    test "deletes anon visitor row (no password)" do
+      {:ok, v} = Visitors.find_or_provision_anon("anon", @network, "1.2.3.4")
+
+      assert :ok = Visitors.purge_if_anon(v.id)
+      assert is_nil(Repo.get(Visitor, v.id))
+    end
+
+    test "no-op for registered visitor (password set)" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      {:ok, _registered} = Visitors.commit_password(v.id, "s3cret")
+
+      assert :ok = Visitors.purge_if_anon(v.id)
+      assert %Visitor{} = Repo.get(Visitor, v.id)
+    end
+
+    test "no-op when visitor_id absent (already gone)" do
+      assert :ok = Visitors.purge_if_anon(Ecto.UUID.generate())
     end
   end
 end
@@ -1790,6 +1839,32 @@ defmodule Grappa.Visitors do
 
   @spec get!(Ecto.UUID.t()) :: Visitor.t()
   def get!(visitor_id) when is_binary(visitor_id), do: Repo.get!(Visitor, visitor_id)
+
+  @doc """
+  W11: deletes the visitor row IFF it is anon (`password_encrypted` is
+  nil). No-op for registered visitors (W12 — they survive session
+  deletion). No-op when the visitor row is already gone (race-safe).
+
+  Called from every `accounts_sessions` deletion site so anon visitor
+  state is co-terminus with its auth session: tomorrow's anon "alice"
+  login is guaranteed a fresh row (no scrollback inheritance, no
+  channel-list inheritance) since today's row is wiped along with
+  the session that birthed it. CASCADE handles `visitor_channels` +
+  `messages`.
+
+  Registered visitors are FK-protected against this — `password_encrypted`
+  is the "graduation" signal from ephemeral-anon to long-lived-identity
+  per W12. They are deleted only by the Reaper (`expires_at` past) or
+  explicit operator action.
+  """
+  @spec purge_if_anon(Ecto.UUID.t()) :: :ok
+  def purge_if_anon(visitor_id) when is_binary(visitor_id) do
+    case Repo.get(Visitor, visitor_id) do
+      nil -> :ok
+      %Visitor{password_encrypted: nil} = anon -> {:ok, _} = Repo.delete(anon); :ok
+      %Visitor{} -> :ok
+    end
+  end
 end
 ```
 
@@ -2463,6 +2538,61 @@ EOF
 ---
 
 ### Task 9: Visitors.Login — synchronous probe-connect orchestrator
+
+**S5 amendment (privacy model — W10/W11/W12/W13):** the original Task 9
+body assumes any login attempt with `(nick, network_slug)` either
+provisions or fast-paths an existing visitor. That has zero auth — anyone
+typing nick "alice" inherits her row + scrollback. Replace the unguarded
+fast-path with the privacy gate:
+
+Decision tree at `Visitors.Login.login(nick, password, ip, ua, token)`:
+
+1. **No visitor row for `(nick, network_slug)`** → provision new anon
+   visitor row → spawn Session.Server → issue token. Same as before.
+2. **Visitor row exists, registered (`password_encrypted` set)**:
+   - login `password` argument absent → `{:error, :password_required}` → 401.
+   - login `password` matches → preempt:
+       - delete prior `accounts_sessions` rows for this visitor (calls
+         `Visitors.purge_if_anon/1` per row but no-ops since registered);
+       - terminate live `Session.Server` for `{:visitor, visitor.id}` if any;
+       - spawn new Session.Server (carries `pending_password` for upstream
+         auto-IDENTIFY, mirroring fresh-login path);
+       - create new accounts_sessions row + token.
+   - login `password` mismatches → `{:error, :password_mismatch}` → 401.
+3. **Visitor row exists, anon (`password_encrypted` nil)**:
+   - request carries valid `token` for this visitor → reuse: rotate token
+     (delete old accounts_sessions, create new), keep visitor row, keep
+     Session.Server if alive (no preemption needed — same client).
+   - request has no token / wrong token → `{:error, :anon_collision}` →
+     409. Adversary cannot hijack live anon nick from a fresh client.
+     Original holder must wait for natural expiration (W9 sliding TTL)
+     to free the nick.
+
+The `token` parameter is the bearer token from the client's prior session,
+read by `AuthController` from the `Authorization: Bearer ...` header on
+the login request (separate from the password field). Resolves to a
+visitor_id via `Accounts.authenticate/1`.
+
+`login_error` type grows to:
+`:malformed_nick | :visitor_network_unconfigured | :ip_cap_exceeded |
+:upstream_unreachable | :timeout | :no_server | :network_unconfigured |
+:password_required | :password_mismatch | :anon_collision`.
+
+`AuthController` map: `:password_required` + `:password_mismatch` → 401.
+`:anon_collision` → 409 Conflict with `Retry-After` header advisory
+(value: `visitor.expires_at - now()` in seconds, capped to W9 ceiling).
+
+The fresh-login path (case 1) ALSO calls `Accounts.create_session/3`
+which inserts an `accounts_sessions` row tied to the visitor — this is
+the row that, on its eventual death, will trigger
+`Visitors.purge_if_anon/1` (Task 6 amendment) and cascade-wipe the anon
+visitor's data. Co-terminus lifecycle ✓.
+
+The plaintext-password comparison against `Cloak.EncryptedBinary` works
+because EncryptedBinary roundtrip yields plaintext on Repo load (the
+cipher only applies to bytes-on-disk). Constant-time comparison via
+`Plug.Crypto.secure_compare/2` to avoid timing oracles on
+password-field length / value.
 
 **Files:**
 - Create: `lib/grappa/visitors/login.ex`
