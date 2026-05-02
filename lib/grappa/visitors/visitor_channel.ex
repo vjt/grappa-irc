@@ -35,6 +35,15 @@ defmodule Grappa.Visitors.VisitorChannel do
     timestamps(type: :utc_datetime_usec)
   end
 
+  @doc """
+  Builds a create changeset for a visitor's joined-channel record.
+  Required fields: `:visitor_id`, `:network_slug`, `:name`. Both
+  `:network_slug` (`Identifier.valid_network_slug?/1`) and `:name`
+  (`Identifier.valid_channel?/1`) are validated against canonical
+  IRC identifier predicates — channel names go on the wire as JOIN
+  arguments, so syntactic hygiene matters. Uniqueness on
+  `(visitor_id, network_slug, name)` prevents duplicate JOINs.
+  """
   @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(attrs) do
     %__MODULE__{}
