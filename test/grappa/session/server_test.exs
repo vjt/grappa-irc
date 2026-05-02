@@ -1130,4 +1130,163 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "*Serv-targeted PRIVMSG skips scrollback + PubSub (W12 privacy)" do
+    test "NickServ target: no row, no broadcast, returns {:ok, :no_persist}" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "NickServ")
+        )
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+      refute_receive {:event, _}, 100
+      assert [] = Scrollback.fetch(user.id, network.id, "NickServ", nil, 10)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "ChanServ target: skipped same as NickServ (suffix-serv rule)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
+
+      assert [] = Scrollback.fetch(user.id, network.id, "ChanServ", nil, 10)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "case-insensitive: nickserv (lowercase) also skipped" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:user, user.id}, network.id, "nickserv", "IDENTIFY pwd")
+
+      assert [] = Scrollback.fetch(user.id, network.id, "nickserv", nil, 10)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "non-*Serv channel target: persists + broadcasts as before" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "#italia")
+        )
+
+      assert {:ok, %Scrollback.Message{body: "ciao"}} =
+               Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
+
+      assert_receive {:event, %{message: %{body: "ciao"}}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "outbound NickServ verb capture into pending_auth" do
+    test "send_privmsg NickServ IDENTIFY stages password + arms timer" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+      state = :sys.get_state(pid)
+      assert match?({"s3cret", _deadline}, state.pending_auth)
+      assert is_reference(state.pending_auth_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "second IDENTIFY overwrites first (latest-wins via mailbox FIFO, W8)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY old")
+      Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY new")
+
+      state = :sys.get_state(pid)
+      assert match?({"new", _}, state.pending_auth)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test ":pending_auth_timeout discards pending_auth + clears timer" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+      send(pid, :pending_auth_timeout)
+      Process.sleep(50)
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "non-NickServ *Serv (e.g. ChanServ REGISTER) does NOT stage pending_auth" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+      assert is_nil(state.pending_auth_timer)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "non-*Serv channel PRIVMSG does NOT stage pending_auth" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
+
+      state = :sys.get_state(pid)
+      assert is_nil(state.pending_auth)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

@@ -245,16 +245,29 @@ defmodule Grappa.Session do
 
   @doc """
   Sends a PRIVMSG upstream through the session for `(subject,
-  network_id)`. Persists a `Grappa.Scrollback.Message` row with
-  `sender = session.nick`, broadcasts on the per-channel PubSub topic,
-  AND writes to the upstream socket — atomic from the caller's view.
+  network_id)`. For non-services targets, persists a
+  `Grappa.Scrollback.Message` row with `sender = session.nick`,
+  broadcasts on the per-channel PubSub topic, AND writes to the
+  upstream socket — atomic from the caller's view.
 
-  Returns `{:ok, message}` with the persisted row on success,
-  `{:error, :no_session}` if no session is registered, or
-  `{:error, Ecto.Changeset.t()}` on validation failure.
+  PRIVMSG to a *Serv-suffixed target (NickServ / ChanServ /
+  MemoServ / OperServ / BotServ / HostServ / HelpServ — the
+  universal IRC services nick convention) is wire-only: the body
+  is sent upstream but NOT persisted to scrollback and NOT
+  broadcast over PubSub. This avoids leaking passwords (W12) and
+  keeps services traffic out of the scrollback DB. The reply for
+  this case is `{:ok, :no_persist}`.
+
+  Returns `{:ok, message}` with the persisted row on success for
+  channel targets, `{:ok, :no_persist}` for *Serv targets,
+  `{:error, :no_session}` if no session is registered,
+  `{:error, :invalid_line}` if target/body fail CRLF/NUL safety,
+  or `{:error, Ecto.Changeset.t()}` on validation failure of the
+  scrollback row insert.
   """
   @spec send_privmsg(subject(), integer(), String.t(), String.t()) ::
           {:ok, Grappa.Scrollback.Message.t()}
+          | {:ok, :no_persist}
           | {:error, :no_session | :invalid_line}
           | {:error, Ecto.Changeset.t()}
   def send_privmsg(subject, network_id, target, body)
