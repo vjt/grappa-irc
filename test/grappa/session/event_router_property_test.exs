@@ -68,7 +68,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         |> Map.new()
 
       %{
-        user_id: "00000000-0000-0000-0000-000000000001",
+        subject: {:user, "00000000-0000-0000-0000-000000000001"},
         network_id: 1,
         nick: nick,
         members: members
@@ -115,7 +115,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
             quitting_nick <- ascii_nick_gen()
           ) do
       state = %{
-        user_id: "00000000-0000-0000-0000-000000000001",
+        subject: {:user, "00000000-0000-0000-0000-000000000001"},
         network_id: 1,
         nick: "self",
         members: original_members

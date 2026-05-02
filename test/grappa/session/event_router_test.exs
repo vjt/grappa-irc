@@ -15,12 +15,13 @@ defmodule Grappa.Session.EventRouterTest do
   alias Grappa.Session.EventRouter
 
   @user_id "00000000-0000-0000-0000-000000000001"
+  @subject {:user, @user_id}
   @network_id 42
 
   defp base_state(overrides \\ %{}) do
     Map.merge(
       %{
-        user_id: @user_id,
+        subject: @subject,
         network_id: @network_id,
         nick: "vjt",
         members: %{}

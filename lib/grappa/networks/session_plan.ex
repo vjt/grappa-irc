@@ -1,6 +1,6 @@
 defmodule Grappa.Networks.SessionPlan do
   @moduledoc """
-  Pure resolver: credential → primitive `Grappa.Session.start_opts/0`.
+  Pure resolver: credential → primitive `t:Grappa.Session.start_opts/0`.
 
   Reads from `Accounts` for the user name, picks the lowest-priority
   enabled server via `Grappa.Networks.Servers.pick_server!/1`, and
@@ -71,7 +71,8 @@ defmodule Grappa.Networks.SessionPlan do
   @spec build_plan(User.t(), Network.t(), Credential.t(), Server.t()) :: Session.start_opts()
   defp build_plan(%User{} = user, %Network{} = network, %Credential{} = cred, %Server{} = server) do
     %{
-      user_name: user.name,
+      subject: {:user, user.id},
+      subject_label: user.name,
       network_slug: network.slug,
       nick: cred.nick,
       realname: Credential.effective_realname(cred),

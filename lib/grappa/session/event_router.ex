@@ -24,7 +24,7 @@ defmodule Grappa.Session.EventRouter do
   ## State shape (subset of `Session.Server.state()`)
 
       @type state :: %{
-              required(:user_id) => Ecto.UUID.t(),
+              required(:subject) => Grappa.Session.subject(),
               required(:network_id) => integer(),
               required(:nick) => String.t(),
               required(:members) => members(),
@@ -82,15 +82,16 @@ defmodule Grappa.Session.EventRouter do
   """
 
   alias Grappa.IRC.Message
+  alias Grappa.Session
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
-  full Session.Server state has additional fields (`user_name`,
+  full Session.Server state has additional fields (`subject_label`,
   `network_slug`, `autojoin`, `client`, etc.) — this typespec uses
   `optional(any()) => any()` to admit them without enforcing them.
   """
   @type state :: %{
-          required(:user_id) => Ecto.UUID.t(),
+          required(:subject) => Session.subject(),
           required(:network_id) => integer(),
           required(:nick) => String.t(),
           required(:members) => members(),
@@ -101,8 +102,15 @@ defmodule Grappa.Session.EventRouter do
           String.t() => %{String.t() => [String.t()]}
         }
 
+  @typedoc """
+  Persist-effect attrs map. Exactly one of `:user_id` / `:visitor_id`
+  is set per `Grappa.Scrollback.Message` XOR check (Task 4 migration);
+  the choice is derived from `state.subject` via
+  `Grappa.Session.put_subject_id/2`.
+  """
   @type persist_attrs :: %{
-          required(:user_id) => Ecto.UUID.t(),
+          optional(:user_id) => Ecto.UUID.t(),
+          optional(:visitor_id) => Ecto.UUID.t(),
           required(:network_id) => integer(),
           required(:channel) => String.t(),
           required(:server_time) => integer(),
@@ -473,15 +481,18 @@ defmodule Grappa.Session.EventRouter do
         ) ::
           {state(), effect()}
   defp build_persist(state, kind, channel, sender, body, meta) do
-    attrs = %{
-      user_id: state.user_id,
-      network_id: state.network_id,
-      channel: channel,
-      server_time: System.system_time(:millisecond),
-      sender: sender,
-      body: body,
-      meta: meta
-    }
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: channel,
+          server_time: System.system_time(:millisecond),
+          sender: sender,
+          body: body,
+          meta: meta
+        },
+        state.subject
+      )
 
     {state, {:persist, kind, attrs}}
   end

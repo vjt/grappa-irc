@@ -18,9 +18,10 @@ defmodule Grappa.Session.Server do
   `init/1` is a pure data consumer: it takes the fully-resolved
   `t:Grappa.Session.start_opts/0` map (host / port / tls / nick /
   realname / sasl_user / password / auth_method / autojoin_channels
-  / user_name / network_slug, plus user_id + network_id merged in
-  by `Grappa.Session.start_session/3`) and does NO DB reads — no
-  `Grappa.Accounts`, no `Grappa.Networks`, no `Grappa.Repo`. The
+  / subject / subject_label / network_slug, plus network_id merged
+  in by `Grappa.Session.start_session/3`) and does NO DB reads — no
+  `Grappa.Accounts`, no `Grappa.Networks`, no `Grappa.Repo`,
+  no `Grappa.Visitors`. The
   server-pick policy + credential resolution live on
   `Grappa.Networks.SessionPlan.resolve/1` (Networks owns the data, Session
   owns the connection).
@@ -59,11 +60,12 @@ defmodule Grappa.Session.Server do
   ## Wire shape (broadcast contract)
 
   PRIVMSG broadcasts emit `Grappa.Scrollback.Wire.message_event/1` on
-  the per-(user, network, channel) topic built via
-  `Grappa.PubSub.Topic.channel/3`. `state.user_name` is the first
-  segment (sub-task 2h) so multi-user instances cannot leak broadcasts
-  across users — payload-level iso (decision G3 dropped `user_id` from
-  the wire) needed routing-level iso to actually keep alice and vjt's
+  the per-(subject, network, channel) topic built via
+  `Grappa.PubSub.Topic.channel/3`. `state.subject_label` is the
+  first segment (sub-task 2h, generalized in Task 6.5) so multi-user
+  + visitor instances cannot leak broadcasts across subjects —
+  payload-level iso (decision G3 dropped `user_id` from the wire)
+  needed routing-level iso to actually keep alice / vjt / visitor
   PubSub mailboxes separate.
 
   ## Outbound API (Task 9)
@@ -79,7 +81,7 @@ defmodule Grappa.Session.Server do
   use GenServer, restart: :transient
 
   alias Grappa.IRC.{AuthFSM, Client, Message}
-  alias Grappa.{Log, Scrollback}
+  alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
   alias Grappa.Session.EventRouter
@@ -88,14 +90,15 @@ defmodule Grappa.Session.Server do
 
   @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
-  `(user_id, network_id)` keys `Grappa.Session.start_session/3`
-  merges in. Kept as a separate type from `start_opts/0` because
-  the public start contract takes the two ids positionally.
+  `network_id` key `Grappa.Session.start_session/3` merges in. The
+  `subject` field is already in `start_opts/0` (Task 6.5 — subject
+  is no longer a separate positional, it's part of the resolved plan
+  alongside `subject_label`).
   """
   @type init_opts :: %{
-          required(:user_id) => Ecto.UUID.t(),
+          required(:subject) => Grappa.Session.subject(),
+          required(:subject_label) => String.t(),
           required(:network_id) => integer(),
-          required(:user_name) => String.t(),
           required(:network_slug) => String.t(),
           required(:nick) => String.t(),
           required(:realname) => String.t(),
@@ -109,8 +112,8 @@ defmodule Grappa.Session.Server do
         }
 
   @type state :: %{
-          user_id: Ecto.UUID.t(),
-          user_name: String.t(),
+          subject: Grappa.Session.subject(),
+          subject_label: String.t(),
           network_id: integer(),
           network_slug: String.t(),
           nick: String.t(),
@@ -122,28 +125,29 @@ defmodule Grappa.Session.Server do
   ## API
 
   @spec start_link(init_opts()) :: GenServer.on_start()
-  def start_link(%{user_id: user_id, network_id: network_id} = opts)
-      when is_binary(user_id) and is_integer(network_id) do
-    GenServer.start_link(__MODULE__, opts, name: via(user_id, network_id))
+  def start_link(%{subject: subject, network_id: network_id} = opts)
+      when is_integer(network_id) and is_tuple(subject) do
+    GenServer.start_link(__MODULE__, opts, name: via(subject, network_id))
   end
 
   @doc """
-  Returns the registry key for `(user_id, network_id)`. Single source
-  of truth for the `{:session, user_id, network_id}` shape — every
+  Returns the registry key for `(subject, network_id)`. Single source
+  of truth for the `{:session, subject, network_id}` shape — every
   caller that needs to look up or terminate a session by key must go
-  through this. Adding a discriminator (workspace, shard) becomes a
-  one-place change.
+  through this. The tagged-tuple `subject` keeps user-side and
+  visitor-side sessions on the same `network_id` from colliding.
   """
-  @spec registry_key(Ecto.UUID.t(), integer()) :: {:session, Ecto.UUID.t(), integer()}
-  def registry_key(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
-    {:session, user_id, network_id}
+  @spec registry_key(Grappa.Session.subject(), integer()) ::
+          {:session, Grappa.Session.subject(), integer()}
+  def registry_key(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
+    {:session, subject, network_id}
   end
 
-  @doc "Returns the via-tuple for the session registered for `(user_id, network_id)`."
-  @spec via(Ecto.UUID.t(), integer()) ::
-          {:via, Registry, {atom(), {:session, Ecto.UUID.t(), integer()}}}
-  def via(user_id, network_id) when is_binary(user_id) and is_integer(network_id) do
-    {:via, Registry, {Grappa.SessionRegistry, registry_key(user_id, network_id)}}
+  @doc "Returns the via-tuple for the session registered for `(subject, network_id)`."
+  @spec via(Grappa.Session.subject(), integer()) ::
+          {:via, Registry, {atom(), {:session, Grappa.Session.subject(), integer()}}}
+  def via(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
+    {:via, Registry, {Grappa.SessionRegistry, registry_key(subject, network_id)}}
   end
 
   ## GenServer callbacks
@@ -156,11 +160,11 @@ defmodule Grappa.Session.Server do
   # regardless of upstream reachability.
   @impl GenServer
   def init(opts) do
-    :ok = Log.set_session_context(opts.user_name, opts.network_slug)
+    :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
 
     state = %{
-      user_id: opts.user_id,
-      user_name: opts.user_name,
+      subject: opts.subject,
+      subject_label: opts.subject_label,
       network_id: opts.network_id,
       network_slug: opts.network_slug,
       nick: opts.nick,
@@ -198,23 +202,26 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
-    attrs = %{
-      user_id: state.user_id,
-      network_id: state.network_id,
-      channel: target,
-      server_time: System.system_time(:millisecond),
-      kind: :privmsg,
-      sender: state.nick,
-      body: body,
-      meta: %{}
-    }
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: target,
+          server_time: System.system_time(:millisecond),
+          kind: :privmsg,
+          sender: state.nick,
+          body: body,
+          meta: %{}
+        },
+        state.subject
+      )
 
     case Scrollback.persist_event(attrs) do
       {:ok, message} ->
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.user_name, state.network_slug, target),
+            Topic.channel(state.subject_label, state.network_slug, target),
             Wire.message_event(message)
           )
 
@@ -250,23 +257,26 @@ defmodule Grappa.Session.Server do
   # scrollback view alongside everyone else's.
   def handle_call({:send_topic, channel, body}, _, state)
       when is_binary(channel) and is_binary(body) do
-    attrs = %{
-      user_id: state.user_id,
-      network_id: state.network_id,
-      channel: channel,
-      server_time: System.system_time(:millisecond),
-      kind: :topic,
-      sender: state.nick,
-      body: body,
-      meta: %{}
-    }
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: channel,
+          server_time: System.system_time(:millisecond),
+          kind: :topic,
+          sender: state.nick,
+          body: body,
+          meta: %{}
+        },
+        state.subject
+      )
 
     case Scrollback.persist_event(attrs) do
       {:ok, message} ->
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.user_name, state.network_slug, channel),
+            Topic.channel(state.subject_label, state.network_slug, channel),
             Wire.message_event(message)
           )
 
@@ -386,7 +396,7 @@ defmodule Grappa.Session.Server do
       port: opts.port,
       tls: opts.tls,
       dispatch_to: self(),
-      logger_metadata: Log.session_context(opts.user_name, opts.network_slug),
+      logger_metadata: Log.session_context(opts.subject_label, opts.network_slug),
       nick: opts.nick,
       realname: opts.realname,
       sasl_user: opts.sasl_user,
@@ -424,7 +434,7 @@ defmodule Grappa.Session.Server do
       :ok =
         Phoenix.PubSub.broadcast(
           Grappa.PubSub,
-          Topic.user(prev.user_name),
+          Topic.user(prev.subject_label),
           {:event, %{kind: "channels_changed"}}
         )
     end
@@ -440,15 +450,17 @@ defmodule Grappa.Session.Server do
 
     case Scrollback.persist_event(full_attrs) do
       {:ok, message} ->
-        # Topic shape is `(user_name, network_slug, channel)` —
-        # sub-task 2h roots every Grappa topic in the user
-        # discriminator. `:network` is preloaded by
+        # Topic shape is `(subject_label, network_slug, channel)` —
+        # sub-task 2h roots every Grappa topic in the subject
+        # discriminator (Task 6.5 generalized "user_name" to
+        # opaque subject_label so visitors map to a parallel
+        # `"visitor:<uuid>"` root). `:network` is preloaded by
         # `Scrollback.persist_event/1`; Wire.message_event
         # pattern-matches on it.
         :ok =
           Phoenix.PubSub.broadcast(
             Grappa.PubSub,
-            Topic.channel(state.user_name, state.network_slug, attrs.channel),
+            Topic.channel(state.subject_label, state.network_slug, attrs.channel),
             Wire.message_event(message)
           )
 

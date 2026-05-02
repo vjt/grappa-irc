@@ -99,7 +99,7 @@ defmodule GrappaWeb.MembersControllerTest do
       slug = "az-#{System.unique_integer([:positive])}"
       {network, pid} = setup_session_with_members(vjt, port, slug)
 
-      :ok = Session.stop_session(vjt.id, network.id)
+      :ok = Session.stop_session({:user, vjt.id}, network.id)
       refute Process.alive?(pid)
 
       conn = get(conn, "/networks/#{slug}/channels/%23test/members")

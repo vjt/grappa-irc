@@ -16,8 +16,8 @@ defmodule Grappa.Auth.IdentifierClassifier do
   validation.
 
   Used by `GrappaWeb.AuthController.login/2` to dispatch to either
-  `Grappa.Accounts.get_user_by_credentials/2` or
-  `Grappa.Visitors.login/4`.
+  `Grappa.Accounts.get_user_by_credentials/2` or the visitor login
+  path landing in `Grappa.Visitors.Login` (Task 9).
   """
 
   use Boundary, top_level?: true, deps: [Grappa.IRC]

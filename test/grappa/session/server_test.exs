@@ -155,7 +155,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      assert Session.whereis(user.id, network.id) == pid
+      assert Session.whereis({:user, user.id}, network.id) == pid
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
@@ -179,21 +179,61 @@ defmodule Grappa.Session.ServerTest do
       pid2 = start_session_for(alice, net2)
 
       assert pid1 != pid2
-      assert Session.whereis(vjt.id, net1.id) == pid1
-      assert Session.whereis(alice.id, net2.id) == pid2
+      assert Session.whereis({:user, vjt.id}, net1.id) == pid1
+      assert Session.whereis({:user, alice.id}, net2.id) == pid2
 
       :ok = GenServer.stop(pid1, :normal, 1_000)
       :ok = GenServer.stop(pid2, :normal, 1_000)
     end
 
     test "whereis/2 returns nil for unknown keys" do
-      assert Session.whereis(Ecto.UUID.generate(), 999_999_999) == nil
+      assert Session.whereis({:user, Ecto.UUID.generate()}, 999_999_999) == nil
+    end
+
+    test "user-subject and visitor-subject sessions for the same network_id coexist on the registry" do
+      # Task 6.5 isolation guarantee. The registry key is
+      # `{:session, subject, network_id}` — different first-tuple-element
+      # discriminates user from visitor even when the underlying UUID
+      # happens to coincide. Visitor.SessionPlan + visitor wiring land
+      # in Task 7+; this test hand-crafts the visitor opts to isolate
+      # the subject-tuple registry behavior at the Session boundary.
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      user_pid = start_session_for(user, network)
+
+      visitor_id = Ecto.UUID.generate()
+      visitor_subject = {:visitor, visitor_id}
+
+      visitor_plan = %{
+        subject: visitor_subject,
+        subject_label: "visitor:" <> visitor_id,
+        network_slug: network.slug,
+        nick: "vsh",
+        realname: "Grappa Visitor",
+        sasl_user: "vsh",
+        auth_method: :none,
+        password: nil,
+        autojoin_channels: [],
+        host: "127.0.0.1",
+        port: port,
+        tls: false
+      }
+
+      Process.flag(:trap_exit, true)
+      {:ok, visitor_pid} = Session.start_session(visitor_subject, network.id, visitor_plan)
+
+      assert Session.whereis({:user, user.id}, network.id) == user_pid
+      assert Session.whereis(visitor_subject, network.id) == visitor_pid
+      assert user_pid != visitor_pid
+
+      :ok = Session.stop_session(visitor_subject, network.id)
+      :ok = GenServer.stop(user_pid, :normal, 1_000)
     end
   end
 
   describe "stop_session/2 + unbind_credential teardown (S29 H5)" do
     test "stop_session/2 is idempotent for unknown keys" do
-      assert :ok = Session.stop_session(Ecto.UUID.generate(), 999_999_999)
+      assert :ok = Session.stop_session({:user, Ecto.UUID.generate()}, 999_999_999)
     end
 
     test "stop_session/2 tears down a running Session and clears the registry" do
@@ -202,12 +242,12 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       assert Process.alive?(pid)
-      assert Session.whereis(user.id, network.id) == pid
+      assert Session.whereis({:user, user.id}, network.id) == pid
 
-      assert :ok = Session.stop_session(user.id, network.id)
+      assert :ok = Session.stop_session({:user, user.id}, network.id)
 
       refute Process.alive?(pid)
-      assert Session.whereis(user.id, network.id) == nil
+      assert Session.whereis({:user, user.id}, network.id) == nil
     end
 
     # The integration check: Credentials.unbind_credential/2 must call
@@ -227,7 +267,7 @@ defmodule Grappa.Session.ServerTest do
       assert :ok = Credentials.unbind_credential(user, network)
 
       refute Process.alive?(pid)
-      assert Session.whereis(user.id, network.id) == nil
+      assert Session.whereis({:user, user.id}, network.id) == nil
     end
   end
 
@@ -483,7 +523,7 @@ defmodule Grappa.Session.ServerTest do
       # Autojoin JOIN signals Session has processed `001` fully.
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
 
-      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "hi")
+      assert {:ok, msg} = Session.send_privmsg({:user, user.id}, network.id, "#sniffo", "hi")
       assert msg.sender == "grappa-actual"
 
       assert_message_event(
@@ -529,7 +569,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
-      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "post-rename")
+      assert {:ok, msg} = Session.send_privmsg({:user, user.id}, network.id, "#sniffo", "post-rename")
       assert msg.sender == "renamed-vjt"
 
       [row] = Scrollback.fetch(user.id, network.id, "#sniffo", nil, 10)
@@ -560,7 +600,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
-      assert {:ok, msg} = Session.send_privmsg(user.id, network.id, "#sniffo", "still me")
+      assert {:ok, msg} = Session.send_privmsg({:user, user.id}, network.id, "#sniffo", "still me")
       assert msg.sender == "grappa-test"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -740,7 +780,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
-      assert {:ok, members} = Session.list_members(user.id, network.id, "#test")
+      assert {:ok, members} = Session.list_members({:user, user.id}, network.id, "#test")
 
       # mIRC sort: @ ops alphabetical → + voiced alphabetical → plain alphabetical
       # `grappa-test` is the operator's own nick (added by JOIN-self with no
@@ -759,7 +799,7 @@ defmodule Grappa.Session.ServerTest do
 
     test "no session for (user, network) returns {:error, :no_session}" do
       assert {:error, :no_session} =
-               Session.list_members(Ecto.UUID.generate(), 999_999_999, "#test")
+               Session.list_members({:user, Ecto.UUID.generate()}, 999_999_999, "#test")
     end
 
     test "channel not in members returns empty list" do
@@ -768,7 +808,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      assert {:ok, []} = Session.list_members(user.id, network.id, "#nowhere")
+      assert {:ok, []} = Session.list_members({:user, user.id}, network.id, "#nowhere")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -825,7 +865,7 @@ defmodule Grappa.Session.ServerTest do
       end)
 
       assert {:ok, ["#azzurra", "#italia"]} =
-               Session.list_channels(user.id, network.id)
+               Session.list_channels({:user, user.id}, network.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -839,7 +879,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = await_handshake(server)
 
       assert {:ok, message} =
-               Session.send_topic(user.id, network.id, "#italia", "new topic")
+               Session.send_topic({:user, user.id}, network.id, "#italia", "new topic")
 
       assert message.kind == :topic
       assert message.channel == "#italia"
@@ -856,17 +896,17 @@ defmodule Grappa.Session.ServerTest do
 
     test "rejects CRLF in body before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x", "bad\r\nINJECT")
+               Session.send_topic({:user, Ecto.UUID.generate()}, 999_999, "#x", "bad\r\nINJECT")
     end
 
     test "rejects CRLF in channel before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x\r\nQUIT", "ok")
+               Session.send_topic({:user, Ecto.UUID.generate()}, 999_999, "#x\r\nQUIT", "ok")
     end
 
     test "no_session for unknown (user, network)" do
       assert {:error, :no_session} =
-               Session.send_topic(Ecto.UUID.generate(), 999_999, "#x", "ok")
+               Session.send_topic({:user, Ecto.UUID.generate()}, 999_999, "#x", "ok")
     end
   end
 
@@ -877,7 +917,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
 
-      assert :ok = Session.send_nick(user.id, network.id, "vjt-away")
+      assert :ok = Session.send_nick({:user, user.id}, network.id, "vjt-away")
 
       {:ok, line} =
         IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
@@ -889,12 +929,12 @@ defmodule Grappa.Session.ServerTest do
 
     test "rejects CRLF in nick before whereis lookup" do
       assert {:error, :invalid_line} =
-               Session.send_nick(Ecto.UUID.generate(), 999_999, "vjt\r\nQUIT")
+               Session.send_nick({:user, Ecto.UUID.generate()}, 999_999, "vjt\r\nQUIT")
     end
 
     test "no_session for unknown (user, network)" do
       assert {:error, :no_session} =
-               Session.send_nick(Ecto.UUID.generate(), 999_999, "newnick")
+               Session.send_nick({:user, Ecto.UUID.generate()}, 999_999, "newnick")
     end
   end
 

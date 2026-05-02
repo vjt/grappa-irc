@@ -54,7 +54,7 @@ defmodule Grappa.BootstrapTest do
   end
 
   defp stop_session(user_id, network_id) when is_integer(network_id) do
-    case Session.whereis(user_id, network_id) do
+    case Session.whereis({:user, user_id}, network_id) do
       nil -> :ok
       pid -> DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end
@@ -74,8 +74,8 @@ defmodule Grappa.BootstrapTest do
 
       assert :ok = Bootstrap.run()
 
-      assert is_pid(Session.whereis(vjt.id, net_a.id))
-      assert is_pid(Session.whereis(vjt.id, net_b.id))
+      assert is_pid(Session.whereis({:user, vjt.id}, net_a.id))
+      assert is_pid(Session.whereis({:user, vjt.id}, net_b.id))
     end
 
     test "logs structured summary line with started/failed counts" do
@@ -128,14 +128,14 @@ defmodule Grappa.BootstrapTest do
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
       assert :ok = Bootstrap.run()
-      pid_after_first = Session.whereis(vjt.id, net.id)
+      pid_after_first = Session.whereis({:user, vjt.id}, net.id)
       assert is_pid(pid_after_first)
 
       log = capture_log(fn -> assert :ok = Bootstrap.run() end)
 
       assert log =~ "started=1"
       assert log =~ "failed=0"
-      assert Session.whereis(vjt.id, net.id) == pid_after_first
+      assert Session.whereis({:user, vjt.id}, net.id) == pid_after_first
     end
   end
 
@@ -174,7 +174,7 @@ defmodule Grappa.BootstrapTest do
 
       assert log =~ "started=2"
       assert log =~ "failed=0"
-      assert is_pid(Session.whereis(vjt.id, ok_net.id))
+      assert is_pid(Session.whereis({:user, vjt.id}, ok_net.id))
     end
   end
 end

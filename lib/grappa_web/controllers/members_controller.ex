@@ -37,7 +37,7 @@ defmodule GrappaWeb.MembersController do
     user_id = conn.assigns.current_user_id
     network = conn.assigns.network
 
-    case Session.list_members(user_id, network.id, channel) do
+    case Session.list_members({:user, user_id}, network.id, channel) do
       {:ok, members} ->
         render(conn, :index, members: members)
 
