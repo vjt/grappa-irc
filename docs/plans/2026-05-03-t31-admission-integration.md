@@ -1213,24 +1213,46 @@ scripts/check.sh
 scripts/dialyzer.sh
 ```
 
-- [ ] **Step 2: Rebase + merge to main**
+Standalone `scripts/dialyzer.sh` is required in addition to `check.sh` per memory pin `feedback_dialyzer_plt_staleness` — cluster-runs can mask warnings under PLT staleness. Both must be green.
+
+- [ ] **Step 2: Rebase + ff-merge to main (NO push yet)**
 
 ```bash
 git rebase main
 cd /srv/grappa
 git merge --ff-only cluster/t31-integration
 scripts/check.sh
-git push
 ```
 
-- [ ] **Step 3: Deploy + healthcheck**
+DO NOT `git push` here. Push is gated on the e2e matrix at Step 6 + vjt explicit ask. `scripts/deploy.sh` reads from `/srv/grappa` (main), not origin, so the deploy can proceed without an origin push.
+
+- [ ] **Step 3: Pre-deploy operator-bind — `azzurra max_concurrent_sessions=3`**
+
+The 4-tab cap-proof e2e check at Step 5 needs a non-nil `max_concurrent_sessions` cap to trigger against. Plan 1 added the column (default `nil` = uncapped); Plan 2 needs an operator verb to populate it.
+
+Sibling decides the verb name — candidates:
+  * Extend `mix grappa.bind_network` with `--max-sessions N` flag.
+  * New `mix grappa.set_network_caps --slug azzurra --max-sessions 3 --max-per-client 1`.
+  * Reuse `mix grappa.update_network_credential` (already exists per `lib/grappa/mix/tasks/grappa.update_network_credential.ex`) if it can be extended cleanly to network-level (not credential-level) updates — likely wrong fit since current verb is per-credential.
+
+Recommended: new dedicated `mix grappa.set_network_caps` task. Single-purpose, doesn't bloat existing verbs, easy to discover in `--help`. Document chosen verb in DESIGN_NOTES at T31 closing.
+
+After bind, verify:
+
+```bash
+scripts/db.sh "SELECT slug, max_concurrent_sessions, max_per_client FROM networks;"
+```
+
+The row for `azzurra` must show `max_concurrent_sessions=3` (and `max_per_client` per whatever Plan 2 default makes sense — likely `1` to enforce one session per cicchetto client).
+
+- [ ] **Step 4: Deploy + healthcheck**
 
 ```bash
 scripts/deploy.sh
 scripts/healthcheck.sh
 ```
 
-- [ ] **Step 4: E2e validation matrix — REAL BROWSER, hard gate**
+- [ ] **Step 5: E2e validation matrix — REAL BROWSER, hard gate**
 
 Plan 1 verbs are inert until Plan 2 wires consumers; the deploy step is the FIRST test of the entire admission stack in prod conditions. Inspection of unit tests + curl-only e2e is INSUFFICIENT. Use real browser automation — `chrome-devtools-mcp` plugin (already configured — see `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*` tools) or equivalent — pointing at the live deployment.
 
@@ -1262,14 +1284,24 @@ If the cap-proof check requires a debug endpoint to read the registry count, bui
 
 The browser-flow matrix is a HARD GATE: every row must be green (with screenshot or live-DOM evidence pasted into the close-out) before LANDED status. Push to origin is gated on completion (see Step 6 below).
 
-- [ ] **Step 5: Worktree cleanup + checkpoint update**
+- [ ] **Step 6: Push to origin (gated on vjt explicit ask)**
+
+After every row of the e2e matrix is green, surface the green matrix to vjt and WAIT for the push instruction. Do NOT auto-push at e2e-green. main is currently 29 commits ahead of origin (Plan 1 deferred its push per session contract); Plan 2 ships the combined push at this gate.
+
+```bash
+git push    # only after vjt explicit ask
+```
+
+If anything in the matrix is red or partially observed, push is forbidden — fix root cause + re-run the matrix from the failed row.
+
+- [ ] **Step 7: Worktree cleanup + checkpoint update**
 
 ```bash
 git worktree remove ../grappa-task-t31-integration
 git branch -d cluster/t31-integration
 ```
 
-Update CP11 (or open CP12) with T31 LANDED entry.
+Update CP11 (or open CP12) with T31 LANDED entry. Update memory pin `project_t31_admission_control` to LANDED status with completion date + commit refs. Update DESIGN_NOTES with T31 closing note (admission control + captcha + circuit-breaker as the FINAL post-S16 ops follow-up; NetworkCircuit lazy-expiry + window-vs-cooldown semantics per Plan 1 follow-up commit `8fdeaef`; chosen operator-bind verb name from Step 3).
 
 ## Plan 2 exit criteria
 
