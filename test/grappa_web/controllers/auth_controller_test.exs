@@ -178,7 +178,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
       on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
 
-      expect(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
+      stub(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
         {:error, :captcha_required}
       end)
 
