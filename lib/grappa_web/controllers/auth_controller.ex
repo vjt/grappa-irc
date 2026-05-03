@@ -70,26 +70,40 @@ defmodule GrappaWeb.AuthController do
   row per W11 ("anon visitor lifecycle co-terminus with
   accounts_sessions row"). Registered visitors stay automatically —
   `Visitors.purge_if_anon/1` short-circuits when `password_encrypted`
-  is set. Returns 204 + empty body.
+  is set.
 
-  Order matters: stop the Session.Server BEFORE purging the visitor
-  row so the GenServer's mailbox drains via `terminate/2` without any
-  in-flight scrollback persist tripping the `messages.visitor_id` FK.
+  For user sessions, scans `Grappa.SessionRegistry` for every
+  `{:session, {:user, user_id}, network_id}` entry and stops each
+  `Session.Server` so the live IRC connection terminates symmetric
+  with visitor logout (T31 Plan 2 Task 7). User identity is
+  persistent (no analog to W11 anon-purge); re-login or the next
+  `Bootstrap` restart respawns from the user's `Networks.Credential`
+  rows. Returns 204 + empty body.
+
+  Order matters: stop the Session.Server BEFORE revoking the
+  `accounts_sessions` row so the GenServer's mailbox drains via
+  `terminate/2` cleanly (and, on the visitor branch, BEFORE purging
+  the visitor row so an in-flight scrollback persist doesn't trip
+  the `messages.visitor_id` FK).
   """
   @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def logout(conn, _) do
-    :ok = maybe_terminate_visitor(conn.assigns)
+    :ok = maybe_terminate_sessions(conn.assigns)
     :ok = Accounts.revoke_session(conn.assigns.current_session_id)
     send_resp(conn, :no_content, "")
   end
 
-  @spec maybe_terminate_visitor(map()) :: :ok
-  defp maybe_terminate_visitor(%{current_visitor: %Visitor{} = visitor}) do
+  @spec maybe_terminate_sessions(map()) :: :ok
+  defp maybe_terminate_sessions(%{current_visitor: %Visitor{} = visitor}) do
     :ok = stop_visitor_session(visitor)
     :ok = Visitors.purge_if_anon(visitor.id)
   end
 
-  defp maybe_terminate_visitor(_), do: :ok
+  defp maybe_terminate_sessions(%{current_subject: {:user, user_id}}) do
+    :ok = stop_all_user_sessions(user_id)
+  end
+
+  defp maybe_terminate_sessions(_), do: :ok
 
   @spec stop_visitor_session(Visitor.t()) :: :ok
   defp stop_visitor_session(%Visitor{} = visitor) do
@@ -105,6 +119,24 @@ defmodule GrappaWeb.AuthController do
 
         :ok
     end
+  end
+
+  @spec stop_all_user_sessions(Ecto.UUID.t()) :: :ok
+  defp stop_all_user_sessions(user_id) when is_binary(user_id) do
+    # Match spec literally interpolates `{:user, user_id}` at construction
+    # time so only THIS user's rows match; `:"$1"` captures the
+    # `network_id`. Key shape `{:session, subject, network_id}` is per
+    # `Grappa.Session.Server.registry_key/2` (the canonical shape that
+    # `Admission.count_live_sessions/1` also matches against).
+    pattern = {{:session, {:user, user_id}, :"$1"}, :_, :_}
+
+    Grappa.SessionRegistry
+    |> Registry.select([{pattern, [], [:"$1"]}])
+    |> Enum.each(fn network_id ->
+      :ok = Session.stop_session({:user, user_id}, network_id)
+    end)
+
+    :ok
   end
 
   defp mode1_login(conn, _, nil), do: send_error(conn, 401, "invalid_credentials")

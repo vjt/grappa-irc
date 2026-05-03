@@ -33,6 +33,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
   alias Grappa.Admission.NetworkCircuit
+  alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
 
   # NetworkCircuit is ETS-backed and survives Ecto sandbox resets.
@@ -403,6 +404,73 @@ defmodule GrappaWeb.AuthControllerTest do
       # data persists past logout, gated on next-login password match.
       assert %Visitor{password_encrypted: pwd} = Repo.get(Visitor, visitor.id)
       assert is_binary(pwd)
+    end
+
+    test "user logout terminates all running Session.Server processes for that user",
+         %{conn: conn} do
+      {server, port} = start_server()
+
+      user = user_fixture()
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(user, network)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      ref = Process.monitor(pid)
+
+      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> delete("/auth/logout")
+
+      assert response(conn, 204) == ""
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+
+      assert Registry.lookup(
+               Grappa.SessionRegistry,
+               SessionServer.registry_key({:user, user.id}, network.id)
+             ) == []
+    end
+
+    test "user logout with multiple bindings stops all of them", %{conn: conn} do
+      {server1, port1} = start_server()
+      {server2, port2} = start_server()
+
+      user = user_fixture()
+      {network1, _} = network_with_server(port: port1)
+      {network2, _} = network_with_server(port: port2)
+      _ = credential_fixture(user, network1)
+      _ = credential_fixture(user, network2)
+
+      pid1 = start_session_for(user, network1)
+      pid2 = start_session_for(user, network2)
+      :ok = await_handshake(server1)
+      :ok = await_handshake(server2)
+      ref1 = Process.monitor(pid1)
+      ref2 = Process.monitor(pid2)
+
+      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/auth/logout")
+      |> response(204)
+
+      assert_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 5_000
+      assert_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 5_000
+
+      assert Registry.lookup(
+               Grappa.SessionRegistry,
+               SessionServer.registry_key({:user, user.id}, network1.id)
+             ) == []
+
+      assert Registry.lookup(
+               Grappa.SessionRegistry,
+               SessionServer.registry_key({:user, user.id}, network2.id)
+             ) == []
     end
 
     test "visitor logout when network row deleted mid-session logs warning + 204",
