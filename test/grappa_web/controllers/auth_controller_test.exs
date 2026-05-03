@@ -1,3 +1,17 @@
+defmodule RequiresCaptchaFake do
+  @moduledoc """
+  Test-only fake implementation of `Grappa.Admission.Captcha` that
+  always demands a captcha solve. Used by the captcha_required wire-shape
+  integration test in `GrappaWeb.AuthControllerTest`. Plan 2 Task 10
+  introduces a Mox-based `CaptchaMock` for finer per-call orchestration;
+  this fake is sufficient for a single binary "always requires" case.
+  """
+  @behaviour Grappa.Admission.Captcha
+
+  @impl Grappa.Admission.Captcha
+  def verify(_, _), do: {:error, :captcha_required}
+end
+
 defmodule GrappaWeb.AuthControllerTest do
   @moduledoc """
   REST surface for `POST /auth/login` + `DELETE /auth/logout`.
@@ -149,6 +163,38 @@ defmodule GrappaWeb.AuthControllerTest do
     test "malformed nick → 400 malformed_nick", %{conn: conn} do
       conn = post(conn, "/auth/login", %{"identifier" => "9bad"})
       assert json_response(conn, 400)["error"] == "malformed_nick"
+    end
+
+    test "captcha_required → 400 captcha_required + site_key (FallbackController wire shape)",
+         %{conn: conn} do
+      # T31 Plan 2 Task 6: assert that an admission flow which surfaces
+      # `:captcha_required` from the captcha provider lands as the
+      # canonical wire shape — 400 `{"error":"captcha_required",
+      # "site_key":<binary|nil>}` — through the FallbackController.
+      # Complements the direct dispatch test in
+      # `fallback_controller_test.exs`; this one exercises the full
+      # AuthController -> Visitors.Login -> Admission.verify_captcha
+      # -> {:error, :captcha_required} -> FallbackController path.
+      #
+      # Captcha provider is swapped to a fake that always demands a
+      # captcha. `verify_captcha/2` reads provider via Application.get_env
+      # at runtime — its moduledoc explicitly documents this swap as the
+      # test ergonomic. Restored on `on_exit` so other tests see Disabled.
+      original = Application.get_env(:grappa, :admission, [])
+      patched = Keyword.put(original, :captcha_provider, RequiresCaptchaFake)
+      Application.put_env(:grappa, :admission, patched)
+      on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+
+      {_, _} = setup_visitor_network(pick_unused_port())
+
+      conn = post(conn, "/auth/login", %{"identifier" => "fresh-anon"})
+
+      body = json_response(conn, 400)
+      assert body["error"] == "captcha_required"
+      # Task 13 wires :captcha_site_key via config/runtime.exs; until
+      # then the key is present (set by FallbackController) but its value
+      # is unwired in test/dev. Pin shape, not value.
+      assert Map.has_key?(body, "site_key")
     end
 
     test "client_cap_exceeded → 429 too_many_sessions (FallbackController wire shape)",

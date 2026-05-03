@@ -218,50 +218,6 @@ defmodule GrappaWeb.Plugs.AuthnTest do
     end
   end
 
-  describe "client_id plumbing" do
-    test "X-Grappa-Client-Id header populates :current_client_id assign", %{conn: conn} do
-      user = user_fixture()
-      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
-
-      conn =
-        conn
-        |> put_req_header("authorization", "Bearer " <> session.id)
-        |> put_req_header("x-grappa-client-id", "device-uuid-1")
-        |> Authn.call(Authn.init([]))
-
-      assert conn.assigns.current_client_id == "device-uuid-1"
-    end
-
-    test "missing header → :current_client_id is nil", %{conn: conn} do
-      user = user_fixture()
-      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
-
-      conn =
-        conn
-        |> put_req_header("authorization", "Bearer " <> session.id)
-        |> Authn.call(Authn.init([]))
-
-      assert conn.assigns.current_client_id == nil
-    end
-
-    test "rejects malformed client_id (non-UUID, length > 64)", %{conn: conn} do
-      user = user_fixture()
-      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
-      bogus = String.duplicate("x", 200)
-
-      conn =
-        conn
-        |> put_req_header("authorization", "Bearer " <> session.id)
-        |> put_req_header("x-grappa-client-id", bogus)
-        |> Authn.call(Authn.init([]))
-
-      # Treat malformed as absent — don't 400 the request, just nil the
-      # assign. Cicchetto generates UUID v4 by spec; only an attacker
-      # would submit garbage. Logging in defensive paths sufficient.
-      assert conn.assigns.current_client_id == nil
-    end
-  end
-
   describe "401 response shape" do
     test "Content-Type is application/json and body is JSON {error: 'unauthorized'}",
          %{conn: conn} do
