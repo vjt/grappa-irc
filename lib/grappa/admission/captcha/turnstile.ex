@@ -4,7 +4,7 @@ defmodule Grappa.Admission.Captcha.Turnstile do
 
   Wire shape mirrors the Cloudflare API
   (https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
-  Shared HTTP plumbing lives in `Grappa.Admission.Captcha.SiteVerifyHttp`.
+  Shared HTTP plumbing lives in `SiteVerifyHttp`.
   """
   @behaviour Grappa.Admission.Captcha
 
