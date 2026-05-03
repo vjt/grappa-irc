@@ -115,4 +115,27 @@ defmodule Grappa.Networks do
   """
   @spec get_network!(integer()) :: Network.t()
   def get_network!(id) when is_integer(id), do: Repo.get!(Network, id)
+
+  @doc """
+  Updates the admission caps (`max_concurrent_sessions`,
+  `max_per_client`) on a network row. Operator-side entry point used by
+  `mix grappa.set_network_caps` (dev DB) and `bin/grappa rpc` against
+  the same fn (prod DB) — single source for the validation +
+  Repo.update round-trip.
+
+  Both fields are optional individually; the changeset's
+  `validate_number(greater_than: 0)` rule rejects zero or negative
+  values. Unsupplied keys keep their current value (changeset only
+  casts the allowlist `[:slug, :max_concurrent_sessions,
+  :max_per_client]`).
+  """
+  @spec update_network_caps(Network.t(), %{
+          optional(:max_concurrent_sessions) => integer(),
+          optional(:max_per_client) => integer()
+        }) :: {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
+  def update_network_caps(%Network{} = network, attrs) when is_map(attrs) do
+    network
+    |> Network.changeset(attrs)
+    |> Repo.update()
+  end
 end
