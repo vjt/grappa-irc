@@ -673,6 +673,60 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "update_network_caps/2" do
+    test "sets both max_concurrent_sessions and max_per_client" do
+      net = network_fixture()
+      assert is_nil(net.max_concurrent_sessions)
+      assert is_nil(net.max_per_client)
+
+      assert {:ok, %Network{} = updated} =
+               Networks.update_network_caps(net, %{max_concurrent_sessions: 3, max_per_client: 1})
+
+      assert updated.max_concurrent_sessions == 3
+      assert updated.max_per_client == 1
+      assert updated.slug == net.slug
+    end
+
+    test "updates only the cap fields supplied; preserves the others" do
+      net = network_fixture()
+
+      {:ok, with_both} =
+        Networks.update_network_caps(net, %{max_concurrent_sessions: 5, max_per_client: 2})
+
+      assert {:ok, %Network{} = updated} =
+               Networks.update_network_caps(with_both, %{max_concurrent_sessions: 10})
+
+      assert updated.max_concurrent_sessions == 10
+      assert updated.max_per_client == 2
+    end
+
+    test "rejects zero or negative caps via changeset (greater_than: 0)" do
+      net = network_fixture()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.update_network_caps(net, %{max_concurrent_sessions: 0})
+
+      assert errors_on(cs)[:max_concurrent_sessions] != nil
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.update_network_caps(net, %{max_per_client: -1})
+
+      assert errors_on(cs)[:max_per_client] != nil
+    end
+
+    test "ignores unknown attrs (cast allowlist)" do
+      net = network_fixture()
+
+      assert {:ok, %Network{} = updated} =
+               Networks.update_network_caps(net, %{
+                 max_concurrent_sessions: 4,
+                 garbage: "ignored"
+               })
+
+      assert updated.max_concurrent_sessions == 4
+    end
+  end
+
   describe "pick_server!/1 (A2/A10 — lifted from Session.Server)" do
     test "returns the lowest-priority enabled server, ties broken by id" do
       net = network_fixture()
