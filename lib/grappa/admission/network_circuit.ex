@@ -59,6 +59,7 @@ defmodule Grappa.Admission.NetworkCircuit do
   use GenServer
 
   alias Grappa.Admission.Telemetry
+  alias Grappa.RateLimit.JitteredCooldown
 
   @table :admission_network_circuit_state
   @jitter_pct 25
@@ -73,22 +74,6 @@ defmodule Grappa.Admission.NetworkCircuit do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
-  end
-
-  ## Internals
-
-  @doc false
-  @spec compute_cooldown(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def compute_cooldown(base_ms, jitter_pct)
-      when is_integer(base_ms) and base_ms >= 0 and
-             is_integer(jitter_pct) and jitter_pct >= 0 and jitter_pct <= 100 do
-    jitter = trunc(base_ms * jitter_pct / 100)
-
-    if jitter == 0 do
-      base_ms
-    else
-      base_ms - jitter + :rand.uniform(2 * jitter + 1) - 1
-    end
   end
 
   @doc false
@@ -129,11 +114,14 @@ defmodule Grappa.Admission.NetworkCircuit do
         if now >= cooled_at_ms do
           # Cast the expiry notification so the GenServer emits exactly one
           # [:grappa, :admission, :circuit, :close] event with metadata
-          # %{reason: :cooldown_expired} per transition. Mailbox serialization
-          # + ETS-state recheck inside the cast handler guarantee exactly-once
-          # delivery even if concurrent callers all observe the same expired
-          # cooldown simultaneously.
-          GenServer.cast(__MODULE__, {:cooldown_expire, network_id})
+          # %{reason: :cooldown_expired} per transition. The observed
+          # `cooled_at_ms` rides along as an observation token: the cast
+          # handler match-spec verifies the ETS row still has the same
+          # token, so a re-open between observation and cast handling
+          # (different `cooled_at_ms`) cleanly no-ops without emitting
+          # a bogus :close. Mailbox serialization + token match guarantee
+          # exactly-once delivery for any given open→cooldown→close epoch.
+          GenServer.cast(__MODULE__, {:cooldown_expire, network_id, cooled_at_ms})
           :ok
         else
           {:error, :open, ceil((cooled_at_ms - now) / 1_000)}
@@ -188,7 +176,7 @@ defmodule Grappa.Admission.NetworkCircuit do
 
     {circuit_state, cooled_at} =
       if count >= @threshold do
-        {:open, now + compute_cooldown(@cooldown_ms, @jitter_pct)}
+        {:open, now + JitteredCooldown.compute(@cooldown_ms, @jitter_pct)}
       else
         {:closed, 0}
       end
@@ -224,20 +212,23 @@ defmodule Grappa.Admission.NetworkCircuit do
     {:noreply, state}
   end
 
-  def handle_cast({:cooldown_expire, network_id}, state) do
-    # Exactly-once cooldown expiry event. Multiple concurrent check/1 callers
-    # may all cast this message, but only the first one to run finds the ETS
-    # entry still present and still past cooldown. Subsequent casts are noops.
-    now = System.monotonic_time(:millisecond)
-
+  def handle_cast({:cooldown_expire, network_id, observed_cooled_at}, state) do
+    # Exactly-once cooldown expiry event, with H6 observation-token guard:
+    # the cast carries the `cooled_at_ms` the caller observed in check/1, and
+    # this handler match-pins it against the current ETS row. A match means
+    # the row hasn't mutated since observation (which by construction was
+    # past cooldown) — safe to delete + emit :close. A mismatch means the
+    # state moved on (re-opened with a fresh `cooled_at_ms`, cleared by
+    # record_success, or already deleted by a sibling cast) — no-op, no
+    # spurious telemetry. Token match obviates the now >= cooled_at_ms
+    # re-check: if the row still matches the observed token, we already
+    # know it was past cooldown.
     case :ets.lookup(@table, network_id) do
-      [{_, _, _, :open, cooled_at_ms}] when now >= cooled_at_ms ->
+      [{_, _, _, :open, ^observed_cooled_at}] ->
         :ets.delete(@table, network_id)
         Telemetry.circuit_close(network_id, :cooldown_expired)
 
       _ ->
-        # Entry already gone (cleared by another cast or record_success) or
-        # state changed — nothing to do.
         :ok
     end
 

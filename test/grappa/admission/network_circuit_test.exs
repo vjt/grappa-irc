@@ -19,23 +19,6 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     :ok
   end
 
-  describe "compute_cooldown/2" do
-    test "returns cooldown_ms ± 25% jitter window" do
-      base = NetworkCircuit.cooldown_ms()
-      jitter = trunc(base * 0.25)
-
-      for _ <- 1..50 do
-        ms = NetworkCircuit.compute_cooldown(base, 25)
-        assert ms >= base - jitter
-        assert ms <= base + jitter
-      end
-    end
-
-    test "0 jitter pct returns exact base" do
-      assert NetworkCircuit.compute_cooldown(1_000, 0) == 1_000
-    end
-  end
-
   describe "module-level config readers" do
     test "threshold/0 is positive" do
       assert NetworkCircuit.threshold() > 0
