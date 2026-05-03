@@ -13,7 +13,10 @@ defmodule GrappaWeb.FallbackControllerTest do
   and keeps the test from depending on which production code path emits
   each atom.
   """
-  use GrappaWeb.ConnCase, async: true
+  # async: false — the captcha_required test mutates the shared
+  # `:persistent_term` slot for `Grappa.Admission.Config.config/0` to
+  # exercise the Turnstile wire shape (B1.3 migration).
+  use GrappaWeb.ConnCase, async: false
 
   alias GrappaWeb.FallbackController
 
@@ -51,14 +54,23 @@ defmodule GrappaWeb.FallbackControllerTest do
 
   describe "T31 captcha errors" do
     test "{:error, :captcha_required} → 400 captcha_required + site_key + provider" do
-      prior = Application.get_env(:grappa, :admission)
+      pt_key = {Grappa.Admission.Config, :config}
+      original_pt = :persistent_term.get(pt_key, :__unset__)
 
-      Application.put_env(:grappa, :admission,
+      Grappa.Admission.Config.put_test_config(%Grappa.Admission.Config{
         captcha_provider: Grappa.Admission.Captcha.Turnstile,
-        captcha_site_key: "test-site-key-123"
-      )
+        captcha_secret: "test-secret",
+        captcha_site_key: "test-site-key-123",
+        turnstile_endpoint: "unused",
+        hcaptcha_endpoint: "unused"
+      })
 
-      on_exit(fn -> Application.put_env(:grappa, :admission, prior) end)
+      on_exit(fn ->
+        case original_pt do
+          :__unset__ -> :persistent_term.erase(pt_key)
+          cfg -> :persistent_term.put(pt_key, cfg)
+        end
+      end)
 
       conn = FallbackController.call(build_conn_for_call(), {:error, :captcha_required})
       body = json_response(conn, 400)

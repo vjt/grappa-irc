@@ -180,19 +180,17 @@ defmodule GrappaWeb.FallbackController do
     end)
   end
 
-  # Runtime read of operator-provided captcha config. Mirrors the
-  # request-time read in Grappa.Admission.Captcha.{Turnstile,HCaptcha}
-  # (Tasks 8/9): the captcha config is operator-deploy-time data
-  # (env vars baked into the docker compose stack), not per-request
-  # state — so the strict CLAUDE.md "runtime banned" rule's intent
-  # (no IPC-via-config) doesn't apply. The value MUST be hot-readable
-  # so a runtime.exs change picks up at boot without a recompile.
+  # Boot-time captcha config — read once at app start by
+  # `Grappa.Admission.Config.boot/0`, stored in `:persistent_term`,
+  # snapshot is the source of truth for all readers (this controller +
+  # Captcha.{Turnstile,HCaptcha}). CLAUDE.md "Application.get_env
+  # runtime banned" — the boundary lives in `Grappa.Admission.Config`.
   defp captcha_site_key do
-    Application.get_env(:grappa, :admission, [])[:captcha_site_key]
+    Grappa.Admission.Config.config().captcha_site_key
   end
 
   defp captcha_provider_wire do
-    case Application.get_env(:grappa, :admission, [])[:captcha_provider] do
+    case Grappa.Admission.Config.config().captcha_provider do
       Grappa.Admission.Captcha.Turnstile -> "turnstile"
       Grappa.Admission.Captcha.HCaptcha -> "hcaptcha"
       _ -> "disabled"

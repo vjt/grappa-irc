@@ -1,21 +1,30 @@
 defmodule Grappa.Admission.Captcha.HCaptchaTest do
-  use ExUnit.Case, async: true
+  # async: false — see TurnstileTest header for rationale (shared
+  # `:persistent_term` slot for `Grappa.Admission.Config.config/0`).
+  use ExUnit.Case, async: false
 
   alias Grappa.Admission.Captcha.HCaptcha
 
+  @pt_key {Grappa.Admission.Config, :config}
+
   setup do
     bypass = Bypass.open()
-    original = Application.get_env(:grappa, :admission, [])
+    original_pt = :persistent_term.get(@pt_key, :__unset__)
 
-    Application.put_env(
-      :grappa,
-      :admission,
-      original
-      |> Keyword.put(:captcha_secret, "test-secret")
-      |> Keyword.put(:hcaptcha_endpoint, "http://localhost:#{bypass.port}/siteverify")
-    )
+    Grappa.Admission.Config.put_test_config(%Grappa.Admission.Config{
+      captcha_provider: Grappa.Admission.Captcha.HCaptcha,
+      captcha_secret: "test-secret",
+      captcha_site_key: "test-site-key",
+      turnstile_endpoint: "unused",
+      hcaptcha_endpoint: "http://localhost:#{bypass.port}/siteverify"
+    })
 
-    on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+    on_exit(fn ->
+      case original_pt do
+        :__unset__ -> :persistent_term.erase(@pt_key)
+        cfg -> :persistent_term.put(@pt_key, cfg)
+      end
+    end)
 
     {:ok, bypass: bypass}
   end
