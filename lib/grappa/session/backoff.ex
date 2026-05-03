@@ -120,6 +120,22 @@ defmodule Grappa.Session.Backoff do
     GenServer.cast(__MODULE__, {:success, {subject, network_id}})
   end
 
+  @doc """
+  Clear the failure counter for `(subject, network_id)`. Operator-
+  initiated paths (Login.preempt_and_respawn) call this before
+  respawning so prior crash backoff doesn't gate an explicit user
+  action. Asynchronous (cast).
+
+  Distinct from `record_success/2` semantically: success means "we
+  saw a welcome, prior failures are stale"; reset means "operator is
+  overriding any failure history, start fresh." Same effect on the
+  table; different intent at call site.
+  """
+  @spec reset(Session.subject(), integer()) :: :ok
+  def reset(subject, network_id) when is_integer(network_id) do
+    GenServer.cast(__MODULE__, {:reset, {subject, network_id}})
+  end
+
   @doc false
   @spec failure_count(Session.subject(), integer()) :: non_neg_integer()
   def failure_count(subject, network_id) when is_integer(network_id) do
@@ -150,6 +166,11 @@ defmodule Grappa.Session.Backoff do
   end
 
   def handle_cast({:success, key}, state) do
+    :ets.delete(@table, key)
+    {:noreply, state}
+  end
+
+  def handle_cast({:reset, key}, state) do
     :ets.delete(@table, key)
     {:noreply, state}
   end
