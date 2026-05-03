@@ -32,33 +32,28 @@ defmodule Grappa.Admission.Captcha.TurnstileTest do
     {:ok, bypass: bypass}
   end
 
-  test "returns :ok on success: true", %{bypass: bypass} do
-    Bypass.expect_once(bypass, "POST", "/siteverify", fn conn ->
-      conn |> Plug.Conn.put_resp_content_type("application/json") |> Plug.Conn.resp(200, ~s({"success":true}))
-    end)
-
-    assert :ok = Turnstile.verify("real-token", "1.2.3.4")
-  end
-
-  test "returns :captcha_failed on success: false", %{bypass: bypass} do
-    Bypass.expect_once(bypass, "POST", "/siteverify", fn conn ->
-      Plug.Conn.resp(conn, 200, ~s({"success":false,"error-codes":["timeout-or-duplicate"]}))
-    end)
-
-    assert {:error, :captcha_failed} = Turnstile.verify("expired-token", "1.2.3.4")
-  end
-
   test "returns :captcha_required on nil token" do
     assert {:error, :captcha_required} = Turnstile.verify(nil, "1.2.3.4")
   end
 
-  test "returns :captcha_provider_unavailable on 5xx", %{bypass: bypass} do
-    Bypass.expect_once(bypass, fn conn -> Plug.Conn.resp(conn, 500, "") end)
-    assert {:error, :captcha_provider_unavailable} = Turnstile.verify("token", "1.2.3.4")
+  test "returns :captcha_required on empty-string token" do
+    assert {:error, :captcha_required} = Turnstile.verify("", "1.2.3.4")
   end
 
-  test "returns :captcha_provider_unavailable on connect failure", %{bypass: bypass} do
-    Bypass.down(bypass)
-    assert {:error, :captcha_provider_unavailable} = Turnstile.verify("token", "1.2.3.4")
+  test "delegates to SiteVerifyHttp with turnstile_endpoint + captcha_secret",
+       %{bypass: bypass} do
+    Bypass.expect_once(bypass, "POST", "/siteverify", fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      params = URI.decode_query(body)
+
+      assert params["secret"] == "test-secret"
+      assert params["response"] == "real-token"
+
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, ~s({"success":true}))
+    end)
+
+    assert :ok = Turnstile.verify("real-token", "1.2.3.4")
   end
 end
