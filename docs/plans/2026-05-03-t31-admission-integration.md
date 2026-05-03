@@ -803,7 +803,129 @@ solve). Both pass through to Visitors.Login as part of the input map.
 Plan 2 of 2.
 ```
 
-## Task 7 — Captcha `Turnstile` impl
+## Task 7 — User logout terminates Session.Server (symmetric with visitor)
+
+**Scope-A** addition (vjt-confirmed in CP11 S21 brainstorm, post-Plan-1 LANDED). Mirror visitor logout pattern shipped in `b809953` (`feat(auth): visitor logout terminates Session.Server + W11 anon-purge`) for user sessions. Currently `AuthController.logout/2` revokes the `accounts_sessions` row but DOES NOT stop running user `Session.Server` processes — the upstream IRC connection survives logout. Symmetry with the visitor flow demands stop.
+
+User identity is persistent (no analog to W11 anon-purge); only the live IRC connection terminates. Re-login spawns a fresh `Session.Server` from the user's `Networks.Credential` rows on next operator-initiated start OR Bootstrap restart. A user-facing "reconnect after logout without re-binding" verb is out of T31 scope (see memory pin `project_t32_disconnect_verb` for the related but distinct disconnect verb).
+
+**Files:**
+- Modify: `lib/grappa_web/controllers/auth_controller.ex`
+- Modify: `test/grappa_web/controllers/auth_controller_test.exs`
+
+- [ ] **Step 1: Failing test**
+
+Add to `test/grappa_web/controllers/auth_controller_test.exs` (sibling to existing visitor-logout coverage). The exact fixture/spawn verbs depend on what already exists in `test/support/auth_fixtures.ex` and the user-side cold-start path; implementer subagent greps `Bootstrap.spawn_one/2` for the production user-spawn shape and mirrors it in the test:
+
+```elixir
+test "user logout terminates all running Session.Server processes for that user", %{conn: conn} do
+  user = Grappa.AuthFixtures.user_fixture()
+  network = Grappa.AuthFixtures.network_with_server()
+  # Bind credential + spawn Session.Server matching the production cold-start path
+  # (mirror Bootstrap.spawn_one/2 verbs, NOT a test-only shortcut).
+  ...
+  pid = ... # the spawned Session.Server pid
+  ref = Process.monitor(pid)
+
+  {:ok, session} = Grappa.Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
+
+  conn =
+    conn
+    |> put_req_header("authorization", "Bearer " <> session.id)
+    |> delete(~p"/auth/logout")
+
+  assert response(conn, 204) == ""
+
+  # Session.Server stopped
+  assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+
+  # Registry entry gone
+  assert Registry.lookup(Grappa.SessionRegistry, {{:user, user.id}, network.id}) == []
+end
+
+test "user logout with multiple bindings stops all of them", %{conn: conn} do
+  # Same shape, two networks bound; assert both Session.Server pids stopped.
+  ...
+end
+```
+
+- [ ] **Step 2: Run, expect FAIL**
+
+```bash
+scripts/mix.sh test test/grappa_web/controllers/auth_controller_test.exs --warnings-as-errors
+```
+
+- [ ] **Step 3: Extend logout to user case**
+
+In `lib/grappa_web/controllers/auth_controller.ex`, generalize the visitor-only path. Rename `maybe_terminate_visitor/1` to `maybe_terminate_sessions/1` and add a clause for the user-tagged subject. The exact assign shape (`:current_user` vs `:current_subject`) is whatever `Plugs.Authn` produces for the user branch — implementer subagent reads `lib/grappa_web/plugs/authn.ex` first and picks the matching clause head.
+
+```elixir
+@spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
+def logout(conn, _) do
+  :ok = maybe_terminate_sessions(conn.assigns)
+  :ok = Accounts.revoke_session(conn.assigns.current_session_id)
+  send_resp(conn, :no_content, "")
+end
+
+@spec maybe_terminate_sessions(map()) :: :ok
+defp maybe_terminate_sessions(%{current_visitor: %Visitor{} = visitor}) do
+  :ok = stop_visitor_session(visitor)
+  :ok = Visitors.purge_if_anon(visitor.id)
+end
+
+# Match whatever Plugs.Authn assigns for the user case. If it assigns
+# {:user, id} as :current_subject:
+defp maybe_terminate_sessions(%{current_subject: {:user, user_id}}) do
+  :ok = stop_all_user_sessions(user_id)
+end
+
+defp maybe_terminate_sessions(_), do: :ok
+
+@spec stop_all_user_sessions(integer()) :: :ok
+defp stop_all_user_sessions(user_id) do
+  # Enumerate all (network_id) currently bound to a live Session.Server
+  # for this user via Registry.select on the {{:user, user_id}, network_id}
+  # key shape (Plan 1 Task 8 lineage). Implementer subagent confirms the
+  # exact key shape against Session.start_session/3 + the existing
+  # Visitors.list_active code path before picking the match spec.
+  pattern = {{{:user, user_id}, :"$1"}, :_, :_}
+  Grappa.SessionRegistry
+  |> Registry.select([{pattern, [], [:"$1"]}])
+  |> Enum.each(fn network_id ->
+    :ok = Grappa.Session.stop_session({:user, user_id}, network_id)
+  end)
+  :ok
+end
+```
+
+Order matters (mirrors visitor pattern): stop the `Session.Server` BEFORE revoking the `accounts_sessions` row so the GenServer's `terminate/2` can drain its mailbox cleanly. No analog to `Visitors.purge_if_anon/1` — user identities are persistent.
+
+- [ ] **Step 4: Run, expect PASS**
+
+```bash
+scripts/mix.sh test test/grappa_web/controllers/auth_controller_test.exs --warnings-as-errors
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+feat(t31): user logout terminates Session.Server processes (symmetric)
+
+Mirror b809953 (visitor logout) for user sessions. AuthController.logout/2
+now scans the Grappa.SessionRegistry for all {{:user, id}, network_id}
+entries and stops each Session.Server before revoking the access token.
+User identity is persistent (no analog to W11 anon-purge — that branch
+is visitor-only); only the live IRC connection terminates. Re-login or
+next Bootstrap restart respawns from the user's Networks.Credential
+rows.
+
+Closes the post-T30 logout-symmetry gap surfaced when designing T31's
+admission gates. vjt option (ii) confirmed in CP11 S21 brainstorm.
+
+Plan 2 of 2.
+```
+
+## Task 8 — Captcha `Turnstile` impl
 
 **Files:**
 - Create: `lib/grappa/admission/captcha/turnstile.ex`
@@ -918,15 +1040,15 @@ Captcha behaviour contract. Bypass-driven tests for all 5 paths
 Plan 2 of 2.
 ```
 
-## Task 8 — Captcha `HCaptcha` impl
+## Task 9 — Captcha `HCaptcha` impl
 
-Mirror Task 7's shape for hCaptcha. Endpoint: `https://hcaptcha.com/siteverify`. Same form-encoded contract. Same return shapes.
+Mirror Task 8's shape for hCaptcha. Endpoint: `https://hcaptcha.com/siteverify`. Same form-encoded contract. Same return shapes.
 
-Files: `lib/grappa/admission/captcha/h_captcha.ex` + `test/grappa/admission/captcha/h_captcha_test.exs`. Tests + impl track Task 7 line-for-line, swapping endpoint + module name.
+Files: `lib/grappa/admission/captcha/h_captcha.ex` + `test/grappa/admission/captcha/h_captcha_test.exs`. Tests + impl track Task 8 line-for-line, swapping endpoint + module name.
 
 Commit message: `feat(t31): Captcha.HCaptcha — hCaptcha verify impl`.
 
-## Task 9 — `CaptchaMock` for Mox + integration tests
+## Task 10 — `CaptchaMock` for Mox + integration tests
 
 **Files:**
 - Create: `test/support/captcha_mock.ex`
@@ -945,7 +1067,7 @@ Tests that exercise the captcha-required → captcha-passed flow swap config to 
 
 Commit: `feat(t31): CaptchaMock for Mox-driven Login captcha tests`.
 
-## Task 10 — Telemetry events
+## Task 11 — Telemetry events
 
 **Files:**
 - Create: `lib/grappa/admission/telemetry.ex`
@@ -964,7 +1086,7 @@ Used by Phase 5's PromEx exporter (deferred); for now just `:telemetry.execute/3
 
 Commit: `feat(t31): admission telemetry — circuit transitions + capacity rejections`.
 
-## Task 11 — cicchetto `client_id` generation
+## Task 12 — cicchetto `client_id` generation
 
 **Files:**
 - Create: `cicchetto/src/lib/clientId.ts`
@@ -1053,7 +1175,7 @@ buildHeaders helper.
 Plan 2 of 2.
 ```
 
-## Task 12 — cicchetto error rendering + captcha widget
+## Task 13 — cicchetto error rendering + captcha widget
 
 **Files:**
 - Create: `cicchetto/src/lib/captcha.ts` (Turnstile/hCaptcha widget loader)
@@ -1082,7 +1204,7 @@ User-facing copy for each error:
 
 Commit: `feat(t31): cicchetto handles captcha_required + admission errors`.
 
-## Task 13 — Final integration + e2e + deploy
+## Task 14 — Final integration + e2e + deploy
 
 - [ ] **Step 1: Full check**
 
@@ -1131,7 +1253,7 @@ Update CP11 (or open CP12) with T31 LANDED entry.
 
 ## Plan 2 exit criteria
 
-- [ ] All 13 tasks landed on `cluster/t31-integration`.
+- [ ] All 14 tasks landed on `cluster/t31-integration`.
 - [ ] `scripts/check.sh` green.
 - [ ] Standalone `scripts/dialyzer.sh` green.
 - [ ] cicchetto `npm test` green.
