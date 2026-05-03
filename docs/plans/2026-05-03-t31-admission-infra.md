@@ -1233,7 +1233,9 @@ defmodule Grappa.AdmissionTest do
     for {key, _, _, _, _} <- NetworkCircuit.entries(),
         do: :ets.delete(:admission_network_circuit_state, key)
 
-    network = Grappa.AuthFixtures.network_with_server()
+    # network_with_server/1 requires :port (Keyword.fetch!) and returns
+    # a {Network.t(), Server.t()} tuple — pin both at the test boundary.
+    {network, _server} = Grappa.AuthFixtures.network_with_server(port: 6_667)
     {:ok, network: network}
   end
 
@@ -1259,10 +1261,21 @@ defmodule Grappa.AdmissionTest do
 
   describe "check_capacity/1 — network total cap" do
     test "exceeded → :network_cap_exceeded", %{network: net} do
+      # Task 4 changeset rejects max_concurrent_sessions: 0 (validate_number
+      # greater_than: 0). Use cap=1 + register one fake live-session entry
+      # in SessionRegistry so Registry.count_match returns 1, tripping the
+      # cap. Registry entry is auto-removed when the test pid exits.
       {:ok, net} =
         net
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 0})
+        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
         |> Grappa.Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          Grappa.SessionRegistry,
+          {{:visitor, "fake-vid"}, net.id},
+          nil
+        )
 
       input = %{
         subject_kind: :visitor,
