@@ -189,11 +189,5 @@ defmodule GrappaWeb.FallbackController do
     Grappa.Admission.Config.config().captcha_site_key
   end
 
-  defp captcha_provider_wire do
-    case Grappa.Admission.Config.config().captcha_provider do
-      Grappa.Admission.Captcha.Turnstile -> "turnstile"
-      Grappa.Admission.Captcha.HCaptcha -> "hcaptcha"
-      _ -> "disabled"
-    end
-  end
+  defp captcha_provider_wire, do: Grappa.Admission.captcha_provider_wire()
 end

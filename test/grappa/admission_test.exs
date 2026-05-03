@@ -7,7 +7,8 @@ defmodule Grappa.AdmissionTest do
   use Grappa.DataCase, async: false
 
   alias Grappa.Admission
-  alias Grappa.Admission.NetworkCircuit
+  alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
+  alias Grappa.Admission.{Config, NetworkCircuit}
 
   setup do
     for {key, _, _, _, _} <- NetworkCircuit.entries(),
@@ -123,6 +124,64 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.verify_captcha("any-token", "1.2.3.4")
       assert :ok = Admission.verify_captcha(nil, nil)
       assert :ok = Admission.verify_captcha("", "1.2.3.4")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # captcha_provider_wire/0 — delegates to configured impl's wire_name/0
+  # ---------------------------------------------------------------------------
+
+  describe "captcha_provider_wire/0" do
+    @pt_key {Config, :config}
+
+    setup do
+      original_pt = :persistent_term.get(@pt_key, :__unset__)
+      original_env = Application.get_env(:grappa, :admission)
+
+      on_exit(fn ->
+        case original_pt do
+          :__unset__ -> :persistent_term.erase(@pt_key)
+          cfg -> :persistent_term.put(@pt_key, cfg)
+        end
+
+        if is_nil(original_env),
+          do: Application.delete_env(:grappa, :admission),
+          else: Application.put_env(:grappa, :admission, original_env)
+      end)
+
+      :ok
+    end
+
+    test "returns wire_name from configured impl module" do
+      Config.put_test_config(%Config{
+        captcha_provider: Turnstile,
+        captcha_secret: "stub",
+        captcha_site_key: "stub",
+        turnstile_endpoint: "https://stub",
+        hcaptcha_endpoint: "https://stub"
+      })
+
+      assert Admission.captcha_provider_wire() == "turnstile"
+
+      Config.put_test_config(%Config{
+        captcha_provider: HCaptcha,
+        captcha_secret: "stub",
+        captcha_site_key: "stub",
+        turnstile_endpoint: "https://stub",
+        hcaptcha_endpoint: "https://stub"
+      })
+
+      assert Admission.captcha_provider_wire() == "hcaptcha"
+
+      Config.put_test_config(%Config{
+        captcha_provider: Disabled,
+        captcha_secret: nil,
+        captcha_site_key: nil,
+        turnstile_endpoint: "https://stub",
+        hcaptcha_endpoint: "https://stub"
+      })
+
+      assert Admission.captcha_provider_wire() == "disabled"
     end
   end
 

@@ -11,6 +11,9 @@ defmodule Grappa.Admission.Captcha.Disabled do
   @behaviour Grappa.Admission.Captcha
 
   @impl Grappa.Admission.Captcha
+  def wire_name, do: "disabled"
+
+  @impl Grappa.Admission.Captcha
   @spec verify(Grappa.Admission.Captcha.token(), Grappa.Admission.Captcha.ip()) :: :ok
   def verify(_, _), do: :ok
 end

@@ -209,4 +209,14 @@ defmodule Grappa.Admission do
     cfg = Grappa.Admission.Config.config()
     cfg.captcha_provider.verify(token, ip)
   end
+
+  @doc """
+  Returns the wire-shape provider token for the configured Captcha impl.
+  Used by FallbackController in `captcha_required` error envelopes so
+  cicchetto knows which widget to mount.
+  """
+  @spec captcha_provider_wire() :: String.t()
+  def captcha_provider_wire do
+    Grappa.Admission.Config.config().captcha_provider.wire_name()
+  end
 end

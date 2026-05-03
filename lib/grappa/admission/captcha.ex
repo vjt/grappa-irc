@@ -23,6 +23,10 @@ defmodule Grappa.Admission.Captcha do
       returned 5xx, was unreachable, or our request timed out. Distinct
       from `:captcha_failed` because operator-side issue, not user-side.
 
+  `wire_name/0` returns the wire-shape provider token used in error
+  envelopes (e.g. the `provider:` key in `captcha_required` JSON
+  responses). Cicchetto uses this to decide which widget to mount.
+
   Implementations MUST NOT raise. Network errors land as
   `{:error, :captcha_provider_unavailable}`.
   """
@@ -32,4 +36,5 @@ defmodule Grappa.Admission.Captcha do
   @type error :: :captcha_required | :captcha_failed | :captcha_provider_unavailable
 
   @callback verify(token(), ip()) :: :ok | {:error, error()}
+  @callback wire_name() :: String.t()
 end

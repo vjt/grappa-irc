@@ -171,11 +171,10 @@ defmodule GrappaWeb.AuthControllerTest do
       # TurnstileTest / HCaptchaTest. Site key is set in the same
       # `put_test_config/1` so the wire body carries the operator-set
       # value (Task 13.A: boot-snapshot read in FallbackController).
-      # Restored on `on_exit`. The wire `provider` field for CaptchaMock
-      # falls into `captcha_provider_wire/0`'s default branch →
-      # "disabled" (the Turnstile/HCaptcha-specific wire strings only
-      # emit when the operator configures those modules — verifying the
-      # default-branch behaviour is the value here).
+      # Restored on `on_exit`. The wire `provider` field is now delegated
+      # to `Admission.captcha_provider_wire/0` which calls `wire_name/0`
+      # on the configured impl. CaptchaMock stubs `wire_name` to return
+      # "disabled", exercising the full dispatch path.
       pt_key = {Grappa.Admission.Config, :config}
       original_pt = :persistent_term.get(pt_key, :__unset__)
 
@@ -197,6 +196,8 @@ defmodule GrappaWeb.AuthControllerTest do
       stub(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
         {:error, :captcha_required}
       end)
+
+      stub(Grappa.Admission.CaptchaMock, :wire_name, fn -> "disabled" end)
 
       {_, _} = setup_visitor_network(pick_unused_port())
 
