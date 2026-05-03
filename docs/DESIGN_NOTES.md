@@ -1384,6 +1384,165 @@ DynamicSupervisors keep the conservative default.
 
 ---
 
+## 2026-05-03 — T31 admission control + captcha LANDED (CP11 S22 — closes post-Phase-4 ops)
+
+Three-tier admission cap + Cloudflare Turnstile captcha + per-network
+failure circuit-breaker shipped to prod. Closes the post-Phase-4 ops
+cluster; the original CP11 framing ("max 3 concurrent connections per
+source IP") was rejected during brainstorm (S21) because IP alone
+cannot split mobile-CGNAT-legit from abuser-on-shared-IP — one IP is
+thousands of legit users behind a CGNAT carrier.
+
+### Final cap shape
+
+`Grappa.Admission.check_capacity/1` composes three gates in order:
+
+  1. **NetworkCircuit** — per-network failure circuit-breaker. Lazy
+     ETS GenServer, distinct from S20's per-(subject, network)
+     `Session.Backoff`. Failure window + cooldown are independent
+     intervals (cooldown only kicks in after the threshold is
+     breached; window slides regardless). Login records both
+     successes (resets) and failures (counts toward threshold).
+  2. **Per-network total** — `networks.max_concurrent_sessions`
+     (column added Plan 1, default `nil` = uncapped). Match-spec
+     `{{:session, :_, network_id}, :_, :_}` over
+     `Grappa.SessionRegistry`. Counts ALL session types — user
+     sessions (Bootstrap-spawned from credentials) AND visitor
+     sessions (Login-spawned). Operator caveat: vjt's persistent
+     user session counts toward the visitor cap budget.
+  3. **Per-(client_id, network)** — `networks.max_per_client`
+     (column added Plan 1, default 1). Reads `accounts_sessions` for
+     the X-Grappa-Client-Id header value. Lives on the session row,
+     NOT the registry key (registry stores subject + network_id, not
+     client_id), so the match-spec lookup happens against Ecto, not
+     ETS.
+
+### Captcha gate
+
+`Grappa.Admission.Captcha` behaviour with three impls: `Disabled`
+(default), `Turnstile`, `HCaptcha`. Provider chosen at runtime via
+`GRAPPA_CAPTCHA_PROVIDER` env var (`disabled` | `turnstile` |
+`hcaptcha` — anything else falls back to Disabled with a Logger
+warning). Gate fires at `Visitors.Login` case-1 (fresh anon
+provision) ONLY — cases 2/3 are already password/token-gated, so
+re-captcha would be redundant friction.
+
+Wire shape on captcha-required: `400 {error: "captcha_required",
+provider: "<provider>", site_key: "<public site key>"}`. The
+provider field is non-redundant — site_key format alone doesn't
+disambiguate Turnstile from hCaptcha at the SPA layer (both use
+opaque alphanumeric strings), so cicchetto reads provider to pick
+the right widget loader.
+
+### Operator-bind verb
+
+`mix grappa.set_network_caps --network <slug> --max-sessions N
+--max-per-client N` (new, single-purpose Mix.Task) wraps
+`Grappa.Networks.update_network_caps/2`. Prod release uses the same
+context fn via `bin/grappa rpc` (release ships without `mix`).
+
+Verb chosen over extending `bind_network` because caps live on
+`networks` (per-deployment shared infra, one azzurra row, many
+users bind it) not on `network_credentials` (per-(user, network)).
+Reusing the credential-scoped verb would have leaked the domain
+boundary per CLAUDE.md "Reuse the verbs, not the nouns" — the 20%
+mismatch (network row vs credential row, no user dimension) is the
+boundary.
+
+### Plan-fix-first dual application
+
+The cluster shipped via TWO independent applications of the
+plan-fix-first principle (codified in S21 for Plan 1):
+
+  * **Plan 2 spec drift** — 12 docs-only commits on main ahead of
+    cluster execution (Tasks 3, 3.5, 4, 5, 6, 7, 8, 10, 12, 13, 14
+    + targeted-test invocation cleanup). Each fixed a spec bug
+    BEFORE implementation, so the cluster never inherited it.
+  * **Task 14 deploy-time bugs** — 3 code commits on main during
+    Step 5 e2e validation, each caught only by real-browser
+    automation (chrome-devtools-mcp). Filed as a side worktree
+    `cluster/t31-deploy-fix` because the changes were code, not
+    docs.
+
+The three deploy-time bugs all shared a property: invisible to unit
+suite, visible only at the prod boundary.
+
+  1. `compose.prod.yaml` `environment:` block had no entries for
+     the three captcha env vars. Docker compose only consumes
+     `.env` for variable substitution (e.g. `${SECRET_KEY_BASE}`)
+     — host env vars don't auto-inject into containers unless
+     listed explicitly in `environment:` or via `env_file:`.
+     `runtime.exs`'s `System.get_env(...)` returned nil → captcha
+     fell back to `Disabled`. Test config sidestepped this entirely
+     by passing the keyword list directly via
+     `Application.put_env(:grappa, :admission, ...)` in
+     `config/test.exs`.
+
+  2. `crypto.randomUUID` is gated to secure contexts (HTTPS or
+     localhost). On `http://grappa.bad.ass` (TLS deferred to Phase
+     5 hardening) the call throws `crypto.randomUUID is not a
+     function`. Vitest jsdom IS a secure context, so the unit
+     suite never tripped. Fallback hand-rolls v4 from
+     `crypto.getRandomValues` (which IS available on insecure
+     origins — only randomUUID specifically is gated).
+
+  3. Nginx CSP `script-src 'self'` blocked Turnstile JS at
+     `https://challenges.cloudflare.com/turnstile/v0/api.js`. CSP
+     stays the load-bearing XSS defense for the
+     bearer-in-localStorage design (auth.ts module-level comment
+     names this), so the fix added the minimal allowlist:
+     Turnstile host on `script-src` + `connect-src` (verify-XHR) +
+     new `frame-src` (challenge UI is iframed). Biome doesn't
+     inspect CSP headers; the unit suite couldn't catch it.
+
+Lesson: env-var → runtime config + browser APIs gated by
+secure-context + CSP allowlist are three boundaries that ONLY
+real-browser e2e exercises. The "REAL BROWSER, hard gate" mandate
+in Plan 2 Step 5 paid for itself.
+
+### W3 supersession
+
+Plan 2 retired `Visitors.Login.@max_per_ip` + `check_ip_cap/1`.
+T31's per-(client_id, network) cap is the replacement — tighter
+keying on the same anti-abuse intent, with the captcha gate
+covering the cases where `client_id` is a fresh UUID (which is
+always for a new visitor, by definition).
+
+### What's deliberately NOT in T31
+
+  * **No per-IP cap.** Brainstorm rejected per-IP outright; CGNAT
+     mobile carriers fail it. Per-(client_id, network) +
+     captcha-on-fresh-anon are the two halves of the replacement.
+  * **No ASN/MaxMind reputation lookup.** Mobile CGNAT detection
+    requires the paid GeoIP2 ISP product; CAPTCHA solves the same
+    problem cleaner.
+  * **No datacenter IP CIDR blocking.** CAPTCHA covers it.
+  * **No browser canvas / device fingerprinting.** `client_id`
+    UUID v4 in localStorage is the only fingerprint, and visitors
+    can clear it freely (the captcha is what makes that costly).
+  * **No identity-tier exemptions from concurrency caps.**
+    Operator's only knob is per-network `max_per_client`.
+
+### Plan 2 micro-followups carried forward (not blocking next cluster)
+
+Filed in `docs/plans/2026-05-03-t31-admission-integration.md`
+"Post-T31 state":
+
+  * Partial index `where: "client_id IS NOT NULL"` on
+    `accounts_sessions.client_id`.
+  * DB-level CHECK constraints on `networks.max_concurrent_sessions`
+    + `max_per_client`.
+  * `Network.changeset` "rejects negative" test name accuracy
+    (currently asserts 0, not negative).
+  * `NetworkCircuit.compute_cooldown(0, _)` edge-case test +
+    setup-block comment.
+  * `superpowers:requesting-code-review` template — gates RUN, not
+    asserted from inspection (corrective from Plan 1's review
+    deviation; Task 14 reviewers complied via evidence-paste
+    mandate).
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

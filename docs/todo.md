@@ -248,3 +248,17 @@ fixed in C8):**
 - The Italian Hackers' Embassy / Azzurra context is the longer story.
   See `docs/project-story.md` for the narrative thread that survives
   individual sessions.
+
+## Wishlist (vjt 2026-05-03 #sniffo banter w/ nextime)
+
+- **Addressed-messages highlight on return-from-away.** When a user
+  reconnects/returns, surface messages that mentioned them (or DMs)
+  prominently — not just "unread count." Needs a last-seen marker
+  per channel + a server-computed "things addressed to you while
+  away" list that cicchetto can render as a top section before the
+  scrollback proper. Phase 4/5 cicchetto UX.
+- **Auto-away management.** Client emits idle/active hints (focus,
+  tab visibility, lock screen if available); server flips presence
+  and AWAY status without user intervention. No `/away` typing.
+  Combine with the addressed-on-return bucket above so the round trip
+  is automatic. Phase 4 cicchetto + small server hook.

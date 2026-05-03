@@ -1044,3 +1044,125 @@ Phase 3 because the cicchetto/ subsystem was invisible to it.
 applies just as hard to the apparatus you use to review the code.
 Half-coverage is worse than no coverage because it lulls you into
 thinking the review ran. Update the meta when you add the matter.
+
+## S39 — 2026-05-03 — T31, and the hard gate that paid for itself
+
+The post-Phase-4 ops cluster closed today. T31 — the admission
+control + captcha + circuit-breaker stack — landed across two
+plans and three production deploys. The story isn't the code,
+which was largely mechanical assembly of patterns the codebase
+already knew. The story is the gate that caught what the suite
+couldn't.
+
+The cluster spent thirteen tasks under the standard cycle: TDD,
+Mox at boundaries, Bypass for HTTP fakes, two-stage review per
+task, plan-fix-first whenever the spec inherited a bug. Plan 2
+shipped twelve docs-only plan-fix commits on main during cluster
+execution alongside the implementation commits — the principle
+codified during Plan 1 (S21) reused without ceremony. By Task 13.B
+LANDED, the suite was 806 server tests + 194 cicchetto vitest, all
+green. Standalone Dialyzer green. Credo green. Sobelow green.
+mix.audit + hex.audit clean.
+
+The plan called for Task 14 to run a real-browser e2e matrix
+against the live deploy, with the language "REAL BROWSER, hard
+gate" in capitals. The temptation, when the suite is that green,
+is to interpret the gate as ceremonial — open the browser, click
+through the happy path, confirm what the test suite already knows
+to be true. That interpretation is the trap. The hard gate's job
+is to find what the suite cannot find, and the suite can only find
+what the suite is shaped to look at.
+
+What broke in production:
+
+The first deploy reached `/healthz`-green and accepted nick-only
+visitor logins without a captcha challenge. The captcha unit suite
+was green. Every Login-flow test was green. The deploy was wrong:
+`compose.prod.yaml`'s `environment:` block had no entries for the
+three captcha env vars. Docker compose only consumes `.env` for
+variable substitution; host env vars don't auto-inject into
+containers unless listed explicitly. `runtime.exs` read the three
+keys as nil, fell through to `Captcha.Disabled`, and the production
+admission stack accepted everything. The unit suite couldn't see
+this because test config calls `Application.put_env(:grappa,
+:admission, ...)` directly — the env-var pipeline is invisible to
+it.
+
+The second deploy, after the env propagation fix, got the captcha
+config loaded. The browser navigated to the login page, filled the
+nick, clicked Log in, and rendered a generic error overlay with
+the message "crypto.randomUUID is not a function". The vitest
+suite's 3 clientId tests all green. The reason: vitest's jsdom is
+a secure context, but `http://grappa.bad.ass` is not. `crypto.
+randomUUID` is gated to secure contexts only; on plain HTTP it
+isn't a function, it's undefined. Login was impossible. Fallback
+hand-rolls v4 from `crypto.getRandomValues`, which IS available
+on insecure origins because only `randomUUID` specifically is
+gated.
+
+The third deploy, after the UUID fallback, rendered the Login page
+with the `crypto` error gone, and threw a CSP violation: nginx's
+`script-src 'self'` blocked
+`https://challenges.cloudflare.com/turnstile/v0/api.js`. The CSP
+unit suite did not exist, because biome doesn't inspect headers,
+and the only thing that was going to find this was a real browser
+loading a real script tag past a real reverse proxy. Added the
+Turnstile host to `script-src` + `connect-src` + new `frame-src`,
+redeployed, reloaded the page, and watched the Cloudflare iframe
+mount and auto-solve "Success!" against the registered hostname.
+
+Three deploys, three plan-fix-first commits. Each one was
+unit-test-invisible by construction: env-var → runtime config is
+a boundary the test suite cannot exercise without re-implementing
+the deployment; secure-context-gated browser APIs are a boundary
+that jsdom does not enforce; CSP allowlist is a boundary that
+the test suite has no eyes for. Each of the three would have
+shipped to production silently and stayed broken until the first
+real visitor tried to log in.
+
+The 4-tab cap-proof, when it ran, was almost anticlimactic. Three
+tabs each cleared their token-but-kept-their-client-id, logged in
+as `capproof_a`, `_b`, `_c`. The session registry rose 1 → 2 → 3
+→ 4 (counting vjt's persistent user session). The fourth tab tried
+to log in and got `503 network_busy` instantly — capacity check
+runs before captcha, so the rejected client never burned a Turnstile
+token. The friendly message rendered: "This network is at capacity.
+Try again in a few minutes." Switched to per-client cap by re-
+binding `max_per_client=1` and `max_concurrent_sessions=10`; the
+fifth attempt hit `429 too_many_sessions` with "You're already
+connected to this network from another device or tab." The
+admission stack worked exactly as the spec promised. It's the
+deploy that wasn't ready until the gate caught what the suite
+couldn't.
+
+**Law:** the test suite is shaped to test the suite's view of the
+system. Three boundaries — env-var pipelines, secure-context
+browser APIs, CSP allowlists — exist outside that view by
+construction. Real-browser e2e isn't a ceremony at the end of a
+ship; it's the first measurement against a different shape, and
+when it breaks, what it surfaces is the difference between the
+view and the system. Any deploy whose only validation is "the
+suite is green" has answered a different question than the one
+the operator asked.
+
+**Law:** plan-fix-first applies to deploy-time bugs, not just spec
+drift. The original codification (Plan 1, S21) was about catching
+spec divergence before the cluster inherited it. Task 14 reused
+the principle for three real production failures discovered at
+the deploy boundary; each landed as a side-worktree commit
+(`cluster/t31-deploy-fix`) ff-merged to main between deploys, with
+its own commit message naming what was wrong and why the unit
+suite missed it. The pattern is "the plan and the deploy are both
+spec layers; each can carry bugs; fix the bug at the layer it
+lives in, then proceed with the original work."
+
+T31 closes a chapter that started as "max 3 connections per IP"
+on a CP11 azzurra constraint and ended as a three-tier admission
+stack with provider-pluggable captcha, a per-network failure
+circuit-breaker, an operator-bind verb, and three deploy-config
+hardening fixes nobody knew were missing until a browser opened.
+Forty-one commits ahead of origin became sixty-nine became zero
+when vjt said "sure push no problem". The next cluster trajectory
+(text-polish polish-deferred → M2 NickServ-IDP → anon-webirc → P4-V)
+inherits an admission stack that has been stress-tested in
+production by the only test that could have stress-tested it.
