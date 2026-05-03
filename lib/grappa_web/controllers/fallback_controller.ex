@@ -37,12 +37,7 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_credentials
            | :invalid_line
            | :unauthorized
-           | :client_cap_exceeded
-           | :network_cap_exceeded
-           | {:network_circuit_open, non_neg_integer()}
-           | :captcha_required
-           | :captcha_failed
-           | :captcha_provider_unavailable
+           | Grappa.Admission.error()
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do

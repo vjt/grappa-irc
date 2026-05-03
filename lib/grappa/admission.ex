@@ -66,6 +66,8 @@ defmodule Grappa.Admission do
           | :network_cap_exceeded
           | {:network_circuit_open, non_neg_integer()}
 
+  @type error :: capacity_error() | Captcha.error()
+
   @default_max_per_client_per_network Application.compile_env(
                                         :grappa,
                                         [:admission, :default_max_per_client_per_network],
