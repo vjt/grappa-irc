@@ -22,6 +22,8 @@ defmodule Grappa.Networks.Network do
   @type t :: %__MODULE__{
           id: integer() | nil,
           slug: String.t() | nil,
+          max_concurrent_sessions: non_neg_integer() | nil,
+          max_per_client: non_neg_integer() | nil,
           servers: [Server.t()] | Ecto.Association.NotLoaded.t(),
           credentials: [Credential.t()] | Ecto.Association.NotLoaded.t(),
           inserted_at: DateTime.t() | nil,
@@ -30,6 +32,8 @@ defmodule Grappa.Networks.Network do
 
   schema "networks" do
     field :slug, :string
+    field :max_concurrent_sessions, :integer
+    field :max_per_client, :integer
 
     has_many :servers, Server
     has_many :credentials, Credential
@@ -52,9 +56,11 @@ defmodule Grappa.Networks.Network do
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(network, attrs) do
     network
-    |> cast(attrs, [:slug])
+    |> cast(attrs, [:slug, :max_concurrent_sessions, :max_per_client])
     |> validate_required([:slug])
     |> validate_change(:slug, &validate_slug/2)
+    |> validate_number(:max_concurrent_sessions, greater_than: 0)
+    |> validate_number(:max_per_client, greater_than: 0)
     |> unique_constraint(:slug)
   end
 
