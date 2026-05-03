@@ -1449,14 +1449,14 @@ defmodule Grappa.Admission do
   end
 
   defp count_live_sessions(network_id) do
-    # Registry stores keys as `{subject, network_id}`. count_match's
-    # `key` arg is matched as an Erlang term, not a match-spec — so
-    # `{:_, network_id}` would only count entries with the literal atom
-    # `:_` as the first tuple element, never matching real subjects.
-    # count_select with an explicit match-spec is the correct API for
-    # filtering by partial key shape.
+    # Registry keys are `{subject, network_id}` (subject = `{:user|:visitor, id}`).
+    # Count entries with any subject matching this network_id. The match-spec
+    # head `{{:_, network_id}, :_, :_}` literally interpolates network_id at
+    # construction time — `:_` matches any subject; the integer matches itself.
+    # `count_match/3` won't work here: its `key` arg is matched as a plain
+    # Erlang term (`:_` is a literal atom inside a tuple, not a wildcard).
     Registry.count_select(Grappa.SessionRegistry, [
-      {{{:_, :"$1"}, :_, :_}, [{:==, :"$1", network_id}], [true]}
+      {{{:_, network_id}, :_, :_}, [], [true]}
     ])
   end
 
