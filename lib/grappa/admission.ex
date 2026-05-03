@@ -40,10 +40,9 @@ defmodule Grappa.Admission do
   import Ecto.Query
 
   alias Grappa.Accounts.Session, as: AccountSession
-  alias Grappa.Admission.NetworkCircuit
+  alias Grappa.Admission.{Captcha, NetworkCircuit}
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.Repo
-  alias Grappa.Admission.Captcha
   alias Grappa.Visitors.Visitor
 
   @type subject_kind :: :user | :visitor
@@ -182,10 +181,8 @@ defmodule Grappa.Admission do
   @spec verify_captcha(String.t() | nil, String.t() | nil) ::
           :ok | {:error, Captcha.error()}
   def verify_captcha(token, ip) do
-    provider =
-      Application.get_env(:grappa, :admission, [])
-      |> Keyword.get(:captcha_provider, Grappa.Admission.Captcha.Disabled)
-
+    config = Application.get_env(:grappa, :admission, [])
+    provider = Keyword.get(config, :captcha_provider, Grappa.Admission.Captcha.Disabled)
     provider.verify(token, ip)
   end
 end
