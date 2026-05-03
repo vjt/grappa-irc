@@ -4,6 +4,7 @@ defmodule Grappa.Application do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.Admission,
       Grappa.Bootstrap,
       Grappa.PubSub,
       Grappa.Repo,
@@ -51,6 +52,11 @@ defmodule Grappa.Application do
         # so the table MUST exist before the first session spawn. See
         # `Grappa.Session.Backoff` moduledoc for the curve + rationale.
         Grappa.Session.Backoff,
+        # Grappa.Admission.NetworkCircuit (T31): both ETS-backed
+        # singletons that must exist before the first session spawn or
+        # admission check. NetworkCircuit funnels writes through its
+        # GenServer; the named table is created in init/1.
+        Grappa.Admission.NetworkCircuit,
         # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
         # default (3 restarts in 5s) is GLOBAL across all children; one
         # upstream network-wide outage causing several Session.Server
