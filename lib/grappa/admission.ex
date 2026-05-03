@@ -19,7 +19,7 @@ defmodule Grappa.Admission do
   | cap                 | applies to                | source                                         |
   |---------------------|---------------------------|------------------------------------------------|
   | NetworkCircuit      | all flows                 | ETS via `Admission.NetworkCircuit.check/1`     |
-  | network total       | all flows                 | `Registry.count_match/3` on SessionRegistry    |
+  | network total       | all flows                 | `Registry.count_select/2` on SessionRegistry   |
   | client per network  | flows with non-nil client | SQL union over accounts_sessions               |
 
   Bootstrap flows (`:bootstrap_user`, `:bootstrap_visitor`) carry
