@@ -50,7 +50,8 @@ defmodule Grappa.Accounts.Session do
           last_seen_at: DateTime.t() | nil,
           revoked_at: DateTime.t() | nil,
           user_agent: String.t() | nil,
-          ip: String.t() | nil
+          ip: String.t() | nil,
+          client_id: String.t() | nil
         }
 
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -63,9 +64,10 @@ defmodule Grappa.Accounts.Session do
     field :revoked_at, :utc_datetime_usec
     field :user_agent, :string
     field :ip, :string
+    field :client_id, :string
   end
 
-  @cast_fields [:user_id, :visitor_id, :created_at, :last_seen_at, :ip, :user_agent]
+  @cast_fields [:user_id, :visitor_id, :created_at, :last_seen_at, :ip, :user_agent, :client_id]
   @required_fields [:created_at, :last_seen_at]
 
   @doc """

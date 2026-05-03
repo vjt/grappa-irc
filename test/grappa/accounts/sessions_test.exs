@@ -115,6 +115,35 @@ defmodule Grappa.Accounts.SessionsTest do
       refute cs.valid?
       assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).user_id
     end
+
+    test "accepts and round-trips client_id" do
+      user = Grappa.AuthFixtures.user_fixture()
+      now = DateTime.utc_now()
+
+      attrs = %{
+        user_id: user.id,
+        created_at: now,
+        last_seen_at: now,
+        client_id: "550e8400-e29b-41d4-a716-446655440000"
+      }
+
+      changeset = Grappa.Accounts.Session.changeset(%Grappa.Accounts.Session{}, attrs)
+      assert changeset.valid?
+      assert {:ok, session} = Grappa.Repo.insert(changeset)
+      assert session.client_id == "550e8400-e29b-41d4-a716-446655440000"
+    end
+
+    test "client_id is optional (nil for mix-task / legacy rows)" do
+      user = Grappa.AuthFixtures.user_fixture()
+      now = DateTime.utc_now()
+
+      attrs = %{user_id: user.id, created_at: now, last_seen_at: now}
+      changeset = Grappa.Accounts.Session.changeset(%Grappa.Accounts.Session{}, attrs)
+
+      assert changeset.valid?
+      assert {:ok, session} = Grappa.Repo.insert(changeset)
+      assert session.client_id == nil
+    end
   end
 
   describe "authenticate/1" do
