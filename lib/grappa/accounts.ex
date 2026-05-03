@@ -144,24 +144,36 @@ defmodule Grappa.Accounts do
   Authorization-bearer transport stays a single token namespace).
 
   `ip` and `user_agent` are recorded for audit; both may be `nil`
-  (mix tasks bypass the HTTP surface and have neither). The returned
-  `Session.t().id` IS the bearer token to hand back to the client.
+  (mix tasks bypass the HTTP surface and have neither). The optional
+  `opts` keyword list accepts `client_id:` (the opaque device identifier
+  extracted from `X-Grappa-Client-Id` by `GrappaWeb.Plugs.Authn`); when
+  present it is stored on the row so `Grappa.Admission.check_capacity/1`
+  can count per-(client, network) sessions. The returned `Session.t().id`
+  IS the bearer token to hand back to the client.
   """
-  @spec create_session(subject(), String.t() | nil, String.t() | nil) ::
+  @spec create_session(subject(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, Session.t()} | {:error, Ecto.Changeset.t()}
-  def create_session({:user, user_id}, ip, user_agent) when is_binary(user_id) do
-    do_create_session(%{user_id: user_id, ip: ip, user_agent: user_agent})
+  def create_session(subject, ip, user_agent, opts \\ [])
+
+  def create_session({:user, user_id}, ip, user_agent, opts) when is_binary(user_id) do
+    do_create_session(%{user_id: user_id, ip: ip, user_agent: user_agent}, opts)
   end
 
-  def create_session({:visitor, visitor_id}, ip, user_agent) when is_binary(visitor_id) do
-    do_create_session(%{visitor_id: visitor_id, ip: ip, user_agent: user_agent})
+  def create_session({:visitor, visitor_id}, ip, user_agent, opts) when is_binary(visitor_id) do
+    do_create_session(%{visitor_id: visitor_id, ip: ip, user_agent: user_agent}, opts)
   end
 
-  defp do_create_session(attrs) do
+  defp do_create_session(attrs, opts) do
     now = DateTime.utc_now()
 
+    extra =
+      case Keyword.get(opts, :client_id) do
+        nil -> %{created_at: now, last_seen_at: now}
+        client_id -> %{created_at: now, last_seen_at: now, client_id: client_id}
+      end
+
     %Session{}
-    |> Session.changeset(Map.merge(attrs, %{created_at: now, last_seen_at: now}))
+    |> Session.changeset(Map.merge(attrs, extra))
     |> validate_subject_exists()
     |> Repo.insert()
   end

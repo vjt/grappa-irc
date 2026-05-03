@@ -125,7 +125,9 @@ defmodule GrappaWeb.AuthController do
       password: password,
       ip: format_ip(conn),
       user_agent: user_agent(conn),
-      token: extract_bearer(conn)
+      token: extract_bearer(conn),
+      captcha_token: conn.params["captcha_token"],
+      client_id: extract_client_id(conn)
     }
 
     case Login.login(input, []) do
@@ -148,8 +150,13 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(conn, _, :password_mismatch),
     do: send_error(conn, 401, "password_mismatch")
 
-  defp visitor_error_response(conn, _, :ip_cap_exceeded),
-    do: send_error(conn, 429, "ip_cap_exceeded")
+  defp visitor_error_response(conn, _, reason)
+       when reason in [:client_cap_exceeded, :network_cap_exceeded, :network_circuit_open],
+       do: send_error(conn, 429, Atom.to_string(reason))
+
+  defp visitor_error_response(conn, _, reason)
+       when reason in [:captcha_required, :captcha_failed, :captcha_provider_unavailable],
+       do: send_error(conn, 403, Atom.to_string(reason))
 
   defp visitor_error_response(conn, nick, :anon_collision),
     do: anon_collision_response(conn, nick)
@@ -189,6 +196,25 @@ defmodule GrappaWeb.AuthController do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] when token != "" -> token
       _ -> nil
+    end
+  end
+
+  # Mirrors GrappaWeb.Plugs.Authn.extract_client_id/1 — /auth/login is
+  # NOT behind :authn (login mints the token), so we re-read the header
+  # inline. Task 6 (AuthController integration) wires this into the full
+  # admission + captcha flow.
+  @client_id_regex ~r/\A[A-Za-z0-9_-]+\z/
+
+  defp extract_client_id(conn) do
+    case get_req_header(conn, "x-grappa-client-id") do
+      [value | _] when is_binary(value) ->
+        if byte_size(value) > 0 and byte_size(value) <= 64 and
+             String.match?(value, @client_id_regex),
+           do: value,
+           else: nil
+
+      _ ->
+        nil
     end
   end
 

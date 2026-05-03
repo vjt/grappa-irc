@@ -17,67 +17,78 @@ defmodule Grappa.Visitors.Login do
     3. Look up an existing `Visitor` row by `(nick, network_slug)`.
     4. Branch on `(visitor existence × password_encrypted)`:
 
-       * **Case 1 — no row.** Check per-IP cap (W3), provision a
-         fresh anon visitor, spawn `Session.Server` with
+       * **Case 1 — no row.** Check per-(client, network) cap via
+         `Grappa.Admission.check_capacity/1` (T31), verify CAPTCHA,
+         provision a fresh anon visitor, spawn `Session.Server` with
          `notify_pid: self()` + `notify_ref: ref`, block on
-         `{:session_ready, ref}` (8s default). On any failure
-         post-provisioning the just-created anon row is purged so
-         a retry starts clean. On success, mint an
-         `Accounts.Session` and return `{:ok, %{visitor, token}}`.
+         `{:session_ready, ref}`. On any spawn failure the
+         just-created anon row is purged so a retry starts clean.
+         On success, `NetworkCircuit.record_success/1` clears prior
+         failure state; on spawn failure, `NetworkCircuit.record_failure/1`
+         bumps the circuit. Mint an `Accounts.Session` and return
+         `{:ok, %{visitor, token}}`.
 
        * **Case 2 — registered (`password_encrypted` set).**
-         Require password. Constant-time compare via
-         `Plug.Crypto.secure_compare/2` to avoid timing oracles.
+         Check capacity, then require password. Constant-time compare
+         via `Plug.Crypto.secure_compare/2` to avoid timing oracles.
          On match: revoke prior `accounts_sessions` rows
          (`Accounts.revoke_sessions_for_visitor/1`),
          `Visitors.purge_if_anon/1` per W11 (no-op for registered
          but mirror-symmetric with other deletion sites),
-         `Session.stop_session/2` (idempotent), respawn fresh
-         Session.Server, send `PRIVMSG NickServ :IDENTIFY <pwd>`
+         `Session.stop_session/2` (idempotent),
+         `Session.Backoff.reset/2` (clear crash-backoff from prior
+         session so an explicit user re-login isn't penalised),
+         respawn fresh Session.Server, `NetworkCircuit.record_success/1`
+         on welcome, send `PRIVMSG NickServ :IDENTIFY <pwd>`
          post-readiness so NickServ + the +r MODE observer
          (Task 15) can reconfirm registration, then mint a fresh
          Accounts.Session.
 
-       * **Case 3 — anon (`password_encrypted` nil).** Require a
-         valid bearer token that resolves (via
-         `Accounts.authenticate/1`) to THIS visitor's id. On
-         match: rotate token (revoke old, mint new), keep the
-         live Session.Server (no preemption — same client). On
-         absent / wrong token: `:anon_collision`. The original
-         holder must wait for natural expiration (W9) to free the
-         nick.
+       * **Case 3 — anon (`password_encrypted` nil).** Check
+         capacity, then require a valid bearer token that resolves
+         (via `Accounts.authenticate/1`) to THIS visitor's id. On
+         match: rotate token (revoke old, mint new), keep the live
+         Session.Server (no preemption — same client). On absent /
+         wrong token: `:anon_collision`. The original holder must
+         wait for natural expiration (W9) to free the nick.
 
-  Per-IP cap is checked only on case-1 (provisioning); reattaches
-  don't grow the IP footprint.
-
-  Synchronous probe budget defaults to 8s (W5). Test paths can
-  shrink it via the `:login_timeout_ms` opt to keep the timeout
-  branch cheap to exercise.
+  Synchronous probe budget configured via `:login_probe_timeout_ms`
+  (default 3s) so nginx 504 never bites — meaningful error reaches
+  client in <5s. Test paths can shrink it via the `:login_timeout_ms`
+  opt to keep the timeout branch cheap to exercise.
   """
 
   alias Grappa.{Accounts, Networks, Repo, Session, Visitors}
+  alias Grappa.Admission.NetworkCircuit
   alias Grappa.Auth.IdentifierClassifier
+  alias Grappa.Session.Backoff
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
   require Logger
 
   @visitor_network Application.compile_env(:grappa, :visitor_network)
-  @max_per_ip Application.compile_env(:grappa, :max_visitors_per_ip, 5)
-  @login_timeout_ms 8_000
+  @login_timeout_ms Application.compile_env(:grappa, [:admission, :login_probe_timeout_ms], 3_000)
 
   @type input :: %{
           required(:nick) => String.t(),
           required(:password) => String.t() | nil,
           required(:ip) => String.t() | nil,
           required(:user_agent) => String.t() | nil,
-          required(:token) => String.t() | nil
+          required(:token) => String.t() | nil,
+          required(:captcha_token) => String.t() | nil,
+          required(:client_id) => String.t() | nil
         }
 
   @type result :: %{visitor: Visitor.t(), token: Ecto.UUID.t()}
 
   @type login_error ::
           :malformed_nick
-          | :ip_cap_exceeded
+          | :client_cap_exceeded
+          | :network_cap_exceeded
+          | :network_circuit_open
+          | :captcha_required
+          | :captcha_failed
+          | :captcha_provider_unavailable
           | :upstream_unreachable
           | :timeout
           | :no_server
@@ -89,14 +100,19 @@ defmodule Grappa.Visitors.Login do
   @doc """
   Run the synchronous login flow against the configured visitor
   network. `input` carries the request fields (`nick`, `password`,
-  `ip`, `user_agent`, `token`). `opts` accepts `:login_timeout_ms`
-  for tests that need to shrink the 8s W5 budget.
+  `ip`, `user_agent`, `token`, `captcha_token`, `client_id`). `opts`
+  accepts `:login_timeout_ms` for tests that need to shrink the probe
+  budget.
 
   Returns `{:ok, %{visitor, token}}` on success or
   `{:error, login_error()}` with the failure reason.
   """
   @spec login(input(), keyword()) :: {:ok, result()} | {:error, login_error()}
-  def login(%{nick: _, password: _, ip: _, user_agent: _, token: _} = input, opts \\ []) do
+  def login(
+        %{nick: _, password: _, ip: _, user_agent: _, token: _, captcha_token: _, client_id: _} =
+          input,
+        opts \\ []
+      ) do
     timeout = Keyword.get(opts, :login_timeout_ms, @login_timeout_ms)
 
     with :ok <- validate_nick(input.nick),
@@ -127,14 +143,25 @@ defmodule Grappa.Visitors.Login do
 
   # Case 1 — provision new anon
   defp dispatch(nil, input, network, timeout) do
-    with :ok <- check_ip_cap(input.ip),
+    capacity_input = %{
+      subject_kind: :visitor,
+      subject_id: nil,
+      network_id: network.id,
+      client_id: input.client_id,
+      flow: :login_fresh
+    }
+
+    with :ok <- Grappa.Admission.check_capacity(capacity_input),
+         :ok <- Grappa.Admission.verify_captcha(input.captcha_token, input.ip),
          {:ok, visitor} <-
            Visitors.find_or_provision_anon(input.nick, network.slug, input.ip) do
       case continue_case_1(visitor, network, input, timeout) do
         {:ok, _} = ok ->
+          :ok = NetworkCircuit.record_success(network.id)
           ok
 
         {:error, _} = err ->
+          :ok = NetworkCircuit.record_failure(network.id)
           # Purge the just-provisioned anon row so a retry starts
           # clean. purge_if_anon/1 short-circuits on registered rows
           # (which can't be reached in case 1 anyway) — the call is
@@ -148,14 +175,32 @@ defmodule Grappa.Visitors.Login do
   # Case 2 — registered, password gate
   defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeout)
        when is_binary(pwd) do
-    with :ok <- check_password(input.password, pwd) do
+    capacity_input = %{
+      subject_kind: :visitor,
+      subject_id: visitor.id,
+      network_id: network.id,
+      client_id: input.client_id,
+      flow: :login_existing
+    }
+
+    with :ok <- Grappa.Admission.check_capacity(capacity_input),
+         :ok <- check_password(input.password, pwd) do
       preempt_and_respawn(visitor, network, input, timeout)
     end
   end
 
   # Case 3 — anon, token gate
-  defp dispatch(%Visitor{password_encrypted: nil} = visitor, input, _, _) do
-    with :ok <- check_anon_token(input.token, visitor.id) do
+  defp dispatch(%Visitor{password_encrypted: nil} = visitor, input, network, _) do
+    capacity_input = %{
+      subject_kind: :visitor,
+      subject_id: visitor.id,
+      network_id: network.id,
+      client_id: input.client_id,
+      flow: :login_existing
+    }
+
+    with :ok <- Grappa.Admission.check_capacity(capacity_input),
+         :ok <- check_anon_token(input.token, visitor.id) do
       rotate_token(visitor, input)
     end
   end
@@ -163,16 +208,6 @@ defmodule Grappa.Visitors.Login do
   defp continue_case_1(visitor, network, input, timeout) do
     with {:ok, _} <- spawn_and_await(visitor, network, timeout) do
       issue_token(visitor, input)
-    end
-  end
-
-  defp check_ip_cap(nil), do: :ok
-
-  defp check_ip_cap(ip) do
-    if Visitors.count_active_for_ip(ip) >= @max_per_ip do
-      {:error, :ip_cap_exceeded}
-    else
-      :ok
     end
   end
 
@@ -200,8 +235,10 @@ defmodule Grappa.Visitors.Login do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
     :ok = Visitors.purge_if_anon(visitor.id)
     :ok = Session.stop_session({:visitor, visitor.id}, network.id)
+    :ok = Backoff.reset({:visitor, visitor.id}, network.id)
 
     with {:ok, _} <- spawn_and_await(visitor, network, timeout) do
+      :ok = NetworkCircuit.record_success(network.id)
       send_post_login_identify(visitor, network, input.password)
       issue_token(visitor, input)
     end
@@ -301,7 +338,12 @@ defmodule Grappa.Visitors.Login do
 
   defp issue_token(visitor, input) do
     {:ok, session} =
-      Accounts.create_session({:visitor, visitor.id}, input.ip, input.user_agent)
+      Accounts.create_session(
+        {:visitor, visitor.id},
+        input.ip,
+        input.user_agent,
+        client_id: input.client_id
+      )
 
     {:ok, %{visitor: visitor, token: session.id}}
   end

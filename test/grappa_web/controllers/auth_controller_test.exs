@@ -18,7 +18,19 @@ defmodule GrappaWeb.AuthControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
+  alias Grappa.Admission.NetworkCircuit
   alias Grappa.Visitors.Visitor
+
+  # NetworkCircuit is ETS-backed and survives Ecto sandbox resets.
+  # Clear before each test so spawn failures from one test don't trip
+  # the threshold for a subsequent test that creates a network with the
+  # same auto-increment id.
+  setup do
+    for {key, _, _, _, _} <- NetworkCircuit.entries(),
+        do: :ets.delete(:admission_network_circuit_state, key)
+
+    :ok
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -139,17 +151,37 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "malformed_nick"
     end
 
-    test "ip cap exceeded → 429 ip_cap_exceeded", %{conn: conn} do
-      # config/test.exs: max_visitors_per_ip = 2. Provision 2 → 3rd 429s.
-      # Phoenix.ConnTest default remote_ip is {127, 0, 0, 1}.
-      {_, port} = start_server()
-      setup_visitor_network(port)
+    test "client_cap_exceeded → 429 client_cap_exceeded", %{conn: conn} do
+      # T31: W3 per-IP cap retired in favour of per-(client, network) cap
+      # via Grappa.Admission.check_capacity/1. Set cap to 1, seed one
+      # existing session for client-id "test-device", then attempt a second
+      # login from the same device.
+      {_, _} = setup_visitor_network(pick_unused_port())
 
-      {:ok, _} = Visitors.find_or_provision_anon("aa", "azzurra", "127.0.0.1")
-      {:ok, _} = Visitors.find_or_provision_anon("bb", "azzurra", "127.0.0.1")
+      {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
 
-      conn = post(conn, "/auth/login", %{"identifier" => "cc"})
-      assert json_response(conn, 429)["error"] == "ip_cap_exceeded"
+      {:ok, capped_net} =
+        net
+        |> Grappa.Networks.Network.changeset(%{max_per_client: 1})
+        |> Repo.update()
+
+      {:ok, existing_visitor} =
+        Visitors.find_or_provision_anon("existing_user", capped_net.slug, "127.0.0.1")
+
+      {:ok, _} =
+        Accounts.create_session(
+          {:visitor, existing_visitor.id},
+          "127.0.0.1",
+          nil,
+          client_id: "test-device"
+        )
+
+      conn =
+        conn
+        |> put_req_header("x-grappa-client-id", "test-device")
+        |> post("/auth/login", %{"identifier" => "cc"})
+
+      assert json_response(conn, 429)["error"] == "client_cap_exceeded"
     end
 
     test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do
@@ -259,7 +291,9 @@ defmodule GrappaWeb.AuthControllerTest do
             password: nil,
             ip: "1.2.3.4",
             user_agent: "ua",
-            token: nil
+            token: nil,
+            captcha_token: nil,
+            client_id: nil
           })
         end)
 
@@ -293,7 +327,9 @@ defmodule GrappaWeb.AuthControllerTest do
             password: nil,
             ip: "1.2.3.4",
             user_agent: "ua",
-            token: nil
+            token: nil,
+            captcha_token: nil,
+            client_id: nil
           })
         end)
 
@@ -329,7 +365,9 @@ defmodule GrappaWeb.AuthControllerTest do
             password: nil,
             ip: "1.2.3.4",
             user_agent: "ua",
-            token: nil
+            token: nil,
+            captcha_token: nil,
+            client_id: nil
           })
         end)
 
