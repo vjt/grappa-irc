@@ -125,6 +125,28 @@ defmodule Grappa.Session.BackoffTest do
     end
   end
 
+  describe "reset/2" do
+    test "clears state for explicit (subject, network)" do
+      :ok = Backoff.record_failure({:visitor, "v1"}, 7)
+      :ok = Backoff.record_failure({:visitor, "v1"}, 7)
+      _ = :sys.get_state(Backoff)
+
+      assert Backoff.failure_count({:visitor, "v1"}, 7) == 2
+
+      :ok = Backoff.reset({:visitor, "v1"}, 7)
+      _ = :sys.get_state(Backoff)
+
+      assert Backoff.failure_count({:visitor, "v1"}, 7) == 0
+      assert Backoff.wait_ms({:visitor, "v1"}, 7) == 0
+    end
+
+    test "is no-op for fresh key" do
+      :ok = Backoff.reset({:visitor, "fresh"}, 99)
+      _ = :sys.get_state(Backoff)
+      assert Backoff.failure_count({:visitor, "fresh"}, 99) == 0
+    end
+  end
+
   describe "ETS persistence across caller crashes" do
     test "failure recorded by a now-dead caller is still queryable" do
       key_subject = {:visitor, "ephemeral"}
