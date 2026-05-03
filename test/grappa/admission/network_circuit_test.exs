@@ -246,6 +246,22 @@ defmodule Grappa.Admission.NetworkCircuitTest do
 
       refute_receive {:telemetry, [:grappa, :admission, :circuit, :close], _, _}, 100
     end
+
+    test "does NOT emit :close on success when prior entry is :closed (sub-threshold accruing failures)" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 1005
+
+      # Accrue failures below threshold — entry exists in :closed state.
+      :ok = NetworkCircuit.record_failure(net_id)
+      :ok = NetworkCircuit.record_failure(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      :ok = NetworkCircuit.record_success(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      # No open→closed transition occurred — no event must fire.
+      refute_receive {:telemetry, [:grappa, :admission, :circuit, :close], _, _}, 100
+    end
   end
 
   describe "telemetry — circuit close on cooldown expiry" do

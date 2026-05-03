@@ -128,10 +128,11 @@ defmodule Grappa.Admission.NetworkCircuit do
 
         if now >= cooled_at_ms do
           # Cast the expiry notification so the GenServer emits exactly one
-          # [:grappa, :admission, :circuit, :close, :cooldown_expired] event per
-          # transition. Mailbox serialization + ETS-state recheck inside the
-          # cast handler guarantee exactly-once delivery even if concurrent
-          # callers all observe the same expired cooldown simultaneously.
+          # [:grappa, :admission, :circuit, :close] event with metadata
+          # %{reason: :cooldown_expired} per transition. Mailbox serialization
+          # + ETS-state recheck inside the cast handler guarantee exactly-once
+          # delivery even if concurrent callers all observe the same expired
+          # cooldown simultaneously.
           GenServer.cast(__MODULE__, {:cooldown_expire, network_id})
           :ok
         else
@@ -204,13 +205,19 @@ defmodule Grappa.Admission.NetworkCircuit do
   end
 
   def handle_cast({:success, network_id}, state) do
-    # Emit close event only if there was an ETS entry to clear.
-    # A success on a network that never had a circuit entry is a noop w.r.t.
-    # telemetry — don't emit a spurious :close event.
-    had_entry = :ets.lookup(@table, network_id) != []
+    # Emit close event only on a true open→closed transition. A sub-threshold
+    # accruing-failures entry (state :closed) being cleared on success is not
+    # a circuit close — the circuit was never open. Phase 5 PromEx consumers
+    # count transitions; a spurious :close would skew the metric.
+    was_open =
+      case :ets.lookup(@table, network_id) do
+        [{_, _, _, :open, _}] -> true
+        _ -> false
+      end
+
     :ets.delete(@table, network_id)
 
-    if had_entry do
+    if was_open do
       Telemetry.circuit_close(network_id, :success)
     end
 

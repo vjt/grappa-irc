@@ -50,7 +50,8 @@ defmodule Grappa.Admission.Telemetry do
 
   @spec capacity_reject(atom(), term(), integer(), String.t() | nil) :: :ok
   def capacity_reject(flow, error, network_id, client_id)
-      when is_atom(flow) and is_integer(network_id) do
+      when is_atom(flow) and is_integer(network_id) and
+             (is_binary(client_id) or is_nil(client_id)) do
     :telemetry.execute(
       [:grappa, :admission, :capacity, :reject],
       %{},
