@@ -23,7 +23,7 @@ defmodule Grappa.Admission.Telemetry do
 
     * `[:grappa, :admission, :capacity, :reject]`
       measurements: `%{}`
-      metadata: `%{flow: atom(), error: atom() | tuple(), network_id: integer(), client_id: String.t() | nil}`
+      metadata: `%{flow: atom(), error: atom() | tuple(), network_id: integer(), client_id: Grappa.ClientId.t() | nil}`
       Emitted from `Admission.check_capacity/1` on every rejection.
       Distinct concern from `:circuit, :open` — fires on every rejected
       candidate during an open window, not just on the transition.
@@ -52,7 +52,7 @@ defmodule Grappa.Admission.Telemetry do
     )
   end
 
-  @spec capacity_reject(atom(), term(), integer(), String.t() | nil) :: :ok
+  @spec capacity_reject(atom(), term(), integer(), Grappa.ClientId.t() | nil) :: :ok
   def capacity_reject(flow, error, network_id, client_id)
       when is_atom(flow) and is_integer(network_id) and
              (is_binary(client_id) or is_nil(client_id)) do
