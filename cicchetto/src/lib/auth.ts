@@ -41,6 +41,20 @@ export function setToken(value: string | null): void {
   setTokenSignal(value);
 }
 
+// M-cic-6 — `setOn401Handler` used to fire as a module-load side
+// effect; importing `auth.ts` mutated the global `api` module's
+// handler slot before any explicit bootstrap point ran. That made
+// test isolation fragile (every test importing auth.ts wired the
+// handler before `vi.clearAllMocks()` could fire) and tied
+// dead-token-detect wiring to module-graph load order rather than to
+// an explicit application bootstrap. `bootstrapAuth()` is called
+// once from `main.tsx` after `applyTheme()` and before `render()`,
+// so the handler is wired exactly once and only when the application
+// genuinely starts.
+function handleUnauthorized(): void {
+  setToken(null);
+}
+
 // Wire the api module's 401 handler to clear our token. Without this,
 // a server-side revoke or token expiry surfaces only as ApiError(401)
 // at each call site — the bearer stays in localStorage, the UI looks
@@ -48,7 +62,9 @@ export function setToken(value: string | null): void {
 // REST call 401s. Centralizing the clear here means: one server 401
 // → setToken(null) → token signal goes null → socket.ts createEffect
 // disconnects the WS, RequireAuth bounces to /login.
-api.setOn401Handler(() => setToken(null));
+export function bootstrapAuth(): void {
+  api.setOn401Handler(handleUnauthorized);
+}
 
 export function isAuthenticated(): boolean {
   return tokenSignal() !== null;
