@@ -154,29 +154,50 @@ describe("auth signal store", () => {
     });
   });
 
-  it("registers an api 401 handler at module load that clears the token", async () => {
-    // We mock the api module's setOn401Handler to capture whatever
-    // auth.ts hands it. Then we invoke that captured handler and assert
-    // it clears the token state. This proves the dead-token-detect
-    // wiring without relying on a real fetch — the api unit test
-    // covers the readError → handler-invoke side; this covers the
-    // handler-clears-token side.
-    let captured: (() => void) | null = null;
-    vi.doMock("../lib/api", () => ({
-      login: vi.fn(),
-      me: vi.fn(),
-      logout: vi.fn(),
-      setOn401Handler: vi.fn().mockImplementation((fn: () => void) => {
-        captured = fn;
-      }),
-    }));
-    localStorage.setItem("grappa-token", "tok-stale");
-    const auth = await import("../lib/auth");
-    expect(auth.token()).toBe("tok-stale");
-    expect(captured).not.toBeNull();
-    if (captured !== null) (captured as () => void)();
-    expect(auth.token()).toBeNull();
-    expect(localStorage.getItem("grappa-token")).toBeNull();
-    vi.doUnmock("../lib/api");
+  // M-cic-6 — `setOn401Handler` used to fire as a module-load side
+  // effect of `auth.ts`. Any test that imported `auth.ts` (directly or
+  // transitively, e.g. via `Login.tsx`) wired the global api module's
+  // 401 handler before Vitest's mock-reset window opened, leaking
+  // state across files. Move to an explicit `bootstrapAuth()` called
+  // once from `main.tsx`; importing the module no longer mutates
+  // the api module.
+  describe("bootstrapAuth() — explicit 401 handler wiring", () => {
+    it("does NOT register a 401 handler at module load", async () => {
+      let registrations = 0;
+      vi.doMock("../lib/api", () => ({
+        login: vi.fn(),
+        me: vi.fn(),
+        logout: vi.fn(),
+        setOn401Handler: vi.fn().mockImplementation(() => {
+          registrations++;
+        }),
+      }));
+      await import("../lib/auth");
+      expect(registrations).toBe(0);
+      vi.doUnmock("../lib/api");
+    });
+
+    it("registers a 401 handler that clears the token when bootstrapAuth is called", async () => {
+      let captured: (() => void) | null = null;
+      vi.doMock("../lib/api", () => ({
+        login: vi.fn(),
+        me: vi.fn(),
+        logout: vi.fn(),
+        setOn401Handler: vi.fn().mockImplementation((fn: () => void) => {
+          captured = fn;
+        }),
+      }));
+      localStorage.setItem("grappa-token", "tok-stale");
+      const auth = await import("../lib/auth");
+      expect(auth.token()).toBe("tok-stale");
+      // Pre-bootstrap: no handler captured yet.
+      expect(captured).toBeNull();
+      auth.bootstrapAuth();
+      expect(captured).not.toBeNull();
+      if (captured !== null) (captured as () => void)();
+      expect(auth.token()).toBeNull();
+      expect(localStorage.getItem("grappa-token")).toBeNull();
+      vi.doUnmock("../lib/api");
+    });
   });
 });

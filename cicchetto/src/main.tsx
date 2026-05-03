@@ -3,7 +3,7 @@ import { Route, Router, useNavigate } from "@solidjs/router";
 import { type Component, createEffect, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import Login from "./Login";
-import { isAuthenticated } from "./lib/auth";
+import { bootstrapAuth, isAuthenticated } from "./lib/auth";
 // Side-effect-only: registers the WS subscribe createRoot so per-
 // channel join effects fire once `user()` + `channelsBySlug()` resolve.
 // Pre-A4 this lifecycle was implicit (Shell imported `lib/networks`,
@@ -20,6 +20,14 @@ import "./themes/default.css";
 // FOUC on cold load and no flash on toggle (both themes ship in one CSS
 // file via :root[data-theme="..."] blocks).
 applyTheme();
+
+// Wire the api module's 401 → setToken(null) handler exactly once.
+// Must run before render() (any API call could 401 before the UI
+// fully mounts) and after the module graph has settled (so the
+// handler reference is stable for all subsequent api calls). See
+// `auth.ts > bootstrapAuth` for the rationale behind the explicit
+// bootstrap point.
+bootstrapAuth();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found in index.html");

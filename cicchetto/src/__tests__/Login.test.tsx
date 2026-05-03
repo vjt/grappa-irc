@@ -188,6 +188,11 @@ describe("Login", () => {
   //     after the form is gone.
   describe("captcha widget mount errors", () => {
     it("shows error toast when captcha CDN fails to load (H3)", async () => {
+      // Production code intentionally `console.warn`s the mount failure
+      // for operator-visible diagnostics (Login.tsx:123). The warn
+      // would otherwise print to the test runner stdout on every run;
+      // silence it for this single test instead of blanket-suppressing.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       vi.mocked(auth.login).mockRejectedValueOnce(
         new ApiError(400, "captcha_required", {
           site_key: "k",
@@ -211,6 +216,7 @@ describe("Login", () => {
       });
       // Button must be re-enabled so the user can retry.
       expect((button as HTMLButtonElement).disabled).toBe(false);
+      warnSpy.mockRestore();
     });
 
     it("shows generic message when provider is 'disabled' (H4)", async () => {

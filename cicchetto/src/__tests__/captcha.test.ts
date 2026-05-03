@@ -62,4 +62,29 @@ describe("mountCaptchaWidget", () => {
     cleanup();
     expect(removeMock).toHaveBeenCalledWith("widget-1");
   });
+
+  // M-cic-4 — `loadScript` rejects on `script.onerror` (CDN blocked,
+  // network failure, integrity mismatch). Without a test the error
+  // path is dead-code; we want the rejection shape to surface as a
+  // typed `Error` carrying the URL so the Login form's friendly
+  // "Captcha unavailable" toast (Login.tsx:125) keeps working.
+  test("rejects when the script tag fires onerror", async () => {
+    // Drop the pre-injected scripts so loadScript appends a fresh tag.
+    for (const s of document.head.querySelectorAll("script")) s.remove();
+
+    const promise = mountCaptchaWidget(
+      "turnstile",
+      document.createElement("div"),
+      "k",
+      () => undefined,
+    );
+    // jsdom does not actually fetch script src — we simulate the
+    // browser's failure path by dispatching `error` on the appended
+    // tag. The `loadScript` promise rejects via its `onerror` handler.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    for (const s of document.head.querySelectorAll("script")) {
+      s.dispatchEvent(new Event("error"));
+    }
+    await expect(promise).rejects.toThrow(/failed to load/);
+  });
 });
