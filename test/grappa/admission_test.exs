@@ -52,15 +52,22 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    # Note: testing network_cap_exceeded requires real Session.Server processes
-    # registered in the Registry, which isn't feasible in the Ecto.Sandbox test context.
-    # The registry count mechanism is tested via integration tests with real sessions.
-    # Here we test the path exists by setting a cap and verifying the check doesn't crash.
-    test "cap value is read from database", %{network: net} do
-      {:ok, _net} =
+    test "exceeded → :network_cap_exceeded", %{network: net} do
+      # Task 4 changeset rejects max_concurrent_sessions: 0 (validate_number
+      # greater_than: 0). Use cap=1 + register one fake live-session entry
+      # in SessionRegistry so Registry.count_match returns 1, tripping the
+      # cap. Registry entry is auto-removed when the test pid exits.
+      {:ok, net} =
         net
         |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
         |> Grappa.Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          Grappa.SessionRegistry,
+          {{:visitor, "fake-vid"}, net.id},
+          nil
+        )
 
       input = %{
         subject_kind: :visitor,
@@ -70,8 +77,7 @@ defmodule Grappa.AdmissionTest do
         flow: :login_fresh
       }
 
-      # Should not crash; returns :ok because no real sessions are registered
-      assert :ok = Admission.check_capacity(input)
+      assert {:error, :network_cap_exceeded} = Admission.check_capacity(input)
     end
   end
 
