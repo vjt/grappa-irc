@@ -20,7 +20,8 @@ defmodule Grappa.AdmissionTest do
   end
 
   describe "check_capacity/1 — network circuit gate" do
-    test "open circuit short-circuits with :network_circuit_open", %{network: net} do
+    test "open circuit short-circuits with {:network_circuit_open, retry_after}",
+         %{network: net} do
       for _ <- 1..NetworkCircuit.threshold() do
         :ok = NetworkCircuit.record_failure(net.id)
       end
@@ -35,7 +36,13 @@ defmodule Grappa.AdmissionTest do
         flow: :login_fresh
       }
 
-      assert {:error, :network_circuit_open} = Admission.check_capacity(input)
+      # Task 5: tuple shape carries retry_after seconds. Bare atom no
+      # longer occurs at runtime — FallbackController emits Retry-After
+      # header from the integer payload.
+      assert {:error, {:network_circuit_open, retry_after}} =
+               Admission.check_capacity(input)
+
+      assert is_integer(retry_after) and retry_after >= 0
     end
   end
 
