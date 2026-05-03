@@ -286,7 +286,8 @@ defmodule Grappa.Bootstrap do
   end
 
   @spec check_visitor_capacity(Visitor.t(), Network.t()) ::
-          :ok | {:error, :network_cap_exceeded | :network_circuit_open}
+          :ok
+          | {:error, :network_cap_exceeded | {:network_circuit_open, non_neg_integer()}}
   defp check_visitor_capacity(%Visitor{id: visitor_id}, %Network{id: network_id}) do
     Grappa.Admission.check_capacity(%{
       subject_kind: :visitor,

@@ -85,7 +85,7 @@ defmodule Grappa.Visitors.Login do
           :malformed_nick
           | :client_cap_exceeded
           | :network_cap_exceeded
-          | :network_circuit_open
+          | {:network_circuit_open, non_neg_integer()}
           | :captcha_required
           | :captcha_failed
           | :captcha_provider_unavailable

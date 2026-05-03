@@ -61,7 +61,10 @@ defmodule Grappa.Admission do
           flow: flow()
         }
 
-  @type capacity_error :: :client_cap_exceeded | :network_cap_exceeded | :network_circuit_open
+  @type capacity_error ::
+          :client_cap_exceeded
+          | :network_cap_exceeded
+          | {:network_circuit_open, non_neg_integer()}
 
   @default_max_per_client_per_network Application.compile_env(
                                         :grappa,
@@ -90,8 +93,15 @@ defmodule Grappa.Admission do
 
   defp check_circuit(network_id) do
     case NetworkCircuit.check(network_id) do
-      :ok -> :ok
-      {:error, :open, _} -> {:error, :network_circuit_open}
+      :ok ->
+        :ok
+
+      {:error, :open, retry_after} when is_integer(retry_after) ->
+        # Tuple shape preserves the cooldown payload all the way to the
+        # HTTP boundary, where FallbackController emits it as a
+        # `Retry-After` response header. Bare-atom would lose the
+        # cooldown — clients would have to guess the back-off interval.
+        {:error, {:network_circuit_open, retry_after}}
     end
   end
 

@@ -311,7 +311,8 @@ defmodule Grappa.Visitors.LoginTest do
       assert result == {:error, :network_cap_exceeded}
     end
 
-    test "network_circuit_open → {:error, :network_circuit_open}", %{network: net} do
+    test "network_circuit_open → {:error, {:network_circuit_open, retry_after}}",
+         %{network: net} do
       for _ <- 1..NetworkCircuit.threshold() do
         :ok = NetworkCircuit.record_failure(net.id)
       end
@@ -319,18 +320,20 @@ defmodule Grappa.Visitors.LoginTest do
       # Flush GenServer cast queue before checking.
       _ = :sys.get_state(NetworkCircuit)
 
-      result =
-        Login.login(%{
-          nick: "fresh",
-          password: nil,
-          ip: "1.2.3.4",
-          user_agent: nil,
-          token: nil,
-          captcha_token: nil,
-          client_id: "device-a"
-        })
+      # Task 5: Login surfaces the tuple shape so FallbackController can
+      # emit Retry-After. Bare atom would lose the cooldown payload.
+      assert {:error, {:network_circuit_open, retry_after}} =
+               Login.login(%{
+                 nick: "fresh",
+                 password: nil,
+                 ip: "1.2.3.4",
+                 user_agent: nil,
+                 token: nil,
+                 captcha_token: nil,
+                 client_id: "device-a"
+               })
 
-      assert result == {:error, :network_circuit_open}
+      assert is_integer(retry_after) and retry_after >= 0
     end
   end
 end
