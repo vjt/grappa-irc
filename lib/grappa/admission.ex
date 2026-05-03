@@ -57,7 +57,7 @@ defmodule Grappa.Admission do
           subject_kind: subject_kind(),
           subject_id: Ecto.UUID.t() | nil,
           network_id: integer(),
-          client_id: String.t() | nil,
+          client_id: Grappa.ClientId.t() | nil,
           flow: flow()
         }
 

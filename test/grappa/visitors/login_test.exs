@@ -253,12 +253,14 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, existing_visitor} =
         Visitors.find_or_provision_anon("old_user", capped_net.slug, "1.2.3.4")
 
+      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+
       {:ok, _} =
         Accounts.create_session(
           {:visitor, existing_visitor.id},
           "1.2.3.4",
           nil,
-          client_id: "device-a"
+          client_id: client_id
         )
 
       # Second login attempt from same client_id on same network should
@@ -271,7 +273,7 @@ defmodule Grappa.Visitors.LoginTest do
           user_agent: nil,
           token: nil,
           captcha_token: nil,
-          client_id: "device-a"
+          client_id: client_id
         })
 
       assert result == {:error, :client_cap_exceeded}
@@ -305,7 +307,7 @@ defmodule Grappa.Visitors.LoginTest do
           user_agent: nil,
           token: nil,
           captcha_token: nil,
-          client_id: "device-a"
+          client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
         })
 
       assert result == {:error, :network_cap_exceeded}
@@ -330,7 +332,7 @@ defmodule Grappa.Visitors.LoginTest do
                  user_agent: nil,
                  token: nil,
                  captcha_token: nil,
-                 client_id: "device-a"
+                 client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
                })
 
       assert is_integer(retry_after) and retry_after >= 0

@@ -116,7 +116,25 @@ defmodule Grappa.Accounts.SessionsTest do
       assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).user_id
     end
 
-    test "accepts and round-trips client_id" do
+    test "accepts and round-trips client_id (UUID v4)" do
+      user = Grappa.AuthFixtures.user_fixture()
+      now = DateTime.utc_now()
+      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+
+      attrs = %{
+        user_id: user.id,
+        created_at: now,
+        last_seen_at: now,
+        client_id: client_id
+      }
+
+      changeset = Session.changeset(%Session{}, attrs)
+      assert changeset.valid?
+      assert {:ok, session} = Grappa.Repo.insert(changeset)
+      assert session.client_id == client_id
+    end
+
+    test "rejects client_id that is not a UUID v4 (decision E cast)" do
       user = Grappa.AuthFixtures.user_fixture()
       now = DateTime.utc_now()
 
@@ -124,13 +142,12 @@ defmodule Grappa.Accounts.SessionsTest do
         user_id: user.id,
         created_at: now,
         last_seen_at: now,
-        client_id: "550e8400-e29b-41d4-a716-446655440000"
+        client_id: "not-a-uuid"
       }
 
-      changeset = Grappa.Accounts.Session.changeset(%Grappa.Accounts.Session{}, attrs)
-      assert changeset.valid?
-      assert {:ok, session} = Grappa.Repo.insert(changeset)
-      assert session.client_id == "550e8400-e29b-41d4-a716-446655440000"
+      changeset = Session.changeset(%Session{}, attrs)
+      refute changeset.valid?
+      assert "is invalid" in errors_on(changeset).client_id
     end
 
     test "client_id is optional (nil for mix-task / legacy rows)" do
@@ -138,7 +155,7 @@ defmodule Grappa.Accounts.SessionsTest do
       now = DateTime.utc_now()
 
       attrs = %{user_id: user.id, created_at: now, last_seen_at: now}
-      changeset = Grappa.Accounts.Session.changeset(%Grappa.Accounts.Session{}, attrs)
+      changeset = Session.changeset(%Session{}, attrs)
 
       assert changeset.valid?
       assert {:ok, session} = Grappa.Repo.insert(changeset)

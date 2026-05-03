@@ -33,7 +33,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: net.id,
-        client_id: "device-a",
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
       }
 
@@ -53,7 +53,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: net.id,
-        client_id: "device-a",
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
       }
 
@@ -85,7 +85,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: net.id,
-        client_id: "device-a",
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
       }
 
@@ -221,7 +221,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: net.id,
-        client_id: "device-a",
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
       }
 
@@ -234,7 +234,7 @@ defmodule Grappa.AdmissionTest do
                         flow: :login_fresh,
                         error: {:network_circuit_open, _},
                         network_id: ^net_id,
-                        client_id: "device-a"
+                        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
                       }},
                      500
     end
@@ -258,7 +258,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: capped_net.id,
-        client_id: "device-b",
+        client_id: "11111111-2222-4333-8444-555555555555",
         flow: :login_fresh
       }
 
@@ -271,7 +271,7 @@ defmodule Grappa.AdmissionTest do
                         flow: :login_fresh,
                         error: :network_cap_exceeded,
                         network_id: ^net_id,
-                        client_id: "device-b"
+                        client_id: "11111111-2222-4333-8444-555555555555"
                       }},
                      500
     end
@@ -283,7 +283,7 @@ defmodule Grappa.AdmissionTest do
         subject_kind: :visitor,
         subject_id: nil,
         network_id: net.id,
-        client_id: "device-c",
+        client_id: "99999999-aaaa-4bbb-8ccc-dddddddddddd",
         flow: :login_fresh
       }
 

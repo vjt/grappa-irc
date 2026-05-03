@@ -24,17 +24,17 @@ defmodule GrappaWeb.Plugs.ClientId do
 
   ## Wire shape
 
-  Accept any URL-safe ASCII string up to 64 bytes. The 64-byte cap
-  protects the schema (varchar) from absurd values without forcing a
-  UUID-strict regex that ties cicchetto's implementation choice to the
-  server contract: server stores verbatim.
+  UUID v4 canonical form (decision E, cluster/t31-cleanup). The regex
+  is sourced from `Grappa.ClientId.regex/0` so the boundary check and
+  the schema-side cast (`field :client_id, Grappa.ClientId`) share a
+  single source of truth — drift is impossible. The fixed 36-char
+  anchored regex makes byte-size guards redundant.
   """
   @behaviour Plug
 
   import Plug.Conn
 
-  @client_id_regex ~r/\A[A-Za-z0-9_-]+\z/
-  @max_bytes 64
+  @client_id_regex Grappa.ClientId.regex()
 
   @impl Plug
   def init(opts), do: opts
@@ -56,8 +56,5 @@ defmodule GrappaWeb.Plugs.ClientId do
   end
 
   @spec valid?(String.t()) :: boolean()
-  defp valid?(value) do
-    byte_size(value) > 0 and byte_size(value) <= @max_bytes and
-      String.match?(value, @client_id_regex)
-  end
+  defp valid?(value), do: Regex.match?(@client_id_regex, value)
 end
