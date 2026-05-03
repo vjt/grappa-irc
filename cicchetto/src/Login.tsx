@@ -31,9 +31,30 @@ function friendlyMessage(err: ApiError): string {
       return "Login service temporarily unavailable. Please try again.";
     case "captcha_failed":
       return "Captcha challenge failed. Please try again.";
+    case "captcha_required":
+      // Reached only via the disabled-provider routing in handleError
+      // (operator demanded captcha but wired no provider) — every
+      // other captcha_required path branches into the widget mount.
+      return "Verification temporarily unavailable.";
+    case "captcha_provider_unavailable":
+      // Server-side site-verify returned a 4xx/5xx or the upstream
+      // provider was unreachable — caller can retry once the verify
+      // service recovers (B2.1–B2.3 SiteVerifyHttp surface).
+      return "Verification service is unreachable. Try again shortly.";
     default:
       return err.message;
   }
+}
+
+// Type predicate for the captcha_required info envelope. The wire
+// shape is `{site_key: String, provider: "turnstile" | "hcaptcha" |
+// "disabled"}` (see `AdmissionError` in `lib/api.ts`); narrowing here
+// rejects malformed payloads at the boundary instead of leaning on
+// unsafe casts deeper in the form.
+function isCaptchaInfo(info: unknown): info is { provider: string; site_key: string } {
+  if (typeof info !== "object" || info === null) return false;
+  const i = info as Record<string, unknown>;
+  return typeof i.provider === "string" && typeof i.site_key === "string";
 }
 
 const Login: Component = () => {
@@ -45,17 +66,19 @@ const Login: Component = () => {
   const navigate = useNavigate();
 
   let widgetContainer: HTMLDivElement | undefined;
-  let cleanup: (() => void) | undefined;
 
   const handleError = (err: unknown): void => {
     if (err instanceof ApiError) {
-      if (err.code === "captcha_required") {
-        const provider = err.info.provider as "turnstile" | "hcaptcha" | "disabled";
-        const siteKey = err.info.site_key as string;
+      if (err.code === "captcha_required" && isCaptchaInfo(err.info)) {
+        const provider = err.info.provider;
         if (provider === "turnstile" || provider === "hcaptcha") {
-          setCaptcha({ provider, siteKey });
+          setCaptcha({ provider, siteKey: err.info.site_key });
           return;
         }
+        // provider === "disabled" (operator demanded captcha but wired
+        // no provider) — fall through to the friendlyMessage arm so
+        // the user sees a generic "verification unavailable" copy
+        // instead of the raw wire token.
       }
       setError(friendlyMessage(err));
     } else {
@@ -66,7 +89,18 @@ const Login: Component = () => {
   createEffect(() => {
     const c = captcha();
     if (c === null || widgetContainer === undefined) return;
-    void mountCaptchaWidget(c.provider, widgetContainer, c.siteKey, async (token) => {
+
+    // Per-effect-run cleanup capture. `local` flags whether onCleanup
+    // already fired; if the mount promise resolves AFTER teardown
+    // (rapid mount/unmount or component disposal mid-flight) the
+    // resolved cleanup is invoked immediately. Both pieces of state
+    // are scoped to THIS createEffect invocation so a re-run can't
+    // overwrite the previous one's cleanup before it runs (M-cic-5).
+    let local = false;
+    let cleanup: (() => void) | undefined;
+
+    mountCaptchaWidget(c.provider, widgetContainer, c.siteKey, async (token) => {
+      setSubmitting(true);
       try {
         const pwd = password();
         await auth.login(identifier(), pwd === "" ? null : pwd, token);
@@ -74,12 +108,29 @@ const Login: Component = () => {
       } catch (err) {
         setCaptcha(null);
         handleError(err);
+      } finally {
+        setSubmitting(false);
       }
-    }).then((c2) => {
-      cleanup = c2;
-    });
+    })
+      .then((c2) => {
+        if (local) c2();
+        else cleanup = c2;
+      })
+      .catch((err: unknown) => {
+        // CDN blocked, network error, or provider script failed to
+        // load — surface a user-actionable toast and re-enable submit
+        // so the user can retry once they unblock the CDN.
+        console.warn("[captcha] mount failed:", err);
+        setCaptcha(null);
+        setError("Captcha unavailable. Disable ad-blocker or try again.");
+        setSubmitting(false);
+      });
 
-    onCleanup(() => cleanup?.());
+    onCleanup(() => {
+      local = true;
+      cleanup?.();
+      cleanup = undefined;
+    });
   });
 
   const onSubmit = async (e: Event) => {
