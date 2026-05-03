@@ -108,6 +108,50 @@ describe("listChannels (post-A5 wire shape)", () => {
   });
 });
 
+describe("ApiError info field (T31 admission errors)", () => {
+  it("ApiError carries parsed body in info field", async () => {
+    stubFetch(400, {
+      error: "captcha_required",
+      site_key: "k",
+      provider: "turnstile",
+    });
+    try {
+      await api.login({ identifier: "alice" });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(api.ApiError);
+      const err = e as api.ApiError;
+      expect(err.code).toBe("captcha_required");
+      expect(err.info.site_key).toBe("k");
+      expect(err.info.provider).toBe("turnstile");
+    }
+  });
+
+  it("ApiError extracts Retry-After header into info.retry_after", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "network_unreachable" }), {
+          status: 503,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": "30",
+          },
+        }),
+      ),
+    );
+    try {
+      await api.login({ identifier: "alice" });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(api.ApiError);
+      const err = e as api.ApiError;
+      expect(err.code).toBe("network_unreachable");
+      expect(err.info.retry_after).toBe(30);
+    }
+  });
+});
+
 describe("postTopic / postNick", () => {
   it("postTopic POSTs JSON to /networks/:slug/channels/:chan/topic", async () => {
     const fetchMock = vi
