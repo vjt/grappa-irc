@@ -34,7 +34,7 @@ defmodule Grappa.Admission do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo],
+    deps: [Grappa.Accounts, Grappa.Networks, Grappa.RateLimit, Grappa.Repo],
     # Grappa.Visitors.Visitor is referenced only for SQL join predicates
     # (schema-only access). A proper dep would create a
     # Visitors ↔ Admission cycle (Login calls check_capacity). Same
