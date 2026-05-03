@@ -100,14 +100,14 @@ defmodule Grappa.Admission.TelemetryTest do
     test "emits [:grappa, :admission, :capacity, :reject] with correct metadata" do
       attach_event([:grappa, :admission, :capacity, :reject], self())
 
-      :ok = Telemetry.capacity_reject(:login_fresh, :client_cap_exceeded, 7, "device-abc")
+      :ok = Telemetry.capacity_reject(:login_fresh, :client_cap_exceeded, 7, "44c2ab8a-cb38-4960-b92a-a7aefb190386")
 
       assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
                       %{
                         flow: :login_fresh,
                         error: :client_cap_exceeded,
                         network_id: 7,
-                        client_id: "device-abc"
+                        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
                       }}
     end
 

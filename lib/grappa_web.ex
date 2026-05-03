@@ -14,6 +14,7 @@ defmodule GrappaWeb do
       Grappa.Accounts,
       Grappa.Admission,
       Grappa.Auth.IdentifierClassifier,
+      Grappa.ClientId,
       Grappa.IRC,
       Grappa.Networks,
       Grappa.PubSub,

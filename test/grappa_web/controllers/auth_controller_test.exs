@@ -232,17 +232,19 @@ defmodule GrappaWeb.AuthControllerTest do
       {:ok, existing_visitor} =
         Visitors.find_or_provision_anon("existing_user", capped_net.slug, "127.0.0.1")
 
+      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+
       {:ok, _} =
         Accounts.create_session(
           {:visitor, existing_visitor.id},
           "127.0.0.1",
           nil,
-          client_id: "test-device"
+          client_id: client_id
         )
 
       conn =
         conn
-        |> put_req_header("x-grappa-client-id", "test-device")
+        |> put_req_header("x-grappa-client-id", client_id)
         |> post("/auth/login", %{"identifier" => "cc"})
 
       assert json_response(conn, 429) == %{"error" => "too_many_sessions"}
