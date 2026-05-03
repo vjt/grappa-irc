@@ -61,4 +61,31 @@ if config_env() == :prod do
     ]
 
   config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL") || "info")
+
+  # T31 admission captcha — operator-set provider, secret, and public
+  # site key. Read at boot by FallbackController + Admission.verify_captcha
+  # via Application.get_env (the documented exception, see those modules'
+  # docstrings). Default provider is Disabled so a deploy without the env
+  # vars boots clean and never emits captcha_required at the boundary.
+  captcha_provider =
+    case System.get_env("GRAPPA_CAPTCHA_PROVIDER", "disabled") do
+      "turnstile" -> Grappa.Admission.Captcha.Turnstile
+      "hcaptcha" -> Grappa.Admission.Captcha.HCaptcha
+      _ -> Grappa.Admission.Captcha.Disabled
+    end
+
+  captcha_site_key = System.get_env("GRAPPA_CAPTCHA_SITE_KEY")
+
+  config :grappa, :admission,
+    captcha_provider: captcha_provider,
+    captcha_secret: System.get_env("GRAPPA_CAPTCHA_SECRET"),
+    captcha_site_key: captcha_site_key
+
+  if captcha_provider != Grappa.Admission.Captcha.Disabled and is_nil(captcha_site_key) do
+    require Logger
+
+    Logger.warning(
+      "captcha provider #{inspect(captcha_provider)} configured but :captcha_site_key is nil — clients will receive a captcha_required body with site_key=null and the widget will fail to render"
+    )
+  end
 end

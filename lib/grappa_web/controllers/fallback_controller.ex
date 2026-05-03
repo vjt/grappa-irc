@@ -27,17 +27,6 @@ defmodule GrappaWeb.FallbackController do
   """
   use GrappaWeb, :controller
 
-  # Operator-set CAPTCHA site key (Turnstile/HCaptcha public key, baked
-  # at image build time). Read at compile time per CLAUDE.md's
-  # `Application.{put,get}_env/2`: boot-time only, runtime banned" rule —
-  # `Admission.verify_captcha/2`'s runtime read of `:captcha_provider` is
-  # the *single* documented exception (Mox-driven test ergonomics);
-  # the site key is not eligible. `nil` in dev/test where captcha is
-  # disabled — clients receive `"site_key": null` in that case, which
-  # is consistent with the `Disabled` provider never reaching the
-  # `:captcha_required` branch.
-  @captcha_site_key Application.compile_env(:grappa, [:admission, :captcha_site_key])
-
   @spec call(
           Plug.Conn.t(),
           {:error,
@@ -158,7 +147,11 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, :captcha_required}) do
     conn
     |> put_status(:bad_request)
-    |> json(%{error: "captcha_required", site_key: @captcha_site_key})
+    |> json(%{
+      error: "captcha_required",
+      site_key: captcha_site_key(),
+      provider: captcha_provider_wire()
+    })
   end
 
   def call(conn, {:error, :captcha_failed}) do
@@ -185,5 +178,24 @@ defmodule GrappaWeb.FallbackController do
         String.replace(acc, "%{#{k}}", to_string(v))
       end)
     end)
+  end
+
+  # Runtime read of operator-provided captcha config. Mirrors the
+  # request-time read in Grappa.Admission.Captcha.{Turnstile,HCaptcha}
+  # (Tasks 8/9): the captcha config is operator-deploy-time data
+  # (env vars baked into the docker compose stack), not per-request
+  # state — so the strict CLAUDE.md "runtime banned" rule's intent
+  # (no IPC-via-config) doesn't apply. The value MUST be hot-readable
+  # so a runtime.exs change picks up at boot without a recompile.
+  defp captcha_site_key do
+    Application.get_env(:grappa, :admission, [])[:captcha_site_key]
+  end
+
+  defp captcha_provider_wire do
+    case Application.get_env(:grappa, :admission, [])[:captcha_provider] do
+      Grappa.Admission.Captcha.Turnstile -> "turnstile"
+      Grappa.Admission.Captcha.HCaptcha -> "hcaptcha"
+      _ -> "disabled"
+    end
   end
 end
