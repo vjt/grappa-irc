@@ -31,6 +31,9 @@ defmodule Grappa.Session.Backoff do
     * `record_success/2` — clears the entry; called from the 001
       RPL_WELCOME hook in `Session.Server` (we know the upstream
       accepted us, so prior failures are stale).
+    * `reset/2` — explicit clear for operator-initiated paths
+      (`Login.preempt_and_respawn`); same table effect as
+      `record_success/2`, distinct intent at call site.
 
   Writes funnel through the GenServer to keep the read-modify-write
   of the count consistent under concurrent failures (two visitors
