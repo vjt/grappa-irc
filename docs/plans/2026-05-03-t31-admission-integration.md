@@ -97,7 +97,7 @@ describe "reset/2" do
 end
 ```
 
-- [ ] **Step 2: Run, expect FAIL**: `scripts/mix.sh test test/grappa/session/backoff_test.exs --warnings-as-errors`
+- [ ] **Step 2: Run, expect FAIL**: `scripts/test.sh test/grappa/session/backoff_test.exs`
 
 - [ ] **Step 3: Add `reset/2`**
 
@@ -130,7 +130,7 @@ def handle_cast({:reset, key}, state) do
 end
 ```
 
-- [ ] **Step 4: Run, expect PASS**: `scripts/mix.sh test test/grappa/session/backoff_test.exs --warnings-as-errors`
+- [ ] **Step 4: Run, expect PASS**: `scripts/test.sh test/grappa/session/backoff_test.exs`
 
 - [ ] **Step 5: Commit**
 
@@ -521,7 +521,7 @@ use Boundary,
 - [ ] **Step 4: Run all login tests, expect PASS**
 
 ```bash
-scripts/mix.sh test test/grappa/visitors/login_test.exs --warnings-as-errors
+scripts/test.sh test/grappa/visitors/login_test.exs
 ```
 
 Expect: existing tests pass + new admission tests pass. Existing tests need their input maps extended with `captcha_token: nil, client_id: nil` because the typespec is now stricter. Grep for `Login.login(` in test/, fix each call site.
@@ -852,7 +852,7 @@ end
 - [ ] **Step 2: Run, expect FAIL**
 
 ```bash
-scripts/mix.sh test test/grappa_web/controllers/auth_controller_test.exs --warnings-as-errors
+scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs
 ```
 
 - [ ] **Step 3: Extend logout to user case**
@@ -903,7 +903,7 @@ Order matters (mirrors visitor pattern): stop the `Session.Server` BEFORE revoki
 - [ ] **Step 4: Run, expect PASS**
 
 ```bash
-scripts/mix.sh test test/grappa_web/controllers/auth_controller_test.exs --warnings-as-errors
+scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs
 ```
 
 - [ ] **Step 5: Commit**
