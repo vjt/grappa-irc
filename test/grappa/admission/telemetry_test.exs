@@ -123,7 +123,8 @@ defmodule Grappa.Admission.TelemetryTest do
     test "accepts tuple error (circuit-open shape)" do
       attach_event([:grappa, :admission, :capacity, :reject], self())
 
-      :ok = Telemetry.capacity_reject(:login_fresh, {:network_circuit_open, 42}, 5, "dev-x")
+      :ok =
+        Telemetry.capacity_reject(:login_fresh, {:network_circuit_open, 42}, 5, "3b8e0c4d-77f1-4a92-bc01-8e3e5a9c4d2f")
 
       assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
                       %{error: {:network_circuit_open, 42}, network_id: 5}}

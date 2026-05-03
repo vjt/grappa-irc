@@ -76,7 +76,7 @@ defmodule Grappa.Visitors.Login do
           required(:user_agent) => String.t() | nil,
           required(:token) => String.t() | nil,
           required(:captcha_token) => String.t() | nil,
-          required(:client_id) => String.t() | nil
+          required(:client_id) => Grappa.ClientId.t() | nil
         }
 
   @type result :: %{visitor: Visitor.t(), token: Ecto.UUID.t()}
