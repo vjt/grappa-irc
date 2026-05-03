@@ -1543,6 +1543,44 @@ Filed in `docs/plans/2026-05-03-t31-admission-integration.md`
 
 ---
 
+## 2026-05-03 — NetworkCircuit semantics: lazy expiry + window-vs-cooldown independence
+
+`Grappa.Admission.NetworkCircuit` (T31 P1, refined T31-cleanup B4)
+implements a per-network failure circuit-breaker with two
+**independent** intervals:
+
+  * **Failure window** (`@window_ms`, default 60s) — sliding window
+    over which failure counts accumulate. Resets on the next failure
+    that arrives past the window boundary while the circuit is
+    `:closed`.
+  * **Cooldown** (`@cooldown_ms`, default 30s with ±25% jitter from
+    `Grappa.RateLimit.JitteredCooldown`) — minimum time the circuit
+    stays `:open` after threshold breach.
+
+Independence: a failure during cooldown does NOT reset the window
+counter — it's silently dropped (no half-open). A success-side
+clearing only happens via `:cooldown_expire` cast triggered by
+`check/1` observing `now >= cooled_at_ms`. The cast carries the
+observed `cooled_at_ms` as a token; if the circuit re-opened
+between observation and cast handler, the token mismatch makes the
+handler no-op (H6 race fix).
+
+**Lazy expiry:** ETS rows persist indefinitely once written. The
+expire-cast deletes the row only when the observation token matches
+current state. There is no periodic sweep — operator confirms via
+`:observer_cli` ETS table inspection that `:admission_network_circuit_state`
+size is bounded by the small number of networks the bouncer talks to.
+
+**Why distinct from `Session.Backoff`:** Backoff is per-(subject,
+network) reconnect pacing; NetworkCircuit is per-network
+all-subjects health gating. Both share `JitteredCooldown` primitive
+but the failure-source semantics differ — Backoff records every
+upstream connect failure for a single session; NetworkCircuit
+records aggregated network-wide failure count regardless of which
+session reported.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
