@@ -106,4 +106,12 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
   end
+
+  describe "verify_captcha/2 — Disabled provider" do
+    test "always returns :ok" do
+      assert :ok = Admission.verify_captcha("any-token", "1.2.3.4")
+      assert :ok = Admission.verify_captcha(nil, nil)
+      assert :ok = Admission.verify_captcha("", "1.2.3.4")
+    end
+  end
 end
