@@ -166,4 +166,37 @@ defmodule Grappa.Session.BackoffTest do
       assert Backoff.failure_count(key_subject, 42) == 1
     end
   end
+
+  describe "ETS named-table survival rescue (M-life-1)" do
+    # The named ETS table is owned by the Backoff GenServer. If the
+    # owner dies, the table is destroyed; until the supervisor respawns
+    # the GenServer (and init/1 re-creates the table), direct ETS reads
+    # from CALLERS (Session.Server connect path) raise ArgumentError.
+    # That callers crash because the singleton is restarting is wrong —
+    # safe defaults (no delay / 0 count / empty list) preserve the hot
+    # path. Test by terminating the supervised child without restart,
+    # exercising the rescue branch deterministically, then restarting
+    # for downstream tests.
+    setup do
+      :ok = Supervisor.terminate_child(Grappa.Supervisor, Grappa.Session.Backoff)
+
+      on_exit(fn ->
+        {:ok, _} = Supervisor.restart_child(Grappa.Supervisor, Grappa.Session.Backoff)
+      end)
+
+      :ok
+    end
+
+    test "wait_ms/2 returns 0 when ETS table is missing" do
+      assert Backoff.wait_ms({:user, "u1"}, 1) == 0
+    end
+
+    test "failure_count/2 returns 0 when ETS table is missing" do
+      assert Backoff.failure_count({:user, "u1"}, 1) == 0
+    end
+
+    test "entries/0 returns [] when ETS table is missing" do
+      assert Backoff.entries() == []
+    end
+  end
 end
