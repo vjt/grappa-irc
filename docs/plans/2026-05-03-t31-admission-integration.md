@@ -1182,8 +1182,13 @@ test "user logout terminates all running Session.Server processes for that user"
   # Session.Server stopped
   assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
 
-  # Registry entry gone
-  assert Registry.lookup(Grappa.SessionRegistry, {{:user, user.id}, network.id}) == []
+  # Registry entry gone — key shape is {:session, subject, network_id}
+  # per Grappa.Session.Server.registry_key/2. Use the helper so the
+  # test stays in lockstep with the production key construction.
+  assert Registry.lookup(
+           Grappa.SessionRegistry,
+           Grappa.Session.Server.registry_key({:user, user.id}, network.id)
+         ) == []
 end
 
 test "user logout with multiple bindings stops all of them", %{conn: conn} do
@@ -1224,14 +1229,16 @@ end
 
 defp maybe_terminate_sessions(_), do: :ok
 
-@spec stop_all_user_sessions(integer()) :: :ok
-defp stop_all_user_sessions(user_id) do
+@spec stop_all_user_sessions(Ecto.UUID.t()) :: :ok
+defp stop_all_user_sessions(user_id) when is_binary(user_id) do
   # Enumerate all (network_id) currently bound to a live Session.Server
-  # for this user via Registry.select on the {{:user, user_id}, network_id}
-  # key shape (Plan 1 Task 8 lineage). Implementer subagent confirms the
-  # exact key shape against Session.start_session/3 + the existing
-  # Visitors.list_active code path before picking the match spec.
-  pattern = {{{:user, user_id}, :"$1"}, :_, :_}
+  # for this user via Registry.select on the {:session, subject, network_id}
+  # 3-tuple key shape per Grappa.Session.Server.registry_key/2 (the
+  # canonical shape Admission.count_live_sessions/1 also matches against
+  # post-Task-3.5 fix f370709). The match spec literally interpolates
+  # {:user, user_id} at construction time so only THIS user's sessions
+  # match; :"$1" captures the network_id.
+  pattern = {{:session, {:user, user_id}, :"$1"}, :_, :_}
   Grappa.SessionRegistry
   |> Registry.select([{pattern, [], [:"$1"]}])
   |> Enum.each(fn network_id ->
@@ -1255,8 +1262,9 @@ scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs
 feat(t31): user logout terminates Session.Server processes (symmetric)
 
 Mirror b809953 (visitor logout) for user sessions. AuthController.logout/2
-now scans the Grappa.SessionRegistry for all {{:user, id}, network_id}
-entries and stops each Session.Server before revoking the access token.
+now scans the Grappa.SessionRegistry for all {:session, {:user, id},
+network_id} entries and stops each Session.Server before revoking the
+access token.
 User identity is persistent (no analog to W11 anon-purge — that branch
 is visitor-only); only the live IRC connection terminates. Re-login or
 next Bootstrap restart respawns from the user's Networks.Credential
