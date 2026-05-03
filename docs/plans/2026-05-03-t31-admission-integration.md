@@ -878,7 +878,30 @@ end
 
 - [ ] **Step 3: Add clauses to FallbackController**
 
-In `lib/grappa_web/controllers/fallback_controller.ex`, update the `@spec` for `call/2` to include the new atoms, then add clauses:
+**Captcha site key plumbing** — read at compile time, NOT runtime.
+CLAUDE.md: "`Application.{put,get}_env/2`: boot-time only, runtime banned —
+neither read nor written from any GenServer callback, controller, plug
+body, or release task." Add a module-attr at the top of
+`fallback_controller.ex`:
+
+```elixir
+@captcha_site_key Application.compile_env(:grappa, [:admission, :captcha_site_key])
+```
+
+(Matches existing patterns: `Admission`'s `@default_max_per_client_per_network`
+at line 66, `NetworkCircuit`'s `@window_secs` etc. at lines 64-66, and
+`AuthController`'s `@visitor_network_slug` at line 36. The site key is an
+operator-set value baked at image build time; runtime mutation is not a
+requirement. `Admission.verify_captcha/2`'s runtime `get_env` for
+`:captcha_provider` is the *single* documented exception, justified by
+Mox-driven test ergonomics — the site key inherits no such exception.)
+
+**FallbackController clauses** — update `@spec` for `call/2` to include the
+new atoms, then add the 6 clauses below. NB: `Admission.check_capacity/1`
+emits the `{:network_circuit_open, retry_after}` tuple ALWAYS (per the
+return-type change in this task); the bare-atom `:network_circuit_open`
+shape no longer occurs at runtime, so the bare-atom clause MUST NOT be
+added. Including it would be dead code:
 
 ```elixir
 def call(conn, {:error, :client_cap_exceeded}) do
@@ -893,12 +916,6 @@ def call(conn, {:error, :network_cap_exceeded}) do
   |> json(%{error: "network_busy"})
 end
 
-def call(conn, {:error, :network_circuit_open}) do
-  conn
-  |> put_status(:service_unavailable)
-  |> json(%{error: "network_unreachable"})
-end
-
 def call(conn, {:error, {:network_circuit_open, retry_after}}) when is_integer(retry_after) do
   conn
   |> put_resp_header("retry-after", to_string(retry_after))
@@ -907,11 +924,9 @@ def call(conn, {:error, {:network_circuit_open, retry_after}}) when is_integer(r
 end
 
 def call(conn, {:error, :captcha_required}) do
-  site_key = Application.get_env(:grappa, :admission, []) |> Keyword.get(:captcha_site_key)
-
   conn
   |> put_status(:bad_request)
-  |> json(%{error: "captcha_required", site_key: site_key})
+  |> json(%{error: "captcha_required", site_key: @captcha_site_key})
 end
 
 def call(conn, {:error, :captcha_failed}) do
@@ -927,11 +942,8 @@ def call(conn, {:error, :captcha_provider_unavailable}) do
 end
 ```
 
-NOTE: The `:network_circuit_open` clause is a tuple-shape `{atom, retry_after}` for the Retry-After header path; non-tuple bare atom defaults without the header. This requires `Visitors.Login` to plumb `retry_after_seconds` from `Admission.NetworkCircuit.check/1`'s `{:error, :open, secs}` shape — update Login's error shape accordingly.
-
-(Alternative: have `Admission.check_capacity/1` always return the tuple shape `{:network_circuit_open, retry_after}`. Cleaner. Adjust Plan 1's verb shape OR update at integration.)
-
-For Plan 2, choose the cleaner path: update `Admission.check_capacity/1`'s return type to:
+**Admission return-type change.** `Admission.check_capacity/1`'s
+`:capacity_error` typespec MUST become:
 
 ```elixir
 @type capacity_error ::
@@ -940,7 +952,30 @@ For Plan 2, choose the cleaner path: update `Admission.check_capacity/1`'s retur
         | {:network_circuit_open, non_neg_integer()}
 ```
 
-This requires a touch-up to `lib/grappa/admission.ex` — no test break since Plan 1's tests didn't pin the exact shape.
+`check_circuit/1` updates `{:error, :open, retry_after}` → `{:error,
+{:network_circuit_open, retry_after}}` (tuple, was bare atom). This
+cascades to every `:network_circuit_open` consumer — search
+`grep -rn "network_circuit_open" lib/ test/` and adapt every pattern to
+the tuple shape. No test break expected since Plan 1's tests pinned
+through `assert {:error, :network_circuit_open} = ...` style; bump those
+to `{:error, {:network_circuit_open, _}} = ...` (binding the retry value
+or wildcarding it).
+
+**AuthController `action_fallback` wiring + scope-bleed cleanup.**
+Commit `a3b70e8` (Task 3 implementer) added inline error-clause mappings
+in `AuthController.visitor_login/2` for the 6 atoms, with the WRONG
+status-code split (blanket 429 for cap atoms, blanket 403 for captcha
+atoms). It did NOT add `action_fallback`. Task 5 must:
+
+  1. Add `action_fallback GrappaWeb.FallbackController` to AuthController.
+  2. REMOVE the inline 429/403 error clauses from `visitor_login/2` (and
+     any other action that received them) so the FallbackController
+     clauses fire.
+  3. Verify by running the AuthController test suite — the canonical
+     status-code split should now apply: 429 too_many_sessions /
+     503 network_busy / 503 network_unreachable+Retry-After /
+     400 captcha_required+site_key / 400 captcha_failed /
+     503 service_degraded.
 
 - [ ] **Step 4: Run, expect PASS**
 
