@@ -16,6 +16,11 @@ defmodule GrappaWeb.Plugs.Authn do
       surface counts as user-initiated traffic. Cadence (≥1h) is
       handled inside `touch/1`.
 
+  Both branches additionally assign `:current_client_id` — the
+  validated `X-Grappa-Client-Id` header value (URL-safe ASCII, ≤64
+  bytes), or `nil` if absent or malformed. Read by the admission gates
+  and `AuthController` for per-client session tracking.
+
   Loading the subject here costs one DB round-trip per authenticated
   request but eliminates the `Accounts.get_user!/1` re-fetch each
   user-aware controller used to perform. The session FK is
@@ -43,6 +48,8 @@ defmodule GrappaWeb.Plugs.Authn do
   alias GrappaWeb.FallbackController
 
   require Logger
+
+  @client_id_regex ~r/\A[A-Za-z0-9_-]+\z/
 
   @impl Plug
   def init(opts), do: opts
@@ -134,7 +141,7 @@ defmodule GrappaWeb.Plugs.Authn do
   # values without forcing a UUID-strict regex that ties cicchetto's
   # implementation choice to the server.
   defp valid_client_id?(value) when is_binary(value) do
-    byte_size(value) > 0 and byte_size(value) <= 64 and String.match?(value, ~r/\A[A-Za-z0-9_-]+\z/)
+    byte_size(value) > 0 and byte_size(value) <= 64 and String.match?(value, @client_id_regex)
   end
 
   defp get_token(conn) do
