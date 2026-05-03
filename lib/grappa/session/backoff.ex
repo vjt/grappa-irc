@@ -68,6 +68,32 @@ defmodule Grappa.Session.Backoff do
   we're at the 30-min cap. A k-line bouncer would idle for the cap
   duration between attempts instead of hammering — the IP K-line
   expires (typically 24h on azzurra) without further escalation.
+
+  ## Telemetry
+
+  The `:reset` and `:success` cast handlers are operationally identical
+  (`:ets.delete/2`) but represent distinct operational events. Telemetry
+  surfaces the intent so Phase 5 PromEx can count them separately.
+
+    * `[:grappa, :session, :backoff, :success]`
+      measurements: `%{count: 1}`
+      metadata: `%{key: {Session.subject(), integer()}}`
+      Emitted from the `{:success, key}` cast handler — fired by
+      `Session.Server`'s `001 RPL_WELCOME` hook (upstream accepted us,
+      prior failure history is stale).
+
+    * `[:grappa, :session, :backoff, :reset]`
+      measurements: `%{count: 1}`
+      metadata: `%{key: {Session.subject(), integer()}}`
+      Emitted from the `{:reset, key}` cast handler — fired by operator-
+      initiated paths (`Login.preempt_and_respawn`, and
+      `Bootstrap.spawn_with_admission/3` when M-life-5 lands) overriding
+      any failure history.
+
+  No telemetry on `{:failure, _}` yet — the cast handler bumps the
+  counter but adding a per-failure event would create a noisy stream
+  that PromEx consumers don't currently need. Add when there's a
+  metric that requires it.
   """
   use GenServer
 
@@ -181,11 +207,13 @@ defmodule Grappa.Session.Backoff do
 
   def handle_cast({:success, key}, state) do
     :ets.delete(@table, key)
+    :telemetry.execute([:grappa, :session, :backoff, :success], %{count: 1}, %{key: key})
     {:noreply, state}
   end
 
   def handle_cast({:reset, key}, state) do
     :ets.delete(@table, key)
+    :telemetry.execute([:grappa, :session, :backoff, :reset], %{count: 1}, %{key: key})
     {:noreply, state}
   end
 
