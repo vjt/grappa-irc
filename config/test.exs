@@ -3,15 +3,17 @@ import Config
 config :grappa, Grappa.Repo,
   database: Path.expand("../runtime/grappa_test#{System.get_env("MIX_TEST_PARTITION")}.db", __DIR__),
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2,
-  # SQLite has a single writer; with `async: true` tests + `max_cases: 8`,
-  # write-heavy tests (ScrollbackTest's 505-row insert loop) plus the
-  # ~100 ms Argon2 hash inside Accounts test setup can stack the writer
-  # queue deep enough to trip the busy timeout. The original 5_000 ms
-  # value started cascading "Database busy" failures once Phase 2's
-  # Sessions + Authn tests added more concurrent inserts; 30_000 ms
-  # gives the queue enough headroom that legitimate contention waits
-  # instead of erroring, while still surfacing a real deadlock loudly.
+  # SQLite has a single writer at the file level. With async: true tests
+  # checking out separate connections from the Sandbox pool, every conn
+  # racing on `BEGIN IMMEDIATE; INSERT;` queues on the file lock —
+  # cascading "Database busy" once host parallelism (max_cases =
+  # schedulers_online * 2 = 16 on the 8-core box) exceeds what the file
+  # can serialize within busy_timeout, despite the 30s budget. The
+  # canonical ecto_sqlite3 Sandbox pattern is pool_size: 1: a single
+  # connection which the Sandbox checkout serializes per-test. async:
+  # true still works — Sandbox owns the conn per test; concurrency
+  # comes from interleaved checkouts, not concurrent file writes.
+  pool_size: 1,
   busy_timeout: 30_000
 
 config :grappa, GrappaWeb.Endpoint,
