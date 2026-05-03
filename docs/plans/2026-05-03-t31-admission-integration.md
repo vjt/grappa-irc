@@ -300,24 +300,35 @@ describe "capacity gates" do
   end
 
   test "client_cap_exceeded → {:error, :client_cap_exceeded}", %{network: net} do
-    # Pre-populate accounts_sessions with N visitors from same client_id
-    # to trip the per-(client_id, network) cap. Default cap in test
-    # config is 10; bring it down for this test via ad-hoc app env put.
-    Application.put_env(:grappa, :admission,
-      Application.get_env(:grappa, :admission) |> Keyword.put(:default_max_per_client_per_network, 1))
+    # Pin the per-(client, network) cap at 1 via the network's
+    # max_per_client column (the operator's knob — Plan 1 schema).
+    # Application.put_env on :default_max_per_client_per_network is
+    # NOT effective here: Admission reads that key as
+    # Application.compile_env, so the test-env value (10) is baked in
+    # at compile time. The per-network override IS read at runtime via
+    # Repo.get(Network, id), so it's the right test seam.
+    {:ok, net} =
+      net
+      |> Grappa.Networks.Network.changeset(%{max_per_client: 1})
+      |> Grappa.Repo.update()
 
-    on_exit(fn ->
-      Application.put_env(:grappa, :admission,
-        Application.get_env(:grappa, :admission) |> Keyword.put(:default_max_per_client_per_network, 10))
-    end)
+    # Seed one existing visitor + accounts_sessions row for client_id
+    # "device-a" on this network. Use direct fixture verbs, not
+    # Login.login, to avoid spinning a real Session.Server in the
+    # capacity-only test (the spawn path is exercised in other tests).
+    {:ok, existing_visitor} =
+      Grappa.Visitors.find_or_provision_anon("old_user", net.slug, "1.2.3.4")
 
-    # Spawn one existing visitor session for client_id "device-a"
-    {:ok, _existing} =
-      Grappa.Visitors.Login.login(
-        %{nick: "old_user", password: nil, ip: "1.2.3.4", user_agent: nil, token: nil, captcha_token: nil, client_id: "device-a"}
+    {:ok, _session} =
+      Grappa.Accounts.create_session(
+        {:visitor, existing_visitor.id},
+        "1.2.3.4",
+        nil,
+        client_id: "device-a"
       )
 
-    # Second login attempt from same client_id on same network should fail
+    # Second login attempt from same client_id on same network should
+    # fail at the admission gate, before any spawn attempt.
     result =
       Grappa.Visitors.Login.login(
         %{nick: "second_user", password: nil, ip: "1.2.3.4", user_agent: nil, token: nil, captcha_token: nil, client_id: "device-a"}
