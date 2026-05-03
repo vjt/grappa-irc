@@ -7,6 +7,7 @@ defmodule Grappa.Application do
       Grappa.Bootstrap,
       Grappa.PubSub,
       Grappa.Repo,
+      Grappa.Session,
       Grappa.Vault,
       Grappa.Visitors.Reaper,
       GrappaWeb
@@ -42,6 +43,14 @@ defmodule Grappa.Application do
         # itself under {:session, user, network_id} via this Registry,
         # and lookups happen in DynamicSupervisor's start_child cascade.
         {Registry, keys: :unique, name: Grappa.SessionRegistry},
+
+        # Backoff before SessionSupervisor — owns the ETS table that
+        # tracks per-(subject, network_id) failure counts across
+        # `:transient` Session.Server respawns. Reads are direct ETS
+        # lookups from `Session.Server.handle_continue/2`'s start path,
+        # so the table MUST exist before the first session spawn. See
+        # `Grappa.Session.Backoff` moduledoc for the curve + rationale.
+        Grappa.Session.Backoff,
         # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
         # default (3 restarts in 5s) is GLOBAL across all children; one
         # upstream network-wide outage causing several Session.Server

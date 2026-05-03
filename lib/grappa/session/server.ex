@@ -84,7 +84,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{EventRouter, GhostRecovery, NSInterceptor}
+  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, NSInterceptor}
 
   require Logger
 
@@ -200,6 +200,20 @@ defmodule Grappa.Session.Server do
   def init(opts) do
     :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
 
+    # Trap exits so a `Client` crash arrives as `{:EXIT, client_pid,
+    # reason}` in our mailbox instead of brutally killing this Session
+    # via the link. Lets us record a Backoff failure BEFORE returning
+    # `{:stop, _, _}` to the supervisor — without trap_exit the crash
+    # would propagate through the link and the failure count would
+    # never be incremented (the `:transient` respawn would then read
+    # 0 ms wait, defeating the whole backoff).
+    #
+    # Safe because `Client.start_link/1` is the only linked spawn from
+    # this process — see `start_link` block + `do_start_client/2`. The
+    # supervisor's :shutdown EXIT is handled by GenServer's default
+    # behaviour (it stops cleanly even under trap_exit).
+    Process.flag(:trap_exit, true)
+
     state = %{
       subject: opts.subject,
       subject_label: opts.subject_label,
@@ -238,13 +252,47 @@ defmodule Grappa.Session.Server do
 
   defp pending_password_from_opts(_), do: nil
 
+  # Backoff layer: read the per-(subject, network_id) failure count via
+  # `Grappa.Session.Backoff.wait_ms/2` and defer the actual Client spawn
+  # by that many milliseconds. The count survives `:transient` restart
+  # so a crash-respawn cycle (k-line bounce, repeat ECONNREFUSED, etc.)
+  # waits exponentially longer between attempts. Fresh sessions read
+  # 0 ms and start the Client immediately.
+  #
+  # The defer is non-blocking: `Process.send_after/3` schedules the
+  # `:start_client_now` info, init/1 returns to the supervisor
+  # immediately. Bootstrap's per-credential start_child loop stays O(1)
+  # regardless of how deep into the backoff curve a particular session
+  # is — pairs with the Client's own non-blocking `init/1`.
   @impl GenServer
   def handle_continue({:start_client, client_opts}, state) do
+    case Backoff.wait_ms(state.subject, state.network_id) do
+      0 ->
+        do_start_client(client_opts, state)
+
+      ms when is_integer(ms) and ms > 0 ->
+        Logger.info("backoff delaying connect",
+          delay_ms: ms,
+          failure_count: Backoff.failure_count(state.subject, state.network_id)
+        )
+
+        Process.send_after(self(), {:start_client_after_backoff, client_opts}, ms)
+        {:noreply, state}
+    end
+  end
+
+  defp do_start_client(client_opts, state) do
     case Client.start_link(client_opts) do
       {:ok, client} ->
         {:noreply, %{state | client: client}}
 
       {:error, reason} ->
+        # Inline start failure (Client.init/1 rejected the opts —
+        # malformed AuthFSM state, etc.). Treat as a failure for
+        # backoff purposes: respawn-cycle on this would be the same
+        # hammer pattern as a connect-fail loop. Bumps the same
+        # counter the EXIT-path bumps.
+        :ok = Backoff.record_failure(state.subject, state.network_id)
         {:stop, {:client_start_failed, reason}, state}
     end
   end
@@ -374,7 +422,36 @@ defmodule Grappa.Session.Server do
     {:noreply, state}
   end
 
+  # Deferred Client.start_link/1 from `handle_continue({:start_client, _}, _)`'s
+  # backoff branch. Pairs with the Backoff lookup at start: when the
+  # delay timer fires, do the actual start. Same `do_start_client/2`
+  # path so the `:client_start_failed` shape is identical.
   @impl GenServer
+  def handle_info({:start_client_after_backoff, client_opts}, state) do
+    do_start_client(client_opts, state)
+  end
+
+  # Linked Client crashed. Record a backoff failure (so the next
+  # respawn waits longer) then propagate the stop. The Backoff cast is
+  # asynchronous; the GenServer.cast doesn't block this stop, but the
+  # `Backoff` GenServer's mailbox processes it before our respawned
+  # init/1 re-reads `wait_ms/2` (the supervisor's restart path is not
+  # instant — it runs after this terminate completes).
+  def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
+      when client_pid != nil do
+    :ok = Backoff.record_failure(state.subject, state.network_id)
+    {:stop, {:client_exit, reason}, %{state | client: nil}}
+  end
+
+  # Supervisor-issued shutdown — propagate without recording a failure
+  # (operator/Bootstrap-driven, not a crash). GenServer's default would
+  # do the same; explicit clause for clarity + so the Logger.warning
+  # catchall below doesn't fire.
+  def handle_info({:EXIT, _, reason}, state)
+      when reason == :shutdown or reason == :normal do
+    {:stop, reason, state}
+  end
+
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
     :ok = Client.send_pong(state.client, token)
     {:noreply, state}
@@ -412,6 +489,12 @@ defmodule Grappa.Session.Server do
         to: welcomed_nick
       )
     end
+
+    # Backoff success: 001 RPL_WELCOME proves upstream accepted us. Any
+    # prior failure history is stale — clear the entry so the next
+    # failure starts the exponential ladder at count=1 again instead of
+    # whatever depth the previous outage reached.
+    Backoff.record_success(state.subject, state.network_id)
 
     state =
       state

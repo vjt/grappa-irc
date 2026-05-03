@@ -28,6 +28,17 @@ config :grappa, :max_visitors_per_ip, 5
 # replaces with proper exponential backoff + per-session health.
 config :grappa, :irc_client_connect_failure_sleep_ms, 30_000
 
+# `Grappa.Session.Backoff` — per-(subject, network_id) exponential
+# backoff curve for IRC reconnect after Session.Server crashes. Layer
+# ABOVE the IRC.Client per-attempt throttle: failure count survives
+# Session.Server's :transient restart so a k-line bouncing the
+# bouncer's IP doesn't loop at restart-rate. See the module doc for
+# the full curve table. `config/test.exs` shrinks both values so test
+# delays don't drag.
+config :grappa, :session_backoff,
+  base_ms: 5_000,
+  cap_ms: 30 * 60 * 1_000
+
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: "runtime/grappa_dev.db"
@@ -113,7 +124,13 @@ config :logger, :console,
     # session — the Scrollback rows preserve the moment-of-write
     # nick, but the upstream-driven mutations only land in the log.
     :from,
-    :to
+    :to,
+    # Session.Backoff context — observability for the exponential
+    # delay applied before a Client respawn. `delay_ms` is the chosen
+    # wait window; `failure_count` is the consecutive-failure depth
+    # the curve fed off.
+    :delay_ms,
+    :failure_count
   ]
 
 import_config "#{config_env()}.exs"

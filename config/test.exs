@@ -44,6 +44,14 @@ config :grappa, :max_visitors_per_ip, 2
 # (Visitors.Login case 1 :upstream_unreachable) don't drag.
 config :grappa, :irc_client_connect_failure_sleep_ms, 50
 
+# Session.Backoff — shrink the curve so tests that exercise the
+# delayed-start-client path (or accidentally touch the Backoff
+# module) don't drag. The math (base × 2^(count-1) capped, ±25%
+# jitter) is identical; only the magnitude shrinks.
+config :grappa, :session_backoff,
+  base_ms: 5,
+  cap_ms: 100
+
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite
 # is wiped per-run via Sandbox.
