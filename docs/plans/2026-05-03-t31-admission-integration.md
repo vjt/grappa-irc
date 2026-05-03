@@ -6,7 +6,7 @@
 
 **Architecture:** Plan 1 landed `Admission.check_capacity/1` + `Admission.verify_captcha/2` as inert verbs. Plan 2 wires them into `Grappa.Visitors.Login.handle_login/3` (case-1 = capacity + captcha + probe; case-2/3 = capacity + maybe Backoff.reset, no captcha). `Grappa.Bootstrap` consumes capacity (network-total only) on cold-start. `Plugs.Authn` extracts `X-Grappa-Client-Id` header and assigns `:current_client_id` for downstream consumers. `FallbackController` maps the six new admission error atoms; `AuthController` + `AuthJSON` surface the captcha-required response carrying the provider's `site_key`. cicchetto: `crypto.randomUUID()` → localStorage → `X-Grappa-Client-Id` header on every authenticated request; new error renderers for the 429/503/400 admission responses; captcha widget integration.
 
-**Tech Stack:** Elixir 1.19 / OTP 28, Bypass for HTTP fakes, Mox for behaviour mocking, telemetry, TypeScript 5 + Solid 2 + Vitest in cicchetto. All Elixir work runs inside the `grappa` container via `scripts/*.sh`. cicchetto runs separately under `cd cicchetto && npm run dev` for the local dev iteration loop.
+**Tech Stack:** Elixir 1.19 / OTP 28, Bypass for HTTP fakes, Mox for behaviour mocking, telemetry, TypeScript 5 + Solid 2 + Vitest in cicchetto. All Elixir work runs inside the `grappa` container via `scripts/*.sh`. cicchetto runs inside an `oven/bun:1` container via `scripts/bun.sh` (worktree-aware, shared bun-cache); use `scripts/bun.sh run dev` for the local dev iteration loop and `scripts/bun.sh run test` for vitest.
 
 ## Reference docs
 
@@ -1616,8 +1616,10 @@ function buildHeaders(token?: string): HeadersInit {
 - [ ] **Step 4: Run vitest**
 
 ```bash
-cd cicchetto && npm test
+scripts/bun.sh run test
 ```
+
+(Run from the worktree root; `scripts/bun.sh` cd's into `cicchetto/` inside the bun container and is worktree-aware via the bind-mount.)
 
 - [ ] **Step 5: Commit**
 
@@ -1765,7 +1767,7 @@ Update CP11 (or open CP12) with T31 LANDED entry. Update memory pin `project_t31
 - [ ] All 15 tasks landed on `cluster/t31-integration` (Tasks 1–14 + Task 3.5 prereq).
 - [ ] `scripts/check.sh` green.
 - [ ] Standalone `scripts/dialyzer.sh` green.
-- [ ] cicchetto `npm test` green.
+- [ ] cicchetto `scripts/bun.sh run test` green.
 - [ ] Branch rebased + ff-merged to main.
 - [ ] `scripts/deploy.sh` succeeded; `scripts/healthcheck.sh` green.
 - [ ] E2e matrix all passes verified at `http://192.168.53.11`.
