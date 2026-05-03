@@ -39,6 +39,31 @@ config :grappa, :session_backoff,
   base_ms: 5_000,
   cap_ms: 30 * 60 * 1_000
 
+# T31 admission control. Defaults match the design (CP11 S20 →
+# CP11 S21 brainstorm). All values configurable per-env via
+# config/runtime.exs at deployment time.
+#
+#   * default_max_per_client_per_network — global per-(client_id,
+#     network_id) cap. Operator can override per-network via the
+#     networks.max_per_client column.
+#   * captcha_provider — module implementing Grappa.Admission.Captcha
+#     behaviour. Disabled = always :ok (test/dev/private deployments).
+#     Plan 2 adds Turnstile + HCaptcha modules.
+#   * captcha_secret — provider's verify-side secret (env var in prod).
+#   * login_probe_timeout_ms — Visitors.Login probe-connect budget.
+#     3s default leaves nginx 30s upstream timeout plenty of slack.
+#     Was hard-coded 8s pre-T31; Plan 2 wires this in.
+#   * network_circuit_threshold / window_ms / cooldown_ms — see
+#     Grappa.Admission.NetworkCircuit moduledoc.
+config :grappa, :admission,
+  default_max_per_client_per_network: 1,
+  captcha_provider: Grappa.Admission.Captcha.Disabled,
+  captcha_secret: nil,
+  login_probe_timeout_ms: 3_000,
+  network_circuit_threshold: 5,
+  network_circuit_window_ms: 60_000,
+  network_circuit_cooldown_ms: 5 * 60_000
+
 config :grappa, Grappa.Repo,
   adapter: Ecto.Adapters.SQLite3,
   database: "runtime/grappa_dev.db"
@@ -130,7 +155,14 @@ config :logger, :console,
     # wait window; `failure_count` is the consecutive-failure depth
     # the curve fed off.
     :delay_ms,
-    :failure_count
+    :failure_count,
+    # T31 admission — rides admission rejection / circuit transition log
+    # lines so operator can grep cap-exceeded events.
+    :cap_kind,
+    :cap_value,
+    :cap_observed,
+    :circuit_state,
+    :retry_after_seconds
   ]
 
 import_config "#{config_env()}.exs"

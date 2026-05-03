@@ -58,9 +58,12 @@ config :grappa, :session_backoff,
 # transition tests don't drag. Math is identical, only magnitudes
 # shrink.
 config :grappa, :admission,
+  default_max_per_client_per_network: 10,
+  captcha_provider: Grappa.Admission.Captcha.Disabled,
   network_circuit_threshold: 3,
   network_circuit_window_ms: 100,
-  network_circuit_cooldown_ms: 50
+  network_circuit_cooldown_ms: 50,
+  login_probe_timeout_ms: 100
 
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite
