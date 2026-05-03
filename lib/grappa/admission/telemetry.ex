@@ -15,7 +15,11 @@ defmodule Grappa.Admission.Telemetry do
       Emitted once per open→closed transition in `NetworkCircuit`.
       `:success` — cleared by `record_success/1`.
       `:cooldown_expired` — detected by `check/1` and routed as a
-      `{:cooldown_expire, network_id}` cast for exactly-once delivery.
+      `{:cooldown_expire, network_id, observed_cooled_at_ms}` cast for
+      exactly-once delivery. The trailing `cooled_at_ms` rides as an
+      observation token: the handler match-pins it against the current
+      ETS row, so a re-open between observation and cast handling
+      cleanly no-ops without emitting a bogus :close (H6).
 
     * `[:grappa, :admission, :capacity, :reject]`
       measurements: `%{}`

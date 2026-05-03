@@ -247,6 +247,45 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     end
   end
 
+  describe "H7 — failure during cooldown but past failure-window" do
+    test "circuit stays :open + cooled_at_ms unchanged when failure arrives during cooldown but past window" do
+      net_id = 2001
+
+      # Open the circuit so the row exists in :open state.
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      # Inject an ETS row that simulates: open circuit, window already
+      # expired, but cooldown still active. We can't get there organically
+      # in test config (window_ms < cooldown_ms is not guaranteed), so we
+      # forge the row with custom (started_at, cooled_at_ms).
+      now = System.monotonic_time(:millisecond)
+      forged_started_at = now - NetworkCircuit.window_ms() - 100
+      forged_cooled_at = now + 60_000
+
+      :ets.insert(
+        :admission_network_circuit_state,
+        {net_id, NetworkCircuit.threshold(), forged_started_at, :open, forged_cooled_at}
+      )
+
+      # Failure arrives during open + past-window: pre-H7 the handler
+      # silently overwrote the row with state :closed and cooled_at = 0.
+      :ok = NetworkCircuit.record_failure(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      # Post-H7: drop silently — circuit must still be :open with the
+      # original cooled_at_ms preserved.
+      [{_, _, _, state, cooled_at}] =
+        :ets.lookup(:admission_network_circuit_state, net_id)
+
+      assert state == :open
+      assert cooled_at == forged_cooled_at
+    end
+  end
+
   describe "telemetry — circuit close on cooldown expiry" do
     test "emits [:grappa, :admission, :circuit, :close] reason :cooldown_expired after cooldown" do
       attach_circuit_event([:grappa, :admission, :circuit, :close])
