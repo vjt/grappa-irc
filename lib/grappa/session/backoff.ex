@@ -100,6 +100,13 @@ defmodule Grappa.Session.Backoff do
       [] -> 0
       [{_, count, _}] -> compute_wait(count)
     end
+  rescue
+    # Named table is destroyed when the owning GenServer crashes; the
+    # supervisor respawns and init/1 re-creates it within milliseconds.
+    # During that window, callers (Session.Server connect path) MUST NOT
+    # crash — they're uninvolved bystanders. Safe default: no delay,
+    # which is what a fresh / cleared entry already returns.
+    ArgumentError -> 0
   end
 
   @doc """
@@ -146,6 +153,10 @@ defmodule Grappa.Session.Backoff do
       [] -> 0
       [{_, count, _}] -> count
     end
+  rescue
+    # See wait_ms/2: rescue ArgumentError from missing named-table during
+    # supervisor-respawn window. Safe default mirrors the empty-row case.
+    ArgumentError -> 0
   end
 
   ## GenServer
@@ -204,5 +215,11 @@ defmodule Grappa.Session.Backoff do
 
   @doc false
   @spec entries() :: [entry()]
-  def entries, do: :ets.tab2list(@table)
+  def entries do
+    :ets.tab2list(@table)
+  rescue
+    # See wait_ms/2: rescue ArgumentError from missing named-table during
+    # supervisor-respawn window. Safe default: empty snapshot.
+    ArgumentError -> []
+  end
 end

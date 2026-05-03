@@ -286,6 +286,34 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     end
   end
 
+  describe "ETS named-table survival rescue (M-life-1)" do
+    # The named ETS table is owned by the NetworkCircuit GenServer. If
+    # the owner dies, the table is destroyed; until the supervisor
+    # respawns the GenServer (and init/1 re-creates the table), direct
+    # ETS reads from CALLERS (Login admission) raise ArgumentError.
+    # Safe defaults (circuit closed / empty entries) preserve the hot
+    # path. Test by terminating the supervised child without restart,
+    # exercising the rescue branch deterministically, then restarting
+    # for downstream tests.
+    setup do
+      :ok = Supervisor.terminate_child(Grappa.Supervisor, Grappa.Admission.NetworkCircuit)
+
+      on_exit(fn ->
+        {:ok, _} = Supervisor.restart_child(Grappa.Supervisor, Grappa.Admission.NetworkCircuit)
+      end)
+
+      :ok
+    end
+
+    test "check/1 returns :ok (circuit closed) when ETS table is missing" do
+      assert NetworkCircuit.check(1) == :ok
+    end
+
+    test "entries/0 returns [] when ETS table is missing" do
+      assert NetworkCircuit.entries() == []
+    end
+  end
+
   describe "telemetry — circuit close on cooldown expiry" do
     test "emits [:grappa, :admission, :circuit, :close] reason :cooldown_expired after cooldown" do
       attach_circuit_event([:grappa, :admission, :circuit, :close])
