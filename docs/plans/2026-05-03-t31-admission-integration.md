@@ -1401,22 +1401,128 @@ Commit message: `feat(t31): Captcha.HCaptcha — hCaptcha verify impl`.
 
 ## Task 10 — `CaptchaMock` for Mox + integration tests
 
-**Files:**
-- Create: `test/support/captcha_mock.ex`
+### Background
+
+Three concrete `Grappa.Admission.Captcha` impls now exist (`Disabled`,
+`Turnstile`, `HCaptcha`). Tests that exercise the captcha-required →
+captcha-passed flow need fine-grained per-call orchestration: rejecting
+the first call, accepting the second after the client retries with a
+solved token. A Mox-defined mock against the `Grappa.Admission.Captcha`
+behaviour is the canonical Elixir pattern for that.
+
+### Files
+
+- **Modify:** `test/test_helper.exs` — add the `Mox.defmock/2` call.
+- **Modify:** `test/grappa_web/controllers/auth_controller_test.exs` —
+  remove the top-level `RequiresCaptchaFake` defmodule (lines 1–13) and
+  port its single test to use `Grappa.Admission.CaptchaMock` via Mox
+  expectations. Carryover from Task 6 code-quality reviewer's deferred
+  Minor: `RequiresCaptchaFake` was acknowledged as file-local
+  scaffolding to be retired once Mox lands.
+- **No new file under `test/support/`.** `Mox.defmock/2` is an
+  expression that defines a module at runtime, not a `defmodule`-shaped
+  source unit — it cannot live inside an `elixirc_paths(:test)` source
+  file (would need a wrapping `defmodule`, but `defmock/2` itself
+  expands to a top-level `defmodule`, so nesting fails). Canonical
+  placement is `test_helper.exs`, which `Code.eval_file/1`s the
+  expression at suite startup.
+
+### Step 1 — wire Mox in `test_helper.exs`
+
+Append AFTER the existing `ExUnit.start(...)` and `Sandbox.mode(...)`
+lines:
 
 ```elixir
 Mox.defmock(Grappa.Admission.CaptchaMock, for: Grappa.Admission.Captcha)
 ```
 
-Wire into `test/test_helper.exs`:
+### Step 2 — replace `RequiresCaptchaFake` in `auth_controller_test.exs`
 
-```elixir
-Mox.defmock(Grappa.Admission.CaptchaMock, for: Grappa.Admission.Captcha)
+  1. Delete the entire `defmodule RequiresCaptchaFake do ... end` at the
+     top of the file (current lines 1–13).
+  2. In the captcha-required wire-shape test (search the file for
+     `RequiresCaptchaFake` references), replace the per-test
+     `Application.put_env(:grappa, :admission, [..., captcha_provider:
+     RequiresCaptchaFake])` setup with a Mox-driven swap:
+
+     ```elixir
+     # Inside the test that asserts the 400/captcha_required wire shape:
+     original = Application.get_env(:grappa, :admission, [])
+
+     Application.put_env(:grappa, :admission,
+       Keyword.put(original, :captcha_provider, Grappa.Admission.CaptchaMock))
+
+     on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+
+     Mox.expect(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
+       {:error, :captcha_required}
+     end)
+
+     Mox.set_mox_global()  # so Login's process can call the mock
+     ```
+
+     `Mox.set_mox_global()` is required because `Visitors.Login.login/2`
+     runs inside the test process here (synchronous controller action),
+     but the captcha verify happens inside `Admission.verify_captcha/2`
+     which may be invoked from a spawned task in some flows; global mode
+     keeps the mock visible regardless. If it's purely in-process,
+     `Mox.expect` alone suffices — verify locally.
+
+     Equivalent shape to the prior fake: every call returns
+     `{:error, :captcha_required}`. The one-call expectation maps to the
+     test's single login attempt.
+
+  3. The `async: false` constraint on `GrappaWeb.AuthControllerTest`
+     stays — Visitors.Login spawns Session.Server processes under the
+     singleton supervisor, which is incompatible with `async: true`.
+     `set_mox_global` requires `async: false` anyway.
+
+### Step 3 — gate
+
+Run from worktree root:
+
+  * `scripts/test.sh test/grappa_web/controllers/auth_controller_test.exs`
+    — same number of tests passing as before the change. The captcha
+    test should still assert the 400 + `captcha_required` shape.
+  * `scripts/format.sh` then `scripts/format.sh --check` — clean.
+  * `scripts/credo.sh` — must contain "found no issues".
+  * `scripts/dialyzer.sh` STANDALONE — `Total errors: 0`,
+    `passed successfully`.
+  * `scripts/test.sh` — full suite, 0 failures. After Tasks 8+9 the
+    suite is at 786 tests; this task should leave the count UNCHANGED
+    (pure refactor of one existing test) or ±0.
+
+### Step 4 — commit
+
+```
+feat(t31): CaptchaMock for Mox-driven Login captcha tests
+
+Define Grappa.Admission.CaptchaMock against the Captcha behaviour in
+test/test_helper.exs. Retire the file-local RequiresCaptchaFake from
+auth_controller_test.exs in favour of Mox.expect/3 for finer per-call
+orchestration of the captcha-required wire-shape test.
+
+No production code touched. Carryover from Task 6 code-quality review
+deferred Minor.
+
+Plan 2 of 2.
 ```
 
-Tests that exercise the captcha-required → captcha-passed flow swap config to `Grappa.Admission.CaptchaMock` per-test.
+### Watch-outs
 
-Commit: `feat(t31): CaptchaMock for Mox-driven Login captcha tests`.
+  * `Mox.defmock/2` placement in `test_helper.exs` — NOT inside any
+    `defmodule`, NOT in a `test/support/*.ex` file. The plan's earlier
+    instruction to also create `test/support/captcha_mock.ex` was a
+    duplicate-spec typo and is removed in this revision.
+  * Don't create a separate `test/support/admission/captcha_fakes.ex`
+    file just to host migrated fakes — Mox replaces the fakes entirely.
+    The Task 6 reviewer's "migrate to test/support/admission/" guidance
+    was conditional on keeping a fake; with Mox in scope, deleting the
+    fake is cleaner.
+  * If the existing test relies on `Application.put_env` patterns for
+    the captcha provider swap, port them all to the same
+    `original`/`on_exit` shape used by `TurnstileTest` /
+    `HCaptchaTest` (Tasks 8+9) for consistency.
 
 ## Task 11 — Telemetry events
 
