@@ -1449,13 +1449,21 @@ defmodule Grappa.Admission do
   end
 
   defp count_live_sessions(network_id) do
-    Registry.count_match(Grappa.SessionRegistry, {:_, network_id}, :_)
+    # Registry stores keys as `{subject, network_id}`. count_match's
+    # `key` arg is matched as an Erlang term, not a match-spec — so
+    # `{:_, network_id}` would only count entries with the literal atom
+    # `:_` as the first tuple element, never matching real subjects.
+    # count_select with an explicit match-spec is the correct API for
+    # filtering by partial key shape.
+    Registry.count_select(Grappa.SessionRegistry, [
+      {{{:_, :"$1"}, :_, :_}, [{:==, :"$1", network_id}], [true]}
+    ])
   end
 
   # Bootstrap flows have nil client — skip client-cap check.
   defp check_client_cap(%{client_id: nil}), do: :ok
 
-  defp check_client_cap(%{client_id: client_id, network_id: network_id} = _input)
+  defp check_client_cap(%{client_id: client_id, network_id: network_id})
        when is_binary(client_id) do
     cap = effective_max_per_client(network_id)
     count = count_subjects_for_client_on_network(client_id, network_id)
@@ -1478,7 +1486,10 @@ defmodule Grappa.Admission do
   defp count_subjects_for_client_on_network(client_id, network_id) do
     %Network{slug: slug} = Repo.get!(Network, network_id)
 
-    visitor_subjects =
+    # sqlite3 doesn't support `DISTINCT ON` (which Ecto's `distinct:
+    # <field>` clause generates). Use `count(field, :distinct)` in the
+    # select to get COUNT(DISTINCT field) — works in sqlite + portable.
+    visitor_count_q =
       from(s in AccountSession,
         join: v in Visitor,
         on: v.id == s.visitor_id,
@@ -1486,23 +1497,20 @@ defmodule Grappa.Admission do
           s.client_id == ^client_id and
             v.network_slug == ^slug and
             is_nil(s.revoked_at),
-        distinct: s.visitor_id,
-        select: s.visitor_id
+        select: count(s.visitor_id, :distinct)
       )
 
-    user_subjects =
+    user_count_q =
       from(s in AccountSession,
         join: c in Credential,
         on: c.user_id == s.user_id and c.network_id == ^network_id,
         where:
           s.client_id == ^client_id and
             is_nil(s.revoked_at),
-        distinct: s.user_id,
-        select: s.user_id
+        select: count(s.user_id, :distinct)
       )
 
-    Repo.aggregate(visitor_subjects, :count, :visitor_id) +
-      Repo.aggregate(user_subjects, :count, :user_id)
+    Repo.one(visitor_count_q) + Repo.one(user_count_q)
   end
 end
 ```
