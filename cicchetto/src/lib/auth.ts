@@ -54,9 +54,14 @@ export function isAuthenticated(): boolean {
   return tokenSignal() !== null;
 }
 
-export async function login(identifier: string, password: string | null): Promise<void> {
+export async function login(
+  identifier: string,
+  password: string | null,
+  captchaToken?: string,
+): Promise<void> {
   const req: api.LoginRequest =
     password !== null && password !== "" ? { identifier, password } : { identifier };
+  if (captchaToken !== undefined) req.captcha_token = captchaToken;
   const { token: t, subject } = await api.login(req);
   localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
   setToken(t);

@@ -25,7 +25,16 @@ function buildHeaders(token?: string): HeadersInit {
 export type LoginRequest = {
   identifier: string;
   password?: string;
+  captcha_token?: string;
 };
+
+export type AdmissionError =
+  | { error: "too_many_sessions" }
+  | { error: "network_busy" }
+  | { error: "network_unreachable"; retry_after?: number }
+  | { error: "captcha_required"; site_key: string; provider: "turnstile" | "hcaptcha" | "disabled" }
+  | { error: "captcha_failed" }
+  | { error: "service_degraded" };
 
 export type Subject =
   | { kind: "user"; id: string; name: string }
@@ -138,12 +147,14 @@ export type ChannelEvent = {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly info: Record<string, unknown>;
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: string, info: Record<string, unknown> = {}) {
     super(`${status} ${code}`);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.info = info;
   }
 }
 
@@ -174,17 +185,21 @@ export function setOn401Handler(fn: (() => void) | null): void {
 
 async function readError(res: Response): Promise<ApiError> {
   if (res.status === 401 && on401Handler !== null) on401Handler();
-  // The grappa server uses `%{error: "<token>"}` for tagged errors and
-  // `%{errors: {detail: ...}}` for Phoenix's default 404/500 fallback —
-  // try both before giving up. A non-JSON body collapses to the HTTP
-  // status text so the caller still gets a useful `code`.
+  let body: Record<string, unknown> = {};
+  let code: string;
   try {
-    const body = (await res.json()) as { error?: string; errors?: { detail?: string } };
-    const code = body.error ?? body.errors?.detail ?? res.statusText;
-    return new ApiError(res.status, code);
+    body = (await res.json()) as Record<string, unknown>;
+    const errs = body.errors as { detail?: string } | undefined;
+    code = (body.error as string | undefined) ?? errs?.detail ?? res.statusText;
   } catch {
-    return new ApiError(res.status, res.statusText || "unknown");
+    code = res.statusText || "unknown";
   }
+  const retryAfter = res.headers.get("retry-after");
+  if (retryAfter !== null) {
+    const n = Number(retryAfter);
+    if (Number.isFinite(n)) body.retry_after = n;
+  }
+  return new ApiError(res.status, code, body);
 }
 
 export async function login(req: LoginRequest): Promise<LoginResponse> {

@@ -16,7 +16,12 @@ vi.mock("../lib/auth", () => ({
   setToken: vi.fn(),
 }));
 
+vi.mock("../lib/captcha", () => ({
+  mountCaptchaWidget: vi.fn(),
+}));
+
 import * as auth from "../lib/auth";
+import { mountCaptchaWidget } from "../lib/captcha";
 
 const renderLogin = () =>
   render(() => (
@@ -64,6 +69,80 @@ describe("Login", () => {
     fireEvent.click(screen.getByRole("button", { name: /log in/i }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
+    });
+  });
+
+  it("renders captcha widget when login responds 400 captcha_required", async () => {
+    vi.mocked(auth.login).mockRejectedValueOnce(
+      new ApiError(400, "captcha_required", {
+        site_key: "k",
+        provider: "turnstile",
+      }),
+    );
+    vi.mocked(mountCaptchaWidget).mockResolvedValue(() => undefined);
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
+      target: { value: "alice" },
+    });
+    fireEvent.input(screen.getByLabelText(/password/i), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(mountCaptchaWidget).toHaveBeenCalled();
+    });
+    const call = vi.mocked(mountCaptchaWidget).mock.calls[0];
+    if (call === undefined) throw new Error("mountCaptchaWidget not called");
+    expect(call[0]).toBe("turnstile");
+    expect(call[1]).toBeInstanceOf(HTMLElement);
+    expect(call[2]).toBe("k");
+    expect(typeof call[3]).toBe("function");
+  });
+
+  it("submits captcha_token after solve callback", async () => {
+    vi.mocked(auth.login)
+      .mockRejectedValueOnce(
+        new ApiError(400, "captcha_required", {
+          site_key: "k",
+          provider: "turnstile",
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    vi.mocked(mountCaptchaWidget).mockResolvedValue(() => undefined);
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
+      target: { value: "alice" },
+    });
+    fireEvent.input(screen.getByLabelText(/password/i), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(mountCaptchaWidget).toHaveBeenCalled();
+    });
+    const call = vi.mocked(mountCaptchaWidget).mock.calls[0];
+    if (call === undefined) throw new Error("mountCaptchaWidget not called");
+    const onSolve = call[3];
+    onSolve("solved-token");
+    await waitFor(() => {
+      expect(auth.login).toHaveBeenCalledWith("alice", "secret", "solved-token");
+    });
+  });
+
+  it("renders too_many_sessions copy on 429", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(429, "too_many_sessions"));
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), {
+      target: { value: "alice" },
+    });
+    fireEvent.input(screen.getByLabelText(/password/i), {
+      target: { value: "secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "You're already connected to this network from another device or tab. Close one before opening a new session.",
+      );
     });
   });
 
