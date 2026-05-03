@@ -50,6 +50,9 @@ config :grappa, :session_backoff,
 #     behaviour. Disabled = always :ok (test/dev/private deployments).
 #     Plan 2 adds Turnstile + HCaptcha modules.
 #   * captcha_secret — provider's verify-side secret (env var in prod).
+#   * captcha_site_key — provider's public site key (env var in prod;
+#     Task 13.A). Read at request time by FallbackController so a
+#     runtime.exs change picks up at boot without a recompile.
 #   * login_probe_timeout_ms — Visitors.Login probe-connect budget.
 #     3s default leaves nginx 30s upstream timeout plenty of slack.
 #     Was hard-coded 8s pre-T31; Plan 2 wires this in.
@@ -59,6 +62,7 @@ config :grappa, :admission,
   default_max_per_client_per_network: 1,
   captcha_provider: Grappa.Admission.Captcha.Disabled,
   captcha_secret: nil,
+  captcha_site_key: nil,
   login_probe_timeout_ms: 3_000,
   network_circuit_threshold: 5,
   network_circuit_window_ms: 60_000,

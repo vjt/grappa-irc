@@ -50,18 +50,21 @@ defmodule GrappaWeb.FallbackControllerTest do
   end
 
   describe "T31 captcha errors" do
-    test "{:error, :captcha_required} → 400 captcha_required + site_key" do
+    test "{:error, :captcha_required} → 400 captcha_required + site_key + provider" do
+      prior = Application.get_env(:grappa, :admission)
+
+      Application.put_env(:grappa, :admission,
+        captcha_provider: Grappa.Admission.Captcha.Turnstile,
+        captcha_site_key: "test-site-key-123"
+      )
+
+      on_exit(fn -> Application.put_env(:grappa, :admission, prior) end)
+
       conn = FallbackController.call(build_conn_for_call(), {:error, :captcha_required})
-
-      assert conn.status == 400
-
-      body = Jason.decode!(conn.resp_body)
+      body = json_response(conn, 400)
       assert body["error"] == "captcha_required"
-      # site_key is operator-set via config/runtime.exs; absent in test
-      # config (provider is Disabled). Body MUST contain the key
-      # regardless — clients that parse this branch always see the field,
-      # null-or-string. JSON null round-trips to nil.
-      assert Map.has_key?(body, "site_key")
+      assert body["site_key"] == "test-site-key-123"
+      assert body["provider"] == "turnstile"
     end
 
     test "{:error, :captcha_failed} → 400 captcha_failed" do

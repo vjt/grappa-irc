@@ -158,22 +158,31 @@ defmodule GrappaWeb.AuthControllerTest do
       # T31 Plan 2 Task 6: assert that an admission flow which surfaces
       # `:captcha_required` from the captcha provider lands as the
       # canonical wire shape — 400 `{"error":"captcha_required",
-      # "site_key":<binary|nil>}` — through the FallbackController.
-      # Complements the direct dispatch test in
+      # "site_key":<binary>, "provider":<wire>}` — through the
+      # FallbackController. Complements the direct dispatch test in
       # `fallback_controller_test.exs`; this one exercises the full
       # AuthController -> Visitors.Login -> Admission.verify_captcha
       # -> {:error, :captcha_required} -> FallbackController path.
       #
       # Captcha provider is swapped to CaptchaMock (Mox) that returns
-      # {:error, :captcha_required} for this call. `verify_captcha/2` reads
-      # provider via Application.get_env at runtime — swap pattern mirrors
-      # TurnstileTest / HCaptchaTest. Restored on `on_exit`.
+      # {:error, :captcha_required} for this call. `verify_captcha/2`
+      # reads provider via Application.get_env at runtime — swap pattern
+      # mirrors TurnstileTest / HCaptchaTest. Site key is set in the same
+      # put_env so the wire body carries the operator-set value
+      # (Task 13.A: runtime read in FallbackController). Restored on
+      # `on_exit`. The wire `provider` field for CaptchaMock falls into
+      # `captcha_provider_wire/0`'s default branch → "disabled" (the
+      # Turnstile/HCaptcha-specific wire strings only emit when the
+      # operator configures those modules — verifying the default-branch
+      # behaviour is the value here).
       original = Application.get_env(:grappa, :admission, [])
 
       Application.put_env(
         :grappa,
         :admission,
-        Keyword.put(original, :captcha_provider, Grappa.Admission.CaptchaMock)
+        original
+        |> Keyword.put(:captcha_provider, Grappa.Admission.CaptchaMock)
+        |> Keyword.put(:captcha_site_key, "test-site-key-123")
       )
 
       on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
@@ -188,10 +197,8 @@ defmodule GrappaWeb.AuthControllerTest do
 
       body = json_response(conn, 400)
       assert body["error"] == "captcha_required"
-      # Task 13 wires :captcha_site_key via config/runtime.exs; until
-      # then the key is present (set by FallbackController) but its value
-      # is unwired in test/dev. Pin shape, not value.
-      assert Map.has_key?(body, "site_key")
+      assert body["site_key"] == "test-site-key-123"
+      assert body["provider"] == "disabled"
     end
 
     test "client_cap_exceeded → 429 too_many_sessions (FallbackController wire shape)",
