@@ -58,6 +58,8 @@ defmodule Grappa.Admission.NetworkCircuit do
   """
   use GenServer
 
+  alias Grappa.Admission.Telemetry
+
   @table :admission_network_circuit_state
   @jitter_pct 25
 
@@ -125,6 +127,12 @@ defmodule Grappa.Admission.NetworkCircuit do
         now = System.monotonic_time(:millisecond)
 
         if now >= cooled_at_ms do
+          # Cast the expiry notification so the GenServer emits exactly one
+          # [:grappa, :admission, :circuit, :close, :cooldown_expired] event per
+          # transition. Mailbox serialization + ETS-state recheck inside the
+          # cast handler guarantee exactly-once delivery even if concurrent
+          # callers all observe the same expired cooldown simultaneously.
+          GenServer.cast(__MODULE__, {:cooldown_expire, network_id})
           :ok
         else
           {:error, :open, ceil((cooled_at_ms - now) / 1_000)}
@@ -164,16 +172,16 @@ defmodule Grappa.Admission.NetworkCircuit do
   def handle_cast({:failure, network_id}, state) do
     now = System.monotonic_time(:millisecond)
 
-    {count, window_start} =
+    {count, window_start, prior_circuit_state} =
       case :ets.lookup(@table, network_id) do
         [] ->
-          {1, now}
+          {1, now, :closed}
 
-        [{_, prior_count, prior_start, _, _}] ->
+        [{_, prior_count, prior_start, prior_state, _}] ->
           if now - prior_start > @window_ms do
-            {1, now}
+            {1, now, :closed}
           else
-            {prior_count + 1, prior_start}
+            {prior_count + 1, prior_start, prior_state}
           end
       end
 
@@ -185,11 +193,47 @@ defmodule Grappa.Admission.NetworkCircuit do
       end
 
     :ets.insert(@table, {network_id, count, window_start, circuit_state, cooled_at})
+
+    # Emit once on the closed→open transition only. If prior state was already
+    # :open, the circuit is already tripped — no duplicate event.
+    if circuit_state == :open and prior_circuit_state != :open do
+      Telemetry.circuit_open(network_id, @threshold, @cooldown_ms)
+    end
+
     {:noreply, state}
   end
 
   def handle_cast({:success, network_id}, state) do
+    # Emit close event only if there was an ETS entry to clear.
+    # A success on a network that never had a circuit entry is a noop w.r.t.
+    # telemetry — don't emit a spurious :close event.
+    had_entry = :ets.lookup(@table, network_id) != []
     :ets.delete(@table, network_id)
+
+    if had_entry do
+      Telemetry.circuit_close(network_id, :success)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:cooldown_expire, network_id}, state) do
+    # Exactly-once cooldown expiry event. Multiple concurrent check/1 callers
+    # may all cast this message, but only the first one to run finds the ETS
+    # entry still present and still past cooldown. Subsequent casts are noops.
+    now = System.monotonic_time(:millisecond)
+
+    case :ets.lookup(@table, network_id) do
+      [{_, _, _, :open, cooled_at_ms}] when now >= cooled_at_ms ->
+        :ets.delete(@table, network_id)
+        Telemetry.circuit_close(network_id, :cooldown_expired)
+
+      _ ->
+        # Entry already gone (cleared by another cast or record_success) or
+        # state changed — nothing to do.
+        :ok
+    end
+
     {:noreply, state}
   end
 end

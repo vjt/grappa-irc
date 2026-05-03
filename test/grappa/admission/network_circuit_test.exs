@@ -149,4 +149,156 @@ defmodule Grappa.Admission.NetworkCircuitTest do
       assert NetworkCircuit.check(1) == :ok
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Telemetry events
+  # ---------------------------------------------------------------------------
+
+  defp attach_circuit_event(event_name) do
+    id = "nc-test-#{inspect(event_name)}-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        id,
+        event_name,
+        fn name, measurements, metadata, pid ->
+          send(pid, {:telemetry, name, measurements, metadata})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(id) end)
+    id
+  end
+
+  describe "telemetry — circuit open transition" do
+    test "emits [:grappa, :admission, :circuit, :open] on closed→open transition" do
+      attach_circuit_event([:grappa, :admission, :circuit, :open])
+      net_id = 1001
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :open], %{},
+                      %{
+                        network_id: ^net_id,
+                        threshold: threshold,
+                        cooldown_ms: _
+                      }},
+                     500
+
+      assert threshold == NetworkCircuit.threshold()
+    end
+
+    test "does NOT double-emit :open when circuit is already open" do
+      attach_circuit_event([:grappa, :admission, :circuit, :open])
+      net_id = 1002
+
+      # Open the circuit.
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      # Drain the first (and only) event.
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :open], %{}, %{network_id: ^net_id}},
+                     500
+
+      # Additional failures on an already-open circuit must not re-emit.
+      :ok = NetworkCircuit.record_failure(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      refute_receive {:telemetry, [:grappa, :admission, :circuit, :open], _, _}, 100
+    end
+  end
+
+  describe "telemetry — circuit close on success" do
+    test "emits [:grappa, :admission, :circuit, :close] reason :success when clearing open circuit" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 1003
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      :ok = NetworkCircuit.record_success(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :success}},
+                     500
+    end
+
+    test "does NOT emit :close on success when no prior ETS entry exists (noop delete)" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 1004
+
+      # No failures — no ETS entry. record_success must be a noop w.r.t. telemetry.
+      :ok = NetworkCircuit.record_success(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      refute_receive {:telemetry, [:grappa, :admission, :circuit, :close], _, _}, 100
+    end
+  end
+
+  describe "telemetry — circuit close on cooldown expiry" do
+    test "emits [:grappa, :admission, :circuit, :close] reason :cooldown_expired after cooldown" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 1005
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+      assert {:error, :open, _} = NetworkCircuit.check(net_id)
+
+      # Test config sets cooldown_ms to ~50ms; sleep past it.
+      Process.sleep(NetworkCircuit.cooldown_ms() + 30)
+
+      # check/1 observes elapsed cooldown and casts {:cooldown_expire, net_id};
+      # the cast lands in the GenServer and emits the event.
+      assert NetworkCircuit.check(net_id) == :ok
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :cooldown_expired}},
+                     500
+    end
+
+    test "does NOT double-emit :cooldown_expired on repeated check calls after expiry" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 1006
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      Process.sleep(NetworkCircuit.cooldown_ms() + 30)
+
+      # First check triggers the cast.
+      assert NetworkCircuit.check(net_id) == :ok
+      _ = :sys.get_state(NetworkCircuit)
+
+      # Drain the first event.
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :cooldown_expired}},
+                     500
+
+      # Second check after ETS entry is gone must NOT re-emit.
+      assert NetworkCircuit.check(net_id) == :ok
+      _ = :sys.get_state(NetworkCircuit)
+
+      refute_receive {:telemetry, [:grappa, :admission, :circuit, :close], _, _}, 100
+    end
+  end
 end

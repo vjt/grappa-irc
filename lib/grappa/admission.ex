@@ -40,12 +40,12 @@ defmodule Grappa.Admission do
     # Visitors ↔ Admission cycle (Login calls check_capacity). Same
     # pattern as Grappa.Accounts's dirty_xref on Visitors.Visitor.
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Captcha, NetworkCircuit]
+    exports: [Captcha, NetworkCircuit, Telemetry]
 
   import Ecto.Query
 
   alias Grappa.Accounts.Session, as: AccountSession
-  alias Grappa.Admission.{Captcha, NetworkCircuit}
+  alias Grappa.Admission.{Captcha, NetworkCircuit, Telemetry}
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
@@ -83,11 +83,22 @@ defmodule Grappa.Admission do
   or skip the row + log (Bootstrap).
   """
   @spec check_capacity(capacity_input()) :: :ok | {:error, capacity_error()}
-  def check_capacity(%{network_id: network_id} = input) when is_integer(network_id) do
-    with :ok <- check_circuit(network_id),
-         :ok <- check_network_total(network_id),
-         :ok <- check_client_cap(input) do
-      :ok
+  def check_capacity(%{network_id: network_id, flow: flow, client_id: client_id} = input)
+      when is_integer(network_id) do
+    result =
+      with :ok <- check_circuit(network_id),
+           :ok <- check_network_total(network_id),
+           :ok <- check_client_cap(input) do
+        :ok
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, error} ->
+        Telemetry.capacity_reject(flow, error, network_id, client_id)
+        {:error, error}
     end
   end
 

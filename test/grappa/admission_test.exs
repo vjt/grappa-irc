@@ -125,4 +125,112 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.verify_captcha("", "1.2.3.4")
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Telemetry — capacity_reject event
+  # ---------------------------------------------------------------------------
+
+  defp attach_reject_event do
+    id = "admission-test-reject-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        id,
+        [:grappa, :admission, :capacity, :reject],
+        fn name, measurements, metadata, pid ->
+          send(pid, {:telemetry, name, measurements, metadata})
+        end,
+        test_pid
+      )
+
+    on_exit(fn -> :telemetry.detach(id) end)
+    id
+  end
+
+  describe "check_capacity/1 — telemetry capacity_reject events" do
+    test "emits :capacity, :reject when circuit open", %{network: net} do
+      attach_reject_event()
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net.id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+
+      input = %{
+        subject_kind: :visitor,
+        subject_id: nil,
+        network_id: net.id,
+        client_id: "device-a",
+        flow: :login_fresh
+      }
+
+      assert {:error, {:network_circuit_open, _}} = Admission.check_capacity(input)
+
+      net_id = net.id
+
+      assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
+                      %{
+                        flow: :login_fresh,
+                        error: {:network_circuit_open, _},
+                        network_id: ^net_id,
+                        client_id: "device-a"
+                      }},
+                     500
+    end
+
+    test "emits :capacity, :reject when network cap exceeded", %{network: net} do
+      attach_reject_event()
+
+      {:ok, capped_net} =
+        net
+        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
+        |> Grappa.Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          Grappa.SessionRegistry,
+          Grappa.Session.Server.registry_key({:visitor, "fake-vid"}, capped_net.id),
+          nil
+        )
+
+      input = %{
+        subject_kind: :visitor,
+        subject_id: nil,
+        network_id: capped_net.id,
+        client_id: "device-b",
+        flow: :login_fresh
+      }
+
+      assert {:error, :network_cap_exceeded} = Admission.check_capacity(input)
+
+      net_id = capped_net.id
+
+      assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
+                      %{
+                        flow: :login_fresh,
+                        error: :network_cap_exceeded,
+                        network_id: ^net_id,
+                        client_id: "device-b"
+                      }},
+                     500
+    end
+
+    test "does NOT emit :capacity, :reject on :ok", %{network: net} do
+      attach_reject_event()
+
+      input = %{
+        subject_kind: :visitor,
+        subject_id: nil,
+        network_id: net.id,
+        client_id: "device-c",
+        flow: :login_fresh
+      }
+
+      assert :ok = Admission.check_capacity(input)
+
+      refute_receive {:telemetry, [:grappa, :admission, :capacity, :reject], _, _}, 100
+    end
+  end
 end
