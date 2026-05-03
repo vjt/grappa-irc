@@ -73,6 +73,7 @@ defmodule GrappaWeb.Plugs.Authn do
 
     conn =
       conn
+      |> assign(:current_client_id, extract_client_id(conn))
       |> assign(:current_user_id, user_id)
       |> assign(:current_user, user)
       |> assign(:current_subject, {:user, user_id})
@@ -86,6 +87,7 @@ defmodule GrappaWeb.Plugs.Authn do
       {:ok, %Visitor{} = visitor} ->
         conn =
           conn
+          |> assign(:current_client_id, extract_client_id(conn))
           |> assign(:current_visitor_id, visitor_id)
           |> assign(:current_visitor, visitor)
           |> assign(:current_subject, {:visitor, visitor_id})
@@ -114,6 +116,25 @@ defmodule GrappaWeb.Plugs.Authn do
         :ok = Accounts.revoke_session(session_id)
         {:error, :visitor_missing}
     end
+  end
+
+  defp extract_client_id(conn) do
+    case get_req_header(conn, "x-grappa-client-id") do
+      [value | _] when is_binary(value) ->
+        if valid_client_id?(value), do: value, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  # Accept any URL-safe ASCII string up to 64 bytes. cicchetto generates
+  # a UUID v4 (36 chars), but the server contract is "opaque token, server
+  # stores verbatim". Defensive cap protects schema (varchar) from absurd
+  # values without forcing a UUID-strict regex that ties cicchetto's
+  # implementation choice to the server.
+  defp valid_client_id?(value) when is_binary(value) do
+    byte_size(value) > 0 and byte_size(value) <= 64 and String.match?(value, ~r/\A[A-Za-z0-9_-]+\z/)
   end
 
   defp get_token(conn) do
