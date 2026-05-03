@@ -151,11 +151,17 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "malformed_nick"
     end
 
-    test "client_cap_exceeded → 429 client_cap_exceeded", %{conn: conn} do
+    test "client_cap_exceeded → 429 too_many_sessions (FallbackController wire shape)",
+         %{conn: conn} do
       # T31: W3 per-IP cap retired in favour of per-(client, network) cap
       # via Grappa.Admission.check_capacity/1. Set cap to 1, seed one
       # existing session for client-id "test-device", then attempt a second
       # login from the same device.
+      #
+      # Task 5: AuthController no longer hand-maps admission atoms — the
+      # `{:error, :client_cap_exceeded}` flows through `FallbackController`
+      # and surfaces as 429 `{"error":"too_many_sessions"}` (the canonical
+      # wire string set by Plan 2 Task 5).
       {_, _} = setup_visitor_network(pick_unused_port())
 
       {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
@@ -181,7 +187,7 @@ defmodule GrappaWeb.AuthControllerTest do
         |> put_req_header("x-grappa-client-id", "test-device")
         |> post("/auth/login", %{"identifier" => "cc"})
 
-      assert json_response(conn, 429)["error"] == "client_cap_exceeded"
+      assert json_response(conn, 429) == %{"error" => "too_many_sessions"}
     end
 
     test "upstream unreachable → 502 upstream_unreachable", %{conn: conn} do

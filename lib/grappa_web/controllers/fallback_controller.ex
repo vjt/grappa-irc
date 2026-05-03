@@ -27,6 +27,17 @@ defmodule GrappaWeb.FallbackController do
   """
   use GrappaWeb, :controller
 
+  # Operator-set CAPTCHA site key (Turnstile/HCaptcha public key, baked
+  # at image build time). Read at compile time per CLAUDE.md's
+  # `Application.{put,get}_env/2`: boot-time only, runtime banned" rule —
+  # `Admission.verify_captcha/2`'s runtime read of `:captcha_provider` is
+  # the *single* documented exception (Mox-driven test ergonomics);
+  # the site key is not eligible. `nil` in dev/test where captcha is
+  # disabled — clients receive `"site_key": null` in that case, which
+  # is consistent with the `Disabled` provider never reaching the
+  # `:captcha_required` branch.
+  @captcha_site_key Application.compile_env(:grappa, [:admission, :captcha_site_key])
+
   @spec call(
           Plug.Conn.t(),
           {:error,
@@ -37,6 +48,12 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_credentials
            | :invalid_line
            | :unauthorized
+           | :client_cap_exceeded
+           | :network_cap_exceeded
+           | {:network_circuit_open, non_neg_integer()}
+           | :captcha_required
+           | :captcha_failed
+           | :captcha_provider_unavailable
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
   def call(conn, {:error, :bad_request}) do
@@ -106,6 +123,54 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unauthorized)
     |> json(%{error: "invalid_credentials"})
+  end
+
+  # T31 admission errors. Status-code split:
+  #
+  #   * 429 — client misbehaviour (too many sessions from same client).
+  #   * 503 — server-side capacity / upstream / dependency degradation.
+  #   * 400 — captcha challenge required or failed (request was
+  #     well-formed but lacks a valid solve).
+  #
+  # The `:network_circuit_open` clause matches ONLY the tuple shape;
+  # `Admission.check_circuit/1` always emits the tuple, so a bare-atom
+  # clause would be dead code that misleads future readers.
+  def call(conn, {:error, :client_cap_exceeded}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{error: "too_many_sessions"})
+  end
+
+  def call(conn, {:error, :network_cap_exceeded}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "network_busy"})
+  end
+
+  def call(conn, {:error, {:network_circuit_open, retry_after}})
+      when is_integer(retry_after) do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(retry_after))
+    |> put_status(:service_unavailable)
+    |> json(%{error: "network_unreachable"})
+  end
+
+  def call(conn, {:error, :captcha_required}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "captcha_required", site_key: @captcha_site_key})
+  end
+
+  def call(conn, {:error, :captcha_failed}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "captcha_failed"})
+  end
+
+  def call(conn, {:error, :captcha_provider_unavailable}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "service_degraded"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

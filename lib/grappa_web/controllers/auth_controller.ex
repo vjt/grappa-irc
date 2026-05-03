@@ -44,7 +44,9 @@ defmodule GrappaWeb.AuthController do
   `IdentifierClassifier`; per-branch failures map to canonical HTTP
   statuses (see moduledoc + `visitor_login/3`).
   """
-  @spec login(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
+  @spec login(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, atom() | {:network_circuit_open, non_neg_integer()}}
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
 
@@ -150,13 +152,31 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(conn, _, :password_mismatch),
     do: send_error(conn, 401, "password_mismatch")
 
-  defp visitor_error_response(conn, _, reason)
-       when reason in [:client_cap_exceeded, :network_cap_exceeded, :network_circuit_open],
-       do: send_error(conn, 429, Atom.to_string(reason))
+  # T31 Plan 2 Task 5: admission + captcha atoms flow through
+  # `GrappaWeb.FallbackController` (wired globally via `use GrappaWeb,
+  # :controller`). Returning `{:error, reason}` here dispatches the
+  # canonical wire shape: 429 too_many_sessions / 503 network_busy /
+  # 503 network_unreachable+Retry-After / 400 captcha_required+site_key /
+  # 400 captcha_failed / 503 service_degraded. The matching clause is
+  # spelled exactly so the inline action's contract stays auditable
+  # without grepping the FallbackController.
+  defp visitor_error_response(_, _, :client_cap_exceeded),
+    do: {:error, :client_cap_exceeded}
 
-  defp visitor_error_response(conn, _, reason)
-       when reason in [:captcha_required, :captcha_failed, :captcha_provider_unavailable],
-       do: send_error(conn, 403, Atom.to_string(reason))
+  defp visitor_error_response(_, _, :network_cap_exceeded),
+    do: {:error, :network_cap_exceeded}
+
+  defp visitor_error_response(_, _, {:network_circuit_open, _} = err),
+    do: {:error, err}
+
+  defp visitor_error_response(_, _, :captcha_required),
+    do: {:error, :captcha_required}
+
+  defp visitor_error_response(_, _, :captcha_failed),
+    do: {:error, :captcha_failed}
+
+  defp visitor_error_response(_, _, :captcha_provider_unavailable),
+    do: {:error, :captcha_provider_unavailable}
 
   defp visitor_error_response(conn, nick, :anon_collision),
     do: anon_collision_response(conn, nick)
