@@ -1230,17 +1230,37 @@ scripts/deploy.sh
 scripts/healthcheck.sh
 ```
 
-- [ ] **Step 4: E2e validation matrix**
+- [ ] **Step 4: E2e validation matrix — REAL BROWSER, hard gate**
+
+Plan 1 verbs are inert until Plan 2 wires consumers; the deploy step is the FIRST test of the entire admission stack in prod conditions. Inspection of unit tests + curl-only e2e is INSUFFICIENT. Use real browser automation — `chrome-devtools-mcp` plugin (already configured — see `mcp__plugin_chrome-devtools-mcp_chrome-devtools__*` tools) or equivalent — pointing at the live deployment.
+
+RED at any row = HALT, fix root cause, re-run from the failed row. Do NOT push to origin, do NOT proceed to LANDED status.
+
+**API-level matrix (curl-runnable for fast feedback):**
 
 | step | expected |
 |---|---|
-| `POST /auth/login` (fresh anon, no captcha config) | 200 (`captcha_provider: Disabled` in env) |
-| `POST /auth/login` from same client_id, second nick | 429 `too_many_sessions` (default cap=1) |
+| `POST /auth/login` (fresh anon, captcha disabled) | 200 (when `captcha_provider: Disabled`) |
+| `POST /auth/login` from same client_id, second nick | 429 `too_many_sessions` (per-client cap=1) |
 | Set `networks.max_concurrent_sessions=0`, login | 503 `network_busy` |
-| Trigger circuit (5 fails in window), login | 503 `network_unreachable` + Retry-After |
-| Set `captcha_provider: Turnstile` + bad secret, login | 400 `captcha_required` then 400 `captcha_failed` |
-| cicchetto fresh load → Network tab → check headers | `X-Grappa-Client-Id` present, valid UUID v4 |
-| cicchetto opens 2 tabs → both share client_id | second tab's login → 429 (cap=1) |
+| Trigger circuit (`threshold` fails in window), login | 503 `network_unreachable` + `Retry-After` header |
+| Captcha provider misconfigured (bad secret), login | 400 `captcha_required`, then 400 `captcha_failed` after fake-token submit |
+
+**Browser-flow matrix (chrome-devtools-mcp / real browser, MANDATORY):**
+
+| step | expected |
+|---|---|
+| Fresh visitor login → Cloudflare Turnstile widget renders | widget paints in cicchetto Login page; site key `0x4AAAAAADIVjqhMXybemB6v` (public, registered for `grappa.bad.ass`, mode `Managed`) |
+| Captcha solves + login proceeds | Turnstile auto-solves for registered host in most cases; if interactive challenge appears, screenshot + flag but proceed if it auto-solves |
+| Networks sidebar populates after login | post-spawn + 001 RPL_WELCOME, cicchetto network panel shows the bound network (e.g. azzurra) |
+| Phoenix Channels round-trip | open a channel join, send PRIVMSG, verify echo + a fake inbound (drive a second IRC client to PRIVMSG the test nick) |
+| 4-tab cap-proof | open 3 browser tabs (same client_id via shared localStorage), all 3 logins succeed (cap=3, set in pre-deploy operator-bind step). Open a 4th tab → admission rejects with 429 `too_many_sessions` and cicchetto error renderer shows the rejection. Verify `Registry.count_match(Grappa.SessionRegistry, {{:_, azzurra_id}, :_}, [], [true])` stays ≤3 throughout via `scripts/observer.sh` or a debug HTTP endpoint. The 4th attempt's rejection MUST come from `Admission.check_capacity/1` in the actual prod container, not from a unit test. |
+| `X-Grappa-Client-Id` header present | cicchetto fresh load → Network tab → header sent on every authenticated request, valid UUID v4 |
+| Two tabs share client_id | with cap=1, second tab's login → 429 |
+
+If the cap-proof check requires a debug endpoint to read the registry count, build it via `Phoenix.LiveDashboard` or a controller in `GrappaWeb` — per CLAUDE.md "Debugging tools are infrastructure": HTTP endpoint over throwaway IEx script. Never substitute "I checked observer_cli interactively and it looked right" for a verifiable measurement.
+
+The browser-flow matrix is a HARD GATE: every row must be green (with screenshot or live-DOM evidence pasted into the close-out) before LANDED status. Push to origin is gated on completion (see Step 6 below).
 
 - [ ] **Step 5: Worktree cleanup + checkpoint update**
 
