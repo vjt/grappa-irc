@@ -167,6 +167,36 @@ defmodule Grappa.Session.BackoffTest do
     end
   end
 
+  describe "telemetry (M-life-2)" do
+    # The :reset and :success cast handlers are operationally identical
+    # (both `:ets.delete/2`); telemetry is the distinguishing signal
+    # between operator-initiated reset and upstream-welcome success.
+    # Phase 5 PromEx will count these separately.
+    test "reset/2 cast handler emits [:grappa, :session, :backoff, :reset]" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:grappa, :session, :backoff, :reset]
+        ])
+
+      :ok = Backoff.reset({:user, "u1"}, 1)
+
+      assert_receive {[:grappa, :session, :backoff, :reset], ^ref, %{count: 1}, %{key: {{:user, "u1"}, 1}}},
+                     500
+    end
+
+    test "record_success/2 cast handler emits [:grappa, :session, :backoff, :success]" do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:grappa, :session, :backoff, :success]
+        ])
+
+      :ok = Backoff.record_success({:user, "u1"}, 1)
+
+      assert_receive {[:grappa, :session, :backoff, :success], ^ref, %{count: 1}, %{key: {{:user, "u1"}, 1}}},
+                     500
+    end
+  end
+
   describe "ETS named-table survival rescue (M-life-1)" do
     # The named ETS table is owned by the Backoff GenServer. If the
     # owner dies, the table is destroyed; until the supervisor respawns
