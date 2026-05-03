@@ -1,17 +1,3 @@
-defmodule RequiresCaptchaFake do
-  @moduledoc """
-  Test-only fake implementation of `Grappa.Admission.Captcha` that
-  always demands a captcha solve. Used by the captcha_required wire-shape
-  integration test in `GrappaWeb.AuthControllerTest`. Plan 2 Task 10
-  introduces a Mox-based `CaptchaMock` for finer per-call orchestration;
-  this fake is sufficient for a single binary "always requires" case.
-  """
-  @behaviour Grappa.Admission.Captcha
-
-  @impl Grappa.Admission.Captcha
-  def verify(_, _), do: {:error, :captcha_required}
-end
-
 defmodule GrappaWeb.AuthControllerTest do
   @moduledoc """
   REST surface for `POST /auth/login` + `DELETE /auth/logout`.
@@ -30,6 +16,7 @@ defmodule GrappaWeb.AuthControllerTest do
   use GrappaWeb.ConnCase, async: false
 
   import Grappa.AuthFixtures
+  import Mox
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
   alias Grappa.Admission.NetworkCircuit
@@ -177,14 +164,23 @@ defmodule GrappaWeb.AuthControllerTest do
       # AuthController -> Visitors.Login -> Admission.verify_captcha
       # -> {:error, :captcha_required} -> FallbackController path.
       #
-      # Captcha provider is swapped to a fake that always demands a
-      # captcha. `verify_captcha/2` reads provider via Application.get_env
-      # at runtime — its moduledoc explicitly documents this swap as the
-      # test ergonomic. Restored on `on_exit` so other tests see Disabled.
+      # Captcha provider is swapped to CaptchaMock (Mox) that returns
+      # {:error, :captcha_required} for this call. `verify_captcha/2` reads
+      # provider via Application.get_env at runtime — swap pattern mirrors
+      # TurnstileTest / HCaptchaTest. Restored on `on_exit`.
       original = Application.get_env(:grappa, :admission, [])
-      patched = Keyword.put(original, :captcha_provider, RequiresCaptchaFake)
-      Application.put_env(:grappa, :admission, patched)
+
+      Application.put_env(
+        :grappa,
+        :admission,
+        Keyword.put(original, :captcha_provider, Grappa.Admission.CaptchaMock)
+      )
+
       on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+
+      expect(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
+        {:error, :captcha_required}
+      end)
 
       {_, _} = setup_visitor_network(pick_unused_port())
 
