@@ -112,11 +112,14 @@ config :logger, :console,
     :pid,
     :unexpected,
     # Bootstrap summary: how many credentials we enumerated and how
-    # many session starts succeeded vs. failed. `:visitors` is the
-    # parallel count for the visitor-respawn pass (Task 19).
+    # many session starts were freshly spawned, skipped (admission
+    # cap-tripped or already-running idempotent NO-OP), or failed
+    # (M-life-4 tri-counter — see Grappa.Bootstrap moduledoc).
+    # `:visitors` is the parallel count for the visitor-respawn pass.
     :credentials,
     :visitors,
-    :started,
+    :spawned,
+    :skipped,
     :failed,
     # Per-IRC-event context: who/what an event refers to (KICK target,
     # NICK_CHANGE new-nick, MODE arg, etc. — mirrors the Meta.@known_keys
