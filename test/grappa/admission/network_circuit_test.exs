@@ -11,14 +11,10 @@ defmodule Grappa.Admission.NetworkCircuitTest do
   alias Grappa.Admission.NetworkCircuit
 
   setup do
-    start_supervised!(NetworkCircuit)
-
-    on_exit(fn ->
-      case :ets.whereis(:admission_network_circuit_state) do
-        :undefined -> :ok
-        _ -> :ets.delete_all_objects(:admission_network_circuit_state)
-      end
-    end)
+    # NetworkCircuit is supervised by Grappa.Application; just clear
+    # state per test.
+    for {key, _, _, _, _} <- NetworkCircuit.entries(),
+        do: :ets.delete(:admission_network_circuit_state, key)
 
     :ok
   end
