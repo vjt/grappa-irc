@@ -78,7 +78,7 @@ defmodule Grappa.Bootstrap do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Grappa.Session, Grappa.Visitors]
+    deps: [Grappa.Admission, Grappa.Networks, Grappa.Session, Grappa.Visitors]
 
   use Task, restart: :transient
 
@@ -140,11 +140,32 @@ defmodule Grappa.Bootstrap do
            credential,
          acc
        ) do
-    with {:ok, plan} <- SessionPlan.resolve(credential),
+    capacity_input = %{
+      subject_kind: :user,
+      subject_id: user_id,
+      network_id: network_id,
+      client_id: nil,
+      flow: :bootstrap_user
+    }
+
+    with :ok <- Grappa.Admission.check_capacity(capacity_input),
+         {:ok, plan} <- SessionPlan.resolve(credential),
          {:ok, _} <- Session.start_session({:user, user_id}, network_id, plan) do
       Logger.info("session started", user: user_id, network: slug)
       %{acc | started: acc.started + 1}
     else
+      {:error, :network_cap_exceeded} ->
+        # T31 Plan 2 Task 4 — per-network total cap tripped. Best-effort
+        # per the moduledoc's failure-modes contract: skip the row + warn,
+        # no queue or retry shape. Operator sizes the cap correctly is the
+        # right pressure.
+        Logger.warning("session skipped — network cap exceeded",
+          user: user_id,
+          network: slug
+        )
+
+        %{acc | failed: acc.failed + 1}
+
       {:error, {:already_started, _}} ->
         # Bootstrap is `restart: :transient` — on the (single) restart
         # every previously-spawned session is still alive under the
@@ -223,6 +244,7 @@ defmodule Grappa.Bootstrap do
   defp spawn_visitor(%Visitor{} = visitor, acc) do
     with {:ok, plan} <- VisitorSessionPlan.resolve(visitor),
          {:ok, %Network{} = network} <- Networks.get_network_by_slug(plan.network_slug),
+         :ok <- check_visitor_capacity(visitor, network),
          {:ok, _} <- Session.start_session({:visitor, visitor.id}, network.id, plan) do
       Logger.info("visitor session started",
         visitor_id: visitor.id,
@@ -231,6 +253,17 @@ defmodule Grappa.Bootstrap do
 
       %{acc | started: acc.started + 1}
     else
+      {:error, :network_cap_exceeded} ->
+        # T31 Plan 2 Task 4 — per-network total cap tripped. Best-effort
+        # per the moduledoc's failure-modes contract: skip the row + warn,
+        # no queue or retry shape.
+        Logger.warning("visitor session skipped — network cap exceeded",
+          visitor_id: visitor.id,
+          network: visitor.network_slug
+        )
+
+        %{acc | failed: acc.failed + 1}
+
       {:error, {:already_started, _}} ->
         # Mirror `spawn_one/2`'s F3 idempotency: on Bootstrap restart
         # the session is still alive under the same Registry key.
@@ -250,5 +283,17 @@ defmodule Grappa.Bootstrap do
 
         %{acc | failed: acc.failed + 1}
     end
+  end
+
+  @spec check_visitor_capacity(Visitor.t(), Network.t()) ::
+          :ok | {:error, :network_cap_exceeded | :network_circuit_open}
+  defp check_visitor_capacity(%Visitor{id: visitor_id}, %Network{id: network_id}) do
+    Grappa.Admission.check_capacity(%{
+      subject_kind: :visitor,
+      subject_id: visitor_id,
+      network_id: network_id,
+      client_id: nil,
+      flow: :bootstrap_visitor
+    })
   end
 end

@@ -262,4 +262,57 @@ defmodule Grappa.BootstrapTest do
       assert :ok = Bootstrap.run()
     end
   end
+
+  describe "run/0 network total cap (T31)" do
+    # Plan 2 Task 4 — Bootstrap respects per-network total session cap on
+    # cold-start. If `networks.max_concurrent_sessions` is lower than the
+    # number of credential/visitor rows pointing at that network, the
+    # over-cap rows are skipped + warned. No queue, no retry — clean
+    # skip-and-log per the Bootstrap moduledoc's best-effort contract.
+    test "respawn skips visitors over network cap" do
+      {_, port} = start_server()
+      slug = "azzurra-#{System.unique_integer([:positive])}"
+      {:ok, fresh_network} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, _} =
+        Grappa.Networks.Servers.add_server(fresh_network, %{
+          host: "127.0.0.1",
+          port: port,
+          tls: false
+        })
+
+      {:ok, network} =
+        fresh_network
+        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
+        |> Grappa.Repo.update()
+
+      for n <- 1..3 do
+        visitor_fixture(network_slug: slug, nick: "v#{n}#{System.unique_integer([:positive])}")
+      end
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert :ok = Bootstrap.run() end)
+
+      on_exit(fn ->
+        rows =
+          Registry.select(Grappa.SessionRegistry, [
+            {{{:session, :"$1", network.id}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+          ])
+
+        Enum.each(rows, fn {_, pid} ->
+          DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+        end)
+      end)
+
+      started_rows =
+        Registry.select(Grappa.SessionRegistry, [
+          {{{:session, :_, network.id}, :_, :_}, [], [true]}
+        ])
+
+      assert length(started_rows) <= 1
+      assert log =~ "skipped — network cap"
+    end
+  end
 end
