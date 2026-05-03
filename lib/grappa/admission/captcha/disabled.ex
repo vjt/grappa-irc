@@ -12,5 +12,5 @@ defmodule Grappa.Admission.Captcha.Disabled do
 
   @impl Grappa.Admission.Captcha
   @spec verify(Grappa.Admission.Captcha.token(), Grappa.Admission.Captcha.ip()) :: :ok
-  def verify(_token, _ip), do: :ok
+  def verify(_, _), do: :ok
 end
