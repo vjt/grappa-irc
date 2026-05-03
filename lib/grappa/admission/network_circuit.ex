@@ -161,35 +161,39 @@ defmodule Grappa.Admission.NetworkCircuit do
   def handle_cast({:failure, network_id}, state) do
     now = System.monotonic_time(:millisecond)
 
-    {count, window_start, prior_circuit_state} =
-      case :ets.lookup(@table, network_id) do
-        [] ->
-          {1, now, :closed}
+    case :ets.lookup(@table, network_id) do
+      [] ->
+        # No prior row. Delegating to handle_closed_failure/4 with
+        # prior_count=0, prior_start=now keeps the threshold-crossing
+        # decision in one place: the `now - prior_start > @window_ms`
+        # branch is false (now - now == 0), so logic falls through to
+        # `prior_count + 1 >= @threshold` (= `1 >= @threshold`) — opens
+        # the circuit immediately when threshold == 1, otherwise writes
+        # a fresh count=1 :closed row. Identical semantics to a direct
+        # insert without duplicating the threshold check.
+        handle_closed_failure(network_id, 0, now, now)
+        {:noreply, state}
 
-        [{_, prior_count, prior_start, prior_state, _}] ->
-          if now - prior_start > @window_ms do
-            {1, now, :closed}
-          else
-            {prior_count + 1, prior_start, prior_state}
-          end
-      end
+      [{_, prior_count, prior_start, :closed, _}] ->
+        handle_closed_failure(network_id, prior_count, prior_start, now)
+        {:noreply, state}
 
-    {circuit_state, cooled_at} =
-      if count >= @threshold do
-        {:open, now + JitteredCooldown.compute(@cooldown_ms, @jitter_pct)}
-      else
-        {:closed, 0}
-      end
+      [{_, _, _, :open, cooled_at_ms}] when now < cooled_at_ms ->
+        # Still cooling down. No half-open per moduledoc — drop the
+        # failure silently. The :cooldown_expire cast (when it fires)
+        # will handle the open→closed transition with correct telemetry.
+        {:noreply, state}
 
-    :ets.insert(@table, {network_id, count, window_start, circuit_state, cooled_at})
-
-    # Emit once on the closed→open transition only. If prior state was already
-    # :open, the circuit is already tripped — no duplicate event.
-    if circuit_state == :open and prior_circuit_state != :open do
-      Telemetry.circuit_open(network_id, @threshold, @cooldown_ms)
+      [{_, _, _, :open, _}] ->
+        # Cooldown elapsed but the :cooldown_expire cast hasn't been
+        # processed yet (or was never observed because no check/1 raced
+        # past it). Treat as a fresh window starting now: write a new
+        # :closed row with count=1, cooled_at=0. Any deferred
+        # :cooldown_expire cast carrying the OLD observed cooled_at_ms
+        # will mismatch on the H6 token pin and no-op cleanly.
+        handle_closed_failure(network_id, 0, now, now)
+        {:noreply, state}
     end
-
-    {:noreply, state}
   end
 
   def handle_cast({:success, network_id}, state) do
@@ -233,5 +237,30 @@ defmodule Grappa.Admission.NetworkCircuit do
     end
 
     {:noreply, state}
+  end
+
+  # Apply the count/window/threshold transition for a :closed (or equivalent
+  # fresh-window) prior state. Three branches:
+  #
+  #   - now - prior_start > @window_ms  → window expired; reset count to 1.
+  #   - prior_count + 1 >= @threshold   → threshold crossed; open circuit.
+  #   - otherwise                       → bump count, stay :closed.
+  @spec handle_closed_failure(integer(), non_neg_integer(), integer(), integer()) :: :ok
+  defp handle_closed_failure(network_id, prior_count, prior_start, now) do
+    cond do
+      now - prior_start > @window_ms ->
+        :ets.insert(@table, {network_id, 1, now, :closed, 0})
+        :ok
+
+      prior_count + 1 >= @threshold ->
+        cooldown = JitteredCooldown.compute(@cooldown_ms, @jitter_pct)
+        :ets.insert(@table, {network_id, prior_count + 1, prior_start, :open, now + cooldown})
+        Telemetry.circuit_open(network_id, @threshold, @cooldown_ms)
+        :ok
+
+      true ->
+        :ets.insert(@table, {network_id, prior_count + 1, prior_start, :closed, 0})
+        :ok
+    end
   end
 end
