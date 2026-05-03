@@ -18,6 +18,13 @@ defmodule Grappa.Application do
 
   @impl Application
   def start(_, _) do
+    # Boot-time captcha config injection — read :admission keys once,
+    # validate, store in :persistent_term. CLAUDE.md "Application.{put,get}_env:
+    # boot-time only" — this is the designated boundary site for the
+    # :admission keyspace. See spec decision A in
+    # docs/superpowers/specs/2026-05-03-t31-cleanup-design.md.
+    :ok = Grappa.Admission.Config.boot()
+
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
     # reorder is a deliberate choice.
