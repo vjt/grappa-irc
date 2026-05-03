@@ -311,7 +311,7 @@ defmodule Grappa.BootstrapTest do
           {{{:session, :_, network.id}, :_, :_}, [], [true]}
         ])
 
-      assert length(started_rows) <= 1
+      assert length(started_rows) == 1
       assert log =~ "skipped — network cap"
     end
   end
