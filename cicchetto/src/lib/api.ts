@@ -11,6 +11,17 @@
 // unauthenticated 401 from `Plugs.Authn` and the credential-failure 401
 // from login both surface here as `ApiError`.
 
+import { getOrCreateClientId } from "./clientId";
+
+function buildHeaders(token?: string): HeadersInit {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-grappa-client-id": getOrCreateClientId(),
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+  return headers;
+}
+
 export type LoginRequest = {
   identifier: string;
   password?: string;
@@ -179,7 +190,7 @@ async function readError(res: Response): Promise<ApiError> {
 export async function login(req: LoginRequest): Promise<LoginResponse> {
   const res = await fetch("/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders(),
     body: JSON.stringify(req),
   });
   if (!res.ok) throw await readError(res);
@@ -188,7 +199,7 @@ export async function login(req: LoginRequest): Promise<LoginResponse> {
 
 export async function me(token: string): Promise<MeResponse> {
   const res = await fetch("/me", {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as MeResponse;
@@ -197,14 +208,14 @@ export async function me(token: string): Promise<MeResponse> {
 export async function logout(token: string): Promise<void> {
   const res = await fetch("/auth/logout", {
     method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
 }
 
 export async function listNetworks(token: string): Promise<Network[]> {
   const res = await fetch("/networks", {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as Network[];
@@ -212,7 +223,7 @@ export async function listNetworks(token: string): Promise<Network[]> {
 
 export async function listChannels(token: string, networkSlug: string): Promise<ChannelEntry[]> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/channels`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as ChannelEntry[];
@@ -232,7 +243,7 @@ export async function listMessages(
   const qs = before === undefined ? "" : `?before=${before}`;
   const res = await fetch(
     `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages${qs}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
   return (await res.json()) as ScrollbackMessage[];
@@ -255,10 +266,7 @@ export async function sendMessage(
     `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers: buildHeaders(token),
       body: JSON.stringify({ body }),
     },
   );
@@ -280,10 +288,7 @@ export async function postTopic(
     `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/topic`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers: buildHeaders(token),
       body: JSON.stringify({ body }),
     },
   );
@@ -300,10 +305,7 @@ export async function postJoin(
 ): Promise<void> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/channels`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
+    headers: buildHeaders(token),
     body: JSON.stringify({ name: channelName }),
   });
   if (!res.ok) throw await readError(res);
@@ -321,7 +323,7 @@ export async function postPart(
     `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}`,
     {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: buildHeaders(token),
     },
   );
   if (!res.ok) throw await readError(res);
@@ -338,7 +340,7 @@ export async function listMembers(
 ): Promise<{ nick: string; modes: string[] }[]> {
   const res = await fetch(
     `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/members`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
   const body = (await res.json()) as { members: { nick: string; modes: string[] }[] };
@@ -352,10 +354,7 @@ export async function listMembers(
 export async function postNick(token: string, networkSlug: string, nick: string): Promise<void> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/nick`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
+    headers: buildHeaders(token),
     body: JSON.stringify({ nick }),
   });
   if (!res.ok) throw await readError(res);
