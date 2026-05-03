@@ -997,45 +997,154 @@ no new envelope shape introduced.
 Plan 2 of 2.
 ```
 
-## Task 6 — `AuthController` + `AuthJSON` integration
+## Task 6 — `AuthController` + `AuthJSON` integration + `ClientId` plug hoist
 
 **Files:**
-- Modify: `lib/grappa_web/controllers/auth_controller.ex`
-- Modify: `lib/grappa_web/controllers/auth_json.ex`
+- Create: `lib/grappa_web/plugs/client_id.ex`
+- Create: `test/grappa_web/plugs/client_id_test.exs`
+- Modify: `lib/grappa_web/router.ex` (wire `ClientId` into `:api` pipeline)
+- Modify: `lib/grappa_web/plugs/authn.ex` (drop inline `extract_client_id/1`;
+  the assign now arrives pre-populated from the upstream `:api` pipeline)
+- Modify: `lib/grappa_web/controllers/auth_controller.ex` (drop inline
+  `extract_client_id/1`; read `conn.assigns.current_client_id`)
+- Modify: `test/grappa_web/controllers/auth_controller_test.exs`
+- Modify: `test/grappa_web/plugs/authn_test.exs` (Authn no longer owns
+  client_id extraction; assert on the assign produced by the upstream
+  `ClientId` plug instead of header → assign within Authn)
 
-- [ ] **Step 1: Failing test** — extend AuthController test for captcha_required wire shape, ensuring `site_key` is present in 400 response.
+### Status of plan-original Step 2 (Login input map threading)
 
-- [ ] **Step 2: Update `auth_controller.ex`'s `visitor_login/3`** to thread `client_id` + `captcha_token` from conn assigns + body params into `Login.login/2`'s input map:
+Tasks 3 (`a3b70e8`) + 5 (`1b26a1f`) ALREADY implemented the Login input map
+threading + duplicated `extract_client_id/1` inline in `AuthController`
+because `/auth/login` is NOT behind `:authn`. Task 6's net new work is:
 
-```elixir
-input = %{
-  nick: nick,
-  password: password,
-  ip: format_remote_ip(conn.remote_ip),
-  user_agent: get_req_header(conn, "user-agent") |> List.first(),
-  token: extract_bearer(conn),
-  captcha_token: Map.get(params, "captcha_token"),
-  client_id: conn.assigns[:current_client_id]
-}
-```
+  1. Add the missing captcha_required wire-shape integration test
+     against `AuthController` (plan Step 1).
+  2. Hoist `extract_client_id/1` out of both `Plugs.Authn` AND
+     `AuthController` into a new `Plugs.ClientId` plug at the `:api`
+     pipeline (Option A from sibling decision; alternative Option B was a
+     shared `Grappa.Auth.ClientId` helper module called by both — rejected
+     because cross-cutting request enrichment via plug is the idiomatic
+     Phoenix path and `:api` is the highest pipeline shared by `/auth/login`
+     + every authenticated route, so a single plug invocation covers both
+     surfaces with zero duplication).
+  3. Verify plan Step 2's Login input map shape matches what `visitor_login/3`
+     actually does post-hoist (the `conn.assigns[:current_client_id]` reading
+     stays; the inline extraction goes).
 
-(`params` is the controller action's input; if the existing controller doesn't pass `params` through, refactor to do so.)
+### Steps
 
-- [ ] **Step 3: Update `AuthJSON`** — no new render needed; FallbackController owns the captcha-required envelope. AuthJSON unchanged.
+- [ ] **Step 1: Plan-fix-first commit on main** — already landed (this commit).
 
-- [ ] **Step 4: Run, expect PASS**
+- [ ] **Step 2: Failing test (TDD)** in
+  `test/grappa_web/controllers/auth_controller_test.exs` — assert that
+  hitting `POST /auth/login` with input that triggers `:captcha_required`
+  from `Visitors.Login` yields 400 with `%{"error" => "captcha_required",
+  "site_key" => _}` (use `Map.has_key?(body, "site_key")` since `:captcha_site_key`
+  is unwired in test/dev today — Task 13 will wire it via `config/runtime.exs`,
+  then the assertion can bump to a value comparison). The test exercises the
+  full FallbackController dispatch path through the controller, complementing
+  the existing unit test in `test/grappa_web/controllers/fallback_controller_test.exs`
+  which calls `FallbackController.call/2` directly.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Implement `GrappaWeb.Plugs.ClientId`** at
+  `lib/grappa_web/plugs/client_id.ex`. Behaviour: `Plug`. On `call/2`,
+  reads `x-grappa-client-id` request header, validates (URL-safe ASCII,
+  ≤64 bytes; same `~r/\A[A-Za-z0-9_-]+\z/` regex Plugs.Authn carries
+  today), and assigns `:current_client_id` (binary on success, `nil` on
+  missing/malformed). NEVER halts — malformed becomes `nil` so the
+  downstream admission gates can decide policy (per-client cap requires
+  a client_id, but client_id absence is a valid state, e.g., from
+  curl/CI). Moduledoc explains why `:api` (covers /auth/login + every
+  authenticated route through one invocation) and why nil-on-malformed
+  (boundary tolerance — admission policy decides, not the plug).
 
-```bash
-feat(t31): AuthController threads client_id + captcha_token into Login
+- [ ] **Step 4: Plug test** at `test/grappa_web/plugs/client_id_test.exs`
+  with cases: valid header → assign set; missing header → assign nil; header
+  > 64 bytes → assign nil; header containing `/` or `;` → assign nil; empty
+  header value → assign nil. Mirror the existing
+  `test/grappa_web/plugs/authn_test.exs` client_id describe block (which gets
+  retired in Step 6).
 
-client_id read from :current_client_id conn assign (Plug from Task 2).
-captcha_token read from request body (cicchetto sends after widget
-solve). Both pass through to Visitors.Login as part of the input map.
+- [ ] **Step 5: Wire into router** — in `lib/grappa_web/router.ex`, append
+  `plug GrappaWeb.Plugs.ClientId` to the `:api` pipeline. Order: AFTER
+  `plug :accepts, ["json"]` (content-type negotiation runs first; client_id
+  enrichment is independent, but conventional ordering is "framework
+  housekeeping → app concerns").
 
-Plan 2 of 2.
-```
+- [ ] **Step 6: Strip `extract_client_id/1` from `Plugs.Authn`** — remove
+  the private `extract_client_id/1` + `valid_client_id?/1` helpers + the
+  `@client_id_regex` module attr. Drop the two `assign(:current_client_id,
+  extract_client_id(conn))` lines in `assign_subject/2` (both clauses) — the
+  assign is already populated by upstream `Plugs.ClientId` in the `:api`
+  pipeline, which runs before `:authn`. Update the moduledoc paragraph that
+  documents `:current_client_id` to point at `Plugs.ClientId` instead.
+  Update `test/grappa_web/plugs/authn_test.exs` describe block: those tests
+  assert client_id behaviour on the `:authn` plug today; either delete (now
+  redundant with Step 4 plug tests) or convert to integration tests that
+  exercise the full pipeline. Delete is preferred — single source of truth
+  for behaviour assertion is the new plug's test.
+
+- [ ] **Step 7: Strip inline `extract_client_id/1` from `AuthController`** —
+  remove the private `extract_client_id/1` helper + `@client_id_regex` module
+  attr. In `visitor_login/3`, change `client_id: extract_client_id(conn)` to
+  `client_id: conn.assigns[:current_client_id]`. The assign is now populated
+  by `Plugs.ClientId` upstream in the `:api` pipeline (which the `/auth/login`
+  scope pipes through). Drop the comment block above the inline extraction
+  that referenced the Plugs.Authn mirror — the mirror no longer exists.
+
+- [ ] **Step 8: Verify `visitor_login/3` matches plan-original Step 2 input
+  map shape** — should look like:
+
+  ```elixir
+  input = %{
+    nick: nick,
+    password: password,
+    ip: format_ip(conn),
+    user_agent: user_agent(conn),
+    token: extract_bearer(conn),
+    captcha_token: conn.params["captcha_token"],
+    client_id: conn.assigns[:current_client_id]
+  }
+  ```
+
+  (Helpers `format_ip/1` + `user_agent/1` already exist in the controller
+  and are the canonical replacements for the plan's snippet's
+  `format_remote_ip/1` + inline `get_req_header` pipeline. `conn.params` is
+  the canonical access for body+query params merged; equivalent to the
+  plan's `Map.get(params, "captcha_token")`.)
+
+- [ ] **Step 9: AuthJSON unchanged** — no new render, FallbackController owns
+  the captcha-required envelope.
+
+- [ ] **Step 10: Run, expect PASS**
+
+  ```bash
+  scripts/test.sh test/grappa_web/plugs/client_id_test.exs \
+                  test/grappa_web/plugs/authn_test.exs \
+                  test/grappa_web/controllers/auth_controller_test.exs
+  scripts/check.sh
+  scripts/dialyzer.sh
+  ```
+
+- [ ] **Step 11: Commit (single logical change)**
+
+  ```bash
+  feat(t31): Plugs.ClientId hoist + AuthController captcha wire-shape test
+
+  Hoists X-Grappa-Client-Id extraction out of Plugs.Authn AND
+  AuthController into a single Plugs.ClientId plug wired to the :api
+  pipeline. Both prior call sites duplicated the same regex +
+  validation; one plug at the highest shared pipeline removes the
+  duplication and gives /auth/login (unauthenticated) the same
+  :current_client_id assign that authenticated routes get.
+
+  Adds the captcha_required wire-shape integration test through
+  AuthController, complementing the existing direct FallbackController
+  unit test.
+
+  Plan 2 of 2.
+  ```
 
 ## Task 7 — User logout terminates Session.Server (symmetric with visitor)
 
