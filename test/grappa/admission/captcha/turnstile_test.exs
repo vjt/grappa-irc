@@ -1,21 +1,33 @@
 defmodule Grappa.Admission.Captcha.TurnstileTest do
-  use ExUnit.Case, async: true
+  # async: false — mutates the shared `:persistent_term` slot for
+  # `Grappa.Admission.Config.config/0` (B1.3 migration). The previous
+  # `Application.put_env` pattern was also globally racy but only set
+  # provider-specific keys; the struct's all-or-nothing snapshot makes
+  # the race observable, so we serialise.
+  use ExUnit.Case, async: false
 
   alias Grappa.Admission.Captcha.Turnstile
 
+  @pt_key {Grappa.Admission.Config, :config}
+
   setup do
     bypass = Bypass.open()
-    original = Application.get_env(:grappa, :admission, [])
+    original_pt = :persistent_term.get(@pt_key, :__unset__)
 
-    Application.put_env(
-      :grappa,
-      :admission,
-      original
-      |> Keyword.put(:captcha_secret, "test-secret")
-      |> Keyword.put(:turnstile_endpoint, "http://localhost:#{bypass.port}/siteverify")
-    )
+    Grappa.Admission.Config.put_test_config(%Grappa.Admission.Config{
+      captcha_provider: Grappa.Admission.Captcha.Turnstile,
+      captcha_secret: "test-secret",
+      captcha_site_key: "test-site-key",
+      turnstile_endpoint: "http://localhost:#{bypass.port}/siteverify",
+      hcaptcha_endpoint: "unused"
+    })
 
-    on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+    on_exit(fn ->
+      case original_pt do
+        :__unset__ -> :persistent_term.erase(@pt_key)
+        cfg -> :persistent_term.put(@pt_key, cfg)
+      end
+    end)
 
     {:ok, bypass: bypass}
   end

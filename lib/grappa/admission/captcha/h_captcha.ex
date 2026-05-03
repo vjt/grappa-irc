@@ -7,7 +7,6 @@ defmodule Grappa.Admission.Captcha.HCaptcha do
   """
   @behaviour Grappa.Admission.Captcha
 
-  @endpoint_default "https://hcaptcha.com/siteverify"
   @timeout_ms 5_000
 
   @impl Grappa.Admission.Captcha
@@ -17,9 +16,9 @@ defmodule Grappa.Admission.Captcha.HCaptcha do
   def verify("", _), do: {:error, :captcha_required}
 
   def verify(token, ip) when is_binary(token) do
-    config = Application.get_env(:grappa, :admission, [])
-    secret = Keyword.fetch!(config, :captcha_secret)
-    endpoint = Keyword.get(config, :hcaptcha_endpoint, @endpoint_default)
+    cfg = Grappa.Admission.Config.config()
+    secret = cfg.captcha_secret
+    endpoint = cfg.hcaptcha_endpoint
 
     body = URI.encode_query(%{secret: secret, response: token, remoteip: ip || ""})
     headers = [{"content-type", "application/x-www-form-urlencoded"}]

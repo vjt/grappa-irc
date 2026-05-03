@@ -166,26 +166,33 @@ defmodule GrappaWeb.AuthControllerTest do
       #
       # Captcha provider is swapped to CaptchaMock (Mox) that returns
       # {:error, :captcha_required} for this call. `verify_captcha/2`
-      # reads provider via Application.get_env at runtime — swap pattern
-      # mirrors TurnstileTest / HCaptchaTest. Site key is set in the same
-      # put_env so the wire body carries the operator-set value
-      # (Task 13.A: runtime read in FallbackController). Restored on
-      # `on_exit`. The wire `provider` field for CaptchaMock falls into
-      # `captcha_provider_wire/0`'s default branch → "disabled" (the
-      # Turnstile/HCaptcha-specific wire strings only emit when the
-      # operator configures those modules — verifying the default-branch
-      # behaviour is the value here).
-      original = Application.get_env(:grappa, :admission, [])
+      # reads provider via `Grappa.Admission.Config.config/0` —
+      # `:persistent_term`-backed snapshot — swap pattern mirrors
+      # TurnstileTest / HCaptchaTest. Site key is set in the same
+      # `put_test_config/1` so the wire body carries the operator-set
+      # value (Task 13.A: boot-snapshot read in FallbackController).
+      # Restored on `on_exit`. The wire `provider` field for CaptchaMock
+      # falls into `captcha_provider_wire/0`'s default branch →
+      # "disabled" (the Turnstile/HCaptcha-specific wire strings only
+      # emit when the operator configures those modules — verifying the
+      # default-branch behaviour is the value here).
+      pt_key = {Grappa.Admission.Config, :config}
+      original_pt = :persistent_term.get(pt_key, :__unset__)
 
-      Application.put_env(
-        :grappa,
-        :admission,
-        original
-        |> Keyword.put(:captcha_provider, Grappa.Admission.CaptchaMock)
-        |> Keyword.put(:captcha_site_key, "test-site-key-123")
-      )
+      Grappa.Admission.Config.put_test_config(%Grappa.Admission.Config{
+        captcha_provider: Grappa.Admission.CaptchaMock,
+        captcha_secret: "test-secret",
+        captcha_site_key: "test-site-key-123",
+        turnstile_endpoint: "unused",
+        hcaptcha_endpoint: "unused"
+      })
 
-      on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
+      on_exit(fn ->
+        case original_pt do
+          :__unset__ -> :persistent_term.erase(pt_key)
+          cfg -> :persistent_term.put(pt_key, cfg)
+        end
+      end)
 
       stub(Grappa.Admission.CaptchaMock, :verify, fn _, _ ->
         {:error, :captcha_required}

@@ -198,17 +198,15 @@ defmodule Grappa.Admission do
   @doc """
   Delegates to the configured Captcha behaviour impl.
 
-  The impl module is read at runtime (NOT compile_env) so test config
-  can substitute Mox mocks per-test via Application.put_env. This is
-  the single documented exception to "no runtime config reads" in
-  CLAUDE.md — captcha provider swapping is a Mox-driven test ergonomic,
-  not config-as-IPC.
+  Provider is read from `Grappa.Admission.Config.config/0` —
+  `:persistent_term`-backed boot-time snapshot. Tests substitute via
+  `Grappa.Admission.Config.put_test_config/1` (Mix.env-gated), which
+  also lets Mox mocks replace the provider per-test.
   """
   @spec verify_captcha(String.t() | nil, String.t() | nil) ::
           :ok | {:error, Captcha.error()}
   def verify_captcha(token, ip) do
-    config = Application.get_env(:grappa, :admission, [])
-    provider = Keyword.get(config, :captcha_provider, Grappa.Admission.Captcha.Disabled)
-    provider.verify(token, ip)
+    cfg = Grappa.Admission.Config.config()
+    cfg.captcha_provider.verify(token, ip)
   end
 end
