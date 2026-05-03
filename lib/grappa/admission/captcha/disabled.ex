@@ -11,6 +11,7 @@ defmodule Grappa.Admission.Captcha.Disabled do
   @behaviour Grappa.Admission.Captcha
 
   @impl Grappa.Admission.Captcha
+  @spec wire_name() :: String.t()
   def wire_name, do: "disabled"
 
   @impl Grappa.Admission.Captcha

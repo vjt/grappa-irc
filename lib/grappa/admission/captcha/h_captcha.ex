@@ -10,6 +10,7 @@ defmodule Grappa.Admission.Captcha.HCaptcha do
   @timeout_ms 5_000
 
   @impl Grappa.Admission.Captcha
+  @spec wire_name() :: String.t()
   def wire_name, do: "hcaptcha"
 
   @impl Grappa.Admission.Captcha
