@@ -34,7 +34,12 @@ defmodule Grappa.Admission do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo, Grappa.Visitors],
+    deps: [Grappa.Accounts, Grappa.Networks, Grappa.Repo],
+    # Grappa.Visitors.Visitor is referenced only for SQL join predicates
+    # (schema-only access). A proper dep would create a
+    # Visitors ↔ Admission cycle (Login calls check_capacity). Same
+    # pattern as Grappa.Accounts's dirty_xref on Visitors.Visitor.
+    dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Captcha, NetworkCircuit]
 
   import Ecto.Query

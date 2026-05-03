@@ -16,7 +16,21 @@ defmodule Grappa.Visitors.LoginTest do
 
   alias Grappa.{Accounts, IRCServer, Repo, Session, Visitors}
   alias Grappa.Accounts.Session, as: AccountsSession
+  alias Grappa.Admission.NetworkCircuit
+  alias Grappa.Networks.Network
   alias Grappa.Visitors.{Login, Visitor}
+
+  # NetworkCircuit is ETS-backed and survives Ecto sandbox resets. Each
+  # test that creates a network may get the same auto-increment id (sqlite
+  # resets the sequence per sandbox transaction). Clear the circuit table
+  # before every test so a failure recorded in one test doesn't bleed into
+  # the next test's fresh network-row with the same integer id.
+  setup do
+    for {key, _, _, _, _} <- NetworkCircuit.entries(),
+        do: :ets.delete(:admission_network_circuit_state, key)
+
+    :ok
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -47,7 +61,7 @@ defmodule Grappa.Visitors.LoginTest do
 
   defp login_input(overrides \\ %{}) do
     Map.merge(
-      %{nick: "vjt", password: nil, ip: "1.2.3.4", user_agent: "ua", token: nil},
+      %{nick: "vjt", password: nil, ip: "1.2.3.4", user_agent: "ua", token: nil, captcha_token: nil, client_id: nil},
       overrides
     )
   end
@@ -87,19 +101,6 @@ defmodule Grappa.Visitors.LoginTest do
       assert vid == v.id
 
       stop_visitor_session(v.id, network.id)
-    end
-
-    test "ip cap exceeded → {:error, :ip_cap_exceeded}, no session spawned" do
-      # The Network row must exist so Login.login passes the
-      # :network_unconfigured gate before the per-IP cap check fires.
-      # Port doesn't matter — IP cap rejects before any spawn attempt.
-      {_, _} = setup_visitor_network(pick_unused_port())
-
-      # max_visitors_per_ip is 2 in config/test.exs. Provision 2 → 3rd fails.
-      {:ok, _} = Visitors.find_or_provision_anon("a", "azzurra", "1.2.3.4")
-      {:ok, _} = Visitors.find_or_provision_anon("b", "azzurra", "1.2.3.4")
-
-      assert {:error, :ip_cap_exceeded} = Login.login(login_input(%{nick: "c"}))
     end
 
     test "connect refused → {:error, :upstream_unreachable}, anon row purged" do
@@ -222,6 +223,110 @@ defmodule Grappa.Visitors.LoginTest do
     test "malformed token → {:error, :anon_collision}" do
       assert {:error, :anon_collision} =
                Login.login(login_input(%{token: "not-a-uuid"}))
+    end
+  end
+
+  describe "capacity gates" do
+    setup do
+      # Clear circuit state between tests so prior failures don't bleed.
+      for {key, _, _, _, _} <- NetworkCircuit.entries(),
+          do: :ets.delete(:admission_network_circuit_state, key)
+
+      # Use the visitor network slug ("azzurra") so Login.login's
+      # visitor_network() lookup succeeds. No IRC server needed — capacity
+      # checks hit DB + ETS only and do not spawn sessions.
+      network = network_fixture(slug: "azzurra")
+      {:ok, network: network}
+    end
+
+    test "client_cap_exceeded → {:error, :client_cap_exceeded}", %{network: net} do
+      # Pin the per-(client, network) cap at 1 via the network's
+      # max_per_client column (the operator's knob — Plan 1 schema).
+      {:ok, capped_net} =
+        net
+        |> Network.changeset(%{max_per_client: 1})
+        |> Repo.update()
+
+      # Seed one existing visitor + accounts_sessions row for client_id
+      # "device-a" on this network. Use direct fixture verbs, not
+      # Login.login, to avoid spinning a real Session.Server.
+      {:ok, existing_visitor} =
+        Visitors.find_or_provision_anon("old_user", capped_net.slug, "1.2.3.4")
+
+      {:ok, _} =
+        Accounts.create_session(
+          {:visitor, existing_visitor.id},
+          "1.2.3.4",
+          nil,
+          client_id: "device-a"
+        )
+
+      # Second login attempt from same client_id on same network should
+      # fail at the admission gate, before any spawn attempt.
+      result =
+        Login.login(%{
+          nick: "second_user",
+          password: nil,
+          ip: "1.2.3.4",
+          user_agent: nil,
+          token: nil,
+          captcha_token: nil,
+          client_id: "device-a"
+        })
+
+      assert result == {:error, :client_cap_exceeded}
+    end
+
+    test "network_cap_exceeded → {:error, :network_cap_exceeded}", %{network: net} do
+      # Task 4 changeset rejects max_concurrent_sessions: 0.
+      # Use cap=1 + register one fake live-session entry in SessionRegistry
+      # so Registry.count_select returns 1, tripping the cap.
+      {:ok, capped_net} =
+        net
+        |> Network.changeset(%{max_concurrent_sessions: 1})
+        |> Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          Grappa.SessionRegistry,
+          {{:visitor, "fake-vid"}, capped_net.id},
+          nil
+        )
+
+      result =
+        Login.login(%{
+          nick: "any_nick",
+          password: nil,
+          ip: "1.2.3.4",
+          user_agent: nil,
+          token: nil,
+          captcha_token: nil,
+          client_id: "device-a"
+        })
+
+      assert result == {:error, :network_cap_exceeded}
+    end
+
+    test "network_circuit_open → {:error, :network_circuit_open}", %{network: net} do
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net.id)
+      end
+
+      # Flush GenServer cast queue before checking.
+      _ = :sys.get_state(NetworkCircuit)
+
+      result =
+        Login.login(%{
+          nick: "fresh",
+          password: nil,
+          ip: "1.2.3.4",
+          user_agent: nil,
+          token: nil,
+          captcha_token: nil,
+          client_id: "device-a"
+        })
+
+      assert result == {:error, :network_circuit_open}
     end
   end
 end
