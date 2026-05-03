@@ -8,3 +8,4 @@
 # `async: false` on the heavy tests or migrating off sqlite.
 ExUnit.start(capture_log: true, max_cases: 2)
 Ecto.Adapters.SQL.Sandbox.mode(Grappa.Repo, :manual)
+Mox.defmock(Grappa.Admission.CaptchaMock, for: Grappa.Admission.Captcha)
