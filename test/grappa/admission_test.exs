@@ -55,8 +55,12 @@ defmodule Grappa.AdmissionTest do
     test "exceeded → :network_cap_exceeded", %{network: net} do
       # Task 4 changeset rejects max_concurrent_sessions: 0 (validate_number
       # greater_than: 0). Use cap=1 + register one fake live-session entry
-      # in SessionRegistry so Registry.count_match returns 1, tripping the
-      # cap. Registry entry is auto-removed when the test pid exits.
+      # in SessionRegistry so Registry.count_select returns 1, tripping the
+      # cap. The fake key MUST go through `Server.registry_key/2` so the
+      # match-spec in `count_live_sessions/1` actually matches — registering
+      # a hand-rolled tuple bypasses the production registrar and makes the
+      # test pass while encoding the bug. Registry entry is auto-removed
+      # when the test pid exits.
       {:ok, net} =
         net
         |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
@@ -65,7 +69,7 @@ defmodule Grappa.AdmissionTest do
       {:ok, _} =
         Registry.register(
           Grappa.SessionRegistry,
-          {{:visitor, "fake-vid"}, net.id},
+          Grappa.Session.Server.registry_key({:visitor, "fake-vid"}, net.id),
           nil
         )
 
