@@ -1,13 +1,12 @@
 defmodule Grappa.Admission.Captcha.Turnstile do
   @moduledoc """
-  Cloudflare Turnstile captcha verify impl.
+  Cloudflare Turnstile siteverify implementation.
 
-  Endpoint: https://challenges.cloudflare.com/turnstile/v0/siteverify
-  Expected form-encoded body: secret + response + remoteip.
+  Wire shape mirrors the Cloudflare API
+  (https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+  Shared HTTP plumbing lives in `Grappa.Admission.Captcha.SiteVerifyHttp`.
   """
   @behaviour Grappa.Admission.Captcha
-
-  @timeout_ms 5_000
 
   @impl Grappa.Admission.Captcha
   @spec wire_name() :: String.t()
@@ -19,20 +18,14 @@ defmodule Grappa.Admission.Captcha.Turnstile do
   def verify(nil, _), do: {:error, :captcha_required}
   def verify("", _), do: {:error, :captcha_required}
 
-  def verify(token, ip) when is_binary(token) do
+  def verify(token, remote_ip) when is_binary(token) do
     cfg = Grappa.Admission.Config.config()
-    secret = cfg.captcha_secret
-    endpoint = cfg.turnstile_endpoint
 
-    body = URI.encode_query(%{secret: secret, response: token, remoteip: ip || ""})
-    headers = [{"content-type", "application/x-www-form-urlencoded"}]
-
-    case Req.post(endpoint, body: body, headers: headers, receive_timeout: @timeout_ms) do
-      {:ok, %{status: 200, body: %{"success" => true}}} -> :ok
-      {:ok, %{status: 200, body: %{"success" => false}}} -> {:error, :captcha_failed}
-      {:ok, %{status: status}} when status >= 500 -> {:error, :captcha_provider_unavailable}
-      {:ok, %{status: _}} -> {:error, :captcha_failed}
-      {:error, _} -> {:error, :captcha_provider_unavailable}
-    end
+    Grappa.Admission.Captcha.SiteVerifyHttp.verify(
+      cfg.turnstile_endpoint,
+      cfg.captcha_secret,
+      token,
+      remote_ip
+    )
   end
 end
