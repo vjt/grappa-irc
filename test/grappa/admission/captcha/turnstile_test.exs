@@ -5,16 +5,17 @@ defmodule Grappa.Admission.Captcha.TurnstileTest do
 
   setup do
     bypass = Bypass.open()
-
-    current = Application.get_env(:grappa, :admission)
+    original = Application.get_env(:grappa, :admission, [])
 
     Application.put_env(
       :grappa,
       :admission,
-      current
+      original
       |> Keyword.put(:captcha_secret, "test-secret")
       |> Keyword.put(:turnstile_endpoint, "http://localhost:#{bypass.port}/siteverify")
     )
+
+    on_exit(fn -> Application.put_env(:grappa, :admission, original) end)
 
     {:ok, bypass: bypass}
   end
