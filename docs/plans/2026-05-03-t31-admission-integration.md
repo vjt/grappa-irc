@@ -559,6 +559,150 @@ W3 :ip_cap_exceeded retired in favor of T31 per-(client, network) cap;
 Plan 2 of 2.
 ```
 
+## Task 3.5 — Fix `Admission.count_live_sessions/1` registry-key match-spec
+
+**Why this exists (plan-fix-first, surfaced during Task 4 implementation):**
+
+`Grappa.Admission.count_live_sessions/1` (Plan 1 Task 6) used a match-spec
+head `{{:_, network_id}, :_, :_}` — a **2-tuple registry key**. But
+`Grappa.Session.Server.registry_key/2` (the canonical production registrar
+since Plan 1 Task 6's `Server.via/2`) returns a **3-tuple**
+`{:session, subject, network_id}`. The match-spec therefore never matches
+real production entries; `count_live_sessions/1` always returns 0;
+`check_network_total/1` never trips. The two existing tests that supposedly
+exercise the cap (`test/grappa/admission_test.exs` "exceeded →
+:network_cap_exceeded" and `test/grappa/visitors/login_test.exs`
+"network_cap_exceeded → ...") only "pass" because they pre-register
+synthetic 2-tuple keys via raw `Registry.register/3`, bypassing
+`Server.registry_key/2`. The match-spec asserts a buggy shape against a
+buggy fixture — both wrong, mutually consistent. CLAUDE.md "Never assert
+buggy behavior" is violated.
+
+Task 4's contract (Bootstrap respects the per-network cap on cold-start)
+cannot be made green without fixing this — the wiring is a no-op against
+real sessions until `count_live_sessions/1` matches the production key
+shape.
+
+**Files:**
+- Modify: `lib/grappa/admission.ex`
+- Modify: `test/grappa/admission_test.exs`
+- Modify: `test/grappa/visitors/login_test.exs`
+
+- [ ] **Step 1: Read the canonical key shape**
+
+`lib/grappa/session/server.ex` `registry_key/2`:
+
+```elixir
+@spec registry_key(Grappa.Session.subject(), integer()) ::
+        {:session, Grappa.Session.subject(), integer()}
+def registry_key(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
+  {:session, subject, network_id}
+end
+```
+
+Every real production entry uses this 3-tuple. Fakes registered via raw
+`Registry.register/3` MUST mirror this shape.
+
+- [ ] **Step 2: Fix the match-spec in `lib/grappa/admission.ex`**
+
+Replace:
+
+```elixir
+defp count_live_sessions(network_id) do
+  # Registry keys are `{subject, network_id}` (subject = `{:user|:visitor, id}`).
+  # Count entries with any subject matching this network_id. The match-spec
+  # head `{{:_, network_id}, :_, :_}` literally interpolates network_id at
+  # construction time — `:_` matches any subject; the integer matches itself.
+  # `count_match/3` won't work here: its `key` arg is matched as a plain
+  # Erlang term (`:_` is a literal atom inside a tuple, not a wildcard).
+  Registry.count_select(Grappa.SessionRegistry, [
+    {{{:_, network_id}, :_, :_}, [], [true]}
+  ])
+end
+```
+
+with:
+
+```elixir
+defp count_live_sessions(network_id) do
+  # Registry keys are `{:session, subject, network_id}` per
+  # `Grappa.Session.Server.registry_key/2`. Match-spec head literally
+  # interpolates network_id at construction time — `:_` matches any
+  # subject; the integer matches itself. `count_match/3` won't work
+  # here: its `key` arg is matched as a plain Erlang term (`:_` is a
+  # literal atom inside a tuple, not a wildcard).
+  Registry.count_select(Grappa.SessionRegistry, [
+    {{{:session, :_, network_id}, :_, :_}, [], [true]}
+  ])
+end
+```
+
+- [ ] **Step 3: Fix the existing test fixtures that encoded the bug**
+
+In `test/grappa/admission_test.exs` "exceeded → :network_cap_exceeded"
+(near line 65), replace the raw 2-tuple fake registration:
+
+```elixir
+{:ok, _} =
+  Registry.register(
+    Grappa.SessionRegistry,
+    {{:visitor, "fake-vid"}, net.id},
+    nil
+  )
+```
+
+with the canonical 3-tuple shape sourced from `Server.registry_key/2`:
+
+```elixir
+{:ok, _} =
+  Registry.register(
+    Grappa.SessionRegistry,
+    Grappa.Session.Server.registry_key({:visitor, "fake-vid"}, net.id),
+    nil
+  )
+```
+
+In `test/grappa/visitors/login_test.exs` "network_cap_exceeded →
+{:error, :network_cap_exceeded}" (near line 290), apply the same
+substitution. Both tests still assert the same outcome, but now the
+fake keys match the production key shape and the match-spec actually
+sees them — i.e. the production code path is exercised, not bypassed.
+
+- [ ] **Step 4: Run, expect both targeted tests still PASS**
+
+```bash
+scripts/test.sh test/grappa/admission_test.exs
+scripts/test.sh test/grappa/visitors/login_test.exs
+```
+
+- [ ] **Step 5: Run full check, expect green**
+
+```bash
+scripts/check.sh
+scripts/dialyzer.sh   # standalone, per PLT-staleness pin
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+fix(t31): Admission.count_live_sessions registry-key match-spec
+
+Production registers session keys as `{:session, subject, network_id}`
+via `Server.registry_key/2`. The match-spec head used a stale 2-tuple
+shape `{:_, network_id}` so it never matched real entries — the cap
+never tripped. The two existing tests exercising the cap registered
+2-tuple fakes and only "passed" because they bypassed the production
+registrar. Both updated to register via `Server.registry_key/2`.
+
+Surfaced during Plan 2 Task 4 implementation when the Bootstrap wiring
+correctly called `check_capacity/1` but the cap test continued to fail
+because `count_live_sessions/1` returned 0 against real session
+entries. CLAUDE.md "Never assert buggy behavior" — the previous tests
+encoded the bug and prevented anyone from finding it.
+
+Plan 2 of 2 (Task 3.5, prereq for Task 4).
+```
+
 ## Task 4 — `Bootstrap` network-total cap
 
 **Files:**
@@ -567,27 +711,71 @@ Plan 2 of 2.
 
 - [ ] **Step 1: Failing test**
 
-In `test/grappa/bootstrap_test.exs`, add:
+In `test/grappa/bootstrap_test.exs`, add inside the existing test module
+(matching the existing fixture conventions — `start_server/0` returns
+`{server_pid, port}` for a fake IRC listener; `visitor_fixture/1` lives in
+`Grappa.AuthFixtures` and is already imported; module-level Logger info
+gating mirrors the file's other capture-log tests):
 
 ```elixir
-describe "network total cap" do
+describe "run/0 network total cap (T31)" do
+  # Plan 2 Task 4 — Bootstrap respects per-network total session cap on
+  # cold-start. If `networks.max_concurrent_sessions` is lower than the
+  # number of credential/visitor rows pointing at that network, the
+  # over-cap rows are skipped + warned. No queue, no retry — clean
+  # skip-and-log per the Bootstrap moduledoc's best-effort contract.
   test "respawn skips visitors over network cap" do
-    network = Grappa.AuthFixtures.network_with_server(slug: "azzurra")
-    {:ok, _} = network |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1}) |> Grappa.Repo.update()
+    {_, port} = start_server()
+    slug = "azzurra-#{System.unique_integer([:positive])}"
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
 
-    # Provision 3 visitors
+    {:ok, _} =
+      Grappa.Networks.Servers.add_server(network, %{
+        host: "127.0.0.1",
+        port: port,
+        tls: false
+      })
+
+    {:ok, network} =
+      network
+      |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
+      |> Grappa.Repo.update()
+
     for n <- 1..3 do
-      Grappa.AuthFixtures.visitor_fixture(network_slug: "azzurra", nick: "v#{n}")
+      visitor_fixture(network_slug: slug, nick: "v#{n}#{System.unique_integer([:positive])}")
     end
 
-    log = ExUnit.CaptureLog.capture_log(fn -> Grappa.Bootstrap.run() end)
+    Logger.put_module_level(Grappa.Bootstrap, :info)
+    on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-    started_count = Registry.count_match(Grappa.SessionRegistry, {:_, network.id}, :_)
+    log = capture_log(fn -> assert :ok = Bootstrap.run() end)
+
+    on_exit(fn ->
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, :"$1", network.id}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+      ])
+      |> Enum.each(fn {_subject, pid} ->
+        DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+      end)
+    end)
+
+    started_count =
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, :_, network.id}, :_, :_}, [], [true]}
+      ])
+      |> length()
+
     assert started_count <= 1
     assert log =~ "skipped — network cap"
   end
 end
 ```
+
+NB: the obvious-looking shorter form
+`Grappa.AuthFixtures.network_with_server(slug: "azzurra")` does NOT
+work — `network_with_server/1` requires `:port` (not optional) and
+returns `{network, server}` (not `network`). Inline the
+`find_or_create_network` + `add_server` pair instead, as above.
 
 - [ ] **Step 2: Run, expect FAIL**
 
@@ -1316,7 +1504,7 @@ Update CP11 (or open CP12) with T31 LANDED entry. Update memory pin `project_t31
 
 ## Plan 2 exit criteria
 
-- [ ] All 14 tasks landed on `cluster/t31-integration`.
+- [ ] All 15 tasks landed on `cluster/t31-integration` (Tasks 1–14 + Task 3.5 prereq).
 - [ ] `scripts/check.sh` green.
 - [ ] Standalone `scripts/dialyzer.sh` green.
 - [ ] cicchetto `npm test` green.
