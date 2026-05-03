@@ -36,11 +36,17 @@ defmodule Grappa.Admission.Captcha.SiteVerifyHttpTest do
              SiteVerifyHttp.verify(endpoint, "secret", "token", "1.2.3.4")
   end
 
-  test "connection refused → {:error, :captcha_provider_unavailable}" do
-    closed_endpoint = "http://localhost:1/siteverify"
+  test "connection refused → {:error, :captcha_provider_unavailable}", %{
+    bypass: bypass,
+    endpoint: endpoint
+  } do
+    # Match the per-provider test convention: tear the listener down so
+    # the OS rejects the connection. Avoids `localhost:1` magic-port
+    # which can race with anything else binding low ports.
+    Bypass.down(bypass)
 
     assert {:error, :captcha_provider_unavailable} =
-             SiteVerifyHttp.verify(closed_endpoint, "secret", "token", "1.2.3.4")
+             SiteVerifyHttp.verify(endpoint, "secret", "token", "1.2.3.4")
   end
 
   test "remote_ip nil omits remoteip key", %{bypass: bypass, endpoint: endpoint} do
