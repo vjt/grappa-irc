@@ -11,6 +11,8 @@ defmodule Grappa.Admission.Captcha.Turnstile do
   @timeout_ms 5_000
 
   @impl Grappa.Admission.Captcha
+  @spec verify(Grappa.Admission.Captcha.token(), Grappa.Admission.Captcha.ip()) ::
+          :ok | {:error, Grappa.Admission.Captcha.error()}
   def verify(nil, _), do: {:error, :captcha_required}
   def verify("", _), do: {:error, :captcha_required}
 
