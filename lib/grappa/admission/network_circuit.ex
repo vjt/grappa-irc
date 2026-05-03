@@ -77,7 +77,9 @@ defmodule Grappa.Admission.NetworkCircuit do
 
   @doc false
   @spec compute_cooldown(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def compute_cooldown(base_ms, jitter_pct \\ @jitter_pct) when jitter_pct >= 0 do
+  def compute_cooldown(base_ms, jitter_pct)
+      when is_integer(base_ms) and base_ms >= 0 and
+             is_integer(jitter_pct) and jitter_pct >= 0 and jitter_pct <= 100 do
     jitter = trunc(base_ms * jitter_pct / 100)
 
     if jitter == 0 do
@@ -88,15 +90,15 @@ defmodule Grappa.Admission.NetworkCircuit do
   end
 
   @doc false
-  @spec threshold() :: pos_integer()
+  @spec threshold() :: unquote(@threshold)
   def threshold, do: @threshold
 
   @doc false
-  @spec window_ms() :: pos_integer()
+  @spec window_ms() :: unquote(@window_ms)
   def window_ms, do: @window_ms
 
   @doc false
-  @spec cooldown_ms() :: pos_integer()
+  @spec cooldown_ms() :: unquote(@cooldown_ms)
   def cooldown_ms, do: @cooldown_ms
 
   @doc false
@@ -177,7 +179,7 @@ defmodule Grappa.Admission.NetworkCircuit do
 
     {circuit_state, cooled_at} =
       if count >= @threshold do
-        {:open, now + compute_cooldown(@cooldown_ms)}
+        {:open, now + compute_cooldown(@cooldown_ms, @jitter_pct)}
       else
         {:closed, 0}
       end
