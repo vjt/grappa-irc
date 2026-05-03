@@ -2,9 +2,11 @@ defmodule GrappaWeb.Router do
   @moduledoc """
   Top-level router. Three pipelines:
 
-    * `:api`     — JSON content negotiation. Applied to every JSON
-      surface, authenticated or not (login is unauthenticated but
-      still JSON).
+    * `:api`     — JSON content negotiation + `X-Grappa-Client-Id`
+      extraction (`GrappaWeb.Plugs.ClientId` populates
+      `:current_client_id`). Applied to every JSON surface,
+      authenticated or not (login is unauthenticated but still JSON,
+      and admission gates need the client_id at login time too).
     * `:authn`   — bearer-token authentication. Plugs
       `GrappaWeb.Plugs.Authn`, which assigns `:current_user_id` +
       `:current_session_id` on success and halts with a uniform 401
@@ -30,6 +32,7 @@ defmodule GrappaWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug GrappaWeb.Plugs.ClientId
   end
 
   pipeline :authn do

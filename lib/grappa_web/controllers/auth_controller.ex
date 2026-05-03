@@ -23,6 +23,10 @@ defmodule GrappaWeb.AuthController do
   without preempting the live `Session.Server`. The header is extracted
   inline because `/auth/login` is NOT behind `:authn` (login is the
   surface that mints the token in the first place).
+
+  `:current_client_id` is populated by `GrappaWeb.Plugs.ClientId`
+  (wired into the `:api` pipeline so login + every authenticated route
+  share one extraction site).
   """
   use GrappaWeb, :controller
 
@@ -129,7 +133,7 @@ defmodule GrappaWeb.AuthController do
       user_agent: user_agent(conn),
       token: extract_bearer(conn),
       captcha_token: conn.params["captcha_token"],
-      client_id: extract_client_id(conn)
+      client_id: conn.assigns[:current_client_id]
     }
 
     case Login.login(input, []) do
@@ -216,25 +220,6 @@ defmodule GrappaWeb.AuthController do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] when token != "" -> token
       _ -> nil
-    end
-  end
-
-  # Mirrors GrappaWeb.Plugs.Authn.extract_client_id/1 — /auth/login is
-  # NOT behind :authn (login mints the token), so we re-read the header
-  # inline. Task 6 (AuthController integration) wires this into the full
-  # admission + captcha flow.
-  @client_id_regex ~r/\A[A-Za-z0-9_-]+\z/
-
-  defp extract_client_id(conn) do
-    case get_req_header(conn, "x-grappa-client-id") do
-      [value | _] when is_binary(value) ->
-        if byte_size(value) > 0 and byte_size(value) <= 64 and
-             String.match?(value, @client_id_regex),
-           do: value,
-           else: nil
-
-      _ ->
-        nil
     end
   end
 
