@@ -1634,34 +1634,445 @@ buildHeaders helper.
 Plan 2 of 2.
 ```
 
-## Task 13 — cicchetto error rendering + captcha widget
+## Task 13 — admission errors UX (server config + cicchetto rendering + captcha widget)
+
+This task ships in **two commits** on `cluster/t31-integration` (CLAUDE.md "bite-sized commits, one logical change"): 13.A (server-side) lands first because cicchetto consumes the new wire shape; 13.B (cicchetto) follows.
+
+### 13.A — server: runtime captcha_site_key + provider in captcha_required body
+
+**Why this commit exists:** Task 5 deferred concern carryover (`config/runtime.exs` wiring not yet done; `Application.compile_env` in `FallbackController` bakes `nil` into prod images). Plus: cicchetto needs to know which widget script to lazy-load — server is source of truth for `:captcha_provider`, so the captcha_required wire body MUST carry both `site_key` AND `provider`. Sniffing provider from `site_key` format is brittle.
 
 **Files:**
-- Create: `cicchetto/src/lib/captcha.ts` (Turnstile/hCaptcha widget loader)
-- Modify: `cicchetto/src/Login.tsx` (handle captcha_required + render widget)
-- Modify: `cicchetto/src/lib/api.ts` (typed error shapes for new wire bodies)
+- Modify: `config/config.exs` (add `:captcha_site_key` default `nil` to the `:admission` block).
+- Modify: `config/test.exs` (add `:captcha_site_key` default `nil` matching config.exs — per `feedback_dialyzer_plt_staleness` memory pin: defaults must live in BOTH).
+- Modify: `config/runtime.exs` (in the `if config_env() == :prod do` block, append a `:admission` config that reads `GRAPPA_CAPTCHA_PROVIDER` / `GRAPPA_CAPTCHA_SECRET` / `GRAPPA_CAPTCHA_SITE_KEY` from env; emit `Logger.warning` if provider non-Disabled and key nil).
+- Modify: `lib/grappa_web/controllers/fallback_controller.ex` (drop `@captcha_site_key Application.compile_env(...)`; replace with private helpers that read at request time; emit `provider` field in the captcha_required body).
+- Modify: `test/grappa_web/controllers/fallback_controller_test.exs` (existing `Map.has_key?(body, "site_key")` test bumps to value-and-provider assertion under explicit `Application.put_env` scope + `on_exit` cleanup).
+- Modify: `test/grappa_web/controllers/auth_controller_test.exs` (the AuthController captcha-required wire-shape test, line ~190 onwards, gains the same put_env scope + asserts `body["site_key"]` + `body["provider"]`).
 
-Add types to `api.ts`:
+**Spec — runtime.exs append (inside `if config_env() == :prod do`):**
+
+```elixir
+captcha_provider =
+  case System.get_env("GRAPPA_CAPTCHA_PROVIDER", "disabled") do
+    "turnstile" -> Grappa.Admission.Captcha.Turnstile
+    "hcaptcha" -> Grappa.Admission.Captcha.HCaptcha
+    _ -> Grappa.Admission.Captcha.Disabled
+  end
+
+captcha_site_key = System.get_env("GRAPPA_CAPTCHA_SITE_KEY")
+
+config :grappa, :admission,
+  captcha_provider: captcha_provider,
+  captcha_secret: System.get_env("GRAPPA_CAPTCHA_SECRET"),
+  captcha_site_key: captcha_site_key
+
+if captcha_provider != Grappa.Admission.Captcha.Disabled and is_nil(captcha_site_key) do
+  require Logger
+
+  Logger.warning(
+    "captcha provider #{inspect(captcha_provider)} configured but :captcha_site_key is nil — clients will receive a captcha_required body with site_key=null and the widget will fail to render"
+  )
+end
+```
+
+(Place after the existing `:logger` line at the bottom of the prod block.)
+
+**Spec — config/config.exs `:admission` block addition:**
+
+Add `captcha_site_key: nil,` between the `captcha_secret:` and `login_probe_timeout_ms:` lines. Mirror addition in `config/test.exs`'s `:admission` block.
+
+**Spec — fallback_controller.ex changes:**
+
+Remove the `@captcha_site_key` module attribute + its preceding moduledoc paragraph (the one explaining compile_env vs runtime). Replace the `:captcha_required` clause body and add two private helpers:
+
+```elixir
+def call(conn, {:error, :captcha_required}) do
+  conn
+  |> put_status(:bad_request)
+  |> json(%{
+    error: "captcha_required",
+    site_key: captcha_site_key(),
+    provider: captcha_provider_wire()
+  })
+end
+
+# Runtime read of operator-provided captcha config. Mirrors the
+# request-time read in Grappa.Admission.Captcha.{Turnstile,HCaptcha}
+# (Tasks 8/9): the captcha config is operator-deploy-time data
+# (env vars baked into the docker compose stack), not per-request
+# state — so the strict CLAUDE.md "runtime banned" rule's intent
+# (no IPC-via-config) doesn't apply. The value MUST be hot-readable
+# so a runtime.exs change picks up at boot without a recompile.
+defp captcha_site_key do
+  Application.get_env(:grappa, :admission, [])[:captcha_site_key]
+end
+
+defp captcha_provider_wire do
+  case Application.get_env(:grappa, :admission, [])[:captcha_provider] do
+    Grappa.Admission.Captcha.Turnstile -> "turnstile"
+    Grappa.Admission.Captcha.HCaptcha -> "hcaptcha"
+    _ -> "disabled"
+  end
+end
+```
+
+**Spec — test changes (fallback_controller_test.exs):**
+
+Replace the existing `:captcha_required` test body with the value-asserting variant:
+
+```elixir
+test "{:error, :captcha_required} → 400 captcha_required + site_key + provider" do
+  prior = Application.get_env(:grappa, :admission)
+
+  Application.put_env(:grappa, :admission,
+    captcha_provider: Grappa.Admission.Captcha.Turnstile,
+    captcha_site_key: "test-site-key-123"
+  )
+
+  on_exit(fn -> Application.put_env(:grappa, :admission, prior) end)
+
+  conn = FallbackController.call(build_conn_for_call(), {:error, :captcha_required})
+  body = json_response(conn, 400)
+  assert body["error"] == "captcha_required"
+  assert body["site_key"] == "test-site-key-123"
+  assert body["provider"] == "turnstile"
+end
+```
+
+(auth_controller_test.exs's captcha-required wire-shape test gets the same treatment around line 190 — replace the `Map.has_key?(body, "site_key")` line with the explicit value+provider assertion under put_env + on_exit, snapshotting prior config.)
+
+**Gates (server-side):**
+- `scripts/format.sh --check`
+- `scripts/credo.sh`
+- `scripts/dialyzer.sh` (standalone, per memory pin)
+- Targeted: `scripts/test.sh test/grappa_web/controllers/fallback_controller_test.exs test/grappa_web/controllers/auth_controller_test.exs`
+- Full: `scripts/test.sh`
+- `scripts/check.sh`
+
+**Commit message body:**
+
+```
+feat(t31): captcha config — runtime site_key + provider in wire body
+
+Task 5 deferred two issues to Task 13: (1) :captcha_site_key not
+wired in config/runtime.exs (so prod images bake nil); (2) the
+captcha_required body needed enough to drive a widget mount on the
+SPA side. This commit closes both.
+
+config/runtime.exs reads GRAPPA_CAPTCHA_PROVIDER /
+GRAPPA_CAPTCHA_SECRET / GRAPPA_CAPTCHA_SITE_KEY into the :admission
+config block at boot, with a Logger.warning when the provider is
+non-Disabled but the site_key is nil (an actively misconfigured
+deploy that would emit site_key=null bodies and break the widget).
+config/config.exs + test.exs gain matching :captcha_site_key: nil
+defaults per the feedback_dialyzer_plt_staleness memory pin.
+
+FallbackController drops the Application.compile_env-baked
+@captcha_site_key in favour of two private helpers reading
+Application.get_env at request time. The pattern matches Tasks 8/9's
+captcha provider modules (Turnstile, HCaptcha) — the captcha config
+is operator-deploy-time data, not per-request state, so the
+runtime-banned rule's intent (no IPC-via-config) doesn't apply. The
+value must be hot-readable so a runtime.exs change picks up at boot
+without recompile. Documented in helper docstrings.
+
+The captcha_required body now carries `provider` ("turnstile" |
+"hcaptcha" | "disabled") alongside `site_key`, so cicchetto can
+lazy-load the matching widget script (Task 13.B) without sniffing
+key formats. Existing Map.has_key? presence assertions in
+fallback/auth controller tests bump to value-and-provider equality
+under explicit Application.put_env scope + on_exit snapshot.
+
+Plan 2 of 2.
+```
+
+### 13.B — cicchetto: AdmissionError types + captcha widget + Login integration
+
+**Files:**
+- Modify: `cicchetto/src/lib/api.ts` (extend `ApiError` to carry parsed body via `info` field; extend `readError` to surface `Retry-After` header into `info.retry_after`; add `AdmissionError` types; add `captcha_token?: string` to `LoginRequest`).
+- Create: `cicchetto/src/lib/captcha.ts` (Turnstile/hCaptcha widget loader + mount).
+- Create: `cicchetto/src/__tests__/captcha.test.ts` (vitest scaffolds).
+- Modify: `cicchetto/src/Login.tsx` (catch `captcha_required`, mount widget, re-submit on solve; render copy for the other admission errors).
+- Modify: `cicchetto/src/lib/auth.ts` (extend `login(identifier, password, captchaToken?)`).
+- Modify: `cicchetto/src/__tests__/Login.test.tsx` (add three captcha + admission-copy scenarios).
+- Modify: `cicchetto/src/__tests__/api.test.ts` (assert `info` field + retry-after header extraction).
+
+**Spec — `api.ts` extensions:**
 
 ```typescript
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly info: Record<string, unknown>;
+
+  constructor(status: number, code: string, info: Record<string, unknown> = {}) {
+    super(`${status} ${code}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.info = info;
+  }
+}
+
+async function readError(res: Response): Promise<ApiError> {
+  if (res.status === 401 && on401Handler !== null) on401Handler();
+  let body: Record<string, unknown> = {};
+  let code: string;
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+    const errs = body.errors as { detail?: string } | undefined;
+    code = (body.error as string | undefined) ?? errs?.detail ?? res.statusText;
+  } catch {
+    code = res.statusText || "unknown";
+  }
+  const retryAfter = res.headers.get("retry-after");
+  if (retryAfter !== null) {
+    const n = Number(retryAfter);
+    if (Number.isFinite(n)) body.retry_after = n;
+  }
+  return new ApiError(res.status, code, body);
+}
+
+export type LoginRequest = {
+  identifier: string;
+  password?: string;
+  captcha_token?: string;
+};
+
 export type AdmissionError =
   | { error: "too_many_sessions" }
   | { error: "network_busy" }
   | { error: "network_unreachable"; retry_after?: number }
-  | { error: "captcha_required"; site_key: string }
+  | { error: "captcha_required"; site_key: string; provider: "turnstile" | "hcaptcha" | "disabled" }
   | { error: "captcha_failed" }
   | { error: "service_degraded" };
 ```
 
-`Login.tsx`: on `captcha_required` response, lazy-load the widget script (Turnstile: `https://challenges.cloudflare.com/turnstile/v0/api.js`; hCaptcha: `https://js.hcaptcha.com/1/api.js`), mount widget with the `site_key`, on solve callback re-submit Login with `captcha_token`.
+**Spec — `captcha.ts` (verbatim):**
 
-User-facing copy for each error:
-- `too_many_sessions` → "You're already connected to this network from another device or tab. Close one before opening a new session."
-- `network_busy` → "This network is at capacity. Try again in a few minutes."
-- `network_unreachable` → "We can't reach the network right now. Retry in N seconds." (use `retry_after`)
-- `service_degraded` → "Login service temporarily unavailable. Please try again."
+```typescript
+export type CaptchaProvider = "turnstile" | "hcaptcha";
 
-Commit: `feat(t31): cicchetto handles captcha_required + admission errors`.
+const SCRIPT_URLS: Record<CaptchaProvider, string> = {
+  turnstile: "https://challenges.cloudflare.com/turnstile/v0/api.js",
+  hcaptcha: "https://js.hcaptcha.com/1/api.js",
+};
+
+type WidgetGlobal = {
+  render: (container: HTMLElement, opts: { sitekey: string; callback: (token: string) => void }) => string;
+  remove: (id: string) => void;
+};
+
+export async function mountCaptchaWidget(
+  provider: CaptchaProvider,
+  container: HTMLElement,
+  siteKey: string,
+  onSolve: (token: string) => void,
+): Promise<() => void> {
+  await loadScript(SCRIPT_URLS[provider]);
+  const widget = (window as unknown as Record<string, WidgetGlobal>)[provider];
+  const id = widget.render(container, { sitekey: siteKey, callback: onSolve });
+  return () => widget.remove(id);
+}
+
+async function loadScript(url: string): Promise<void> {
+  if (document.querySelector(`script[src="${url}"]`) !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`failed to load ${url}`));
+    document.head.appendChild(s);
+  });
+}
+```
+
+**Spec — `captcha.test.ts` (vitest scaffolds, three tests):**
+
+```typescript
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mountCaptchaWidget } from "../lib/captcha";
+
+describe("mountCaptchaWidget", () => {
+  let renderMock: ReturnType<typeof vi.fn>;
+  let removeMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    renderMock = vi.fn(() => "widget-1");
+    removeMock = vi.fn();
+    // Stub the global the script-load would normally provide.
+    (window as unknown as Record<string, unknown>).turnstile = {
+      render: renderMock,
+      remove: removeMock,
+    };
+    (window as unknown as Record<string, unknown>).hcaptcha = {
+      render: renderMock,
+      remove: removeMock,
+    };
+    // Pre-inject the script tag so loadScript's existence-check shortcut fires
+    // and we don't need to fake the onload event.
+    for (const url of [
+      "https://challenges.cloudflare.com/turnstile/v0/api.js",
+      "https://js.hcaptcha.com/1/api.js",
+    ]) {
+      const s = document.createElement("script");
+      s.src = url;
+      document.head.appendChild(s);
+    }
+  });
+
+  afterEach(() => {
+    document.head.querySelectorAll("script").forEach((s) => s.remove());
+    delete (window as unknown as Record<string, unknown>).turnstile;
+    delete (window as unknown as Record<string, unknown>).hcaptcha;
+  });
+
+  test("turnstile mounts via window.turnstile.render with sitekey + callback", async () => {
+    const onSolve = vi.fn();
+    const container = document.createElement("div");
+    await mountCaptchaWidget("turnstile", container, "test-key", onSolve);
+    expect(renderMock).toHaveBeenCalledWith(
+      container,
+      expect.objectContaining({ sitekey: "test-key", callback: onSolve }),
+    );
+  });
+
+  test("hcaptcha mounts via window.hcaptcha.render", async () => {
+    const onSolve = vi.fn();
+    const container = document.createElement("div");
+    await mountCaptchaWidget("hcaptcha", container, "uuid-key", onSolve);
+    expect(renderMock).toHaveBeenCalledWith(
+      container,
+      expect.objectContaining({ sitekey: "uuid-key", callback: onSolve }),
+    );
+  });
+
+  test("cleanup function calls widget.remove with returned id", async () => {
+    const cleanup = await mountCaptchaWidget(
+      "turnstile",
+      document.createElement("div"),
+      "k",
+      () => undefined,
+    );
+    cleanup();
+    expect(removeMock).toHaveBeenCalledWith("widget-1");
+  });
+});
+```
+
+(Implementer may add a fourth `loadScript` test that drives the script-tag injection path — not mandatory; covered transitively by Login.test.tsx.)
+
+**Spec — `auth.ts` extension:**
+
+`login` gains an optional third arg:
+
+```typescript
+export async function login(
+  identifier: string,
+  password: string | null,
+  captchaToken?: string,
+): Promise<void> {
+  const req: api.LoginRequest =
+    password !== null && password !== ""
+      ? { identifier, password }
+      : { identifier };
+  if (captchaToken !== undefined) req.captcha_token = captchaToken;
+  const { token: t, subject } = await api.login(req);
+  localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
+  setToken(t);
+}
+```
+
+**Spec — `Login.tsx`:**
+
+Add a `captchaState` signal (`{ provider, siteKey } | null`) and a `widgetRef` setter ref. On `ApiError` with `code === "captcha_required"`, read `err.info.provider` + `err.info.site_key` (narrow types) and set captchaState. `createEffect` on `[captchaState, widgetRef]`: when both present, call `mountCaptchaWidget`; the solve callback re-invokes `auth.login(identifier(), password() === "" ? null : password(), token)` and then navigates. Cleanup the widget on unmount or on re-set.
+
+Render a `<div ref={setWidgetRef}>` below the password input, gated `<Show when={captchaState()}>`. Friendly copy for the other admission errors via a `friendlyMessage(err)` helper:
+
+```typescript
+function friendlyMessage(err: ApiError): string {
+  switch (err.code) {
+    case "invalid_credentials":
+      return "Invalid name or password.";
+    case "too_many_sessions":
+      return "You're already connected to this network from another device or tab. Close one before opening a new session.";
+    case "network_busy":
+      return "This network is at capacity. Try again in a few minutes.";
+    case "network_unreachable": {
+      const retry = err.info.retry_after;
+      return typeof retry === "number"
+        ? `We can't reach the network right now. Retry in ${retry} seconds.`
+        : "We can't reach the network right now.";
+    }
+    case "service_degraded":
+      return "Login service temporarily unavailable. Please try again.";
+    case "captcha_failed":
+      return "Captcha challenge failed. Please try again.";
+    default:
+      return err.message;
+  }
+}
+```
+
+The existing `if (err instanceof ApiError && err.code === "invalid_credentials")` branch collapses into `if (err instanceof ApiError) setError(friendlyMessage(err)); else setError(err instanceof Error ? err.message : "login_failed");` — except `captcha_required` short-circuits to the widget-mount path, no error text rendered.
+
+**Spec — Login.test.tsx (three new scenarios):**
+
+- "renders captcha widget when login responds 400 captcha_required" — stub `auth.login` to throw `ApiError(400, "captcha_required", { site_key: "k", provider: "turnstile" })`; assert the widget container appears + `mountCaptchaWidget` got called with `("turnstile", _, "k", _)`.
+- "submits captcha_token after solve callback" — capture the `onSolve` callback passed to mountCaptchaWidget; invoke it with `"solved-token"`; assert `auth.login` got re-called with `(id, pwd, "solved-token")`.
+- "renders too_many_sessions copy on 429" — stub `auth.login` to throw `ApiError(429, "too_many_sessions")`; assert the rendered error text matches the spec verbatim.
+
+(Mock `mountCaptchaWidget` via `vi.mock("../lib/captcha")` so the test doesn't touch real DOM script-loading.)
+
+**Spec — api.test.ts additions (two scenarios):**
+
+- "ApiError carries parsed body in info field" — fetch stub returns 400 with `{"error": "captcha_required", "site_key": "k", "provider": "turnstile"}`; assert `err.info.site_key === "k"` and `err.info.provider === "turnstile"`.
+- "ApiError extracts Retry-After header into info.retry_after" — fetch stub returns 503 + Retry-After: 30 + `{"error": "network_unreachable"}`; assert `err.info.retry_after === 30`.
+
+**Gates (cicchetto-side):**
+- `scripts/bun.sh run test`
+- `scripts/bun.sh run check` (biome + tsc)
+
+**Server-side gates (Task 13 spans both):**
+- `scripts/check.sh` end-of-task confirms 13.A + 13.B together don't regress.
+
+**Commit message body:**
+
+```
+feat(t31): cicchetto handles captcha_required + admission errors
+
+Task 13.B — surface every admission error atom in the Login form.
+ApiError gains an `info: Record<string, unknown>` field carrying the
+parsed body + Retry-After header, so callers can read site_key,
+provider, retry_after off the thrown error without a separate
+shape per error atom.
+
+LoginRequest gains optional `captcha_token`. auth.login takes an
+optional third arg passed through to the request body.
+
+New cicchetto/src/lib/captcha.ts lazy-loads the Turnstile or
+hCaptcha widget script (URL chosen by the provider field from the
+captcha_required body) and mounts via window.<provider>.render.
+Returns a cleanup fn that calls .remove(id).
+
+Login.tsx: on ApiError(400, captcha_required), reads provider +
+site_key from err.info, renders a div, mounts the matching widget,
+re-submits login on solve. All other admission error atoms render
+the user-facing copy via friendlyMessage(err) — invalid_credentials,
+too_many_sessions, network_busy, network_unreachable (uses
+info.retry_after), service_degraded, captcha_failed.
+
+Plan 2 of 2.
+```
+
+**Stop conditions for the whole task:**
+
+- 13.A: server-side `scripts/check.sh` green AND fallback_controller_test.exs + auth_controller_test.exs green AND standalone `scripts/dialyzer.sh` green.
+- 13.B: cicchetto `scripts/bun.sh run test` green AND `scripts/bun.sh run check` green.
+- Two commits on `cluster/t31-integration`, both with "Plan 2 of 2." marker.
 
 ## Task 14 — Final integration + e2e + deploy
 
