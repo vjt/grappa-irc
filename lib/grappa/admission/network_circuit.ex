@@ -103,11 +103,91 @@ defmodule Grappa.Admission.NetworkCircuit do
   @spec entries() :: [entry()]
   def entries, do: :ets.tab2list(@table)
 
+  @doc """
+  Whether the circuit for `network_id` permits a new admission attempt.
+
+  Direct ETS lookup — no GenServer roundtrip. `:ok` if circuit is
+  closed OR the recorded cooldown has elapsed; `{:error, :open,
+  retry_after_seconds}` if currently open with cooldown remaining.
+  """
+  @spec check(integer()) :: :ok | {:error, :open, non_neg_integer()}
+  def check(network_id) when is_integer(network_id) do
+    case :ets.lookup(@table, network_id) do
+      [] ->
+        :ok
+
+      [{_, _, _, :closed, _}] ->
+        :ok
+
+      [{_, _, _, :open, cooled_at_ms}] ->
+        now = System.monotonic_time(:millisecond)
+
+        if now >= cooled_at_ms do
+          :ok
+        else
+          {:error, :open, ceil((cooled_at_ms - now) / 1_000)}
+        end
+    end
+  end
+
+  @doc """
+  Record a failed admission attempt against `network_id`. Bumps count
+  within the current window; transitions to `:open` when count reaches
+  threshold. Async (cast).
+  """
+  @spec record_failure(integer()) :: :ok
+  def record_failure(network_id) when is_integer(network_id) do
+    GenServer.cast(__MODULE__, {:failure, network_id})
+  end
+
+  @doc """
+  Record a successful admission against `network_id` — clears the entry
+  to `:closed, count=0`. Called from `Grappa.Visitors.Login` (Plan 2)
+  when probe-connect receives `001 RPL_WELCOME`. Async (cast).
+  """
+  @spec record_success(integer()) :: :ok
+  def record_success(network_id) when is_integer(network_id) do
+    GenServer.cast(__MODULE__, {:success, network_id})
+  end
+
   ## GenServer
 
   @impl GenServer
   def init(_) do
     _ = :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
     {:ok, %{}}
+  end
+
+  @impl GenServer
+  def handle_cast({:failure, network_id}, state) do
+    now = System.monotonic_time(:millisecond)
+
+    {count, window_start} =
+      case :ets.lookup(@table, network_id) do
+        [] ->
+          {1, now}
+
+        [{_, prior_count, prior_start, _, _}] ->
+          if now - prior_start > @window_ms do
+            {1, now}
+          else
+            {prior_count + 1, prior_start}
+          end
+      end
+
+    {circuit_state, cooled_at} =
+      if count >= @threshold do
+        {:open, now + compute_cooldown(@cooldown_ms)}
+      else
+        {:closed, 0}
+      end
+
+    :ets.insert(@table, {network_id, count, window_start, circuit_state, cooled_at})
+    {:noreply, state}
+  end
+
+  def handle_cast({:success, network_id}, state) do
+    :ets.delete(@table, network_id)
+    {:noreply, state}
   end
 end

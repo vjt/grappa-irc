@@ -54,6 +54,14 @@ config :grappa, :session_backoff,
   base_ms: 5,
   cap_ms: 100
 
+# T31 NetworkCircuit — shrink threshold/window/cooldown so circuit-
+# transition tests don't drag. Math is identical, only magnitudes
+# shrink.
+config :grappa, :admission,
+  network_circuit_threshold: 3,
+  network_circuit_window_ms: 100,
+  network_circuit_cooldown_ms: 50
+
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite
 # is wiped per-run via Sandbox.
