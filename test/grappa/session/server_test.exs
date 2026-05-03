@@ -142,12 +142,14 @@ defmodule Grappa.Session.ServerTest do
       # The connect failure surfaces async — `Client.start_link/1` returns
       # `{:ok, _}` immediately (post-C2), `Session.handle_continue/2` writes
       # the client pid into state, then the Client's OWN `handle_continue`
-      # runs the connect, hits :econnrefused, and crashes. The link kills
-      # Session with the same `{:connect_failed, _}` reason — no
-      # `:client_start_failed` wrapping (that path only fires if
-      # `Client.start_link/1` itself returns `{:error, _}`, e.g. a
-      # `{:missing_password, _}` validation failure).
-      assert_receive {:EXIT, ^pid, {:connect_failed, _}}, 1_000
+      # runs the connect, hits :econnrefused, and crashes. Session traps
+      # the linked exit (Backoff hook), records a failure, and stops with
+      # `{:client_exit, {:connect_failed, _}}` — wrap is intentional so
+      # the supervisor's failure log distinguishes "I asked Client to die"
+      # from "Client died on me." `{:client_start_failed, _}` is the
+      # separate path for `Client.start_link/1` itself returning `{:error,
+      # _}` (e.g. a `{:missing_password, _}` validation failure).
+      assert_receive {:EXIT, ^pid, {:client_exit, {:connect_failed, _}}}, 1_500
     end
   end
 

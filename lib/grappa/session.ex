@@ -51,7 +51,7 @@ defmodule Grappa.Session do
   use Boundary,
     top_level?: true,
     deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
-    exports: [Server]
+    exports: [Backoff, Server]
 
   alias Grappa.IRC.{AuthFSM, Identifier}
   alias Grappa.Session.Server
