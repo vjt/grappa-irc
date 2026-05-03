@@ -12,6 +12,7 @@ defmodule GrappaWeb do
     top_level?: true,
     deps: [
       Grappa.Accounts,
+      Grappa.Admission,
       Grappa.Auth.IdentifierClassifier,
       Grappa.IRC,
       Grappa.Networks,
