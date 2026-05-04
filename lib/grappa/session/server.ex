@@ -116,6 +116,25 @@ defmodule Grappa.Session.Server do
              {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
 
   @typedoc """
+  Optional opaque callback injected by `Networks.SessionPlan.resolve/1`
+  into every user-session plan. Called from `handle_terminal_failure/2`
+  when a hard upstream error (k-line / permanent SASL) means the session
+  should never be restarted without operator action.
+
+  The closure captures `user_id` + `network_id` and calls
+  `Networks.mark_failed_by_ids/3` — a static Networks alias is avoided
+  here for the same Boundary reason as `visitor_committer` (Networks
+  already deps Session; closing the cycle is banned by `use Boundary`).
+
+  Calling convention: fire inside `Task.start/1` BEFORE `{:stop, :normal}`
+  so the Server's GenServer exit is truly `:normal` and the `:transient`
+  supervisor doesn't restart. The Task's async execution means
+  `mark_failed_by_ids` runs after the process has exited — `stop_session`
+  inside `mark_failed` finds `whereis → nil` and is a no-op.
+  """
+  @type credential_failer :: (String.t() -> :ok)
+
+  @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
   `network_id` key `Grappa.Session.start_session/3` merges in. The
   `subject` field is already in `start_opts/0` (Task 6.5 — subject
@@ -138,7 +157,8 @@ defmodule Grappa.Session.Server do
           required(:tls) => boolean(),
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
-          optional(:visitor_committer) => visitor_committer()
+          optional(:visitor_committer) => visitor_committer(),
+          optional(:credential_failer) => credential_failer()
         }
 
   @type state :: %{
@@ -156,6 +176,7 @@ defmodule Grappa.Session.Server do
           pending_auth_timer: reference() | nil,
           pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil,
+          credential_failer: credential_failer() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
           ghost_timer: reference() | nil
         }
@@ -229,6 +250,7 @@ defmodule Grappa.Session.Server do
       pending_auth_timer: nil,
       pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer),
+      credential_failer: Map.get(opts, :credential_failer),
       ghost_recovery: nil,
       ghost_timer: nil
     }
@@ -580,9 +602,120 @@ defmodule Grappa.Session.Server do
 
   def handle_info(:ghost_timeout, state), do: {:noreply, state}
 
+  # 465 ERR_YOUREBANNEDCREEP — k-line / g-line. Hard, terminal,
+  # non-recoverable: the upstream network operator has explicitly banned
+  # this host/mask. No amount of reconnect will help — the ban must be
+  # lifted by a network admin. Transition credential to :failed so
+  # Bootstrap skips this session on the next deploy and cicchetto can
+  # surface a visible reason badge.
+  #
+  # The trailing param (upstream's human-readable ban reason) is captured
+  # verbatim so operators can diagnose which rule matched (e.g. "You are
+  # k-lined" vs a DNSBL reason). The "k-line: " prefix is added for
+  # disambiguation in the DB reason column.
+  def handle_info(
+        {:irc, %Message{command: {:numeric, 465}, params: params}},
+        state
+      ) do
+    trailing = List.last(params) || "k-line"
+    reason = "k-line: #{trailing}"
+
+    Logger.error(
+      "k-line received — session marked :failed (network_id=#{state.network_id})",
+      reason: reason
+    )
+
+    handle_terminal_failure(reason, state)
+  end
+
+  # 904 ERR_SASLFAIL — SASL authentication numeric. The trailing text
+  # discriminates permanent failures (wrong credentials → mark :failed)
+  # from transient ones (timeout / abort / network hiccup → continue
+  # backoff). Decision C (locked): transient 904 stays in continuous
+  # reconnect; only permanent failures escalate to :failed.
+  #
+  # Classifier: see `sasl_terminal?/1` for the exact matching rules.
+  def handle_info(
+        {:irc, %Message{command: {:numeric, 904}, params: params}},
+        state
+      ) do
+    trailing = List.last(params) || ""
+
+    if sasl_terminal?(trailing) do
+      reason = "sasl: #{trailing}"
+
+      Logger.error(
+        "permanent SASL failure — session marked :failed " <>
+          "(network_id=#{state.network_id} trailing=#{inspect(trailing)})"
+      )
+
+      handle_terminal_failure(reason, state)
+    else
+      Logger.warning(
+        "transient SASL failure — staying in backoff " <>
+          "(network_id=#{state.network_id} trailing=#{inspect(trailing)})"
+      )
+
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
-  ## Internals
+  # Terminal failure handling — k-line or permanent SASL (Decision C,
+  # locked). Fires the `credential_failer` callback (if present) in a
+  # detached Task so the DB transition + PubSub broadcast happen AFTER
+  # this GenServer has exited. Calling mark_failed synchronously would
+  # deadlock: mark_failed calls Session.stop_session → DynamicSupervisor
+  # .terminate_child → the server can't exit while blocked in the call.
+  # The Task's async execution is safe: by the time it calls
+  # mark_failed_by_ids → stop_session → whereis, the process is already
+  # gone (whereis returns nil → stop_session is a no-op → DB transition
+  # and broadcast proceed normally).
+  #
+  # Visitor sessions carry no credential_failer (ephemeral credential,
+  # no connection_state column) — the nil guard is intentional.
+  #
+  # `{:stop, :normal, state}` causes the `:transient` restart strategy
+  # to NOT respawn: `:transient` only restarts on ABNORMAL exits.
+  @spec handle_terminal_failure(String.t(), state()) :: {:stop, :normal, state()}
+  defp handle_terminal_failure(reason, state) when is_binary(reason) do
+    _ =
+      if is_function(state.credential_failer, 1) do
+        failer = state.credential_failer
+        Task.start(fn -> failer.(reason) end)
+      end
+
+    {:stop, :normal, state}
+  end
+
+  # SASL terminal-failure classifier (Decision C, locked).
+  #
+  # Permanent (credentials misconfigured — operator must fix):
+  #   "SASL authentication failed" — upstream rejected our credentials
+  #     definitively. The exact wording varies slightly across IRCds but
+  #     always contains "authentication failed".
+  #   "Invalid username/password" — some IRCds use this phrasing for
+  #     PLAIN auth failures.
+  #   "Password incorrect" — alternate wording for credential rejection.
+  #
+  # Transient (network hiccup — bouncer should keep trying):
+  #   "SASL authentication aborted" — client or server aborted mid-exchange.
+  #   "SASL authentication timed out" — timeout, not a credential error.
+  #   Everything else — unknown reasons default to TRANSIENT to avoid
+  #     falsely parking a session on an unrecognized error message from
+  #     a non-standard IRCd. Permanent-fail must be an affirmative match.
+  #
+  # Case-insensitive substring matching: IRCd phrasing varies; targeting
+  # the distinctive substring is more robust than exact string equality.
+  @spec sasl_terminal?(String.t()) :: boolean()
+  defp sasl_terminal?(trailing) when is_binary(trailing) do
+    lower = String.downcase(trailing)
+
+    String.contains?(lower, "authentication failed") or
+      String.contains?(lower, "invalid username") or
+      String.contains?(lower, "password incorrect")
+  end
 
   # *Serv suffix is the universal IRC services nick convention
   # (NickServ / ChanServ / MemoServ / OperServ / BotServ / HostServ /

@@ -112,7 +112,8 @@ defmodule Grappa.Session do
           required(:tls) => boolean(),
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
-          optional(:visitor_committer) => Server.visitor_committer()
+          optional(:visitor_committer) => Server.visitor_committer(),
+          optional(:credential_failer) => Server.credential_failer()
         }
 
   @doc """

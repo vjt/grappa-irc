@@ -16,7 +16,7 @@ defmodule Grappa.Networks.SessionPlan do
   credential into the upstream-connect data — is the only thing in this
   module.
   """
-  alias Grappa.{Accounts, Session}
+  alias Grappa.{Accounts, Networks, Session}
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credential, Network, NoServerError, Server, Servers}
   alias Grappa.Repo
@@ -82,7 +82,18 @@ defmodule Grappa.Networks.SessionPlan do
       autojoin_channels: cred.autojoin_channels,
       host: server.host,
       port: server.port,
-      tls: server.tls
+      tls: server.tls,
+      # Opaque callback injected so Session.Server can transition the
+      # credential to :failed on hard upstream errors (k-line, permanent
+      # SASL) without a static Networks dependency from Session. Session
+      # is already a dep of Networks — adding the reverse would create a
+      # Boundary cycle. The closure captures the IDs; Session.Server
+      # calls it inside a Task.start so the GenServer has already exited
+      # before mark_failed_by_ids calls stop_session (which finds the
+      # session gone and is a no-op).
+      credential_failer: fn reason ->
+        Networks.mark_failed_by_ids(user.id, cred.network_id, reason)
+      end
     }
   end
 end

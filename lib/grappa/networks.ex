@@ -56,6 +56,8 @@ defmodule Grappa.Networks do
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.PubSub.Topic
 
+  require Logger
+
   @doc """
   Idempotently fetches-or-creates a network by slug. Concurrent
   callers race on the unique index — the loser retries the
@@ -324,6 +326,54 @@ defmodule Grappa.Networks do
 
   def mark_failed(%Credential{connection_state: :parked}, _),
     do: {:error, :user_parked}
+
+  @doc """
+  Session-internal variant of `mark_failed/2` for use from
+  `Session.Server.handle_terminal_failure/2`. Looks up the credential by
+  `user_id` + `network_id` and delegates to `mark_failed/2`.
+
+  Called from a `Task.start` inside `Session.Server` to avoid a deadlock:
+  `mark_failed/2` calls `Session.stop_session/2` which calls
+  `DynamicSupervisor.terminate_child/2` — if the Session.Server called
+  `mark_failed/2` synchronously while still running, the terminate_child
+  would block waiting for the server to exit, which can't happen because the
+  server is blocked in the `mark_failed` call. The Task runs after `{:stop,
+  :normal}` has already exited the GenServer, so `stop_session` finds
+  `whereis/2 → nil` and is a no-op.
+
+  Only meaningful for user sessions (`{:user, user_id}`). Visitor sessions
+  are ephemeral and have no `connection_state` column to transition.
+
+  Returns `:ok` unconditionally — caller (the Task) does not need the result.
+  """
+  @spec mark_failed_by_ids(Ecto.UUID.t(), integer(), String.t()) :: :ok
+  def mark_failed_by_ids(user_id, network_id, reason)
+      when is_binary(user_id) and is_integer(network_id) and is_binary(reason) do
+    case Repo.get_by(Credential, user_id: user_id, network_id: network_id) do
+      %Credential{} = cred ->
+        case mark_failed(cred, reason) do
+          {:ok, _} ->
+            :ok
+
+          {:error, :user_parked} ->
+            Logger.warning(
+              "mark_failed_by_ids: credential is :parked, dropping terminal transition " <>
+                "(user_id=#{user_id} network_id=#{network_id})",
+              reason: reason
+            )
+
+            :ok
+        end
+
+      nil ->
+        Logger.warning(
+          "mark_failed_by_ids: credential not found — visitor or already deleted " <>
+            "(user_id=#{user_id} network_id=#{network_id})"
+        )
+
+        :ok
+    end
+  end
 
   # Direct-write changeset for connection-state transitions only.
   # `Credential.changeset/2` runs the full validate_required + password
