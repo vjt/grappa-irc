@@ -142,6 +142,23 @@ defmodule Grappa.Session.EventRouter do
           params: %{String.t() => String.t() | nil}
         }
 
+  @typedoc """
+  WHOIS-userhost cache entry. Populated from JOIN's `nick!user@host` prefix,
+  311 RPL_WHOISUSER, and 352 RPL_WHOREPLY. Used by S5 ban-mask derivation
+  to produce `*!*@host` from a bare nick. Not broadcast over PubSub — purely
+  internal to Session.Server; S5's `/ban` is the only consumer.
+  """
+  @type userhost_entry :: %{user: String.t(), host: String.t()}
+
+  @typedoc """
+  Network-wide WHOIS-userhost cache. Keyed by **lowercased** nick (RFC 2812
+  §2.2 nick comparisons are case-insensitive). Updated on JOIN/311/352
+  (population) and evicted on QUIT/PART/KICK/NICK (lifecycle events). Cache
+  is bounded by unique nicks across currently-joined channels — typically
+  <500 entries for normal usage. No LRU or cap in this version.
+  """
+  @type userhost_cache :: %{(nick :: String.t()) => userhost_entry()}
+
   @type effect ::
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
@@ -188,7 +205,29 @@ defmodule Grappa.Session.EventRouter do
         Map.update(state.members, channel, %{sender => []}, &Map.put(&1, sender, []))
       end
 
-    {state, eff} = build_persist(%{state | members: members}, :join, channel, sender, nil, %{})
+    # S2.4: populate userhost_cache from JOIN prefix when user+host both present.
+    # If the server omits either (e.g. +x cloaking strips host), skip — don't
+    # half-populate. Self-JOIN is included so our own entry is tracked.
+    userhost_cache =
+      case msg.prefix do
+        {:nick, nick, user, host} when is_binary(user) and is_binary(host) ->
+          nick_key = normalize_nick(nick)
+          Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
+
+        _ ->
+          Map.get(state, :userhost_cache, %{})
+      end
+
+    {state, eff} =
+      build_persist(
+        %{state | members: members, userhost_cache: userhost_cache},
+        :join,
+        channel,
+        sender,
+        nil,
+        %{}
+      )
+
     {:cont, state, [eff]}
   end
 
@@ -209,27 +248,60 @@ defmodule Grappa.Session.EventRouter do
     #
     # S2.3: self-PART also drops topics + channel_modes cache entries — these
     # caches are scoped to channels the session is currently in.
-    {members, topics, channel_modes} =
+    #
+    # S2.4: evict userhost_cache entries for nicks that no longer share any
+    # channel with us after the PART. For self-PART: look at who was in the
+    # parted channel, then after removing the channel from members, evict any
+    # nick that appears in no remaining channel. For other-user PART: the
+    # parting nick is removed from this channel; evict if they appear in no
+    # other channel in the (post-PART) members map.
+    {members, topics, channel_modes, userhost_cache} =
       cond do
         sender == state.nick ->
-          {Map.delete(state.members, channel), Map.delete(Map.get(state, :topics, %{}), normalize_channel(channel)),
-           Map.delete(Map.get(state, :channel_modes, %{}), normalize_channel(channel))}
+          # Collect who was in the parted channel before we drop it
+          parted_members = Map.keys(Map.get(state.members, channel, %{}))
+          new_members = Map.delete(state.members, channel)
+
+          # Evict nicks from the parted channel that no longer appear in any
+          # remaining channel. We include self (state.nick) so our own entry
+          # is evicted when appropriate.
+          cache = Map.get(state, :userhost_cache, %{})
+          new_cache = evict_if_no_overlap(parted_members, new_members, cache)
+
+          {new_members, Map.delete(Map.get(state, :topics, %{}), normalize_channel(channel)),
+           Map.delete(Map.get(state, :channel_modes, %{}), normalize_channel(channel)), new_cache}
 
         Map.has_key?(state.members, channel) ->
-          {Map.update!(state.members, channel, &Map.delete(&1, sender)), Map.get(state, :topics, %{}),
-           Map.get(state, :channel_modes, %{})}
+          new_members = Map.update!(state.members, channel, &Map.delete(&1, sender))
+          cache = Map.get(state, :userhost_cache, %{})
+
+          new_cache =
+            if channels_with_member(new_members, sender) == [] do
+              Map.delete(cache, normalize_nick(sender))
+            else
+              cache
+            end
+
+          {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
 
         true ->
           # Defensive: persist the audit row even for an unknown channel
           # (member-state untouched). Lets a renderer recover the PART
           # event if upstream re-orders relative to a JOIN we haven't
           # seen yet.
-          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{})}
+          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}),
+           Map.get(state, :userhost_cache, %{})}
       end
 
     {state, eff} =
       build_persist(
-        %{state | members: members, topics: topics, channel_modes: channel_modes},
+        %{
+          state
+          | members: members,
+            topics: topics,
+            channel_modes: channel_modes,
+            userhost_cache: userhost_cache
+        },
         :part,
         channel,
         sender,
@@ -249,13 +321,19 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
+    # S2.4: QUIT means the nick is gone from the network — always evict from
+    # userhost_cache, even when sender has no channel overlap in members
+    # (e.g. WHOIS populated the cache before a JOIN was seen, or the members
+    # map race). Eviction is unconditional: gone = gone.
+    userhost_cache = Map.delete(Map.get(state, :userhost_cache, %{}), normalize_nick(sender))
+
     case channels_with_member(state.members, sender) do
       [] ->
-        {:cont, state, []}
+        {:cont, %{state | userhost_cache: userhost_cache}, []}
 
       channels ->
         members = remove_member_everywhere(state.members, channels, sender)
-        new_state = %{state | members: members}
+        new_state = %{state | members: members, userhost_cache: userhost_cache}
 
         effects =
           for ch <- channels do
@@ -335,11 +413,15 @@ defmodule Grappa.Session.EventRouter do
 
     members = rename_member_everywhere(state.members, channels, old_nick, new_nick)
 
+    # S2.4: NICK rename migrates the userhost entry from old_nick to new_nick.
+    # user+host don't change with a nick change — only the key moves.
+    userhost_cache = rename_userhost_entry(Map.get(state, :userhost_cache, %{}), old_nick, new_nick)
+
     new_state =
       if old_nick == state.nick do
-        %{state | nick: new_nick, members: members}
+        %{state | nick: new_nick, members: members, userhost_cache: userhost_cache}
       else
-        %{state | members: members}
+        %{state | members: members, userhost_cache: userhost_cache}
       end
 
     effects =
@@ -389,25 +471,55 @@ defmodule Grappa.Session.EventRouter do
     # Symmetric with self-PART. Other-user KICK preserves the inner-nick
     # delete.
     # S2.3: self-KICK also drops topics + channel_modes cache entries.
+    # S2.4: evict userhost_cache for the kicked nick (same channel-overlap
+    # logic as PART).
     chan_key = normalize_channel(channel)
 
-    {members, topics, channel_modes} =
+    {members, topics, channel_modes, userhost_cache} =
       cond do
         target == state.nick ->
-          {Map.delete(state.members, channel), Map.delete(Map.get(state, :topics, %{}), chan_key),
-           Map.delete(Map.get(state, :channel_modes, %{}), chan_key)}
+          new_members = Map.delete(state.members, channel)
+          cache = Map.get(state, :userhost_cache, %{})
+
+          # Self-kicked: evict own entry (we're gone from this channel; if we
+          # were only in this channel, nothing left to cache for ourselves).
+          new_cache =
+            if channels_with_member(new_members, target) == [] do
+              Map.delete(cache, normalize_nick(target))
+            else
+              cache
+            end
+
+          {new_members, Map.delete(Map.get(state, :topics, %{}), chan_key),
+           Map.delete(Map.get(state, :channel_modes, %{}), chan_key), new_cache}
 
         Map.has_key?(state.members, channel) ->
-          {Map.update!(state.members, channel, &Map.delete(&1, target)), Map.get(state, :topics, %{}),
-           Map.get(state, :channel_modes, %{})}
+          new_members = Map.update!(state.members, channel, &Map.delete(&1, target))
+          cache = Map.get(state, :userhost_cache, %{})
+
+          new_cache =
+            if channels_with_member(new_members, target) == [] do
+              Map.delete(cache, normalize_nick(target))
+            else
+              cache
+            end
+
+          {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
 
         true ->
-          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{})}
+          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}),
+           Map.get(state, :userhost_cache, %{})}
       end
 
     {state, eff} =
       build_persist(
-        %{state | members: members, topics: topics, channel_modes: channel_modes},
+        %{
+          state
+          | members: members,
+            topics: topics,
+            channel_modes: channel_modes,
+            userhost_cache: userhost_cache
+        },
         :kick,
         channel,
         sender,
@@ -505,6 +617,34 @@ defmodule Grappa.Session.EventRouter do
   # (each 353 already committed its delta).
   def route(%Message{command: {:numeric, 366}}, state) do
     {:cont, state, []}
+  end
+
+  # 311 RPL_WHOISUSER: `:server 311 own_nick target user host * :realname`.
+  # S2.4: upsert userhost_cache with the target nick's user+host. This is
+  # the authoritative WHOIS data — always overwrites any JOIN-derived entry.
+  # Keyed by lowercased nick (RFC 2812 §2.2 case-insensitive comparison).
+  def route(
+        %Message{command: {:numeric, 311}, params: [_, target, user, host | _]},
+        state
+      )
+      when is_binary(target) and is_binary(user) and is_binary(host) do
+    nick_key = normalize_nick(target)
+    cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
+    {:cont, %{state | userhost_cache: cache}, []}
+  end
+
+  # 352 RPL_WHOREPLY: `:server 352 own_nick #chan user host server target H/G :hop realname`.
+  # S2.4: upsert userhost_cache with target nick's user+host (params are
+  # positional: index 0=own_nick, 1=#chan, 2=user, 3=host, 4=server, 5=target).
+  # Keyed by lowercased nick.
+  def route(
+        %Message{command: {:numeric, 352}, params: [_, _, user, host, _, target | _]},
+        state
+      )
+      when is_binary(target) and is_binary(user) and is_binary(host) do
+    nick_key = normalize_nick(target)
+    cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
+    {:cont, %{state | userhost_cache: cache}, []}
   end
 
   # 001 RPL_WELCOME: first param is the welcomed nick (what upstream
@@ -774,5 +914,44 @@ defmodule Grappa.Session.EventRouter do
   @spec parse_unix_ts(String.t()) :: DateTime.t()
   defp parse_unix_ts(ts_str) when is_binary(ts_str) do
     DateTime.from_unix!(String.to_integer(ts_str))
+  end
+
+  # ---------------------------------------------------------------------------
+  # S2.4 helpers — WHOIS-userhost cache
+  # ---------------------------------------------------------------------------
+
+  # IRC nicks are case-insensitive (RFC 2812 §2.2). Normalise to downcase for
+  # userhost_cache keys — mirrors normalize_channel/1 above. Applied at BOTH
+  # write (JOIN/311/352/NICK) and read (lookup_userhost/3) time so lookup is
+  # always case-insensitive regardless of how the upstream sends the nick.
+  @spec normalize_nick(String.t()) :: String.t()
+  defp normalize_nick(nick) when is_binary(nick), do: String.downcase(nick)
+
+  # Evict userhost_cache entries for nicks that appear in no channel of
+  # `members_map` after the PART. Called for self-PART where every nick
+  # in the departed channel must be checked against the updated members.
+  @spec evict_if_no_overlap([String.t()], members(), userhost_cache()) :: userhost_cache()
+  defp evict_if_no_overlap(nicks, members_map, cache) do
+    Enum.reduce(nicks, cache, fn nick, acc ->
+      maybe_evict(acc, nick, channels_with_member(members_map, nick))
+    end)
+  end
+
+  @spec maybe_evict(userhost_cache(), String.t(), [String.t()]) :: userhost_cache()
+  defp maybe_evict(cache, nick, []), do: Map.delete(cache, normalize_nick(nick))
+  defp maybe_evict(cache, _, _), do: cache
+
+  # Migrate a userhost_cache entry from old_nick to new_nick on a NICK rename.
+  # If old_nick is not in the cache (never seen via JOIN/WHOIS/WHO), no-op.
+  # The user+host fields are preserved — they don't change with a nick change.
+  @spec rename_userhost_entry(userhost_cache(), String.t(), String.t()) :: userhost_cache()
+  defp rename_userhost_entry(cache, old_nick, new_nick) do
+    old_key = normalize_nick(old_nick)
+    new_key = normalize_nick(new_nick)
+
+    case Map.fetch(cache, old_key) do
+      {:ok, entry} -> cache |> Map.delete(old_key) |> Map.put(new_key, entry)
+      :error -> cache
+    end
   end
 end

@@ -2417,4 +2417,193 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # S2.4 — WHOIS-userhost cache (ban-mask derivation)
+  # ---------------------------------------------------------------------------
+  #
+  # Cache is an in-memory `%{nick => %{user, host}}` map on Session.Server,
+  # keyed by lowercased nick (RFC 2812 §2.2 case-insensitive).
+  # Populated from JOIN prefix, 311 RPL_WHOISUSER, and 352 RPL_WHOREPLY.
+  # Evicted on QUIT, PART/KICK (with channel-overlap check), NICK rename.
+  # NO PubSub broadcast — consumed internally by S5 /ban mask derivation.
+  #
+  # These integration tests use IRCServer + real Session.Server processes
+  # (same pattern as S2.3 topic/modes tests above).
+
+  describe "S2.4 — userhost_cache (311 + 352 + Session.lookup_userhost/3)" do
+    test "311 RPL_WHOISUSER populates cache, lookup returns :ok entry" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#whoistest"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#whoistest")
+
+      # Feed 311 RPL_WHOISUSER: server 311 own_nick target user host * :realname
+      IRCServer.feed(
+        server,
+        ":irc.test.org 311 grappa-test alice alice_u alice.host * :Alice Realname\r\n"
+      )
+
+      flush_server(server)
+
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "352 RPL_WHOREPLY populates cache, lookup returns :ok entry" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#whotest"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#whotest")
+
+      # Feed 352 RPL_WHOREPLY: server 352 own_nick #chan user host server nick H :hop realname
+      IRCServer.feed(
+        server,
+        ":irc.test.org 352 grappa-test #whotest alice_u alice.host irc.test.org alice H :0 Alice\r\n"
+      )
+
+      flush_server(server)
+
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "JOIN with user@host in prefix populates cache" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#joincache"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#joincache")
+
+      # Another user joins with full nick!user@host prefix
+      IRCServer.feed(server, ":bob!bob_u@bob.host JOIN :#joincache\r\n")
+      flush_server(server)
+
+      assert {:ok, %{user: "bob_u", host: "bob.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "bob")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "lookup_userhost/3 is case-insensitive for nick key" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#casetest"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#casetest")
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 311 grappa-test Alice alice_u alice.host * :Alice\r\n"
+      )
+
+      flush_server(server)
+
+      # Lookup with different case must work
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "Alice")
+
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "ALICE")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "lookup_userhost/3 returns :not_cached for unknown nick" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      assert {:error, :not_cached} =
+               Session.lookup_userhost({:user, user.id}, network.id, "nobody")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "lookup_userhost/3 returns :no_session for unknown session" do
+      assert {:error, :no_session} =
+               Session.lookup_userhost({:user, Ecto.UUID.generate()}, 999_999_999, "alice")
+    end
+
+    test "QUIT evicts the nick from userhost_cache" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#quitevict"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#quitevict")
+
+      # Seed via 311
+      IRCServer.feed(
+        server,
+        ":irc.test.org 311 grappa-test alice alice_u alice.host * :Alice\r\n"
+      )
+
+      flush_server(server)
+
+      assert {:ok, _} = Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      # Now alice quits
+      IRCServer.feed(server, ":alice!alice_u@alice.host QUIT :Goodbye\r\n")
+      flush_server(server)
+
+      assert {:error, :not_cached} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "NICK renames cache entry preserving user+host" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#nickrename"]})
+
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#nickrename")
+
+      # Seed alice via 353 + 311
+      IRCServer.feed(
+        server,
+        ":irc.test.org 353 grappa-test = #nickrename :grappa-test alice\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 311 grappa-test alice alice_u alice.host * :Alice\r\n"
+      )
+
+      flush_server(server)
+
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      # alice renames to alice_away
+      IRCServer.feed(server, ":alice!alice_u@alice.host NICK :alice_away\r\n")
+      flush_server(server)
+
+      assert {:error, :not_cached} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice")
+
+      assert {:ok, %{user: "alice_u", host: "alice.host"}} =
+               Session.lookup_userhost({:user, user.id}, network.id, "alice_away")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

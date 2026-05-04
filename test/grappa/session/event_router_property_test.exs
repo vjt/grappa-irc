@@ -73,7 +73,8 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         nick: nick,
         members: members,
         topics: %{},
-        channel_modes: %{}
+        channel_modes: %{},
+        userhost_cache: %{}
       }
     end
   end
@@ -88,6 +89,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
       assert is_map(new_state)
       assert is_binary(new_state.nick)
       assert is_map(new_state.members)
+      assert is_map(Map.get(new_state, :userhost_cache, %{}))
       assert is_list(effects)
 
       Enum.each(effects, fn
@@ -133,7 +135,8 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         subject: {:user, "00000000-0000-0000-0000-000000000001"},
         network_id: 1,
         nick: "self",
-        members: original_members
+        members: original_members,
+        userhost_cache: %{}
       }
 
       msg = %Message{
