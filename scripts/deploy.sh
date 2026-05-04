@@ -40,28 +40,25 @@ mkdir -p runtime/cicchetto-dist
 echo "Building cicchetto dist..."
 docker compose "${COMPOSE_ARGS[@]}" run --rm cicchetto-build
 
-# 3. Bring up grappa + nginx. --no-deps avoids re-running cicchetto-build
+# 3. Apply pending migrations BEFORE bringing the long-running container up.
+#    Pre-S3 the order was reversed (up -d first, then exec migrate in a
+#    retry loop). That worked as long as Bootstrap's queries only touched
+#    columns the running schema already had — but the moment a deploy
+#    introduces a new column Bootstrap reads (S1's `connection_state`,
+#    landed 2026-05-04), Bootstrap's first DB hit races the migration
+#    eval and crash-loops the supervision tree before the eval lands.
+#    The retry loop didn't help: the container was already restart-cycling
+#    by the time `exec` could attach. Fix: one-shot `docker compose run`
+#    against the same image, same bind-mounted prod DB, runs to completion
+#    + exits BEFORE step 4's `up -d` starts Bootstrap. The long-running
+#    container always boots against an up-to-date schema.
+echo "Running migrations..."
+docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps grappa bin/grappa eval 'Grappa.Release.migrate()'
+
+# 4. Bring up grappa + nginx. --no-deps avoids re-running cicchetto-build
 #    (we just ran it above; compose's depends_on graph would otherwise try
 #    again because `run --rm` removes the container).
 docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps grappa nginx
-
-# 4. Run pending migrations against the prod Repo. Must happen AFTER the
-# container is up (the release binary needs its slim runtime present)
-# but BEFORE Bootstrap-spawned sessions try to insert scrollback rows.
-# Bootstrap fires asynchronously from supervision tree start, so we race
-# the first PRIVMSG insert vs. this command — a tight loop with retry
-# handles the case where the release boot is still completing.
-echo "Running migrations..."
-for i in $(seq 1 15); do
-    if docker compose "${COMPOSE_ARGS[@]}" exec -T grappa bin/grappa eval 'Grappa.Release.migrate()' >/dev/null 2>&1; then
-        echo "✓ migrations applied"
-        break
-    fi
-    sleep 2
-    if [ "$i" = "15" ]; then
-        die "migrations did not apply within 30s. Check: scripts/monitor.sh"
-    fi
-done
 
 # 5. Wait for /healthz via nginx, probed from INSIDE the nginx container
 #    so the check is independent of host port binding (default wildcard
