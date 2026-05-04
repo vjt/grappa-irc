@@ -44,6 +44,14 @@ services:
       MIX_ENV: ${MIX_ENV:-dev}
       DATABASE_PATH: /app/runtime/grappa_dev.db
       ELIXIR_ERL_OPTIONS: "+fnu"  # filename UTF-8 mode (avoids Erlang locale warnings)
+      # T31 Plan 2 — admission captcha. Mirrors compose.prod.yaml so dev
+      # exercises the same runtime.exs env-var → :grappa, :admission
+      # propagation as prod. Defaults to disabled provider; operator can
+      # export GRAPPA_CAPTCHA_PROVIDER=turnstile + secret/site_key in
+      # the host shell to test live verification end-to-end.
+      GRAPPA_CAPTCHA_PROVIDER: ${GRAPPA_CAPTCHA_PROVIDER:-disabled}
+      GRAPPA_CAPTCHA_SITE_KEY: ${GRAPPA_CAPTCHA_SITE_KEY:-}
+      GRAPPA_CAPTCHA_SECRET: ${GRAPPA_CAPTCHA_SECRET:-}
     command: ["mix", "phx.server"]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
