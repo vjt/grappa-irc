@@ -97,4 +97,24 @@ defmodule Grappa.IRC.Message do
   def sender_nick({:nick, nick, _, _}), do: nick
   def sender_nick({:server, server}), do: server
   def sender_nick(nil), do: "*"
+
+  @doc """
+  Returns the value of an IRCv3 message-tag, or `nil` when the tag is
+  absent. Tag-only entries (`@account` with no `=`) yield `true`.
+
+  Centralised accessor so consumers do not poke at the `tags` map
+  directly — keeps the storage shape (today: a `%{String.t() => ...}`
+  map; tomorrow: maybe a struct with normalized vendor-prefix keys) an
+  implementation detail of this module.
+  """
+  @spec tag(t(), String.t()) :: String.t() | true | nil
+  def tag(%__MODULE__{tags: tags}, key) when is_binary(key), do: Map.get(tags, key)
+
+  @doc """
+  Returns the value of an IRCv3 message-tag, or `default` when absent.
+  Tag-only entries (`@account` with no `=`) yield `true`.
+  """
+  @spec tag(t(), String.t(), default) :: String.t() | true | default when default: term()
+  def tag(%__MODULE__{tags: tags}, key, default) when is_binary(key),
+    do: Map.get(tags, key, default)
 end
