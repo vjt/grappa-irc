@@ -234,6 +234,30 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `AWAY :<reason>\\r\\n` (set) or bare `AWAY\\r\\n` (unset).
+
+  - `send_away(client, reason)` with a non-nil `reason` sends `AWAY :reason`.
+    Rejects CR/LF/NUL in the reason with `{:error, :invalid_line}`.
+  - `send_away_unset(client)` sends bare `AWAY\\r\\n` to clear any active away
+    status. Callers MUST use the separate arity — `send_away(client, nil)` is
+    not a valid public call (no default-arg path per CLAUDE.md).
+
+  IRC semantics: a bare `AWAY` with no trailing param clears away status
+  (RFC 2812 §4.6). A populated `AWAY :reason` sets it. The two-function
+  shape makes the distinction explicit at the call site.
+  """
+  @spec send_away(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_away(client, reason) when is_binary(reason) do
+    if Identifier.safe_line_token?(reason),
+      do: send_line(client, "AWAY :#{reason}\r\n"),
+      else: {:error, :invalid_line}
+  end
+
+  @doc "Sends bare `AWAY\\r\\n` to unset away status. No validation needed."
+  @spec send_away_unset(pid()) :: :ok
+  def send_away_unset(client), do: send_line(client, "AWAY\r\n")
+
+  @doc """
   Sends `PONG :<token>\\r\\n` in response to an upstream PING.
 
   Unlike the other outbound helpers, this one has no

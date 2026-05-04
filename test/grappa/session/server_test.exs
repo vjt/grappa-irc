@@ -2612,4 +2612,206 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  describe "away_state transitions (S3.2)" do
+    # All tests in this describe block use a real IRCServer so we can verify
+    # the AWAY lines sent upstream. The handler accepts the handshake and
+    # echos back 001 so the session reaches :connected state.
+
+    defp start_server_with_001 do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      start_server(handler)
+    end
+
+    test "set_explicit_away issues AWAY :reason upstream and returns :ok" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb")
+
+      assert {:ok, "AWAY :brb\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_explicit_away issues bare AWAY and transitions to :present" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "gone")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"))
+
+      assert :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+
+      assert {:ok, "AWAY\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_explicit_away when not :away_explicit returns {:error, :not_explicit}" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Present state — no explicit away set
+      assert {:error, :not_explicit} =
+               Session.unset_explicit_away({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "set_auto_away when :present issues AWAY :auto-away… upstream" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert :ok = Session.set_auto_away({:user, user.id}, network.id)
+
+      assert {:ok, away_line} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"))
+
+      # The auto-away reason is the fixed string
+      assert String.starts_with?(away_line, "AWAY :auto-away")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "set_auto_away when :away_explicit is a no-op (explicit takes precedence)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Set explicit away first
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "explicit reason")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :explicit"))
+
+      # Now try to set auto-away — should be no-op
+      assert :ok = Session.set_auto_away({:user, user.id}, network.id)
+
+      # No second AWAY line should arrive (no "AWAY :auto-away")
+      # Use a short timeout to confirm silence
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto-away"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "set_explicit_away when :away_auto overwrites (explicit always wins)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # First set auto
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"))
+
+      # Now set explicit — should overwrite
+      assert :ok = Session.set_explicit_away({:user, user.id}, network.id, "manual")
+
+      assert {:ok, "AWAY :manual\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :manual"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_auto_away when :away_auto transitions to :present and issues bare AWAY" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"))
+
+      assert :ok = Session.unset_auto_away({:user, user.id}, network.id)
+
+      assert {:ok, "AWAY\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_auto_away when :away_explicit is a no-op (don't touch explicit away)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "manual")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :manual"))
+
+      # unset_auto should be no-op
+      assert :ok = Session.unset_auto_away({:user, user.id}, network.id)
+
+      # No bare AWAY should be issued
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_auto_away when :present is a no-op (already not away)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert :ok = Session.unset_auto_away({:user, user.id}, network.id)
+
+      # No AWAY line at all
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "{:error, :no_session} when session not registered" do
+      assert {:error, :no_session} =
+               Session.set_explicit_away({:user, Ecto.UUID.generate()}, 9_999_999, "reason")
+
+      assert {:error, :no_session} =
+               Session.unset_explicit_away({:user, Ecto.UUID.generate()}, 9_999_999)
+
+      assert {:error, :no_session} =
+               Session.set_auto_away({:user, Ecto.UUID.generate()}, 9_999_999)
+
+      assert {:error, :no_session} =
+               Session.unset_auto_away({:user, Ecto.UUID.generate()}, 9_999_999)
+    end
+  end
 end
