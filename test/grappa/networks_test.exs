@@ -60,6 +60,42 @@ defmodule Grappa.NetworksTest do
       assert errors_on(cs)[:slug] != nil
     end
 
+    # B5.4 M-pers-6: the race-recovery path was "on ANY changeset error,
+    # fall through to Repo.get_by; if the row is now there, return it as
+    # `{:ok, _}`." That contract loses validation errors whenever an
+    # out-of-band insert (raw SQL, concurrent process, manual Repo
+    # poke) plants a row with the same slug between the failing
+    # validate-changeset insert and the recovery get_by — the operator-
+    # side "where did my validation error go?" failure mode. Fix: only
+    # fall through on a uniqueness violation on `:slug`; other
+    # validation failures surface the changeset directly.
+    #
+    # This test pins the contract by planting a bad-slug row in the DB
+    # and then calling find_or_create_network with the same bad slug.
+    # The pre-B5.4 code path went: top-level get_by → finds the
+    # planted row → returns `{:ok, _}`, masking the slug-validation
+    # error that Network.changeset would have surfaced. Post-B5.4:
+    # find_or_create_network ALSO validates the slug at the entry
+    # point so the get_by fast-path can't mask a validation failure.
+    test "surfaces validation failure even when a bad-slug row exists in the DB" do
+      bad_slug = "Bad Slug!"
+      refute Identifier.valid_network_slug?(bad_slug)
+
+      # Plant a row with the bad slug via schemaless insert (bypasses
+      # Network.changeset). This mimics a raw-SQL state of the table.
+      {:ok, _} =
+        Repo.insert(%Network{
+          slug: bad_slug,
+          inserted_at: DateTime.utc_now(),
+          updated_at: DateTime.utc_now()
+        })
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Networks.find_or_create_network(%{slug: bad_slug})
+
+      assert errors_on(cs)[:slug] != nil
+    end
+
     # A18: slug validation is sourced from
     # `Identifier.valid_network_slug?/1`. The Network
     # changeset previously carried its own `@slug_format` regex +

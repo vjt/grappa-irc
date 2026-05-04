@@ -47,31 +47,75 @@ defmodule Grappa.Networks do
   The retry lives here, not at every call site, so callers can do the
   one-armed `{:ok, network} = ...` match without each one re-deriving
   the race-handling rule.
+
+  B5.4 M-pers-6: validate the slug at the entry point BEFORE the
+  `Repo.get_by/2` fast-path, so a bad-slug row that landed via raw
+  SQL (or a pre-validation ancestor of this code) doesn't get
+  returned as `{:ok, _}` — that would mask the operator-side typo
+  the changeset is supposed to surface. The recovery step
+  (`insert_or_recover/2`) ALSO tightens its fall-through to fire only
+  on a uniqueness violation, so a non-uniqueness changeset error
+  (FK miss, validate_number, etc. — none today, but hardened for
+  future cap fields) surfaces directly instead of being masked by a
+  racing get_by.
   """
   @spec find_or_create_network(%{required(:slug) => String.t()}) ::
           {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
   def find_or_create_network(%{slug: slug} = attrs) when is_binary(slug) do
+    cs = Network.changeset(%Network{}, attrs)
+
+    if cs.valid? do
+      lookup_or_insert(attrs, slug)
+    else
+      {:error, cs}
+    end
+  end
+
+  defp lookup_or_insert(attrs, slug) do
     case Repo.get_by(Network, slug: slug) do
       %Network{} = net -> {:ok, net}
       nil -> insert_or_recover(attrs, slug)
     end
   end
 
-  # Insert; on changeset error, look once more — if the row is now
-  # there, we lost the race and the unique-index violation isn't a
-  # validation failure. If it still isn't there, the changeset really
-  # is invalid (bad slug, etc.) — surface it.
+  # Insert; on changeset error, discriminate by error type:
+  #
+  #   * uniqueness violation on `:slug` — we lost the race against a
+  #     concurrent insert. Retry `Repo.get_by/2` to return the
+  #     just-inserted row.
+  #   * any other error — genuine validation failure (FK miss, future
+  #     cap field, etc.). Surface the changeset directly. Pre-B5.4 the
+  #     fall-through retried `get_by` for ANY changeset error, which
+  #     could mask a validation failure as `{:ok, _}` if a racing
+  #     process happened to land a row in the meantime.
   defp insert_or_recover(attrs, slug) do
     case %Network{} |> Network.changeset(attrs) |> Repo.insert() do
       {:ok, net} ->
         {:ok, net}
 
       {:error, %Ecto.Changeset{} = cs} ->
-        case Repo.get_by(Network, slug: slug) do
-          %Network{} = net -> {:ok, net}
-          nil -> {:error, cs}
+        if uniqueness_violation?(cs, :slug) do
+          recover_race(cs, slug)
+        else
+          {:error, cs}
         end
     end
+  end
+
+  defp recover_race(cs, slug) do
+    case Repo.get_by(Network, slug: slug) do
+      %Network{} = net -> {:ok, net}
+      # Racy: the row vanished between insert + recovery. Surface the
+      # uniqueness changeset; caller can decide to retry.
+      nil -> {:error, cs}
+    end
+  end
+
+  defp uniqueness_violation?(%Ecto.Changeset{errors: errors}, field) do
+    Enum.any?(errors, fn
+      {^field, {_, opts}} -> Keyword.get(opts, :constraint) == :unique
+      _ -> false
+    end)
   end
 
   @doc """
@@ -137,9 +181,16 @@ defmodule Grappa.Networks do
   Unsupplied keys keep their current value (changeset only casts the
   allowlist `[:slug, :max_concurrent_sessions, :max_per_client]`).
   """
+  # B5.3 review-fix: tightened from `integer() | nil` to
+  # `non_neg_integer() | nil` so the typespec matches the changeset's
+  # `validate_non_negative_or_nil/2` rule + the schema's
+  # `non_neg_integer() | nil` field type. Drift between the spec
+  # (loose) and the runtime contract (strict) misled callers into
+  # thinking negative values were a runtime concern; they're rejected
+  # at the changeset boundary unconditionally.
   @spec update_network_caps(Network.t(), %{
-          optional(:max_concurrent_sessions) => integer() | nil,
-          optional(:max_per_client) => integer() | nil
+          optional(:max_concurrent_sessions) => non_neg_integer() | nil,
+          optional(:max_per_client) => non_neg_integer() | nil
         }) :: {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
   def update_network_caps(%Network{} = network, attrs) when is_map(attrs) do
     network
