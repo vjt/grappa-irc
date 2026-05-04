@@ -1,9 +1,16 @@
 defmodule Grappa.QueryWindows.Window do
-  @moduledoc false
-  # Internal schema for `query_windows`. Public API lives in
-  # `Grappa.QueryWindows`. Callers MUST NOT import or alias this module
-  # directly — the `Boundary` annotation on `Grappa.QueryWindows` does not
-  # export `Window`, so crossing the boundary is a compile-time error.
+  @moduledoc """
+  Schema for `query_windows` — one row per (user, network, target_nick)
+  open DM window.
+
+  Public API lives in `Grappa.QueryWindows`; callers receive `%Window{}`
+  structs by type and reference the schema only via the parent context.
+  The Boundary annotation on `Grappa.QueryWindows` exports this module
+  so the `t()` cross-module reference resolves cleanly in published
+  docs.
+
+  See `Grappa.QueryWindows` for the upsert / delete / list semantics.
+  """
 
   use Ecto.Schema
   import Ecto.Changeset
