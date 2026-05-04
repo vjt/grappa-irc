@@ -33,6 +33,13 @@ defmodule Grappa.Admission.Telemetry do
   """
 
   @spec circuit_open(integer(), integer(), integer()) :: :ok
+  @doc """
+  Emits `[:grappa, :admission, :circuit, :open]` on the closed→open
+  circuit-breaker transition for `network_id`. The event carries
+  `threshold` (failure count that tripped the open) and `cooldown_ms`
+  (duration before the breaker auto-closes). PromEx subscriber deferred
+  to Phase 5.
+  """
   def circuit_open(network_id, threshold, cooldown_ms)
       when is_integer(network_id) and is_integer(threshold) and is_integer(cooldown_ms) do
     :telemetry.execute(
@@ -43,6 +50,12 @@ defmodule Grappa.Admission.Telemetry do
   end
 
   @spec circuit_close(integer(), :success | :cooldown_expired) :: :ok
+  @doc """
+  Emits `[:grappa, :admission, :circuit, :close]` on the open→closed
+  circuit-breaker transition. `reason` is `:success` (cleared by a
+  successful session handshake) or `:cooldown_expired` (the
+  observation-token cooldown passed without a new open).
+  """
   def circuit_close(network_id, reason)
       when is_integer(network_id) and reason in [:success, :cooldown_expired] do
     :telemetry.execute(
@@ -53,6 +66,14 @@ defmodule Grappa.Admission.Telemetry do
   end
 
   @spec capacity_reject(atom(), term(), integer(), Grappa.ClientId.t() | nil) :: :ok
+  @doc """
+  Emits `[:grappa, :admission, :capacity, :reject]` on every
+  capacity-check rejection. `flow` is the admission flow atom (e.g.
+  `:user`, `:visitor`), `error` is the rejection reason atom or tuple,
+  `network_id` is the target network FK, and `client_id` is the
+  originating client (nil for system flows). Fires per-rejection, not
+  just on circuit open — enables per-network rejection-rate dashboards.
+  """
   def capacity_reject(flow, error, network_id, client_id)
       when is_atom(flow) and is_integer(network_id) and
              (is_binary(client_id) or is_nil(client_id)) do

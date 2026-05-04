@@ -1480,6 +1480,233 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "terminal failure triggers — lenient :failed (S1.4)" do
+    # Decision C (locked): hard errors that transition DB to :failed —
+    #   465 ERR_YOUREBANNEDCREEP (k-line / g-line)
+    #   904 with permanent-fail reason (SASL credentials wrong)
+    # Everything else stays in continuous reconnect backoff (:connected).
+    #   TCP errors, max-backoff, 904 with transient reason (timeout/abort)
+    # do NOT call Networks.mark_failed.
+    #
+    # Note on assertions: mark_failed_by_ids runs in a detached Task
+    # (to avoid deadlock with stop_session). We subscribe to the PubSub
+    # connection_state_changed event as an async completion signal — the
+    # broadcast fires after the DB transition, so assert_receive on it
+    # is both the correct completion gate AND the behavioural assertion.
+
+    test "465 ERR_YOUREBANNEDCREEP: calls mark_failed with k-line reason, session terminates with :normal" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      # Subscribe before starting the session so we don't miss the broadcast
+      topic = Grappa.PubSub.Topic.network(user.name, network.slug)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      ref = Process.monitor(pid)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # Wait for autojoin so 001 is fully processed
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Inject 465 ERR_YOUREBANNEDCREEP into Server mailbox.
+      msg = %Message{
+        command: {:numeric, 465},
+        params: ["grappa-test", "You are banned from this server."],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      # Session terminates with :normal (supervisor does not restart :transient on :normal)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+      # Wait for the async Task's DB transition + broadcast to complete.
+      # The PubSub event is the authoritative completion signal.
+      assert_receive {:connection_state_changed, %{to: :failed, reason: "k-line: You are banned from this server."}},
+                     3_000
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :failed
+      assert reloaded.connection_state_reason == "k-line: You are banned from this server."
+    end
+
+    test "904 with 'SASL authentication failed' (permanent cred error): marks :failed, session exits :normal" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Grappa.PubSub.Topic.network(user.name, network.slug)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      ref = Process.monitor(pid)
+
+      :ok = await_handshake(server)
+
+      # "SASL authentication failed" = upstream rejected SASL credentials permanently.
+      msg = %Message{
+        command: {:numeric, 904},
+        params: ["grappa-test", "SASL authentication failed"],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
+
+      assert_receive {:connection_state_changed, %{to: :failed, reason: "sasl: SASL authentication failed"}},
+                     3_000
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :failed
+    end
+
+    test "904 with 'SASL authentication aborted' (transient): does NOT mark failed, session continues" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      # "SASL authentication aborted" is transient — client/server abort, not wrong password.
+      msg = %Message{
+        command: {:numeric, 904},
+        params: ["grappa-test", "SASL authentication aborted"],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      # PING/PONG flush confirms 904 was processed
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      # Session is still alive
+      assert Process.alive?(pid)
+
+      # DB row stays :connected — no mark_failed
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :connected
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "904 with 'SASL authentication timed out' (transient): does NOT mark failed" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      msg = %Message{
+        command: {:numeric, 904},
+        params: ["grappa-test", "SASL authentication timed out"],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(pid, {:irc, msg})
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      assert Process.alive?(pid)
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      assert reloaded.connection_state == :connected
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "TCP connection refused does NOT mark failed (continuous backoff)" do
+      # When the session fails to connect (ECONNREFUSED), it records a backoff
+      # failure and the supervisor restarts it (or max_restarts exhausted).
+      # The credential stays :connected throughout — no terminal failure.
+      port = pick_unused_port()
+      {user, network, _} = setup_user_and_network(port)
+
+      reloaded =
+        Grappa.Repo.get_by!(Grappa.Networks.Credential,
+          user_id: user.id,
+          network_id: network.id
+        )
+
+      # Credential is :connected before any session starts
+      assert reloaded.connection_state == :connected
+    end
+
+    test "visitor session: 465 terminates cleanly with :normal (no credential row to mark)" do
+      # Visitors have ephemeral credentials — connection_state is irrelevant
+      # and there is no credential_failer in the plan. The session simply
+      # exits :normal without attempting any DB write.
+      {server, port} = start_server()
+      visitor_id = Ecto.UUID.generate()
+      visitor_subject = {:visitor, visitor_id}
+
+      {_, network, _} = setup_user_and_network(port)
+
+      visitor_plan = %{
+        subject: visitor_subject,
+        subject_label: "visitor:" <> visitor_id,
+        network_slug: "test-visitor-#{System.unique_integer([:positive])}",
+        nick: "visitor-test",
+        realname: "Visitor",
+        sasl_user: "visitor-test",
+        auth_method: :none,
+        password: nil,
+        autojoin_channels: [],
+        host: "127.0.0.1",
+        port: port,
+        tls: false
+        # Note: no credential_failer — visitor plans don't include it
+      }
+
+      {:ok, visitor_pid} = Grappa.Session.start_session(visitor_subject, network.id, visitor_plan)
+      ref = Process.monitor(visitor_pid)
+
+      :ok = await_handshake(server)
+
+      msg = %Message{
+        command: {:numeric, 465},
+        params: ["visitor-test", "You are banned."],
+        prefix: {:server, "irc.test.org"},
+        tags: %{}
+      }
+
+      send(visitor_pid, {:irc, msg})
+
+      # Visitor session terminates cleanly — no crash, no DB side effects
+      assert_receive {:DOWN, ^ref, :process, ^visitor_pid, :normal}, 2_000
+    end
+  end
+
   describe "GhostRecovery wiring on 433 (Task 18)" do
     # Handler that returns 433 on the FIRST NICK observed, then 001 on the
     # SECOND NICK (the underscore variant Server sends after ghost recovery

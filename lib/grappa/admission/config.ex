@@ -50,6 +50,12 @@ defmodule Grappa.Admission.Config do
   @key {__MODULE__, :config}
 
   @spec boot() :: :ok
+  @doc """
+  Reads admission config from `Application.get_env/3`, validates,
+  and stores in `:persistent_term` for lock-free runtime reads.
+  Called once from `Grappa.Application.start/2` before the
+  supervision tree is started.
+  """
   def boot do
     raw = Application.get_env(:grappa, :admission, [])
     cfg = build!(raw)
@@ -58,6 +64,11 @@ defmodule Grappa.Admission.Config do
   end
 
   @spec config() :: t()
+  @doc """
+  Returns the current admission config struct. Reads from
+  `:persistent_term` — lock-free, non-allocating, ~10ns per call.
+  Callers must call `boot/0` first (ensured by supervision order).
+  """
   def config, do: :persistent_term.get(@key)
 
   if Mix.env() == :test do
