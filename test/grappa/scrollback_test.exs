@@ -365,6 +365,25 @@ defmodule Grappa.ScrollbackTest do
       assert Scrollback.fetch({:user, user.id}, net.id, "#empty", nil, 10) == []
     end
 
+    # B5.4 L-pers-2: an unknown subject discriminator was previously a
+    # silent FunctionClauseError from `subject_where/2`'s pattern-match
+    # — the Erlang-level message hid both the offending value and the
+    # function name. Add an explicit fall-through that raises
+    # ArgumentError with the inspected subject, so caller bugs (typo
+    # like `:users`, accidental `nil`, leftover atom from a refactor)
+    # surface with actionable diagnostics.
+    test "raises ArgumentError on unknown subject discriminator", %{network: net} do
+      assert_raise ArgumentError, ~r/unknown subject:/, fn ->
+        Scrollback.fetch({:typo, "x"}, net.id, "#sniffo", nil, 10)
+      end
+    end
+
+    test "raises ArgumentError on subject where the discriminator is nil", %{network: net} do
+      assert_raise ArgumentError, ~r/unknown subject:/, fn ->
+        Scrollback.fetch(nil, net.id, "#sniffo", nil, 10)
+      end
+    end
+
     # A26: every row is returned with `:network` preloaded so callers
     # can hand the result straight to `Scrollback.Wire.to_json/1`
     # (which pattern-matches on `%Network{slug: _}` and crashes on

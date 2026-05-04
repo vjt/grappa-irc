@@ -160,6 +160,16 @@ defmodule Grappa.Scrollback do
   defp subject_where(query, {:visitor, visitor_id}) when is_binary(visitor_id),
     do: where(query, [m], m.visitor_id == ^visitor_id)
 
+  # B5.4 L-pers-2: explicit fall-through replaces an implicit
+  # FunctionClauseError (Erlang-level message hides both the
+  # offending value and the function name). ArgumentError carries
+  # the inspected subject so caller bugs (typo `:users` for `:user`,
+  # `nil` from a stale ref, leftover atom from a refactor) surface
+  # with actionable diagnostics. Same fail-loud behaviour, better
+  # post-mortem.
+  defp subject_where(_, other),
+    do: raise(ArgumentError, "unknown subject: #{inspect(other)}")
+
   defp maybe_before(query, nil), do: query
 
   defp maybe_before(query, before) when is_integer(before),
