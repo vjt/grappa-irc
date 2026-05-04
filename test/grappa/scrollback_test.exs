@@ -65,8 +65,11 @@ defmodule Grappa.ScrollbackTest do
                ScrollbackHelpers.insert(%{channel: "#x"})
 
       errors = errors_on(cs)
-      # user_id is no longer validate_required — XOR validation fires instead
-      assert "must set user_id or visitor_id" in errors.user_id
+      # B5.4 M-pers-2: subject XOR error attaches to synthetic :subject key,
+      # not :user_id (was buggy — always :user_id regardless of which field
+      # was actually wrong). user_id is no longer validate_required — XOR
+      # validation fires instead.
+      assert "must set user_id or visitor_id" in errors.subject
       assert "can't be blank" in errors.network_id
       assert "can't be blank" in errors.server_time
       assert "can't be blank" in errors.kind
@@ -486,7 +489,11 @@ defmodule Grappa.ScrollbackTest do
       }
 
       assert {:error, changeset} = Scrollback.persist_event(attrs)
-      assert "user_id and visitor_id are mutually exclusive" in errors_on(changeset).user_id
+      # B5.4 M-pers-2: synthetic :subject key (was always :user_id even when
+      # the conflict spans both fields). Mirror of Session XOR enforcement.
+      assert "user_id and visitor_id are mutually exclusive" in errors_on(changeset).subject
+      refute Map.has_key?(errors_on(changeset), :user_id)
+      refute Map.has_key?(errors_on(changeset), :visitor_id)
     end
 
     test "rejects when neither user_id nor visitor_id set" do
@@ -503,7 +510,10 @@ defmodule Grappa.ScrollbackTest do
       }
 
       assert {:error, changeset} = Scrollback.persist_event(attrs)
-      assert "must set user_id or visitor_id" in errors_on(changeset).user_id
+      # B5.4 M-pers-2: synthetic :subject key.
+      assert "must set user_id or visitor_id" in errors_on(changeset).subject
+      refute Map.has_key?(errors_on(changeset), :user_id)
+      refute Map.has_key?(errors_on(changeset), :visitor_id)
     end
   end
 end

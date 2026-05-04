@@ -45,11 +45,24 @@ defmodule Grappa.Scrollback.MessageTest do
     end
 
     test "rejects missing required fields" do
-      for field <- [:user_id, :network_id, :channel, :server_time, :kind, :sender, :body] do
+      for {field, error_key} <- [
+            # B5.4 M-pers-2: user_id absence triggers the XOR validator,
+            # which now attaches its error to the synthetic :subject key
+            # (not :user_id). All other fields still report their own key.
+            {:user_id, :subject},
+            {:network_id, :network_id},
+            {:channel, :channel},
+            {:server_time, :server_time},
+            {:kind, :kind},
+            {:sender, :sender},
+            {:body, :body}
+          ] do
         attrs = Map.delete(@valid_attrs, field)
         cs = Message.changeset(%Message{}, attrs)
         refute cs.valid?, "expected missing #{field} to invalidate the changeset"
-        assert cs.errors[field] != nil
+
+        assert cs.errors[error_key] != nil,
+               "expected missing #{field} to surface an error on #{error_key}"
       end
     end
   end
