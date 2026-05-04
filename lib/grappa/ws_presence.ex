@@ -160,7 +160,7 @@ defmodule Grappa.WSPresence do
   # ---------------------------------------------------------------------------
 
   @impl GenServer
-  def init(_opts) do
+  def init(_) do
     {:ok,
      %{
        sockets: %{},
@@ -170,12 +170,12 @@ defmodule Grappa.WSPresence do
   end
 
   @impl GenServer
-  def handle_call({:register, user_name, socket_pid, notify_pid}, _from, state) do
+  def handle_call({:register, user_name, socket_pid, notify_pid}, _, state) do
     existing_set = Map.get(state.sockets, user_name, MapSet.new())
     already_tracked = MapSet.member?(existing_set, socket_pid)
 
     # Only monitor if not already tracking this pid
-    state =
+    state1 =
       if already_tracked do
         state
       else
@@ -188,22 +188,22 @@ defmodule Grappa.WSPresence do
       end
 
     # Store notify_pid override (last write wins — idempotent)
-    state =
+    state2 =
       if notify_pid != nil do
-        put_in(state, [:notify_pids, user_name], notify_pid)
+        put_in(state1, [:notify_pids, user_name], notify_pid)
       else
-        state
+        state1
       end
 
     # Fire ws_connected only when going from 0 to 1
     if not already_tracked and MapSet.size(existing_set) == 0 do
-      notify(user_name, {:ws_connected, user_name}, state)
+      notify(user_name, {:ws_connected, user_name}, state2)
     end
 
-    {:reply, :ok, state}
+    {:reply, :ok, state2}
   end
 
-  def handle_call({:ws_count, user_name}, _from, state) do
+  def handle_call({:ws_count, user_name}, _, state) do
     count =
       state.sockets
       |> Map.get(user_name, MapSet.new())
@@ -212,7 +212,7 @@ defmodule Grappa.WSPresence do
     {:reply, count, state}
   end
 
-  def handle_call({:client_closing, user_name, socket_pid}, _from, state) do
+  def handle_call({:client_closing, user_name, socket_pid}, _, state) do
     existing_set = Map.get(state.sockets, user_name, MapSet.new())
 
     # Is this the last one?
@@ -220,20 +220,20 @@ defmodule Grappa.WSPresence do
 
     if MapSet.size(remaining) == 0 and MapSet.member?(existing_set, socket_pid) do
       # Remove from sockets immediately (pid DOWN will be idempotent)
-      state = put_in(state, [:sockets, user_name], remaining)
-      notify(user_name, {:ws_all_disconnected, user_name}, state)
-      {:reply, :ok, state}
+      state1 = put_in(state, [:sockets, user_name], remaining)
+      notify(user_name, {:ws_all_disconnected, user_name}, state1)
+      {:reply, :ok, state1}
     else
       {:reply, :ok, state}
     end
   end
 
-  def handle_call(:reset_for_test, _from, _state) do
+  def handle_call(:reset_for_test, _, _) do
     {:reply, :ok, %{sockets: %{}, notify_pids: %{}, refs_to_user: %{}}}
   end
 
   @impl GenServer
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, _}, state) do
     case Map.get(state.refs_to_user, ref) do
       nil ->
         {:noreply, state}

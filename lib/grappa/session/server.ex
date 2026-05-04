@@ -605,8 +605,8 @@ defmodule Grappa.Session.Server do
   # any pending auto-away debounce timer and (if currently :away_auto)
   # unset auto-away. Explicit away is left untouched — reconnecting a tab
   # should not silently clear a `/away` the user issued deliberately.
-  def handle_info({:ws_connected, _user_name}, state) do
-    state =
+  def handle_info({:ws_connected, _}, state) do
+    state1 =
       if is_reference(state.auto_away_timer) do
         Process.cancel_timer(state.auto_away_timer)
         %{state | auto_away_timer: nil}
@@ -614,24 +614,24 @@ defmodule Grappa.Session.Server do
         state
       end
 
-    state =
-      if state.away_state == :away_auto do
-        unset_away_internal(state)
+    state2 =
+      if state1.away_state == :away_auto do
+        unset_away_internal(state1)
       else
-        state
+        state1
       end
 
-    {:noreply, state}
+    {:noreply, state2}
   end
 
   # S3.2 — WS disconnect: the last browser tab for this user closed.
   # Schedule the 30s debounce before issuing auto-away. If already
   # `:away_explicit`, skip entirely — the user intentionally went away.
-  def handle_info({:ws_all_disconnected, _user_name}, %{away_state: :away_explicit} = state) do
+  def handle_info({:ws_all_disconnected, _}, %{away_state: :away_explicit} = state) do
     {:noreply, state}
   end
 
-  def handle_info({:ws_all_disconnected, _user_name}, state) do
+  def handle_info({:ws_all_disconnected, _}, state) do
     # Cancel any existing debounce timer (shouldn't happen in normal flow,
     # but guards against two rapid disconnect events — only the last wins).
     _ =
