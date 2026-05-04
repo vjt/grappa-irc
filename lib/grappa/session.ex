@@ -596,6 +596,139 @@ defmodule Grappa.Session do
     call_session(subject, network_id, {:lookup_userhost, nick})
   end
 
+  # ---------------------------------------------------------------------------
+  # S5.2 — Channel-ops facade functions
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Sends `MODE <channel> +ooo... <nicks>` upstream, chunked per ISUPPORT MODES=.
+  Multi-nick: the Session.Server fans out to N `MODE` lines if the nick list
+  exceeds the server's MODES= limit. Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_op(subject(), integer(), String.t(), [String.t()]) ::
+          :ok | {:error, :no_session}
+  def send_op(subject, network_id, channel, nicks)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_list(nicks) do
+    call_session(subject, network_id, {:send_op, channel, nicks})
+  end
+
+  @doc "Sends `MODE <channel> -ooo... <nicks>` upstream, chunked per ISUPPORT MODES=."
+  @spec send_deop(subject(), integer(), String.t(), [String.t()]) ::
+          :ok | {:error, :no_session}
+  def send_deop(subject, network_id, channel, nicks)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_list(nicks) do
+    call_session(subject, network_id, {:send_deop, channel, nicks})
+  end
+
+  @doc "Sends `MODE <channel> +vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
+  @spec send_voice(subject(), integer(), String.t(), [String.t()]) ::
+          :ok | {:error, :no_session}
+  def send_voice(subject, network_id, channel, nicks)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_list(nicks) do
+    call_session(subject, network_id, {:send_voice, channel, nicks})
+  end
+
+  @doc "Sends `MODE <channel> -vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
+  @spec send_devoice(subject(), integer(), String.t(), [String.t()]) ::
+          :ok | {:error, :no_session}
+  def send_devoice(subject, network_id, channel, nicks)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_list(nicks) do
+    call_session(subject, network_id, {:send_devoice, channel, nicks})
+  end
+
+  @doc """
+  Sends `KICK <channel> <nick> :<reason>` upstream.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_kick(subject(), integer(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_kick(subject, network_id, channel, nick, reason)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_binary(nick) and is_binary(reason) do
+    call_session(subject, network_id, {:send_kick, channel, nick, reason})
+  end
+
+  @doc """
+  Sends `MODE <channel> +b <mask>` upstream. If `mask_or_nick` is a bare nick
+  (no `!` or `@`), the Session.Server derives the mask from the WHOIS cache:
+  `*!*@host` on cache hit, `nick!*@*` on miss. An explicit mask (containing
+  `!` or `@`) passes through unchanged.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_ban(subject(), integer(), String.t(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_ban(subject, network_id, channel, mask_or_nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_binary(mask_or_nick) do
+    call_session(subject, network_id, {:send_ban, channel, mask_or_nick})
+  end
+
+  @doc """
+  Sends `MODE <channel> -b <mask>` upstream.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_unban(subject(), integer(), String.t(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_unban(subject, network_id, channel, mask)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_binary(mask) do
+    call_session(subject, network_id, {:send_unban, channel, mask})
+  end
+
+  @doc """
+  Sends `INVITE <nick> <channel>` upstream (RFC 2812 order: nick first, then channel).
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_invite(subject(), integer(), String.t(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_invite(subject, network_id, channel, nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             is_binary(nick) do
+    call_session(subject, network_id, {:send_invite, channel, nick})
+  end
+
+  @doc """
+  Sends `MODE <channel> b` upstream — the banlist query form (no sign).
+  Numerics 367 RPL_BANLIST + 368 RPL_ENDOFBANLIST reply with the ban list.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_banlist(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_banlist(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:send_banlist, channel})
+  end
+
+  @doc """
+  Sends `MODE <own_nick> <modes>` upstream — user-mode change on own nick.
+  The own nick is read from Session.Server state (populated at 001).
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_umode(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session}
+  def send_umode(subject, network_id, modes)
+      when is_subject(subject) and is_integer(network_id) and is_binary(modes) do
+    call_session(subject, network_id, {:send_umode, modes})
+  end
+
+  @doc """
+  Sends `MODE <target> <modes> [params...]` verbatim, with NO chunking.
+  This is the raw power-user escape hatch — `/mode #chan +o-v vjt rofl`
+  passes the full mixed mode string through as-is. The server is authoritative.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_mode(subject(), integer(), String.t(), String.t(), [String.t()]) ::
+          :ok | {:error, :no_session}
+  def send_mode(subject, network_id, target, modes, params)
+      when is_subject(subject) and is_integer(network_id) and is_binary(target) and
+             is_binary(modes) and is_list(params) do
+    call_session(subject, network_id, {:send_mode, target, modes, params})
+  end
+
   @doc """
   Adds the correct subject FK column to a `Grappa.Scrollback` /
   `Accounts` attrs map — `:user_id` for `{:user, _}` subjects,
