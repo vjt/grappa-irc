@@ -152,7 +152,7 @@ defmodule GrappaWeb.GrappaChannel do
   # process). Visitors are excluded — visitor disconnect = bouncer disconnect
   # (ephemeral credential, no upstream session to mark away).
   @impl Phoenix.Channel
-  def handle_in("client_closing", _payload, socket) do
+  def handle_in("client_closing", _, socket) do
     user_name = socket.assigns.user_name
 
     unless visitor?(user_name) do
