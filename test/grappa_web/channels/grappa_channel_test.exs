@@ -289,6 +289,241 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # S5.3 — inbound ops events
+  # ---------------------------------------------------------------------------
+  #
+  # Each test joins the user-level topic (simplest join shape), pushes an
+  # event, and verifies:
+  #   - The reply to the push is `:ok`.
+  #   - The correct IRC line was emitted to the fake upstream.
+  #
+  # The channel-level join would also work but requires more setup; user-level
+  # is sufficient to exercise the handle_in dispatch path.
+
+  describe "S5.3 — ops verbs: inbound channel events" do
+    setup do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+      topic = Topic.user(user.name)
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      %{irc_server: irc_server, socket: socket, user: user, network: network}
+    end
+
+    test "op: sends MODE #chan +ooo upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice", "bob", "carol"]
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +ooo"))
+    end
+
+    test "deop: sends MODE #chan -ooo upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "deop", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice", "bob", "carol"]
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -ooo"))
+    end
+
+    test "voice: sends MODE #chan +v upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "voice", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +v"))
+    end
+
+    test "devoice: sends MODE #chan -v upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "devoice", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -v"))
+    end
+
+    test "kick: sends KICK #chan nick :reason upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "kick", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice",
+          "reason" => "bye"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "KICK #snap alice :bye\r\n"))
+    end
+
+    test "ban: sends MODE #chan +b with explicit mask", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "ban", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mask" => "*!*@evil.com"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +b *!*@evil.com\r\n"))
+    end
+
+    test "unban: sends MODE #chan -b <mask> upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "unban", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mask" => "*!*@evil.com"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap -b *!*@evil.com\r\n"))
+    end
+
+    test "invite: sends INVITE nick #chan upstream (nick first)", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INVITE alice #snap\r\n"))
+    end
+
+    test "banlist: sends MODE #chan b (query form, no sign)", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "banlist", %{
+          "network_id" => network.id,
+          "channel" => "#snap"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap b\r\n"))
+    end
+
+    test "umode: sends MODE own_nick <modes> upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "umode", %{
+          "network_id" => network.id,
+          "modes" => "+i"
+        })
+
+      assert_reply(ref, :ok)
+      # grappa-snap is the nick used in setup
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE grappa-snap +i\r\n"))
+    end
+
+    test "mode: sends raw verbatim MODE line, no chunking", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "mode", %{
+          "network_id" => network.id,
+          "target" => "#snap",
+          "modes" => "+o-v",
+          "params" => ["alice", "bob"]
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +o-v alice bob\r\n"))
+    end
+
+    test "op: unknown network_id returns {:error, network_not_found}", %{socket: socket} do
+      ref =
+        push(socket, "op", %{
+          "network_id" => 999_999,
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{reason: "no_session"})
+    end
+
+    test "visitor socket: op returns visitor_not_allowed", %{network: network} do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+    end
+  end
+
   describe "join rejects malformed topics" do
     test "rejects Phase 1 grappa:network: shape (regression check)" do
       # Sub-task 2h removed the Phase 1 `grappa:network:*` channel
