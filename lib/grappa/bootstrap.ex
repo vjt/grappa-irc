@@ -38,6 +38,38 @@ defmodule Grappa.Bootstrap do
   user) increment the `failed` counter and continue with the next
   session; one bad row does not block the others.
 
+  ## Hard-fail config invariants — refuse to boot on misconfig
+
+  Two pre-spawn invariants are enforced by `raise RuntimeError` so a
+  bad operator config halts the supervisor instead of silently
+  degrading:
+
+    * **W7** — every active visitor's `network_slug` must resolve to a
+      `Networks.Network` row. A visitor pinned to a slug the operator
+      has dropped is an orphan; `Visitors.Login` + `Visitors.SessionPlan`
+      both trust the slug → network resolution at runtime.
+    * **Servers-bound invariant** — every distinct network referenced
+      by a `Networks.Credential` (mode-1 admin) OR an active `Visitor`
+      (visitor mode) must have at least one enabled server in
+      `network_servers`. Without it, `SessionPlan.resolve/1` returns
+      `{:error, :no_server}` per row at spawn time AND every subsequent
+      `POST /auth/login` / cicchetto reconnect for that network surfaces
+      as an opaque 500 (the controller's catch-all maps unknown reasons
+      to `:internal`). The bouncer is unusable for that network in
+      either direction; the only honest signal is to refuse to boot
+      and tell the operator how to recover (`mix grappa.add_server`).
+
+  Both invariants run BEFORE the spawn loops so a misconfig surfaces
+  on the very first boot attempt, not after the supervisor has been up
+  long enough for the first user to hit login. This is the SAME bias as
+  CLAUDE.md "errors are loud, not silent" + the W7 visitor-orphan
+  decision: "better to refuse to boot loudly than to drop scrollback
+  on a misconfiguration."
+
+  Per-row best-effort failure modes (below) handle conditions that are
+  legitimately transient or per-row (cap exceeded, upstream connect
+  refused) and cannot be ruled out at boot.
+
   Three counters, three operationally-distinct conditions
   (post-M-life-4):
 
@@ -109,7 +141,7 @@ defmodule Grappa.Bootstrap do
   use Task, restart: :transient
 
   alias Grappa.{Networks, Session, Visitors}
-  alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
+  alias Grappa.Networks.{Credential, Credentials, Network, Servers, SessionPlan}
   alias Grappa.Session.Backoff
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
@@ -153,8 +185,18 @@ defmodule Grappa.Bootstrap do
   """
   @spec run() :: {:ok, Result.t()}
   def run do
+    credentials = Credentials.list_credentials_for_all_users()
+    visitors = Visitors.list_active()
+
+    # Hard-fail config invariants run BEFORE any spawn so a bad operator
+    # config halts the supervisor instead of degrading silently. See
+    # moduledoc "Hard-fail config invariants" — both raises are
+    # operator-facing and tell them how to recover.
+    validate_visitor_networks!(visitors)
+    validate_credential_servers!(credentials, visitors)
+
     user_stats =
-      case Credentials.list_credentials_for_all_users() do
+      case credentials do
         [] ->
           Logger.warning("bootstrap: no credentials bound — running web-only")
           %Result{}
@@ -163,8 +205,7 @@ defmodule Grappa.Bootstrap do
           spawn_all(credentials)
       end
 
-    validate_visitor_networks!()
-    visitor_stats = spawn_visitors()
+    visitor_stats = spawn_visitors(visitors)
 
     {:ok, sum_results(user_stats, visitor_stats)}
   end
@@ -216,9 +257,8 @@ defmodule Grappa.Bootstrap do
     end
   end
 
-  @spec spawn_visitors() :: Result.t()
-  defp spawn_visitors do
-    visitors = Visitors.list_active()
+  @spec spawn_visitors([Visitor.t()]) :: Result.t()
+  defp spawn_visitors(visitors) do
     stats = Enum.reduce(visitors, %Result{}, &spawn_visitor/2)
 
     Logger.info("bootstrap visitors done",
@@ -351,10 +391,10 @@ defmodule Grappa.Bootstrap do
   # operator intervention (require a deliberate cleanup or restore)
   # is intentionally biased toward the latter — better to refuse to
   # boot loudly than to drop scrollback on a misconfiguration.
-  @spec validate_visitor_networks!() :: :ok
-  defp validate_visitor_networks! do
+  @spec validate_visitor_networks!([Visitor.t()]) :: :ok
+  defp validate_visitor_networks!(visitors) do
     orphans =
-      Visitors.list_active()
+      visitors
       |> Enum.map(& &1.network_slug)
       |> Enum.uniq()
       |> Enum.reject(fn slug ->
@@ -370,6 +410,66 @@ defmodule Grappa.Bootstrap do
           "visitor rows pinned to network(s) not in current config: " <>
             "#{inspect(slugs)}. Either restore the network in DB or run: " <>
             Enum.map_join(slugs, " ; ", &"mix grappa.reap_visitors --network=#{&1}")
+
+        raise RuntimeError, msg
+    end
+  end
+
+  # Servers-bound invariant: every distinct network referenced by a
+  # bound credential or active visitor must have at least one enabled
+  # server in `network_servers`. A network without a usable server is
+  # silently broken in BOTH directions:
+  #
+  #   - Bootstrap's per-row `SessionPlan.resolve/1` returns
+  #     `{:error, :no_server}` and bumps the `failed` counter, but the
+  #     supervision tree comes up healthy and the operator only sees
+  #     it via grep.
+  #   - Every subsequent `POST /auth/login` (admin or visitor) for
+  #     that network exercises the same resolve path, fails with
+  #     `:no_server`, and the controller's catch-all maps the unknown
+  #     reason to `{:error, :internal}` → opaque 500. Cicchetto users
+  #     see a generic error with no actionable signal.
+  #
+  # The fix at the controller would still leave the bouncer in a
+  # half-configured state. The honest signal is to refuse to boot and
+  # point the operator at `mix grappa.add_server`. Mirrors the W7
+  # visitor-network bias.
+  @spec validate_credential_servers!([Credential.t()], [Visitor.t()]) :: :ok
+  defp validate_credential_servers!(credentials, visitors) do
+    cred_networks =
+      Enum.map(credentials, fn %Credential{network: %Network{} = n} -> n end)
+
+    visitor_networks =
+      visitors
+      |> Enum.map(& &1.network_slug)
+      |> Enum.uniq()
+      |> Enum.flat_map(fn slug ->
+        case Networks.get_network_by_slug(slug) do
+          {:ok, %Network{} = n} -> [n]
+          {:error, :not_found} -> []
+        end
+      end)
+
+    serverless =
+      (cred_networks ++ visitor_networks)
+      |> Enum.uniq_by(& &1.id)
+      |> Enum.filter(fn %Network{} = n ->
+        n |> Servers.list_servers() |> Enum.filter(& &1.enabled) == []
+      end)
+      |> Enum.map(& &1.slug)
+
+    case serverless do
+      [] ->
+        :ok
+
+      slugs ->
+        msg =
+          "network(s) referenced by bound credentials or active visitors " <>
+            "have no enabled server in network_servers: #{inspect(slugs)}. " <>
+            "Bind one with: " <>
+            Enum.map_join(slugs, " ; ", fn slug ->
+              "mix grappa.add_server --network=#{slug} --host=<host> --port=<port>"
+            end)
 
         raise RuntimeError, msg
     end
