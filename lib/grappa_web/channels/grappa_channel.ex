@@ -162,6 +162,61 @@ defmodule GrappaWeb.GrappaChannel do
     {:noreply, socket}
   end
 
+  # S3.4 — /away slash-command: set explicit away.
+  #
+  # Resolves the network slug to a network_id via `Networks.get_network_by_slug/1`,
+  # then delegates to `Session.set_explicit_away/3`. Returns `{:ok, _}` on success.
+  # Visitors are rejected — visitor sessions have no auto-away state and the
+  # `set_explicit_away/3` facade only routes to user sessions.
+  def handle_in(
+        "away",
+        %{"action" => "set", "network" => slug, "reason" => reason},
+        socket
+      )
+      when is_binary(slug) and is_binary(reason) do
+    user_name = socket.assigns.user_name
+
+    if visitor?(user_name) do
+      {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
+    else
+      with {:ok, user} <- safe_get_user(user_name),
+           {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
+           :ok <- Session.set_explicit_away({:user, user.id}, network.id, reason) do
+        {:reply, :ok, socket}
+      else
+        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
+        {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+        {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_reason"}}, socket}
+      end
+    end
+  end
+
+  # S3.4 — /away slash-command: unset explicit away.
+  #
+  # Visitors are rejected with `visitor_no_away`. Returns `{:error,
+  # %{reason: "not_explicit"}}` if the session is not in `:away_explicit` state
+  # (mirrors `Session.unset_explicit_away/2`'s `{:error, :not_explicit}` return).
+  def handle_in("away", %{"action" => "unset", "network" => slug}, socket)
+      when is_binary(slug) do
+    user_name = socket.assigns.user_name
+
+    if visitor?(user_name) do
+      {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
+    else
+      with {:ok, user} <- safe_get_user(user_name),
+           {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
+           :ok <- Session.unset_explicit_away({:user, user.id}, network.id) do
+        {:reply, :ok, socket}
+      else
+        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
+        {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+        {:error, :not_explicit} -> {:reply, {:error, %{reason: "not_explicit"}}, socket}
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # After-join snapshot helpers
   # ---------------------------------------------------------------------------

@@ -1192,6 +1192,30 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # S3.4: 305 RPL_UNAWAY / 306 RPL_NOWAWAY confirmed by the upstream.
+  # Broadcast `{:event, %{kind: "away_confirmed", state: "present" | "away"}}`
+  # on the user-level PubSub topic so cicchetto can update its status display.
+  # The `:present` / `:away` atom is converted to a string discriminator to
+  # match the `kind: STRING` JSON-wire convention used across all events.
+  defp apply_effects([{:away_confirmed, away_atom} | rest], state)
+       when away_atom in [:present, :away] do
+    away_str = Atom.to_string(away_atom)
+
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.user(state.subject_label),
+        {:event,
+         %{
+           kind: "away_confirmed",
+           network: state.network_slug,
+           state: away_str
+         }}
+      )
+
+    apply_effects(rest, state)
+  end
+
   # Task 15: NickServ-as-IDP confirmed our pending IDENTIFY by setting
   # +r on our nick. Invoke the opaque `visitor_committer` callback
   # (`Grappa.Visitors.commit_password/2`, injected by
