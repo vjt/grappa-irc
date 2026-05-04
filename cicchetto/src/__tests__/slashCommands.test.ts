@@ -146,3 +146,42 @@ describe("parseSlash — T32 verbs", () => {
     });
   });
 });
+
+// S3.4 — /away verb
+describe("parseSlash — /away", () => {
+  it("/away bare → unset explicit away", () => {
+    expect(parseSlash("/away")).toEqual({ kind: "away", action: "unset" });
+  });
+
+  it("/away <reason text> → set with reason", () => {
+    expect(parseSlash("/away brb coffee")).toEqual({
+      kind: "away",
+      action: "set",
+      reason: "brb coffee",
+    });
+  });
+
+  it("/away :reason (irssi-style colon prefix) → strips leading colon", () => {
+    expect(parseSlash("/away :gone fishing")).toEqual({
+      kind: "away",
+      action: "set",
+      reason: "gone fishing",
+    });
+  });
+
+  it("/away : (bare colon, no text) → set with empty string reason", () => {
+    // A bare colon is an irssi artifact; the stripped reason is empty string.
+    // The server-side guard (safe_line_token?) will accept empty string;
+    // upstream IRC drops empty AWAY bodies to bare AWAY semantics.
+    expect(parseSlash("/away :")).toEqual({
+      kind: "away",
+      action: "set",
+      reason: "",
+    });
+  });
+
+  it("/away    (only whitespace after verb) → unset (empty rest)", () => {
+    // Extra whitespace is trimmed before the rest check.
+    expect(parseSlash("/away   ")).toEqual({ kind: "away", action: "unset" });
+  });
+});

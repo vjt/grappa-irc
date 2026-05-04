@@ -25,6 +25,14 @@
 // If the user wants a reason without specifying a network they must use
 // `/disconnect <activenet> reason` explicitly. This keeps the parser
 // pure (zero state dependency).
+//
+// S3.4 — /away verb:
+//
+// `/away :reason` AND `/away reason text` → set (action: "set",
+// reason: "..."). The leading `:` is stripped if present (irssi
+// convention). Bare `/away` (no args) → unset (action: "unset").
+// reason is always a plain string — callers do not need to handle the
+// `:` prefix variant after this parser strips it.
 
 export type SlashCommand =
   | { kind: "empty" }
@@ -39,6 +47,8 @@ export type SlashCommand =
   | { kind: "disconnect"; network: string | null; reason: string | null }
   | { kind: "connect"; network: string }
   | { kind: "connect-error"; error: string }
+  | { kind: "away"; action: "set"; reason: string }
+  | { kind: "away"; action: "unset" }
   | { kind: "unknown"; verb: string; rest: string };
 
 export function parseSlash(input: string): SlashCommand {
@@ -117,6 +127,13 @@ export function parseSlash(input: string): SlashCommand {
       const [network] = rest.split(/\s+/);
       if (!network) return { kind: "connect-error", error: "/connect requires <network>" };
       return { kind: "connect", network };
+    }
+    case "away": {
+      // Bare /away → unset explicit away status.
+      if (rest === "") return { kind: "away", action: "unset" };
+      // /away :reason (irssi style) or /away reason — strip leading : if present.
+      const reason = rest.startsWith(":") ? rest.slice(1).trim() : rest;
+      return { kind: "away", action: "set", reason };
     }
     default:
       return { kind: "unknown", verb, rest };

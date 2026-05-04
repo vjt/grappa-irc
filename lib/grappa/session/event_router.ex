@@ -165,6 +165,7 @@ defmodule Grappa.Session.EventRouter do
           | {:visitor_r_observed, String.t()}
           | {:topic_changed, String.t(), topic_entry()}
           | {:channel_modes_changed, String.t(), channel_mode_entry()}
+          | {:away_confirmed, :present | :away}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -654,6 +655,28 @@ defmodule Grappa.Session.EventRouter do
   def route(%Message{command: {:numeric, 1}, params: [welcomed_nick | _]}, state)
       when is_binary(welcomed_nick) do
     {:cont, %{state | nick: welcomed_nick}, []}
+  end
+
+  # 305 RPL_UNAWAY: upstream confirmed away status cleared ("You are no longer
+  # marked as being away"). Fire an `away_confirmed` effect so Session.Server
+  # can broadcast the state transition to cicchetto on the user-level topic.
+  #
+  # The numeric fires in response to an upstream AWAY (unset) command — either
+  # from explicit `/away` (bare) or from the auto-away path. The :present atom
+  # mirrors the away_state closed set.
+  def route(%Message{command: {:numeric, 305}}, state) do
+    {:cont, state, [{:away_confirmed, :present}]}
+  end
+
+  # 306 RPL_NOWAWAY: upstream confirmed away status set ("You have been marked
+  # as being away"). Fire an `away_confirmed` effect so Session.Server can
+  # broadcast the state transition to cicchetto.
+  #
+  # The :away atom is intentionally generic — the numeric doesn't distinguish
+  # explicit from auto-away; Session.Server's state carries that distinction
+  # and cicchetto derives the display from away_state, not this numeric.
+  def route(%Message{command: {:numeric, 306}}, state) do
+    {:cont, state, [{:away_confirmed, :away}]}
   end
 
   def route(%Message{} = _, state), do: {:cont, state, []}
