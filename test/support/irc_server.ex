@@ -81,6 +81,13 @@ defmodule Grappa.IRCServer do
 
   @impl GenServer
   def init(handler) do
+    # L-irc-2: trap exits so `terminate/2` runs on link-driven shutdown
+    # too (not just normal `:stop`). Without this the listen socket and
+    # accepted client socket leak when the test process exits — Eaccept
+    # cascades on the next test if the OS reuses the same ephemeral
+    # port faster than the kernel reaps the dead listener.
+    Process.flag(:trap_exit, true)
+
     {:ok, listen} =
       :gen_tcp.listen(0, [:binary, packet: :line, active: false, reuseaddr: true])
 
@@ -185,6 +192,15 @@ defmodule Grappa.IRCServer do
 
   def handle_info({:tcp_closed, _}, state), do: {:noreply, %{state | sock: nil}}
 
+  # L-irc-2: with `:trap_exit, true` the spawn_link'd acceptor's
+  # normal exit (and any future linked process) lands in the mailbox
+  # as `{:EXIT, pid, reason}` instead of crashing this GenServer.
+  # Treat both `:normal` and abnormal reasons as "the linked helper
+  # is gone" — there's nothing to recover; the server keeps running
+  # until its own owner shuts it down. A `:noreply` swallow keeps
+  # the GenServer alive without requiring per-helper recovery code.
+  def handle_info({:EXIT, _, _}, state), do: {:noreply, state}
+
   # M-irc-2: timer fired before any line satisfied the predicate. Drop
   # the waiter and reply timeout. If the entry is gone (already replied
   # via notify_waiters/2 then the late timer arrives), this is a no-op.
@@ -210,5 +226,19 @@ defmodule Grappa.IRCServer do
     end)
 
     %{state | waiters: remaining}
+  end
+
+  # L-irc-2: close both sockets on shutdown so the OS reaps the
+  # listener + accepted client cleanly. Pairs with `Process.flag(:trap_exit,
+  # true)` in `init/1` — under abnormal exit (test process linked to
+  # this server crashes mid-flow) the link signal lands here instead
+  # of vanishing. The two `if` guards handle the pre-accept window
+  # (`sock` is nil) and a post-`:tcp_closed` state (also nil) without
+  # raising on a `:gen_tcp.close(nil)` call.
+  @impl GenServer
+  def terminate(_, %{listen: listen, sock: sock}) do
+    if listen, do: :gen_tcp.close(listen)
+    if sock, do: :gen_tcp.close(sock)
+    :ok
   end
 end
