@@ -21,7 +21,8 @@ defmodule GrappaWeb do
       Grappa.QueryWindows,
       Grappa.Scrollback,
       Grappa.Session,
-      Grappa.Visitors
+      Grappa.Visitors,
+      Grappa.WSPresence
     ],
     exports: [Endpoint]
 

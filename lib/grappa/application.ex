@@ -11,6 +11,7 @@ defmodule Grappa.Application do
       Grappa.Session,
       Grappa.Vault,
       Grappa.Visitors.Reaper,
+      Grappa.WSPresence,
       GrappaWeb
     ]
 
@@ -59,6 +60,10 @@ defmodule Grappa.Application do
         # so the table MUST exist before the first session spawn. See
         # `Grappa.Session.Backoff` moduledoc for the curve + rationale.
         Grappa.Session.Backoff,
+        # WSPresence: tracks live WS socket pids per user_name to drive auto-away
+        # (S3.1). Must come before SessionSupervisor so session processes can subscribe
+        # to its notifications as soon as they start. Restart: :permanent (infrastructure).
+        Grappa.WSPresence,
         # Grappa.Admission.NetworkCircuit (T31): both ETS-backed
         # singletons that must exist before the first session spawn or
         # admission check. NetworkCircuit funnels writes through its
