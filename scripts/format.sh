@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Format Elixir code (or check formatting in CI mode).
 #
 # Usage:

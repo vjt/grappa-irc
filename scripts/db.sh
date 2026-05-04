@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Open a sqlite3 shell against the dev (or prod) database.
 #
 # Usage:

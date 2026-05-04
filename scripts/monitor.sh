@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Tail the grappa container logs.
 #
 # Usage:
@@ -16,4 +16,4 @@ else
     args=("$@")
 fi
 
-exec docker compose -f "$COMPOSE_FILE" logs "${args[@]}" grappa
+exec docker compose "${COMPOSE_ARGS[@]}" logs "${args[@]}" grappa

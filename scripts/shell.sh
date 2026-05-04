@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Open a bash shell inside the running grappa container.
 #
 # Usage:

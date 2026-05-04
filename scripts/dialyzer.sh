@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run Dialyzer inside the container.
 #
 # Usage:

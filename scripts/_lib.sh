@@ -13,7 +13,11 @@
 # Provides:
 #   - SRC_ROOT           absolute path to source tree (worktree dir or main repo)
 #   - REPO_ROOT          absolute path to main repo (resolved via git --git-common-dir)
-#   - COMPOSE_FILE       compose.yaml unless GRAPPA_PROD=1, then compose.prod.yaml
+#   - COMPOSE_ARGS       `-f base [-f personal-override]` array; pass as
+#                        `docker compose "${COMPOSE_ARGS[@]}" ...`. Base is
+#                        compose.yaml unless GRAPPA_PROD=1 (then compose.prod.yaml);
+#                        the matching personal override (compose.override.yaml or
+#                        compose.prod.override.yaml) is appended only when present.
 #   - WORKTREE_VOLUMES   array of `-v SRC_ROOT/x:/app/x:ro` overrides (empty when on main)
 #   - in_container()              runs args inside the running grappa container (errors if not up)
 #   - in_oneshot()                runs args in a fresh one-shot container w/ worktree overrides
@@ -39,11 +43,28 @@ export SRC_ROOT
 REPO_ROOT="$(git -C "$SRC_ROOT" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
 export REPO_ROOT
 
-COMPOSE_FILE="compose.yaml"
+# Compose files: base (committed) + personal override (gitignored, optional).
+# Personal overrides bind to a deployment-specific LAN IP / set $PHX_HOST.
+# See compose.{,prod.}override.yaml.example.
+#
+# All scripts cd to $REPO_ROOT before running docker compose, so relative
+# paths resolve against the main repo. The override is read from REPO_ROOT
+# (not SRC_ROOT) because it represents the host machine's deployment
+# binding, not the worktree's source — every worktree on this host shares
+# the same LAN binding.
 if [ "${GRAPPA_PROD:-}" = "1" ]; then
-    COMPOSE_FILE="compose.prod.yaml"
+    base_compose="compose.prod.yaml"
+    override_compose="compose.prod.override.yaml"
+else
+    base_compose="compose.yaml"
+    override_compose="compose.override.yaml"
 fi
-export COMPOSE_FILE
+
+declare -ag COMPOSE_ARGS=(-f "$base_compose")
+if [ -f "$REPO_ROOT/$override_compose" ]; then
+    COMPOSE_ARGS+=(-f "$override_compose")
+fi
+export COMPOSE_ARGS
 
 # Worktree source overrides. When SRC_ROOT == REPO_ROOT (running from main),
 # this stays empty and `"${WORKTREE_VOLUMES[@]}"` expands to nothing.
@@ -100,28 +121,28 @@ in_container() {
         die "in_container called from a worktree — the live container has main's source mounted, not the worktree's. Use in_oneshot or in_container_or_oneshot."
     fi
     local cid
-    cid="$(docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null || true)"
+    cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q grappa 2>/dev/null || true)"
     if [ -z "$cid" ]; then
         die "grappa container is not running. Start it with: docker compose up -d"
     fi
-    docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
+    docker compose "${COMPOSE_ARGS[@]}" exec -T grappa "$@"
 }
 
 # Run a one-shot mix task without requiring the long-running container.
 # Useful for `mix deps.get`, `mix ecto.create`, etc. before first boot.
 # Layers worktree source overrides if invoked from a worktree.
 #
-# `compose.oneshot.yaml` is layered ON TOP of $COMPOSE_FILE so the run
-# container drops the static vlan53 IP + fixed container_name. Without
-# this, a oneshot started while ANY long-lived container (dev or prod)
-# holds 192.168.53.11 bombs with "Address already in use".
+# `compose.oneshot.yaml` is layered LAST so its `ports: !reset []` and
+# `container_name: !reset null` overrides drop any host-side bindings
+# inherited from the base compose file or the personal override.
+# Without this, a oneshot started while ANY long-lived container holds
+# the same host port bombs with "Address already in use".
 #
-# The override path is absolute via $SRC_ROOT so the file resolves to
-# the worktree copy (when running from a worktree) — the scripts cd to
-# REPO_ROOT first, but oneshot config should track the worktree, same
-# as the source mounts in WORKTREE_VOLUMES.
+# The oneshot override path is absolute via $SRC_ROOT so the file
+# resolves to the worktree copy when running from a worktree — same as
+# the source mounts in WORKTREE_VOLUMES.
 in_oneshot() {
-    docker compose -f "$COMPOSE_FILE" -f "$SRC_ROOT/compose.oneshot.yaml" \
+    docker compose "${COMPOSE_ARGS[@]}" -f "$SRC_ROOT/compose.oneshot.yaml" \
         run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
 }
 
@@ -139,9 +160,9 @@ in_oneshot() {
 in_container_or_oneshot() {
     if [ "$SRC_ROOT" = "$REPO_ROOT" ]; then
         local cid
-        cid="$(docker compose -f "$COMPOSE_FILE" ps -q grappa 2>/dev/null || true)"
+        cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q grappa 2>/dev/null || true)"
         if [ -n "$cid" ] && docker exec "$cid" sh -c 'command -v mix >/dev/null 2>&1'; then
-            docker compose -f "$COMPOSE_FILE" exec -T grappa "$@"
+            docker compose "${COMPOSE_ARGS[@]}" exec -T grappa "$@"
             return
         fi
     fi

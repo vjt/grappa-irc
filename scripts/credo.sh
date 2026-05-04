@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run Credo (strict by default) inside the container.
 #
 # Usage:

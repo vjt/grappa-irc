@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Open an IEx shell inside the running grappa container.
 #
 # Usage:
@@ -10,7 +10,7 @@
 cd "$REPO_ROOT"
 
 if [ "${1:-}" = "--remsh" ]; then
-    docker compose -f "$COMPOSE_FILE" exec grappa bin/grappa remote
+    docker compose "${COMPOSE_ARGS[@]}" exec grappa bin/grappa remote
 else
-    docker compose -f "$COMPOSE_FILE" exec grappa iex -S mix
+    docker compose "${COMPOSE_ARGS[@]}" exec grappa iex -S mix
 fi

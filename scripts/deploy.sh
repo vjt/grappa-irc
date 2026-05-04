@@ -1,15 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build the prod release + cicchetto SPA, then (re)start the prod stack.
 #
 # Refuses to run on a non-main branch. Builds compose.prod.yaml's grappa
 # image, runs the cicchetto-build oneshot to refresh the SPA dist into
 # ./runtime/cicchetto-dist, then brings up grappa + nginx. Verifies
-# /healthz via nginx.
+# /healthz from inside the nginx container (independent of host port
+# binding — works whether nginx is on the wildcard :3000 default or a
+# personal-override LAN IP).
 #
 # Usage:
 #   scripts/deploy.sh
 
-. "$(dirname "$0")/_lib.sh"
+GRAPPA_PROD=1 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
 
@@ -23,7 +25,7 @@ if [ ! -f .env ]; then
 fi
 
 # 1. Build grappa prod image
-docker compose -f compose.prod.yaml build grappa
+docker compose "${COMPOSE_ARGS[@]}" build grappa
 
 # 2. Refresh cicchetto SPA dist into ./runtime/cicchetto-dist.
 #    Always run on every deploy — bun install cache + Vite incremental
@@ -36,12 +38,12 @@ docker compose -f compose.prod.yaml build grappa
 #    user.
 mkdir -p runtime/cicchetto-dist
 echo "Building cicchetto dist..."
-docker compose -f compose.prod.yaml run --rm cicchetto-build
+docker compose "${COMPOSE_ARGS[@]}" run --rm cicchetto-build
 
 # 3. Bring up grappa + nginx. --no-deps avoids re-running cicchetto-build
 #    (we just ran it above; compose's depends_on graph would otherwise try
 #    again because `run --rm` removes the container).
-docker compose -f compose.prod.yaml up -d --force-recreate --no-deps grappa nginx
+docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps grappa nginx
 
 # 4. Run pending migrations against the prod Repo. Must happen AFTER the
 # container is up (the release binary needs its slim runtime present)
@@ -51,7 +53,7 @@ docker compose -f compose.prod.yaml up -d --force-recreate --no-deps grappa ngin
 # handles the case where the release boot is still completing.
 echo "Running migrations..."
 for i in $(seq 1 15); do
-    if docker compose -f compose.prod.yaml exec -T grappa bin/grappa eval 'Grappa.Release.migrate()' >/dev/null 2>&1; then
+    if docker compose "${COMPOSE_ARGS[@]}" exec -T grappa bin/grappa eval 'Grappa.Release.migrate()' >/dev/null 2>&1; then
         echo "✓ migrations applied"
         break
     fi
@@ -61,12 +63,13 @@ for i in $(seq 1 15); do
     fi
 done
 
-# 5. Wait for /healthz via nginx (grappa is no longer on vlan53 — only
-#    reachable through the reverse proxy at 192.168.53.11:80).
+# 5. Wait for /healthz via nginx, probed from INSIDE the nginx container
+#    so the check is independent of host port binding (default wildcard
+#    :3000 vs personal-override LAN-IP:80).
 echo "Waiting for /healthz via nginx..."
 for i in $(seq 1 30); do
-    if curl -fsS --max-time 2 http://192.168.53.11/healthz >/dev/null 2>&1; then
-        echo "✓ grappa is up at http://192.168.53.11 (via nginx → grappa:4000)"
+    if docker compose "${COMPOSE_ARGS[@]}" exec -T nginx wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1; then
+        echo "✓ grappa is up (nginx → grappa:4000 healthy)"
         exit 0
     fi
     sleep 2
