@@ -730,6 +730,18 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `TOPIC <channel> :` upstream — empty trailing parameter clears the channel
+  topic per RFC 2812 §3.2.4. This is the irssi `/topic -delete` convention.
+  The inbound TOPIC event echoed back by the server will update the topic cache
+  via EventRouter. Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_topic_clear(subject(), integer(), String.t()) :: :ok | {:error, :no_session}
+  def send_topic_clear(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:send_topic_clear, channel})
+  end
+
+  @doc """
   Adds the correct subject FK column to a `Grappa.Scrollback` /
   `Accounts` attrs map — `:user_id` for `{:user, _}` subjects,
   `:visitor_id` for `{:visitor, _}` subjects. Mirror of the

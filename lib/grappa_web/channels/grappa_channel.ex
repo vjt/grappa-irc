@@ -80,6 +80,12 @@ defmodule GrappaWeb.GrappaChannel do
   - `"mode"` — raw verbatim MODE line, no chunking. Payload: `%{"network_id" => id,
     "target" => target, "modes" => modes, "params" => [...]}`.
 
+  - `"topic_set"` — set channel topic. Payload: `%{"network_id" => id, "channel" => chan,
+    "text" => text}`. Persists a scrollback `:topic` row. Rejects CRLF injection.
+
+  - `"topic_clear"` — clear channel topic (irssi `/topic -delete` convention).
+    Payload: `%{"network_id" => id, "channel" => chan}`. Sends `TOPIC #chan :`.
+
   All ops verbs reject visitor sockets and return `{:error, %{reason: "visitor_not_allowed"}}`.
 
   ## Outbound event shapes
@@ -402,6 +408,42 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(target) and is_binary(modes) and is_list(params) do
     dispatch_ops_verb(socket, fn user ->
       Session.send_mode({:user, user.id}, network_id, target, modes, params)
+    end)
+  end
+
+  # /topic <text>  →  TOPIC #chan :<text>
+  # send_topic returns {:ok, message} on success (persists scrollback row).
+  # The visitor check and user lookup use the shared helper path directly.
+  def handle_in(
+        "topic_set",
+        %{"network_id" => network_id, "channel" => channel, "text" => text},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_binary(text) do
+    user_name = socket.assigns.user_name
+
+    with false <- visitor?(user_name),
+         {:ok, user} <- safe_get_user(user_name),
+         {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
+      {:reply, :ok, socket}
+    else
+      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+      {:error, _} -> {:reply, {:error, %{reason: "persist_failed"}}, socket}
+    end
+  end
+
+  # /topic -delete  →  TOPIC #chan : (empty trailing — irssi convention, S5.4)
+  def handle_in(
+        "topic_clear",
+        %{"network_id" => network_id, "channel" => channel},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_topic_clear({:user, user.id}, network_id, channel)
     end)
   end
 
