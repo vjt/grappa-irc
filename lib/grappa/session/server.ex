@@ -608,7 +608,7 @@ defmodule Grappa.Session.Server do
   def handle_info({:ws_connected, _}, state) do
     state1 =
       if is_reference(state.auto_away_timer) do
-        Process.cancel_timer(state.auto_away_timer)
+        _ = Process.cancel_timer(state.auto_away_timer)
         %{state | auto_away_timer: nil}
       else
         state
