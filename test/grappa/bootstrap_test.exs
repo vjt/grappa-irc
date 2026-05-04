@@ -325,6 +325,85 @@ defmodule Grappa.BootstrapTest do
     end
   end
 
+  describe "run/0 hard-error on network without enabled server" do
+    # Servers-bound invariant: every distinct network referenced by a
+    # bound credential or active visitor must have at least one enabled
+    # server in `network_servers`. A network with zero (or all-disabled)
+    # servers is silently broken in BOTH directions:
+    #
+    #   - Bootstrap's per-row `SessionPlan.resolve/1` returns
+    #     `{:error, :no_server}` and bumps the `failed` counter, but the
+    #     supervision tree comes up healthy and the operator only sees
+    #     the misconfig via `grep "session start failed"`.
+    #   - Every subsequent `POST /auth/login` for that network exercises
+    #     the same resolve path; the controller's catch-all maps the
+    #     unknown reason to `{:error, :internal}` → opaque 500 with no
+    #     actionable wire signal.
+    #
+    # The honest signal is to refuse to boot. Mirrors the W7
+    # visitor-network bias — operator misconfig is loud, never silent.
+    test "raises with operator instructions when credential's network has no server" do
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      slug = "noserver-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, _} =
+        Credentials.bind_credential(vjt, network, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      assert_raise RuntimeError, ~r/no enabled server.*#{slug}.*add_server/, fn ->
+        Bootstrap.run()
+      end
+    end
+
+    test "raises when visitor's network exists but has no server" do
+      slug = "vnoserver-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+      _ = visitor_fixture(network_slug: slug)
+
+      assert_raise RuntimeError, ~r/no enabled server.*#{slug}.*add_server/, fn ->
+        Bootstrap.run()
+      end
+    end
+
+    test "raises when only enabled-flag is false on every server" do
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      slug = "disabled-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+
+      {:ok, server} =
+        Servers.add_server(network, %{host: "127.0.0.1", port: 6667, tls: false})
+
+      {:ok, _} =
+        server
+        |> Ecto.Changeset.change(enabled: false)
+        |> Grappa.Repo.update()
+
+      {:ok, _} =
+        Credentials.bind_credential(vjt, network, %{
+          nick: "vjt",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      assert_raise RuntimeError, ~r/no enabled server.*#{slug}/, fn ->
+        Bootstrap.run()
+      end
+    end
+
+    test "does not raise when every referenced network has an enabled server" do
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      net = bind_db(vjt, "ok-#{System.unique_integer([:positive])}", port)
+      on_exit(fn -> stop_session(vjt.id, net.id) end)
+
+      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+    end
+  end
+
   describe "run/0 network total cap (T31)" do
     # Plan 2 Task 4 — Bootstrap respects per-network total session cap on
     # cold-start. If `networks.max_concurrent_sessions` is lower than the
