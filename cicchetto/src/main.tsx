@@ -11,6 +11,7 @@ import { bootstrapAuth, isAuthenticated } from "./lib/auth";
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
 import "./lib/userTopic";
+import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
 import Shell from "./Shell";
 import "./themes/default.css";
@@ -28,6 +29,25 @@ applyTheme();
 // `auth.ts > bootstrapAuth` for the rationale behind the explicit
 // bootstrap point.
 bootstrapAuth();
+
+// S3.3 — pagehide immediate-away hint.
+//
+// Both `pagehide` and `beforeunload` are registered. `pagehide` is the
+// preferred modern event (fires on bfcache entry AND actual unload;
+// `beforeunload` does not fire reliably in all browser/mobile scenarios).
+// `beforeunload` is the legacy fallback for environments that don't support
+// `pagehide` (older Chrome, some WebViews). Both call `notifyClientClosing`
+// which is idempotent — the server-side client_closing handler calls
+// WSPresence.client_closing/2 which is itself idempotent (MapSet delete
+// is a no-op on an already-removed pid). No risk in firing both.
+//
+// Fire-and-forget: the push is non-blocking. The socket may not have time
+// to flush the message before the page tears down, but `pagehide` on modern
+// browsers gives the page enough time to enqueue the WS frame. The 30s
+// debounce on the server side is the safety net for when the push doesn't
+// reach the server.
+window.addEventListener("pagehide", notifyClientClosing);
+window.addEventListener("beforeunload", notifyClientClosing);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found in index.html");

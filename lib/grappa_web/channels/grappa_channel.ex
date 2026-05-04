@@ -45,6 +45,14 @@ defmodule GrappaWeb.GrappaChannel do
   No snapshot — the network-level topic carries connection-state events
   only; topic+modes are delivered per-channel.
 
+  ## Inbound events
+
+  - `"client_closing"` — pagehide / beforeunload hint from cicchetto.
+    Calls `Grappa.WSPresence.client_closing/2` so the auto-away debounce
+    fires immediately (no 30s wait) if this is the last socket for the
+    user. Visitors are excluded (no auto-away for visitor sessions).
+    Fire-and-forget; no reply.
+
   ## Outbound event shapes
 
   All events pushed by this channel share the `kind:` discriminator (string
@@ -73,7 +81,7 @@ defmodule GrappaWeb.GrappaChannel do
   """
   use GrappaWeb, :channel
 
-  alias Grappa.{Accounts, Networks, QueryWindows, Session}
+  alias Grappa.{Accounts, Networks, QueryWindows, Session, WSPresence}
   alias Grappa.Networks.{Credentials, Network}
   alias Grappa.PubSub.Topic
 
@@ -131,6 +139,26 @@ defmodule GrappaWeb.GrappaChannel do
   def handle_info({:after_join, {:network, _, _}}, socket) do
     # No snapshot for network-level topics — they carry connection-state
     # events only; topic+modes are delivered per-channel.
+    {:noreply, socket}
+  end
+
+  # S3.3 — pagehide immediate-away hint.
+  #
+  # Cicchetto fires `client_closing` on `pagehide` / `beforeunload` via the
+  # user-level channel so WSPresence can fire `:ws_all_disconnected`
+  # immediately rather than waiting for the 30s debounce. The transport_pid
+  # is the WS process that UserSocket.connect/3 registered with WSPresence
+  # at connect time (WSPresence tracks the transport process, not the channel
+  # process). Visitors are excluded — visitor disconnect = bouncer disconnect
+  # (ephemeral credential, no upstream session to mark away).
+  @impl Phoenix.Channel
+  def handle_in("client_closing", _payload, socket) do
+    user_name = socket.assigns.user_name
+
+    unless visitor?(user_name) do
+      :ok = WSPresence.client_closing(user_name, socket.transport_pid)
+    end
+
     {:noreply, socket}
   end
 

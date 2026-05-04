@@ -39,6 +39,12 @@ import { token } from "./auth";
 
 let _socket: Socket | null = null;
 
+// Module-level reference to the joined user-level channel. Set by
+// `joinUser` so `notifyClientClosing` can push the `client_closing`
+// event on pagehide / beforeunload without passing the channel reference
+// around to every call site.
+let _userChannel: Channel | null = null;
+
 function getSocket(): Socket {
   if (_socket === null) {
     _socket = new Socket("/socket", {
@@ -84,6 +90,8 @@ export function joinUser(userName: string): Channel {
     .receive("timeout", () => {
       console.error("[grappa] channel join timed out", topic);
     });
+  // Track the user-level channel for the pagehide immediate-away hint (S3.3).
+  _userChannel = ch;
   return ch;
 }
 
@@ -104,4 +112,21 @@ export function joinChannel(userName: string, networkSlug: string, channelName: 
       console.error("[grappa] channel join timed out", topic);
     });
   return ch;
+}
+
+// S3.3 — pagehide immediate-away hint.
+//
+// Pushes `client_closing` over the active user-level channel so the
+// server's WSPresence fires `:ws_all_disconnected` immediately —
+// bypassing the 30s auto-away debounce — if this is the last socket
+// for the user. No-op if no user channel has been joined yet (which
+// can happen if the page unloads before `joinUser` completes).
+//
+// The push is fire-and-forget: `pagehide` / `beforeunload` give no
+// time to await a reply. The server handles idempotency — the pid DOWN
+// from the real socket close is a no-op if client_closing already
+// fired the notification.
+export function notifyClientClosing(): void {
+  if (_userChannel === null) return;
+  _userChannel.push("client_closing", {});
 }
