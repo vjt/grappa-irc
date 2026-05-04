@@ -97,7 +97,12 @@ defmodule Grappa.Accounts.SessionsTest do
         })
 
       refute cs.valid?
-      assert "must set user_id or visitor_id" in errors_on(cs).user_id
+      # B5.4 M-pers-2: synthetic :subject key — neither user_id nor visitor_id
+      # is "wrong"; the error is about the absence of EITHER. A single key
+      # keeps client-side error rendering uniform across both XOR violations.
+      assert "must set user_id or visitor_id" in errors_on(cs).subject
+      refute Map.has_key?(errors_on(cs), :user_id)
+      refute Map.has_key?(errors_on(cs), :visitor_id)
     end
 
     test "rejects both user_id and visitor_id set", %{user: user} do
@@ -113,7 +118,12 @@ defmodule Grappa.Accounts.SessionsTest do
         })
 
       refute cs.valid?
-      assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).user_id
+      # B5.4 M-pers-2: synthetic :subject key (was always :user_id, masking
+      # which side was the unexpected addition). Both fields are valid in
+      # isolation; the conflict is across the pair, not on one specific field.
+      assert "user_id and visitor_id are mutually exclusive" in errors_on(cs).subject
+      refute Map.has_key?(errors_on(cs), :user_id)
+      refute Map.has_key?(errors_on(cs), :visitor_id)
     end
 
     test "accepts and round-trips client_id (UUID v4)" do
