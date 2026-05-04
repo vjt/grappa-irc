@@ -153,6 +153,23 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "malformed_nick"
     end
 
+    # M-web-3: captcha_token shape validation. Reject non-binary or
+    # oversize tokens at the boundary BEFORE any Login.login/2 work
+    # (which would forward the abuse-shaped payload to the Turnstile /
+    # HCaptcha verify endpoint). 4096-byte cap is generous for any
+    # legitimate provider token (Turnstile tokens are ~600 bytes,
+    # HCaptcha ~1600); anything larger is abuse-shaped.
+    test "captcha_token > 4096 bytes → 400 bad_request", %{conn: conn} do
+      huge = String.duplicate("a", 4097)
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt", "captcha_token" => huge})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "non-binary captcha_token → 400 bad_request", %{conn: conn} do
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt", "captcha_token" => 42})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
     test "captcha_required → 400 captcha_required + site_key (FallbackController wire shape)",
          %{conn: conn} do
       # T31 Plan 2 Task 6: assert that an admission flow which surfaces
