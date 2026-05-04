@@ -203,8 +203,6 @@ defmodule Grappa.Bootstrap do
     case SessionPlan.resolve(credential) do
       {:ok, plan} ->
         capacity_input = %{
-          subject_kind: :user,
-          subject_id: user_id,
           network_id: network_id,
           client_id: nil,
           flow: :bootstrap_user
@@ -240,8 +238,6 @@ defmodule Grappa.Bootstrap do
         case Networks.get_network_by_slug(plan.network_slug) do
           {:ok, %Network{id: network_id}} ->
             capacity_input = %{
-              subject_kind: :visitor,
-              subject_id: visitor_id,
               network_id: network_id,
               client_id: nil,
               flow: :bootstrap_visitor

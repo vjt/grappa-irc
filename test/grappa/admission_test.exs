@@ -30,8 +30,6 @@ defmodule Grappa.AdmissionTest do
       _ = :sys.get_state(NetworkCircuit)
 
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: net.id,
         client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
@@ -50,8 +48,6 @@ defmodule Grappa.AdmissionTest do
   describe "check_capacity/1 — network total cap" do
     test "nil cap = uncapped", %{network: net} do
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: net.id,
         client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
@@ -82,8 +78,6 @@ defmodule Grappa.AdmissionTest do
         )
 
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: net.id,
         client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
@@ -96,8 +90,6 @@ defmodule Grappa.AdmissionTest do
   describe "check_capacity/1 — Bootstrap paths skip client cap" do
     test ":bootstrap_user with nil client_id is :ok", %{network: net} do
       input = %{
-        subject_kind: :user,
-        subject_id: Ecto.UUID.generate(),
         network_id: net.id,
         client_id: nil,
         flow: :bootstrap_user
@@ -108,8 +100,6 @@ defmodule Grappa.AdmissionTest do
 
     test ":bootstrap_visitor with nil client_id is :ok", %{network: net} do
       input = %{
-        subject_kind: :visitor,
-        subject_id: Ecto.UUID.generate(),
         network_id: net.id,
         client_id: nil,
         flow: :bootstrap_visitor
@@ -218,8 +208,6 @@ defmodule Grappa.AdmissionTest do
       _ = :sys.get_state(NetworkCircuit)
 
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: net.id,
         client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
@@ -255,8 +243,6 @@ defmodule Grappa.AdmissionTest do
         )
 
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: capped_net.id,
         client_id: "11111111-2222-4333-8444-555555555555",
         flow: :login_fresh
@@ -280,8 +266,6 @@ defmodule Grappa.AdmissionTest do
       attach_reject_event()
 
       input = %{
-        subject_kind: :visitor,
-        subject_id: nil,
         network_id: net.id,
         client_id: "99999999-aaaa-4bbb-8ccc-dddddddddddd",
         flow: :login_fresh
