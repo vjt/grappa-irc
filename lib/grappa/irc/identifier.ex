@@ -91,12 +91,20 @@ defmodule Grappa.IRC.Identifier do
 
     * IRC nicks (`vjt`)
     * Server names (host shape)
-    * The prefix-less marker `"*"`
+    * The prefix-less anonymous-sender sentinel
+      (`Grappa.IRC.Message.anonymous_sender/0`, currently `"*"`)
     * `<bracketed>` meta-sender markers for non-IRC origins (REST etc.)
+
+  L-irc-1: the `"*"` sentinel is owned by `Grappa.IRC.Message`; the
+  comparison routes through `Message.anonymous_sender/0` so both
+  modules share a single source of truth instead of mirrored magic
+  strings.
   """
   @spec valid_sender?(term()) :: boolean()
   def valid_sender?(s) when is_binary(s) do
-    s == "*" or Regex.match?(@meta_sender_regex, s) or valid_nick?(s) or valid_host?(s)
+    s == Grappa.IRC.Message.anonymous_sender() or
+      Regex.match?(@meta_sender_regex, s) or
+      valid_nick?(s) or valid_host?(s)
   end
 
   def valid_sender?(_), do: false

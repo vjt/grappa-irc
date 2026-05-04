@@ -83,20 +83,49 @@ defmodule Grappa.IRC.Message do
   @enforce_keys [:command]
   defstruct tags: %{}, prefix: nil, command: nil, params: []
 
+  # L-irc-1: the prefix-less sentinel is a literal `"*"` per the RFC
+  # 2812 message-grammar boundary — when no prefix is present the
+  # sender is the local connection (server's own perspective on a
+  # client-originated line). The sentinel surfaces here in
+  # `sender_nick/1`'s `nil` clause and is also accepted by
+  # `Grappa.IRC.Identifier.valid_sender?/1` (the inbound-validator
+  # boundary). Keep both sites referencing this constant so the magic
+  # value lives in ONE place — a future change (e.g. switching to a
+  # tagged sentinel like `:anonymous` for type-safety) only edits this
+  # constant + its two consumers, not every grep result.
+  @anonymous_sender "*"
+
+  @doc """
+  The literal sentinel returned by `sender_nick/1` for prefix-less
+  lines. Documented at the boundary so callers that need to recognise
+  the "no real sender" case can pattern-match against this constant
+  rather than re-typing `"*"` everywhere.
+
+  Per `Grappa.IRC.Identifier.valid_sender?/1`, this same `"*"` token
+  is also a valid persisted-row sender — the storage layer treats it
+  as a closed-set value alongside nicks, host shapes, and bracketed
+  meta-sender markers (`<system>` etc.).
+  """
+  @spec anonymous_sender() :: String.t()
+  def anonymous_sender, do: @anonymous_sender
+
   @doc """
   Returns the sender nickname (user-originated lines), the server name
-  (server-originated lines), or `"*"` for prefix-less client-originated
-  lines.
+  (server-originated lines), or the `anonymous_sender/0` sentinel
+  (`"*"`) for prefix-less client-originated lines.
 
   Centralised here so consumers do not pattern-match on the prefix
   tuple shape directly — that internal shape stays an implementation
-  detail of this module (architecture review A5).
+  detail of this module (architecture review A5). The `"*"` sentinel
+  is the closed-set value documented at `anonymous_sender/0`; pattern
+  matchers should compare against that constant, not a re-typed
+  literal.
   """
   @spec sender_nick(t() | prefix()) :: String.t()
   def sender_nick(%__MODULE__{prefix: prefix}), do: sender_nick(prefix)
   def sender_nick({:nick, nick, _, _}), do: nick
   def sender_nick({:server, server}), do: server
-  def sender_nick(nil), do: "*"
+  def sender_nick(nil), do: @anonymous_sender
 
   @doc """
   Returns the value of an IRCv3 message-tag, or `nil` when the tag is
