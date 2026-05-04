@@ -232,21 +232,32 @@ defmodule Grappa.IRC.Parser do
         [nick, rest] = String.split(raw, "!", parts: 2)
 
         case String.split(rest, "@", parts: 2) do
-          [user, host] -> {:nick, nick, user, host}
-          [user] -> {:nick, nick, user, nil}
+          [user, host] -> {:nick, nilify(nick), nilify(user), nilify(host)}
+          [user] -> {:nick, nilify(nick), nilify(user), nil}
         end
 
       String.contains?(raw, "@") ->
         [nick, host] = String.split(raw, "@", parts: 2)
-        {:nick, nick, nil, host}
+        {:nick, nilify(nick), nil, nilify(host)}
 
       String.contains?(raw, ".") ->
         {:server, raw}
 
       true ->
-        {:nick, raw, nil, nil}
+        {:nick, nilify(raw), nil, nil}
     end
   end
+
+  # M-irc-1: empty prefix components normalize to `nil`. Some upstreams
+  # emit pathological prefixes (`!user@host`, `nick!@host`, `nick!user@`,
+  # bare `:`) where one or more prefix segments are empty strings; the
+  # downstream type contract is `String.t() | nil`, not "" — empty strings
+  # would round-trip into `Message.sender_nick/1` and produce zero-length
+  # nick badges in the UI. Normalize at the parser boundary so consumers
+  # see one shape: present-with-content OR `nil`.
+  @spec nilify(String.t()) :: String.t() | nil
+  defp nilify(""), do: nil
+  defp nilify(s), do: s
 
   defp parse_command_and_params(""), do: {:error, :no_command}
 
