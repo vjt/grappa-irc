@@ -1581,6 +1581,136 @@ session reported.
 
 ---
 
+## 2026-05-04 — t31-cleanup cluster close-out: 74-finding bundled cleanup, 8 vjt-blessed decisions, sqlite ALTER+CHECK landmine
+
+`cluster/t31-cleanup` shipped + deployed to `http://grappa.bad.ass`
+2026-05-04 (CP11 S29). Bundled paydown of every actionable finding
+from the post-T31 codebase review (`docs/reviews/codebase/2026-05-03-codebase-review.md`):
+12 HIGH + 35 MEDIUM + 27 LOW + 6 already-filed Plan-2 micro-followups
++ 2 non-T31 HIGH (H2 user-logout-WS-tear-down, H12 send_pong NUL
+asymmetry). Seven natural buckets; ~40 commits across two plans;
++60 server tests (855 → 915); 8 plan-fixes mid-execution (plan-fix-
+first discipline matured: never silently absorb plan-vs-code
+divergence).
+
+### vjt-blessed decisions adopted (A–H)
+
+  * **A** — `Application.get_env` runtime reads removed; supervisor
+    injects via `start_link/1` opts (boot-time configuration boundary
+    only, mirroring CLAUDE.md's documented exception list).
+  * **B** — Captcha duplication kept ONLY where mirroring provider
+    wire shape (Turnstile vs hCaptcha endpoints / payloads / error
+    codes); shared HTTP client + error-mapping + config-load
+    consolidated into `Grappa.Admission.Captcha.Provider` behaviour.
+  * **C** — `NetworkCircuit` H6 + H7 races fixed via observation-
+    token capture (`cooled_at_ms`) + state-aware window-reset; cast
+    handler short-circuits on token mismatch.
+  * **D** — `Grappa.IRC.Parser.strip_unsafe_bytes/1` rename + NUL
+    strip closes `send_pong/2` NUL injection asymmetry (H12); CR/LF/NUL
+    stripped at single boundary; `strip_crlf/1` removed (total-
+    consistency, no compatibility shim).
+  * **E** — `Grappa.ClientId` Ecto custom type at `lib/grappa/
+    client_id.ex` (top-level Boundary peer; storage `:string`; UUID
+    v4 regex `~r/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}
+    -[0-9a-f]{12}\z/i`); public `regex/0` accessor reused by
+    `Plugs.ClientId` (single source of truth, no parallel literal).
+  * **F** — `networks.{max_concurrent_sessions, max_per_client}` is
+    a three-valued contract: positive (set), `0` (lock-down), `nil`
+    (unlimited). `Network.changeset` swaps `validate_number` →
+    `validate_change(&validate_non_negative_or_nil/2)` to express it;
+    `mix grappa.set_network_caps` adds `--clear-max-*` flags mutex
+    with `--max-*`.
+  * **G** — `Grappa.IRC.Message.anonymous_sender/0` is the single
+    source of truth for the `"*"` prefix-less sentinel (L-irc-1);
+    `Identifier.valid_sender?/1` routes through it instead of
+    mirroring the magic string.
+  * **H** — Reviewer-template upgrade: dispatch briefs MUST require
+    the reviewer to RUN each gate command and paste its literal tail.
+    Skill-source path mismatch (`~/.claude/superpowers/skills/...`
+    is plugin-cache, regenerated) made an upstream edit infeasible;
+    routed to user-global memory pin (`feedback_reviewer_gate_evidence`)
+    after vjt blessed option 2.
+
+### Subject-discriminator unification (M-web-1, B6.2)
+
+Conn `:current_subject` reshaped from a dual-assign convention
+(`:current_user_id` / `:current_visitor_id`, ambiguous when both
+nil — anon vs not-yet-loaded?) to a tagged tuple carrying the loaded
+struct: `{:user, %User{}}` | `{:visitor, %Visitor{}}`. New module
+`GrappaWeb.Subject` owns the boundary helper `to_session/1` (struct →
+ID map) — 33 lines justified by 8 controller call sites needing the
+projection. Big-bang refactor across 13 files; test count unchanged
+(884) — contract preserved. UserSocket left untouched (M-web-1 spec
+scoped REST surface; UserSocket has its own `connect/3` auth path).
+
+### Defense-in-depth: DB CHECK constraints + Ecto.Enum at boundary
+
+B5.5 added DB-level CHECK constraints — `networks.max_concurrent_sessions
+>= 0`, `networks.max_per_client >= 0`, `messages.kind IN
+('privmsg','notice','action','join','part','quit','nick_change','mode',
+'topic','kick')`, `network_credentials.auth_method IN
+('plain','sasl_plain','none')`. Ecto.Enum already validates kind +
+auth_method at the changeset boundary; the DB CHECK is the second
+line of defense — if a future migration or release script bypasses
+the schema and writes a raw map, the DB rejects it. Pairing is
+deliberate: Ecto for friendly changeset errors during normal
+operation, sqlite CHECK for the case where Ecto is sidestepped.
+
+### CSP tightening + drift-detector CI test (B6.5/6/7)
+
+`connect-src` dropped global `ws:` / `wss:` allow → explicit host-
+scoped `ws://grappa.bad.ass wss://grappa.bad.ass` + Turnstile.
+Security headers extracted to `infra/snippets/security-headers.conf`
+(included by both `/` and `/sw.js` locations). New CI test
+`test/grappa/infra/csp_provider_test.exs` parses `nginx.conf` +
+snippet, asserts each non-Disabled captcha behaviour impl host
+appears in the CSP allowlist — drift detector fires the moment a
+new provider lands without its CSP entry. Sibling-judgment infra
+change: `infra/` added to `WORKTREE_VOLUMES` in `scripts/_lib.sh`
+(precedent: `lib`, `test`, `config`, `priv/repo`).
+
+### Hard-won lesson: sqlite ALTER + CHECK + WAL — `defer_foreign_keys` is the right tool
+
+sqlite has no `ALTER TABLE ADD CONSTRAINT`. The canonical recipe
+for adding a CHECK to an existing table is rename-old + recreate-new
++ INSERT-SELECT + drop-old. With foreign-key references in play
+(networks ← network_servers, network_credentials, messages), the
+recipe lands in two distinct landmines:
+
+1. **`@disable_ddl_transaction true` + `PRAGMA foreign_keys=OFF/ON`**
+   (the canonical sqlite recipe) interacts badly with Ecto/Exqlite's
+   connection pool in WAL mode: without a pinned transaction,
+   sequential `execute()` calls each get their own pool connection
+   with their own `sqlite_master` snapshot. `CREATE INDEX` after
+   `RENAME` + `DROP` saw a stale snapshot showing the index still
+   on the old table and crashed `index already exists`. Reproduced
+   2× in dev.
+2. **Plain transactional migration** — sqlite ≥ 3.25 auto-rewrites
+   dependent FK references to point at `*_old` during the parent
+   `ALTER RENAME`. The dependents (`network_servers`,
+   `network_credentials`, `messages`) block `DROP TABLE networks_old`
+   with `FOREIGN KEY constraint failed`. First prod deploy attempt
+   failed here.
+
+**The fix that lands cleanly:** `PRAGMA defer_foreign_keys=ON` at the
+top of `up/0` and `down/0`, with the migration left in its default
+transactional shape. FK checks defer to COMMIT; by the time COMMIT
+runs, all four tables have been recreated with fresh CHECK schemas
+and fresh `REFERENCES "networks"` text. Round-trip clean: dev
+`ecto.migrate + rollback + migrate` green; 8/8 CHECK constraint
+tests green; prod migration applied cleanly on second deploy.
+Memorialised here so the next ALTER-CHECK migration doesn't
+re-derive the lesson.
+
+### Cluster outcome
+
+7 buckets / ~40 commits / +60 tests / 8 plan-fixes / 12 HIGH + 35
+MEDIUM + 27 LOW spec items closed / shipped to prod 2026-05-04.
+Worktree branch `cluster/t31-cleanup` stays alive — channel-client-
+polish (the next MVP-required cluster) will reuse it.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
