@@ -10,15 +10,27 @@
 #   HEARTBEAT state=<...>    (every 1800s if no other event)
 #   PANE-MISSING             (and exits — pane is gone)
 #
-# Busy detector: a line in the last 15 carries `…` AND a spinner timer
-# `(NNs` / `(Nm Ms` / `(Nh Mm Ss` (active spinner), OR an explicit
-# interrupt prompt (`Press up to edit` / `esc to interrupt`). Bare `…`
-# (truncated task descriptions like `tok…`, list-compaction
+# Busy detector: a line in the last 15 carries `… (` (the spinner shape:
+# ellipsis + space + open-paren that introduces the parenthesized status
+# — `(NNs · ...)` once the timer arms, `(thinking)` / `(almost done ...)`
+# in the pre-timer phase) — OR an explicit interrupt prompt (`Press up
+# to edit` / `esc to interrupt`).
+#
+# Bare `…` (truncated task descriptions like `tok…`, list-compaction
 # `… +N completed`) is treated as IDLE — it tripped the old detector
 # for ~30 minutes during CP10 S6 and produced confusing HEARTBEAT-busy
-# events. `h` was added to the timer-unit alternation after a Task 4
-# sibling spun for >1h and emitted `(1h 0m 30s`, which the old `[ms]`
-# class missed → false IDLE during long generations.
+# events.
+#
+# `… (` (ellipsis + space + paren) replaced the original `…` + `(NNs`
+# / `(Nm` / `(Nh` two-pattern AND-match because a sibling can spend
+# many seconds with `… (thinking)` before the timer renders, and that
+# window was being mis-classified as IDLE.
+#
+# Idle debounce: a single idle read after a busy read can be a transient
+# tool-call gap (between Read/Bash result rendering and the next
+# spinner line appearing). One 5s re-capture confirms before emitting
+# IDLE — kills false-IDLE events during long agentic sequences without
+# slowing down genuine idles by more than 5s.
 #
 # Usage: monitor.sh <SIBLING_PANE_ID>   e.g. monitor.sh %119
 #
@@ -39,11 +51,24 @@ while true; do
   [ -z "$out" ] && { echo "PANE-MISSING"; break; }
 
   tail=$(echo "$out" | tail -15)
-  if echo "$tail" | awk '/…/ && /\([0-9]+[hms]/{f=1} END{exit !f}' \
+  if echo "$tail" | awk '/… \(/{f=1} END{exit !f}' \
      || echo "$tail" | grep -qE 'Press up to edit|esc to interrupt'; then
     state="busy"
   else
     state="idle"
+  fi
+
+  # Debounce busy→idle transitions: a single idle read after busy may be
+  # a transient tool-call gap. Re-capture after 5s and require still-idle
+  # before classifying as idle.
+  if [ "$state" = "idle" ] && [ "$prev_state" = "busy" ]; then
+    sleep 5
+    out2=$(tmux capture-pane -t "$pane" -p 2>/dev/null)
+    tail2=$(echo "$out2" | tail -15)
+    if echo "$tail2" | awk '/… \(/{f=1} END{exit !f}' \
+       || echo "$tail2" | grep -qE 'Press up to edit|esc to interrupt'; then
+      state="busy"
+    fi
   fi
 
   ctx=$(echo "$out" | grep -oE "🧠 [0-9]+%" | tail -1 | grep -oE "[0-9]+")
