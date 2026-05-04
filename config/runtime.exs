@@ -75,17 +75,32 @@ if config_env() == :prod do
     end
 
   captcha_site_key = System.get_env("GRAPPA_CAPTCHA_SITE_KEY")
+  captcha_secret = System.get_env("GRAPPA_CAPTCHA_SECRET")
 
   config :grappa, :admission,
     captcha_provider: captcha_provider,
-    captcha_secret: System.get_env("GRAPPA_CAPTCHA_SECRET"),
+    captcha_secret: captcha_secret,
     captcha_site_key: captcha_site_key
 
-  if captcha_provider != Grappa.Admission.Captcha.Disabled and is_nil(captcha_site_key) do
+  # Belt-and-braces softer signal: Grappa.Admission.Config.boot/0 will
+  # hard-crash on missing secret/site_key for non-Disabled providers,
+  # but emitting a Logger.warning here surfaces the misconfiguration at
+  # runtime.exs evaluation time — earlier in the boot sequence and
+  # before the Application.start cascade — which is friendlier when
+  # tailing prod logs after a botched env update.
+  if captcha_provider != Grappa.Admission.Captcha.Disabled do
     require Logger
 
-    Logger.warning(
-      "captcha provider #{inspect(captcha_provider)} configured but :captcha_site_key is nil — clients will receive a captcha_required body with site_key=null and the widget will fail to render"
-    )
+    if is_nil(captcha_secret) or captcha_secret == "" do
+      Logger.warning(
+        "captcha provider #{inspect(captcha_provider)} configured but GRAPPA_CAPTCHA_SECRET is missing/blank — Admission.Config.boot/0 will refuse to start"
+      )
+    end
+
+    if is_nil(captcha_site_key) or captcha_site_key == "" do
+      Logger.warning(
+        "captcha provider #{inspect(captcha_provider)} configured but GRAPPA_CAPTCHA_SITE_KEY is missing/blank — Admission.Config.boot/0 will refuse to start"
+      )
+    end
   end
 end
