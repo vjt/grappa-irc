@@ -130,3 +130,36 @@ export function notifyClientClosing(): void {
   if (_userChannel === null) return;
   _userChannel.push("client_closing", {});
 }
+
+// S3.4 — /away slash-command pushes.
+//
+// Both variants push on the user-level channel and return a Promise
+// that resolves on "ok" or rejects on "error" (mirrors the `away`
+// handle_in reply shape from GrappaChannel). Callers (compose.ts)
+// await the promise inside the submit try/catch so errors surface
+// as inline compose-box alerts, same as REST failures.
+export function pushAwaySet(network: string, reason: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (_userChannel === null) {
+      reject(new Error("not connected"));
+      return;
+    }
+    _userChannel
+      .push("away", { action: "set", network, reason })
+      .receive("ok", () => resolve())
+      .receive("error", (err: unknown) => reject(new Error(String(err))));
+  });
+}
+
+export function pushAwayUnset(network: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (_userChannel === null) {
+      reject(new Error("not connected"));
+      return;
+    }
+    _userChannel
+      .push("away", { action: "unset", network })
+      .receive("ok", () => resolve())
+      .receive("error", (err: unknown) => reject(new Error(String(err))));
+  });
+}
