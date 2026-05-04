@@ -64,10 +64,48 @@ defmodule Grappa.Repo.Migrations.CheckConstraintsCapsAuthMethodMessagesKind do
 
   `down/0` reverses each table by repeating the same dance with the
   CHECK clause omitted from the recreated table.
+
+  ## Why `PRAGMA defer_foreign_keys=ON`
+
+  First-deploy attempt failed in prod with `Exqlite.Error: FOREIGN KEY
+  constraint failed` on `DROP TABLE networks_old`. Sqlite >= 3.25
+  auto-rewrites dependent FK refs from `networks` → `networks_old`
+  during the parent rename; the dependents (`network_servers`,
+  `network_credentials`, `messages`) then point at `networks_old`,
+  blocking its drop while FKs are enforced.
+
+  Tried `PRAGMA foreign_keys=OFF` first (the canonical sqlite recipe
+  per https://www.sqlite.org/lang_altertable.html#otheralter). It
+  REQUIRES `@disable_ddl_transaction true` (FK pragma can't toggle
+  mid-transaction). But that path hit a separate Ecto/Exqlite
+  connection-pool quirk: without a pinned transaction, sequential
+  `execute()` calls land on different pool connections, each with
+  its own snapshot of `sqlite_master`. The CREATE INDEX after a
+  rename+drop sequence saw a stale snapshot showing the index still
+  on `networks_old` and crashed with "index already exists".
+
+  `PRAGMA defer_foreign_keys=ON` works INSIDE a transaction (no
+  `disable_ddl_transaction` needed). It defers FK checks to COMMIT,
+  by which point all 4 tables have been recreated with fresh
+  CHECK-bearing schemas + fresh FK ref text pointing back at the
+  fresh `networks` (sqlite >=3.25 auto-rewrites refs during EACH
+  rename, so the dependents that get recreated after networks
+  inherit the up-to-date `REFERENCES "networks"` text). Verified
+  empirically: the schema is consistent post-COMMIT, no dangling
+  refs to `*_old` tables. Auto-resets at end of transaction.
+
+  Trade-off vs `foreign_keys=OFF`: defer relies on the auto-rewrite
+  + recreate chain to leave the schema consistent at COMMIT time;
+  if a future migration adds a 5th dependent table without
+  recreating it here, defer would let the dangling-ref schema
+  commit. The Boundary-discipline test + the implicit FK check
+  on next session boot would catch it loudly. Acceptable for the
+  defense-in-depth-CHECK-constraint use case.
   """
   use Ecto.Migration
 
   def up do
+    execute("PRAGMA defer_foreign_keys=ON")
     recreate_networks_with_check()
     recreate_network_servers_to_refresh_fk()
     recreate_network_credentials_with_check()
@@ -75,6 +113,7 @@ defmodule Grappa.Repo.Migrations.CheckConstraintsCapsAuthMethodMessagesKind do
   end
 
   def down do
+    execute("PRAGMA defer_foreign_keys=ON")
     rollback_messages()
     rollback_network_credentials()
     rollback_network_servers()
