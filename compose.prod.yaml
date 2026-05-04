@@ -3,17 +3,22 @@
 # Build + run:  scripts/deploy.sh
 # Tail logs:    docker compose -f compose.prod.yaml logs -f
 #
-# Architecture: nginx is the only LAN-facing service. It owns vlan53
-# 192.168.53.11 (where DNS grappa.bad.ass resolves) and reverse-proxies
-# the bouncer + serves cicchetto's static SPA dist. grappa lives on a
+# Architecture: nginx is the only LAN-facing service. It owns the host's
+# :80 publish (where DNS for $PHX_HOST resolves) and reverse-proxies the
+# bouncer + serves cicchetto's static SPA dist. grappa lives on a
 # Docker-managed bridge (grappa_internal) and is reachable ONLY through
-# nginx — operator + iPhone PWA both come in via grappa.bad.ass:80.
+# nginx — operator + iPhone PWA both come in via $PHX_HOST:80.
+#
+# Deployment-specific bindings (binding nginx to a LAN/VLAN IP only,
+# pinning $PHX_HOST, etc.) live in `compose.prod.override.yaml` —
+# gitignored, auto-loaded by scripts/_lib.sh when present. See
+# `compose.prod.override.yaml.example`.
 #
 # Differences vs dev (compose.yaml):
 #   - target: runtime (mix release, no mix tools, no source bind-mount)
 #   - SECRET_KEY_BASE required (no dev fallback)
 #   - DATABASE_PATH points at /app/runtime/grappa_prod.db
-#   - grappa is NOT on vlan53 — it's only reachable through nginx
+#   - grappa is NOT exposed on the host — it's only reachable through nginx
 #   - cicchetto-build (oneshot) populates ./runtime/cicchetto-dist on host
 #   - nginx serves dist + proxies /auth /me /networks /healthz /socket
 
@@ -112,9 +117,9 @@ services:
     hostname: grappa-nginx
     restart: always
     networks:
-      vlan53:
-        ipv4_address: 192.168.53.11
-      grappa_internal:
+      - grappa_internal
+    ports:
+      - "3000:80"
     volumes:
       - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./infra/snippets:/etc/nginx/snippets:ro
@@ -140,7 +145,5 @@ services:
         max-file: "5"
 
 networks:
-  vlan53:
-    external: true
   grappa_internal:
     driver: bridge
