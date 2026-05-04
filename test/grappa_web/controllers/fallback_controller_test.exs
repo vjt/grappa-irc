@@ -94,4 +94,60 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert Jason.decode!(conn.resp_body) == %{"error" => "service_degraded"}
     end
   end
+
+  # L-web-1: AuthController error envelopes that previously bypassed
+  # the FallbackController via inline `send_error/3`. Routed here to
+  # keep the wire-shape contract in one module.
+  describe "AuthController error envelopes (L-web-1)" do
+    test "{:error, :malformed_nick} → 400 malformed_nick" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :malformed_nick})
+
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body) == %{"error" => "malformed_nick"}
+    end
+
+    test "{:error, :password_required} → 401 password_required" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :password_required})
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == %{"error" => "password_required"}
+    end
+
+    test "{:error, :password_mismatch} → 401 password_mismatch" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :password_mismatch})
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body) == %{"error" => "password_mismatch"}
+    end
+
+    test "{:error, :upstream_unreachable} → 502 upstream_unreachable" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :upstream_unreachable})
+
+      assert conn.status == 502
+      assert Jason.decode!(conn.resp_body) == %{"error" => "upstream_unreachable"}
+    end
+
+    test "{:error, :timeout} → 504 timeout" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :timeout})
+
+      assert conn.status == 504
+      assert Jason.decode!(conn.resp_body) == %{"error" => "timeout"}
+    end
+
+    test "{:error, :internal} → 500 internal" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :internal})
+
+      assert conn.status == 500
+      assert Jason.decode!(conn.resp_body) == %{"error" => "internal"}
+    end
+
+    test "{:error, {:anon_collision, retry_after}} → 409 anon_collision + Retry-After" do
+      conn =
+        FallbackController.call(build_conn_for_call(), {:error, {:anon_collision, 1234}})
+
+      assert conn.status == 409
+      assert Jason.decode!(conn.resp_body) == %{"error" => "anon_collision"}
+      assert Plug.Conn.get_resp_header(conn, "retry-after") == ["1234"]
+    end
+  end
 end
