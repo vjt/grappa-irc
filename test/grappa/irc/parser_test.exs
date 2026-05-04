@@ -124,6 +124,36 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok, %Message{prefix: {:nick, "vjt", nil, "host"}, command: :join}} =
                Parser.parse(":vjt@host JOIN #x")
     end
+
+    # M-irc-1: pathological prefix shapes where one or more segments are
+    # empty strings. Real upstreams (mostly malformed proxies / test
+    # fixtures, but defensible against any RFC-permissive ircd) can
+    # emit these. The parser normalizes empty strings to `nil` so the
+    # downstream type contract `String.t() | nil` holds, and the UI
+    # never renders a zero-length nick.
+    test "M-irc-1: \"!user@host\" normalizes empty nick to nil" do
+      assert {:ok, %Message{prefix: {:nick, nil, "user", "host"}, command: :join}} =
+               Parser.parse(":!user@host JOIN #x")
+    end
+
+    test "M-irc-1: \"nick!@host\" normalizes empty user to nil" do
+      assert {:ok, %Message{prefix: {:nick, "nick", nil, "host"}, command: :join}} =
+               Parser.parse(":nick!@host JOIN #x")
+    end
+
+    test "M-irc-1: \"nick!user@\" normalizes empty host to nil" do
+      assert {:ok, %Message{prefix: {:nick, "nick", "user", nil}, command: :join}} =
+               Parser.parse(":nick!user@ JOIN #x")
+    end
+
+    test "M-irc-1: bare \":\" normalizes empty nick to nil (preserves :nick shape)" do
+      # Bare `:` followed by space then command. take_prefix splits on
+      # the first space, parse_prefix sees "". The cond all-false branch
+      # produces {:nick, raw, nil, nil} — nilify keeps the shape but
+      # turns "" into nil so the downstream type contract holds.
+      assert {:ok, %Message{prefix: {:nick, nil, nil, nil}, command: :join}} =
+               Parser.parse(": JOIN #x")
+    end
   end
 
   describe "parse/1 — IRCv3 message-tags" do
