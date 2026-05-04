@@ -146,6 +146,12 @@ defmodule Grappa.WSPresence do
   Resets WSPresence state to empty. **Test-only** — only callable in the
   test environment. Panics in production via the test-env guard.
   """
+  # Dialyzer sees two clauses depending on Mix.env() at compile time:
+  # - test env: returns :ok (from GenServer.call reply)
+  # - non-test: raises (no_return)
+  # A single @spec cannot capture both, so we suppress the warning
+  # rather than lying about the production no_return branch.
+  @dialyzer {:nowarn_function, reset_for_test: 0}
   @spec reset_for_test() :: :ok
   if Mix.env() == :test do
     def reset_for_test, do: GenServer.call(__MODULE__, :reset_for_test)
