@@ -872,7 +872,7 @@ This is the SAFETY NET, not the primary mechanism — the per-bucket README-touc
   5. Mobile viewport (DevTools mobile emulation): bottom-bar visible + horizontal scroll across networks; hamburger opens nicks-only.
   6. Auto-away: close all tabs → reopen 30s+ later → AWAY upstream issued during gap (verify via IRC log capture).
   7. Pagehide path: navigate away from cicchetto → AWAY immediate (no debounce).
-- [ ] **Step 3**: Deploy: `scripts/deploy.sh` rebuilds prod image; healthcheck green at `http://grappa.bad.ass`.
+- [ ] **Step 3**: Deploy: `scripts/deploy.sh` rebuilds prod image; healthcheck green at `http://voygrappa.bad.ass`.
 - [ ] **Step 4**: Memory pin updates + CP LANDED entry.
 - [ ] **Step 5**: Worktree cleanup: branch + worktree removal per `commit-commands:clean_gone` skill.
 - [ ] **Step 6**: `git commit -m "docs(cp): channel-client-polish LANDED — full IRC-client UX cluster"`
@@ -887,7 +887,7 @@ This is the SAFETY NET, not the primary mechanism — the per-bucket README-touc
   * `cd cicchetto && bun run test` — all green.
   * `cd cicchetto && bun run check` — biome + tsc clean.
   * `mix boundary` — no boundary violations.
-  * `scripts/deploy.sh` — prod image rebuilds; healthcheck green at `http://grappa.bad.ass`.
+  * `scripts/deploy.sh` — prod image rebuilds; healthcheck green at `http://voygrappa.bad.ass`.
   * Real-browser e2e (per Z.3 Step 2 list).
   * Push autonomous on green per `feedback_push_autonomy` AT EACH BUCKET (vjt-blessed 2026-05-04).
 
