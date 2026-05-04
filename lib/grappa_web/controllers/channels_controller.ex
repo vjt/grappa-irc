@@ -82,7 +82,13 @@ defmodule GrappaWeb.ChannelsController do
   end
 
   # Q3 pinned: when a channel is in both autojoin and session, source
-  # is :autojoin. Sorted alphabetically by name for wire-shape stability.
+  # is :autojoin. Sorted alphabetically by `{name, source}` for
+  # wire-shape stability — name is the primary key and (under current
+  # MapSet.difference dedup) is unique, but tie-breaking on `:source`
+  # makes the ordering contract total. If a future refactor ever
+  # widened `merge_channel_sources/2` to accept duplicates, clients
+  # would still see deterministic order across requests instead of
+  # source-dependent churn (M-web-4).
   @spec merge_channel_sources([String.t()], [String.t()]) ::
           [%{name: String.t(), joined: boolean(), source: :autojoin | :joined}]
   defp merge_channel_sources(autojoin, session) do
@@ -99,7 +105,7 @@ defmodule GrappaWeb.ChannelsController do
       |> MapSet.difference(autojoin_set)
       |> Enum.map(fn name -> %{name: name, joined: true, source: :joined} end)
 
-    Enum.sort_by(autojoin_entries ++ session_only_entries, & &1.name)
+    Enum.sort_by(autojoin_entries ++ session_only_entries, &{&1.name, &1.source})
   end
 
   @doc """
