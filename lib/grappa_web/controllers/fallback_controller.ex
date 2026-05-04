@@ -34,6 +34,7 @@ defmodule GrappaWeb.FallbackController do
            | :forbidden
            | :not_found
            | :no_session
+           | :not_connected
            | :invalid_credentials
            | :invalid_line
            | :unauthorized
@@ -78,6 +79,17 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not_found"})
+  end
+
+  # T32 (S1.3): `Networks.disconnect/2` rejects if the credential is
+  # already `:parked` or `:failed` — the caller asked to disconnect a
+  # network that isn't connected. 400 rather than 409 because the
+  # transition is simply invalid given current state, and the client
+  # should inspect the credential's `connection_state` before retrying.
+  def call(conn, {:error, :not_connected}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "not_connected"})
   end
 
   # Subject is authenticated but the action is not available to its kind

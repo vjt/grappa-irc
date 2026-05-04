@@ -74,6 +74,8 @@ defmodule GrappaWeb.Router do
   scope "/networks/:network_id", GrappaWeb do
     pipe_through [:api, :authn, :resolve_network]
 
+    patch "/", NetworksController, :update
+
     get "/channels", ChannelsController, :index
     post "/channels", ChannelsController, :create
     delete "/channels/:channel_id", ChannelsController, :delete

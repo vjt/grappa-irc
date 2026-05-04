@@ -248,7 +248,9 @@ defmodule Grappa.Networks do
   `Topic.network(user_name, network_slug)`.
   """
   @spec connect(Credential.t()) :: {:ok, Credential.t()}
-  def connect(%Credential{connection_state: :connected} = cred), do: {:ok, cred}
+  def connect(%Credential{connection_state: :connected} = cred) do
+    {:ok, preload_user_and_network(cred)}
+  end
 
   def connect(%Credential{connection_state: from} = cred) when from in [:parked, :failed] do
     cred = preload_user_and_network(cred)

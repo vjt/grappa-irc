@@ -35,6 +35,9 @@ defmodule Grappa.Networks.Wire do
           auth_method: Credential.auth_method(),
           auth_command_template: String.t() | nil,
           autojoin_channels: [String.t()],
+          connection_state: Credential.connection_state(),
+          connection_state_reason: String.t() | nil,
+          connection_state_changed_at: DateTime.t() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -72,6 +75,11 @@ defmodule Grappa.Networks.Wire do
   upstream secret) and the virtual `:password` field — both must
   NEVER appear on the wire. If you're tempted to add either, stop
   and re-read the moduledoc.
+
+  Includes T32 connection-state fields (`connection_state`,
+  `connection_state_reason`, `connection_state_changed_at`) so the
+  REST surface for `PATCH /networks/:id` can return the updated
+  credential state without a separate endpoint.
   """
   @spec credential_to_json(Credential.t()) :: credential_json()
   def credential_to_json(%Credential{network: %Network{slug: slug}} = c) do
@@ -83,6 +91,9 @@ defmodule Grappa.Networks.Wire do
       auth_method: c.auth_method,
       auth_command_template: c.auth_command_template,
       autojoin_channels: c.autojoin_channels,
+      connection_state: c.connection_state,
+      connection_state_reason: c.connection_state_reason,
+      connection_state_changed_at: c.connection_state_changed_at,
       inserted_at: c.inserted_at,
       updated_at: c.updated_at
     }
