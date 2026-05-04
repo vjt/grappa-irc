@@ -99,29 +99,32 @@ defmodule Grappa.IRC.Parser.PropertyTest do
     end
   end
 
-  describe "CR/LF invariant — adversarial input (C6 / S5)" do
+  describe "unsafe-byte invariant — adversarial input (C6 / S5 + H12)" do
     # Inverse property to the round-trip block above: feed the parser
-    # adversarial input WITH embedded CR/LF in arbitrary positions, then
-    # assert the parsed `params`, `command`, and `prefix` tokens are
-    # CR/LF-free. The parser invariant `Session.Server` relies on for
-    # `Client.send_pong/2` is "tokens never carry control bytes" —
-    # a future refactor of `strip_crlf/1` (e.g. switching from
+    # adversarial input WITH embedded CR/LF/NUL in arbitrary positions,
+    # then assert the parsed `params`, `command`, and `prefix` tokens
+    # are free of those bytes. The parser invariant `Session.Server`
+    # relies on for `Client.send_pong/2` is "tokens never carry the
+    # bytes `Identifier.safe_line_token?/1` rejects" — a future
+    # refactor of `strip_unsafe_bytes/1` (e.g. switching from
     # `:binary.replace` to a regex) could regress on a sequence the
-    # five unit tests in `parser_test.exs` don't enumerate.
+    # unit tests in `parser_test.exs` don't enumerate. H12 added NUL
+    # alongside CR/LF; the property covers all three.
 
-    property "no parsed token contains CR or LF, regardless of input position" do
+    @unsafe_bytes [<<0>>, <<?\r>>, <<?\n>>]
+
+    property "no parsed token contains CR/LF/NUL, regardless of input position" do
       check all(line <- adversarial_line_gen()) do
         case Parser.parse(line) do
           {:ok, %Message{params: params, command: command, prefix: prefix}} ->
-            for param <- params do
-              refute String.contains?(param, "\r"), "param has CR: #{inspect(param)}"
-              refute String.contains?(param, "\n"), "param has LF: #{inspect(param)}"
+            for param <- params, b <- @unsafe_bytes do
+              refute String.contains?(param, b),
+                     "param has unsafe byte #{inspect(b)}: #{inspect(param)}"
             end
 
             case command do
               {:unknown, raw} ->
-                refute String.contains?(raw, "\r")
-                refute String.contains?(raw, "\n")
+                for b <- @unsafe_bytes, do: refute(String.contains?(raw, b))
 
               _ ->
                 :ok
@@ -129,14 +132,12 @@ defmodule Grappa.IRC.Parser.PropertyTest do
 
             case prefix do
               {:nick, nick, user, host} ->
-                for token <- [nick, user, host], is_binary(token) do
-                  refute String.contains?(token, "\r")
-                  refute String.contains?(token, "\n")
+                for token <- [nick, user, host], is_binary(token), b <- @unsafe_bytes do
+                  refute String.contains?(token, b)
                 end
 
               {:server, host} ->
-                refute String.contains?(host, "\r")
-                refute String.contains?(host, "\n")
+                for b <- @unsafe_bytes, do: refute(String.contains?(host, b))
 
               nil ->
                 :ok
@@ -144,6 +145,17 @@ defmodule Grappa.IRC.Parser.PropertyTest do
 
           {:error, _} ->
             :ok
+        end
+      end
+    end
+
+    property "strip_unsafe_bytes output contains no \\x00 \\r \\n regardless of input shape" do
+      check all(input <- StreamData.binary()) do
+        out = Parser.strip_unsafe_bytes(input)
+
+        for b <- @unsafe_bytes do
+          refute String.contains?(out, b),
+                 "stripped output retains #{inspect(b)}: #{inspect(out)}"
         end
       end
     end
@@ -251,26 +263,30 @@ defmodule Grappa.IRC.Parser.PropertyTest do
   end
 
   # Adversarial line generator: builds a vaguely IRC-shaped line then
-  # sprinkles `\r` / `\n` bytes at arbitrary positions. The exact byte
-  # sequences don't matter — the property only cares that whatever
-  # comes back parsed has CR/LF stripped from every token.
+  # sprinkles `\x00` / `\r` / `\n` bytes at arbitrary positions. The
+  # exact byte sequences don't matter — the property only cares that
+  # whatever comes back parsed has those bytes stripped from every
+  # token. NUL was added in H12 alongside the existing CR/LF bytes so
+  # the parser invariant matches `Identifier.safe_line_token?/1`.
   defp adversarial_line_gen do
     gen all(
           base <- StreamData.string(:printable, min_length: 1, max_length: 60),
           inserts <-
             StreamData.list_of(
-              StreamData.tuple({StreamData.member_of(["\r", "\n", "\r\n"]), StreamData.integer(0..60)}),
+              StreamData.tuple(
+                {StreamData.member_of([<<0>>, <<?\r>>, <<?\n>>, <<?\r, ?\n>>]), StreamData.integer(0..60)}
+              ),
               max_length: 5
             )
           # Skip lines that would be only whitespace post-strip — the
           # parser correctly rejects those with `:empty` and the
           # property has nothing to assert on the `{:error, _}` arm.
         ) do
-      sprinkle_crlf(base, inserts)
+      sprinkle_unsafe(base, inserts)
     end
   end
 
-  defp sprinkle_crlf(base, inserts) do
+  defp sprinkle_unsafe(base, inserts) do
     Enum.reduce(inserts, base, fn {sep, pos}, acc ->
       pos = min(pos, byte_size(acc))
       <<head::binary-size(pos), tail::binary>> = acc

@@ -225,11 +225,16 @@ defmodule Grappa.IRC.Client do
   @doc """
   Sends `PONG :<token>\\r\\n` in response to an upstream PING.
 
-  Unlike the other outbound helpers, this one has no CR/LF guard: the
-  token is parser-supplied — `Grappa.IRC.Parser` strips ALL `\\r`/`\\n`
-  from inbound bytes (the parser invariant pinned in C6 / S5), so by
-  the time `Session.Server` echoes the token here it cannot contain
-  CR/LF. Contract is `:ok`; callers do `:ok = send_pong(...)`.
+  Unlike the other outbound helpers, this one has no
+  `safe_line_token?/1` guard: the token is parser-clean.
+  `Grappa.IRC.Parser.strip_unsafe_bytes/1` strips the three bytes
+  (`\\x00`, `\\r`, `\\n`) that `Identifier.safe_line_token?/1` rejects
+  before grammar parsing, so the parser invariant matches the token
+  contract — by the time `Session.Server` echoes the token here it
+  cannot carry any of those bytes. H12 (decision G) closed the
+  pre-cluster gap where `Parser.strip_crlf/1` covered only CR/LF
+  while `safe_line_token?/1` also rejected NUL. Contract is `:ok`;
+  callers do `:ok = send_pong(...)`.
   """
   @spec send_pong(pid(), String.t()) :: :ok
   def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
