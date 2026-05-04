@@ -39,6 +39,14 @@ defmodule GrappaWeb.AuthController do
   @anon_retry_after_ceiling_seconds 48 * 3600
   @visitor_network_slug Application.compile_env(:grappa, :visitor_network)
 
+  # M-web-3: cap captcha_token at 4096 bytes BEFORE forwarding to
+  # Login.login/2 (which would forward to the upstream Turnstile /
+  # HCaptcha verify endpoint). 4096 bytes is generous for any
+  # legitimate provider token (Turnstile ~600B, HCaptcha ~1600B);
+  # anything larger is abuse-shaped and should be rejected at the
+  # boundary so the upstream HTTP client never sees it.
+  @captcha_token_max_bytes 4096
+
   @doc """
   `POST /auth/login` — `{identifier, password?}` →
   `{token, subject: {kind, id, ...}}`.
@@ -54,14 +62,35 @@ defmodule GrappaWeb.AuthController do
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
 
-    case IdentifierClassifier.classify(id) do
-      {:email, email} -> mode1_login(conn, email, password)
-      {:nick, nick} -> visitor_login(conn, nick, password)
-      {:error, :malformed} -> send_error(conn, 400, "malformed_nick")
+    case validate_captcha_token(Map.get(params, "captcha_token")) do
+      :ok ->
+        case IdentifierClassifier.classify(id) do
+          {:email, email} -> mode1_login(conn, email, password)
+          {:nick, nick} -> visitor_login(conn, nick, password)
+          {:error, :malformed} -> send_error(conn, 400, "malformed_nick")
+        end
+
+      :bad_token ->
+        send_error(conn, 400, "bad_request")
     end
   end
 
   def login(conn, _), do: send_error(conn, 400, "bad_request")
+
+  # M-web-3: captcha_token is operator-attacker-controlled wire input.
+  # Reject non-binary (JSON `42`, `null`, lists, maps) and oversize
+  # binaries at the boundary so neither `Login.login/2` nor the
+  # downstream Turnstile/HCaptcha HTTP client ever sees abuse-shaped
+  # payloads. nil is allowed — provider Disabled / unconfigured paths
+  # carry no token.
+  @spec validate_captcha_token(term()) :: :ok | :bad_token
+  defp validate_captcha_token(nil), do: :ok
+
+  defp validate_captcha_token(token)
+       when is_binary(token) and byte_size(token) <= @captcha_token_max_bytes,
+       do: :ok
+
+  defp validate_captcha_token(_), do: :bad_token
 
   @doc """
   `DELETE /auth/logout` — revokes the session whose token was just
