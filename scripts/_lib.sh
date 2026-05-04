@@ -81,6 +81,7 @@ if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
         -v "$SRC_ROOT/test:/app/test"
         -v "$SRC_ROOT/config:/app/config"
         -v "$SRC_ROOT/priv/repo:/app/priv/repo"
+        -v "$SRC_ROOT/infra:/app/infra:ro"
         -v "$SRC_ROOT/mix.exs:/app/mix.exs:ro"
         -v "$SRC_ROOT/mix.lock:/app/mix.lock:$lock_mode"
         -v "$SRC_ROOT/.formatter.exs:/app/.formatter.exs:ro"
