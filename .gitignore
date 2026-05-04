@@ -49,6 +49,9 @@ priv/plts/*.plt.hash
 /compose.override.yaml
 /compose.prod.override.yaml
 
+# ── Local cluster worktrees (self-contained, machine-specific)
+/.worktrees/
+
 # ── Claude Code session state (locks, scratch, output)
 # Skills + settings.json are repo-shared content; everything else
 # (locks, scratch, settings.local.json) stays local.
