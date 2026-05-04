@@ -85,6 +85,7 @@ scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
 scripts/observer.sh          # observer_cli runtime introspection
 scripts/deploy.sh            # build prod image + restart (refuses non-main)
+scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only)
 ```
 
