@@ -78,11 +78,11 @@
 | **C6** | Mobile layout (bottom-bar + hamburger + 768px) | cic | 4 | yes |
 | **C7** | Scrollback polish bundle | cic | 7 | yes |
 | **C8** | Mentions window + away UI + watchlist UI | cic | 4 | yes |
-| **Z** | DESIGN_NOTES + cluster review + LANDED | both | 3 | yes (final) |
+| **Z** | DESIGN_NOTES + README sweep + cluster review + LANDED | both | 4 | yes (final) |
 
 **Cross-bucket order:** S1 → S2 → S3 → S4 → S5 → C1 → C2 → C3 → C4 → C5 → C6 → C7 → C8 → Z. Server-side primitives ship first; cicchetto consumes them. Within each bucket sibling carves natural sub-seams.
 
-**Total tasks:** ~62. Cluster scope is large; per-bucket push policy means user sees progress continuously rather than waiting for end-of-cluster.
+**Total tasks:** ~63 (Z gained README sweep per `feedback_readme_currency`). Cluster scope is large; per-bucket push policy means user sees progress continuously rather than waiting for end-of-cluster.
 
 ---
 
@@ -809,13 +809,22 @@
 - [ ] **Step 1**: Append entry covering: T32 connection_state shape; auto-away semantics (multi-tab WS counter, pagehide hint); numeric-routing matrix; query_windows persistence; user_settings as forward-compatible JSON store; cluster-wide focus-only-on-user-action rule; window-kind atom enumeration; visitor-skip discipline.
 - [ ] **Step 2**: `git commit -m "docs(design-notes): channel-client-polish cluster architectural decisions"`
 
-### Task Z.2: Full-cluster code review (parallel agents)
+### Task Z.2: README sweep (per `feedback_readme_currency`)
+
+**Files:**
+- Modify: `README.md`
+
+- [ ] **Step 1**: Diff README against the cluster's shipped surface — new slash-commands (`~25` verbs across S1+C2: /quit /disconnect /connect /nick /away /msg /query /q /op /deop /voice /devoice /kick /ban /unban /banlist /invite /umode /mode /topic /who /names /list /links /watch /highlight), new REST surface (PATCH `/networks/:id` connection_state extension), new tables (`query_windows`, `user_settings`), new env vars (none expected), new mix tasks (none expected), new deploy steps (migrations only).
+- [ ] **Step 2**: Update README sections: feature list (slash-cmds + DM + WHOIS + ops + window-kinds + mobile), bouncer-API surface, "Run it locally" if deployment changed, screenshot/animated-gif if cicchetto UX shifts visibly. Don't bloat with internals — CLAUDE.md / DESIGN_NOTES content stays there.
+- [ ] **Step 3**: `git commit -m "docs(readme): channel-client-polish — slash-cmds + DM + window-kinds + mobile"`
+
+### Task Z.3: Full-cluster code review (parallel agents)
 
 - [ ] Spawn parallel review agents per `code-review` skill — server-side review, cicchetto review, cross-cutting consistency review, security review (Sobelow + manual auth surface).
 - [ ] Triage findings; fold-forward fixes per T31-style discipline.
 - [ ] Re-run all gates after fixes.
 
-### Task Z.3: LANDED CP + memory pin updates
+### Task Z.4: LANDED CP + memory pin updates
 
 **Files:**
 - Modify: active checkpoint (`docs/checkpoints/2026-05-XX-cpYY.md`)
@@ -886,7 +895,7 @@ feedback_push_autonomy.
 | C6 | mobile layout (#10) | C6.1–C6.3 |
 | C7 | scrollback polish (#5 #8 #9 + watchlist highlight from #19) | C7.1–C7.7 |
 | C8 | mentions window + away UI + watchlist UX (#19) | C8.1–C8.3 |
-| Z | wrap | Z.1–Z.3 |
+| Z | wrap (incl. README sweep per `feedback_readme_currency`) | Z.1–Z.4 |
 
 All 21 spec features mapped. T32 verb cluster mapped (S1 + C2 + C4-via-/quit-flow). Cluster-wide rules (focus-only-on-user-action; visitor-skip; one-feature-one-code-path) enforced per-bucket.
 
