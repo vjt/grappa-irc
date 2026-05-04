@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run a mix task inside the grappa container.
 #
 # Usage:

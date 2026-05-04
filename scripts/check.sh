@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run the full CI gate locally inside the container.
 #
 # Usage:

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Attach observer_cli to the running grappa node.
 #
 # observer_cli is a TUI-based runtime introspection tool. From here you can
