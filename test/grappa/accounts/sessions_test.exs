@@ -173,6 +173,38 @@ defmodule Grappa.Accounts.SessionsTest do
     end
   end
 
+  describe "Session.touch_changeset/2 monotonic last_seen_at (B5.4 L-pers-3)" do
+    setup %{user: user} do
+      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
+      %{session: session}
+    end
+
+    test "accepts a forward bump (now > prev)", %{session: session} do
+      forward = DateTime.add(session.last_seen_at, 60, :second)
+      cs = Session.touch_changeset(session, forward)
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :last_seen_at) == forward
+    end
+
+    test "accepts the same instant (no-op write — not strictly forward but not backward)",
+         %{session: session} do
+      # equal-to-prev is a degenerate-but-not-skewed case: a tight
+      # touch loop under high load can reasonably observe `now ==
+      # prev` at usec resolution. Reject only the strictly-backward
+      # case so legitimate same-tick touches pass through.
+      cs = Session.touch_changeset(session, session.last_seen_at)
+      assert cs.valid?
+    end
+
+    test "rejects a backward jump (system-clock skew)", %{session: session} do
+      backward = DateTime.add(session.last_seen_at, -60, :second)
+      cs = Session.touch_changeset(session, backward)
+
+      refute cs.valid?
+      assert "must not move backward (system-clock skew?)" in errors_on(cs).last_seen_at
+    end
+  end
+
   describe "authenticate/1" do
     setup %{user: user} do
       {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
