@@ -24,7 +24,9 @@ defmodule Grappa.Session.EventRouterTest do
         subject: @subject,
         network_id: @network_id,
         nick: "vjt",
-        members: %{}
+        members: %{},
+        topics: %{},
+        channel_modes: %{}
       },
       overrides
     )
@@ -378,18 +380,27 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{modes: "+ovo", args: ["a", "b", "c"]}
     end
 
-    test "MODE +b (channel-level, not user mode) emits :persist but no member mutation" do
+    test "MODE +b (channel-level, not user mode) emits :persist + :channel_modes_changed, no member mutation" do
       state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
 
       # +b is a ban — not in our user-mode prefix table; channel-level only.
       m = msg(:mode, ["#italia", "+b", "*!*@spammer.net"], {:nick, "op", "u", "h"})
 
-      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
-               EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
 
       # alice mode list unchanged — +b doesn't apply to a member's modes
       assert new_state.members["#italia"] == %{"alice" => []}
+      # channel_modes cache updated with ban
+      assert "b" in new_state.channel_modes["#italia"].modes
+
+      persist = Enum.find(effects, fn {tag, _, _} -> tag == :persist end)
+      assert {:persist, :mode, attrs} = persist
       assert attrs.meta == %{modes: "+b", args: ["*!*@spammer.net"]}
+
+      assert Enum.any?(effects, fn
+               {:channel_modes_changed, "#italia", _} -> true
+               _ -> false
+             end)
     end
 
     test "MODE on user's own nick (not channel) does NOT persist a row" do
@@ -502,18 +513,30 @@ defmodule Grappa.Session.EventRouterTest do
   end
 
   describe "route/2 — :topic (TOPIC command only)" do
-    test "TOPIC command emits :persist :topic with body=new_topic" do
+    test "TOPIC command stores in cache + emits :persist :topic + :topic_changed" do
       state = base_state()
 
       m = msg(:topic, ["#italia", "Welcome to Italia"], {:nick, "ChanServ", "u", "h"})
 
-      assert {:cont, ^state, [{:persist, :topic, attrs}]} =
-               EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
 
+      # Topic cache updated
+      assert new_state.topics["#italia"].text == "Welcome to Italia"
+      assert new_state.topics["#italia"].set_by == "ChanServ"
+
+      # Persist row emitted
+      persist = Enum.find(effects, fn {tag, _, _} -> tag == :persist end)
+      assert {:persist, :topic, attrs} = persist
       assert attrs.channel == "#italia"
       assert attrs.sender == "ChanServ"
       assert attrs.body == "Welcome to Italia"
       assert attrs.meta == %{}
+
+      # Channel-level broadcast emitted
+      assert Enum.any?(effects, fn
+               {:topic_changed, "#italia", _} -> true
+               _ -> false
+             end)
     end
   end
 
@@ -588,19 +611,32 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
-  describe "route/2 — :numeric 332 / 333 (TOPIC backfill on JOIN — no-op)" do
-    test "332 RPL_TOPIC is a no-op (topic-bar reads live state, not scrollback)" do
+  describe "route/2 — :numeric 332 / 333 (TOPIC backfill on JOIN)" do
+    test "332 RPL_TOPIC stores text in topics cache and emits :topic_changed" do
       state = base_state()
       m = msg({:numeric, 332}, ["vjt", "#italia", "current topic text"], {:server, "irc"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.topics["#italia"].text == "current topic text"
+
+      assert Enum.any?(effects, fn
+               {:topic_changed, "#italia", %{text: "current topic text"}} -> true
+               _ -> false
+             end)
     end
 
-    test "333 RPL_TOPICWHOTIME is a no-op" do
+    test "333 RPL_TOPICWHOTIME stores set_by/set_at in topics cache and emits :topic_changed" do
       state = base_state()
       m = msg({:numeric, 333}, ["vjt", "#italia", "ChanServ", "1717890000"], {:server, "irc"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.topics["#italia"].set_by == "ChanServ"
+      assert %DateTime{} = new_state.topics["#italia"].set_at
+
+      assert Enum.any?(effects, fn
+               {:topic_changed, "#italia", %{set_by: "ChanServ"}} -> true
+               _ -> false
+             end)
     end
   end
 

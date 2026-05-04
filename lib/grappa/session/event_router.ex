@@ -10,8 +10,8 @@ defmodule Grappa.Session.EventRouter do
       @type effect ::
               {:persist, kind, persist_attrs}    -- write a Scrollback row
               | {:reply, iodata()}                -- send a line upstream
-                                                     (forward-compat;
-                                                      no E1 route emits this)
+              | {:topic_changed, channel, topic_entry()}
+              | {:channel_modes_changed, channel, channel_mode_entry()}
 
   This shape was extracted per the 2026-04-27 architecture review
   (finding A6, CP10 D4) and mirrors `Grappa.IRC.AuthFSM` from D2 — the
@@ -119,10 +119,35 @@ defmodule Grappa.Session.EventRouter do
           required(:meta) => map()
         }
 
+  @typedoc """
+  Topic cache entry. `text: nil` means no topic set (RPL_NOTOPIC) or the
+  333-before-332 out-of-order case (332 hasn't arrived yet). Stored case-
+  preserved as delivered by the server; lookup normalises to downcase.
+  """
+  @type topic_entry :: %{
+          text: String.t() | nil,
+          set_by: String.t() | nil,
+          set_at: DateTime.t() | nil
+        }
+
+  @typedoc """
+  Channel-mode cache entry. `modes` is a list of single-char mode keys
+  (e.g. `["n", "t"]`); `params` maps mode char to its argument string for
+  modes that carry args (e.g. `%{"k" => "secret", "l" => "42"}`).
+  Modes without args are absent from `params`. Stored case-preserved;
+  lookup normalises to downcase.
+  """
+  @type channel_mode_entry :: %{
+          modes: [String.t()],
+          params: %{String.t() => String.t() | nil}
+        }
+
   @type effect ::
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
           | {:visitor_r_observed, String.t()}
+          | {:topic_changed, String.t(), topic_entry()}
+          | {:channel_modes_changed, String.t(), channel_mode_entry()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -181,23 +206,37 @@ defmodule Grappa.Session.EventRouter do
     # remains a faithful "currently-joined channels" set. Symmetric with
     # self-JOIN (which wipes-and-reseeds). Other-user PART preserves the
     # existing inner-nick-only semantics.
-    members =
+    #
+    # S2.3: self-PART also drops topics + channel_modes cache entries — these
+    # caches are scoped to channels the session is currently in.
+    {members, topics, channel_modes} =
       cond do
         sender == state.nick ->
-          Map.delete(state.members, channel)
+          {Map.delete(state.members, channel), Map.delete(Map.get(state, :topics, %{}), normalize_channel(channel)),
+           Map.delete(Map.get(state, :channel_modes, %{}), normalize_channel(channel))}
 
         Map.has_key?(state.members, channel) ->
-          Map.update!(state.members, channel, &Map.delete(&1, sender))
+          {Map.update!(state.members, channel, &Map.delete(&1, sender)), Map.get(state, :topics, %{}),
+           Map.get(state, :channel_modes, %{})}
 
         true ->
           # Defensive: persist the audit row even for an unknown channel
           # (member-state untouched). Lets a renderer recover the PART
           # event if upstream re-orders relative to a JOIN we haven't
           # seen yet.
-          state.members
+          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{})}
       end
 
-    {state, eff} = build_persist(%{state | members: members}, :part, channel, sender, reason, %{})
+    {state, eff} =
+      build_persist(
+        %{state | members: members, topics: topics, channel_modes: channel_modes},
+        :part,
+        channel,
+        sender,
+        reason,
+        %{}
+      )
+
     {:cont, state, [eff]}
   end
 
@@ -257,9 +296,28 @@ defmodule Grappa.Session.EventRouter do
     sender = Message.sender_nick(msg)
     members = apply_mode_string(state.members, channel, modes, args)
 
+    # S2.3: split the mode string — per-user modes (matching @user_mode_prefixes)
+    # update state.members (above); channel-level modes update channel_modes cache.
+    # Walk once, produce two effects: members delta (done above) + channel_modes
+    # delta (done here). One channel_modes_changed broadcast per MODE event if the
+    # cache actually changed.
+    chan_key = normalize_channel(channel)
+    existing_entry = Map.get(Map.get(state, :channel_modes, %{}), chan_key, empty_mode_entry())
+    new_entry = apply_channel_mode_string(existing_entry, modes, args)
+
+    channel_modes =
+      Map.put(Map.get(state, :channel_modes, %{}), chan_key, new_entry)
+
+    mode_effects =
+      if new_entry != existing_entry do
+        [{:channel_modes_changed, channel, new_entry}]
+      else
+        []
+      end
+
     {state, eff} =
       build_persist(
-        %{state | members: members},
+        %{state | members: members, channel_modes: channel_modes},
         :mode,
         channel,
         sender,
@@ -267,7 +325,7 @@ defmodule Grappa.Session.EventRouter do
         %{modes: modes, args: args}
       )
 
-    {:cont, state, [eff]}
+    {:cont, state, [eff | mode_effects]}
   end
 
   def route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
@@ -295,10 +353,26 @@ defmodule Grappa.Session.EventRouter do
     {:cont, new_state, effects}
   end
 
+  # Unsolicited TOPIC: a channel operator changed the topic mid-session.
+  # S2.3: update topics cache with new text + set_by (nick from prefix) +
+  # set_at (server-side wall-clock — no numeric available for this path).
+  # Also produces a :topic scrollback row (unchanged from pre-S2.3).
   def route(%Message{command: :topic, params: [channel, body]} = msg, state)
       when is_binary(channel) and is_binary(body) do
-    {state, eff} = build_persist(state, :topic, channel, Message.sender_nick(msg), body, %{})
-    {:cont, state, [eff]}
+    sender = Message.sender_nick(msg)
+    chan_key = normalize_channel(channel)
+
+    entry = %{
+      text: body,
+      set_by: sender,
+      set_at: DateTime.utc_now()
+    }
+
+    topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
+    state1 = %{state | topics: topics}
+
+    {state2, eff} = build_persist(state1, :topic, channel, sender, body, %{})
+    {:cont, state2, [eff, {:topic_changed, channel, entry}]}
   end
 
   def route(%Message{command: :kick, params: [channel, target | rest]} = msg, state)
@@ -314,21 +388,26 @@ defmodule Grappa.Session.EventRouter do
     # Q1: self-KICK (target == state.nick) drops the channel key entirely.
     # Symmetric with self-PART. Other-user KICK preserves the inner-nick
     # delete.
-    members =
+    # S2.3: self-KICK also drops topics + channel_modes cache entries.
+    chan_key = normalize_channel(channel)
+
+    {members, topics, channel_modes} =
       cond do
         target == state.nick ->
-          Map.delete(state.members, channel)
+          {Map.delete(state.members, channel), Map.delete(Map.get(state, :topics, %{}), chan_key),
+           Map.delete(Map.get(state, :channel_modes, %{}), chan_key)}
 
         Map.has_key?(state.members, channel) ->
-          Map.update!(state.members, channel, &Map.delete(&1, target))
+          {Map.update!(state.members, channel, &Map.delete(&1, target)), Map.get(state, :topics, %{}),
+           Map.get(state, :channel_modes, %{})}
 
         true ->
-          state.members
+          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{})}
       end
 
     {state, eff} =
       build_persist(
-        %{state | members: members},
+        %{state | members: members, topics: topics, channel_modes: channel_modes},
         :kick,
         channel,
         sender,
@@ -362,13 +441,69 @@ defmodule Grappa.Session.EventRouter do
     {:cont, %{state | members: members}, []}
   end
 
-  # 332 RPL_TOPIC + 333 RPL_TOPICWHOTIME arrive as JOIN-time backfill;
-  # the topic-bar in P4-1 reads live state, not scrollback rows. Pin as
-  # explicit no-ops so a future "let's persist topic backfill" idea
-  # stays out of E1 scope. 366 RPL_ENDOFNAMES is the end-of-NAMES
-  # marker; we don't need to react (each 353 already committed its
-  # delta).
-  def route(%Message{command: {:numeric, code}}, state) when code in [332, 333, 366] do
+  # 332 RPL_TOPIC: JOIN-time backfill — stores topic text in the topics cache.
+  # Does NOT produce a scrollback row (spec: :topic rows come ONLY from the
+  # TOPIC command, i.e. someone changing the topic mid-session). The set_by /
+  # set_at fields may arrive in the 333 that follows; partial entry is fine.
+  def route(
+        %Message{command: {:numeric, 332}, params: [_, channel, topic_text]},
+        state
+      )
+      when is_binary(channel) and is_binary(topic_text) do
+    chan_key = normalize_channel(channel)
+    existing = Map.get(Map.get(state, :topics, %{}), chan_key, %{text: nil, set_by: nil, set_at: nil})
+    entry = %{existing | text: topic_text}
+    topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
+    {:cont, %{state | topics: topics}, [{:topic_changed, channel, entry}]}
+  end
+
+  # 333 RPL_TOPICWHOTIME: JOIN-time backfill — stores setter + timestamp.
+  # The 332 may not have arrived yet (out-of-order); create the entry with
+  # text: nil if so — 332 will fill it in when it arrives.
+  # Unix timestamp param is always the last positional.
+  def route(
+        %Message{command: {:numeric, 333}, params: [_, channel, setter, unix_ts_str]},
+        state
+      )
+      when is_binary(channel) and is_binary(setter) and is_binary(unix_ts_str) do
+    chan_key = normalize_channel(channel)
+    existing = Map.get(Map.get(state, :topics, %{}), chan_key, %{text: nil, set_by: nil, set_at: nil})
+    ts = parse_unix_ts(unix_ts_str)
+    entry = %{existing | set_by: setter, set_at: ts}
+    topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
+    {:cont, %{state | topics: topics}, [{:topic_changed, channel, entry}]}
+  end
+
+  # 331 RPL_NOTOPIC: explicit "no topic set" — store an explicit-empty entry
+  # so cicchetto can render a "(no topic set)" placeholder (spec #20).
+  def route(
+        %Message{command: {:numeric, 331}, params: [_, channel | _]},
+        state
+      )
+      when is_binary(channel) do
+    chan_key = normalize_channel(channel)
+    entry = %{text: nil, set_by: nil, set_at: nil}
+    topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
+    {:cont, %{state | topics: topics}, [{:topic_changed, channel, entry}]}
+  end
+
+  # 324 RPL_CHANNELMODEIS: initial mode snapshot after JOIN. Replaces the
+  # channel_modes entry entirely with the parsed +modes [params] shape.
+  # Mode string starts with '+'; args follow as separate params.
+  def route(
+        %Message{command: {:numeric, 324}, params: [_, channel, mode_str | mode_args]},
+        state
+      )
+      when is_binary(channel) and is_binary(mode_str) do
+    chan_key = normalize_channel(channel)
+    entry = parse_mode_snapshot(mode_str, mode_args)
+    channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
+    {:cont, %{state | channel_modes: channel_modes}, [{:channel_modes_changed, channel, entry}]}
+  end
+
+  # 366 RPL_ENDOFNAMES is the end-of-NAMES marker; we don't need to react
+  # (each 353 already committed its delta).
+  def route(%Message{command: {:numeric, 366}}, state) do
     {:cont, state, []}
   end
 
@@ -423,6 +558,13 @@ defmodule Grappa.Session.EventRouter do
   # negotiation deferred to Phase 5; the table is a compile-time
   # constant here.
   @user_mode_prefixes %{"o" => "@", "v" => "+"}
+
+  # Channel modes that consume a parameter when being set (+).
+  # RFC 2811 type A (list: b/e/I), type B (always-param: k) and type C
+  # (+param-only: l). Type D flag modes (n, t, m, s, i, p, r, …) take
+  # no argument. CHANMODES ISUPPORT-driven table deferred to Phase 5;
+  # until then this compile-time MapSet covers the common case.
+  @channel_modes_with_param MapSet.new(["b", "e", "I", "k", "l"])
 
   @spec apply_mode_string(members(), String.t(), String.t(), [String.t()]) :: members()
   defp apply_mode_string(members, channel, mode_string, args) do
@@ -538,5 +680,99 @@ defmodule Grappa.Session.EventRouter do
       )
 
     {state, {:persist, kind, attrs}}
+  end
+
+  # ---------------------------------------------------------------------------
+  # S2.3 helpers — topic + channel-mode cache
+  # ---------------------------------------------------------------------------
+
+  # IRC channel names are case-insensitive (RFC 2812 §2.2). Normalise to
+  # downcase for cache keys — same direction as members map convention (keys
+  # are stored case-preserved as-received from server; we normalise here at
+  # write AND read time so lookups are always case-insensitive).
+  @spec normalize_channel(String.t()) :: String.t()
+  defp normalize_channel(channel) when is_binary(channel), do: String.downcase(channel)
+
+  # Empty baseline entry returned when a channel_modes entry doesn't exist yet
+  # (e.g. when a MODE arrives before 324 RPL_CHANNELMODEIS).
+  @spec empty_mode_entry() :: channel_mode_entry()
+  defp empty_mode_entry, do: %{modes: [], params: %{}}
+
+  # Parse a full mode snapshot string (e.g. "+nt" or "+ntk") plus arg list
+  # into a channel_mode_entry. Replaces any existing entry entirely (used by
+  # 324 RPL_CHANNELMODEIS — the server-authoritative snapshot).
+  # The sign must be '+' for a snapshot; we skip any leading '+'.
+  @spec parse_mode_snapshot(String.t(), [String.t()]) :: channel_mode_entry()
+  defp parse_mode_snapshot(mode_str, args) do
+    # Strip leading '+' if present; snapshot is always additive
+    stripped = String.trim_leading(mode_str, "+")
+    walk_channel_modes(empty_mode_entry(), "+" <> stripped, args, :add)
+  end
+
+  # Apply a +/- delta mode string to an existing channel_mode_entry.
+  # Reuses the same sticky-sign recursive pattern as walk_modes/4 for members.
+  # Per-user modes (matching @user_mode_prefixes) are skipped — they update
+  # state.members, not channel_modes. A per-user mode still consumes its arg.
+  @spec apply_channel_mode_string(channel_mode_entry(), String.t(), [String.t()]) ::
+          channel_mode_entry()
+  defp apply_channel_mode_string(entry, mode_string, args) do
+    walk_channel_modes(entry, mode_string, args, :add)
+  end
+
+  # walk_channel_modes: same sticky-sign recursive pattern as walk_modes/4,
+  # but operates on a channel_mode_entry() instead of a members map.
+  # Per-user modes (o, v) consume their arg but are NOT added to the entry.
+  defp walk_channel_modes(entry, "", _, _), do: entry
+
+  defp walk_channel_modes(entry, "+" <> rest, args, _),
+    do: walk_channel_modes(entry, rest, args, :add)
+
+  defp walk_channel_modes(entry, "-" <> rest, args, _),
+    do: walk_channel_modes(entry, rest, args, :remove)
+
+  defp walk_channel_modes(entry, <<mode::binary-size(1), rest::binary>>, args, direction) do
+    case Map.fetch(@user_mode_prefixes, mode) do
+      {:ok, _} ->
+        # Per-user mode: consumes one arg (the target nick) but does NOT
+        # update channel_modes — it updates state.members (done in walk_modes/4).
+        {_, remaining} = pop_arg(args)
+        walk_channel_modes(entry, rest, remaining, direction)
+
+      :error ->
+        # Channel-level mode. Only consume an arg if the mode is in the
+        # @channel_modes_with_param table. Flag modes (n, t, m, s, …) have
+        # no arg — consuming one would misalign the arg list for subsequent
+        # param-modes like k or l.
+        takes_param = MapSet.member?(@channel_modes_with_param, mode)
+        {arg, remaining} = if takes_param, do: pop_arg(args), else: {nil, args}
+        entry = toggle_channel_mode(entry, mode, arg, direction)
+        walk_channel_modes(entry, rest, remaining, direction)
+    end
+  end
+
+  @spec toggle_channel_mode(channel_mode_entry(), String.t(), String.t() | nil, :add | :remove) ::
+          channel_mode_entry()
+  defp toggle_channel_mode(entry, mode, arg, :add) do
+    modes = if mode in entry.modes, do: entry.modes, else: [mode | entry.modes]
+
+    params =
+      if arg != nil do
+        Map.put(entry.params, mode, arg)
+      else
+        entry.params
+      end
+
+    %{entry | modes: modes, params: params}
+  end
+
+  defp toggle_channel_mode(entry, mode, _, :remove) do
+    %{entry | modes: List.delete(entry.modes, mode), params: Map.delete(entry.params, mode)}
+  end
+
+  # Parse a Unix timestamp string; let it crash on non-integer input (bad
+  # upstream → supervisor restart per CLAUDE.md "let it crash").
+  @spec parse_unix_ts(String.t()) :: DateTime.t()
+  defp parse_unix_ts(ts_str) when is_binary(ts_str) do
+    DateTime.from_unix!(String.to_integer(ts_str))
   end
 end
