@@ -12,7 +12,9 @@ defmodule GrappaWeb.MeController do
   Reads `:current_subject` (assigned by `Plugs.Authn` for both kinds)
   and dispatches to the matching `MeJSON.show/1` clause. The plug
   performs the subject load once per request so this controller does
-  no DB work (S42).
+  no DB work (S42). M-web-1: the loaded struct lives inside the
+  `:current_subject` tagged tuple — no parallel `:current_user` /
+  `:current_visitor` assigns to drift.
   """
   use GrappaWeb, :controller
 
@@ -20,8 +22,8 @@ defmodule GrappaWeb.MeController do
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, _) do
     case conn.assigns.current_subject do
-      {:user, _} -> render(conn, :show, user: conn.assigns.current_user)
-      {:visitor, _} -> render(conn, :show, visitor: conn.assigns.current_visitor)
+      {:user, user} -> render(conn, :show, user: user)
+      {:visitor, visitor} -> render(conn, :show, visitor: visitor)
     end
   end
 end

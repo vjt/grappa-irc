@@ -4,17 +4,19 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
 
   Resolves the URL `:network_id` slug to the schema struct and
   authorises the authenticated subject. Branches on
-  `conn.assigns.current_subject` (set by `Plugs.Authn`):
+  `conn.assigns.current_subject` (set by `Plugs.Authn`) — the tagged
+  tuple carries the loaded subject struct directly (M-web-1):
 
-    * **User** — credential lookup. Failure modes (unknown slug, no
-      credential for `(user, network)`, missing user row) collapse to
-      the same `{:error, :not_found}` so a probing user cannot
-      distinguish "wrong slug" from "someone else's network." This is
-      the CP10 review S14 oracle close.
-    * **Visitor** — slug-equality check against `visitor.network_slug`
-      (visitors are bound to one network at row-creation; W11). A
-      mismatched slug collapses to the same uniform 404 — same
-      no-leak posture as the user-side credential miss.
+    * **User** — credential lookup against the loaded `%User{}`.
+      Failure modes (unknown slug, no credential for `(user, network)`,
+      missing user row) collapse to the same `{:error, :not_found}` so
+      a probing user cannot distinguish "wrong slug" from "someone
+      else's network." This is the CP10 review S14 oracle close.
+    * **Visitor** — slug-equality check against the loaded
+      `%Visitor{}`'s `network_slug` (visitors are bound to one network
+      at row-creation; W11). A mismatched slug collapses to the same
+      uniform 404 — same no-leak posture as the user-side credential
+      miss.
 
   On success, assigns `:network` (the schema struct) to the conn so
   the action can use the integer FK without re-resolving.
@@ -26,6 +28,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
 
   import Plug.Conn
 
+  alias Grappa.Accounts.User
   alias Grappa.Networks
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
@@ -40,7 +43,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   def call(conn, _) do
     slug = conn.path_params["network_id"]
 
-    case resolve(conn.assigns.current_subject, conn.assigns, slug) do
+    case resolve(conn.assigns.current_subject, slug) do
       {:ok, network} ->
         assign(conn, :network, network)
 
@@ -58,7 +61,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     end
   end
 
-  defp resolve({:user, _}, %{current_user: user}, slug) do
+  defp resolve({:user, %User{} = user}, slug) do
     with {:ok, network} <- Networks.get_network_by_slug(slug),
          {:ok, _} <- Credentials.get_credential(user, network) do
       {:ok, network}
@@ -67,7 +70,7 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     end
   end
 
-  defp resolve({:visitor, _}, %{current_visitor: %Visitor{network_slug: vslug}}, slug) do
+  defp resolve({:visitor, %Visitor{network_slug: vslug}}, slug) do
     case Networks.get_network_by_slug(slug) do
       {:ok, network} when network.slug == vslug -> {:ok, network}
       {:ok, _} -> {:error, :wrong_network}

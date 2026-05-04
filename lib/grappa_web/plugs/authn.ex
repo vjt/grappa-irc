@@ -6,15 +6,24 @@ defmodule GrappaWeb.Plugs.Authn do
   session, the plug branches on the session row's FK (per Q-A's XOR
   shape — `user_id` xor `visitor_id` always exactly one populated):
 
-    * **User session** → assigns `:current_user_id`,
-      `:current_user` (the loaded `%Accounts.User{}`), and
+    * **User session** → assigns
+      `:current_subject = {:user, %Accounts.User{}}` and
       `:current_session_id`.
-    * **Visitor session** → assigns `:current_visitor_id`,
-      `:current_visitor` (the loaded `%Visitors.Visitor{}`), and
+    * **Visitor session** → assigns
+      `:current_subject = {:visitor, %Visitors.Visitor{}}` and
       `:current_session_id`. The plug ALSO calls `Visitors.touch/1`
       for the W9 sliding-TTL refresh — visitor activity over the REST
       surface counts as user-initiated traffic. Cadence (≥1h) is
       handled inside `touch/1`.
+
+  M-web-1 (B6.2) — single source of truth: the loaded subject struct
+  lives ONLY inside the `:current_subject` tagged tuple. There is no
+  parallel `:current_user` / `:current_visitor` assign to drift out of
+  sync — a future race where one is set and the other is not is now a
+  compile-time impossibility. Consumers pattern-match on the tuple
+  directly and convert to the `t:Grappa.Session.subject/0` ID-tuple via
+  `GrappaWeb.Subject.to_session/1` when delegating to the Session /
+  Scrollback boundary (which speaks IDs, not structs).
 
   `:current_client_id` is populated upstream by
   `GrappaWeb.Plugs.ClientId` (wired into the `:api` pipeline) so both
@@ -76,27 +85,14 @@ defmodule GrappaWeb.Plugs.Authn do
   defp assign_subject(conn, %Session{user_id: user_id, visitor_id: nil})
        when is_binary(user_id) do
     user = Accounts.get_user!(user_id)
-
-    conn =
-      conn
-      |> assign(:current_user_id, user_id)
-      |> assign(:current_user, user)
-      |> assign(:current_subject, {:user, user_id})
-
-    {:ok, conn}
+    {:ok, assign(conn, :current_subject, {:user, user})}
   end
 
   defp assign_subject(conn, %Session{id: session_id, user_id: nil, visitor_id: visitor_id})
        when is_binary(visitor_id) do
     case Visitors.touch(visitor_id) do
       {:ok, %Visitor{} = visitor} ->
-        conn =
-          conn
-          |> assign(:current_visitor_id, visitor_id)
-          |> assign(:current_visitor, visitor)
-          |> assign(:current_subject, {:visitor, visitor_id})
-
-        {:ok, conn}
+        {:ok, assign(conn, :current_subject, {:visitor, visitor})}
 
       {:error, :expired} ->
         # C1: W11 invariant — anon visitor lifecycle is co-terminus with

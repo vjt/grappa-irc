@@ -18,6 +18,7 @@ defmodule GrappaWeb.MembersController do
   use GrappaWeb, :controller
 
   alias Grappa.Session
+  alias GrappaWeb.Subject
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/members` —
@@ -34,7 +35,7 @@ defmodule GrappaWeb.MembersController do
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :no_session}
   def index(conn, %{"channel_id" => channel}) do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     case Session.list_members(subject, network.id, channel) do
