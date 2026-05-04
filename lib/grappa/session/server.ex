@@ -84,7 +84,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, NSInterceptor, NumericRouter}
+  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter}
 
   require Logger
 
@@ -235,7 +235,14 @@ defmodule Grappa.Session.Server do
           # NumericRouter as the `:active` fallback when labeled-response
           # is unavailable and param-derived routing returns {:active, nil}.
           # `nil` until the user issues the first command in this session.
-          last_command_window: window_ref() | nil
+          last_command_window: window_ref() | nil,
+          # S5.1: ISUPPORT MODES=N advertised by the upstream server. Bounds
+          # how many mode changes a single MODE line may carry. Defaults to 3
+          # per IRCv3 spec when the upstream omits MODES= from 005. Updated
+          # when 005 RPL_ISUPPORT arrives with a MODES= token. Kept as a
+          # bounded integer on state (not a generic ISUPPORT map) to stay
+          # minimal — only MODES= is consumed server-side for now.
+          modes_per_chunk: pos_integer()
         }
 
   ## API
@@ -319,7 +326,8 @@ defmodule Grappa.Session.Server do
       auto_away_timer: nil,
       caps_active: MapSet.new(),
       labels_pending: %{},
-      last_command_window: nil
+      last_command_window: nil,
+      modes_per_chunk: 3
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -961,6 +969,22 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | caps_active: caps_active}}
   end
 
+  # S5.1 — 005 RPL_ISUPPORT: extract MODES=N if advertised. Params are space-
+  # separated ISUPPORT tokens (e.g. ["grappa-test", "MODES=4", "CHANTYPES=#",
+  # "are supported ..."]).  We scan every param for a "MODES=" prefix and parse
+  # the integer. The default of 3 is preserved when MODES= is absent.  Only
+  # the first MODES= token is honoured (ircd should emit at most one per 005
+  # line; multiple 005 lines are additive but MODES= is idempotent — use the
+  # first advertised value and ignore later ones to avoid a misbehaving server
+  # downgrading us mid-session).
+  def handle_info(
+        {:irc, %Message{command: {:numeric, 5}} = msg},
+        state
+      ) do
+    modes_per_chunk = extract_modes_isupport(msg.params, state.modes_per_chunk)
+    {:noreply, %{state | modes_per_chunk: modes_per_chunk}}
+  end
+
   # S4.2/S4.4 — Numeric routing: route numerics through NumericRouter and
   # broadcast `numeric_routed` event. Delegated numerics are passed through
   # to the existing delegate/2 path unchanged.
@@ -1508,6 +1532,38 @@ defmodule Grappa.Session.Server do
       true -> 2
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # S5.1 — ISUPPORT MODES= extraction
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  The default max-modes-per-chunk when upstream omits MODES= from ISUPPORT.
+  IRCv3 spec and RFC 2812 §3.2.3 both cite 3 as the de-facto minimum; all
+  major IRCds (bahamut, ircd-seven, UnrealIRCd) default to at least 3.
+  """
+  @spec default_modes_per_chunk() :: pos_integer()
+  def default_modes_per_chunk, do: 3
+
+  # Scans 005 RPL_ISUPPORT params for a "MODES=N" token and returns N as
+  # an integer. Returns the current value unchanged when no MODES= is found.
+  # Silently ignores malformed tokens (e.g. "MODES=" with no number) — the
+  # default is always a safe fallback.
+  @spec extract_modes_isupport([String.t()], pos_integer()) :: pos_integer()
+  defp extract_modes_isupport(params, current) when is_list(params) do
+    Enum.reduce_while(params, current, &parse_modes_token/2)
+  end
+
+  @spec parse_modes_token(String.t(), pos_integer()) ::
+          {:cont, pos_integer()} | {:halt, pos_integer()}
+  defp parse_modes_token("MODES=" <> rest, _) do
+    case Integer.parse(rest) do
+      {n, ""} when n > 0 -> {:halt, n}
+      _ -> {:cont, 3}
+    end
+  end
+
+  defp parse_modes_token(_, acc), do: {:cont, acc}
 
   # ---------------------------------------------------------------------------
   # S3.2 — away state internal helpers
