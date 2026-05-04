@@ -120,6 +120,22 @@ fixed in C8):**
   15 consecutive runs zero failures; the C2 cluster's stop_session
   race fix almost certainly closed it.)
 
+- **Channel-window must show "not connected" state when upstream
+  is failing.** Currently when the IRC session can't reach upstream
+  (TCP/TLS `:closed`, backoff loop, never registered) cicchetto's
+  channel pane renders identically to a healthy-but-empty channel:
+  scrollback shows historical sqlite rows + members pane shows
+  "no members yet" + sidebar lists the channel as if joined. Operator
+  has no signal that the network is in a connect-failure state.
+  Surfaced live 2026-05-04 during channel-client-polish e2e: azzurra
+  on `irc.azzurra.chat` blackhole-closing TLS handshakes for hours;
+  bug invisible in UI until RPC-inspected. Bundle into channel-client-polish
+  C-side rendering work — `connection_state` enum from S1 (T32) gives
+  the server-side signal; cicchetto needs an empty-state branch when
+  network is `:failed` (or session is in unreachable backoff). Natural
+  fit for C1 (window-list refactor) or C3 (channel-header) bucket;
+  pin during execution.
+
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
