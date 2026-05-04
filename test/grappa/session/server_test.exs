@@ -1770,12 +1770,18 @@ defmodule Grappa.Session.ServerTest do
       assert state2.topics["#test"].set_by == "vjt!user@host"
       assert %DateTime{} = state2.topics["#test"].set_at
 
-      # Two :topic_changed broadcasts expected (one per numeric)
-      assert_receive {:topic_changed, %{channel: "#test", topic: %{text: "Welcome to the test channel"}}},
+      # Two :event/:topic_changed broadcasts expected (one per numeric)
+      assert_receive {:event,
+                      %{
+                        kind: "topic_changed",
+                        channel: "#test",
+                        topic: %{text: "Welcome to the test channel"}
+                      }},
                      1_000
 
-      assert_receive {:topic_changed,
+      assert_receive {:event,
                       %{
+                        kind: "topic_changed",
                         channel: "#test",
                         topic: %{
                           set_by: "vjt!user@host"
@@ -1836,7 +1842,7 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(state.topics["#quiet"].set_by)
       assert is_nil(state.topics["#quiet"].set_at)
 
-      assert_receive {:topic_changed, %{channel: "#quiet", topic: %{text: nil}}}, 1_000
+      assert_receive {:event, %{kind: "topic_changed", channel: "#quiet", topic: %{text: nil}}}, 1_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1864,7 +1870,7 @@ defmodule Grappa.Session.ServerTest do
       # set_at should be approximately now (wall-clock)
       assert DateTime.compare(state.topics["#live"].set_at, t_before) in [:gt, :eq]
 
-      assert_receive {:topic_changed, %{channel: "#live", topic: %{text: "Fresh new topic"}}},
+      assert_receive {:event, %{kind: "topic_changed", channel: "#live", topic: %{text: "Fresh new topic"}}},
                      1_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -1971,7 +1977,7 @@ defmodule Grappa.Session.ServerTest do
       assert length(state.channel_modes["#modes"].modes) == 2
       assert state.channel_modes["#modes"].params == %{}
 
-      assert_receive {:channel_modes_changed, %{channel: "#modes", modes: %{modes: modes}}},
+      assert_receive {:event, %{kind: "channel_modes_changed", channel: "#modes", modes: %{modes: modes}}},
                      1_000
 
       assert "n" in modes
@@ -2021,7 +2027,7 @@ defmodule Grappa.Session.ServerTest do
       assert "n" in state.channel_modes["#delta"].modes
       assert "t" in state.channel_modes["#delta"].modes
 
-      assert_receive {:channel_modes_changed, %{channel: "#delta", modes: %{modes: modes}}}, 1_000
+      assert_receive {:event, %{kind: "channel_modes_changed", channel: "#delta", modes: %{modes: modes}}}, 1_000
       assert "n" in modes
       assert "t" in modes
 
@@ -2086,7 +2092,7 @@ defmodule Grappa.Session.ServerTest do
       # channel_modes unchanged (still just ["n"])
       assert state.channel_modes["#roles"].modes == ["n"]
 
-      refute_receive {:channel_modes_changed, _}, 200
+      refute_receive {:event, %{kind: "channel_modes_changed"}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
