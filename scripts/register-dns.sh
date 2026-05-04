@@ -1,5 +1,10 @@
-#!/bin/bash
-# Register grappa.bad.ass A record via Technitium DNS API.
+#!/usr/bin/env bash
+# Register a grappa A record via Technitium DNS API.
+#
+# Personal/operator helper — not invoked by the standard dev or deploy
+# flow. Pre-supposes a Technitium DNS server with API access and an
+# env file containing TECHNITIUM_TOKEN. Tune the env vars below for
+# your deployment; nothing is hardcoded to a particular IP/hostname.
 #
 # Idempotent in the strong sense: post-condition asserts the
 # authoritative DNS answer matches the desired IP after this runs.
@@ -8,14 +13,16 @@
 # record is deleted and re-added — `add` alone would silently no-op
 # on conflict and leave the wrong IP in place.
 #
-# Reads TECHNITIUM_TOKEN from /srv/dns/.env on this host (override
-# with TECHNITIUM_ENV_FILE). Other knobs available via env vars:
-#   GRAPPA_DOMAIN         default grappa.bad.ass
-#   GRAPPA_ZONE           default bad.ass
-#   GRAPPA_IP             default 192.168.53.11   (nginx vlan53 IP)
+# Required env vars (no defaults — script refuses to run without):
+#   GRAPPA_DOMAIN         FQDN to register, e.g. grappa.example.com
+#   GRAPPA_ZONE           authoritative zone, e.g. example.com
+#   GRAPPA_IP             A-record target IP
+#
+# Optional env vars (with defaults):
 #   GRAPPA_TTL            default 300
 #   TECHNITIUM_BASE_URL   default https://ns1.bad.ass/api
 #   DNS_NS                default ns1.bad.ass     (post-condition dig)
+#   TECHNITIUM_ENV_FILE   default /srv/dns/.env   (sourced for TECHNITIUM_TOKEN)
 #
 # Technitium quirks: API takes params as query-string (NOT JSON body);
 # self-signed cert (curl -sk); response JSON has `status` + optional
@@ -24,9 +31,9 @@
 set -euo pipefail
 
 ENV_FILE="${TECHNITIUM_ENV_FILE:-/srv/dns/.env}"
-DOMAIN="${GRAPPA_DOMAIN:-grappa.bad.ass}"
-ZONE="${GRAPPA_ZONE:-bad.ass}"
-IP="${GRAPPA_IP:-192.168.53.11}"
+DOMAIN="${GRAPPA_DOMAIN:?GRAPPA_DOMAIN missing — e.g. export GRAPPA_DOMAIN=grappa.example.com}"
+ZONE="${GRAPPA_ZONE:?GRAPPA_ZONE missing — e.g. export GRAPPA_ZONE=example.com}"
+IP="${GRAPPA_IP:?GRAPPA_IP missing — e.g. export GRAPPA_IP=192.168.1.10}"
 TTL="${GRAPPA_TTL:-300}"
 TECHNITIUM_BASE_URL="${TECHNITIUM_BASE_URL:-https://ns1.bad.ass/api}"
 DNS_NS="${DNS_NS:-ns1.bad.ass}"
