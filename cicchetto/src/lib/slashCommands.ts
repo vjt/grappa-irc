@@ -15,6 +15,16 @@
 // Unknown commands surface as `{kind: "unknown", verb, rest}` rather
 // than throwing — lets the UI render an inline error like "unknown
 // command: /whois" without losing what the user typed.
+//
+// T32 verbs — /quit /disconnect /connect:
+//
+// `/disconnect [network] [reason]` heuristic: the first whitespace-
+// delimited token is ALWAYS treated as the network slug (no state
+// lookup, no ambiguity). Bare `/disconnect` (no args) returns
+// `network: null` so the handler resolves the active-window's network.
+// If the user wants a reason without specifying a network they must use
+// `/disconnect <activenet> reason` explicitly. This keeps the parser
+// pure (zero state dependency).
 
 export type SlashCommand =
   | { kind: "empty" }
@@ -25,6 +35,10 @@ export type SlashCommand =
   | { kind: "topic"; body: string }
   | { kind: "nick"; nick: string }
   | { kind: "msg"; target: string; body: string }
+  | { kind: "quit"; reason: string | null }
+  | { kind: "disconnect"; network: string | null; reason: string | null }
+  | { kind: "connect"; network: string }
+  | { kind: "connect"; error: string }
   | { kind: "unknown"; verb: string; rest: string };
 
 export function parseSlash(input: string): SlashCommand {
@@ -80,6 +94,31 @@ export function parseSlash(input: string): SlashCommand {
         target: rest.slice(0, sp),
         body: rest.slice(sp + 1).trim(),
       };
+    }
+    case "quit":
+      // Nuclear: park all networks + close WS + clear auth + redirect.
+      // reason is optional free-text (everything after the verb).
+      return { kind: "quit", reason: rest === "" ? null : rest };
+    case "disconnect": {
+      // Heuristic: first arg is ALWAYS the network slug (see module comment).
+      // Bare /disconnect → network: null (handler resolves active-window network).
+      if (rest === "") return { kind: "disconnect", network: null, reason: null };
+      const sp = rest.search(/\s/);
+      if (sp === -1) return { kind: "disconnect", network: rest, reason: null };
+      return {
+        kind: "disconnect",
+        network: rest.slice(0, sp),
+        reason: rest.slice(sp + 1).trim(),
+      };
+    }
+    case "connect": {
+      // Network arg is required — bare /connect is a parser-level error.
+      if (rest === "")
+        return { kind: "connect", error: "/connect requires <network>" } as SlashCommand;
+      const [network] = rest.split(/\s+/);
+      if (!network)
+        return { kind: "connect", error: "/connect requires <network>" } as SlashCommand;
+      return { kind: "connect", network };
     }
     default:
       return { kind: "unknown", verb, rest };

@@ -78,3 +78,71 @@ describe("parseSlash", () => {
     expect(parseSlash("//me literal")).toEqual({ kind: "privmsg", body: "/me literal" });
   });
 });
+
+// T32 verbs: /quit /disconnect /connect
+//
+// /quit — nuclear: park ALL networks + close WS + clear auth + redirect to login.
+//   Parser output: reason is optional free-text (everything after the verb).
+//   Handler (in compose.ts) carries out the nuclear flow — parser is pure.
+//
+// /disconnect — surgical per-network.
+//   First arg is ALWAYS treated as the network slug (not a reason), per the
+//   deterministic heuristic chosen here: parser never does state lookups, so
+//   it cannot distinguish a slug from a reason word. Bare /disconnect
+//   (no args) returns network: null — the handler resolves to the
+//   active-window's network. This keeps the parser pure (no window-state
+//   dependency). If the user wants a reason without specifying a network
+//   they must use `/disconnect <activenet> my reason` explicitly.
+//
+// /connect — requires a named network arg. Bare /connect is a parser-level
+//   error (surfaces as {kind: "connect", error: "..."}) so the handler can
+//   render the error inline without making an empty API call.
+describe("parseSlash — T32 verbs", () => {
+  it("/quit bare → reason: null", () => {
+    expect(parseSlash("/quit")).toEqual({ kind: "quit", reason: null });
+  });
+
+  it("/quit with reason text → reason: string", () => {
+    expect(parseSlash("/quit going offline")).toEqual({
+      kind: "quit",
+      reason: "going offline",
+    });
+  });
+
+  it("/disconnect bare → network: null, reason: null (handler resolves active-window network)", () => {
+    expect(parseSlash("/disconnect")).toEqual({
+      kind: "disconnect",
+      network: null,
+      reason: null,
+    });
+  });
+
+  it("/disconnect <netslug> → network: slug, reason: null (first arg always treated as network slug)", () => {
+    // Heuristic: first arg is ALWAYS the network slug. Bare slug, no # prefix.
+    expect(parseSlash("/disconnect libera")).toEqual({
+      kind: "disconnect",
+      network: "libera",
+      reason: null,
+    });
+  });
+
+  it("/disconnect <netslug> <reason...> → network: slug, reason: rest of args", () => {
+    expect(parseSlash("/disconnect libera going offline now")).toEqual({
+      kind: "disconnect",
+      network: "libera",
+      reason: "going offline now",
+    });
+  });
+
+  it("/connect <netslug> → network: slug", () => {
+    expect(parseSlash("/connect libera")).toEqual({ kind: "connect", network: "libera" });
+  });
+
+  it("/connect bare → error (network arg required)", () => {
+    const result = parseSlash("/connect");
+    expect(result).toMatchObject({
+      kind: "connect",
+      error: expect.stringContaining("requires"),
+    });
+  });
+});

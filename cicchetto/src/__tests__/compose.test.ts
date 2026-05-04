@@ -18,6 +18,12 @@ vi.mock("../lib/api", () => {
     postNick: vi.fn(),
     postJoin: vi.fn(),
     postPart: vi.fn(),
+    // T32 — required by compose.ts for /quit /disconnect /connect
+    patchNetwork: vi.fn(),
+    // Required by networks.ts (transitively imported via compose.ts → networks.ts)
+    listNetworks: vi.fn().mockResolvedValue([]),
+    listChannels: vi.fn().mockResolvedValue([]),
+    me: vi.fn().mockResolvedValue(null),
     setOn401Handler: vi.fn(),
   };
 });
@@ -30,6 +36,26 @@ vi.mock("../lib/members", () => ({
   membersByChannel: vi.fn(() => ({})),
   applyPresenceEvent: vi.fn(),
   loadMembers: vi.fn(),
+}));
+
+// Mock auth to provide logout for /quit flow. `token` must return a value
+// so the compose submit's `if (!t) return` guard doesn't short-circuit
+// tests that expect the handler to run.
+vi.mock("../lib/auth", () => ({
+  token: vi.fn(() => "tok"),
+  logout: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mock networks so compose.ts can read the network list for /quit without
+// depending on the real api.ts listNetworks call chain in tests.
+vi.mock("../lib/networks", () => ({
+  networks: vi.fn(() => [
+    { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
+    { id: 2, slug: "libera", inserted_at: "", updated_at: "" },
+  ]),
+  user: vi.fn(() => null),
+  channelsBySlug: vi.fn(() => ({})),
+  refetchChannels: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -298,5 +324,239 @@ describe("compose tabComplete (members-only, P4-1 Q6)", () => {
     const r3 = compose.tabComplete(k, r2?.newInput ?? "", r2?.newCursor ?? 0, true);
     // Wraps back to alex
     expect(r3?.newInput).toBe("alex");
+  });
+});
+
+// T32 slash verbs: /quit /disconnect /connect
+describe("compose submit — T32 verbs", () => {
+  it("/quit PATCHes ALL networks to :parked then calls logout", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const auth = await import("../lib/auth");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "freenode",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "parked",
+      connection_state_reason: "user-quit",
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/quit going offline");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // Both networks from the mock get PATCHed to :parked.
+    expect(api.patchNetwork).toHaveBeenCalledTimes(2);
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
+      connection_state: "parked",
+      reason: "going offline",
+    });
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "libera", {
+      connection_state: "parked",
+      reason: "going offline",
+    });
+    // logout() terminates the session regardless of PATCH results.
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/quit bare (no reason) PATCHes without reason field", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "freenode",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "parked",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/quit");
+    await compose.submit(k, "freenode", "#a");
+
+    // No reason key when bare /quit.
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
+      connection_state: "parked",
+    });
+  });
+
+  it("/quit still calls logout even if a PATCH fails (Promise.allSettled)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const auth = await import("../lib/auth");
+    // First PATCH fails, second succeeds.
+    vi.mocked(api.patchNetwork)
+      .mockRejectedValueOnce(new Error("network unreachable"))
+      .mockResolvedValueOnce({
+        network: "libera",
+        nick: "vjt",
+        realname: null,
+        sasl_user: null,
+        auth_method: "sasl_plain",
+        auth_command_template: null,
+        autojoin_channels: [],
+        connection_state: "parked",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "",
+        updated_at: "",
+      });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/quit");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // logout STILL called despite the first PATCH failing.
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/disconnect bare uses active-window's network slug", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "freenode",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "parked",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/disconnect");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // Active-window network slug used when no arg given.
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
+      connection_state: "parked",
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/disconnect <net> targets the named network slug", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "libera",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "parked",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/disconnect libera");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "libera", {
+      connection_state: "parked",
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/disconnect <net> <reason> passes reason to PATCH body", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "libera",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "parked",
+      connection_state_reason: "going offline",
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/disconnect libera going offline");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "libera", {
+      connection_state: "parked",
+      reason: "going offline",
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/connect <net> PATCHes the named network to :connected", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockResolvedValue({
+      network: "libera",
+      nick: "vjt",
+      realname: null,
+      sasl_user: null,
+      auth_method: "sasl_plain",
+      auth_command_template: null,
+      autojoin_channels: [],
+      connection_state: "connected",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/connect libera");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.patchNetwork).toHaveBeenCalledWith("tok", "libera", {
+      connection_state: "connected",
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/connect bare returns inline error without making API call", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/connect");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.patchNetwork).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("requires") });
   });
 });
