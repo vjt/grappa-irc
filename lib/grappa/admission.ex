@@ -50,7 +50,12 @@ defmodule Grappa.Admission do
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
-  @type flow :: :login_fresh | :login_existing | :bootstrap_user | :bootstrap_visitor
+  @type flow ::
+          :login_fresh
+          | :login_existing
+          | :bootstrap_user
+          | :bootstrap_visitor
+          | :patch_network_connect
 
   @type capacity_input :: %{
           network_id: integer(),
