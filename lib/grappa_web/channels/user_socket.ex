@@ -43,7 +43,7 @@ defmodule GrappaWeb.UserSocket do
   """
   use Phoenix.Socket
 
-  alias Grappa.{Accounts, Visitors}
+  alias Grappa.{Accounts, Visitors, WSPresence}
   alias Grappa.Accounts.Session
   alias Grappa.Visitors.Visitor
 
@@ -53,7 +53,21 @@ defmodule GrappaWeb.UserSocket do
   def connect(%{"token" => token}, socket, _) when is_binary(token) do
     with {:ok, session} <- Accounts.authenticate(token),
          {:ok, socket} <- assign_subject(socket, session) do
-      {:ok, assign(socket, :current_session_id, session.id)}
+      socket = assign(socket, :current_session_id, session.id)
+      # S3.1: register socket pid with WSPresence so the auto-away
+      # debounce fires when all WS connections for this user close.
+      # Visitor sessions skip this — visitor disconnect = bouncer disconnect
+      # (ephemeral credential); no upstream session to mark away.
+      user_name = socket.assigns.user_name
+
+      unless String.starts_with?(user_name, "visitor:") do
+        # The transport process (self() at connect time) is the pid that owns
+        # the WS connection. When it exits, the WS is gone. We monitor it via
+        # WSPresence so auto-away fires when all connections for this user close.
+        :ok = WSPresence.register(user_name, self())
+      end
+
+      {:ok, socket}
     else
       _ -> :error
     end
