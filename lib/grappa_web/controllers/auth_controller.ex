@@ -33,6 +33,7 @@ defmodule GrappaWeb.AuthController do
   alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.Visitors.{Login, Visitor}
+  alias GrappaWeb.RemoteIP
 
   require Logger
 
@@ -357,9 +358,11 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
+  # Delegates to `GrappaWeb.RemoteIP.format/1` so the IPv4-mapped IPv6
+  # unwrap (L-web-2) lands once for every controller that audits the
+  # client IP.
   @spec format_ip(Plug.Conn.t()) :: String.t() | nil
-  defp format_ip(%Plug.Conn{remote_ip: nil}), do: nil
-  defp format_ip(%Plug.Conn{remote_ip: ip}), do: ip |> :inet.ntoa() |> to_string()
+  defp format_ip(conn), do: RemoteIP.format(conn)
 
   @spec user_agent(Plug.Conn.t()) :: String.t() | nil
   defp user_agent(conn) do
