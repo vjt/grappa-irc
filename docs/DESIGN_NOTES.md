@@ -1646,10 +1646,10 @@ scoped REST surface; UserSocket has its own `connect/3` auth path).
 ### Defense-in-depth: DB CHECK constraints + Ecto.Enum at boundary
 
 B5.5 added DB-level CHECK constraints — `networks.max_concurrent_sessions
->= 0`, `networks.max_per_client >= 0`, `messages.kind IN
-('privmsg','notice','action','join','part','quit','nick_change','mode',
-'topic','kick')`, `network_credentials.auth_method IN
-('plain','sasl_plain','none')`. Ecto.Enum already validates kind +
+IS NULL OR >= 0`, `networks.max_per_client IS NULL OR >= 0`,
+`messages.kind IN ('privmsg','notice','action','join','part','quit',
+'nick_change','mode','topic','kick')`, `network_credentials.auth_method
+IN ('auto','sasl','server_pass','nickserv_identify','none')`. Ecto.Enum already validates kind +
 auth_method at the changeset boundary; the DB CHECK is the second
 line of defense — if a future migration or release script bypasses
 the schema and writes a raw map, the DB rejects it. Pairing is
