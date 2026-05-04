@@ -6,6 +6,7 @@ import { membersByChannel } from "./members";
 import { networks } from "./networks";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { parseSlash } from "./slashCommands";
+import { pushAwaySet, pushAwayUnset } from "./socket";
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -202,6 +203,19 @@ const exports_ = createRoot(() => {
           // Unpark + respawn. Network slug guaranteed by parser
           // (bare /connect surfaces as kind: "connect-error" instead).
           await patchNetwork(t, cmd.network, { connection_state: "connected" });
+          result = { ok: true };
+          break;
+        }
+        case "away": {
+          // S3.4 — explicit away set/unset via the user-level Phoenix Channel.
+          // The channel push reaches GrappaChannel.handle_in("away", ...) which
+          // routes to Session.set_explicit_away / Session.unset_explicit_away.
+          // networkSlug from submit args is the active window's network.
+          if (cmd.action === "set") {
+            await pushAwaySet(networkSlug, cmd.reason);
+          } else {
+            await pushAwayUnset(networkSlug);
+          }
           result = { ok: true };
           break;
         }
