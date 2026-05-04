@@ -12,9 +12,11 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
   one of these CHECKs without a deliberate migration, these tests
   red-flag it.
   """
-  use Grappa.DataCase, async: false
+  use Grappa.DataCase, async: true
 
   alias Grappa.{Accounts, Networks}
+  alias Grappa.Networks.Credential
+  alias Grappa.Scrollback.Message
 
   describe "networks caps" do
     test "max_concurrent_sessions_non_negative rejects -1" do
@@ -84,8 +86,13 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
       {:ok, user} =
         Accounts.create_user(%{name: "u-#{System.unique_integer([:positive])}", password: "correct horse battery"})
 
+      # Read the allowlist through the prod accessor so adding a 6th
+      # auth_method that the migration's CHECK doesn't yet cover would
+      # red-flag here, not silently slip past.
       for {auth, idx} <-
-            Enum.with_index(["auto", "sasl", "server_pass", "nickserv_identify", "none"]) do
+            Credential.auth_methods()
+            |> Enum.map(&Atom.to_string/1)
+            |> Enum.with_index() do
         {:ok, network} = Networks.find_or_create_network(%{slug: "n-#{idx}-#{System.unique_integer([:positive])}"})
 
         assert {:ok, _} =
@@ -123,8 +130,10 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
 
       {:ok, network} = Networks.find_or_create_network(%{slug: "n-#{System.unique_integer([:positive])}"})
 
-      # Mirrors `Grappa.Scrollback.Message.@kinds`.
-      kinds = ~w[privmsg notice action join part quit nick_change mode topic kick]
+      # Read the allowlist through the prod accessor so adding an 11th
+      # kind that the migration's CHECK doesn't yet cover would red-flag
+      # here, not silently slip past.
+      kinds = Enum.map(Message.kinds(), &Atom.to_string/1)
 
       for kind <- kinds do
         assert {:ok, _} =

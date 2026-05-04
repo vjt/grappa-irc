@@ -42,6 +42,16 @@ defmodule Grappa.Networks.Credential do
   # `Grappa.IRC.AuthFSM` (the verb owner) and mirroring the literal here.
   @auth_methods [:auto, :sasl, :server_pass, :nickserv_identify, :none]
 
+  @doc """
+  Returns the closed-set list of valid `:auth_method` values. Exposed
+  so tests (notably the migration drift-detector
+  `Grappa.Migrations.CheckConstraintsTest`) can iterate the full enum
+  without hard-coding the list at the test site (which would silently
+  drift the moment a sixth method lands in the schema).
+  """
+  @spec auth_methods() :: [auth_method(), ...]
+  def auth_methods, do: @auth_methods
+
   @type auth_method :: AuthFSM.auth_method()
 
   @type t :: %__MODULE__{
