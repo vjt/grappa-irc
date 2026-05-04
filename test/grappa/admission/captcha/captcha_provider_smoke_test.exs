@@ -32,7 +32,7 @@ defmodule Grappa.Admission.Captcha.CaptchaProviderSmokeTest do
 
       test "delegates to SiteVerifyHttp routing secret + token + remoteip to #{endpoint_key}",
            %{bypass: bypass} do
-        Bypass.expect_once(bypass, "POST", "/siteverify", fn conn ->
+        Bypass.expect(bypass, "POST", "/siteverify", fn conn ->
           {:ok, body, conn} = Plug.Conn.read_body(conn)
           params = URI.decode_query(body)
 
