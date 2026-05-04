@@ -4,12 +4,14 @@ defmodule GrappaWeb.ChannelsController do
   (`create/2` + `delete/2` + `topic/2`) for the per-(subject, network)
   session.
 
-  Subject-dispatched (Task 30): every action reads
-  `:current_subject` from `conn.assigns` (plumbed by `Plugs.Authn`) and
-  threads it through the `Grappa.Session.send_*` API which already
-  takes a `subject :: {:user, id} | {:visitor, id}` tuple. The URL
-  `:network_id` slug → schema struct resolution + per-subject iso check
-  happens in `GrappaWeb.Plugs.ResolveNetwork`; this controller reads
+  Subject-dispatched (Task 30): every action reads `:current_subject`
+  from `conn.assigns` (plumbed by `Plugs.Authn`) — a tagged tuple
+  `{:user, %User{}} | {:visitor, %Visitor{}}` carrying the loaded
+  struct (M-web-1). The `Grappa.Session.send_*` API speaks the leaner
+  ID-tuple shape (`{:user, id} | {:visitor, id}`); the conversion
+  goes through `GrappaWeb.Subject.to_session/1`. The URL `:network_id`
+  slug → schema struct resolution + per-subject iso check happens in
+  `GrappaWeb.Plugs.ResolveNetwork`; this controller reads
   `conn.assigns.network` and never re-resolves.
 
   ## index
@@ -41,6 +43,7 @@ defmodule GrappaWeb.ChannelsController do
 
   alias Grappa.Networks.Credentials
   alias Grappa.{Session, Visitors}
+  alias GrappaWeb.Subject
 
   @doc """
   `GET /networks/:network_id/channels` — lists the subject's channels
@@ -56,9 +59,9 @@ defmodule GrappaWeb.ChannelsController do
     network = conn.assigns.network
     subject = conn.assigns.current_subject
 
-    with {:ok, autojoin} <- subject_autojoin(conn, network) do
+    with {:ok, autojoin} <- subject_autojoin(subject, network) do
       session_channels =
-        case Session.list_channels(subject, network.id) do
+        case Session.list_channels(Subject.to_session(subject), network.id) do
           {:ok, list} -> list
           {:error, :no_session} -> []
         end
@@ -68,16 +71,13 @@ defmodule GrappaWeb.ChannelsController do
     end
   end
 
-  defp subject_autojoin(%{assigns: %{current_subject: {:user, _}, current_user: user}}, network) do
+  defp subject_autojoin({:user, user}, network) do
     with {:ok, credential} <- Credentials.get_credential(user, network) do
       {:ok, credential.autojoin_channels}
     end
   end
 
-  defp subject_autojoin(
-         %{assigns: %{current_subject: {:visitor, _}, current_visitor: visitor}},
-         _
-       ) do
+  defp subject_autojoin({:visitor, visitor}, _) do
     {:ok, Visitors.list_autojoin_channels(visitor)}
   end
 
@@ -111,7 +111,7 @@ defmodule GrappaWeb.ChannelsController do
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
   def create(conn, %{"name" => name})
       when is_binary(name) and name != "" do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(name),
@@ -131,7 +131,7 @@ defmodule GrappaWeb.ChannelsController do
   @spec delete(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
   def delete(conn, %{"channel_id" => channel}) do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),
@@ -152,7 +152,7 @@ defmodule GrappaWeb.ChannelsController do
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
   def topic(conn, %{"channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),

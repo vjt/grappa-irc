@@ -34,13 +34,13 @@ defmodule GrappaWeb.NetworksController do
   def index(conn, _) do
     networks =
       case conn.assigns.current_subject do
-        {:user, _} ->
-          conn.assigns.current_user
+        {:user, user} ->
+          user
           |> Credentials.list_credentials_for_user()
           |> Enum.map(& &1.network)
 
-        {:visitor, _} ->
-          case Networks.get_network_by_slug(conn.assigns.current_visitor.network_slug) do
+        {:visitor, visitor} ->
+          case Networks.get_network_by_slug(visitor.network_slug) do
             {:ok, network} -> [network]
             {:error, :not_found} -> []
           end

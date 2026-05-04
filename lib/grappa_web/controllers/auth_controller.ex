@@ -105,30 +105,31 @@ defmodule GrappaWeb.AuthController do
   """
   @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def logout(conn, _) do
-    :ok = maybe_terminate_sessions(conn.assigns)
+    subject = conn.assigns[:current_subject]
+    :ok = maybe_terminate_sessions(subject)
     :ok = Accounts.revoke_session(conn.assigns.current_session_id)
-    :ok = maybe_disconnect_socket(conn.assigns)
+    :ok = maybe_disconnect_socket(subject)
     send_resp(conn, :no_content, "")
   end
 
-  @spec maybe_terminate_sessions(map()) :: :ok
-  defp maybe_terminate_sessions(%{current_visitor: %Visitor{} = visitor}) do
+  @spec maybe_terminate_sessions(GrappaWeb.Subject.t() | nil) :: :ok
+  defp maybe_terminate_sessions({:visitor, %Visitor{} = visitor}) do
     :ok = stop_visitor_session(visitor)
     :ok = Visitors.purge_if_anon(visitor.id)
   end
 
-  defp maybe_terminate_sessions(%{current_subject: {:user, user_id}}) do
+  defp maybe_terminate_sessions({:user, %Accounts.User{id: user_id}}) do
     :ok = stop_all_user_sessions(user_id)
   end
 
   defp maybe_terminate_sessions(_), do: :ok
 
-  @spec maybe_disconnect_socket(map()) :: :ok
-  defp maybe_disconnect_socket(%{current_visitor: %Visitor{id: visitor_id}}) do
+  @spec maybe_disconnect_socket(GrappaWeb.Subject.t() | nil) :: :ok
+  defp maybe_disconnect_socket({:visitor, %Visitor{id: visitor_id}}) do
     broadcast_disconnect("user_socket:visitor:#{visitor_id}")
   end
 
-  defp maybe_disconnect_socket(%{current_user: %Accounts.User{name: name}}) do
+  defp maybe_disconnect_socket({:user, %Accounts.User{name: name}}) do
     broadcast_disconnect("user_socket:#{name}")
   end
 

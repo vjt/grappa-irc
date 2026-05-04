@@ -28,7 +28,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
   end
 
   describe "valid Bearer token" do
-    test "assigns :current_user_id + :current_session_id + :current_user and does NOT halt",
+    test "assigns :current_subject = {:user, %User{}} + :current_session_id and does NOT halt",
          %{conn: conn, user: user, session: session} do
       result =
         conn
@@ -36,14 +36,15 @@ defmodule GrappaWeb.Plugs.AuthnTest do
         |> Authn.call(Authn.init([]))
 
       refute result.halted
-      assert result.assigns.current_user_id == user.id
       assert result.assigns.current_session_id == session.id
-      # S42: the plug also loads the User struct so downstream plugs +
-      # controllers don't re-fetch. Pin the contract here so a future
-      # "the controllers don't read this — drop the load" change fails
-      # the plug's own test before it propagates.
-      assert %User{id: user_id} = result.assigns.current_user
+      # M-web-1 (B6.2): single-source subject discriminator. The plug loads
+      # the subject struct once and assigns it inside the tagged tuple — no
+      # parallel `:current_user` / `:current_user_id` assigns to drift out
+      # of sync with `:current_subject`.
+      assert {:user, %User{id: user_id}} = result.assigns.current_subject
       assert user_id == user.id
+      refute Map.has_key?(result.assigns, :current_user)
+      refute Map.has_key?(result.assigns, :current_user_id)
     end
   end
 
@@ -134,7 +135,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
       {:ok, conn: conn, visitor: visitor, session: session}
     end
 
-    test "valid visitor token assigns :current_visitor + :current_visitor_id, NOT current_user",
+    test "valid visitor token assigns :current_subject = {:visitor, %Visitor{}}, NOT user keys",
          %{conn: conn, visitor: visitor, session: session} do
       result =
         conn
@@ -142,12 +143,16 @@ defmodule GrappaWeb.Plugs.AuthnTest do
         |> Authn.call(Authn.init([]))
 
       refute result.halted
-      assert result.assigns.current_visitor_id == visitor.id
-      assert %Visitor{id: vid} = result.assigns.current_visitor
+      assert {:visitor, %Visitor{id: vid}} = result.assigns.current_subject
       assert vid == visitor.id
       assert result.assigns.current_session_id == session.id
+      # M-web-1 (B6.2): no parallel current_visitor / current_visitor_id /
+      # current_user / current_user_id assigns. The struct is reachable
+      # only via :current_subject — single source.
       refute Map.has_key?(result.assigns, :current_user)
       refute Map.has_key?(result.assigns, :current_user_id)
+      refute Map.has_key?(result.assigns, :current_visitor)
+      refute Map.has_key?(result.assigns, :current_visitor_id)
     end
 
     test "visitor authn bumps expires_at via Visitors.touch/1",

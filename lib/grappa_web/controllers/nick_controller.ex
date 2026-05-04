@@ -34,6 +34,7 @@ defmodule GrappaWeb.NickController do
   """
   use GrappaWeb, :controller
 
+  alias Grappa.Accounts.User
   alias Grappa.Session
 
   @doc """
@@ -48,7 +49,7 @@ defmodule GrappaWeb.NickController do
           Plug.Conn.t() | {:error, :bad_request | :forbidden | :no_session | :invalid_line}
   def create(conn, %{"nick" => nick}) when is_binary(nick) and nick != "" do
     case conn.assigns.current_subject do
-      {:user, user_id} ->
+      {:user, %User{id: user_id}} ->
         network = conn.assigns.network
 
         with :ok <- Session.send_nick({:user, user_id}, network.id, nick) do

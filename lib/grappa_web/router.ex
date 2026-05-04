@@ -8,7 +8,8 @@ defmodule GrappaWeb.Router do
       authenticated or not (login is unauthenticated but still JSON,
       and admission gates need the client_id at login time too).
     * `:authn`   — bearer-token authentication. Plugs
-      `GrappaWeb.Plugs.Authn`, which assigns `:current_user_id` +
+      `GrappaWeb.Plugs.Authn`, which assigns `:current_subject` (a
+      `{:user, %User{}} | {:visitor, %Visitor{}}` tagged tuple) +
       `:current_session_id` on success and halts with a uniform 401
       JSON body on any failure mode (no header, malformed token,
       unknown / revoked / expired session).

@@ -11,6 +11,11 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
   KeyError-crashed on visitor sessions — surfacing as a 500 stack
   trace. This test pins the new wire surface (visitor + correct slug
   passes, visitor + wrong slug 404s).
+
+  M-web-1 (B6.2): the loaded subject struct lives inside the
+  `:current_subject` tagged tuple — no parallel `:current_user` /
+  `:current_visitor` assigns. Tests build conns by setting only
+  `:current_subject`.
   """
   use GrappaWeb.ConnCase, async: true
 
@@ -32,8 +37,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       result =
         conn
         |> Map.put(:path_params, %{"network_id" => "azzurra"})
-        |> Plug.Conn.assign(:current_subject, {:visitor, visitor.id})
-        |> Plug.Conn.assign(:current_visitor, visitor)
+        |> Plug.Conn.assign(:current_subject, {:visitor, visitor})
         |> ResolveNetwork.call(ResolveNetwork.init([]))
 
       refute result.halted
@@ -48,8 +52,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       result =
         conn
         |> Map.put(:path_params, %{"network_id" => "ircnet"})
-        |> Plug.Conn.assign(:current_subject, {:visitor, visitor.id})
-        |> Plug.Conn.assign(:current_visitor, visitor)
+        |> Plug.Conn.assign(:current_subject, {:visitor, visitor})
         |> ResolveNetwork.call(ResolveNetwork.init([]))
 
       assert result.halted
@@ -62,8 +65,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       result =
         conn
         |> Map.put(:path_params, %{"network_id" => "nope"})
-        |> Plug.Conn.assign(:current_subject, {:visitor, visitor.id})
-        |> Plug.Conn.assign(:current_visitor, visitor)
+        |> Plug.Conn.assign(:current_subject, {:visitor, visitor})
         |> ResolveNetwork.call(ResolveNetwork.init([]))
 
       assert result.halted
@@ -88,8 +90,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       result =
         conn
         |> Map.put(:path_params, %{"network_id" => network.slug})
-        |> Plug.Conn.assign(:current_subject, {:user, user.id})
-        |> Plug.Conn.assign(:current_user, user)
+        |> Plug.Conn.assign(:current_subject, {:user, user})
         |> ResolveNetwork.call(ResolveNetwork.init([]))
 
       refute result.halted
@@ -103,8 +104,7 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
       result =
         conn
         |> Map.put(:path_params, %{"network_id" => network.slug})
-        |> Plug.Conn.assign(:current_subject, {:user, user.id})
-        |> Plug.Conn.assign(:current_user, user)
+        |> Plug.Conn.assign(:current_subject, {:user, user})
         |> ResolveNetwork.call(ResolveNetwork.init([]))
 
       assert result.halted

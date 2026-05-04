@@ -12,9 +12,11 @@ defmodule GrappaWeb.MessagesController do
   `create/2` routes through `Grappa.Session.send_privmsg/4`, which
   persists the row, broadcasts on the per-channel PubSub topic, AND
   sends the PRIVMSG upstream — single source for both the scrollback
-  row and the wire event. The lookup is keyed by
-  `(conn.assigns.current_user_id, network.id)` end-to-end (sub-task
-  2g) so two users on the same network land in different sessions.
+  row and the wire event. The lookup is keyed by the
+  `t:Grappa.Session.subject/0` ID-tuple resolved from
+  `conn.assigns.current_subject` via `GrappaWeb.Subject.to_session/1`
+  + `network.id` end-to-end (sub-task 2g) so two subjects on the same
+  network land in different sessions.
   Unknown slug, not-your-network, and known-slug-but-no-session all
   surface as the same uniform 404 `{"error": "not_found"}` body via
   `FallbackController` (CP10 S14 oracle close). The internal
@@ -42,6 +44,7 @@ defmodule GrappaWeb.MessagesController do
   import GrappaWeb.Validation, only: [validate_channel_name: 1]
 
   alias Grappa.{Scrollback, Session}
+  alias GrappaWeb.Subject
 
   @default_limit 50
 
@@ -64,7 +67,7 @@ defmodule GrappaWeb.MessagesController do
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request}
   def index(conn, %{"channel_id" => channel} = params) do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     # Reject malformed channel-name shape with 400 — same boundary the
@@ -88,7 +91,8 @@ defmodule GrappaWeb.MessagesController do
   @doc """
   `POST /networks/:network_id/channels/:channel_id/messages` —
   delegates to `Grappa.Session.send_privmsg/4` for the active session
-  registered as `(current_user_id, network.id)`. The session persists
+  registered as `(subject, network.id)` where `subject` is the
+  `t:Grappa.Session.subject/0` ID-tuple. The session persists
   the row with `sender = session.nick`, broadcasts the canonical wire
   event on the per-channel topic, and writes the PRIVMSG to the
   upstream socket. Returns 201 with the serialized message on success;
@@ -102,7 +106,7 @@ defmodule GrappaWeb.MessagesController do
           | {:error, Ecto.Changeset.t()}
   def create(conn, %{"channel_id" => channel, "body" => body})
       when is_binary(body) and body != "" do
-    subject = conn.assigns.current_subject
+    subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
     # Channel-name shape check is :bad_request; the body's CRLF/NUL
