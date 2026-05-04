@@ -12,6 +12,11 @@ defmodule Grappa.IRC.ParserTest do
 
   alias Grappa.IRC.{Message, Parser}
 
+  # M-irc-4: pulls in `Parser.unescape/1`'s @doc examples (incl. the
+  # IRCv3 §3.3 fall-through arm that the named tests below don't
+  # exercise on a per-byte basis).
+  doctest Grappa.IRC.Parser
+
   describe "parse/1 — basic shapes (RFC 2812)" do
     test "PRIVMSG with nick!user@host prefix and trailing body" do
       assert {:ok,

@@ -197,7 +197,52 @@ defmodule Grappa.IRC.Parser do
     end
   end
 
-  defp unescape_tag_value(value), do: do_unescape(value, <<>>)
+  defp unescape_tag_value(value), do: unescape(value)
+
+  @doc """
+  Decode an IRCv3 message-tag value per [IRCv3 message-tags §3.3].
+
+  Public so the doctests below cover the fall-through arm (the
+  catch-all `do_unescape` clause that handles unknown escapes by
+  emitting just the byte after the backslash). Production callers go
+  through the parser; this entry point exists for tests + future
+  external consumers (e.g. a Phase 6 listener replaying tag values).
+
+  ## Documented escape sequences (IRCv3 §3.3)
+
+      iex> Grappa.IRC.Parser.unescape("a\\\\:b")
+      "a;b"
+      iex> Grappa.IRC.Parser.unescape("a\\\\sb")
+      "a b"
+      iex> Grappa.IRC.Parser.unescape("a\\\\\\\\b")
+      "a\\\\b"
+      iex> Grappa.IRC.Parser.unescape("a\\\\rb")
+      "a\\rb"
+      iex> Grappa.IRC.Parser.unescape("a\\\\nb")
+      "a\\nb"
+
+  ## Fall-through (M-irc-4)
+
+  IRCv3 message-tags §3.3: "If a recipient encounters an escape
+  sequence not listed above, it SHOULD treat the sequence as if it
+  were the character following the backslash (i.e. the backslash is
+  dropped)." The catch-all `do_unescape` clause implements this so
+  the parser is forward-compatible with future escape-sequence
+  extensions. The doctests pin the contract:
+
+      iex> Grappa.IRC.Parser.unescape("\\\\q")
+      "q"
+      iex> Grappa.IRC.Parser.unescape("\\\\.")
+      "."
+
+  A trailing dangling backslash is dropped silently (incomplete
+  escape with no following byte):
+
+      iex> Grappa.IRC.Parser.unescape("foo\\\\")
+      "foo"
+  """
+  @spec unescape(binary()) :: binary()
+  def unescape(value) when is_binary(value), do: do_unescape(value, <<>>)
 
   defp do_unescape(<<>>, acc), do: acc
   defp do_unescape(<<"\\:", rest::binary>>, acc), do: do_unescape(rest, <<acc::binary, ?;>>)
@@ -206,6 +251,11 @@ defmodule Grappa.IRC.Parser do
   defp do_unescape(<<"\\r", rest::binary>>, acc), do: do_unescape(rest, <<acc::binary, ?\r>>)
   defp do_unescape(<<"\\n", rest::binary>>, acc), do: do_unescape(rest, <<acc::binary, ?\n>>)
 
+  # IRCv3 message-tags §3.3 fall-through: "Other escape sequences
+  # SHOULD be parsed as if they were the character following the
+  # backslash." Required for forward compatibility with future spec
+  # extensions — an unknown escape (e.g. `\q`) collapses to its body
+  # byte (`q`) rather than crashing or being passed through verbatim.
   defp do_unescape(<<"\\", c::utf8, rest::binary>>, acc),
     do: do_unescape(rest, <<acc::binary, c::utf8>>)
 
