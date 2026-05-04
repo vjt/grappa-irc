@@ -94,7 +94,7 @@ defmodule Grappa.IRC.Client do
 
   # `:socket` is intentionally NOT enforced — pre-connect (between `init/1`
   # returning and `handle_continue(:connect, _)` running) it is `nil`. Every
-  # code path that touches the socket runs from `handle_info` / `handle_cast`,
+  # code path that touches the socket runs from `handle_info` / `handle_call`,
   # both of which are queued behind the `{:continue, :connect}` per OTP, so
   # the only legal `socket: nil` window is bounded by the continue.
   @enforce_keys [:transport, :dispatch_to, :fsm]
@@ -145,9 +145,20 @@ defmodule Grappa.IRC.Client do
   Sends raw bytes verbatim to the upstream socket. The caller is
   responsible for CR/LF framing and IRC syntax. Used by the high-level
   helpers below; tests and lower-level paths can call directly.
+
+  Synchronous: returns only after `transport_send/2` has completed
+  inside the GenServer. Callers can chain a follow-up that depends on
+  the bytes being on the wire (notably `Networks.disconnect/2`'s
+  QUIT-then-`stop_session/2` sequence) without racing the socket
+  close. The mailbox queues sends behind any prior message, so write
+  ordering is preserved per-Client. There's no measurable throughput
+  cost: `transport_send/2` is the same `:gen_tcp.send` /
+  `:ssl.send` whether invoked from `handle_cast` or `handle_call`,
+  and the line-rate IRC traffic this Client carries is nowhere near
+  GenServer-call overhead bounds.
   """
   @spec send_line(pid(), iodata()) :: :ok
-  def send_line(client, line), do: GenServer.cast(client, {:send, line})
+  def send_line(client, line), do: GenServer.call(client, {:send, line})
 
   @doc """
   Sends `PRIVMSG <target> :<body>\\r\\n`. Rejects CR/LF/NUL in either
@@ -312,9 +323,9 @@ defmodule Grappa.IRC.Client do
   end
 
   @impl GenServer
-  def handle_cast({:send, line}, state) do
+  def handle_call({:send, line}, _, state) do
     :ok = transport_send(state, line)
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
   ## Connection
