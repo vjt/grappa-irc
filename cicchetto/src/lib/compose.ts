@@ -189,9 +189,6 @@ const exports_ = createRoot(() => {
           // Surgical: park one network. `network` from parser is null
           // (bare /disconnect) or a named slug. Null → use active-window's
           // networkSlug (already in scope from submit's args).
-          if ("error" in cmd) {
-            return { error: (cmd as { error: string }).error };
-          }
           const targetSlug = cmd.network ?? networkSlug;
           const disconnBody: { connection_state: "parked"; reason?: string } = {
             connection_state: "parked",
@@ -202,14 +199,14 @@ const exports_ = createRoot(() => {
           break;
         }
         case "connect": {
-          // Unpark + respawn. Requires a network slug (parser enforces).
-          if ("error" in cmd) {
-            return { error: (cmd as { error: string }).error };
-          }
+          // Unpark + respawn. Network slug guaranteed by parser
+          // (bare /connect surfaces as kind: "connect-error" instead).
           await patchNetwork(t, cmd.network, { connection_state: "connected" });
           result = { ok: true };
           break;
         }
+        case "connect-error":
+          return { error: cmd.error };
         case "unknown":
           return { error: `unknown command: /${cmd.verb}` };
         default: {
