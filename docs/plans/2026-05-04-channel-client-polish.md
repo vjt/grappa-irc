@@ -20,6 +20,7 @@
 - **Worktree:** `cluster/channel-client-polish` branched from local `main` (`git checkout main` first). Worktree path `~/code/IRC/grappa-task-channel-client-polish`.
 - **TDD:** failing test FIRST per task. Use production code in tests; never re-implement logic.
 - **Plan-fix-first:** spec drift mid-execution → fix this plan (or pin) on main FIRST in a docs-only commit, THEN proceed.
+- **README currency AS WE GO** (per `feedback_readme_currency` — vjt 2026-05-04 "fucking readme must be kept current as we go"): every bucket that ships user-facing surface (new slash-cmd, new REST endpoint, new visible UX element, new env var, new mix task, deploy-flow change) updates `README.md` IN THE SAME BUCKET — folded into the bucket-close commit OR a dedicated `docs(readme): ...` commit before the bucket-atomic ff-merge. NOT deferred to bucket Z. Bucket Z is the SAFETY NET (final diff catches misses), not the primary mechanism. Per-bucket README touch obligations are listed in each user-facing bucket's task list.
 - **Reviewer gate evidence:** subagent reviewer pastes literal tail of every gate command (`scripts/format.sh --check`, `scripts/credo.sh --strict`, `scripts/dialyzer.sh`, `scripts/test.sh`, `scripts/check.sh`, `cd cicchetto && bun run test`, `cd cicchetto && bun run check`). Decision H from T31 (B6.21) lands the reviewer-template upgrade — channel-client-polish inherits.
 - **Standalone dialyzer:** before LANDED claim, run `scripts/dialyzer.sh` standalone in addition to `scripts/check.sh` per `feedback_dialyzer_plt_staleness`.
 - **25% ctx ceiling:** orchestrator triggers proactive clear-cycle on sibling at ~25% per `feedback_orchestrator_proactive_clear`.
@@ -78,7 +79,7 @@
 | **C6** | Mobile layout (bottom-bar + hamburger + 768px) | cic | 4 | yes |
 | **C7** | Scrollback polish bundle | cic | 7 | yes |
 | **C8** | Mentions window + away UI + watchlist UI | cic | 4 | yes |
-| **Z** | DESIGN_NOTES + README sweep + cluster review + LANDED | both | 4 | yes (final) |
+| **Z** | DESIGN_NOTES + README integrity check + cluster review + LANDED (README touched per-bucket throughout) | both | 4 | yes (final) |
 
 **Cross-bucket order:** S1 → S2 → S3 → S4 → S5 → C1 → C2 → C3 → C4 → C5 → C6 → C7 → C8 → Z. Server-side primitives ship first; cicchetto consumes them. Within each bucket sibling carves natural sub-seams.
 
@@ -150,8 +151,9 @@
 - [ ] **Step 3**: `/disconnect` and `/connect` flows: single PATCH each, refresh window-list state from response.
 - [ ] **Step 4**: `git commit -m "feat(cic): /quit /disconnect /connect slash verbs (T32 part)"`
 
-### Task S1.6: Bucket-atomic ff-merge + push
+### Task S1.6: README touch + bucket-atomic ff-merge + push
 
+- [ ] **README touch** (per `feedback_readme_currency` per-bucket rule): document `/quit`, `/disconnect [network] [reason]`, `/connect <network>` slash-commands; document the `connection_state` user-visible model (parked/connected/failed) + `PATCH /networks/:id` connection_state extension. One commit `docs(readme): T32 verbs + connection_state model` before ff-merge.
 - [ ] Run `scripts/check.sh` + standalone dialyzer + `cd cicchetto && bun run test` + `cd cicchetto && bun run check`. All green.
 - [ ] Rebase worktree onto main (`git fetch origin && git rebase origin/main`).
 - [ ] ff-merge to main; push origin/main per `feedback_push_autonomy`.
@@ -809,14 +811,20 @@
 - [ ] **Step 1**: Append entry covering: T32 connection_state shape; auto-away semantics (multi-tab WS counter, pagehide hint); numeric-routing matrix; query_windows persistence; user_settings as forward-compatible JSON store; cluster-wide focus-only-on-user-action rule; window-kind atom enumeration; visitor-skip discipline.
 - [ ] **Step 2**: `git commit -m "docs(design-notes): channel-client-polish cluster architectural decisions"`
 
-### Task Z.2: README sweep (per `feedback_readme_currency`)
+### Task Z.2: README final integrity check (safety net per `feedback_readme_currency`)
 
 **Files:**
-- Modify: `README.md`
+- Modify: `README.md` (only if drift surfaces)
 
-- [ ] **Step 1**: Diff README against the cluster's shipped surface — new slash-commands (`~25` verbs across S1+C2: /quit /disconnect /connect /nick /away /msg /query /q /op /deop /voice /devoice /kick /ban /unban /banlist /invite /umode /mode /topic /who /names /list /links /watch /highlight), new REST surface (PATCH `/networks/:id` connection_state extension), new tables (`query_windows`, `user_settings`), new env vars (none expected), new mix tasks (none expected), new deploy steps (migrations only).
-- [ ] **Step 2**: Update README sections: feature list (slash-cmds + DM + WHOIS + ops + window-kinds + mobile), bouncer-API surface, "Run it locally" if deployment changed, screenshot/animated-gif if cicchetto UX shifts visibly. Don't bloat with internals — CLAUDE.md / DESIGN_NOTES content stays there.
-- [ ] **Step 3**: `git commit -m "docs(readme): channel-client-polish — slash-cmds + DM + window-kinds + mobile"`
+This is the SAFETY NET, not the primary mechanism — the per-bucket README-touch sub-step (process gates section, also explicitly listed in S1.6 / S5.X / C1.X / C2.X / C3.X / C4.X / C5.X / C6.X / C7.X / C8.X bucket-close tasks) is where README updates actually land in-step with shipping. This task verifies nothing slipped.
+
+**Files:**
+- Modify: `README.md` (only if drift surfaces)
+
+- [ ] **Step 1**: Diff README against the FULL cluster shipped surface — slash-commands (~25 verbs across S1+C2: /quit /disconnect /connect /nick /away /msg /query /q /op /deop /voice /devoice /kick /ban /unban /banlist /invite /umode /mode /topic /who /names /list /links /watch /highlight), REST surface (PATCH `/networks/:id` connection_state extension), tables (`query_windows`, `user_settings`), env vars (none expected), mix tasks (none expected), deploy steps (migrations only), visible cicchetto UX surface (window-kinds, mobile bottom-bar, channel-header strip, mentions window).
+- [ ] **Step 2**: If gaps surface: per-bucket README-touch failed at SOMEWHERE — trace which bucket missed it, and either back-fill in this commit OR (if substantial) raise to vjt as a process audit.
+- [ ] **Step 3**: If no gaps: this task lands a no-op note in the CP entry confirming the per-bucket discipline held.
+- [ ] **Step 4**: If diff lands: `git commit -m "docs(readme): channel-client-polish final integrity sweep — <list misses>"`. If no-op: skip the commit, note it in CP.
 
 ### Task Z.3: Full-cluster code review (parallel agents)
 
@@ -895,7 +903,7 @@ feedback_push_autonomy.
 | C6 | mobile layout (#10) | C6.1–C6.3 |
 | C7 | scrollback polish (#5 #8 #9 + watchlist highlight from #19) | C7.1–C7.7 |
 | C8 | mentions window + away UI + watchlist UX (#19) | C8.1–C8.3 |
-| Z | wrap (incl. README sweep per `feedback_readme_currency`) | Z.1–Z.4 |
+| Z | wrap (incl. Z.2 README final integrity check — per-bucket touch obligations live in each user-facing bucket-close task, NOT here) | Z.1–Z.4 |
 
 All 21 spec features mapped. T32 verb cluster mapped (S1 + C2 + C4-via-/quit-flow). Cluster-wide rules (focus-only-on-user-action; visitor-skip; one-feature-one-code-path) enforced per-bucket.
 
