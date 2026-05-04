@@ -200,7 +200,7 @@ defmodule Grappa.Networks.Credential do
         changeset
 
       _ ->
-        put_change(changeset, :connection_state_changed_at, DateTime.utc_now() |> DateTime.truncate(:second))
+        put_change(changeset, :connection_state_changed_at, DateTime.truncate(DateTime.utc_now(), :second))
     end
   end
 
