@@ -215,12 +215,30 @@ defmodule Grappa.AuthFixtures do
     network_slug = Keyword.get(attrs, :network_slug, "azzurra")
     expires_at = Keyword.get(attrs, :expires_at, DateTime.add(DateTime.utc_now(), 48, :hour))
     ip = Keyword.get(attrs, :ip)
+    attrs_map = %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
 
-    {:ok, visitor} =
-      %{nick: nick, network_slug: network_slug, expires_at: expires_at, ip: ip}
-      |> Visitor.create_changeset()
-      |> Repo.insert()
+    # B5.4 M-pers-3: `Visitor.create_changeset/1` rejects past
+    # `expires_at` (correct production rule — a row born expired is no
+    # row). The reaper / bootstrap-skip / expired-session-revoke tests
+    # explicitly want an already-expired row in the DB to verify the
+    # reaping behaviour. Bypass the changeset for those by going
+    # through the schemaless `Ecto.Changeset.change/2` path which
+    # skips the `validate_change` rules. Production code never goes
+    # this route — only the fixture does, and only for tests that
+    # explicitly pass a past `:expires_at`.
+    insert_visitor(attrs_map, expired?(expires_at))
+  end
 
+  defp expired?(%DateTime{} = expires_at),
+    do: DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+
+  defp insert_visitor(attrs, false) do
+    {:ok, visitor} = attrs |> Visitor.create_changeset() |> Repo.insert()
+    visitor
+  end
+
+  defp insert_visitor(attrs, true) do
+    {:ok, visitor} = %Visitor{} |> Ecto.Changeset.change(attrs) |> Repo.insert()
     visitor
   end
 
