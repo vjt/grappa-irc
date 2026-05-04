@@ -109,12 +109,35 @@
 - Modify: `lib/grappa/networks.ex`
 - Create: `test/grappa/networks/connection_state_test.exs`
 
-- [ ] **Step 1**: Tests for each context fn. `disconnect/2` issues IRC QUIT upstream via Session.Server (use Mox or in-process fake), then transitions to `:parked` + sets reason + changed_at + broadcasts session-lifecycle event over PubSub. `connect/1` transitions to `:connected` + spawns Session.Server (re-uses existing `Networks.spawn_session/1` path Bootstrap uses). `mark_failed/2` is server-internal; transitions to `:failed`, terminates Session.Server, broadcasts.
+**Boundary note (S1.2 plan-fix 2026-05-04):** Original draft had
+`Networks.connect/1` spawn the Session.Server directly via a
+`Networks.spawn_session/1` helper. That created a `Networks ↔ Admission`
+boundary cycle (Admission already deps Networks for cap reads;
+Networks-deps-Admission for spawn closes the loop). Kept boundaries
+clean by splitting responsibilities:
+
+* `Networks.{connect, disconnect, mark_failed}` do **DB transition +
+  PubSub broadcast + `Session.stop_session/2`** (the stop-shape fns).
+  No admission, no `Session.start_session/3`. Networks boundary
+  unchanged.
+* The **spawn-after-`connect`** path (admission + backoff reset +
+  `Session.start_session/3`) lives at the caller — `NetworkController`
+  for `/connect` (S1.3) and `Bootstrap` at boot (existing). Both
+  already dep Admission cleanly.
+
+`Networks.spawn_session/1` is dropped from this plan; the same
+admission+spawn shape Bootstrap uses today is duplicated at the
+controller for now (≤10 LOC). If a third caller appears, extract a
+shared `Grappa.SessionSpawner` top-level module then.
+
+- [ ] **Step 1**: Tests for each context fn. `disconnect/2` issues IRC QUIT upstream via Session.Server (use IRCServer in-process fake), terminates Session.Server, transitions to `:parked` + sets reason + changed_at + broadcasts session-lifecycle event over PubSub. `connect/1` transitions to `:connected` (no spawn at this layer; spawn is the caller's job, see boundary note above) + broadcasts. `mark_failed/2` is server-internal; terminates Session.Server, transitions to `:failed`, broadcasts.
 - [ ] **Step 2**: Implementation. State-transition matrix:
   - `connect/1`: from `:parked | :failed` → `:connected`; idempotent if already `:connected`.
   - `disconnect/2`: from `:connected` → `:parked`; reject if already `:parked` or `:failed` (return `{:error, :not_connected}`).
-  - `mark_failed/2`: from `:connected` → `:failed`; idempotent if already `:failed`. Reject from `:parked` (parked is user intent, don't override).
-- [ ] **Step 3**: Update `Networks.list_credentials_for_all_users/0` to filter `connection_state == :connected` (Bootstrap skips others).
+  - `mark_failed/2`: from `:connected` → `:failed`; idempotent if already `:failed`. Reject from `:parked` with `{:error, :user_parked}` (parked is user intent, don't override).
+  PubSub event shape: `{:connection_state_changed, %{user_id, network_id, network_slug, from, to, reason, at}}` on topic `Grappa.PubSub.Topic.network(user_name, network_slug)` per Topic moduledoc convention.
+  `Session.send_quit/3` added to facade so `disconnect/2` can issue an explicit QUIT upstream before `stop_session/2` tears the supervised process down (otherwise the abrupt socket close on `:shutdown` skips the QUIT line).
+- [ ] **Step 3**: Update `Credentials.list_credentials_for_all_users/0` to filter `connection_state == :connected` (Bootstrap skips others).
 - [ ] **Step 4**: `git commit -m "feat(networks): connect/disconnect/mark_failed context fns (T32 part)"`
 
 ### Task S1.3: PATCH `/networks/:id` endpoint extension
@@ -124,8 +147,8 @@
 - Modify: `lib/grappa_web/controllers/network_json.ex`
 - Modify: `test/grappa_web/controllers/network_controller_test.exs`
 
-- [ ] **Step 1**: Tests — PATCH with `{connection_state: "parked", reason: "manual"}` calls `Networks.disconnect/2`. PATCH with `{connection_state: "connected"}` calls `Networks.connect/1`. PATCH with `{connection_state: "failed"}` returns 400 (server-set only). Authz: only credential owner.
-- [ ] **Step 2**: Implementation in NetworkController.update/2. Reuse FallbackController for error tuples. Render new `connection_state` + `connection_state_reason` + `connection_state_changed_at` in network_json.ex.
+- [ ] **Step 1**: Tests — PATCH with `{connection_state: "parked", reason: "manual"}` calls `Networks.disconnect/2`. PATCH with `{connection_state: "connected"}` calls `Networks.connect/1` AND triggers admission+`Session.start_session/3` per the S1.2 boundary note. PATCH with `{connection_state: "failed"}` returns 400 (server-set only). Authz: only credential owner.
+- [ ] **Step 2**: Implementation in NetworkController.update/2. Reuse FallbackController for error tuples. **Spawn orchestration on `:connected` transition lives here** (admission + `Backoff.reset` + `Session.start_session/3` — same shape as Bootstrap's `spawn_with_admission`). If admission rejects, surface error to caller; the DB row's `:connected` stays as user intent (Bootstrap retries on next deploy or operator re-`/connect`s). Render new `connection_state` + `connection_state_reason` + `connection_state_changed_at` in network_json.ex.
 - [ ] **Step 3**: `git commit -m "feat(web): PATCH /networks/:id supports connection_state transitions (T32 part)"`
 
 ### Task S1.4: Session.Server hook for `:failed` triggers (lenient)
