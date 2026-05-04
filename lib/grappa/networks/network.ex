@@ -59,8 +59,8 @@ defmodule Grappa.Networks.Network do
     |> cast(attrs, [:slug, :max_concurrent_sessions, :max_per_client])
     |> validate_required([:slug])
     |> validate_change(:slug, &validate_slug/2)
-    |> validate_number(:max_concurrent_sessions, greater_than: 0)
-    |> validate_number(:max_per_client, greater_than: 0)
+    |> validate_change(:max_concurrent_sessions, &validate_non_negative_or_nil/2)
+    |> validate_change(:max_per_client, &validate_non_negative_or_nil/2)
     |> unique_constraint(:slug)
   end
 
@@ -69,4 +69,15 @@ defmodule Grappa.Networks.Network do
       do: [],
       else: [{field, "must be lowercase alphanumeric with _ or -, 1-32 chars"}]
   end
+
+  # Caps follow a three-valued contract: nil = unlimited (operator clears
+  # the cap), 0 = degenerate lock-down (allow none — explicit operator
+  # intent), N>0 = the actual cap. Negative integers and non-integer
+  # values are invalid. validate_change/3 only fires when the field is
+  # present in the changeset's :changes — unsupplied keys keep their
+  # current value (per the "supply only what you want to change" verb
+  # contract on Networks.update_network_caps/2).
+  defp validate_non_negative_or_nil(_, nil), do: []
+  defp validate_non_negative_or_nil(_, n) when is_integer(n) and n >= 0, do: []
+  defp validate_non_negative_or_nil(field, _), do: [{field, "must be non-negative integer or nil"}]
 end

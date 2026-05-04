@@ -50,16 +50,16 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
     assert refreshed.max_per_client == 2
   end
 
-  test "raises when the network slug is unknown" do
-    assert_raise Ecto.NoResultsError, fn ->
+  test "raises Mix.Error with friendly message when the network slug is unknown" do
+    assert_raise Mix.Error, ~r/network "ghost" not found/, fn ->
       capture_io(fn ->
         SetNetworkCaps.run(["--network", "ghost", "--max-sessions", "3"])
       end)
     end
   end
 
-  test "raises when --network is missing" do
-    assert_raise KeyError, fn ->
+  test "raises Mix.Error with friendly message when --network is missing" do
+    assert_raise Mix.Error, ~r/--network <slug> is required/, fn ->
       capture_io(fn ->
         SetNetworkCaps.run(["--max-sessions", "3"])
       end)
@@ -67,9 +67,64 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
   end
 
   test "raises when no cap flag is supplied" do
-    assert_raise Mix.Error, fn ->
+    assert_raise Mix.Error, ~r/no changes specified/, fn ->
       capture_io(fn ->
         SetNetworkCaps.run(["--network", "azzurra"])
+      end)
+    end
+  end
+
+  test "--clear-max-sessions clears the cap", %{network: network} do
+    {:ok, _} =
+      Networks.update_network_caps(network, %{max_concurrent_sessions: 5, max_per_client: 2})
+
+    capture_io(fn ->
+      SetNetworkCaps.run(["--network", "azzurra", "--clear-max-sessions"])
+    end)
+
+    refreshed = Networks.get_network_by_slug!("azzurra")
+    assert is_nil(refreshed.max_concurrent_sessions)
+    # symmetry: the unsupplied cap is preserved
+    assert refreshed.max_per_client == 2
+  end
+
+  test "--clear-max-per-client clears the cap", %{network: network} do
+    {:ok, _} =
+      Networks.update_network_caps(network, %{max_concurrent_sessions: 5, max_per_client: 2})
+
+    capture_io(fn ->
+      SetNetworkCaps.run(["--network", "azzurra", "--clear-max-per-client"])
+    end)
+
+    refreshed = Networks.get_network_by_slug!("azzurra")
+    assert is_nil(refreshed.max_per_client)
+    assert refreshed.max_concurrent_sessions == 5
+  end
+
+  test "--clear-max-sessions and --max-sessions are mutually exclusive" do
+    assert_raise Mix.Error, ~r/mutually exclusive/, fn ->
+      capture_io(fn ->
+        SetNetworkCaps.run([
+          "--network",
+          "azzurra",
+          "--max-sessions",
+          "5",
+          "--clear-max-sessions"
+        ])
+      end)
+    end
+  end
+
+  test "--clear-max-per-client and --max-per-client are mutually exclusive" do
+    assert_raise Mix.Error, ~r/mutually exclusive/, fn ->
+      capture_io(fn ->
+        SetNetworkCaps.run([
+          "--network",
+          "azzurra",
+          "--max-per-client",
+          "5",
+          "--clear-max-per-client"
+        ])
       end)
     end
   end
