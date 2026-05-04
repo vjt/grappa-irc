@@ -117,6 +117,7 @@ services:
       grappa_internal:
     volumes:
       - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/snippets:/etc/nginx/snippets:ro
       - ./runtime/cicchetto-dist:/usr/share/nginx/html:ro
     depends_on:
       grappa:
