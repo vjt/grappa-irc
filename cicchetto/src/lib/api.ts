@@ -374,3 +374,48 @@ export async function postNick(token: string, networkSlug: string, nick: string)
   });
   if (!res.ok) throw await readError(res);
 }
+
+// Mirror of `GrappaWeb.NetworksController.update/2` (T32).
+// PATCH `/networks/:network_id` — transitions the credential's
+// `connection_state` to `:parked` (user-initiated disconnect) or
+// `:connected` (re-connect + respawn). `:failed` is server-set only
+// and is rejected by the endpoint (400) — do not send it.
+//
+// Accepts `{connection_state: "parked"|"connected", reason?: string}`.
+// Returns the updated `credential_json` shape (including the three new
+// T32 fields: `connection_state`, `connection_state_reason`,
+// `connection_state_changed_at`) — mirror of `Wire.credential_to_json/1`.
+//
+// `reason` propagates to the server-lifecycle event and to the
+// `connection_state_reason` column, surfacing in the server-messages
+// window (#4) and in the credential badge rendering.
+export type CredentialConnectionState = "connected" | "parked";
+
+export type CredentialJson = {
+  network: string;
+  nick: string;
+  realname: string | null;
+  sasl_user: string | null;
+  auth_method: string;
+  auth_command_template: string | null;
+  autojoin_channels: string[];
+  connection_state: CredentialConnectionState | "failed";
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export async function patchNetwork(
+  token: string,
+  networkSlug: string,
+  body: { connection_state: CredentialConnectionState; reason?: string },
+): Promise<CredentialJson> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}`, {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as CredentialJson;
+}

@@ -1,8 +1,9 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
-import { ApiError, postJoin, postNick, postPart, postTopic } from "./api";
-import { token } from "./auth";
+import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
+import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { membersByChannel } from "./members";
+import { networks } from "./networks";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { parseSlash } from "./slashCommands";
 
@@ -163,6 +164,52 @@ const exports_ = createRoot(() => {
           await sendPrivmsg(networkSlug, cmd.target, cmd.body);
           result = { ok: true };
           break;
+        case "quit": {
+          // Nuclear: park ALL bound networks, then logout.
+          // `Promise.allSettled` — partial PATCH failures do NOT block the
+          // logout. The user wants OUT regardless of individual network
+          // PATCH success. One failed PATCH means that network may auto-
+          // respawn on next boot (Bootstrap skips :parked only), but the
+          // session is still terminated from cicchetto's perspective.
+          const allNets = networks() ?? [];
+          const parkBody: { connection_state: "parked"; reason?: string } = {
+            connection_state: "parked",
+          };
+          if (cmd.reason !== null) parkBody.reason = cmd.reason;
+          await Promise.allSettled(allNets.map((n) => patchNetwork(t, n.slug, parkBody)));
+          // logout() clears auth (setToken(null)), which triggers:
+          //   1. socket.ts createEffect → WS disconnect
+          //   2. RequireAuth → redirect to /login
+          await logout();
+          // After logout the component tree will unmount — no further
+          // result processing needed. Return early to skip history push.
+          return { ok: true };
+        }
+        case "disconnect": {
+          // Surgical: park one network. `network` from parser is null
+          // (bare /disconnect) or a named slug. Null → use active-window's
+          // networkSlug (already in scope from submit's args).
+          if ("error" in cmd) {
+            return { error: (cmd as { error: string }).error };
+          }
+          const targetSlug = cmd.network ?? networkSlug;
+          const disconnBody: { connection_state: "parked"; reason?: string } = {
+            connection_state: "parked",
+          };
+          if (cmd.reason !== null) disconnBody.reason = cmd.reason;
+          await patchNetwork(t, targetSlug, disconnBody);
+          result = { ok: true };
+          break;
+        }
+        case "connect": {
+          // Unpark + respawn. Requires a network slug (parser enforces).
+          if ("error" in cmd) {
+            return { error: (cmd as { error: string }).error };
+          }
+          await patchNetwork(t, cmd.network, { connection_state: "connected" });
+          result = { ok: true };
+          break;
+        }
         case "unknown":
           return { error: `unknown command: /${cmd.verb}` };
         default: {
