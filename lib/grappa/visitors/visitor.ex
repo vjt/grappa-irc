@@ -62,6 +62,15 @@ defmodule Grappa.Visitors.Visitor do
   `Identifier.valid_network_slug?/1` — both are wire-bound (PubSub
   topics + IRC handshake), so syntactic hygiene is enforced at the
   boundary. Uniqueness on `(nick, network_slug)` per W2.
+
+  `:expires_at` must be strictly in the future (B5.4 M-pers-3): a row
+  born already-expired would be reaped on the next `Reaper` sweep but
+  in the meantime would consume `(nick, network_slug)` uniqueness and
+  shadow a legitimate concurrent registration. The `validate_change`
+  only fires when `:expires_at` is present (`validate_required` runs
+  first), so a missing field surfaces a single "can't be blank" error
+  rather than an additional confusing "must be in the future" against
+  `nil`.
   """
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
@@ -70,6 +79,7 @@ defmodule Grappa.Visitors.Visitor do
     |> validate_required([:nick, :network_slug, :expires_at])
     |> validate_change(:nick, &validate_nick/2)
     |> validate_change(:network_slug, &validate_network_slug/2)
+    |> validate_change(:expires_at, &validate_future_expires_at/2)
     |> unique_constraint([:nick, :network_slug])
   end
 
@@ -111,5 +121,12 @@ defmodule Grappa.Visitors.Visitor do
     if Identifier.valid_network_slug?(value),
       do: [],
       else: [{field, "must be a valid network slug"}]
+  end
+
+  defp validate_future_expires_at(field, %DateTime{} = value) do
+    case DateTime.compare(value, DateTime.utc_now()) do
+      :gt -> []
+      _ -> [{field, "must be in the future"}]
+    end
   end
 end
