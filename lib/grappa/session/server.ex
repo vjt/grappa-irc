@@ -385,6 +385,18 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # T32 (channel-client-polish S1.2): writes `QUIT :<reason>` upstream.
+  # Synchronous so the caller (`Grappa.Networks.disconnect/2`) can follow
+  # up with `Session.stop_session/2` knowing the QUIT line is on the
+  # wire — otherwise the abrupt `:shutdown` would close the socket
+  # before `Client.send_quit/2` got a chance to run.
+  def handle_call({:send_quit, reason}, _, state) when is_binary(reason) do
+    case Client.send_quit(state.client, reason) do
+      :ok -> {:reply, :ok, state}
+      {:error, _} = err -> {:reply, err, state}
+    end
+  end
+
   # Returns a snapshot of currently-joined channels
   # (`Map.keys(state.members)`) sorted alphabetically. Public via
   # `Grappa.Session.list_channels/2`. The "currently-joined" invariant

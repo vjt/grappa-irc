@@ -361,6 +361,29 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `QUIT :<reason>` upstream for the session's `(subject,
+  network_id)`. Synchronous (`call`) so the QUIT byte is on the wire
+  BEFORE callers (notably `Grappa.Networks.disconnect/2`) follow up
+  with `stop_session/2` — otherwise the abrupt `:shutdown` exit closes
+  the linked Client's socket before `Client.send_quit/2` runs and the
+  upstream sees a dropped connection without a QUIT line.
+
+  T32 (channel-client-polish S1.2). Returns `:ok`,
+  `{:error, :no_session}`, or `{:error, :invalid_line}` (the reason
+  string carrying CR/LF/NUL).
+  """
+  @spec send_quit(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_quit(subject, network_id, reason)
+      when is_subject(subject) and is_integer(network_id) and is_binary(reason) do
+    if Identifier.safe_line_token?(reason) do
+      call_session(subject, network_id, {:send_quit, reason})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
   Returns a snapshot of currently-joined channels for the session at
   `(subject, network_id)`, sorted alphabetically.
 
