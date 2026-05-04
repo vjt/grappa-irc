@@ -302,12 +302,27 @@ defmodule Grappa.Accounts do
     end
   end
 
+  # B5.4 L-pers-3: route the sliding `last_seen_at` bump through
+  # `Session.touch_changeset/2` so backward-clock skew is REJECTED at
+  # the changeset boundary instead of silently moving the column
+  # backward. The API contract returns a `Session.t()` (not
+  # `{:ok, _} | {:error, _}`), so the error path is swallowed with a
+  # `Logger.warning` — a backward clock is an operator-side
+  # infrastructure problem the bouncer can't recover from inline; the
+  # session continues with its previous `last_seen_at` (idle timer
+  # keeps counting down from there) until the clock drift resolves.
   defp touch_session(session, now) do
-    {:ok, updated} =
-      session
-      |> Ecto.Changeset.change(last_seen_at: now)
-      |> Repo.update()
+    case session |> Session.touch_changeset(now) |> Repo.update() do
+      {:ok, updated} ->
+        updated
 
-    updated
+      {:error, _} ->
+        Logger.warning("touch_session backward-clock detected; ignoring",
+          session_id: session.id,
+          reason: :backward_clock
+        )
+
+        session
+    end
   end
 end

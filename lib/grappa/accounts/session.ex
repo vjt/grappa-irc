@@ -105,6 +105,38 @@ defmodule Grappa.Accounts.Session do
     |> assoc_constraint(:visitor)
   end
 
+  @doc """
+  Builds a sliding-touch changeset that bumps `last_seen_at` to `now`,
+  enforcing time-monotonicity (B5.4 L-pers-3).
+
+  Pre-B5.4 the bump went through `Ecto.Changeset.change/2` directly,
+  with no validation that `now > prev`. A system-clock skew (NTP
+  step, container reboot, test fixture seeding `last_seen_at` from a
+  fixed past) could move the column backward, which then caused the
+  idle-timer in `Accounts.authenticate/1` to misjudge how long the
+  session had been idle (`DateTime.diff(now, last_seen_at)` becomes
+  negative or wildly large).
+
+  The validator REJECTS strictly-backward bumps (`now < prev`); equal
+  is admitted because a tight touch loop under high load can
+  reasonably observe `now == prev` at usec resolution.
+
+  `Accounts.touch_session/2` swallows the error path with a
+  `Logger.warning` since the API contract returns a `Session.t()`
+  (not `{:ok, _} | {:error, _}`). Production callers should never
+  observe this failure mode — a backward clock is an operator-side
+  infrastructure problem the bouncer can't recover from inline.
+  """
+  @spec touch_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
+  def touch_changeset(%__MODULE__{last_seen_at: prev} = session, %DateTime{} = now) do
+    cs = change(session, last_seen_at: now)
+
+    case DateTime.compare(now, prev) do
+      :lt -> add_error(cs, :last_seen_at, "must not move backward (system-clock skew?)")
+      _ -> cs
+    end
+  end
+
   # Mirror of Grappa.Scrollback.Message.validate_subject_xor/1.
   # Run BEFORE per-field validators so the XOR error surfaces first.
   #
