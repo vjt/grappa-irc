@@ -170,6 +170,7 @@ defmodule Grappa.Session.Server do
           members: %{String.t() => %{String.t() => [String.t()]}},
           topics: %{String.t() => EventRouter.topic_entry()},
           channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
+          userhost_cache: EventRouter.userhost_cache(),
           autojoin: [String.t()],
           client: pid() | nil,
           notify_pid: pid() | nil,
@@ -246,6 +247,7 @@ defmodule Grappa.Session.Server do
       members: %{},
       topics: %{},
       channel_modes: %{},
+      userhost_cache: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
@@ -467,6 +469,26 @@ defmodule Grappa.Session.Server do
 
     case Map.get(state.channel_modes, chan_key) do
       nil -> {:reply, {:error, :no_modes}, state}
+      entry -> {:reply, {:ok, entry}, state}
+    end
+  end
+
+  # Returns the userhost cache entry for `nick`. Nick lookup is case-insensitive
+  # (RFC 2812 §2.2) — normalise to downcase at read time, mirroring write-time
+  # normalisation in EventRouter. Returns {:ok, entry} or {:error, :not_cached}.
+  # Public via `Grappa.Session.lookup_userhost/3`.
+  #
+  # This cache is NOT broadcast over PubSub — it is consumed internally by
+  # S5's /ban mask derivation (Session.lookup_userhost/3 is the single
+  # access path). A future reader should not add a broadcast "for consistency"
+  # — the data goes stale fast (users change hosts) and the cache is an
+  # optimistic performance hint, not a source of truth. Only the IRC upstream
+  # is authoritative; WHOIS is the fallback when the cache misses.
+  def handle_call({:lookup_userhost, nick}, _, state) when is_binary(nick) do
+    nick_key = String.downcase(nick)
+
+    case Map.get(state.userhost_cache, nick_key) do
+      nil -> {:reply, {:error, :not_cached}, state}
       entry -> {:reply, {:ok, entry}, state}
     end
   end

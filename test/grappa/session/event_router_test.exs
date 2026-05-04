@@ -26,7 +26,8 @@ defmodule Grappa.Session.EventRouterTest do
         nick: "vjt",
         members: %{},
         topics: %{},
-        channel_modes: %{}
+        channel_modes: %{},
+        userhost_cache: %{}
       },
       overrides
     )
@@ -699,6 +700,220 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, new_state, []} = EventRouter.route(m, state)
       assert new_state.nick == "vjt_truncated"
+    end
+  end
+
+  describe "route/2 — S2.4 WHOIS-userhost cache population" do
+    test "JOIN with nick!user@host prefix populates userhost_cache" do
+      state = base_state(%{userhost_cache: %{}})
+
+      m = %Message{
+        command: :join,
+        params: ["#italia"],
+        prefix: {:nick, "alice", "alice_u", "alice.host"},
+        tags: %{}
+      }
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+    end
+
+    test "JOIN with nil user/host in prefix does NOT populate userhost_cache" do
+      state = base_state(%{userhost_cache: %{}})
+
+      # Some servers strip user@host with +x (cloaking) — skip half-populated entries
+      m = %Message{
+        command: :join,
+        params: ["#italia"],
+        prefix: {:nick, "alice", nil, nil},
+        tags: %{}
+      }
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+    end
+
+    test "JOIN with only host strips partial — nil user means skip" do
+      state = base_state(%{userhost_cache: %{}})
+
+      m = %Message{
+        command: :join,
+        params: ["#italia"],
+        prefix: {:nick, "alice", nil, "some.host"},
+        tags: %{}
+      }
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+    end
+
+    test "311 RPL_WHOISUSER populates userhost_cache for target nick" do
+      state = base_state(%{userhost_cache: %{}})
+
+      # :server 311 own_nick target user host * :realname
+      m =
+        msg(
+          {:numeric, 311},
+          ["vjt", "alice", "alice_u", "alice.host", "*", "Alice Realname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+    end
+
+    test "352 RPL_WHOREPLY populates userhost_cache for target nick" do
+      state = base_state(%{userhost_cache: %{}})
+
+      # :server 352 own_nick #chan user host server target_nick H/G :hopcount realname
+      m =
+        msg(
+          {:numeric, 352},
+          ["vjt", "#italia", "alice_u", "alice.host", "irc.test.org", "alice", "H", "0 Alice Realname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+    end
+
+    test "nick lookup is case-insensitive (lowercase key)" do
+      state = base_state(%{userhost_cache: %{}})
+
+      m =
+        msg(
+          {:numeric, 311},
+          ["vjt", "Alice", "alice_u", "alice.host", "*", "Alice"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      # Stored under downcased key
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+      refute Map.has_key?(new_state.userhost_cache, "Alice")
+    end
+  end
+
+  describe "route/2 — S2.4 WHOIS-userhost cache eviction" do
+    test "QUIT evicts the quitting nick from userhost_cache" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"alice" => []}},
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:quit, ["bye"], {:nick, "alice", "u", "h"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+    end
+
+    test "PART by other user evicts from cache when no other channel overlap" do
+      # alice is only in #one; after parting, no overlap → evict
+      state =
+        base_state(%{
+          members: %{"#one" => %{"alice" => [], "vjt" => []}},
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:part, ["#one"], {:nick, "alice", "u", "h"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+    end
+
+    test "PART by other user keeps cache entry when user still shares another channel" do
+      # alice is in #one AND #two; after parting #one, still in #two → keep
+      state =
+        base_state(%{
+          members: %{
+            "#one" => %{"alice" => [], "vjt" => []},
+            "#two" => %{"alice" => [], "vjt" => []}
+          },
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:part, ["#one"], {:nick, "alice", "u", "h"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "u", host: "h"}
+    end
+
+    test "self-PART clears cache entries for nicks no longer sharing any channel" do
+      # self parts #one; alice was only in #one; bob is in #two → alice evicted, bob kept
+      state =
+        base_state(%{
+          members: %{
+            "#one" => %{"alice" => [], "vjt" => []},
+            "#two" => %{"bob" => [], "vjt" => []}
+          },
+          userhost_cache: %{
+            "alice" => %{user: "u_a", host: "h_a"},
+            "bob" => %{user: "u_b", host: "h_b"}
+          }
+        })
+
+      m = msg(:part, ["#one"], {:nick, "vjt", "u", "h"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+      assert new_state.userhost_cache["bob"] == %{user: "u_b", host: "h_b"}
+    end
+
+    test "KICK evicts kicked nick when no other channel overlap" do
+      state =
+        base_state(%{
+          members: %{"#one" => %{"alice" => [], "op" => []}},
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:kick, ["#one", "alice", "bye"], {:nick, "op", "o", "host"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+    end
+
+    test "KICK keeps cache entry when kicked nick still shares another channel" do
+      state =
+        base_state(%{
+          members: %{
+            "#one" => %{"alice" => [], "op" => []},
+            "#two" => %{"alice" => [], "vjt" => []}
+          },
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:kick, ["#one", "alice", "bye"], {:nick, "op", "o", "host"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "u", host: "h"}
+    end
+
+    test "NICK renames cache entry from old_nick to new_nick" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"alice" => []}},
+          userhost_cache: %{"alice" => %{user: "u", host: "h"}}
+        })
+
+      m = msg(:nick, ["alice_new"], {:nick, "alice", "u", "h"})
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.userhost_cache, "alice")
+      assert new_state.userhost_cache["alice_new"] == %{user: "u", host: "h"}
     end
   end
 
