@@ -53,6 +53,35 @@ defmodule GrappaWeb.GrappaChannel do
     user. Visitors are excluded (no auto-away for visitor sessions).
     Fire-and-forget; no reply.
 
+  - `"away"` — set or unset explicit away. Payload: `%{"action" => "set"|"unset",
+    "network" => slug, "reason" => reason}`. Optional `"origin_window"` for
+    305/306 numeric routing (S4.3). Visitors rejected.
+
+  - `"op"` / `"deop"` / `"voice"` / `"devoice"` — channel mode change on a list
+    of nicks. Payload: `%{"network_id" => id, "channel" => chan, "nicks" => [...]}`.
+    Fans out to N `MODE` lines if nicks exceed the ISUPPORT MODES= limit.
+
+  - `"kick"` — eject a nick. Payload: `%{"network_id" => id, "channel" => chan,
+    "nick" => nick, "reason" => reason}`.
+
+  - `"ban"` / `"unban"` — add/remove a ban mask. Payload: `%{"network_id" => id,
+    "channel" => chan, "mask" => mask_or_nick}`. Bare nicks undergo WHOIS-cache
+    mask derivation in `Session.Server`.
+
+  - `"invite"` — invite a nick. Payload: `%{"network_id" => id, "channel" => chan,
+    "nick" => nick}`.
+
+  - `"banlist"` — query the channel ban list. Payload: `%{"network_id" => id,
+    "channel" => chan}`. Issues `MODE #chan b` (no sign); server replies with 367/368.
+
+  - `"umode"` — user-mode change on own nick. Payload: `%{"network_id" => id,
+    "modes" => modes}`.
+
+  - `"mode"` — raw verbatim MODE line, no chunking. Payload: `%{"network_id" => id,
+    "target" => target, "modes" => modes, "params" => [...]}`.
+
+  All ops verbs reject visitor sockets and return `{:error, %{reason: "visitor_not_allowed"}}`.
+
   ## Outbound event shapes
 
   All events pushed by this channel share the `kind:` discriminator (string
@@ -228,6 +257,155 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # ---------------------------------------------------------------------------
+  # S5.3 — ops verb inbound events
+  #
+  # Each handle_in dispatches to the corresponding Session facade function.
+  # Visitors are rejected — they have no upstream IRC session with operator
+  # state. The `origin_window` field is accepted from the payload (consistency
+  # with the S4.3 contract) but is not threaded to the Session facade: MODE /
+  # KICK / INVITE do not produce correlated numeric replies that need routing
+  # back to the originating window — the server's inbound MODE events come
+  # through EventRouter on their own path.
+  #
+  # Auth path: user_name → safe_get_user → verify network_id belongs to the
+  # user by resolving the session (call_session returns {:error, :no_session}
+  # if no session is running for that (user, network_id) pair).
+  # ---------------------------------------------------------------------------
+
+  # /op alice bob carol  →  MODE #chan +ooo alice bob carol
+  def handle_in(
+        "op",
+        %{"network_id" => network_id, "channel" => channel, "nicks" => nicks},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_op({:user, user.id}, network_id, channel, nicks)
+    end)
+  end
+
+  # /deop alice bob carol  →  MODE #chan -ooo alice bob carol
+  def handle_in(
+        "deop",
+        %{"network_id" => network_id, "channel" => channel, "nicks" => nicks},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_deop({:user, user.id}, network_id, channel, nicks)
+    end)
+  end
+
+  # /voice alice  →  MODE #chan +v alice
+  def handle_in(
+        "voice",
+        %{"network_id" => network_id, "channel" => channel, "nicks" => nicks},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_voice({:user, user.id}, network_id, channel, nicks)
+    end)
+  end
+
+  # /devoice alice  →  MODE #chan -v alice
+  def handle_in(
+        "devoice",
+        %{"network_id" => network_id, "channel" => channel, "nicks" => nicks},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_devoice({:user, user.id}, network_id, channel, nicks)
+    end)
+  end
+
+  # /kick alice :bye  →  KICK #chan alice :bye
+  def handle_in(
+        "kick",
+        %{"network_id" => network_id, "channel" => channel, "nick" => nick, "reason" => reason},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_binary(nick) and
+             is_binary(reason) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_kick({:user, user.id}, network_id, channel, nick, reason)
+    end)
+  end
+
+  # /ban *!*@evil.com or /ban alice (bare nick → mask derivation in Server)
+  def handle_in(
+        "ban",
+        %{"network_id" => network_id, "channel" => channel, "mask" => mask},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_ban({:user, user.id}, network_id, channel, mask)
+    end)
+  end
+
+  # /unban *!*@evil.com  →  MODE #chan -b *!*@evil.com
+  def handle_in(
+        "unban",
+        %{"network_id" => network_id, "channel" => channel, "mask" => mask},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_unban({:user, user.id}, network_id, channel, mask)
+    end)
+  end
+
+  # /invite alice  →  INVITE alice #chan (RFC 2812: nick first, channel second)
+  def handle_in(
+        "invite",
+        %{"network_id" => network_id, "channel" => channel, "nick" => nick},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) and is_binary(nick) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_invite({:user, user.id}, network_id, channel, nick)
+    end)
+  end
+
+  # /banlist  →  MODE #chan b (query form, no sign)
+  def handle_in(
+        "banlist",
+        %{"network_id" => network_id, "channel" => channel},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_banlist({:user, user.id}, network_id, channel)
+    end)
+  end
+
+  # /umode +i  →  MODE own_nick +i
+  def handle_in(
+        "umode",
+        %{"network_id" => network_id, "modes" => modes},
+        socket
+      )
+      when is_integer(network_id) and is_binary(modes) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_umode({:user, user.id}, network_id, modes)
+    end)
+  end
+
+  # /mode #chan +o-v alice bob  →  MODE #chan +o-v alice bob (verbatim, no chunking)
+  def handle_in(
+        "mode",
+        %{"network_id" => network_id, "target" => target, "modes" => modes, "params" => params},
+        socket
+      )
+      when is_integer(network_id) and is_binary(target) and is_binary(modes) and is_list(params) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_mode({:user, user.id}, network_id, target, modes, params)
+    end)
+  end
+
+  # ---------------------------------------------------------------------------
   # After-join snapshot helpers
   # ---------------------------------------------------------------------------
 
@@ -359,6 +537,34 @@ defmodule GrappaWeb.GrappaChannel do
       :ok
     else
       {:error, :forbidden}
+    end
+  end
+
+  # S5.3: shared dispatch path for all ops verbs.
+  #
+  # 1. Reject visitor sockets — they have no upstream IRC session with operator
+  #    state.
+  # 2. Resolve the authenticated user.
+  # 3. Invoke the caller-supplied session thunk. The thunk returns
+  #    `:ok | {:error, :no_session}` — `call_session` inside Session.*
+  #    returns `{:error, :no_session}` when no session is registered for the
+  #    (user, network_id) pair.
+  #
+  # Error mapping is kept flat and minimal — the cicchetto client needs a short
+  # discriminator string, not a nested struct.
+  @spec dispatch_ops_verb(Phoenix.Socket.t(), (Accounts.User.t() -> :ok | {:error, atom()})) ::
+          {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
+  defp dispatch_ops_verb(socket, thunk) do
+    user_name = socket.assigns.user_name
+
+    with false <- visitor?(user_name),
+         {:ok, user} <- safe_get_user(user_name),
+         :ok <- thunk.(user) do
+      {:reply, :ok, socket}
+    else
+      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
     end
   end
 
