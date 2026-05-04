@@ -18,6 +18,7 @@ defmodule GrappaWeb do
       Grappa.IRC,
       Grappa.Networks,
       Grappa.PubSub,
+      Grappa.QueryWindows,
       Grappa.Scrollback,
       Grappa.Session,
       Grappa.Visitors

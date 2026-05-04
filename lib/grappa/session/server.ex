@@ -986,9 +986,10 @@ defmodule Grappa.Session.Server do
       Phoenix.PubSub.broadcast(
         Grappa.PubSub,
         Topic.channel(state.subject_label, state.network_slug, channel),
-        {:topic_changed,
+        {:event,
          %{
-           network_id: state.network_id,
+           kind: "topic_changed",
+           network: state.network_slug,
            channel: channel,
            topic: entry
          }}
@@ -1002,9 +1003,10 @@ defmodule Grappa.Session.Server do
       Phoenix.PubSub.broadcast(
         Grappa.PubSub,
         Topic.channel(state.subject_label, state.network_slug, channel),
-        {:channel_modes_changed,
+        {:event,
          %{
-           network_id: state.network_id,
+           kind: "channel_modes_changed",
+           network: state.network_slug,
            channel: channel,
            modes: entry
          }}

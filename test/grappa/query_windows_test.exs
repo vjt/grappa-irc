@@ -1,8 +1,9 @@
 defmodule Grappa.QueryWindowsTest do
   @moduledoc """
   Context tests for `Grappa.QueryWindows` — per-user persisted DM (query)
-  windows. Exercises the idempotent `open/3` upsert, `close/3` idempotent
-  delete, and `list_for_user/1` grouped-by-network return.
+  windows. Exercises the idempotent `open/4` upsert, `close/4` idempotent
+  delete, `list_for_user/1` grouped-by-network return, and the PubSub
+  broadcast that fires on every successful mutation.
 
   Property tests cover the two invariants that are easy to break
   accidentally:
@@ -10,15 +11,19 @@ defmodule Grappa.QueryWindowsTest do
     1. Idempotent upsert: opening the same (user, network, nick) N times
        always returns the same row id (first insert wins; subsequent
        calls return the existing row without mutating it).
-    2. Case-insensitive uniqueness: `open/3` with "FooBar" and "foobar"
+    2. Case-insensitive uniqueness: `open/4` with "FooBar" and "foobar"
        resolve to the same row. The unique index on `lower(target_nick)`
        enforces this at the DB layer; the application-layer idempotent
        re-select surfaces it cleanly to the caller.
+
+  `async: true` — the broadcast test subscribes to a per-user PubSub
+  topic so each test uses a distinct user_name to avoid crosstalk.
   """
   use Grappa.DataCase, async: true
   use ExUnitProperties
 
   alias Grappa.{Accounts, Networks, QueryWindows}
+  alias Grappa.PubSub.Topic
   alias Grappa.QueryWindows.Window
 
   # ---------------------------------------------------------------------------
@@ -38,15 +43,15 @@ defmodule Grappa.QueryWindowsTest do
   end
 
   # ---------------------------------------------------------------------------
-  # open/3
+  # open/4
   # ---------------------------------------------------------------------------
 
-  describe "open/3" do
+  describe "open/4" do
     test "inserts a new query window and returns {:ok, window}" do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{} = window} = QueryWindows.open(user.id, net.id, "Foobar")
+      assert {:ok, %Window{} = window} = QueryWindows.open(user.id, net.id, "Foobar", user.name)
 
       assert window.user_id == user.id
       assert window.network_id == net.id
@@ -59,8 +64,8 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "vjt")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "vjt")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "vjt", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "vjt", user.name)
       assert id1 == id2
     end
 
@@ -68,8 +73,8 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "FooBar")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "foobar")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "FooBar", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "foobar", user.name)
       assert id1 == id2
     end
 
@@ -77,8 +82,8 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "FooBar")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "FOOBAR")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "FooBar", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "FOOBAR", user.name)
       assert id1 == id2
     end
 
@@ -86,8 +91,8 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "alice")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "bob")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net.id, "alice", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net.id, "bob", user.name)
       refute id1 == id2
     end
 
@@ -96,8 +101,8 @@ defmodule Grappa.QueryWindowsTest do
       net1 = network_fixture()
       net2 = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net1.id, "alice")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net2.id, "alice")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(user.id, net1.id, "alice", user.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(user.id, net2.id, "alice", user.name)
       refute id1 == id2
     end
 
@@ -106,8 +111,8 @@ defmodule Grappa.QueryWindowsTest do
       u2 = user_fixture()
       net = network_fixture()
 
-      assert {:ok, %Window{id: id1}} = QueryWindows.open(u1.id, net.id, "alice")
-      assert {:ok, %Window{id: id2}} = QueryWindows.open(u2.id, net.id, "alice")
+      assert {:ok, %Window{id: id1}} = QueryWindows.open(u1.id, net.id, "alice", u1.name)
+      assert {:ok, %Window{id: id2}} = QueryWindows.open(u2.id, net.id, "alice", u2.name)
       refute id1 == id2
     end
 
@@ -115,24 +120,55 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert {:ok, first} = QueryWindows.open(user.id, net.id, "vjt")
-      assert {:ok, second} = QueryWindows.open(user.id, net.id, "vjt")
+      assert {:ok, first} = QueryWindows.open(user.id, net.id, "vjt", user.name)
+      assert {:ok, second} = QueryWindows.open(user.id, net.id, "vjt", user.name)
 
       assert DateTime.compare(first.opened_at, second.opened_at) == :eq
+    end
+
+    test "broadcasts {:event, %{kind: \"query_windows_list\", windows: ...}} on user topic after open" do
+      user = user_fixture()
+      net = network_fixture()
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+
+      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      # The full list must include the newly opened window
+      assert is_map(windows)
+      [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
+    end
+
+    test "broadcast after second (idempotent) open still fires with current list" do
+      user = user_fixture()
+      net = network_fixture()
+
+      topic = Topic.user(user.name)
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      # Second open (idempotent) also broadcasts
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+
+      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
     end
   end
 
   # ---------------------------------------------------------------------------
-  # close/3
+  # close/4
   # ---------------------------------------------------------------------------
 
-  describe "close/3" do
+  describe "close/4" do
     test "deletes an existing window, subsequent list_for_user returns empty" do
       user = user_fixture()
       net = network_fixture()
 
-      {:ok, _} = QueryWindows.open(user.id, net.id, "vjt")
-      assert :ok = QueryWindows.close(user.id, net.id, "vjt")
+      {:ok, _} = QueryWindows.open(user.id, net.id, "vjt", user.name)
+      assert :ok = QueryWindows.close(user.id, net.id, "vjt", user.name)
       assert QueryWindows.list_for_user(user.id) == %{}
     end
 
@@ -140,15 +176,15 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      assert :ok = QueryWindows.close(user.id, net.id, "nonexistent")
+      assert :ok = QueryWindows.close(user.id, net.id, "nonexistent", user.name)
     end
 
     test "case-insensitive close: 'FooBar' closes a 'foobar' window" do
       user = user_fixture()
       net = network_fixture()
 
-      {:ok, _} = QueryWindows.open(user.id, net.id, "foobar")
-      assert :ok = QueryWindows.close(user.id, net.id, "FooBar")
+      {:ok, _} = QueryWindows.open(user.id, net.id, "foobar", user.name)
+      assert :ok = QueryWindows.close(user.id, net.id, "FooBar", user.name)
       assert QueryWindows.list_for_user(user.id) == %{}
     end
 
@@ -156,13 +192,45 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      {:ok, _} = QueryWindows.open(user.id, net.id, "alice")
-      {:ok, _} = QueryWindows.open(user.id, net.id, "bob")
-      assert :ok = QueryWindows.close(user.id, net.id, "alice")
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open(user.id, net.id, "bob", user.name)
+      assert :ok = QueryWindows.close(user.id, net.id, "alice", user.name)
 
       result = QueryWindows.list_for_user(user.id)
       assert map_size(result) == 1
       assert [%Window{target_nick: "bob"}] = result[net.id]
+    end
+
+    test "broadcasts {:event, %{kind: \"query_windows_list\", windows: ...}} on user topic after close" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open(user.id, net.id, "bob", user.name)
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      :ok = QueryWindows.close(user.id, net.id, "alice", user.name)
+
+      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      # Only bob should remain
+      assert [%Window{target_nick: "bob"}] = Map.fetch!(windows, net.id)
+    end
+
+    test "broadcasts empty windows map when last window closed" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      :ok = QueryWindows.close(user.id, net.id, "alice", user.name)
+
+      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert windows == %{}
     end
   end
 
@@ -180,8 +248,8 @@ defmodule Grappa.QueryWindowsTest do
       user = user_fixture()
       net = network_fixture()
 
-      {:ok, _} = QueryWindows.open(user.id, net.id, "alice")
-      {:ok, _} = QueryWindows.open(user.id, net.id, "bob")
+      {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open(user.id, net.id, "bob", user.name)
 
       result = QueryWindows.list_for_user(user.id)
       assert is_map(result)
@@ -196,9 +264,9 @@ defmodule Grappa.QueryWindowsTest do
       net1 = network_fixture()
       net2 = network_fixture()
 
-      {:ok, _} = QueryWindows.open(user.id, net1.id, "alice")
-      {:ok, _} = QueryWindows.open(user.id, net2.id, "bob")
-      {:ok, _} = QueryWindows.open(user.id, net2.id, "carol")
+      {:ok, _} = QueryWindows.open(user.id, net1.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open(user.id, net2.id, "bob", user.name)
+      {:ok, _} = QueryWindows.open(user.id, net2.id, "carol", user.name)
 
       result = QueryWindows.list_for_user(user.id)
       assert length(result[net1.id]) == 1
@@ -214,8 +282,8 @@ defmodule Grappa.QueryWindowsTest do
       # to :second in the changeset.  Using Process.sleep to ensure ordering
       # would be fragile — instead we rely on the sequential insert order +
       # the ascending id as a tiebreaker for same-second opens.
-      {:ok, w1} = QueryWindows.open(user.id, net.id, "alice")
-      {:ok, w2} = QueryWindows.open(user.id, net.id, "bob")
+      {:ok, w1} = QueryWindows.open(user.id, net.id, "alice", user.name)
+      {:ok, w2} = QueryWindows.open(user.id, net.id, "bob", user.name)
 
       result = QueryWindows.list_for_user(user.id)
       windows = result[net.id]
@@ -233,8 +301,8 @@ defmodule Grappa.QueryWindowsTest do
       u2 = user_fixture()
       net = network_fixture()
 
-      {:ok, _} = QueryWindows.open(u1.id, net.id, "alice")
-      {:ok, _} = QueryWindows.open(u2.id, net.id, "bob")
+      {:ok, _} = QueryWindows.open(u1.id, net.id, "alice", u1.name)
+      {:ok, _} = QueryWindows.open(u2.id, net.id, "bob", u2.name)
 
       result_u1 = QueryWindows.list_for_user(u1.id)
       assert length(result_u1[net.id]) == 1
@@ -257,7 +325,7 @@ defmodule Grappa.QueryWindowsTest do
 
         results =
           Enum.map(1..n, fn _ ->
-            {:ok, w} = QueryWindows.open(user.id, net.id, nick)
+            {:ok, w} = QueryWindows.open(user.id, net.id, nick, user.name)
             w.id
           end)
 
@@ -276,8 +344,8 @@ defmodule Grappa.QueryWindowsTest do
         lower = String.downcase(base_nick)
         upper = String.upcase(base_nick)
 
-        {:ok, w1} = QueryWindows.open(user.id, net.id, lower)
-        {:ok, w2} = QueryWindows.open(user.id, net.id, upper)
+        {:ok, w1} = QueryWindows.open(user.id, net.id, lower, user.name)
+        {:ok, w2} = QueryWindows.open(user.id, net.id, upper, user.name)
 
         assert w1.id == w2.id,
                "Expected lower/upper variants to return same row; got #{w1.id} vs #{w2.id}"
@@ -297,7 +365,7 @@ defmodule Grappa.QueryWindowsTest do
 
         # Open `windows_per_net` unique nicks per network
         for net <- nets, i <- 1..windows_per_net do
-          {:ok, _} = QueryWindows.open(user.id, net.id, "nick#{i}")
+          {:ok, _} = QueryWindows.open(user.id, net.id, "nick#{i}", user.name)
         end
 
         result = QueryWindows.list_for_user(user.id)
