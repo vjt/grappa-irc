@@ -8,6 +8,26 @@ defmodule Grappa.Admission.Config do
   CLAUDE.md "Application.{put,get}_env: boot-time only" — this is the
   designated boundary; no other module reads `:admission` config at
   runtime.
+
+  ## Configuration keys
+
+  Operator-facing (set via env vars in `compose.prod.yaml` →
+  `runtime.exs` → `:grappa, :admission` keyword):
+
+    * `:captcha_provider` — `Disabled` (default), `Turnstile`, `HCaptcha`
+    * `:captcha_secret` — provider secret (required for non-Disabled)
+    * `:captcha_site_key` — public site key (required for non-Disabled)
+
+  Test-only override seam — production uses `build!/1` defaults and
+  no operator path sets these:
+
+    * `:turnstile_endpoint` — defaults to the Cloudflare siteverify URL
+    * `:hcaptcha_endpoint` — defaults to the hCaptcha siteverify URL
+
+  Tests inject a Bypass-backed endpoint via the canonical
+  `put_test_config/1` (Mix.env() == :test gated) rather than poking
+  `Application.put_env` + re-running `boot/0`. The kwlist override
+  remains supported for completeness but is not the recommended path.
   """
 
   @type t :: %__MODULE__{
