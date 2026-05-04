@@ -144,8 +144,6 @@ defmodule Grappa.Visitors.Login do
   # Case 1 — provision new anon
   defp dispatch(nil, input, network, timeout) do
     capacity_input = %{
-      subject_kind: :visitor,
-      subject_id: nil,
       network_id: network.id,
       client_id: input.client_id,
       flow: :login_fresh
@@ -176,8 +174,6 @@ defmodule Grappa.Visitors.Login do
   defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeout)
        when is_binary(pwd) do
     capacity_input = %{
-      subject_kind: :visitor,
-      subject_id: visitor.id,
       network_id: network.id,
       client_id: input.client_id,
       flow: :login_existing
@@ -192,8 +188,6 @@ defmodule Grappa.Visitors.Login do
   # Case 3 — anon, token gate
   defp dispatch(%Visitor{password_encrypted: nil} = visitor, input, network, _) do
     capacity_input = %{
-      subject_kind: :visitor,
-      subject_id: visitor.id,
       network_id: network.id,
       client_id: input.client_id,
       flow: :login_existing

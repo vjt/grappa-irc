@@ -50,12 +50,9 @@ defmodule Grappa.Admission do
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
-  @type subject_kind :: :user | :visitor
   @type flow :: :login_fresh | :login_existing | :bootstrap_user | :bootstrap_visitor
 
   @type capacity_input :: %{
-          subject_kind: subject_kind(),
-          subject_id: Ecto.UUID.t() | nil,
           network_id: integer(),
           client_id: Grappa.ClientId.t() | nil,
           flow: flow()
