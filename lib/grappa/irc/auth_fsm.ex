@@ -380,9 +380,19 @@ defmodule Grappa.IRC.AuthFSM do
   # Parse a CAP LS / CAP ACK cap-list blob: space-separated cap tokens,
   # each optionally suffixed with `=<value>` (we drop the value, keeping
   # only the cap name) — IRCv3.2 cap negotiation only inspects names.
+  #
+  # M-irc-3: explicit @spec + nil-reject. `String.split(_, "=", parts: 2)`
+  # never returns an empty list for the `trim: true` output, so
+  # `List.first/1` never returns nil today — but the type contract
+  # surfaces nil as a possibility, and a future refactor that fed nil
+  # into `"sasl" in caps` would crash silently with a wrong-shape miss.
+  # Reject defensively so the cap-name list is `[String.t()]` by
+  # construction.
+  @spec parse_cap_list(String.t()) :: [String.t()]
   defp parse_cap_list(blob) do
     blob
     |> String.split(" ", trim: true)
     |> Enum.map(fn cap -> cap |> String.split("=", parts: 2) |> List.first() end)
+    |> Enum.reject(&is_nil/1)
   end
 end
