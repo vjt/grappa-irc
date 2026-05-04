@@ -407,6 +407,27 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sets explicit away with an `origin_window` for numeric routing (S4.3).
+
+  Identical to `set_explicit_away/3` but also records the originating
+  cicchetto window in Session.Server state so that 305/306 reply numerics
+  can be routed back to the correct window via `NumericRouter`.
+
+  `origin_window` is `%{kind: atom(), target: String.t() | nil}`.
+  """
+  @spec set_explicit_away(subject(), integer(), String.t(), map()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def set_explicit_away(subject, network_id, reason, origin_window)
+      when is_subject(subject) and is_integer(network_id) and is_binary(reason) and
+             is_map(origin_window) do
+    if Identifier.safe_line_token?(reason) do
+      call_session(subject, network_id, {:set_explicit_away, reason, origin_window})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
   Clears explicit away for the session at `(subject, network_id)`.
 
   Issues bare `AWAY` upstream (RFC 2812 §4.6) and transitions
@@ -424,6 +445,20 @@ defmodule Grappa.Session do
   def unset_explicit_away(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     call_session(subject, network_id, {:unset_explicit_away})
+  end
+
+  @doc """
+  Unsets explicit away with an `origin_window` for numeric routing (S4.3).
+
+  Identical to `unset_explicit_away/2` but also records the originating
+  cicchetto window in Session.Server state so that 305/306 reply numerics
+  route back to the correct window via `NumericRouter`.
+  """
+  @spec unset_explicit_away(subject(), integer(), map()) ::
+          :ok | {:error, :no_session | :not_explicit}
+  def unset_explicit_away(subject, network_id, origin_window)
+      when is_subject(subject) and is_integer(network_id) and is_map(origin_window) do
+    call_session(subject, network_id, {:unset_explicit_away, origin_window})
   end
 
   @doc """

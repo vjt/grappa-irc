@@ -294,10 +294,22 @@ defmodule Grappa.IRC.AuthFSM do
   # strict implementations (Solanum, Ergo) reject the AUTHENTICATE
   # against an un-ACK'd cap. Phase guard makes this a no-op outside
   # the SASL chain (defensive against stray ACKs post-registration).
+  #
+  # S4.2: `labeled-response` is requested alongside (or instead of)
+  # `sasl` — the ACK blob may contain both. Session.Server handles CAP
+  # ACK directly (via `{:irc, %Message{command: :cap, …}}` dispatch from
+  # `IRC.Client`) to track which caps are active without coupling the FSM
+  # to session state. The FSM only cares whether SASL was ACK'd to
+  # drive the AUTHENTICATE flow.
   defp handle_cap([_, "ACK", caps_blob | _], %{phase: :awaiting_cap_ack} = state) do
-    if "sasl" in parse_cap_list(caps_blob) do
+    acked = parse_cap_list(caps_blob)
+
+    if "sasl" in acked do
       {:cont, %{state | phase: :sasl_pending}, ["AUTHENTICATE PLAIN\r\n"]}
     else
+      # SASL not ACK'd — `labeled-response` alone (or CAP END fallback).
+      # Session.Server handles the `labeled-response` flag independently;
+      # the FSM's job is to close the SASL negotiation cleanly.
       cap_unavailable(state)
     end
   end
@@ -310,11 +322,38 @@ defmodule Grappa.IRC.AuthFSM do
   # Phase guard lives in the `handle_cap` LS clauses above: a stray
   # post-registration CAP LS never reaches here. Caller invariant:
   # `state.phase == :awaiting_cap_ls`.
+  #
+  # S4.2: request `labeled-response` opportunistically alongside SASL.
+  # The cap is IRCv3-standard; it lets Session.Server correlate numeric
+  # replies to the originating command window without relying on heuristics.
+  # We always request it when advertised, regardless of auth method, because
+  # all command verbs (PRIVMSG, NICK, TOPIC, AWAY, etc.) benefit from label
+  # correlation — not just SASL-related exchanges.
+  #
+  # Request shape:
+  #   - SASL + labeled-response both advertised → `CAP REQ :sasl labeled-response`
+  #   - Only labeled-response → `CAP REQ :labeled-response`
+  #   - Only SASL → `CAP REQ :sasl` (existing behaviour, unchanged)
+  #   - Neither → fall through to cap_unavailable (existing behaviour)
   defp finalize_cap_ls(caps, state) do
-    if "sasl" in caps and state.auth_method in [:auto, :sasl] do
-      {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :sasl\r\n"]}
-    else
-      cap_unavailable(state)
+    sasl_wanted = "sasl" in caps and state.auth_method in [:auto, :sasl]
+    labeled_response = "labeled-response" in caps
+
+    cond do
+      sasl_wanted and labeled_response ->
+        {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :sasl labeled-response\r\n"]}
+
+      sasl_wanted ->
+        {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :sasl\r\n"]}
+
+      labeled_response ->
+        # No SASL, but labeled-response is available. Request it and close
+        # CAP negotiation with CAP END — labeled-response has no follow-up
+        # exchange (unlike SASL). Session.Server detects the ACK independently.
+        {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :labeled-response\r\n"]}
+
+      true ->
+        cap_unavailable(state)
     end
   end
 

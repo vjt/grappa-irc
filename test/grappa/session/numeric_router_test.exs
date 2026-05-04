@@ -55,11 +55,13 @@ defmodule Grappa.Session.NumericRouterTest do
 
   describe "channel-param numerics → {:channel, chan}" do
     property "all channel-param numerics with a channel param route to {:channel, chan}" do
-      check all numeric <- member_of(@channel_param_numerics),
-                chan <- string(:ascii, min_length: 2),
-                # channel names start with # & etc. — we use a simple valid form
-                chan = "#" <> String.replace(chan, ~r/[#\s\x00\r\n,]/, "a"),
-                String.length(chan) > 1 do
+      check all(
+              numeric <- member_of(@channel_param_numerics),
+              chan <- string(:ascii, min_length: 2),
+              # channel names start with # & etc. — we use a simple valid form
+              chan = "#" <> String.replace(chan, ~r/[#\s\x00\r\n,]/, "a"),
+              String.length(chan) > 1
+            ) do
         m = msg(numeric, ["own_nick", chan, "some trailing"])
         assert {:channel, ^chan} = NumericRouter.route(m, state_no_query())
       end
@@ -120,8 +122,8 @@ defmodule Grappa.Session.NumericRouterTest do
     end
 
     property "401 routes to query when nick matches (case-insensitive)" do
-      check all nick <- string(:ascii, min_length: 1, max_length: 20),
-                nick = String.replace(nick, ~r/[\s\x00\r\n]/, "a") |> then(fn n -> if n == "", do: "a", else: n end) do
+      check all(nick <- string(:ascii, min_length: 1, max_length: 20)) do
+        nick = nick |> String.replace(~r/[\s\x00\r\n]/, "a") |> then(fn n -> if n == "", do: "a", else: n end)
         m = msg(401, ["own", nick, "No such nick"])
         state = state_with_query([String.downcase(nick)])
         assert {:query, ^nick} = NumericRouter.route(m, state)
@@ -137,7 +139,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
   describe "param-less / no-useful-param numerics → {:active, nil}" do
     property "all param-less numerics route to {:active, nil}" do
-      check all numeric <- member_of(@active_numerics) do
+      check all(numeric <- member_of(@active_numerics)) do
         m = msg(numeric, ["own", "some trailing message"])
         assert {:active, nil} = NumericRouter.route(m, state_no_query())
       end
@@ -172,7 +174,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
   describe "delegated numerics → :delegated" do
     property "all delegated numerics return :delegated" do
-      check all numeric <- member_of(@delegated_numerics) do
+      check all(numeric <- member_of(@delegated_numerics)) do
         m = msg(numeric, ["own", "some data"])
         assert :delegated = NumericRouter.route(m, state_no_query())
       end
@@ -210,21 +212,25 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "unknown label falls through to param-derived routing" do
       m = msg_tagged(404, ["own", "#sniffo", "Cannot send"], "unknown-label")
+
       state = %{
         open_query_nicks: MapSet.new(),
         last_command_window: nil,
         labels_pending: %{"different-label" => %{kind: :channel, target: "#other"}}
       }
+
       assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
     end
 
     test "no label tag falls through to param-derived routing" do
       m = msg(404, ["own", "#sniffo", "Cannot send"])
+
       state = %{
         open_query_nicks: MapSet.new(),
         last_command_window: nil,
         labels_pending: %{"abc" => %{kind: :channel, target: "#other"}}
       }
+
       assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
     end
   end
@@ -242,11 +248,13 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test ":active routes to {:active, nil} when last_command_window is nil" do
       m = msg(432, ["own", "badnick", "Erroneous nickname"])
+
       state = %{
         open_query_nicks: MapSet.new(),
         last_command_window: nil,
         labels_pending: %{}
       }
+
       assert {:active, nil} = NumericRouter.route(m, state)
     end
 

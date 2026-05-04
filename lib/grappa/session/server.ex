@@ -84,9 +84,20 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Scrollback, Session}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, NSInterceptor}
+  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, NSInterceptor, NumericRouter}
 
   require Logger
+
+  @typedoc """
+  A window reference — the `kind:` discriminator plus optional `target:` name.
+  Used as the value type for `last_command_window` and `labels_pending` entries.
+  The `kind:` closed set mirrors `NumericRouter.window_kind()`.
+
+  Declared here (not in NumericRouter) because Session.Server owns the state;
+  NumericRouter imports the type. Matching the exact shape lets NumericRouter
+  pattern-match on it directly.
+  """
+  @type window_ref :: %{kind: NumericRouter.window_kind(), target: String.t() | nil}
 
   @typedoc """
   Away state — closed set tracking whether the user is present, manually away
@@ -204,7 +215,27 @@ defmodule Grappa.Session.Server do
           away_state: away_state(),
           away_started_at: DateTime.t() | nil,
           away_reason: String.t() | nil,
-          auto_away_timer: reference() | nil
+          auto_away_timer: reference() | nil,
+          # S4.2: IRCv3 caps confirmed active by upstream CAP ACK. Keys are
+          # lowercase cap names (e.g. "labeled-response"). Empty until the
+          # upstream ACKs at least one cap. Caps added on ACK; never removed
+          # (a registered-phase CAP DEL is not handled — out of S4 scope).
+          caps_active: MapSet.t(String.t()),
+          # S4.2: in-flight label → origin_window correlations for the
+          # `labeled-response` cap. Bounded to currently-in-flight tracked
+          # commands (typically <10 at a time; users issue one command, wait
+          # for response, issue next). Entries are removed on numeric arrival
+          # (see handle_numeric_with_routing/2) so the map stays small.
+          # NOT persisted across crashes — a crash clears the window, and
+          # any labeled numerics that arrive post-restart are routed via
+          # param-derived or last_command_window fallback.
+          labels_pending: %{String.t() => window_ref()},
+          # S4.3: last window that originated a cicchetto command. Updated
+          # on every `:send_*` call that carries an origin_window. Used by
+          # NumericRouter as the `:active` fallback when labeled-response
+          # is unavailable and param-derived routing returns {:active, nil}.
+          # `nil` until the user issues the first command in this session.
+          last_command_window: window_ref() | nil
         }
 
   ## API
@@ -285,7 +316,10 @@ defmodule Grappa.Session.Server do
       away_state: :present,
       away_started_at: nil,
       away_reason: nil,
-      auto_away_timer: nil
+      auto_away_timer: nil,
+      caps_active: MapSet.new(),
+      labels_pending: %{},
+      last_command_window: nil
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -445,6 +479,31 @@ defmodule Grappa.Session.Server do
   # upstream replays the NICK back; EventRouter's NICK handler then
   # reconciles `state.nick` (state.nick == old_nick path) and emits the
   # per-channel `:nick_change` persist effects.
+  #
+  # S4.3: the origin_window variant updates last_command_window so
+  # 432/433/437 NICK-error numerics route back to the right window.
+  # S4.2: if labeled-response is active, prepend @label= tag to the
+  # NICK line so the numeric response echoes the label back.
+  def handle_call({:send_nick, new_nick, origin_window}, _, state) when is_binary(new_nick) do
+    {label, next_state} = prepare_label(state, origin_window)
+
+    result =
+      if is_nil(label) do
+        Client.send_nick(next_state.client, new_nick)
+      else
+        # labeled-response active: inject tag prefix. Nick validation is skipped
+        # here because the label prefix must wrap the full line; Client.send_line
+        # is the raw path. The Session facade pre-validates the nick before this
+        # handler fires (Identifier.valid_nick? check in Session.send_nick/4).
+        Client.send_line(next_state.client, [label_tag(label), "NICK #{new_nick}\r\n"])
+      end
+
+    case result do
+      :ok -> {:reply, :ok, next_state}
+      {:error, _} = err -> {:reply, err, next_state}
+    end
+  end
+
   def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
     case Client.send_nick(state.client, new_nick) do
       :ok -> {:reply, :ok, state}
@@ -469,8 +528,21 @@ defmodule Grappa.Session.Server do
   # Issues `AWAY :<reason>` upstream and records the timestamp + reason.
   # Safe_line_token guard lives on the facade (`Session.set_explicit_away/3`)
   # so injection-attempt vs no-session ordering is consistent.
+  #
+  # S4.3: the origin_window variant is the cicchetto-originated path where
+  # GrappaChannel passes the window that issued the /away command. Updates
+  # `last_command_window` so NumericRouter can correlate 305/306 replies.
+  # S4.2: if labeled-response is active, generate + track a label for the
+  # AWAY command so 305/306 echo it back.
+  def handle_call({:set_explicit_away, reason, origin_window}, _, state)
+      when is_binary(reason) do
+    {label, next_state} = prepare_label(state, origin_window)
+    final_state = set_explicit_away_internal(next_state, reason, label)
+    {:reply, :ok, final_state}
+  end
+
   def handle_call({:set_explicit_away, reason}, _, state) when is_binary(reason) do
-    next_state = set_explicit_away_internal(state, reason)
+    next_state = set_explicit_away_internal(state, reason, nil)
     {:reply, :ok, next_state}
   end
 
@@ -478,8 +550,22 @@ defmodule Grappa.Session.Server do
   # call when currently `:away_explicit`; any other state is a no-op that
   # returns `{:error, :not_explicit}` so callers can surface "you weren't
   # away explicitly" feedback to the user.
+  #
+  # S4.3: the origin_window variant updates last_command_window.
+  def handle_call({:unset_explicit_away, origin_window}, _, %{away_state: :away_explicit} = state) do
+    {label, next_state} = prepare_label(state, origin_window)
+    final_state = unset_away_internal(next_state, label)
+    {:reply, :ok, final_state}
+  end
+
+  def handle_call({:unset_explicit_away, origin_window}, _, state) do
+    # Not currently away_explicit — no-op, but still update last_command_window.
+    {_, next_state} = prepare_label(state, origin_window)
+    {:reply, {:error, :not_explicit}, next_state}
+  end
+
   def handle_call({:unset_explicit_away}, _, %{away_state: :away_explicit} = state) do
-    next_state = unset_away_internal(state)
+    next_state = unset_away_internal(state, nil)
     {:reply, :ok, next_state}
   end
 
@@ -504,7 +590,7 @@ defmodule Grappa.Session.Server do
   # when `:away_explicit` (don't clear an explicit away on reconnect) or
   # `:present` (nothing to do). Only acts on `:away_auto`.
   def handle_call({:unset_auto_away}, _, %{away_state: :away_auto} = state) do
-    next_state = unset_away_internal(state)
+    next_state = unset_away_internal(state, nil)
     {:reply, :ok, next_state}
   end
 
@@ -616,7 +702,7 @@ defmodule Grappa.Session.Server do
 
     state2 =
       if state1.away_state == :away_auto do
-        unset_away_internal(state1)
+        unset_away_internal(state1, nil)
       else
         state1
       end
@@ -847,6 +933,81 @@ defmodule Grappa.Session.Server do
       )
 
       {:noreply, state}
+    end
+  end
+
+  # S4.2 — CAP ACK: detect labeled-response being granted by the upstream.
+  # IRC.Client dispatches ALL parsed messages to Session.Server (including
+  # CAP messages that AuthFSM also processes). This handler fires for any
+  # CAP ACK that contains "labeled-response" in the ACK'd caps list. It
+  # is not phase-guarded — a stray post-registration CAP ACK from a CAP
+  # NEW or similar extension is benign here (we just add the cap name to
+  # caps_active, which is a no-op if it's already there or useless if
+  # the session never issues labeled commands).
+  def handle_info(
+        {:irc, %Message{command: :cap, params: [_, "ACK", caps_blob | _]}},
+        state
+      )
+      when is_binary(caps_blob) do
+    acked = caps_blob |> String.split(" ", trim: true) |> Enum.map(&String.trim/1)
+
+    caps_active =
+      if "labeled-response" in acked do
+        MapSet.put(state.caps_active, "labeled-response")
+      else
+        state.caps_active
+      end
+
+    {:noreply, %{state | caps_active: caps_active}}
+  end
+
+  # S4.2/S4.4 — Numeric routing: route numerics through NumericRouter and
+  # broadcast `numeric_routed` event. Delegated numerics are passed through
+  # to the existing delegate/2 path unchanged.
+  #
+  # The `labels_pending` entry for the matched label (if any) is consumed
+  # here (removed from state) so the map stays bounded. `last_command_window`
+  # is NOT updated here — it's a command-send-time snapshot, not a
+  # numeric-arrival-time one.
+  def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state) do
+    router_state = build_router_state(state)
+
+    case NumericRouter.route(msg, router_state) do
+      :delegated ->
+        # Delegated: existing handlers own this numeric via EventRouter.
+        delegate(msg, state)
+
+      routing ->
+        # Consume label if matched (keeps labels_pending bounded).
+        label = Message.tag(msg, "label")
+        labels_pending = if label, do: Map.delete(state.labels_pending, label), else: state.labels_pending
+
+        numeric_code = numeric_code(msg)
+        trailing = List.last(msg.params)
+
+        target_window = routing_to_window_map(routing)
+        severity = NumericRouter.severity(numeric_code)
+
+        :ok =
+          Phoenix.PubSub.broadcast(
+            Grappa.PubSub,
+            Topic.user(state.subject_label),
+            {:event,
+             %{
+               kind: "numeric_routed",
+               numeric: numeric_code,
+               params: msg.params,
+               trailing: trailing,
+               target_window: target_window,
+               severity: severity
+             }}
+          )
+
+        # Also delegate so EventRouter can update state (e.g. 305/306 away_confirmed).
+        {:cont, next_state, effects} = EventRouter.route(msg, %{state | labels_pending: labels_pending})
+        final_state = apply_effects(effects, next_state)
+        maybe_broadcast_channels_changed(state, final_state)
+        {:noreply, final_state}
     end
   end
 
@@ -1083,11 +1244,76 @@ defmodule Grappa.Session.Server do
     }
   end
 
-  # `EventRouter.route/2` returns `{:cont, new_state, [effect]}`. Effects
-  # are flushed in arrival order via `apply_effects/2`. The router owns
-  # state derivation (members map, nick reconcile); Server owns the
-  # transport — Client.send_line for `:reply`, Scrollback.persist_event
-  # + PubSub.broadcast for `:persist`.
+  # ---------------------------------------------------------------------------
+  # S4.2 — labeled-response label generation + tracking
+  # ---------------------------------------------------------------------------
+
+  # If the upstream has ACK'd `labeled-response`, generates a new label,
+  # records the label → origin_window correlation in labels_pending, and
+  # returns `{label_string, new_state}`. If the cap is not active or
+  # origin_window is nil, returns `{nil, state}` (caller sends without label).
+  # Last_command_window is always updated when origin_window is non-nil.
+  @spec prepare_label(state(), window_ref() | nil) :: {String.t() | nil, state()}
+  defp prepare_label(state, nil) do
+    {nil, state}
+  end
+
+  defp prepare_label(state, origin_window) when is_map(origin_window) do
+    state = %{state | last_command_window: origin_window}
+
+    if MapSet.member?(state.caps_active, "labeled-response") do
+      label = generate_label()
+      labels_pending = Map.put(state.labels_pending, label, origin_window)
+      {label, %{state | labels_pending: labels_pending}}
+    else
+      {nil, state}
+    end
+  end
+
+  # Generates a new UUID label string. RFC 4122 UUID v4 via `:crypto` —
+  # sufficient uniqueness for in-flight correlation (bounded, short-lived map).
+  @spec generate_label() :: String.t()
+  defp generate_label, do: Ecto.UUID.generate()
+
+  # Formats the IRCv3 message-tag prefix for a label. Returns "" when label is nil.
+  @spec label_tag(String.t() | nil) :: String.t()
+  defp label_tag(nil), do: ""
+  defp label_tag(label) when is_binary(label), do: "@label=#{label} "
+
+  # ---------------------------------------------------------------------------
+  # S4.3 — NumericRouter state builder + helpers
+  # ---------------------------------------------------------------------------
+
+  # Builds the `NumericRouter.router_state()` subset from full Session.Server
+  # state. `open_query_nicks` is always empty — querying `QueryWindows` from
+  # Session.Server would introduce a compile-time cycle (Session → QueryWindows
+  # → Networks → Session). The label-based path (S4.2) and `last_command_window`
+  # fallback (S4.3) cover the dominant routing cases; the open-query-nicks
+  # heuristic for unlabeled 401 replies is a future enhancement if needed
+  # (requires a PubSub-driven cache in Session.Server state, not a direct DB
+  # read, to avoid the cycle). Uses the NumericRouter constructor so Dialyzer
+  # can verify the opaque MapSet.t() subtype via the function spec.
+  defp build_router_state(state) do
+    NumericRouter.new_router_state(
+      MapSet.new(),
+      state.last_command_window,
+      state.labels_pending
+    )
+  end
+
+  # Extracts the integer numeric code from a numeric Message.
+  @spec numeric_code(Message.t()) :: 1..999
+  defp numeric_code(%Message{command: {:numeric, code}}), do: code
+
+  # Converts a routing_decision tuple to the wire map shape for the event.
+  # Only called for non-:delegated routing decisions (the :delegated branch in
+  # the numeric handler calls delegate/2 directly). The type is narrowed to
+  # `{kind, target}` tuples only; :delegated never arrives here at runtime.
+  @spec routing_to_window_map({:channel, String.t()} | {:query, String.t()} | {:active, nil} | {:server, nil}) :: %{
+          kind: atom(),
+          target: String.t() | nil
+        }
+  defp routing_to_window_map({kind, target}), do: %{kind: kind, target: target}
   #
   # Channels-list mutation (self-JOIN / self-PART / self-KICK changes the
   # `state.members` keyset) fires a fan-out broadcast on the per-user
@@ -1290,9 +1516,25 @@ defmodule Grappa.Session.Server do
   # Set explicit away: unconditional, always wins. Issues `AWAY :<reason>`
   # upstream. Records `away_started_at` + `away_reason` so Mentions
   # aggregation (S3.5) has the precise window.
-  @spec set_explicit_away_internal(state(), String.t()) :: state()
-  defp set_explicit_away_internal(state, reason) when is_binary(reason) do
+  #
+  # S4.2: `label` is a UUID string when labeled-response cap is active;
+  # `nil` otherwise. When non-nil, the AWAY line is prefixed with `@label=<uuid>`
+  # so the upstream echoes it back on the 305/306 numeric reply.
+  @spec set_explicit_away_internal(state(), String.t(), String.t() | nil) :: state()
+  defp set_explicit_away_internal(state, reason, nil) when is_binary(reason) do
     :ok = Client.send_away(state.client, reason)
+
+    %{
+      state
+      | away_state: :away_explicit,
+        away_started_at: DateTime.utc_now(),
+        away_reason: reason
+    }
+  end
+
+  defp set_explicit_away_internal(state, reason, label)
+       when is_binary(reason) and is_binary(label) do
+    :ok = Client.send_line(state.client, "@label=#{label} AWAY :#{reason}\r\n")
 
     %{
       state
@@ -1319,9 +1561,23 @@ defmodule Grappa.Session.Server do
 
   # Clear any active away state (explicit or auto). Issues bare `AWAY` upstream
   # to clear the status. Resets all away fields to idle defaults.
-  @spec unset_away_internal(state()) :: state()
-  defp unset_away_internal(state) do
+  #
+  # S4.2: `label` is a UUID string when labeled-response cap is active;
+  # `nil` otherwise.
+  @spec unset_away_internal(state(), String.t() | nil) :: state()
+  defp unset_away_internal(state, nil) do
     :ok = Client.send_away_unset(state.client)
+
+    %{
+      state
+      | away_state: :present,
+        away_started_at: nil,
+        away_reason: nil
+    }
+  end
+
+  defp unset_away_internal(state, label) when is_binary(label) do
+    :ok = Client.send_line(state.client, "@label=#{label} AWAY\r\n")
 
     %{
       state

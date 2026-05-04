@@ -65,14 +65,14 @@ defmodule Grappa.Session.NumericRouter do
     * `{:channel, chan}` — route to the named channel's window.
     * `{:query, nick}` — route to the DM/query window for nick.
     * `{:server, nil}` — route to the server-messages pseudo-window.
+    * `{:list, nil}` — route to the /list pseudo-window.
+    * `{:mentions, nil}` — route to the mentions pseudo-window.
     * `{:active, nil}` — route to whichever window is currently focused in
       cicchetto (or whichever `last_command_window` points to — see S4.3).
     * `:delegated` — numeric is owned by a dedicated handler; skip the matrix.
   """
   @type routing_decision ::
-          {:channel, String.t()}
-          | {:query, String.t()}
-          | {:server, nil}
+          {window_kind(), String.t() | nil}
           | {:active, nil}
           | :delegated
 
@@ -92,8 +92,10 @@ defmodule Grappa.Session.NumericRouter do
   and passes them in to keep NumericRouter pure (no GenServer calls, no Repo).
 
     * `open_query_nicks` — a `MapSet` of **lowercased** nick strings for
-      which the user currently has an open DM window. Derived from
-      `QueryWindows.list_for_user/1` at the call site.
+      which the user currently has an open DM window. Currently always empty
+      (QueryWindows dep would cause a compile-time cycle Session → QW → Networks
+      → Session); a PubSub-driven cache is the planned upgrade path if the
+      heuristic is needed in production.
     * `last_command_window` — the most-recently-used window for a
       cicchetto-originated command; `nil` when no command has been issued
       in this session yet. Set by Session.Server on every outbound command.
@@ -102,7 +104,7 @@ defmodule Grappa.Session.NumericRouter do
       <10); Session.Server cleans up on numeric arrival.
   """
   @type router_state :: %{
-          required(:open_query_nicks) => MapSet.t(String.t()),
+          required(:open_query_nicks) => MapSet.t(),
           required(:last_command_window) => window_ref() | nil,
           required(:labels_pending) => %{String.t() => window_ref()}
         }
@@ -200,6 +202,24 @@ defmodule Grappa.Session.NumericRouter do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Builds a `router_state()` from its components.
+
+  Callers (Session.Server) use this constructor rather than building the map
+  literal directly — Dialyzer can verify the opaque `MapSet.t()` subtype via
+  the function's return spec, avoiding `call_without_opaque` false-positives
+  at the `route/2` call site.
+  """
+  @spec new_router_state(MapSet.t(), window_ref() | nil, %{String.t() => window_ref()}) ::
+          router_state()
+  def new_router_state(open_query_nicks, last_command_window, labels_pending) do
+    %{
+      open_query_nicks: open_query_nicks,
+      last_command_window: last_command_window,
+      labels_pending: labels_pending
+    }
+  end
+
+  @doc """
   Routes one numeric `%Message{}` to a `routing_decision()`.
 
   Priority: labeled-response (S4.2) > param-derived > active fallback (S4.3).
@@ -276,8 +296,7 @@ defmodule Grappa.Session.NumericRouter do
   end
 
   # Channel-param: channel name is at params[1] (after own-nick at params[0]).
-  @spec route_channel_param(Message.t(), router_state()) :: routing_decision()
-  defp route_channel_param(%Message{params: [_, channel | _]}, _state)
+  defp route_channel_param(%Message{params: [_, channel | _]}, _)
        when is_binary(channel) do
     {:channel, channel}
   end
@@ -288,7 +307,6 @@ defmodule Grappa.Session.NumericRouter do
   end
 
   # Nick-param: nick is at params[1]. Case-insensitive lookup against open query windows.
-  @spec route_nick_param(Message.t(), router_state()) :: routing_decision()
   defp route_nick_param(%Message{params: [_, nick | _]}, state) when is_binary(nick) do
     if MapSet.member?(state.open_query_nicks, String.downcase(nick)) do
       {:query, nick}
@@ -302,15 +320,11 @@ defmodule Grappa.Session.NumericRouter do
   end
 
   # Active resolution: last_command_window > {:active, nil}.
-  @spec resolve_active(router_state()) :: routing_decision()
-  defp resolve_active(%{last_command_window: %{kind: kind, target: target}})
-       when not is_nil(kind) do
-    {kind, target}
-  end
+  defp resolve_active(%{last_command_window: %{kind: kind, target: target}}),
+    do: {kind, target}
 
-  defp resolve_active(_state), do: {:active, nil}
+  defp resolve_active(_), do: {:active, nil}
 
   # Convert a window_ref to a routing_decision tuple.
-  @spec window_ref_to_decision(window_ref()) :: routing_decision()
   defp window_ref_to_decision(%{kind: kind, target: target}), do: {kind, target}
 end
