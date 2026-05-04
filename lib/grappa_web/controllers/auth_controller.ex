@@ -85,11 +85,29 @@ defmodule GrappaWeb.AuthController do
   `terminate/2` cleanly (and, on the visitor branch, BEFORE purging
   the visitor row so an in-flight scrollback persist doesn't trip
   the `messages.visitor_id` FK).
+
+  H2: After session revocation, broadcasts a `"disconnect"` event to
+  the per-subject UserSocket id-topic
+  (`user_socket:<name>` for users, `user_socket:visitor:<id>` for
+  visitors — matches `GrappaWeb.UserSocket`'s `id/1` callback).
+  Phoenix's socket transport process is subscribed to its id-topic at
+  connect time; receiving `"disconnect"` triggers a
+  `{:stop, {:shutdown, :disconnected}, _}` from the socket's `__info__`
+  catch-all, terminating the live WebSocket. Without this, a logged-out
+  browser would keep receiving PubSub pushes until it reconnects (and
+  gets rejected at re-auth) — Bearer-as-connect-credential needs
+  mid-flight enforcement, not just connect-time re-check. Broadcast is
+  fire-and-forget — runs LAST so a PubSub hiccup can't block the
+  server-side teardown; the `{:error, _}` return from
+  `c:Phoenix.Endpoint.broadcast/3` (PubSub server unreachable) is logged
+  and swallowed since the session row is already revoked, so the WS
+  will be rejected on its next message anyway.
   """
   @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def logout(conn, _) do
     :ok = maybe_terminate_sessions(conn.assigns)
     :ok = Accounts.revoke_session(conn.assigns.current_session_id)
+    :ok = maybe_disconnect_socket(conn.assigns)
     send_resp(conn, :no_content, "")
   end
 
@@ -104,6 +122,35 @@ defmodule GrappaWeb.AuthController do
   end
 
   defp maybe_terminate_sessions(_), do: :ok
+
+  @spec maybe_disconnect_socket(map()) :: :ok
+  defp maybe_disconnect_socket(%{current_visitor: %Visitor{id: visitor_id}}) do
+    broadcast_disconnect("user_socket:visitor:#{visitor_id}")
+  end
+
+  defp maybe_disconnect_socket(%{current_user: %Accounts.User{name: name}}) do
+    broadcast_disconnect("user_socket:#{name}")
+  end
+
+  defp maybe_disconnect_socket(_), do: :ok
+
+  @spec broadcast_disconnect(String.t()) :: :ok
+  defp broadcast_disconnect(socket_id) do
+    case GrappaWeb.Endpoint.broadcast(socket_id, "disconnect", %{}) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        # PubSub server unreachable — session row already revoked, so
+        # the live WS will be rejected on its next message anyway.
+        # Log + swallow rather than crash the logout response.
+        Logger.warning("logout disconnect broadcast failed for #{socket_id}",
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
 
   @spec stop_visitor_session(Visitor.t()) :: :ok
   defp stop_visitor_session(%Visitor{} = visitor) do

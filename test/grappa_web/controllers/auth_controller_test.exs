@@ -486,6 +486,70 @@ defmodule GrappaWeb.AuthControllerTest do
              ) == []
     end
 
+    test "user logout broadcasts \"disconnect\" to user_socket id-topic",
+         %{conn: conn} do
+      # H2: server-side WS termination. Phoenix's UserSocket transport
+      # is subscribed to its id-topic at connect time
+      # (`UserSocket.id/1` => `"user_socket:#{user_name}"`); a
+      # `"disconnect"` event there triggers
+      # `Phoenix.Socket.__info__/2` => `{:stop, {:shutdown,
+      # :disconnected}, _}`, terminating the live WS. Without this
+      # broadcast a logged-out browser keeps receiving PubSub pushes
+      # until the next reconnect — bearer revocation is mid-flight,
+      # not just connect-time.
+      #
+      # Test approach: the conn-test process subscribes to the
+      # id-topic directly (no live UserSocket process needed) and
+      # asserts the canonical `Phoenix.Socket.Broadcast` shape
+      # arrives. End-to-end transport-process termination is Phoenix
+      # framework behavior — covered by their own test suite — and
+      # not the unit under test (`AuthController.logout/2`).
+      {user, session} = user_and_session()
+      :ok = GrappaWeb.Endpoint.subscribe("user_socket:#{user.name}")
+
+      conn
+      |> put_bearer(session.id)
+      |> delete("/auth/logout")
+      |> response(204)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: topic,
+                       event: "disconnect",
+                       payload: %{}
+                     },
+                     500
+
+      assert topic == "user_socket:#{user.name}"
+    end
+
+    test "visitor logout broadcasts \"disconnect\" to visitor user_socket id-topic",
+         %{conn: conn} do
+      # H2 visitor branch — id-topic shape mirrors `UserSocket.id/1`'s
+      # visitor branch (`"user_socket:visitor:#{visitor.id}"`). Uses a
+      # bare visitor + session pair (no live IRC fake) — the
+      # degenerate "no live Session.Server / network row missing"
+      # path still flows through `maybe_disconnect_socket/1` and is
+      # the cheapest fixture that proves the broadcast.
+      {visitor, session} = visitor_and_session()
+      :ok = GrappaWeb.Endpoint.subscribe("user_socket:visitor:#{visitor.id}")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        conn
+        |> put_bearer(session.id)
+        |> delete("/auth/logout")
+        |> response(204)
+      end)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: topic,
+                       event: "disconnect",
+                       payload: %{}
+                     },
+                     500
+
+      assert topic == "user_socket:visitor:#{visitor.id}"
+    end
+
     test "visitor logout when network row deleted mid-session logs warning + 204",
          %{conn: conn} do
       {server, port} = start_server()
