@@ -3033,4 +3033,31 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # S5.4 — topic-clear: irssi /topic -delete sends TOPIC #chan : (empty trailing)
+  # ---------------------------------------------------------------------------
+
+  describe "send_topic_clear/3" do
+    test "sends TOPIC #chan : (empty trailing) upstream" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert :ok = Session.send_topic_clear({:user, user.id}, network.id, "#test")
+
+      {:ok, line} =
+        IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+
+      assert line == "TOPIC #test :\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no_session for unknown (user, network)" do
+      assert {:error, :no_session} =
+               Session.send_topic_clear({:user, Ecto.UUID.generate()}, 999_999, "#x")
+    end
+  end
 end

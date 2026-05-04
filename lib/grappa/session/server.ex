@@ -622,6 +622,15 @@ defmodule Grappa.Session.Server do
     {:reply, :ok, state}
   end
 
+  # S5.4: irssi-convention topic clear — sends `TOPIC #chan :` (empty trailing).
+  # This clears the channel topic on servers that honour RFC 2812 §3.2.4:
+  # an empty trailing parameter signals "no topic". The inbound TOPIC event
+  # that the server echoes back will update the topic cache via EventRouter.
+  def handle_call({:send_topic_clear, channel}, _, state) when is_binary(channel) do
+    :ok = Client.send_line(state.client, "TOPIC #{channel} :\r\n")
+    {:reply, :ok, state}
+  end
+
   # Issues `AWAY :<reason>` upstream and records the timestamp + reason.
   # Safe_line_token guard lives on the facade (`Session.set_explicit_away/3`)
   # so injection-attempt vs no-session ordering is consistent.

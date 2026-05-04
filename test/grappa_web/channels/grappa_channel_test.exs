@@ -522,6 +522,37 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
     end
+
+    test "topic_set: sends TOPIC #chan :text upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "topic_set", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "text" => "new topic text"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :new topic text\r\n"))
+    end
+
+    test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "topic_clear", %{
+          "network_id" => network.id,
+          "channel" => "#snap"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :\r\n"))
+    end
   end
 
   describe "join rejects malformed topics" do
