@@ -38,12 +38,8 @@ defmodule GrappaWeb.MembersController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    case Session.list_members(subject, network.id, channel) do
-      {:ok, members} ->
-        render(conn, :index, members: members)
-
-      {:error, :no_session} = err ->
-        err
+    with {:ok, members} <- Session.list_members(subject, network.id, channel) do
+      render(conn, :index, members: members)
     end
   end
 end
