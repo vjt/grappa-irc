@@ -42,6 +42,25 @@ defmodule Grappa.Networks.Credential do
   # `Grappa.IRC.AuthFSM` (the verb owner) and mirroring the literal here.
   @auth_methods [:auto, :sasl, :server_pass, :nickserv_identify, :none]
 
+  # T32 (channel-client-polish S1.1): terminal/user-visible connection
+  # state for a credential.
+  #
+  # `:connected` — Bootstrap (or `Networks.connect/1`) spawned a
+  #   `Session.Server`; the binding is live, OR the session is in
+  #   continuous reconnect / backoff. Runtime sub-states
+  #   (`:connecting`, `:reconnecting`, `:backing_off`) stay in
+  #   Session.Server GenServer state — NOT mirrored here.
+  # `:parked`    — user-driven `/disconnect` or `/quit`. Bouncer
+  #   stays parked across reboots until `/connect <network>`.
+  # `:failed`    — server-set on permanent error (k-line 465 +
+  #   permanent SASL 904/906 — see plan S1.4 lenient triggers).
+  #
+  # State-transition policy lives in `Grappa.Networks.connect/1`,
+  # `disconnect/2`, and `mark_failed/2` — the schema accepts any
+  # value in the closed set; the context module enforces which
+  # transitions are valid.
+  @connection_states [:connected, :parked, :failed]
+
   @doc """
   Returns the closed-set list of valid `:auth_method` values. Exposed
   so tests (notably the migration drift-detector
@@ -52,7 +71,15 @@ defmodule Grappa.Networks.Credential do
   @spec auth_methods() :: [auth_method(), ...]
   def auth_methods, do: @auth_methods
 
+  @doc """
+  Returns the closed-set list of valid `:connection_state` values
+  (T32). Mirror of `auth_methods/0` shape.
+  """
+  @spec connection_states() :: [connection_state(), ...]
+  def connection_states, do: @connection_states
+
   @type auth_method :: AuthFSM.auth_method()
+  @type connection_state :: :connected | :parked | :failed
 
   @type t :: %__MODULE__{
           user_id: Ecto.UUID.t() | nil,
@@ -67,6 +94,9 @@ defmodule Grappa.Networks.Credential do
           auth_method: auth_method() | nil,
           auth_command_template: String.t() | nil,
           autojoin_channels: [String.t()],
+          connection_state: connection_state() | nil,
+          connection_state_reason: String.t() | nil,
+          connection_state_changed_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -100,6 +130,11 @@ defmodule Grappa.Networks.Credential do
     field :auth_command_template, :string
     field :autojoin_channels, {:array, :string}, default: []
 
+    # T32 (channel-client-polish S1.1).
+    field :connection_state, Ecto.Enum, values: @connection_states, default: :connected
+    field :connection_state_reason, :string
+    field :connection_state_changed_at, :utc_datetime
+
     timestamps(type: :utc_datetime_usec)
   end
 
@@ -124,7 +159,10 @@ defmodule Grappa.Networks.Credential do
       :password,
       :auth_method,
       :auth_command_template,
-      :autojoin_channels
+      :autojoin_channels,
+      :connection_state,
+      :connection_state_reason,
+      :connection_state_changed_at
     ])
     |> validate_required([:user_id, :network_id, :nick, :auth_method])
     # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
