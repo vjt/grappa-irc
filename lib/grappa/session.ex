@@ -385,6 +385,87 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sets explicit away status for the session at `(subject, network_id)`.
+
+  Issues `AWAY :<reason>` upstream and transitions `away_state` to
+  `:away_explicit`. Explicit always wins — calling this while in
+  `:away_auto` overwrites the auto-away without a no-op check. Returns
+  `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}` if the
+  reason string contains CR/LF/NUL.
+
+  S3.2 (channel-client-polish). Symmetric with `unset_explicit_away/2`.
+  """
+  @spec set_explicit_away(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def set_explicit_away(subject, network_id, reason)
+      when is_subject(subject) and is_integer(network_id) and is_binary(reason) do
+    if Identifier.safe_line_token?(reason) do
+      call_session(subject, network_id, {:set_explicit_away, reason})
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Clears explicit away for the session at `(subject, network_id)`.
+
+  Issues bare `AWAY` upstream (RFC 2812 §4.6) and transitions
+  `away_state` to `:present`. Returns `{:error, :not_explicit}` if
+  the session is not currently in `:away_explicit` (prevents silently
+  clearing an auto-away when the user issues `/away` bare from the
+  `:away_auto` state).
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :not_explicit}`.
+
+  S3.2 (channel-client-polish). Symmetric with `set_explicit_away/3`.
+  """
+  @spec unset_explicit_away(subject(), integer()) ::
+          :ok | {:error, :no_session | :not_explicit}
+  def unset_explicit_away(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, {:unset_explicit_away})
+  end
+
+  @doc """
+  Triggers auto-away for the session at `(subject, network_id)`.
+
+  Issues `AWAY :<auto-away reason>` upstream and transitions
+  `away_state` to `:away_auto`, UNLESS the current state is
+  `:away_explicit` (in which case this is a no-op).
+
+  Driven internally by the WSPresence debounce timer
+  (`auto_away_debounce_fire`). Exposed on the facade for test
+  observability — production callers are the Session.Server's own
+  `handle_info` callbacks, not external modules.
+
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec set_auto_away(subject(), integer()) :: :ok | {:error, :no_session}
+  def set_auto_away(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, {:set_auto_away})
+  end
+
+  @doc """
+  Clears auto-away for the session at `(subject, network_id)`.
+
+  Issues bare `AWAY` upstream and transitions `away_state` to `:present`,
+  UNLESS the current state is `:away_explicit` (don't touch an explicit
+  away on reconnect) or `:present` (no-op).
+
+  Driven internally by the WSPresence `:ws_connected` event. Exposed on
+  the facade for test observability — production callers are the
+  Session.Server's own `handle_info` callbacks.
+
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec unset_auto_away(subject(), integer()) :: :ok | {:error, :no_session}
+  def unset_auto_away(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, {:unset_auto_away})
+  end
+
+  @doc """
   Returns a snapshot of currently-joined channels for the session at
   `(subject, network_id)`, sorted alphabetically.
 

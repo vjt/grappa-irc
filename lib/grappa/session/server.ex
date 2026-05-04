@@ -88,6 +88,25 @@ defmodule Grappa.Session.Server do
 
   require Logger
 
+  @typedoc """
+  Away state — closed set tracking whether the user is present, manually away
+  (via `/away :reason` slash command), or automatically away (web client
+  disconnected + 30s debounce elapsed).
+
+  Precedence rule (S3.2): `set_auto_away` is a no-op if state is `:away_explicit`.
+  `set_explicit_away` always wins and overwrites any prior auto-away. Both
+  `unset_*` verbs are no-ops unless called on the matching state.
+  """
+  @type away_state :: :present | :away_explicit | :away_auto
+
+  # The auto-away reason string is fixed and documented. Changing it would
+  # invalidate any client-side text matching; treat it as a protocol constant.
+  @auto_away_reason "auto-away (web client disconnected)"
+
+  # 30-second debounce before issuing AWAY after all WS connections drop.
+  # Gives the user time to open a new tab without going away.
+  @auto_away_debounce_ms 30_000
+
   # 10s is generous for an upstream NickServ → +r MODE round-trip; even
   # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
   # an unconfirmed password doesn't sit on the heap forever, NOT an SLA.
@@ -181,7 +200,11 @@ defmodule Grappa.Session.Server do
           visitor_committer: visitor_committer() | nil,
           credential_failer: credential_failer() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
-          ghost_timer: reference() | nil
+          ghost_timer: reference() | nil,
+          away_state: away_state(),
+          away_started_at: DateTime.t() | nil,
+          away_reason: String.t() | nil,
+          auto_away_timer: reference() | nil
         }
 
   ## API
@@ -258,8 +281,24 @@ defmodule Grappa.Session.Server do
       visitor_committer: Map.get(opts, :visitor_committer),
       credential_failer: Map.get(opts, :credential_failer),
       ghost_recovery: nil,
-      ghost_timer: nil
+      ghost_timer: nil,
+      away_state: :present,
+      away_started_at: nil,
+      away_reason: nil,
+      auto_away_timer: nil
     }
+
+    # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
+    # auto-away debounce and cancel fire on WS connect/disconnect events.
+    # Only user sessions (not visitor sessions) participate in auto-away;
+    # visitor disconnect = bouncer disconnect (ephemeral credential).
+    if match?({:user, _}, opts.subject) do
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          "grappa:ws_presence:#{opts.subject_label}"
+        )
+    end
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
   end
@@ -425,6 +464,55 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # S3.2: explicit away set — user issued `/away <reason>`. Explicit always
+  # wins: replaces any existing auto-away without checking current state.
+  # Issues `AWAY :<reason>` upstream and records the timestamp + reason.
+  # Safe_line_token guard lives on the facade (`Session.set_explicit_away/3`)
+  # so injection-attempt vs no-session ordering is consistent.
+  def handle_call({:set_explicit_away, reason}, _, state) when is_binary(reason) do
+    next_state = set_explicit_away_internal(state, reason)
+    {:reply, :ok, next_state}
+  end
+
+  # S3.2: explicit away unset — user issued bare `/away`. Only honours the
+  # call when currently `:away_explicit`; any other state is a no-op that
+  # returns `{:error, :not_explicit}` so callers can surface "you weren't
+  # away explicitly" feedback to the user.
+  def handle_call({:unset_explicit_away}, _, %{away_state: :away_explicit} = state) do
+    next_state = unset_away_internal(state)
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:unset_explicit_away}, _, state) do
+    {:reply, {:error, :not_explicit}, state}
+  end
+
+  # S3.2: auto-away set — driven by the WSPresence debounce. No-op when
+  # `:away_explicit` (explicit takes precedence). Otherwise issues `AWAY
+  # :@auto_away_reason` upstream and transitions to `:away_auto`.
+  def handle_call({:set_auto_away}, _, %{away_state: :away_explicit} = state) do
+    # Explicit takes precedence — ignore the auto signal entirely.
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:set_auto_away}, _, state) do
+    next_state = set_auto_away_internal(state)
+    {:reply, :ok, next_state}
+  end
+
+  # S3.2: auto-away unset — driven by the WSPresence reconnect event. No-op
+  # when `:away_explicit` (don't clear an explicit away on reconnect) or
+  # `:present` (nothing to do). Only acts on `:away_auto`.
+  def handle_call({:unset_auto_away}, _, %{away_state: :away_auto} = state) do
+    next_state = unset_away_internal(state)
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:unset_auto_away}, _, state) do
+    # :away_explicit or :present — no-op.
+    {:reply, :ok, state}
+  end
+
   # Returns a snapshot of currently-joined channels
   # (`Map.keys(state.members)`) sorted alphabetically. Public via
   # `Grappa.Session.list_channels/2`. The "currently-joined" invariant
@@ -511,6 +599,60 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_info({:start_client_after_backoff, client_opts}, state) do
     do_start_client(client_opts, state)
+  end
+
+  # S3.2 — WS reconnect: a new browser tab opened for this user. Cancel
+  # any pending auto-away debounce timer and (if currently :away_auto)
+  # unset auto-away. Explicit away is left untouched — reconnecting a tab
+  # should not silently clear a `/away` the user issued deliberately.
+  def handle_info({:ws_connected, _user_name}, state) do
+    state =
+      if is_reference(state.auto_away_timer) do
+        Process.cancel_timer(state.auto_away_timer)
+        %{state | auto_away_timer: nil}
+      else
+        state
+      end
+
+    state =
+      if state.away_state == :away_auto do
+        unset_away_internal(state)
+      else
+        state
+      end
+
+    {:noreply, state}
+  end
+
+  # S3.2 — WS disconnect: the last browser tab for this user closed.
+  # Schedule the 30s debounce before issuing auto-away. If already
+  # `:away_explicit`, skip entirely — the user intentionally went away.
+  def handle_info({:ws_all_disconnected, _user_name}, %{away_state: :away_explicit} = state) do
+    {:noreply, state}
+  end
+
+  def handle_info({:ws_all_disconnected, _user_name}, state) do
+    # Cancel any existing debounce timer (shouldn't happen in normal flow,
+    # but guards against two rapid disconnect events — only the last wins).
+    _ =
+      if is_reference(state.auto_away_timer) do
+        Process.cancel_timer(state.auto_away_timer)
+      end
+
+    timer = Process.send_after(self(), :auto_away_debounce_fire, @auto_away_debounce_ms)
+    {:noreply, %{state | auto_away_timer: timer}}
+  end
+
+  # S3.2 — Auto-away debounce fired. If still `:away_explicit`, skip (user
+  # may have issued `/away` in the window between disconnect and fire).
+  # Otherwise issue the upstream AWAY and transition to `:away_auto`.
+  def handle_info(:auto_away_debounce_fire, %{away_state: :away_explicit} = state) do
+    {:noreply, %{state | auto_away_timer: nil}}
+  end
+
+  def handle_info(:auto_away_debounce_fire, state) do
+    next_state = state |> Map.put(:auto_away_timer, nil) |> set_auto_away_internal()
+    {:noreply, next_state}
   end
 
   # Linked Client crashed. Record a backoff failure (so the next
@@ -1115,5 +1257,53 @@ defmodule Grappa.Session.Server do
       "+" in modes -> 1
       true -> 2
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # S3.2 — away state internal helpers
+  # ---------------------------------------------------------------------------
+
+  # Set explicit away: unconditional, always wins. Issues `AWAY :<reason>`
+  # upstream. Records `away_started_at` + `away_reason` so Mentions
+  # aggregation (S3.5) has the precise window.
+  @spec set_explicit_away_internal(state(), String.t()) :: state()
+  defp set_explicit_away_internal(state, reason) when is_binary(reason) do
+    :ok = Client.send_away(state.client, reason)
+
+    %{
+      state
+      | away_state: :away_explicit,
+        away_started_at: DateTime.utc_now(),
+        away_reason: reason
+    }
+  end
+
+  # Set auto-away: only when not already `:away_explicit` (caller guards).
+  # Issues `AWAY :@auto_away_reason` upstream. The constant is fixed
+  # wire protocol — see `@auto_away_reason` docstring.
+  @spec set_auto_away_internal(state()) :: state()
+  defp set_auto_away_internal(state) do
+    :ok = Client.send_away(state.client, @auto_away_reason)
+
+    %{
+      state
+      | away_state: :away_auto,
+        away_started_at: DateTime.utc_now(),
+        away_reason: @auto_away_reason
+    }
+  end
+
+  # Clear any active away state (explicit or auto). Issues bare `AWAY` upstream
+  # to clear the status. Resets all away fields to idle defaults.
+  @spec unset_away_internal(state()) :: state()
+  defp unset_away_internal(state) do
+    :ok = Client.send_away_unset(state.client)
+
+    %{
+      state
+      | away_state: :present,
+        away_started_at: nil,
+        away_reason: nil
+    }
   end
 end
