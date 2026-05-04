@@ -95,8 +95,8 @@ describe("parseSlash", () => {
 //   they must use `/disconnect <activenet> my reason` explicitly.
 //
 // /connect — requires a named network arg. Bare /connect is a parser-level
-//   error (surfaces as {kind: "connect", error: "..."}) so the handler can
-//   render the error inline without making an empty API call.
+//   error (surfaces as {kind: "connect-error", error: "..."}) so the handler
+//   can render the error inline without making an empty API call.
 describe("parseSlash — T32 verbs", () => {
   it("/quit bare → reason: null", () => {
     expect(parseSlash("/quit")).toEqual({ kind: "quit", reason: null });
@@ -141,7 +141,7 @@ describe("parseSlash — T32 verbs", () => {
   it("/connect bare → error (network arg required)", () => {
     const result = parseSlash("/connect");
     expect(result).toMatchObject({
-      kind: "connect",
+      kind: "connect-error",
       error: expect.stringContaining("requires"),
     });
   });

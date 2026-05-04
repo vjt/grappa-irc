@@ -38,7 +38,7 @@ export type SlashCommand =
   | { kind: "quit"; reason: string | null }
   | { kind: "disconnect"; network: string | null; reason: string | null }
   | { kind: "connect"; network: string }
-  | { kind: "connect"; error: string }
+  | { kind: "connect-error"; error: string }
   | { kind: "unknown"; verb: string; rest: string };
 
 export function parseSlash(input: string): SlashCommand {
@@ -113,11 +113,9 @@ export function parseSlash(input: string): SlashCommand {
     }
     case "connect": {
       // Network arg is required — bare /connect is a parser-level error.
-      if (rest === "")
-        return { kind: "connect", error: "/connect requires <network>" } as SlashCommand;
+      if (rest === "") return { kind: "connect-error", error: "/connect requires <network>" };
       const [network] = rest.split(/\s+/);
-      if (!network)
-        return { kind: "connect", error: "/connect requires <network>" } as SlashCommand;
+      if (!network) return { kind: "connect-error", error: "/connect requires <network>" };
       return { kind: "connect", network };
     }
     default:
