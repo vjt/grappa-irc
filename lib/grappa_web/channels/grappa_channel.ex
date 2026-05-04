@@ -168,9 +168,13 @@ defmodule GrappaWeb.GrappaChannel do
   # then delegates to `Session.set_explicit_away/3`. Returns `{:ok, _}` on success.
   # Visitors are rejected — visitor sessions have no auto-away state and the
   # `set_explicit_away/3` facade only routes to user sessions.
+  #
+  # S4.3: reads `origin_window` from the payload (if present) and passes it to
+  # Session.set_explicit_away/4 so 305/306 reply numerics route back to the
+  # originating cicchetto window.
   def handle_in(
         "away",
-        %{"action" => "set", "network" => slug, "reason" => reason},
+        %{"action" => "set", "network" => slug, "reason" => reason} = payload,
         socket
       )
       when is_binary(slug) and is_binary(reason) do
@@ -179,9 +183,11 @@ defmodule GrappaWeb.GrappaChannel do
     if visitor?(user_name) do
       {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
     else
+      origin_window = Map.get(payload, "origin_window")
+
       with {:ok, user} <- safe_get_user(user_name),
            {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
-           :ok <- Session.set_explicit_away({:user, user.id}, network.id, reason) do
+           :ok <- dispatch_set_away(user, network, reason, origin_window) do
         {:reply, :ok, socket}
       else
         :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
@@ -197,16 +203,20 @@ defmodule GrappaWeb.GrappaChannel do
   # Visitors are rejected with `visitor_no_away`. Returns `{:error,
   # %{reason: "not_explicit"}}` if the session is not in `:away_explicit` state
   # (mirrors `Session.unset_explicit_away/2`'s `{:error, :not_explicit}` return).
-  def handle_in("away", %{"action" => "unset", "network" => slug}, socket)
+  #
+  # S4.3: reads `origin_window` from payload and passes to Session facade.
+  def handle_in("away", %{"action" => "unset", "network" => slug} = payload, socket)
       when is_binary(slug) do
     user_name = socket.assigns.user_name
 
     if visitor?(user_name) do
       {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
     else
+      origin_window = Map.get(payload, "origin_window")
+
       with {:ok, user} <- safe_get_user(user_name),
            {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
-           :ok <- Session.unset_explicit_away({:user, user.id}, network.id) do
+           :ok <- dispatch_unset_away(user, network, origin_window) do
         {:reply, :ok, socket}
       else
         :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
@@ -350,5 +360,31 @@ defmodule GrappaWeb.GrappaChannel do
     else
       {:error, :forbidden}
     end
+  end
+
+  # S4.3: dispatch set_away with or without origin_window. When origin_window
+  # is nil (cicchetto didn't send it — pre-C-bucket clients), falls back to
+  # the 3-arg variant that doesn't track last_command_window.
+  @spec dispatch_set_away(Accounts.User.t(), Network.t(), String.t(), map() | nil) ::
+          :ok | {:error, :no_session | :invalid_line}
+  defp dispatch_set_away(%Accounts.User{} = user, %Network{} = network, reason, nil) do
+    Session.set_explicit_away({:user, user.id}, network.id, reason)
+  end
+
+  defp dispatch_set_away(%Accounts.User{} = user, %Network{} = network, reason, origin_window)
+       when is_map(origin_window) do
+    Session.set_explicit_away({:user, user.id}, network.id, reason, origin_window)
+  end
+
+  # S4.3: dispatch unset_away with or without origin_window.
+  @spec dispatch_unset_away(Accounts.User.t(), Network.t(), map() | nil) ::
+          :ok | {:error, :no_session | :not_explicit}
+  defp dispatch_unset_away(%Accounts.User{} = user, %Network{} = network, nil) do
+    Session.unset_explicit_away({:user, user.id}, network.id)
+  end
+
+  defp dispatch_unset_away(%Accounts.User{} = user, %Network{} = network, origin_window)
+       when is_map(origin_window) do
+    Session.unset_explicit_away({:user, user.id}, network.id, origin_window)
   end
 end
