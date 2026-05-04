@@ -1,0 +1,20 @@
+# grappa — dev compose personal override (gitignored as compose.override.yaml).
+#
+# Copy to `compose.override.yaml` if you want to bind the dev Phoenix
+# server somewhere other than the default wildcard :4000. Common case:
+# bind to a specific LAN/VLAN IP only, so the bouncer is reachable on
+# the home network but not on every interface.
+#
+# Auto-loaded by scripts/_lib.sh when present. Do NOT commit your real
+# override — it's pinned to your machine's interface and will collide
+# with anyone else's setup.
+#
+# `ports: !override` replaces compose.yaml's `"4000:4000"` wildcard publish
+# with the IP-bound publish below. Without !override, compose merges port
+# lists by appending (both bindings would coexist). `!reset` would drop
+# ports entirely without re-adding ours.
+
+services:
+  grappa:
+    ports: !override
+      - "192.168.53.12:4000:4000"

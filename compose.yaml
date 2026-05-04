@@ -6,8 +6,12 @@
 # Run iex shell:     scripts/iex.sh
 # Tail logs:         scripts/monitor.sh
 #
-# vlan53 gives the container a direct LAN IP (192.168.53.11). Phoenix listens
-# on port 4000 inside the container; reachable on the LAN as 192.168.53.11:4000.
+# Phoenix listens on 4000 inside the container and is published on the host
+# (wildcard) at :4000. Browse at http://localhost:4000.
+#
+# Deployment-specific bindings (e.g. binding to a LAN/VLAN IP only) live in
+# `compose.override.yaml` — gitignored, auto-loaded by scripts/_lib.sh when
+# present. See `compose.override.yaml.example`.
 #
 # For prod: see compose.prod.yaml (separate file, not an override).
 
@@ -26,9 +30,8 @@ services:
     restart: unless-stopped
     user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
     working_dir: /app
-    networks:
-      vlan53:
-        ipv4_address: 192.168.53.11
+    ports:
+      - "4000:4000"
     volumes:
       # Bind-mount the whole project for live-reload dev workflow.
       - ./:/app
@@ -64,10 +67,6 @@ services:
       options:
         max-size: "5m"
         max-file: "3"
-
-networks:
-  vlan53:
-    external: true
 
 volumes:
   grappa_deps:

@@ -1,0 +1,29 @@
+# grappa — prod compose personal override (gitignored as compose.prod.override.yaml).
+#
+# Copy to `compose.prod.override.yaml` if you want to bind the prod nginx
+# somewhere other than the default wildcard :3000 (host) → :80 (container).
+# Common case: bind to a specific LAN/VLAN IP on :80 so the canonical
+# hostname resolves without a port suffix.
+#
+# Auto-loaded by scripts/_lib.sh when present (scripts/deploy.sh,
+# scripts/healthcheck.sh, etc.). Do NOT commit your real override —
+# it's pinned to your machine's interface + DNS hostname.
+#
+# `ports: !override` replaces compose.prod.yaml's `"3000:80"` wildcard publish
+# with the IP-bound publish below. Without !override, compose merges port
+# lists by appending (both bindings would coexist). `!reset` would drop
+# ports entirely without re-adding ours.
+#
+# PHX_HOST is the hostname Phoenix uses for url helpers + Channels
+# `check_origin` allowlist. Must match the DNS A record that points at
+# the IP below. compose.prod.yaml defaults it to grappa.bad.ass — set
+# yours here if different.
+
+services:
+  nginx:
+    ports: !override
+      - "192.168.53.12:80:80"
+
+  grappa:
+    environment:
+      PHX_HOST: voygrappa.bad.ass

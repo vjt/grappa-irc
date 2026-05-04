@@ -43,6 +43,12 @@ priv/plts/*.plt.hash
 .env.local
 *.local
 
+# ── Personal compose overrides (machine-specific bindings, hostnames).
+# Examples are committed (compose.{,prod.}override.yaml.example);
+# real overrides stay local.
+/compose.override.yaml
+/compose.prod.override.yaml
+
 # ── Claude Code session state (locks, scratch, output)
 # Skills + settings.json are repo-shared content; everything else
 # (locks, scratch, settings.local.json) stays local.
