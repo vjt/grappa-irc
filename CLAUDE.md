@@ -94,6 +94,35 @@ scripts/shell.sh             # bash inside container (debug only)
 `mix` or `iex` on the host. NEVER install hex packages on the host.
 NEVER raw `docker compose` — use the scripts.
 
+**Bash 4+ required.** Scripts use `declare -ag` (associative-global
+arrays) which macOS's `/bin/bash` 3.2 rejects. Shebangs are
+`#!/usr/bin/env bash` so PATH-resolution finds Homebrew bash 5 first
+on macOS, system bash 4+ on Linux. `brew install bash` if missing.
+
+### Per-host compose overrides
+
+Committed compose files (`compose.yaml`, `compose.prod.yaml`) ship
+deployment-agnostic defaults: bridge networks + wildcard host port
+publishes (dev `4000:4000`, prod `3000:80`). Anyone can clone + `docker
+compose up`; nothing depends on a particular LAN, hostname, or vlan.
+
+Personal bindings (LAN/VLAN IP for inbound, `PHX_HOST`) live in
+gitignored overrides:
+
+- `compose.override.yaml` — dev publish, e.g. `192.168.53.12:4000:4000`
+- `compose.prod.override.yaml` — prod nginx publish + `PHX_HOST` env
+
+`scripts/_lib.sh` auto-detects them in `REPO_ROOT` and appends as a
+second `-f` flag. Templates are committed at
+`compose.{,prod.}override.yaml.example`. Use `ports: !override` to
+drop+replace the base file's publish (NOT `!reset`, which drops
+without re-adding).
+
+When proposing a new IP-bound or hostname-pinned binding, put it in
+the override, NEVER in the committed base. Same for nginx.conf and
+the CSP snippet — `'self'` covers same-origin ws/wss automatically;
+don't hardcode hostnames there.
+
 ## Engineering Standards
 
 These rules carry across all sessions. They override the temptation to

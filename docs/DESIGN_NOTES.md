@@ -1711,6 +1711,110 @@ polish (the next MVP-required cluster) will reuse it.
 
 ---
 
+## 2026-05-04 — Compose decoupled from LAN/IP, second host (voygrappa) brought up on macOS
+
+Bringing up grappa on a second host (Mac, `voygrappa.bad.ass` →
+`192.168.53.12`) surfaced that the committed compose stacks were
+implicitly pinned to the canonical Linux deployment: `vlan53` external
+network + `192.168.53.11` static IP for both dev (grappa direct) and
+prod (nginx). Two failure modes:
+
+1. `docker compose up` on a fresh clone bombs at network create
+   (`vlan53` doesn't exist).
+2. Even on the canonical host, the static IP coupled the deployment
+   shape to the network shape — no way to bring up a sibling host
+   without forking compose files.
+
+Compounded on macOS: Docker Desktop runs containers inside a hidden
+Linux VM, so macvlan can't reach the host's LAN interface from inside
+containers. The Linux trick (container directly on vlan53 with its
+own IP) is structurally unavailable.
+
+### Decision
+
+Split machine-specific binding (LAN IP, hostname) from deployment
+shape, into gitignored personal overrides:
+
+  * **Committed base files** ship deployment-agnostic defaults:
+    bridge networks + wildcard host port-publishes (dev `4000:4000`,
+    prod `3000:80`). Anyone clones, `docker compose up`, browses at
+    `http://localhost:{4000,3000}`. No LAN, no DNS, no vlan needed.
+  * **Personal bindings** live in `compose.override.yaml` (dev) and
+    `compose.prod.override.yaml` (prod) — gitignored, auto-loaded
+    by `scripts/_lib.sh` when present. They use `ports: !override`
+    (drop-and-replace) to swap the wildcard publish for an IP-bound
+    one, plus `PHX_HOST` env for prod.
+  * **Examples committed** at `compose.{,prod.}override.yaml.example`
+    so the override pattern is self-documenting; future operators
+    don't have to reverse-engineer it from `_lib.sh`.
+
+### Why prod default is `3000:80`, not `80:80`
+
+Privileged port 80 requires root or `cap_net_bind_service` on the
+host — extra friction for cloning operators who just want to see the
+app run. The canonical home-LAN deployment overrides to
+`192.168.53.{11,12}:80:80` because the DNS A records point there
+without a port suffix; that's a deployment choice, not a
+shipping-default.
+
+### Why `!override`, not `!reset`
+
+Compose's YAML override semantics — `!reset` removes the field
+entirely (correct for `compose.oneshot.yaml`'s `ports: !override []`
+to strip ANY host publish during oneshots), but for
+"drop-base-and-set-new" the right tag is `!override`. Spent a tool
+call on this — `!reset` first attempt produced an empty ports list in
+the merged config; `!override` produces `host_ip + target + published`
+as expected. Documented in the override examples + CLAUDE.md so the
+next operator skips the same misstep.
+
+### CSP de-pinning
+
+`infra/snippets/security-headers.conf` had `connect-src` allowlisting
+`ws://grappa.bad.ass wss://grappa.bad.ass` explicitly. CSP3 specifies
+that `'self'` covers same-origin ws/wss automatically — so
+`connect-src 'self' https://challenges.cloudflare.com` is identical
+for the canonical case AND deployment-hostname agnostic. Phase 5
+wss-rollout note in the prior comment was always moot; deleted.
+
+### macOS bash 3.2 portability
+
+`/bin/bash` on macOS is 3.2 (Apple's last GPLv2-licensed version);
+doesn't grok `declare -ag` (the array-export idiom in `_lib.sh`,
+already there pre-refactor). Switched all `scripts/*.sh` shebangs
+from `#!/bin/bash` to `#!/usr/bin/env bash` so PATH resolution finds
+Homebrew bash 5 first on macOS, system bash 4+ on Linux. Documented
+the bash-4+ requirement in CLAUDE.md so future setup prompts don't
+recommend running scripts under stock macOS bash.
+
+### Healthcheck via container exec
+
+`scripts/healthcheck.sh` and `scripts/deploy.sh`'s `/healthz` poll
+both used `curl http://192.168.53.11/...` against the host. With
+host-port-binding now operator-configurable (default wildcard,
+override IP-bound), the IP literal had to go. Switched to
+`docker compose exec nginx wget -qO- http://127.0.0.1/healthz` —
+probes the in-container loopback, independent of host port shape.
+Works on the wildcard default AND the IP-bound override.
+
+### Worth-noting non-decisions
+
+  * **NOT keeping `register-dns.sh` in the standard flow.** It's a
+    Technitium-specific operator helper for the home LAN; depersonalized
+    (env vars now required, no defaults) so it's at least reusable, but
+    it's not invoked by `deploy.sh` or the dev path.
+  * **NOT consolidating compose files.** Considered folding dev+prod
+    into one file via `profiles:` — rejected because the differences
+    are structural (different services, different build targets,
+    different env requirements). Three files (dev, prod, oneshot)
+    each have one concern; an override is the fourth.
+  * **NOT touching historical docs.** Checkpoints, plans, design
+    notes, project story all reference `192.168.53.11` /
+    `grappa.bad.ass` in their then-current state. They're frozen
+    chronological records — updating would falsify history.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
