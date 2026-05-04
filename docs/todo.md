@@ -192,6 +192,14 @@ fixed in C8):**
   `check_origin` allowlist; if a future feature needs a different
   host, it lands as a separate Phoenix.Endpoint, not as a relaxation
   in `runtime.exs`.
+- Phase 5 hardening (L-web-4, t31-cleanup B6.8): rotate
+  `GrappaWeb.Endpoint.@session_options.signing_salt` away from the
+  `"rotate-me"` Phase 1 placeholder. Lift to `runtime.exs` config
+  alongside `secret_key_base` so it's rotatable without recompile —
+  the moduledoc on `lib/grappa_web/endpoint.ex` already flags this
+  as a Phase 5 lift. No code path signs cookies today (no auth flow
+  uses the cookie session; bearer-token flow rides headers), but
+  rotating before any cookie surface lands is mandatory.
 
 ## Medium
 
