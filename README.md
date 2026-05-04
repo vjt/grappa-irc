@@ -245,9 +245,18 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/topic <text>` | Set topic on the active channel |
 | `/nick <newnick>` | Change nick on the active network |
 | `/msg <nick> <text>` | Send a private message (opens query window) |
+| `/away [reason]` | Set explicit away with an optional reason. Bare `/away` (no reason) clears explicit away status. |
 | `/quit [reason]` | Nuclear logout: parks **all** bound networks (`PATCH /networks/:net` with `connection_state: "parked"`), QUITs each upstream, closes the WS, clears auth, redirects to `/login`. Re-login + `/connect <net>` to bring networks back. |
 | `/disconnect [network] [reason]` | Park one network (active-window's network if no arg). Bouncer stays parked across reboots until `/connect`. Visitor sessions: aliases to `/quit` (visitor credentials are ephemeral). |
 | `/connect <network>` | Unpark + respawn the named network. Works from `:parked` or `:failed`. |
+
+### Auto-away (S3)
+
+When the last browser tab closes (or sends a `pagehide` / `beforeunload` hint), grappa starts a **30-second debounce timer**. If no tab reconnects within that window, the bouncer sends `AWAY :auto-away (web client disconnected)` upstream on every connected network. When a tab reconnects the timer is cancelled and (if auto-away was active) `AWAY` is cleared immediately.
+
+Explicit `/away` takes precedence: once set, auto-away does **not** overwrite it and a tab reconnect does **not** clear it. Only `/away` (bare, no reason) clears explicit away status.
+
+Away state machine: `:present → :away_auto` (web disconnect + 30s) → `:present` (tab reconnect). `:away_explicit` is an independent state set/cleared only by the user; reconnecting a tab does not touch it.
 
 ### `connection_state` model (T32)
 
