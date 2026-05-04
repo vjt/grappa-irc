@@ -252,6 +252,36 @@ defmodule Grappa.IRC.ParserTest do
       assert {:ok, %Message{command: :ping, params: ["foo"]}} =
                Parser.parse("PING :foo\r\n")
     end
+
+    test "embedded NUL in trailing param: token contains no NUL (H12)" do
+      # H12 + decision G: parser invariant matches `Identifier.safe_line_token?/1`
+      # which rejects `\x00` alongside `\r` and `\n`. Without the strip,
+      # `Client.send_pong/2`'s NUL-passthrough docstring (no guard, parser
+      # is the gatekeeper) would be a lie.
+      assert {:ok, %Message{command: :ping, params: [token]}} =
+               Parser.parse("PING :tok\x00NICK pwn")
+
+      refute String.contains?(token, <<0>>)
+      refute String.contains?(token, "\r")
+      refute String.contains?(token, "\n")
+    end
+  end
+
+  describe "strip_unsafe_bytes/1 — H12 invariant (NUL + CR + LF)" do
+    test "strips \\x00 \\r \\n in any combination of presences" do
+      for cr <- [<<>>, <<?\r>>], lf <- [<<>>, <<?\n>>], nul <- [<<>>, <<0>>] do
+        payload = "PING :tok" <> nul <> "garbage" <> cr <> lf
+        assert Parser.strip_unsafe_bytes(payload) == "PING :tokgarbage"
+      end
+    end
+
+    test "no-op when input contains none of the unsafe bytes" do
+      assert Parser.strip_unsafe_bytes("PING :foo") == "PING :foo"
+    end
+
+    test "binary with only unsafe bytes collapses to empty" do
+      assert Parser.strip_unsafe_bytes(<<0, ?\r, ?\n, 0, 0, ?\r>>) == <<>>
+    end
   end
 
   describe "parse/1 — error cases" do
