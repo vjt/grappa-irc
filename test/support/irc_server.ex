@@ -26,11 +26,23 @@ defmodule Grappa.IRCServer do
 
   ## Synchronization
 
-  `wait_for_line/3` polls `sent_lines/1` until a predicate matches or a
+  `wait_for_line/3` blocks until a predicate matches a sent line or a
   timeout fires. Use this to assert the client sent a particular line
   WITHOUT racing on `:sys.get_state` of the client GenServer or relying
   on `Process.sleep` constants. Returns `{:ok, matched_line}` or
   `{:error, :timeout}`.
+
+  Implementation (M-irc-2): the wait is a single GenServer call that
+  either replies immediately (the predicate matches some buffered line)
+  or registers a `{ref, predicate, from}` waiter on server state and
+  returns `:noreply`. When a new inbound line arrives, the handler
+  walks the waiter list and `GenServer.reply/2`s every match. A
+  `Process.send_after/3` timer fires `{:wait_timeout, ref}` to drop
+  the waiter and reply `{:error, :timeout}` at the deadline.
+
+  This replaces the previous 10ms-poll busy-wait — collides with the
+  mailbox-blocking discipline established prod-side, and an idle waiter
+  no longer wakes up just to re-call the server.
   """
   use GenServer
 
@@ -59,23 +71,10 @@ defmodule Grappa.IRCServer do
           {:ok, binary()} | {:error, :timeout}
   def wait_for_line(server, predicate, timeout \\ 1_000)
       when is_function(predicate, 1) and is_integer(timeout) and timeout > 0 do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_line(server, predicate, deadline)
-  end
-
-  defp do_wait_for_line(server, predicate, deadline) do
-    case Enum.find(sent_lines(server), predicate) do
-      nil ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          {:error, :timeout}
-        else
-          Process.sleep(10)
-          do_wait_for_line(server, predicate, deadline)
-        end
-
-      line ->
-        {:ok, line}
-    end
+    # Outer call timeout is `timeout + 100` so the server-side timer
+    # always fires first and the call returns `{:error, :timeout}`
+    # cleanly rather than as a `GenServer.call/3` exit.
+    GenServer.call(server, {:wait_for, predicate, timeout}, timeout + 100)
   end
 
   ## GenServer
@@ -120,13 +119,35 @@ defmodule Grappa.IRCServer do
        sock: nil,
        handler: handler,
        handler_state: %{},
-       sent: []
+       sent: [],
+       # M-irc-2: waiters is a list of `{ref, predicate, from}`. The
+       # ref ties a waiter to its `Process.send_after/3` timeout token
+       # so the timeout fires can find-and-drop the right entry. List
+       # is fine — wait_for_line concurrency is bounded by the test
+       # writing the assertion (typically 1, occasionally a handful).
+       waiters: []
      }}
   end
 
   @impl GenServer
   def handle_call(:port, _, state), do: {:reply, state.port, state}
   def handle_call(:sent_lines, _, state), do: {:reply, Enum.reverse(state.sent), state}
+
+  def handle_call({:wait_for, predicate, timeout}, from, state) do
+    # Eagerly check buffered lines first — a predicate that already
+    # matches replies synchronously without ever touching the timer.
+    # Iterate in arrival order so the FIRST matching line wins (state.sent
+    # is reversed-newest-first).
+    case Enum.find(Enum.reverse(state.sent), predicate) do
+      nil ->
+        ref = make_ref()
+        Process.send_after(self(), {:wait_timeout, ref}, timeout)
+        {:noreply, %{state | waiters: [{ref, predicate, from} | state.waiters]}}
+
+      line ->
+        {:reply, {:ok, line}, state}
+    end
+  end
 
   @impl GenServer
   def handle_cast({:feed, _}, %{sock: nil} = state), do: {:noreply, state}
@@ -159,8 +180,35 @@ defmodule Grappa.IRCServer do
       end
 
     :ok = :inet.setopts(sock, active: :once)
-    {:noreply, new_state}
+    {:noreply, notify_waiters(new_state, line)}
   end
 
   def handle_info({:tcp_closed, _}, state), do: {:noreply, %{state | sock: nil}}
+
+  # M-irc-2: timer fired before any line satisfied the predicate. Drop
+  # the waiter and reply timeout. If the entry is gone (already replied
+  # via notify_waiters/2 then the late timer arrives), this is a no-op.
+  def handle_info({:wait_timeout, ref}, state) do
+    case Enum.split_with(state.waiters, fn {r, _, _} -> r == ref end) do
+      {[{^ref, _, from}], rest} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | waiters: rest}}
+
+      {[], _} ->
+        {:noreply, state}
+    end
+  end
+
+  # Walk the waiter list against the freshly-arrived line. Replies to
+  # every matching waiter and removes them. Predicates are pure (test
+  # writers' contract) so calling each once per arrival is safe.
+  defp notify_waiters(%{waiters: waiters} = state, line) do
+    {matched, remaining} = Enum.split_with(waiters, fn {_, pred, _} -> pred.(line) end)
+
+    Enum.each(matched, fn {_, _, from} ->
+      GenServer.reply(from, {:ok, line})
+    end)
+
+    %{state | waiters: remaining}
+  end
 end
