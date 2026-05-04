@@ -10,6 +10,15 @@ defmodule Grappa.Networks.Network do
   (the `network:` segment of `grappa:user:{user}/network:{slug}/...`,
   see `Grappa.PubSub.Topic`) without escaping.
 
+  **`slug` is immutable post-creation.** No verb mutates it; operator
+  concern. The slug is baked into URL paths, PubSub topic segments,
+  log keys, and the FKs every dependent row carries
+  (`network_credentials.network_id`, `messages.network_id`,
+  `network_servers.network_id`); a rename would orphan every one of
+  those references. Operators wanting to retire a slug delete the row
+  (cascading the credentials + scrollback) and recreate under the new
+  slug.
+
   Primary key is an autoincrement INTEGER — networks are an internal
   identifier; the slug is the public handle.
   """
