@@ -531,8 +531,97 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # S3.2: explicit away set — user issued `/away <reason>`. Explicit always
-  # wins: replaces any existing auto-away without checking current state.
+  # ---------------------------------------------------------------------------
+  # S5.2 — Channel-ops verb handlers
+  # ---------------------------------------------------------------------------
+  # All chunked verbs (/op /deop /voice /devoice /ban /unban) delegate to
+  # ModeChunker.chunk/3 with state.modes_per_chunk (ISUPPORT MODES= value,
+  # default 3). The chunker splits the param list into N-mode slices and
+  # returns one {mode_str, params_slice} per chunk; we send each as a
+  # separate MODE line. The mode letter is repeated once per param by the
+  # chunker ("+ooo alice bob carol").
+  #
+  # The /mode raw verb is verbatim pass-through — NO chunking applies; the
+  # caller is responsible for parameter count. This is the power-user
+  # escape hatch and intentionally bypasses the MODES= limit guard.
+  #
+  # All verbs use handle_call (not handle_cast) so the caller can observe
+  # the `:ok` reply and know the send path has been queued to the socket.
+
+  def handle_call({:send_op, channel, nicks}, _, state)
+      when is_binary(channel) and is_list(nicks) do
+    send_chunked_mode(state, channel, "+o", nicks)
+  end
+
+  def handle_call({:send_deop, channel, nicks}, _, state)
+      when is_binary(channel) and is_list(nicks) do
+    send_chunked_mode(state, channel, "-o", nicks)
+  end
+
+  def handle_call({:send_voice, channel, nicks}, _, state)
+      when is_binary(channel) and is_list(nicks) do
+    send_chunked_mode(state, channel, "+v", nicks)
+  end
+
+  def handle_call({:send_devoice, channel, nicks}, _, state)
+      when is_binary(channel) and is_list(nicks) do
+    send_chunked_mode(state, channel, "-v", nicks)
+  end
+
+  def handle_call({:send_kick, channel, nick, reason}, _, state)
+      when is_binary(channel) and is_binary(nick) and is_binary(reason) do
+    :ok = Client.send_line(state.client, "KICK #{channel} #{nick} :#{reason}\r\n")
+    {:reply, :ok, state}
+  end
+
+  # :send_ban — derive ban mask from userhost_cache when the arg is a bare nick
+  # (no `!` or `@`). Explicit mask passes through unchanged. Derivation:
+  #   - Cache hit → `*!*@host` (host-ban, preferred over nick-ban for stickiness)
+  #   - Cache miss → `nick!*@*` (nick-ban fallback; best-effort without WHOIS)
+  def handle_call({:send_ban, channel, mask_or_nick}, _, state)
+      when is_binary(channel) and is_binary(mask_or_nick) do
+    mask = derive_ban_mask(mask_or_nick, state)
+    send_chunked_mode(state, channel, "+b", [mask])
+  end
+
+  def handle_call({:send_unban, channel, mask}, _, state)
+      when is_binary(channel) and is_binary(mask) do
+    send_chunked_mode(state, channel, "-b", [mask])
+  end
+
+  # INVITE wire order: RFC 2812 §3.2.7 — `INVITE <nick> <channel>`.
+  def handle_call({:send_invite, channel, nick}, _, state)
+      when is_binary(channel) and is_binary(nick) do
+    :ok = Client.send_line(state.client, "INVITE #{nick} #{channel}\r\n")
+    {:reply, :ok, state}
+  end
+
+  # Banlist query form — no sign, just the mode letter.
+  def handle_call({:send_banlist, channel}, _, state) when is_binary(channel) do
+    :ok = Client.send_line(state.client, "MODE #{channel} b\r\n")
+    {:reply, :ok, state}
+  end
+
+  # User-mode change on own nick. Uses state.nick (reconciled at 001).
+  def handle_call({:send_umode, modes}, _, state) when is_binary(modes) do
+    :ok = Client.send_line(state.client, "MODE #{state.nick} #{modes}\r\n")
+    {:reply, :ok, state}
+  end
+
+  # Raw verbatim MODE — no chunking. Target can be channel or nick.
+  # The params list is joined with spaces.
+  def handle_call({:send_mode, target, modes, params}, _, state)
+      when is_binary(target) and is_binary(modes) and is_list(params) do
+    line =
+      case params do
+        [] -> "MODE #{target} #{modes}\r\n"
+        _ -> "MODE #{target} #{modes} #{Enum.join(params, " ")}\r\n"
+      end
+
+    :ok = Client.send_line(state.client, line)
+    {:reply, :ok, state}
+  end
+
   # Issues `AWAY :<reason>` upstream and records the timestamp + reason.
   # Safe_line_token guard lives on the facade (`Session.set_explicit_away/3`)
   # so injection-attempt vs no-session ordering is consistent.
@@ -1544,6 +1633,54 @@ defmodule Grappa.Session.Server do
   """
   @spec default_modes_per_chunk() :: pos_integer()
   def default_modes_per_chunk, do: 3
+
+  # ---------------------------------------------------------------------------
+  # S5.2 — ops verb private helpers
+  # ---------------------------------------------------------------------------
+
+  # Sends one or more MODE lines for chunked verbs (/op /deop /voice /devoice
+  # /ban /unban). Delegates splitting to ModeChunker.chunk/3, then flushes each
+  # chunk as a separate MODE line through the Client socket.
+  # Returns {:reply, :ok, state} — no state mutation occurs (MODE state updates
+  # arrive as inbound MODE events processed by EventRouter).
+  @spec send_chunked_mode(state(), String.t(), String.t(), [String.t()]) ::
+          {:reply, :ok, state()}
+  defp send_chunked_mode(state, channel, mode_str, params) do
+    chunks = ModeChunker.chunk(mode_str, params, state.modes_per_chunk)
+
+    Enum.each(chunks, fn {modes, chunk_params} ->
+      line =
+        case chunk_params do
+          [] -> "MODE #{channel} #{modes}\r\n"
+          _ -> "MODE #{channel} #{modes} #{Enum.join(chunk_params, " ")}\r\n"
+        end
+
+      :ok = Client.send_line(state.client, line)
+    end)
+
+    {:reply, :ok, state}
+  end
+
+  # Derives a ban mask from a bare nick or passes an explicit mask through.
+  # A bare nick (no `!` or `@`) is looked up in the userhost_cache:
+  #   - Cache hit → `*!*@host` (host-ban; preferred for stickiness).
+  #   - Cache miss → `nick!*@*` (nick-ban fallback).
+  # An explicit mask (contains `!` or `@` or `*`) passes through unchanged.
+  @spec derive_ban_mask(String.t(), state()) :: String.t()
+  defp derive_ban_mask(mask_or_nick, state) do
+    if String.contains?(mask_or_nick, ["!", "@", "*"]) do
+      # Looks like an explicit mask — pass through verbatim.
+      mask_or_nick
+    else
+      # Bare nick — attempt userhost_cache lookup.
+      nick_key = String.downcase(mask_or_nick)
+
+      case Map.get(state.userhost_cache, nick_key) do
+        %{host: host} when is_binary(host) -> "*!*@#{host}"
+        _ -> "#{mask_or_nick}!*@*"
+      end
+    end
+  end
 
   # Scans 005 RPL_ISUPPORT params for a "MODES=N" token and returns N as
   # an integer. Returns the current value unchanged when no MODES= is found.

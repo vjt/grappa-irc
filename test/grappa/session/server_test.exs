@@ -2814,4 +2814,223 @@ defmodule Grappa.Session.ServerTest do
                Session.unset_auto_away({:user, Ecto.UUID.generate()}, 9_999_999)
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # S5.2 — ops verb handlers
+  # ---------------------------------------------------------------------------
+
+  describe "S5.2 — ops verbs: /op /deop /voice /devoice /kick /ban /unban /invite /banlist /umode /mode" do
+    # All tests seed the session into a joined channel via welcome_session_on_channel/2
+    # so the Session has members state. Then we call the Session facade and verify
+    # the wire bytes that reach the fake IRC server.
+
+    setup do
+      # Feed 001 so the session autojoins; wait for the JOIN; echo JOIN-self back.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {:ok, server} = IRCServer.start_link(handler)
+      port = IRCServer.port(server)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+      pid = start_session_for(user, network)
+      welcome_session_on_channel(server, "#test")
+      %{server: server, user: user, network: network, pid: pid}
+    end
+
+    test "/op — single nick produces MODE +o upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_op({:user, user.id}, network.id, "#test", ["alice"])
+
+      assert {:ok, "MODE #test +o alice\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +o alice\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/op — multi-nick with modes_per_chunk=3 produces chunked MODE lines", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # Feed ISUPPORT MODES=2 so we can verify chunking at chunk-size 2
+      IRCServer.feed(server, ":irc.test.org 005 grappa-test MODES=2 :are supported\r\n")
+      flush_server(server)
+
+      assert :ok = Session.send_op({:user, user.id}, network.id, "#test", ["alice", "bob", "carol"])
+
+      assert {:ok, "MODE #test +oo alice bob\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +oo alice bob\r\n"))
+
+      assert {:ok, "MODE #test +o carol\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +o carol\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/deop — produces MODE -o upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_deop({:user, user.id}, network.id, "#test", ["alice"])
+
+      assert {:ok, "MODE #test -o alice\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test -o alice\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/voice — produces MODE +v upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_voice({:user, user.id}, network.id, "#test", ["alice"])
+
+      assert {:ok, "MODE #test +v alice\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +v alice\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/devoice — produces MODE -v upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_devoice({:user, user.id}, network.id, "#test", ["alice"])
+
+      assert {:ok, "MODE #test -v alice\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test -v alice\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/kick — produces KICK upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_kick({:user, user.id}, network.id, "#test", "alice", "bad behaviour")
+
+      assert {:ok, "KICK #test alice :bad behaviour\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "KICK"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/ban with bare nick and WHOIS cache hit produces *!*@host mask", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # Seed alice into userhost_cache via a 311 WHOIS reply
+      IRCServer.feed(server, ":irc.test.org 311 grappa-test alice alice_u evil.host * :Alice\r\n")
+      flush_server(server)
+
+      assert :ok = Session.send_ban({:user, user.id}, network.id, "#test", "alice")
+
+      assert {:ok, "MODE #test +b *!*@evil.host\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +b *!*@evil.host\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/ban with bare nick and no WHOIS cache falls back to nick!*@*", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_ban({:user, user.id}, network.id, "#test", "unknownnick")
+
+      assert {:ok, "MODE #test +b unknownnick!*@*\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +b unknownnick!*@*\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/ban with explicit mask passes through unchanged", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_ban({:user, user.id}, network.id, "#test", "*!*@evil.com")
+
+      assert {:ok, "MODE #test +b *!*@evil.com\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +b *!*@evil.com\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/unban — produces MODE -b upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_unban({:user, user.id}, network.id, "#test", "*!*@evil.com")
+
+      assert {:ok, "MODE #test -b *!*@evil.com\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test -b *!*@evil.com\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/invite — produces INVITE upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_invite({:user, user.id}, network.id, "#test", "alice")
+
+      assert {:ok, "INVITE alice #test\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "INVITE alice #test\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/banlist — produces MODE #chan b upstream (query, no sign)", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_banlist({:user, user.id}, network.id, "#test")
+
+      assert {:ok, "MODE #test b\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test b\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/umode — produces MODE own_nick <modes> upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_umode({:user, user.id}, network.id, "+i")
+
+      assert {:ok, "MODE grappa-test +i\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test +i\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/mode raw — passes through verbatim with no chunking", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_mode({:user, user.id}, network.id, "#test", "+o-v", ["vjt", "rofl"])
+
+      assert {:ok, "MODE #test +o-v vjt rofl\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +o-v vjt rofl\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/mode raw with no extra params — passes through verbatim", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_mode({:user, user.id}, network.id, "#test", "+m", [])
+
+      assert {:ok, "MODE #test +m\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test +m\r\n"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "{:error, :no_session} for all ops verbs on unknown session" do
+      uid = Ecto.UUID.generate()
+      assert {:error, :no_session} = Session.send_op({:user, uid}, 9_999, "#x", ["a"])
+      assert {:error, :no_session} = Session.send_deop({:user, uid}, 9_999, "#x", ["a"])
+      assert {:error, :no_session} = Session.send_voice({:user, uid}, 9_999, "#x", ["a"])
+      assert {:error, :no_session} = Session.send_devoice({:user, uid}, 9_999, "#x", ["a"])
+      assert {:error, :no_session} = Session.send_kick({:user, uid}, 9_999, "#x", "a", "r")
+      assert {:error, :no_session} = Session.send_ban({:user, uid}, 9_999, "#x", "a")
+      assert {:error, :no_session} = Session.send_unban({:user, uid}, 9_999, "#x", "*!*@h")
+      assert {:error, :no_session} = Session.send_invite({:user, uid}, 9_999, "#x", "a")
+      assert {:error, :no_session} = Session.send_banlist({:user, uid}, 9_999, "#x")
+      assert {:error, :no_session} = Session.send_umode({:user, uid}, 9_999, "+i")
+      assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
+    end
+  end
 end
