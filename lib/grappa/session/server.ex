@@ -1640,7 +1640,7 @@ defmodule Grappa.Session.Server do
   IRCv3 spec and RFC 2812 §3.2.3 both cite 3 as the de-facto minimum; all
   major IRCds (bahamut, ircd-seven, UnrealIRCd) default to at least 3.
   """
-  @spec default_modes_per_chunk() :: pos_integer()
+  @spec default_modes_per_chunk() :: 3
   def default_modes_per_chunk, do: 3
 
   # ---------------------------------------------------------------------------
