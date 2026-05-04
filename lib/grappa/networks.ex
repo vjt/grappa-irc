@@ -123,15 +123,23 @@ defmodule Grappa.Networks do
   the same fn (prod DB) — single source for the validation +
   Repo.update round-trip.
 
-  Both fields are optional individually; the changeset's
-  `validate_number(greater_than: 0)` rule rejects zero or negative
-  values. Unsupplied keys keep their current value (changeset only
-  casts the allowlist `[:slug, :max_concurrent_sessions,
-  :max_per_client]`).
+  Three-valued contract per cap (decision F, B5.3):
+
+    * `nil` — explicitly clears the cap (means "unlimited"). The
+      `--clear-max-sessions` / `--clear-max-per-client` mix flags
+      surface this from the operator side.
+    * `0` — degenerate lock-down (means "allow none"). Explicit
+      operator intent, distinct from "unlimited".
+    * `N > 0` — the cap itself.
+
+  Negative integers and non-integers are rejected by
+  `Network.changeset/2`'s `validate_non_negative_or_nil/2` rule.
+  Unsupplied keys keep their current value (changeset only casts the
+  allowlist `[:slug, :max_concurrent_sessions, :max_per_client]`).
   """
   @spec update_network_caps(Network.t(), %{
-          optional(:max_concurrent_sessions) => integer(),
-          optional(:max_per_client) => integer()
+          optional(:max_concurrent_sessions) => integer() | nil,
+          optional(:max_per_client) => integer() | nil
         }) :: {:ok, Network.t()} | {:error, Ecto.Changeset.t()}
   def update_network_caps(%Network{} = network, attrs) when is_map(attrs) do
     network

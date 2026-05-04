@@ -700,18 +700,49 @@ defmodule Grappa.NetworksTest do
       assert updated.max_per_client == 2
     end
 
-    test "rejects zero or negative caps via changeset (greater_than: 0)" do
+    test "rejects negative caps via changeset" do
       net = network_fixture()
-
-      assert {:error, %Ecto.Changeset{} = cs} =
-               Networks.update_network_caps(net, %{max_concurrent_sessions: 0})
-
-      assert errors_on(cs)[:max_concurrent_sessions] != nil
 
       assert {:error, %Ecto.Changeset{} = cs} =
                Networks.update_network_caps(net, %{max_per_client: -1})
 
       assert errors_on(cs)[:max_per_client] != nil
+    end
+
+    test "accepts zero (degenerate lock-down — explicit 'allow none')" do
+      net = network_fixture()
+
+      assert {:ok, %Network{} = updated} =
+               Networks.update_network_caps(net, %{max_concurrent_sessions: 0})
+
+      assert updated.max_concurrent_sessions == 0
+    end
+
+    test "with nil clears the cap (explicit 'unlimited')" do
+      net = network_fixture()
+
+      {:ok, with_caps} =
+        Networks.update_network_caps(net, %{max_concurrent_sessions: 5, max_per_client: 3})
+
+      assert {:ok, %Network{} = cleared} =
+               Networks.update_network_caps(with_caps, %{max_concurrent_sessions: nil})
+
+      assert is_nil(cleared.max_concurrent_sessions)
+      # the unsupplied other cap is preserved
+      assert cleared.max_per_client == 3
+    end
+
+    test "with nil clears max_per_client too (symmetry)" do
+      net = network_fixture()
+
+      {:ok, with_caps} =
+        Networks.update_network_caps(net, %{max_concurrent_sessions: 5, max_per_client: 3})
+
+      assert {:ok, %Network{} = cleared} =
+               Networks.update_network_caps(with_caps, %{max_per_client: nil})
+
+      assert is_nil(cleared.max_per_client)
+      assert cleared.max_concurrent_sessions == 5
     end
 
     test "ignores unknown attrs (cast allowlist)" do
