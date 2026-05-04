@@ -75,7 +75,17 @@ defmodule GrappaWeb.AuthController do
   """
   @spec login(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, atom() | {:network_circuit_open, non_neg_integer()}}
+          | {:error,
+             :bad_request
+             | :malformed_nick
+             | :password_required
+             | :password_mismatch
+             | :invalid_credentials
+             | :upstream_unreachable
+             | :timeout
+             | :internal
+             | {:anon_collision, non_neg_integer()}
+             | Grappa.Admission.error()}
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
 
@@ -84,15 +94,15 @@ defmodule GrappaWeb.AuthController do
         case IdentifierClassifier.classify(id) do
           {:email, email} -> mode1_login(conn, email, password)
           {:nick, nick} -> visitor_login(conn, nick, password)
-          {:error, :malformed} -> send_error(conn, 400, "malformed_nick")
+          {:error, :malformed} -> {:error, :malformed_nick}
         end
 
       :bad_token ->
-        send_error(conn, 400, "bad_request")
+        {:error, :bad_request}
     end
   end
 
-  def login(conn, _), do: send_error(conn, 400, "bad_request")
+  def login(_, _), do: {:error, :bad_request}
 
   # M-web-3: captcha_token is operator-attacker-controlled wire input.
   # Reject non-binary (JSON `42`, `null`, lists, maps) and oversize
@@ -233,7 +243,7 @@ defmodule GrappaWeb.AuthController do
     :ok
   end
 
-  defp mode1_login(conn, _, nil), do: send_error(conn, 401, "invalid_credentials")
+  defp mode1_login(_, _, nil), do: {:error, :invalid_credentials}
 
   defp mode1_login(conn, email, password) when is_binary(password) do
     # Mode-1 today is name-keyed. Phase 5 hardening adds a real email
@@ -273,23 +283,25 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  defp visitor_error_response(conn, _, :malformed_nick),
-    do: send_error(conn, 400, "malformed_nick")
-
-  defp visitor_error_response(conn, _, :password_required),
-    do: send_error(conn, 401, "password_required")
-
-  defp visitor_error_response(conn, _, :password_mismatch),
-    do: send_error(conn, 401, "password_mismatch")
-
-  # T31 Plan 2 Task 5: admission + captcha atoms flow through
+  # L-web-1: every visitor-error atom now flows through
   # `GrappaWeb.FallbackController` (wired globally via `use GrappaWeb,
   # :controller`). Returning `{:error, reason}` here dispatches the
-  # canonical wire shape: 429 too_many_sessions / 503 network_busy /
-  # 503 network_unreachable+Retry-After / 400 captcha_required+site_key /
-  # 400 captcha_failed / 503 service_degraded. The matching clause is
-  # spelled exactly so the inline action's contract stays auditable
+  # canonical wire shapes — 400 malformed_nick / 401 password_*
+  # / 429 too_many_sessions / 503 network_busy / 503 network_unreachable
+  # + Retry-After / 400 captcha_required+site_key / 400 captcha_failed /
+  # 503 service_degraded / 502 upstream_unreachable / 504 timeout /
+  # 500 internal / 409 anon_collision+Retry-After. The matching clause
+  # is spelled exactly so the inline action's contract stays auditable
   # without grepping the FallbackController.
+  defp visitor_error_response(_, _, :malformed_nick),
+    do: {:error, :malformed_nick}
+
+  defp visitor_error_response(_, _, :password_required),
+    do: {:error, :password_required}
+
+  defp visitor_error_response(_, _, :password_mismatch),
+    do: {:error, :password_mismatch}
+
   defp visitor_error_response(_, _, :client_cap_exceeded),
     do: {:error, :client_cap_exceeded}
 
@@ -308,38 +320,34 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(_, _, :captcha_provider_unavailable),
     do: {:error, :captcha_provider_unavailable}
 
-  defp visitor_error_response(conn, nick, :anon_collision),
-    do: anon_collision_response(conn, nick)
+  defp visitor_error_response(_, nick, :anon_collision),
+    do: {:error, {:anon_collision, anon_collision_retry_after(nick)}}
 
-  defp visitor_error_response(conn, _, :upstream_unreachable),
-    do: send_error(conn, 502, "upstream_unreachable")
+  defp visitor_error_response(_, _, :upstream_unreachable),
+    do: {:error, :upstream_unreachable}
 
-  defp visitor_error_response(conn, _, :timeout),
-    do: send_error(conn, 504, "timeout")
+  defp visitor_error_response(_, _, :timeout),
+    do: {:error, :timeout}
 
-  defp visitor_error_response(conn, _, _),
-    do: send_error(conn, 500, "internal")
+  defp visitor_error_response(_, _, _),
+    do: {:error, :internal}
 
-  defp anon_collision_response(conn, nick) do
-    seconds =
-      case Visitors.get_by_nick_and_network(nick, @visitor_network_slug) do
-        %Visitor{expires_at: expires_at} ->
-          expires_at
-          |> DateTime.diff(DateTime.utc_now())
-          |> max(1)
-          |> min(@anon_retry_after_ceiling_seconds)
+  # L-web-1: Retry-After value computed at the controller boundary —
+  # the FallbackController shouldn't query Visitors directly. Threaded
+  # to the FallbackController via the `{:anon_collision, retry_after}`
+  # tuple shape mirroring `{:network_circuit_open, retry_after}`.
+  @spec anon_collision_retry_after(String.t()) :: non_neg_integer()
+  defp anon_collision_retry_after(nick) do
+    case Visitors.get_by_nick_and_network(nick, @visitor_network_slug) do
+      %Visitor{expires_at: expires_at} ->
+        expires_at
+        |> DateTime.diff(DateTime.utc_now())
+        |> max(1)
+        |> min(@anon_retry_after_ceiling_seconds)
 
-        nil ->
-          @anon_retry_after_ceiling_seconds
-      end
-
-    conn
-    |> put_resp_header("retry-after", Integer.to_string(seconds))
-    |> send_error(409, "anon_collision")
-  end
-
-  defp send_error(conn, status, code) do
-    conn |> put_status(status) |> json(%{error: code})
+      nil ->
+        @anon_retry_after_ceiling_seconds
+    end
   end
 
   defp extract_bearer(conn) do

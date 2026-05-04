@@ -37,6 +37,13 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_credentials
            | :invalid_line
            | :unauthorized
+           | :malformed_nick
+           | :password_required
+           | :password_mismatch
+           | :upstream_unreachable
+           | :timeout
+           | :internal
+           | {:anon_collision, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
         ) :: Plug.Conn.t()
@@ -159,6 +166,61 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:service_unavailable)
     |> json(%{error: "service_degraded"})
+  end
+
+  # L-web-1: AuthController error envelope migration. Visitor login
+  # surface returns these atoms via `Visitors.Login.login/2`; routing
+  # them through here keeps every action's success-vs-error envelope
+  # in one place. Wire bodies match the prior controller-inline
+  # `send_error` shapes so the migration is a pure refactor — no
+  # client-visible change.
+  def call(conn, {:error, :malformed_nick}) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "malformed_nick"})
+  end
+
+  def call(conn, {:error, :password_required}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "password_required"})
+  end
+
+  def call(conn, {:error, :password_mismatch}) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "password_mismatch"})
+  end
+
+  def call(conn, {:error, :upstream_unreachable}) do
+    conn
+    |> put_status(:bad_gateway)
+    |> json(%{error: "upstream_unreachable"})
+  end
+
+  def call(conn, {:error, :timeout}) do
+    conn
+    |> put_status(:gateway_timeout)
+    |> json(%{error: "timeout"})
+  end
+
+  def call(conn, {:error, :internal}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "internal"})
+  end
+
+  # 409 anon_collision: tuple shape mirrors `{:network_circuit_open,
+  # retry_after}` — the Retry-After value is computed at the
+  # controller boundary (it requires a Visitors lookup that the
+  # FallbackController shouldn't own) and threaded through here so
+  # the wire response shape stays in this module.
+  def call(conn, {:error, {:anon_collision, retry_after}})
+      when is_integer(retry_after) and retry_after >= 0 do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(retry_after))
+    |> put_status(:conflict)
+    |> json(%{error: "anon_collision"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
