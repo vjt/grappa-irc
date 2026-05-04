@@ -212,6 +212,7 @@ All endpoints are authenticated except `POST /auth/login` and `POST /auth/regist
 | `GET`  | `/me` | Current session info |
 | `GET`  | `/networks` | Configured networks for current user |
 | `POST` | `/networks` | Add a network binding |
+| `PATCH` | `/networks/:net` | Update a network binding. T32: accepts `{connection_state: "connected" \| "parked", reason?}` to park/unpark a network without unbinding. `:failed` is server-set only (lenient: k-line / permanent SASL fail), rejected from this endpoint. |
 | `DELETE` | `/networks/:net` | Remove a network binding |
 | `GET`  | `/networks/:net/channels` | Joined channels on that network |
 | `POST` | `/networks/:net/channels` | Join a channel |
@@ -231,6 +232,34 @@ Real-time events arrive over a Phoenix Channel joined per-topic:
 | `grappa:network:{net}/channel:{chan}` | per-channel: message, join, part, mode, topic, notice |
 
 Events are typed JSON — `message`, `join`, `part`, `quit`, `nick`, `mode`, `topic`, `notice`, etc. The client updates its local state from these; it does not need to reason about IRC framing. Reconnect, replay-on-resubscribe, and presence are handled by the `phoenix.js` client library.
+
+## Slash commands (cicchetto)
+
+Typed in the compose box. Parsed client-side; dispatched to REST or IRC depending on the verb. Unknown verbs surface as inline errors.
+
+| Verb | Effect |
+|------|--------|
+| `/me <text>` | CTCP ACTION in the active channel |
+| `/join <#chan>` | Join a channel |
+| `/part [#chan] [reason]` | Part the active or named channel |
+| `/topic <text>` | Set topic on the active channel |
+| `/nick <newnick>` | Change nick on the active network |
+| `/msg <nick> <text>` | Send a private message (opens query window) |
+| `/quit [reason]` | Nuclear logout: parks **all** bound networks (`PATCH /networks/:net` with `connection_state: "parked"`), QUITs each upstream, closes the WS, clears auth, redirects to `/login`. Re-login + `/connect <net>` to bring networks back. |
+| `/disconnect [network] [reason]` | Park one network (active-window's network if no arg). Bouncer stays parked across reboots until `/connect`. Visitor sessions: aliases to `/quit` (visitor credentials are ephemeral). |
+| `/connect <network>` | Unpark + respawn the named network. Works from `:parked` or `:failed`. |
+
+### `connection_state` model (T32)
+
+Each network binding carries a `connection_state` enum:
+
+| State | Set by | Bootstrap | User action |
+|-------|--------|-----------|-------------|
+| `:connected` | default; `/connect`; `PATCH connection_state=connected` | spawns the session | `/disconnect` to park |
+| `:parked` | `/disconnect`; `PATCH connection_state=parked` | **skips** the session | `/connect` to unpark |
+| `:failed` | server-set on hard upstream failure (k-line / permanent SASL) | **skips** the session | `/connect` to retry |
+
+Transient errors (timeout, refused, DNS, max-backoff) keep the session in continuous reconnect with `:connected` — the bouncer's job is to keep trying. `:failed` is reserved for *terminal* failures where retry is futile. The `connection_state_reason` and `connection_state_changed_at` columns expose the cause + when the transition happened, surfaced in cicchetto's server-messages window.
 
 ## Scope
 
