@@ -186,6 +186,22 @@ defmodule Grappa.Networks.Credential do
     |> validate_change(:auth_command_template, &validate_safe_line_token/2)
     |> validate_change(:autojoin_channels, &validate_autojoin_channels/2)
     |> put_encrypted_password()
+    |> put_default_connection_state_changed_at()
+  end
+
+  # The migration column has no DB default (sqlite ADD COLUMN forbids
+  # CURRENT_TIMESTAMP defaults — see migration 20260504120000 moduledoc).
+  # The schema layer fills it on every insert that omits it; explicit
+  # `Networks.{connect,disconnect,mark_failed}` callers already set it
+  # via `DateTime.utc_now/0` and that explicit value wins.
+  defp put_default_connection_state_changed_at(changeset) do
+    case fetch_field(changeset, :connection_state_changed_at) do
+      {_, %DateTime{}} ->
+        changeset
+
+      _ ->
+        put_change(changeset, :connection_state_changed_at, DateTime.utc_now() |> DateTime.truncate(:second))
+    end
   end
 
   defp validate_nick(field, value) when is_binary(value) do
