@@ -2,6 +2,17 @@ import Config
 
 # This file is loaded at runtime in releases (after compile-time config).
 # Read environment variables here, NOT in compile-time config files.
+#
+# ===
+# Runtime env-var registry. Every System.get_env(...) read in this
+# file MUST appear in:
+#   * compose.prod.yaml `environment:` block (so Docker propagates it)
+#   * .env.example with a comment describing the value (so operators know)
+#   * (when applicable) infra/nginx.conf CSP allowlist for any host
+#     this env var configures
+# Drift in any of these breaks the deploy in a way only real-browser
+# e2e catches (per CP11 S22 deploy-time bug post-mortem).
+# ===
 
 if config_env() == :prod do
   database_path =
