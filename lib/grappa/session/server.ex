@@ -168,6 +168,8 @@ defmodule Grappa.Session.Server do
           network_slug: String.t(),
           nick: String.t(),
           members: %{String.t() => %{String.t() => [String.t()]}},
+          topics: %{String.t() => EventRouter.topic_entry()},
+          channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
           autojoin: [String.t()],
           client: pid() | nil,
           notify_pid: pid() | nil,
@@ -242,6 +244,8 @@ defmodule Grappa.Session.Server do
       network_slug: opts.network_slug,
       nick: opts.nick,
       members: %{},
+      topics: %{},
+      channel_modes: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
@@ -443,6 +447,28 @@ defmodule Grappa.Session.Server do
       |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
 
     {:reply, {:ok, members}, state}
+  end
+
+  # Returns a snapshot of the topic cache for `channel`. Serves from cache —
+  # no upstream query. Public via `Grappa.Session.get_topic/3`.
+  def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do
+    chan_key = String.downcase(channel)
+
+    case Map.get(state.topics, chan_key) do
+      nil -> {:reply, {:error, :no_topic}, state}
+      entry -> {:reply, {:ok, entry}, state}
+    end
+  end
+
+  # Returns a snapshot of the channel_modes cache for `channel`. Serves from
+  # cache — no upstream query. Public via `Grappa.Session.get_channel_modes/3`.
+  def handle_call({:get_channel_modes, channel}, _, state) when is_binary(channel) do
+    chan_key = String.downcase(channel)
+
+    case Map.get(state.channel_modes, chan_key) do
+      nil -> {:reply, {:error, :no_modes}, state}
+      entry -> {:reply, {:ok, entry}, state}
+    end
   end
 
   @impl GenServer
@@ -932,6 +958,38 @@ defmodule Grappa.Session.Server do
 
   @spec apply_effects([EventRouter.effect()], state()) :: state()
   defp apply_effects([], state), do: state
+
+  defp apply_effects([{:topic_changed, channel, entry} | rest], state) do
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        {:topic_changed,
+         %{
+           network_id: state.network_id,
+           channel: channel,
+           topic: entry
+         }}
+      )
+
+    apply_effects(rest, state)
+  end
+
+  defp apply_effects([{:channel_modes_changed, channel, entry} | rest], state) do
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        {:channel_modes_changed,
+         %{
+           network_id: state.network_id,
+           channel: channel,
+           modes: entry
+         }}
+      )
+
+    apply_effects(rest, state)
+  end
 
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)

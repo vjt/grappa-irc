@@ -421,6 +421,42 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns the cached topic for `channel` in the given session.
+
+  Serves from the in-memory topic cache — no upstream TOPIC query is
+  issued. Returns `{:ok, entry}` where `entry` is a
+  `Grappa.Session.EventRouter.topic_entry()` map, `{:error, :no_topic}`
+  if the channel is joined but no TOPIC has been received yet, or
+  `{:error, :no_session}` if no session is registered for
+  `(subject, network_id)`.
+  """
+  @spec get_topic(subject(), integer(), String.t()) ::
+          {:ok, Grappa.Session.EventRouter.topic_entry()}
+          | {:error, :no_topic | :no_session}
+  def get_topic(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:get_topic, channel})
+  end
+
+  @doc """
+  Returns the cached channel modes for `channel` in the given session.
+
+  Serves from the in-memory channel-modes cache — no upstream MODE
+  query is issued. Returns `{:ok, entry}` where `entry` is a
+  `Grappa.Session.EventRouter.channel_mode_entry()` map,
+  `{:error, :no_modes}` if the channel is joined but no MODE snapshot
+  has been received yet, or `{:error, :no_session}` if no session is
+  registered for `(subject, network_id)`.
+  """
+  @spec get_channel_modes(subject(), integer(), String.t()) ::
+          {:ok, Grappa.Session.EventRouter.channel_mode_entry()}
+          | {:error, :no_modes | :no_session}
+  def get_channel_modes(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:get_channel_modes, channel})
+  end
+
+  @doc """
   Adds the correct subject FK column to a `Grappa.Scrollback` /
   `Accounts` attrs map — `:user_id` for `{:user, _}` subjects,
   `:visitor_id` for `{:visitor, _}` subjects. Mirror of the

@@ -71,7 +71,9 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         subject: {:user, "00000000-0000-0000-0000-000000000001"},
         network_id: 1,
         nick: nick,
-        members: members
+        members: members,
+        topics: %{},
+        channel_modes: %{}
       }
     end
   end
@@ -101,6 +103,19 @@ defmodule Grappa.Session.EventRouterPropertyTest do
           # iodata is binary | improper-list-of-bytes; we accept any
           # binary as the lowest-cost shape check.
           assert is_binary(IO.iodata_to_binary(line))
+
+        {:topic_changed, channel, entry} ->
+          assert is_binary(channel)
+          assert is_map(entry)
+          assert Map.has_key?(entry, :text)
+          assert Map.has_key?(entry, :set_by)
+          assert Map.has_key?(entry, :set_at)
+
+        {:channel_modes_changed, channel, entry} ->
+          assert is_binary(channel)
+          assert is_map(entry)
+          assert is_list(entry.modes)
+          assert is_map(entry.params)
 
         other ->
           flunk("malformed effect: #{inspect(other)}")
