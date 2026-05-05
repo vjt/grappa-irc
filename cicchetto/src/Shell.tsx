@@ -179,13 +179,15 @@ const Shell: Component = () => {
         >
           {(sel) => (
             <>
-              <TopicBar
-                networkSlug={sel().networkSlug}
-                channelName={sel().channelName}
-                onToggleSidebar={() => setSidebarOpen((v) => !v)}
-                onToggleMembers={() => setMembersOpen((v) => !v)}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
+              <Show when={sel().channelName !== ":server"}>
+                <TopicBar
+                  networkSlug={sel().networkSlug}
+                  channelName={sel().channelName}
+                  onToggleSidebar={() => setSidebarOpen((v) => !v)}
+                  onToggleMembers={() => setMembersOpen((v) => !v)}
+                  onOpenSettings={() => setSettingsOpen(true)}
+                />
+              </Show>
               <ScrollbackPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
               <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
             </>
