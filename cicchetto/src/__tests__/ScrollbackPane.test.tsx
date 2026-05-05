@@ -3,6 +3,14 @@ import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 
+// C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
+// setSelectedChannel is called when own nick's JOIN event shows up.
+const mockSetSelectedChannel = vi.fn();
+vi.mock("../lib/selection", () => ({
+  setSelectedChannel: (ch: unknown) => mockSetSelectedChannel(ch),
+  selectedChannel: () => null,
+}));
+
 // Mock the store boundary, not the REST/WS plumbing — ScrollbackPane is
 // a pure projection of `scrollbackByChannel` + `networks.user` (for the
 // mention matcher). The store itself is exercised in scrollback.test.ts.
@@ -90,6 +98,7 @@ beforeEach(() => {
   mockTopicByChannel.mockReturnValue({});
   // Reset the join-banner shown-set between tests (test seam, see ScrollbackPane.tsx).
   resetShownBannersForTest();
+  mockSetSelectedChannel.mockClear();
 });
 
 describe("ScrollbackPane", () => {
@@ -620,6 +629,60 @@ describe("ScrollbackPane", () => {
       });
       render(() => <ScrollbackPane networkSlug="freenode" channelName=":server" kind="server" />);
       expect(screen.queryByTestId("join-banner")).toBeNull();
+    });
+
+    // C5.0 — JOIN-self auto-focus-switch (spec #7):
+    // When own nick's JOIN event appears in scrollback, the pane MUST call
+    // setSelectedChannel to switch focus to that channel. This is a user
+    // action (the user issued /join) so the cluster-wide focus-only-on-
+    // user-action rule is not violated — the focus-rule invariant tests
+    // assert that OTHER-user joins do NOT shift focus.
+    it("calls setSelectedChannel when own nick JOIN event shows up in scrollback (C5.0)", async () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await waitFor(() => {
+        expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+          networkSlug: "freenode",
+          channelName: "#grappa",
+          kind: "channel",
+        });
+      });
+    });
+
+    it("does NOT call setSelectedChannel when the JOIN sender is not own nick", async () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Give reactive effects time to settle.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(mockSetSelectedChannel).not.toHaveBeenCalled();
     });
   });
 });
