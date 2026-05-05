@@ -121,6 +121,12 @@ vi.mock("../lib/mentionsWindow", () => ({
   }),
 }));
 
+const setReadCursorMock = vi.fn();
+vi.mock("../lib/readCursor", () => ({
+  getReadCursor: vi.fn(() => null),
+  setReadCursor: (...args: unknown[]) => setReadCursorMock(...args),
+}));
+
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
@@ -265,6 +271,26 @@ describe("Shell — three-pane integration", () => {
     expect(container.querySelector(".scrollback-pane")).not.toBeInTheDocument();
     expect(container.querySelector(".compose-box")).not.toBeInTheDocument();
     expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
+  });
+
+  it("C8.2: clicking a mentions row switches focus to channel and sets read cursor", async () => {
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
+    const { container } = render(() => <Shell />);
+    await waitFor(() => {
+      expect(container.querySelector(".mentions-window")).toBeInTheDocument();
+    });
+    const row = container.querySelector(".mentions-row");
+    expect(row).toBeDefined();
+    if (row) fireEvent.click(row);
+    // Should navigate to the channel the mention came from.
+    expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    // Should set read cursor to serverTime - 1 so ScrollbackPane scrolls
+    // to the unread marker positioned just before the clicked message.
+    expect(setReadCursorMock).toHaveBeenCalledWith("freenode", "#grappa", 1_746_442_199_999);
   });
 });
 
