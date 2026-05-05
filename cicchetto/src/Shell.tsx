@@ -242,10 +242,13 @@ const Shell: Component = () => {
                           channelName={sel().channelName}
                           kind={sel().kind}
                         />
-                        <ComposeBox
-                          networkSlug={sel().networkSlug}
-                          channelName={sel().channelName}
-                        />
+                        {/* Server window is read-only — no compose box (BUG 2d fix). */}
+                        <Show when={sel().kind !== "server"}>
+                          <ComposeBox
+                            networkSlug={sel().networkSlug}
+                            channelName={sel().channelName}
+                          />
+                        </Show>
                       </>
                     }
                   >
@@ -347,7 +350,13 @@ const Shell: Component = () => {
                         channelName={sel().channelName}
                         kind={sel().kind}
                       />
-                      <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+                      {/* Server window is read-only — no compose box (BUG 2d fix). */}
+                      <Show when={sel().kind !== "server"}>
+                        <ComposeBox
+                          networkSlug={sel().networkSlug}
+                          channelName={sel().channelName}
+                        />
+                      </Show>
                     </>
                   }
                 >
