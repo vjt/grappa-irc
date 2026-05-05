@@ -26,6 +26,30 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
+vi.mock("../lib/queryWindows", () => ({
+  queryWindowsByNetwork: () => ({
+    1: [
+      { targetNick: "alice", openedAt: "2026-05-04T10:00:00Z" },
+      { targetNick: "bob", openedAt: "2026-05-04T11:00:00Z" },
+    ],
+  }),
+  closeQueryWindowState: vi.fn(),
+  openQueryWindowState: vi.fn(),
+  setQueryWindowsByNetwork: vi.fn(),
+}));
+
+vi.mock("../lib/api", () => ({
+  postPart: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/auth", () => ({
+  token: () => "tok",
+  socketUserName: () => "alice",
+}));
+
+import * as apiMod from "../lib/api";
+// Capture mocked module references at import time, before any resetModules
+import * as qwMod from "../lib/queryWindows";
 import Sidebar from "../Sidebar";
 
 beforeEach(() => {
@@ -89,8 +113,65 @@ describe("Sidebar", () => {
       unreadCounts: () => ({}),
     }));
     vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
+    vi.doMock("../lib/queryWindows", () => ({
+      queryWindowsByNetwork: () => ({}),
+      closeQueryWindowState: vi.fn(),
+      openQueryWindowState: vi.fn(),
+      setQueryWindowsByNetwork: vi.fn(),
+    }));
     const { default: SidebarFresh } = await import("../Sidebar");
     render(() => <SidebarFresh onSelect={vi.fn()} />);
     expect(screen.getByText(/no networks/i)).toBeInTheDocument();
+  });
+
+  // C1.2: Query windows appear in sidebar
+  it("renders query windows (alice, bob) for the network", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    expect(screen.getByText("alice")).toBeInTheDocument();
+    expect(screen.getByText("bob")).toBeInTheDocument();
+  });
+
+  // C1.2: Server window is present, not closeable (no X button)
+  it("server window has no close button", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const serverEntry = screen.getByText("Server");
+    const li = serverEntry.closest("li");
+    expect(li?.querySelector(".sidebar-close")).toBeNull();
+  });
+
+  // C1.2: Channel windows have a close button
+  it("channel windows have a close button", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const channelEntry = screen.getByText("#italia");
+    const li = channelEntry.closest("li");
+    expect(li?.querySelector(".sidebar-close")).toBeTruthy();
+  });
+
+  // C1.2: Query windows have a close button
+  it("query windows have a close button", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const queryEntry = screen.getByText("alice");
+    const li = queryEntry.closest("li");
+    expect(li?.querySelector(".sidebar-close")).toBeTruthy();
+  });
+
+  // C1.2: Clicking X on a query window calls closeQueryWindowState
+  it("clicking close on query window calls closeQueryWindowState", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const aliceEntry = screen.getByText("alice");
+    const li = aliceEntry.closest("li");
+    const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
+    fireEvent.click(closeBtn);
+    expect(qwMod.closeQueryWindowState).toHaveBeenCalledWith(1, "alice");
+  });
+
+  // C1.2: Clicking X on a channel calls postPart
+  it("clicking close on channel calls postPart", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const italiaEntry = screen.getByText("#italia");
+    const li = italiaEntry.closest("li");
+    const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
+    fireEvent.click(closeBtn);
+    expect(apiMod.postPart).toHaveBeenCalledWith("tok", "freenode", "#italia");
   });
 });

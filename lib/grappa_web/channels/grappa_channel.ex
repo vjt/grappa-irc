@@ -86,6 +86,15 @@ defmodule GrappaWeb.GrappaChannel do
   - `"topic_clear"` — clear channel topic (irssi `/topic -delete` convention).
     Payload: `%{"network_id" => id, "channel" => chan}`. Sends `TOPIC #chan :`.
 
+  - `"open_query_window"` — open a DM (query) window. Payload: `%{"network_id" => id,
+    "target_nick" => nick}`. Upserts a `query_windows` row (idempotent via unique idx)
+    and broadcasts the updated `query_windows_list` on the user topic. Visitors rejected.
+
+  - `"close_query_window"` — close a DM (query) window. Payload: `%{"network_id" => id,
+    "target_nick" => nick}`. Deletes the `query_windows` row (idempotent — no-op if
+    missing) and broadcasts the updated `query_windows_list` on the user topic. Visitors
+    rejected.
+
   All ops verbs reject visitor sockets and return `{:error, %{reason: "visitor_not_allowed"}}`.
 
   ## Outbound event shapes
@@ -445,6 +454,59 @@ defmodule GrappaWeb.GrappaChannel do
     dispatch_ops_verb(socket, fn user ->
       Session.send_topic_clear({:user, user.id}, network_id, channel)
     end)
+  end
+
+  # C1.4 — open a DM (query) window.
+  #
+  # Payload: `%{"network_id" => integer, "target_nick" => string}`.
+  # Delegates to `QueryWindows.open/4` (idempotent via unique idx).
+  # After the DB upsert, QueryWindows.open/4 broadcasts the updated
+  # `query_windows_list` on Topic.user/1 — all connected tabs of this
+  # user receive the push and can update their window list.
+  # Visitors are rejected — visitor sessions skip query_windows
+  # persistence (spec §1: "Skipped for visitor sessions").
+  def handle_in(
+        "open_query_window",
+        %{"network_id" => network_id, "target_nick" => target_nick},
+        socket
+      )
+      when is_integer(network_id) and is_binary(target_nick) do
+    user_name = socket.assigns.user_name
+
+    with false <- visitor?(user_name),
+         {:ok, user} <- safe_get_user(user_name),
+         {:ok, _} <- QueryWindows.open(user.id, network_id, target_nick, user_name) do
+      {:reply, :ok, socket}
+    else
+      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, _} -> {:reply, {:error, %{reason: "open_failed"}}, socket}
+    end
+  end
+
+  # C1.2 — close a DM (query) window.
+  #
+  # Payload: `%{"network_id" => integer, "target_nick" => string}`.
+  # Delegates to `QueryWindows.close/4` (idempotent — returns :ok
+  # whether or not the row existed). After the DB delete, broadcasts
+  # the updated `query_windows_list` on Topic.user/1.
+  # Visitors are rejected — they have no persisted query windows.
+  def handle_in(
+        "close_query_window",
+        %{"network_id" => network_id, "target_nick" => target_nick},
+        socket
+      )
+      when is_integer(network_id) and is_binary(target_nick) do
+    user_name = socket.assigns.user_name
+
+    with false <- visitor?(user_name),
+         {:ok, user} <- safe_get_user(user_name) do
+      :ok = QueryWindows.close(user.id, network_id, target_nick, user_name)
+      {:reply, :ok, socket}
+    else
+      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+    end
   end
 
   # ---------------------------------------------------------------------------

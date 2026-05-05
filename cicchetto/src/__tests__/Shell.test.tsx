@@ -73,6 +73,18 @@ vi.mock("../lib/theme", () => ({
 
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
+  token: () => null,
+}));
+
+vi.mock("../lib/queryWindows", () => ({
+  queryWindowsByNetwork: () => ({}),
+  closeQueryWindowState: vi.fn(),
+  openQueryWindowState: vi.fn(),
+  setQueryWindowsByNetwork: vi.fn(),
+}));
+
+vi.mock("../lib/api", () => ({
+  postPart: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../lib/channelKey", () => ({

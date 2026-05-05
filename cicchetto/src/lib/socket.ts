@@ -163,3 +163,20 @@ export function pushAwayUnset(network: string): Promise<void> {
       .receive("error", (err: unknown) => reject(new Error(String(err))));
   });
 }
+
+// C1.4 — open a DM (query) window. Pushes `open_query_window` on the
+// user-level channel; the server upserts the `query_windows` row and
+// broadcasts `query_windows_list` back. Fire-and-forget — the
+// authoritative update arrives via the broadcast event.
+export function pushOpenQueryWindow(networkId: number, targetNick: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("open_query_window", { network_id: networkId, target_nick: targetNick });
+}
+
+// C1.2 — close a DM (query) window. Pushes `close_query_window` on
+// the user-level channel; the server deletes the `query_windows` row
+// and broadcasts `query_windows_list` back. Fire-and-forget.
+export function pushCloseQueryWindow(networkId: number, targetNick: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("close_query_window", { network_id: networkId, target_nick: targetNick });
+}
