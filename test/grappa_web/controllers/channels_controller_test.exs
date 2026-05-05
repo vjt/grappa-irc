@@ -246,6 +246,47 @@ defmodule GrappaWeb.ChannelsControllerTest do
       conn = delete(conn, "/networks/azzurra/channels/%23chan%0AQUIT")
       assert json_response(conn, 400)["error"] == "bad_request"
     end
+
+    # BUG5a: DELETE also removes the channel from autojoin_channels so that
+    # GET /channels returns it as absent (not as joined: false). Without this
+    # fix, cicchetto's channels_changed refetch would return the channel with
+    # joined: false and the sidebar would keep showing it as a parted entry.
+    test "removes channel from autojoin_channels after PART", %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-bug5a-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#grappa", "#other"]})
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23grappa")
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      # Reload credential from DB and assert #grappa is gone from autojoin.
+      reloaded = Grappa.Networks.Credentials.get_credential!(vjt, network)
+      assert reloaded.autojoin_channels == ["#other"]
+      refute "#grappa" in reloaded.autojoin_channels
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "channel not in autojoin_channels is a no-op on the autojoin list after PART",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-bug5a-noop-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#other"]})
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # #grappa is NOT in autojoin_channels — DELETE should still succeed and
+      # leave the list unchanged.
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23grappa")
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      reloaded = Grappa.Networks.Credentials.get_credential!(vjt, network)
+      assert reloaded.autojoin_channels == ["#other"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # A5 close (P4-1): GET /networks/:net/channels composes the

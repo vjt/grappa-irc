@@ -41,7 +41,8 @@ defmodule GrappaWeb.ChannelsController do
 
   import GrappaWeb.Validation, only: [validate_channel_name: 1]
 
-  alias Grappa.Networks.Credentials
+  alias Grappa.Accounts.User
+  alias Grappa.Networks.{Credentials, Network}
   alias Grappa.{Session, Visitors}
   alias GrappaWeb.Subject
 
@@ -132,7 +133,13 @@ defmodule GrappaWeb.ChannelsController do
 
   @doc """
   `DELETE /networks/:network_id/channels/:channel_id` — casts
-  `PART <channel_id>` upstream. Returns 202 + `{"ok": true}`.
+  `PART <channel_id>` upstream AND removes the channel from the
+  credential's `autojoin_channels` list (if present).
+
+  Both ops run unconditionally: the PART fires even if the channel is
+  not in autojoin (e.g. a manually-joined `source: :joined` channel),
+  and the autojoin removal is a no-op when the channel is not in the
+  list. Returns 202 + `{"ok": true}`.
   """
   @spec delete(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
@@ -142,11 +149,46 @@ defmodule GrappaWeb.ChannelsController do
 
     with :ok <- validate_channel_name(channel),
          :ok <- Session.send_part(subject, network.id, channel) do
+      # Remove from autojoin so GET /channels no longer returns the channel
+      # after the PART echo + channels_changed refetch. Only meaningful for
+      # user subjects — visitors have no persistent credential.
+      remove_from_autojoin(conn.assigns.current_subject, network, channel)
+
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
     end
   end
+
+  # Removes `channel` from the user's credential autojoin list. Visitors
+  # have no persistent credential, so this is a no-op for them.
+  @spec remove_from_autojoin(
+          {:user, User.t()} | {:visitor, term()},
+          Network.t(),
+          String.t()
+        ) :: :ok
+  defp remove_from_autojoin({:user, user}, %Network{} = network, channel) do
+    # Best-effort: if the credential doesn't exist or the update fails,
+    # the PART already went through so the IRC channel is left. Logging
+    # the failure is enough — the next reconnect's autojoin would re-join
+    # the channel, but that's an edge case (DELETE → credential gone).
+    case Credentials.remove_autojoin_channel(user, network, channel) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+
+        Logger.warning("remove_autojoin_channel failed after PART",
+          channel: channel,
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
+
+  defp remove_from_autojoin({:visitor, _}, _, _), do: :ok
 
   @doc """
   `POST /networks/:network_id/channels/:channel_id/topic` — body
