@@ -65,5 +65,19 @@ defmodule Grappa.Scrollback.MessageTest do
                "expected missing #{field} to surface an error on #{error_key}"
       end
     end
+
+    # C4/DM fix-up: the `:channel` column stores the PRIVMSG target, which
+    # for direct messages is a nick rather than a channel-sigil name. The
+    # changeset validator was widened to accept both shapes.
+    test "accepts a nick-shaped channel (DM scrollback row)" do
+      cs = Message.changeset(%Message{}, %{@valid_attrs | channel: "someuser"})
+      assert cs.valid?, "expected nick target to produce a valid changeset"
+    end
+
+    test "rejects a channel that is neither a valid channel nor a valid nick" do
+      cs = Message.changeset(%Message{}, %{@valid_attrs | channel: "123bad"})
+      refute cs.valid?
+      assert {"is not a valid IRC identifier", _} = cs.errors[:channel]
+    end
   end
 end

@@ -41,7 +41,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  import GrappaWeb.Validation, only: [validate_channel_name: 1]
+  import GrappaWeb.Validation, only: [validate_target_name: 1]
 
   alias Grappa.{Scrollback, Session}
   alias GrappaWeb.Subject
@@ -70,11 +70,11 @@ defmodule GrappaWeb.MessagesController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    # Reject malformed channel-name shape with 400 — same boundary the
-    # POST surface uses (S40). Without this, an invalid `channel_id`
-    # path segment fed straight into `Scrollback.fetch/5` would return
-    # 200 + an empty list, hiding the client typo.
-    with :ok <- validate_channel_name(channel),
+    # Reject malformed target shape with 400. Accepts both channel-sigil
+    # names (#chan, &local, etc.) and nick-shaped targets for DM scrollback
+    # fetch. Without this, an invalid segment would fall through to
+    # `Scrollback.fetch/5` and return 200 + empty list, hiding the typo.
+    with :ok <- validate_target_name(channel),
          {:ok, cursor} <- parse_cursor(params["before"]),
          {:ok, limit} <- parse_limit(params["limit"]) do
       # `:network` is preloaded by `Scrollback.fetch/5` itself —
@@ -109,10 +109,11 @@ defmodule GrappaWeb.MessagesController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    # Channel-name shape check is :bad_request; the body's CRLF/NUL
-    # check happens inside Session.send_privmsg and surfaces as
-    # :invalid_line. Two distinct error tags so client UX can branch.
-    with :ok <- validate_channel_name(channel),
+    # Target shape check is :bad_request; accepts both channel-sigil and
+    # nick targets so DM sends work (C4 fix-up). The body's CRLF/NUL check
+    # happens inside Session.send_privmsg and surfaces as :invalid_line.
+    # Two distinct error tags so client UX can branch.
+    with :ok <- validate_target_name(channel),
          {:ok, message} <- Session.send_privmsg(subject, network.id, channel, body) do
       # `:network` is preloaded by `Scrollback.persist_event/1` —
       # the Session contract returns a wire-shape-ready row. Don't

@@ -27,4 +27,21 @@ defmodule GrappaWeb.Validation do
   def validate_channel_name(name) do
     if Identifier.valid_channel?(name), do: :ok, else: {:error, :bad_request}
   end
+
+  @doc """
+  Returns `:ok` if `name` is a syntactically valid IRC PRIVMSG target —
+  either a channel name (`#`/`&`/`+`/`!` sigil per RFC 2812 §1.3) or a
+  nick (RFC 2812 §2.3.1). Both are valid `PRIVMSG <target>` recipients at
+  the IRC protocol level.
+
+  Used by `MessagesController` (GET + POST) so that DM scrollback fetch and
+  DM send work without a separate REST route. `ChannelsController` keeps
+  `validate_channel_name/1` because JOIN/PART/TOPIC are channel-only IRC ops.
+  """
+  @spec validate_target_name(String.t()) :: :ok | {:error, :bad_request}
+  def validate_target_name(name) do
+    if Identifier.valid_channel?(name) or Identifier.valid_nick?(name),
+      do: :ok,
+      else: {:error, :bad_request}
+  end
 end

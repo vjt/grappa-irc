@@ -301,5 +301,49 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       assert json_response(conn, 400)["error"] == "bad_request"
     end
+
+    # C4/DM fix-up: digit-leading target is neither a valid nick NOR a
+    # valid channel — validate_target_name rejects it with :bad_request.
+    test "POST with digit-leading target (neither nick nor channel) returns 400",
+         %{conn: conn, vjt: vjt} do
+      _ = setup_network(vjt, 9999, "azzurra")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/123bad/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+  end
+
+  # C4/DM fix-up: POST to a nick-shaped target (DM) must succeed when a
+  # session is running. The target validator was widened from channel-only
+  # to channel-OR-nick; this test pins the happy path.
+  describe "POST to nick target (DM)" do
+    test "sends PRIVMSG upstream to nick target, persists row, returns 201",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/someuser/messages", %{
+          "body" => "hey there"
+        })
+
+      body = json_response(conn, 201)
+      assert body["body"] == "hey there"
+      assert body["channel"] == "someuser"
+      assert body["kind"] == "privmsg"
+
+      assert {:ok, "PRIVMSG someuser :hey there\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG someuser"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 end

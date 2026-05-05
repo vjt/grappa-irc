@@ -163,13 +163,22 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 
-  test "GET with malformed channel_id (no sigil) returns 400 (S40)", %{conn: conn} do
-    # S40 lifted the channel-name shape check from the POST surface
-    # into the GET surface so an invalid channel_id segment doesn't
-    # silently fall through to `Scrollback.fetch/5` and return
-    # 200 + empty list, hiding a client typo. Mirror of the POST
-    # validation tests below.
+  # After the C4/DM fix-up: the target validator accepts BOTH channel-sigil
+  # names AND valid IRC nicks (DM targets). A plain nick like "notachan"
+  # is a valid DM target — it returns 200+[] (no scrollback rows) not 400.
+  # The shape-check only rejects targets that are neither a valid channel
+  # NOR a valid nick, e.g. digit-leading strings.
+  test "GET with nick-shaped target returns 200 (DM scrollback fetch)", %{conn: conn} do
     conn = get(conn, "/networks/azzurra/channels/notachan/messages")
+    assert json_response(conn, 200) == []
+  end
+
+  test "GET with truly malformed target (digit-leading, neither nick nor channel) returns 400",
+       %{conn: conn} do
+    # "123bad" starts with a digit → rejected by valid_nick?; has no
+    # channel sigil → rejected by valid_channel?.  This is the shape
+    # check that still fires after the DM widening.
+    conn = get(conn, "/networks/azzurra/channels/123bad/messages")
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 

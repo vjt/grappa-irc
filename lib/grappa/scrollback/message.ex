@@ -188,7 +188,7 @@ defmodule Grappa.Scrollback.Message do
     ])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> validate_subject_xor()
-    |> validate_identifier(:channel, &Identifier.valid_channel?/1)
+    |> validate_identifier(:channel, &valid_target?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
     |> assoc_constraint(:user)
@@ -231,4 +231,10 @@ defmodule Grappa.Scrollback.Message do
       if predicate.(value), do: [], else: [{field, "is not a valid IRC identifier"}]
     end)
   end
+
+  # IRC PRIVMSG accepts both channel targets (#chan, &local, etc.) and nick
+  # targets for direct messages. The `:channel` column stores the PRIVMSG
+  # target verbatim, so the constraint must accept both shapes (C4 fix-up).
+  @spec valid_target?(term()) :: boolean()
+  defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.valid_nick?(s)
 end
