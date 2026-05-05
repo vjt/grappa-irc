@@ -27,9 +27,11 @@ import { joinChannel } from "./socket";
 //        every real IRC channel topic. Key = channelKey(slug, name).
 //     2. Query-windows loop — iterates `queryWindowsByNetwork()`.
 //        Subscribes to the per-(slug, targetNick) topic for every
-//        open DM window. The server broadcasts outbound `/msg <nick>`
-//        echoes here; subscribing makes those messages appear live
-//        in the query pane without a reload (DM live-WS gap fix).
+//        open DM window, EXCLUDING targetNick == ownNick (the dm-
+//        listener loop owns that topic — see below). The server
+//        broadcasts outbound `/msg <nick>` echoes here; subscribing
+//        makes those messages appear live in the query pane without
+//        a reload (DM live-WS gap fix).
 //     3. DM-listener loop — iterates `networks()`. Subscribes to the
 //        own-nick topic per network (`grappa:user:<u>/network:<slug>/
 //        channel:<ownNick>`). The server broadcasts INBOUND DMs here
@@ -37,8 +39,12 @@ import { joinChannel } from "./socket";
 //        `channel = ownNick`). The handler RE-KEYS the append to
 //        the sender's nick — so an incoming reply from `vjt` lands
 //        in the `vjt` query window's scrollback, NOT in an invisible
-//        own-nick bucket. Always auto-opens the sender's window
-//        (idempotent inside queryWindows.ts).
+//        own-nick bucket. Self-msg (sender = ownNick, via `/msg
+//        <ownNick> :body`) routes to the own-nick key. Always auto-
+//        opens the sender's window (idempotent inside queryWindows.ts).
+//        Non-PRIVMSG/ACTION events (NOTICE from services, mode, etc.)
+//        are DROPPED — they belong in the server-messages window
+//        (feature #4, deferred) and must NOT pollute the own-nick key.
 //
 // All three effects share `routeMessage` so the privmsg/channel
 // ingestion paths are byte-identical downstream — per the user's
@@ -159,27 +165,28 @@ createRoot(() => {
   };
 
   // Handler for the per-network DM-listener (own-nick topic). Every
-  // PRIVMSG arriving here is an INBOUND DM from `payload.message.sender`
-  // (because the server persists `PRIVMSG <ownNick> :body` with
-  // `channel = ownNick`, then broadcasts on that topic). Two side-
-  // effects: (1) auto-open the sender's query window so the pane
-  // appears in the sidebar immediately; (2) re-key the message append
-  // to `channelKey(slug, sender)` so it lands in the conversation
-  // partner's window instead of an invisible own-nick bucket.
+  // PRIVMSG/ACTION arriving here is either:
+  //   (a) an INBOUND DM from `payload.message.sender` (the server
+  //       persists `PRIVMSG <ownNick> :body` with `channel = ownNick`),
+  //   (b) a self-msg echo (operator issued `/msg <ownNick> :body` —
+  //       sender = ownNick).
+  // Both are handled uniformly: auto-open the sender's query window
+  // (idempotent inside queryWindows.ts) and re-key the append to
+  // `channelKey(slug, sender)`. Self-msg: sender = ownNick → appends
+  // to the own-nick key. Inbound: sender = other → appends to
+  // sender's key. Correct for both cases with no special-casing.
   //
-  // Non-PRIVMSG events on the own-nick topic (NOTICE-from-services,
-  // mode +i, etc.) route through the normal channel-handler shape via
-  // `routeMessage` with the own-nick key — they're rare and the
-  // own-nick window currently isn't rendered anywhere; the safer
-  // default is to ingest them so the data isn't lost when a future
-  // "server-messages window" surface attaches.
+  // Non-PRIVMSG/ACTION events on the own-nick topic (NOTICE from
+  // services, mode, join, part, etc.) are DROPPED here. They belong
+  // in the server-messages window (feature #4, deferred). Silently
+  // dropping keeps the own-nick query window clean and avoids
+  // polluting any key until the dedicated surface exists.
   const installDmListenerHandler = (
     phx: Channel,
     slug: string,
     networkId: number,
-    ownNick: string,
+    _ownNick: string,
   ) => {
-    const ownNickKey = channelKey(slug, ownNick);
     phx.on("event", (payload: WireEvent) => {
       if (payload.kind === "topic_changed" || payload.kind === "channel_modes_changed") {
         // Topic / modes on the own-nick "channel" make no sense — the
@@ -189,15 +196,19 @@ createRoot(() => {
       if (payload.kind !== "message") return;
       const message = payload.message;
       if (message.kind === "privmsg" || message.kind === "action") {
-        // Inbound DM — auto-open + re-key.
+        // DM (inbound or self-msg) — auto-open sender's query window
+        // and route to sender's scrollback key. For self-msg
+        // (sender = ownNick), this lands in the own-nick window;
+        // for inbound (sender = other), it lands in sender's window.
         openQueryWindowState(networkId, message.sender, new Date().toISOString());
         const senderKey = channelKey(slug, message.sender);
         routeMessage(slug, senderKey, message.sender, message);
         return;
       }
-      // Other event kinds on the own-nick topic — store under the
-      // own-nick key for future surfaces (no UI today).
-      routeMessage(slug, ownNickKey, ownNick, message);
+      // NOTICE, mode, join, part, quit, kick, nick_change, topic, etc.
+      // on the own-nick topic → deferred to feature #4 (server-messages
+      // window). Drop silently for now; server-side scrollback row
+      // persists at channel=ownNick and will surface when #4 lands.
     });
   };
 
@@ -236,18 +247,31 @@ createRoot(() => {
   // (slug, target) topic). When the auto-open from the DM-listener
   // adds a new entry, this effect re-runs and joins the new topic so
   // ongoing exchanges flow without a reload.
+  //
+  // IMPORTANT: skip targetNick == ownNick. The dm-listener loop is the
+  // SOLE handler for the own-nick topic — installing an extra channel-
+  // handler there would route ALL traffic (NOTICEs, presence events,
+  // etc.) to the own-nick scrollback key, polluting it. The `joined`
+  // Set deduplication alone is insufficient because whichever loop runs
+  // first installs its handler; this explicit skip guarantees the
+  // dm-listener handler wins regardless of effect evaluation order.
   createEffect(() => {
     const t = token();
     const qwbn = queryWindowsByNetwork();
     if (!t) return;
     const userName = socketUserName();
     const nets = networks();
+    const u = user();
     if (!userName || !nets) return;
+    const ownNick = u ? displayNick(u) : null;
     for (const [networkIdStr, windowsList] of Object.entries(qwbn)) {
       const networkId = Number(networkIdStr);
       const net = nets.find((n) => n.id === networkId);
       if (!net) continue;
       for (const qw of windowsList) {
+        // Skip own-nick — the dm-listener loop is the sole subscriber
+        // for that topic and installs the correct re-keying handler.
+        if (ownNick && qw.targetNick.toLowerCase() === ownNick.toLowerCase()) continue;
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick);
