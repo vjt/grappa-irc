@@ -125,7 +125,7 @@ defmodule GrappaWeb.GrappaChannel do
   """
   use GrappaWeb, :channel
 
-  alias Grappa.{Accounts, Networks, QueryWindows, Session, WSPresence}
+  alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
   alias Grappa.Networks.{Credentials, Network}
   alias Grappa.PubSub.Topic
 
@@ -510,8 +510,102 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # ---------------------------------------------------------------------------
-  # After-join snapshot helpers
+  # C8 — /watch /highlight watchlist verbs
+  #
+  # Three action heads (add / del / list) for managing the per-user highlight
+  # watchlist stored in `user_settings`. Visitors are rejected — ephemeral
+  # sessions have no persisted user_settings row. All heads reply with
+  # `{:ok, %{patterns: [...]}}` on success or `{:error, %{reason: ...}}` on
+  # failure, matching the `away` handler's reply-shape convention.
+  #
+  # Forward-only per spec #19: changing the watchlist does NOT re-aggregate
+  # past mentions. New patterns apply to incoming traffic and the NEXT
+  # back-from-away aggregation only.
   # ---------------------------------------------------------------------------
+
+  # /watch list  →  return current watchlist patterns for the user.
+  def handle_in("watchlist", %{"action" => "list"}, socket) do
+    user_name = socket.assigns.user_name
+
+    if visitor?(user_name) do
+      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+    else
+      case safe_get_user(user_name) do
+        {:ok, user} ->
+          patterns = UserSettings.get_highlight_patterns(user.id)
+          {:reply, {:ok, %{patterns: patterns}}, socket}
+
+        :error ->
+          {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      end
+    end
+  end
+
+  # /watch add <pattern>  →  add pattern to watchlist (idempotent — dup is no-op success).
+  def handle_in("watchlist", %{"action" => "add", "pattern" => pattern}, socket)
+      when is_binary(pattern) do
+    user_name = socket.assigns.user_name
+
+    if visitor?(user_name) do
+      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+    else
+      case safe_get_user(user_name) do
+        {:ok, user} ->
+          existing = UserSettings.get_highlight_patterns(user.id)
+
+          new_patterns =
+            if pattern in existing do
+              existing
+            else
+              existing ++ [pattern]
+            end
+
+          case UserSettings.set_highlight_patterns(user.id, new_patterns) do
+            {:ok, _} ->
+              {:reply, {:ok, %{patterns: new_patterns}}, socket}
+
+            {:error, _} ->
+              {:reply, {:error, %{reason: "save_failed"}}, socket}
+          end
+
+        :error ->
+          {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      end
+    end
+  end
+
+  # /watch del <pattern>  →  remove pattern from watchlist.
+  # Returns {:error, :not_found} when the pattern is not in the list.
+  def handle_in("watchlist", %{"action" => "del", "pattern" => pattern}, socket)
+      when is_binary(pattern) do
+    user_name = socket.assigns.user_name
+
+    if visitor?(user_name) do
+      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+    else
+      case safe_get_user(user_name) do
+        {:ok, user} ->
+          existing = UserSettings.get_highlight_patterns(user.id)
+
+          if pattern in existing do
+            new_patterns = List.delete(existing, pattern)
+
+            case UserSettings.set_highlight_patterns(user.id, new_patterns) do
+              {:ok, _} ->
+                {:reply, {:ok, %{patterns: new_patterns}}, socket}
+
+              {:error, _} ->
+                {:reply, {:error, %{reason: "save_failed"}}, socket}
+            end
+          else
+            {:reply, {:error, %{reason: "not_found"}}, socket}
+          end
+
+        :error ->
+          {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      end
+    end
+  end
 
   # Pushes the full user-level snapshot: query_windows_list + topic/modes
   # for every joined channel across all networks.

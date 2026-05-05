@@ -798,4 +798,61 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # C8 — /watch /highlight channel handlers
+  #
+  # `watchlist` handle_in dispatches: add / del / list. Stores persist
+  # in UserSettings. Visitors rejected. Idempotent add / :not_found del.
+  # ---------------------------------------------------------------------------
+
+  describe "watchlist — /watch /highlight verbs" do
+    setup do
+      user_name = "watch-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+      topic = Topic.user(user_name)
+      {:ok, _, socket} = user_name |> build_socket() |> subscribe_and_join(topic, %{})
+      %{user: user, socket: socket, topic: topic}
+    end
+
+    test "list returns empty patterns for new user", %{socket: socket} do
+      ref = push(socket, "watchlist", %{"action" => "list"})
+      assert_reply(ref, :ok, %{patterns: []})
+    end
+
+    test "add inserts pattern and list returns it", %{socket: socket} do
+      ref = push(socket, "watchlist", %{"action" => "add", "pattern" => "grappa"})
+      assert_reply(ref, :ok, %{patterns: ["grappa"]})
+
+      ref2 = push(socket, "watchlist", %{"action" => "list"})
+      assert_reply(ref2, :ok, %{patterns: ["grappa"]})
+    end
+
+    test "add is idempotent — duplicate pattern is a no-op success", %{socket: socket} do
+      push(socket, "watchlist", %{"action" => "add", "pattern" => "foo"})
+      ref = push(socket, "watchlist", %{"action" => "add", "pattern" => "foo"})
+      assert_reply(ref, :ok, %{patterns: patterns})
+      assert Enum.count(patterns, &(&1 == "foo")) == 1
+    end
+
+    test "del removes pattern and list reflects the change", %{socket: socket} do
+      push(socket, "watchlist", %{"action" => "add", "pattern" => "bar"})
+      ref = push(socket, "watchlist", %{"action" => "del", "pattern" => "bar"})
+      assert_reply(ref, :ok, %{patterns: []})
+    end
+
+    test "del of missing pattern returns :error :not_found", %{socket: socket} do
+      ref = push(socket, "watchlist", %{"action" => "del", "pattern" => "nonexistent"})
+      assert_reply(ref, :error, %{reason: "not_found"})
+    end
+
+    test "visitor socket returns visitor_not_allowed" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+      {:ok, _, visitor_socket} = visitor_name |> build_socket() |> subscribe_and_join(topic, %{})
+
+      ref = push(visitor_socket, "watchlist", %{"action" => "list"})
+      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+    end
+  end
 end
