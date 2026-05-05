@@ -2,6 +2,7 @@ import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { sendMessage as apiSendMessage, listMessages, type ScrollbackMessage } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { networks } from "./networks";
 
 // Per-channel scrollback store: the source of truth for messages
 // rendered in `ScrollbackPane`. Module-singleton signal store mirroring
@@ -31,6 +32,53 @@ import { type ChannelKey, channelKey } from "./channelKey";
 // The on(token) cleanup arm registered first, before any verb fires,
 // mirrors the A1 pattern propagated across all post-A4 stores.
 
+// ---------------------------------------------------------------------------
+// Own-nick query filter
+// ---------------------------------------------------------------------------
+//
+// The IRC bouncer persists incoming PRIVMSG and NOTICE messages with
+// `channel` set to the IRC target field — which for messages directed AT
+// the operator's nick is `channel = ownNick`. The REST endpoint
+// `GET /networks/:slug/channels/:nick/messages` therefore returns ALL
+// rows keyed on that target: self-sent messages, inbound DMs from other
+// nicks, AND server/service NOTICEs (NickServ, ChanServ, MOTD banners,
+// raccooncity.azzurra.chat welcome notices, etc.).
+//
+// The live WS dm-listener path (subscribe.ts, post-791ac84) already
+// drops non-self-msg rows on the floor. This filter closes the same gap
+// in the REST initial-load and appendToScrollback paths so the own-nick
+// query window only contains what the user actually sent TO their own
+// nick.
+//
+// Rule: keep a message in the own-nick query window iff:
+//   (kind === "privmsg" || kind === "action") && sender === ownNick
+// All other rows (any NOTICE, inbound PRIVMSG from others, events) are
+// filtered out. The permanent server-side fix (route server NOTICEs to a
+// synthetic :server channel) is deferred pending the server-messages
+// window (feature #4).
+//
+// Visitor case (no Network.nick): ownNick is null → pass through
+// everything (visitor has no own-nick query semantics that matter).
+
+// Resolve the operator's IRC nick for a given (slug, channelName) pair.
+// Returns the nick string if channelName === network.nick (case-
+// insensitive), null otherwise (including visitor / missing network).
+const ownNickIfOwnNickQuery = (slug: string, channelName: string): string | null => {
+  const net = networks()?.find((n) => n.slug === slug);
+  const nick = net?.nick;
+  if (!nick) return null;
+  if (channelName.toLowerCase() !== nick.toLowerCase()) return null;
+  return nick;
+};
+
+// Returns true if `msg` belongs in the own-nick query window.
+// When ownNick is null (visitor / non-own-nick context), always returns
+// true (no filtering). When ownNick is set, only self-msg survives.
+const shouldKeepInOwnNickQuery = (msg: ScrollbackMessage, ownNick: string | null): boolean => {
+  if (!ownNick) return true;
+  return (msg.kind === "privmsg" || msg.kind === "action") && msg.sender === ownNick;
+};
+
 const exports = createRoot(() => {
   const loadedChannels = new Set<ChannelKey>();
   const [scrollbackByChannel, setScrollbackByChannel] = createSignal<
@@ -57,7 +105,21 @@ const exports = createRoot(() => {
   // arrives both as the HTTP 201 body (we ignore that body) and as a
   // WS push from the per-channel PubSub broadcast. Both paths route
   // through here; whichever lands first wins, the second is dropped.
+  //
+  // Own-nick query filter: drops rows that don't belong in the own-nick
+  // query window. Defensive gate covering live WS appends — the primary
+  // gate is the dm-listener handler in subscribe.ts (791ac84), but this
+  // ensures any future bypass path is also covered.
   const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {
+    // Parse slug + channelName from the opaque ChannelKey. Key shape:
+    // `${slug} ${channelName}` — space is the separator (IRC channel names
+    // cannot contain 0x20 per RFC 2812, so no ambiguity).
+    const spaceIdx = key.indexOf(" ");
+    const slug = key.slice(0, spaceIdx);
+    const channelName = key.slice(spaceIdx + 1);
+    const ownNick = ownNickIfOwnNickQuery(slug, channelName);
+    if (!shouldKeepInOwnNickQuery(msg, ownNick)) return;
+
     setScrollbackByChannel((prev) => {
       const existing = prev[key];
       if (existing?.some((m) => m.id === msg.id)) return prev;
@@ -93,7 +155,14 @@ const exports = createRoot(() => {
     setScrollbackByChannel((prev) => (key in prev ? prev : { ...prev, [key]: [] }));
     try {
       const page = await listMessages(t, slug, name);
-      mergeIntoScrollback(key, page);
+      // Apply own-nick query filter: strip history-pollution rows
+      // (service NOTICEs, inbound DMs from others) that the server
+      // persisted under channel=ownNick due to IRC target semantics.
+      // Permanent fix is server-side routing to :server channel
+      // (feature #4, deferred). Visitor / non-own-nick keys: no-op.
+      const ownNick = ownNickIfOwnNickQuery(slug, name);
+      const filtered = ownNick ? page.filter((m) => shouldKeepInOwnNickQuery(m, ownNick)) : page;
+      mergeIntoScrollback(key, filtered);
     } catch {
       // First-load failure leaves the empty seed in place; the pane
       // shows "no messages yet". A retry mechanism is Phase 5+.
@@ -111,7 +180,11 @@ const exports = createRoot(() => {
     if (!oldest) return;
     try {
       const page = await listMessages(t, slug, name, oldest.server_time);
-      mergeIntoScrollback(key, page);
+      // Apply own-nick filter to load-more pages too — same
+      // history-pollution risk as the initial-load page.
+      const ownNick = ownNickIfOwnNickQuery(slug, name);
+      const filtered = ownNick ? page.filter((m) => shouldKeepInOwnNickQuery(m, ownNick)) : page;
+      mergeIntoScrollback(key, filtered);
     } catch {
       // No-op for walking skeleton; user can retry by scrolling again.
     }
