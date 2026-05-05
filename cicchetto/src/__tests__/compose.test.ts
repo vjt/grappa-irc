@@ -28,6 +28,43 @@ vi.mock("../lib/api", () => {
   };
 });
 
+// Mock socket.ts push helpers — compose.ts calls these for ops verbs.
+vi.mock("../lib/socket", () => ({
+  pushAwaySet: vi.fn().mockResolvedValue(undefined),
+  pushAwayUnset: vi.fn().mockResolvedValue(undefined),
+  pushOpenQueryWindow: vi.fn(),
+  pushCloseQueryWindow: vi.fn(),
+  pushChannelOp: vi.fn(),
+  pushChannelDeop: vi.fn(),
+  pushChannelVoice: vi.fn(),
+  pushChannelDevoice: vi.fn(),
+  pushChannelKick: vi.fn(),
+  pushChannelBan: vi.fn(),
+  pushChannelUnban: vi.fn(),
+  pushChannelBanlist: vi.fn(),
+  pushChannelInvite: vi.fn(),
+  pushChannelUmode: vi.fn(),
+  pushChannelMode: vi.fn(),
+  pushChannelTopicClear: vi.fn(),
+  notifyClientClosing: vi.fn(),
+}));
+
+// Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
+vi.mock("../lib/queryWindows", () => ({
+  openQueryWindowState: vi.fn(),
+  closeQueryWindowState: vi.fn(),
+  queryWindowsByNetwork: vi.fn(() => ({})),
+  setQueryWindowsByNetwork: vi.fn(),
+}));
+
+// Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
+vi.mock("../lib/selection", () => ({
+  selectedChannel: vi.fn(() => ({ networkSlug: "freenode", channelName: "#a" })),
+  setSelectedChannel: vi.fn(),
+  unreadCounts: vi.fn(() => ({})),
+  bumpUnread: vi.fn(),
+}));
+
 vi.mock("../lib/scrollback", () => ({
   sendMessage: vi.fn(),
 }));
@@ -558,5 +595,315 @@ describe("compose submit — T32 verbs", () => {
 
     expect(api.patchNetwork).not.toHaveBeenCalled();
     expect(result).toMatchObject({ error: expect.stringContaining("requires") });
+  });
+});
+
+// C2.2 — handler wiring for new verbs.
+describe("compose submit — /query and /q DM verbs", () => {
+  it("/query <nick> opens query window via openQueryWindowState", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const qw = await import("../lib/queryWindows");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/query alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/q <nick> opens query window (alias for /query)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const qw = await import("../lib/queryWindows");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/q bob");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "bob", expect.any(String));
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/msg <nick> <text> opens query window AND sends PRIVMSG", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const qw = await import("../lib/queryWindows");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/msg alice ciao");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "alice", "ciao");
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+describe("compose submit — channel ops verbs", () => {
+  it("/op <nicks> pushes op channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/op alice bob");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelOp).toHaveBeenCalledWith(1, "#a", ["alice", "bob"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/deop <nick> pushes deop channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/deop alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelDeop).toHaveBeenCalledWith(1, "#a", ["alice"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/voice <nick> pushes voice channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/voice alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelVoice).toHaveBeenCalledWith(1, "#a", ["alice"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/devoice <nick> pushes devoice channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/devoice alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelDevoice).toHaveBeenCalledWith(1, "#a", ["alice"]);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/kick <nick> [reason] pushes kick channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/kick alice bye bye");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelKick).toHaveBeenCalledWith(1, "#a", "alice", "bye bye");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/ban <mask> pushes ban channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/ban *!*@evil.com");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelBan).toHaveBeenCalledWith(1, "#a", "*!*@evil.com");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/unban <mask> pushes unban channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/unban *!*@evil.com");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelUnban).toHaveBeenCalledWith(1, "#a", "*!*@evil.com");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/banlist pushes banlist channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/banlist");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelBanlist).toHaveBeenCalledWith(1, "#a");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/invite <nick> pushes invite channel event with active channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/invite alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // channel defaults to active window "#a"
+    expect(socket.pushChannelInvite).toHaveBeenCalledWith(1, "#a", "alice");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/invite <nick> <#chan> pushes invite with explicit channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/invite alice #secret");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelInvite).toHaveBeenCalledWith(1, "#secret", "alice");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/op without channel window returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    // Override selection ONCE to simulate a query window (no # prefix = not a channel).
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "alice",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "alice");
+    compose.setDraft(k, "/op bob");
+    const result = await compose.submit(k, "freenode", "alice");
+
+    expect(socket.pushChannelOp).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("channel window") });
+  });
+});
+
+describe("compose submit — /umode and /mode (no channel context required)", () => {
+  it("/umode <modes> pushes umode event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/umode +i");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelUmode).toHaveBeenCalledWith(1, "+i");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/mode <target> <modes> <params> pushes mode event verbatim", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/mode #sniffo +o-v alice rofl");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#sniffo", "+o-v", ["alice", "rofl"]);
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+describe("compose submit — /topic branches", () => {
+  it("/topic <text> posts to topic REST endpoint", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.postTopic).mockResolvedValue();
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic new topic text");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.postTopic).toHaveBeenCalledWith("tok", "freenode", "#a", "new topic text");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/topic -delete pushes topic_clear channel event", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic -delete");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushChannelTopicClear).toHaveBeenCalledWith(1, "#a");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/topic bare returns inline error (C3 wires the inline render)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("C3") });
+  });
+});
+
+describe("compose submit — info verbs (TODO stubs)", () => {
+  it("/who returns inline error (server-side not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/who alice");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+  });
+
+  it("/names returns inline error (server-side not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/names #grappa");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+  });
+
+  it("/list returns inline error (server-side not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/list *grappa*");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+  });
+
+  it("/links returns inline error (server-side not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/links *.irc.net");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+  });
+});
+
+describe("compose submit — watchlist verbs (TODO stubs)", () => {
+  it("/watch add <pattern> returns inline error (user_settings API not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/watch add myname");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+  });
+
+  it("/highlight list returns inline error (user_settings API not yet implemented)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/highlight list");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
   });
 });

@@ -180,3 +180,104 @@ export function pushCloseQueryWindow(networkId: number, targetNick: string): voi
   if (_userChannel === null) return;
   _userChannel.push("close_query_window", { network_id: networkId, target_nick: targetNick });
 }
+
+// ---------------------------------------------------------------------------
+// S5.3 — Channel ops push helpers. All push on the user-level channel to
+// GrappaChannel, which handles all topics (user, network, channel) in the
+// same module. Auth is by user_name from socket.assigns; the server
+// dispatches to Session.send_*/2-5 functions.
+//
+// Fire-and-forget: the server's numeric error replies (482, 401, etc.)
+// route back via the numeric-routing pipeline (S4) to the originating
+// window — we don't await acks here.
+// ---------------------------------------------------------------------------
+
+// /op <nicks...> → MODE #chan +ooo (chunked server-side per ISUPPORT MODES=).
+export function pushChannelOp(networkId: number, channel: string, nicks: string[]): void {
+  if (_userChannel === null) return;
+  _userChannel.push("op", { network_id: networkId, channel, nicks });
+}
+
+// /deop <nicks...> → MODE #chan -ooo
+export function pushChannelDeop(networkId: number, channel: string, nicks: string[]): void {
+  if (_userChannel === null) return;
+  _userChannel.push("deop", { network_id: networkId, channel, nicks });
+}
+
+// /voice <nicks...> → MODE #chan +vvv
+export function pushChannelVoice(networkId: number, channel: string, nicks: string[]): void {
+  if (_userChannel === null) return;
+  _userChannel.push("voice", { network_id: networkId, channel, nicks });
+}
+
+// /devoice <nicks...> → MODE #chan -vvv
+export function pushChannelDevoice(networkId: number, channel: string, nicks: string[]): void {
+  if (_userChannel === null) return;
+  _userChannel.push("devoice", { network_id: networkId, channel, nicks });
+}
+
+// /kick <nick> [reason] → KICK #chan nick :reason
+export function pushChannelKick(
+  networkId: number,
+  channel: string,
+  nick: string,
+  reason: string,
+): void {
+  if (_userChannel === null) return;
+  _userChannel.push("kick", { network_id: networkId, channel, nick, reason });
+}
+
+// /ban <mask-or-nick> → MODE #chan +b mask (mask derivation server-side if bare nick).
+export function pushChannelBan(networkId: number, channel: string, mask: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("ban", { network_id: networkId, channel, mask });
+}
+
+// /unban <mask> → MODE #chan -b mask
+export function pushChannelUnban(networkId: number, channel: string, mask: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("unban", { network_id: networkId, channel, mask });
+}
+
+// /banlist → MODE #chan b (query form, no sign); server replies 367/368.
+export function pushChannelBanlist(networkId: number, channel: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("banlist", { network_id: networkId, channel });
+}
+
+// /invite <nick> [#chan] → INVITE nick #chan
+export function pushChannelInvite(networkId: number, channel: string, nick: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("invite", { network_id: networkId, channel, nick });
+}
+
+// /umode <modes> → MODE own_nick <modes> (no channel context required).
+export function pushChannelUmode(networkId: number, modes: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("umode", { network_id: networkId, modes });
+}
+
+// /mode <target> <modes> [params...] → MODE target modes params (verbatim, no chunking).
+export function pushChannelMode(
+  networkId: number,
+  target: string,
+  modes: string,
+  params: string[],
+): void {
+  if (_userChannel === null) return;
+  _userChannel.push("mode", { network_id: networkId, target, modes, params });
+}
+
+// /topic -delete → TOPIC #chan : (empty trailing — irssi convention).
+export function pushChannelTopicClear(networkId: number, channel: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("topic_clear", { network_id: networkId, channel });
+}
+
+// /topic <text> → TOPIC #chan :text (pushed via channel event, not REST postTopic).
+// Note: compose.ts uses the existing postTopic REST path for topic-set; this helper
+// is provided for completeness and alternative call sites.
+export function pushChannelTopicSet(networkId: number, channel: string, text: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("topic_set", { network_id: networkId, channel, text });
+}
