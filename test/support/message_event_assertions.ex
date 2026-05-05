@@ -1,8 +1,18 @@
 defmodule Grappa.MessageEventAssertions do
   @moduledoc """
-  Test assertions for the canonical PubSub broadcast event tuple
-  `{:event, %{kind: :message, message: wire_shape}}` produced by
-  `Grappa.Scrollback.Wire.message_event/1`.
+  Test assertions for the canonical PubSub broadcast event payload
+  `%{kind: :message, message: wire_shape}` produced by
+  `Grappa.Scrollback.Wire.message_payload/1` and broadcast via
+  `Grappa.PubSub.broadcast_event/2`.
+
+  Test processes that subscribe with `Phoenix.PubSub.subscribe(Grappa.PubSub,
+  topic)` receive the wrapping `%Phoenix.Socket.Broadcast{event: "event",
+  payload: %{kind: :message, message: wire}}` struct (because
+  `Grappa.PubSub.broadcast_event/2` goes through the framework-native
+  `Phoenix.Channel.Server.broadcast/4` dispatcher, which sends the
+  `Broadcast` struct to plain subscribers and uses the fastlane for
+  channel subscribers — see BUG 6 for why we cannot use the raw
+  `Phoenix.PubSub.broadcast/3` envelope anymore).
 
   Centralised so that tests assert OUTCOMES (sender, body, channel)
   rather than re-inlining the full wire-shape map. A regression in
@@ -16,11 +26,12 @@ defmodule Grappa.MessageEventAssertions do
   import ExUnit.Assertions
 
   @doc """
-  Receives a `{:event, %{kind: :message, message: wire}}` tuple from
-  the test process mailbox within `timeout` ms, asserts each
-  `expected_attrs` key/value matches the corresponding field of the
-  wire payload, and returns the wire map for further inspection
-  (e.g. `assert is_integer(msg.id)`).
+  Receives a `%Phoenix.Socket.Broadcast{event: "event", payload:
+  %{kind: :message, message: wire}}` struct from the test process
+  mailbox within `timeout` ms, asserts each `expected_attrs`
+  key/value matches the corresponding field of the wire payload,
+  and returns the wire map for further inspection (e.g. `assert
+  is_integer(msg.id)`).
 
   ## Example
 
@@ -38,7 +49,11 @@ defmodule Grappa.MessageEventAssertions do
   """
   defmacro assert_message_event(expected_attrs, timeout \\ 1_000) do
     quote do
-      assert_receive {:event, %{kind: :message, message: msg}}, unquote(timeout)
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :message, message: msg}
+                     },
+                     unquote(timeout)
 
       Enum.each(unquote(expected_attrs), fn {key, expected} ->
         actual = Map.fetch!(msg, key)

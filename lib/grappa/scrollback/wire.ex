@@ -10,7 +10,7 @@ defmodule Grappa.Scrollback.Wire do
   Phase 6 IRCv3 `CHATHISTORY` listener will be the fourth — different
   serializer (IRC bytes, not JSON) but same domain event. Centralising
   the shape here separates "data" (`Scrollback.Message` schema) from
-  "verb" (this module's `to_json/1` and `message_event/1`).
+  "verb" (this module's `to_json/1` and `message_payload/1`).
 
   ## Phase 2 sub-task 2e — wire-shape changes
 
@@ -45,7 +45,7 @@ defmodule Grappa.Scrollback.Wire do
           meta: Meta.t()
         }
 
-  @type event :: {:event, %{kind: :message, message: t()}}
+  @type event :: %{kind: :message, message: t()}
 
   @doc """
   Renders a `Grappa.Scrollback.Message` row to its public JSON wire
@@ -68,16 +68,23 @@ defmodule Grappa.Scrollback.Wire do
   end
 
   @doc """
-  Wraps a `Message` row as the canonical broadcast event tuple emitted
-  on `Grappa.PubSub` and pushed verbatim by `GrappaWeb.GrappaChannel`.
+  Wraps a `Message` row as the canonical broadcast event payload —
+  the inner map of the `"event"` push delivered to cicchetto via
+  `GrappaWeb.GrappaChannel`.
 
-  Use this from any broadcaster (REST controller, Session.Server,
-  future listener-facade producers) so the event shape stays
-  single-sourced. The caller is responsible for preloading `:network`
-  before calling.
+  Use this with `Grappa.PubSub.broadcast_event/2`:
+
+      Grappa.PubSub.broadcast_event(topic, Wire.message_payload(message))
+
+  The caller is responsible for preloading `:network` before calling.
+
+  Renamed from `message_event/1` (which returned the legacy `{:event,
+  payload}` tuple shape used with raw `Phoenix.PubSub.broadcast/3`)
+  when BUG 6 forced a switch to the framework-native fastlane path.
+  See `Grappa.PubSub.broadcast_event/2` for the new broadcast surface.
   """
-  @spec message_event(Message.t()) :: event()
-  def message_event(%Message{} = m) do
-    {:event, %{kind: :message, message: to_json(m)}}
+  @spec message_payload(Message.t()) :: event()
+  def message_payload(%Message{} = m) do
+    %{kind: :message, message: to_json(m)}
   end
 end

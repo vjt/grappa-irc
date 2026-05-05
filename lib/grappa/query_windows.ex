@@ -204,10 +204,9 @@ defmodule Grappa.QueryWindows do
     windows = list_for_user(user_id)
 
     :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
+      Grappa.PubSub.broadcast_event(
         Topic.user(user_name),
-        {:event, %{kind: "query_windows_list", windows: windows}}
+        %{kind: "query_windows_list", windows: windows}
       )
   end
 

@@ -202,7 +202,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "wrong-receiver"})
 
       assert json_response(conn, 201)
-      refute_receive {:event, _}, 100
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: _}, 100
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

@@ -79,13 +79,13 @@ defmodule Grappa.Scrollback.WireTest do
     end
   end
 
-  describe "message_event/1" do
-    test "wraps a row in {:event, %{kind: :message, message: wire}}",
+  describe "message_payload/1" do
+    test "wraps a row in %{kind: :message, message: wire}",
          %{user: user, network: network} do
       {:ok, msg} = ScrollbackHelpers.insert(sample(user, network, 1))
       preloaded = Repo.preload(msg, :network)
 
-      assert {:event, %{kind: :message, message: wire}} = Wire.message_event(preloaded)
+      assert %{kind: :message, message: wire} = Wire.message_payload(preloaded)
       assert wire == Wire.to_json(preloaded)
     end
   end

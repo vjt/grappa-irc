@@ -83,7 +83,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       # Wire.to_json/1 pattern-matches on `%Network{slug: slug}` and
       # crashes on unloaded assoc. Both callers (Session.Server's
-      # persist_and_broadcast → Wire.message_event, and the REST POST
+      # persist_and_broadcast → Wire.message_payload, and the REST POST
       # controller → Scrollback.Wire.to_json) used to re-issue a
       # `Repo.preload(message, :network)` after the boundary returned.
       # Pushing the preload into the Scrollback boundary collapses the

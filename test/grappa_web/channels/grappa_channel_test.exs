@@ -2,12 +2,21 @@ defmodule GrappaWeb.GrappaChannelTest do
   @moduledoc """
   Channel tests for `GrappaWeb.GrappaChannel`.
 
-  The channel is a thin pass-through: it subscribes to the joined
-  topic on `Grappa.PubSub` and pushes any `{:event, payload}` it
-  receives to the connected socket verbatim. Tests verify the join
-  shape (which topics are accepted, which are rejected), the authz
-  check that rejects topics belonging to a different user, and the
-  broadcast → push contract.
+  The channel is a thin pass-through: the framework's auto-installed
+  fastlane (Phoenix.Channel.Server.init/1) subscribes the transport
+  pid for the joined topic and writes any
+  `%Phoenix.Socket.Broadcast{event: "event", payload: ...}` arriving
+  via `Grappa.PubSub.broadcast_event/2` directly to the WS as a single
+  frame. Tests verify the join shape (which topics are accepted, which
+  are rejected), the authz check that rejects topics belonging to a
+  different user, and the broadcast → push contract.
+
+  BUG 6 (2026-05-05): the channel previously called
+  `Phoenix.PubSub.subscribe/2` manually in `join/3` IN ADDITION to the
+  framework fastlane, which double-pushed every event. Fixed by
+  removing the manual subscribe and migrating all broadcasters to
+  `Grappa.PubSub.broadcast_event/2`. The two regression tests below
+  (`BUG 6 regression: ...`) lock in the single-push invariant.
 
   Sub-task 2h shifts every Grappa topic to be rooted in the user
   discriminator (`grappa:user:{name}/...`) so multi-user instances
@@ -138,9 +147,9 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       preloaded = Repo.preload(message, :network)
-      {:event, payload} = event = Wire.message_event(preloaded)
+      payload = Wire.message_payload(preloaded)
 
-      Phoenix.PubSub.broadcast(Grappa.PubSub, topic, event)
+      Grappa.PubSub.broadcast_event(topic, payload)
 
       assert_push("event", ^payload)
     end
@@ -156,7 +165,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(joined, %{})
 
-      Phoenix.PubSub.broadcast(Grappa.PubSub, other, {:event, %{kind: :message}})
+      Grappa.PubSub.broadcast_event(other, %{kind: :message})
 
       refute_push("event", _, 50)
     end
@@ -233,9 +242,55 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       payload = %{kind: :motd, body: "welcome"}
-      Phoenix.PubSub.broadcast(Grappa.PubSub, topic, {:event, payload})
+      Grappa.PubSub.broadcast_event(topic, payload)
 
       assert_push("event", ^payload)
+    end
+
+    # BUG 6 regression: every channel topic used to have TWO subscribers
+    # (the channel pid registered twice — manual subscribe with no metadata
+    # AND the framework's auto-installed fastlane), so a single broadcast
+    # produced TWO WS pushes per connected socket. Cicchetto's sidebar bumped
+    # the unread badge by 2 on every PRIVMSG. Fix: removed the manual
+    # `Phoenix.PubSub.subscribe/2` from `GrappaChannel.join/3` and migrated
+    # all broadcasters to `Grappa.PubSub.broadcast_event/2` (which goes
+    # through `Phoenix.Channel.Server.broadcast/4` and the framework's
+    # fastlane). One broadcast → exactly one push.
+    test "BUG 6 regression: one broadcast_event yields exactly ONE push per socket" do
+      user_name = "ch_bug6-#{System.unique_integer([:positive])}"
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      payload = %{kind: :motd, body: "single please"}
+      Grappa.PubSub.broadcast_event(topic, payload)
+
+      # First push must arrive...
+      assert_push("event", ^payload, 200)
+      # ...and no second push must follow.
+      refute_push("event", ^payload, 200)
+    end
+
+    # BUG 6 regression on the channel-level topic — the topic shape that
+    # actually triggered the user-visible badge=2 bug (sidebar message
+    # counter for #grappa).
+    test "BUG 6 regression: channel-level broadcast_event yields exactly ONE push" do
+      user_name = "ch_bug6_chan-#{System.unique_integer([:positive])}"
+      topic = Topic.channel(user_name, "irc.example", "#grappa")
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      payload = %{kind: :message, message: %{body: "ciao"}}
+      Grappa.PubSub.broadcast_event(topic, payload)
+
+      assert_push("event", ^payload, 200)
+      refute_push("event", ^payload, 200)
     end
 
     test "after-join snapshot: visitor socket receives no query_windows_list" do

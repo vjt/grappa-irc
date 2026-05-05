@@ -81,7 +81,7 @@ defmodule Grappa.Scrollback do
   kinds without event-specific payload).
 
   The returned row has `:network` preloaded so callers can hand it
-  straight to `Grappa.Scrollback.Wire.message_event/1` (which
+  straight to `Grappa.Scrollback.Wire.message_payload/1` (which
   pattern-matches on `%Network{slug: _}` and crashes on unloaded assoc).
   Single source for the wire-shape contract — every door (REST,
   PubSub, future Phase 6 listener) goes through here.
