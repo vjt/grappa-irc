@@ -30,15 +30,23 @@ defmodule GrappaWeb.Validation do
 
   @doc """
   Returns `:ok` if `name` is a syntactically valid IRC PRIVMSG target —
-  either a channel name (`#`/`&`/`+`/`!` sigil per RFC 2812 §1.3) or a
-  nick (RFC 2812 §2.3.1). Both are valid `PRIVMSG <target>` recipients at
-  the IRC protocol level.
+  either a channel name (`#`/`&`/`+`/`!` sigil per RFC 2812 §1.3), a
+  nick (RFC 2812 §2.3.1), or the Grappa-internal synthetic `"$server"`
+  pseudo-target used for the server-messages window.
+
+  `"$server"` is not a real IRC target — it is a Grappa-internal name
+  written by `Grappa.Session.Server` when persisting server NOTICEs,
+  MOTD lines, and other messages without an explicit channel context.
+  The synthetic must be accepted here so `loadInitialScrollback` REST
+  fetch succeeds for the Server window in cicchetto.
 
   Used by `MessagesController` (GET + POST) so that DM scrollback fetch and
   DM send work without a separate REST route. `ChannelsController` keeps
   `validate_channel_name/1` because JOIN/PART/TOPIC are channel-only IRC ops.
   """
   @spec validate_target_name(String.t()) :: :ok | {:error, :bad_request}
+  def validate_target_name("$server"), do: :ok
+
   def validate_target_name(name) do
     if Identifier.valid_channel?(name) or Identifier.valid_nick?(name),
       do: :ok,

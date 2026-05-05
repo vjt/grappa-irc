@@ -182,6 +182,28 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 
+  # BUG 2c: $server is Grappa's synthetic pseudo-target for server-window
+  # scrollback. validate_target_name/1 must accept it so REST
+  # loadInitialScrollback succeeds for the Server window.
+  test "GET with $server synthetic target returns 200 (server-window scrollback fetch)",
+       %{conn: conn, user: user, network: network} do
+    {:ok, _} =
+      ScrollbackHelpers.insert(%{
+        user_id: user.id,
+        network_id: network.id,
+        channel: "$server",
+        server_time: 1,
+        kind: :notice,
+        sender: "irc.azzurra.org",
+        body: "Welcome to Azzurra"
+      })
+
+    conn = get(conn, "/networks/azzurra/channels/%24server/messages")
+    body = json_response(conn, 200)
+    assert length(body) == 1
+    assert hd(body)["channel"] == "$server"
+  end
+
   test "GET without Bearer returns 401" do
     conn = get(Phoenix.ConnTest.build_conn(), "/networks/azzurra/channels/%23sniffo/messages")
     assert json_response(conn, 401) == %{"error" => "unauthorized"}
