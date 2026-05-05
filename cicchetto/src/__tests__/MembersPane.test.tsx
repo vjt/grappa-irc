@@ -16,6 +16,20 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
+// C5.1: MembersPane now imports `networks` + `user` for own-nick lookup
+// and networkId resolution. Mock both so MembersPane tests don't drag in
+// the full auth / localStorage stack.
+vi.mock("../lib/networks", () => ({
+  networks: vi.fn(() => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
+  user: vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" })),
+}));
+
+// UserContextMenu is mounted by MembersPane on right-click; stub it so
+// these render tests don't need to pull in its full dependency tree.
+vi.mock("../UserContextMenu", () => ({
+  default: () => <div data-testid="context-menu-stub" />,
+}));
+
 import MembersPane from "../MembersPane";
 
 beforeEach(() => {
