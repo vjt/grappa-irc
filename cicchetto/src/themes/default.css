@@ -548,6 +548,15 @@ body {
   font-weight: bold;
 }
 
+/* C7.7: Watchlist highlight — own-nick match in content kinds.
+   Visually distinct from .scrollback-mention: softer background,
+   no bold, so the two states are clearly different. */
+.scrollback-line.scrollback-highlight {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left: 2px solid var(--accent);
+  padding-left: 0.25rem;
+}
+
 /* C7.2: Muted events — presence/op kinds rendered with reduced contrast.
    Mirrors the irssi dimmed-status-line convention. Smaller font + opacity
    so PRIVMSG/NOTICE/ACTION lines dominate visually. The scrollback-muted

@@ -12,7 +12,7 @@ import { displayNick, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
-import { mentionsUser } from "./lib/mentionMatch";
+import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { networks, user } from "./lib/networks";
 import { numericsByWindow } from "./lib/numericInline";
 import { openQueryWindowState } from "./lib/queryWindows";
@@ -68,6 +68,11 @@ import UserContextMenu from "./UserContextMenu";
 // Right-click → show UserContextMenu at cursor position (same component as
 // MembersPane, ZERO new components). ownModes is derived from membersByChannel
 // for the logged-in nick so op-gated items are correctly enabled/disabled.
+//
+// C7.7: Watchlist highlight rendering — PRIVMSG / NOTICE / ACTION lines where
+// `matchesWatchlist(body, ownNick)` is true get .scrollback-highlight class.
+// MVP: watchlist = own nick only (no user_settings, no /watch). Named
+// separately from mentionsUser so the future /watch cluster can extend it.
 
 export type Props = {
   networkSlug: string;
@@ -277,6 +282,10 @@ const ScrollbackLine: Component<{
   // C7.2: muted — presence/event kinds are visually de-emphasized.
   const isMuted = () => PRESENCE_KINDS.has(props.msg.kind);
 
+  // C7.7: highlight — content kinds where body matches watchlist (own nick MVP).
+  const isHighlight = () =>
+    !PRESENCE_KINDS.has(props.msg.kind) && matchesWatchlist(props.msg.body, props.userNick);
+
   const handlers: NickHandlers = {
     onNickClick: props.onNickClick,
     onNickContextMenu: props.onNickContextMenu,
@@ -291,6 +300,7 @@ const ScrollbackLine: Component<{
         "scrollback-presence": PRESENCE_KINDS.has(props.msg.kind),
         "scrollback-muted": isMuted(),
         "scrollback-mention": isMention(),
+        "scrollback-highlight": isHighlight(),
       }}
       data-testid="scrollback-line"
       data-kind={props.msg.kind}

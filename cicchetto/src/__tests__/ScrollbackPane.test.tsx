@@ -1067,4 +1067,70 @@ describe("ScrollbackPane", () => {
       expect(sender?.classList.contains("nick-clickable")).toBe(true);
     });
   });
+
+  // C7.7: watchlist highlight rendering (MVP: watchlist = own nick only).
+  describe("watchlist highlight rendering (C7.7)", () => {
+    it("PRIVMSG mentioning own nick gets .scrollback-highlight class", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hey vjt, look at this",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-highlight")).toBe(true);
+    });
+
+    it("PRIVMSG NOT mentioning own nick does NOT get .scrollback-highlight", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello world",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-highlight")).toBe(false);
+    });
+
+    it("presence kind (JOIN) does NOT get .scrollback-highlight even if body matches", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: "vjt",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-highlight")).toBe(false);
+    });
+  });
 });

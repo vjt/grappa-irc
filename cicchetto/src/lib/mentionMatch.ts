@@ -14,3 +14,10 @@ export const mentionsUser = (body: string | null, nick: string | null): boolean 
   const escaped = nick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\b${escaped}\\b`, "i").test(body);
 };
+
+// C7.7: watchlist match — same predicate as mentionsUser for the MVP
+// where watchlist = own nick only. Named separately so the future
+// /watch /highlight cluster (user_settings table + cross-network list)
+// can extend this without touching mentionsUser's call sites.
+export const matchesWatchlist = (body: string | null, nick: string | null): boolean =>
+  mentionsUser(body, nick);
