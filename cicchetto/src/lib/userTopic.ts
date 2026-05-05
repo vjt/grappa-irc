@@ -2,10 +2,11 @@ import { createEffect, createRoot, untrack } from "solid-js";
 import type { NumericRouted } from "./api";
 import { socketUserName, token } from "./auth";
 import { channelKey } from "./channelKey";
+import { setMentionsBundle } from "./mentionsWindow";
 import { channelsBySlug, refetchChannels } from "./networks";
 import { appendNumericInline } from "./numericInline";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
-import { selectedChannel } from "./selection";
+import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -120,6 +121,36 @@ createRoot(() => {
         refetchChannels();
       } else if (payload.kind === "query_windows_list") {
         setQueryWindowsByNetwork(parseWindowsMap(payload.windows));
+      } else if (payload.kind === "mentions_bundle") {
+        // C8.1 — back-from-away mentions window. Wire the bundle into the
+        // mentionsWindow store and auto-focus the mentions pseudo-window so
+        // the user sees the aggregation immediately on return.
+        // Focus-rule: this IS a user-action-driven event (returning from away)
+        // so auto-focus is appropriate here (unlike DM auto-open).
+        const networkSlug = payload.network as string;
+        const bundle = {
+          network_slug: networkSlug,
+          away_started_at: payload.away_started_at as string,
+          away_ended_at: payload.away_ended_at as string,
+          away_reason: (payload.away_reason as string | null) ?? null,
+          messages: payload.messages as {
+            server_time: number;
+            channel: string;
+            sender_nick: string;
+            body: string | null;
+            kind: string;
+          }[],
+        };
+        setMentionsBundle(networkSlug, bundle);
+        // Auto-focus the mentions pseudo-window (channelName="" for pseudo-windows).
+        const currentSel = untrack(selectedChannel);
+        if (
+          !currentSel ||
+          currentSel.networkSlug !== networkSlug ||
+          currentSel.kind !== "mentions"
+        ) {
+          setSelectedChannel({ networkSlug, channelName: "", kind: "mentions" });
+        }
       } else if (payload.kind === "numeric_routed") {
         // C5.2 — route numeric feedback to the correct window's inline store.
         const event = payload as unknown as NumericRouted;

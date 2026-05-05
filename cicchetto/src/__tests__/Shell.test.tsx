@@ -101,6 +101,26 @@ vi.mock("../lib/queryWindows", () => ({
   setQueryWindowsByNetwork: vi.fn(),
 }));
 
+vi.mock("../lib/mentionsWindow", () => ({
+  mentionsBundleBySlug: () => ({
+    freenode: {
+      network_slug: "freenode",
+      away_started_at: "2026-05-05T10:00:00.000Z",
+      away_ended_at: "2026-05-05T10:30:00.000Z",
+      away_reason: "lunch",
+      messages: [
+        {
+          server_time: 1_746_442_200_000,
+          channel: "#grappa",
+          sender_nick: "alice",
+          body: "hey vjt",
+          kind: "privmsg",
+        },
+      ],
+    },
+  }),
+}));
+
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
@@ -235,6 +255,16 @@ describe("Shell — three-pane integration", () => {
     fireEvent.click(screen.getByLabelText(/open settings/i));
     const settings = container.querySelector(".settings-drawer");
     expect(settings?.classList.contains("open")).toBe(true);
+  });
+  it("renders MentionsWindow (not ScrollbackPane) when kind === 'mentions'", async () => {
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
+    const { container } = render(() => <Shell />);
+    await waitFor(() => {
+      expect(container.querySelector(".mentions-window")).toBeInTheDocument();
+    });
+    expect(container.querySelector(".scrollback-pane")).not.toBeInTheDocument();
+    expect(container.querySelector(".compose-box")).not.toBeInTheDocument();
+    expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
   });
 });
 
