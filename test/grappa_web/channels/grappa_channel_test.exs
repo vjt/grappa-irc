@@ -285,6 +285,34 @@ defmodule GrappaWeb.GrappaChannelTest do
       nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
       assert "alice" in nicks
     end
+
+    test "after-join snapshot: query_windows_list payload is JSON-serializable (regression)" do
+      # Regression: the prod bug raised Protocol.UndefinedError for
+      # Jason.Encoder on %QueryWindows.Window{} structs because the schema
+      # was pushed verbatim. The fix renders to plain maps at the boundary;
+      # this test guards by exercising the actual JSON encoder path.
+      user_name = "qwjson-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+      {:ok, network} = Networks.find_or_create_network(%{slug: "qwjsonnet-#{System.unique_integer([:positive])}"})
+      {:ok, _} = QueryWindows.open(user.id, network.id, "bob", user_name)
+
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{kind: "query_windows_list", windows: windows} = payload)
+      # Push through Jason — Window schema would raise Protocol.UndefinedError.
+      assert {:ok, json} = Jason.encode(payload)
+      assert is_binary(json)
+      assert json =~ "bob"
+      # Each rendered window is a map with the three published fields.
+      [first | _] = windows |> Map.values() |> List.flatten()
+      assert %{network_id: _, target_nick: "bob", opened_at: opened_at} = first
+      assert is_binary(opened_at)
+    end
   end
 
   describe "join authz — cross-user topics are forbidden" do

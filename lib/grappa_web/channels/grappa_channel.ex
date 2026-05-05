@@ -554,8 +554,25 @@ defmodule GrappaWeb.GrappaChannel do
   # Pushes query_windows_list for `user`.
   @spec push_query_windows_list(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
   defp push_query_windows_list(%Accounts.User{} = user, socket) do
-    windows = QueryWindows.list_for_user(user.id)
+    windows =
+      user.id
+      |> QueryWindows.list_for_user()
+      |> Map.new(fn {network_id, ws} -> {network_id, Enum.map(ws, &render_query_window/1)} end)
+
     push(socket, "event", %{kind: "query_windows_list", windows: windows})
+  end
+
+  @spec render_query_window(QueryWindows.Window.t()) :: %{
+          required(:network_id) => integer(),
+          required(:target_nick) => String.t(),
+          required(:opened_at) => String.t()
+        }
+  defp render_query_window(%QueryWindows.Window{} = w) do
+    %{
+      network_id: w.network_id,
+      target_nick: w.target_nick,
+      opened_at: DateTime.to_iso8601(w.opened_at)
+    }
   end
 
   # For every (network, channel) the user has an active session for, pushes
