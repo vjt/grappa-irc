@@ -50,6 +50,25 @@ defmodule Grappa.Networks.Wire do
         }
 
   @typedoc """
+  Wire shape for `GET /networks` when the caller has a `Credential` row —
+  extends `network_json` with `:nick` (the per-network configured IRC nick).
+
+  Cicchetto uses `:nick` to identify the own-nick topic (`channel:<nick>`)
+  for DM subscription and for the own-nick skip in the query-windows loop.
+  Without per-network nick in the wire, cicchetto falls back to `user.name`,
+  which coincides with query-window targetNick when the operator's account
+  name matches a conversation partner's IRC nick — causing the DM handler
+  to subscribe to the wrong topic and re-key messages incorrectly.
+  """
+  @type network_with_nick_json :: %{
+          id: integer(),
+          slug: String.t(),
+          nick: String.t(),
+          inserted_at: DateTime.t(),
+          updated_at: DateTime.t()
+        }
+
+  @typedoc """
   Per-channel wire shape returned by `GET /networks/:net/channels`. Object
   envelope (not a bare string) per architecture review A5 close: every
   channel entry advertises both `:joined` (currently-in-session) and
@@ -111,6 +130,27 @@ defmodule Grappa.Networks.Wire do
     %{
       id: n.id,
       slug: n.slug,
+      inserted_at: n.inserted_at,
+      updated_at: n.updated_at
+    }
+  end
+
+  @doc """
+  Renders a `Networks.Network` + its credential nick to the extended
+  `network_with_nick_json` shape used by `GET /networks` for user subjects.
+
+  The caller — `GrappaWeb.NetworksController.index` — already has the
+  `Credential` row (from `Credentials.list_credentials_for_user/1`) and
+  passes the network + nick pair. Accepting `nick` explicitly (rather than
+  a `Credential.t()`) keeps this function ignorant of credential shape and
+  avoids another pre-load requirement.
+  """
+  @spec network_with_nick_to_json(Network.t(), String.t()) :: network_with_nick_json()
+  def network_with_nick_to_json(%Network{} = n, nick) when is_binary(nick) and nick != "" do
+    %{
+      id: n.id,
+      slug: n.slug,
+      nick: nick,
       inserted_at: n.inserted_at,
       updated_at: n.updated_at
     }

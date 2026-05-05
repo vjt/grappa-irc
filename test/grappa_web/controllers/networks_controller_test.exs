@@ -62,6 +62,26 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert is_binary(first["slug"])
       assert is_binary(first["inserted_at"])
       assert is_binary(first["updated_at"])
+      # nick is the per-network configured IRC nick — cicchetto uses it to
+      # subscribe to the correct DM topic (channel:<nick>) and to avoid the
+      # own-nick clash when user.name matches a query window targetNick.
+      assert is_binary(first["nick"])
+    end
+
+    test "nick in response matches the credential's configured IRC nick", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-nick-check")
+      session = session_fixture(vjt)
+      {net, _} = network_with_server(port: 6671, slug: "azzurra-nick-#{u()}")
+      _ = credential_fixture(vjt, net, %{nick: "irc-grappa"})
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/networks")
+
+      body = json_response(conn, 200)
+      found = Enum.find(body, &(&1["slug"] == net.slug))
+      assert found["nick"] == "irc-grappa"
     end
 
     test "returns empty list when user has no bindings", %{conn: conn} do
