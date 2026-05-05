@@ -43,6 +43,27 @@ defmodule GrappaWeb.GrappaChannelTest do
     socket(UserSocket, "user_socket:#{user_name}", %{user_name: user_name})
   end
 
+  # Drain up to `max_attempts` query_windows_list pushes and return the
+  # LAST one's `windows` map. Used in tests where a direct DB mutation
+  # (via context fn) and a channel inbound event both fire broadcasts, so
+  # there may be two consecutive query_windows_list pushes in the mailbox;
+  # we want the last one (the authoritative post-mutation state).
+  defp drain_for_query_windows_list(max_attempts) do
+    drain_for_query_windows_list(max_attempts, nil)
+  end
+
+  defp drain_for_query_windows_list(0, last_windows), do: last_windows || %{}
+
+  defp drain_for_query_windows_list(remaining, last_windows) do
+    receive do
+      %Phoenix.Socket.Message{event: "event", payload: %{kind: "query_windows_list", windows: w}} ->
+        drain_for_query_windows_list(remaining - 1, w)
+    after
+      200 ->
+        last_windows || %{}
+    end
+  end
+
   # Shared IRC-fake helpers for after-join snapshot tests.
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -598,6 +619,155 @@ defmodule GrappaWeb.GrappaChannelTest do
                "vjt"
                |> build_socket()
                |> subscribe_and_join("grappa:user:", %{})
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # C1.2 / C1.4 — open_query_window / close_query_window inbound events
+  # ---------------------------------------------------------------------------
+  #
+  # Verifies that pushing `open_query_window` and `close_query_window`
+  # on the user-level channel calls the correct `QueryWindows` context
+  # functions and broadcasts the updated `query_windows_list` back to
+  # the socket (via PubSub after the DB mutation).
+
+  describe "C1.2/C1.4 — open_query_window / close_query_window" do
+    setup do
+      user_name = "qw-inbound-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "qw-net-#{System.unique_integer([:positive])}"})
+
+      topic = Topic.user(user_name)
+
+      {:ok, _, socket} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      # Flush the after_join query_windows_list snapshot
+      assert_push("event", %{kind: "query_windows_list"})
+
+      %{socket: socket, user: user, network: network}
+    end
+
+    test "open_query_window: opens the DM window and broadcasts updated list", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "open_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "alice"
+        })
+
+      assert_reply(ref, :ok)
+      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      assert "alice" in nicks
+    end
+
+    test "open_query_window: idempotent — second open returns ok without duplicating", %{
+      socket: socket,
+      network: network
+    } do
+      ref1 =
+        push(socket, "open_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "bob"
+        })
+
+      assert_reply(ref1, :ok)
+      assert_push("event", %{kind: "query_windows_list"})
+
+      ref2 =
+        push(socket, "open_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "bob"
+        })
+
+      assert_reply(ref2, :ok)
+      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      assert Enum.count(nicks, &(&1 == "bob")) == 1
+    end
+
+    test "close_query_window: closes the DM window and broadcasts updated list", %{
+      socket: socket,
+      user: user,
+      network: network
+    } do
+      # Pre-open a window synchronously via the context (not via channel push)
+      # to set up state without going through the inbound event path.
+      # QueryWindows.open/4 broadcasts query_windows_list — flush it.
+      {:ok, _} = QueryWindows.open(user.id, network.id, "carol", user.name)
+      assert_push("event", %{kind: "query_windows_list"})
+
+      ref =
+        push(socket, "close_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "carol"
+        })
+
+      assert_reply(ref, :ok)
+
+      # After close, the server broadcasts the updated list (without carol).
+      # There may also be a stale broadcast from the open above that hasn't
+      # arrived yet. Drain pushes until we find the post-close snapshot.
+      windows = drain_for_query_windows_list(3)
+      nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      refute "carol" in nicks
+    end
+
+    test "close_query_window: idempotent — closing non-existent window returns ok", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "close_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "nobody"
+        })
+
+      assert_reply(ref, :ok)
+      assert_push("event", %{kind: "query_windows_list"})
+    end
+
+    test "open_query_window: visitor socket returns visitor_not_allowed" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "open_query_window", %{
+          "network_id" => 1,
+          "target_nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+    end
+
+    test "close_query_window: visitor socket returns visitor_not_allowed" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "close_query_window", %{
+          "network_id" => 1,
+          "target_nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
     end
   end
 end
