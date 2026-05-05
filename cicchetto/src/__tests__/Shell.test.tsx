@@ -2,17 +2,21 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const selectionState = vi.hoisted(() => {
-  const state: { current: { networkSlug: string; channelName: string } | null } = {
+  const state: {
+    current: { networkSlug: string; channelName: string; kind: string } | null;
+  } = {
     current: null,
   };
   return {
     selSig: () => state.current,
-    setSelSig: (v: { networkSlug: string; channelName: string } | null) => {
+    setSelSig: (v: { networkSlug: string; channelName: string; kind: string } | null) => {
       state.current = v;
     },
-    setSelectedChannelMock: vi.fn((v: { networkSlug: string; channelName: string } | null) => {
-      state.current = v;
-    }),
+    setSelectedChannelMock: vi.fn(
+      (v: { networkSlug: string; channelName: string; kind: string } | null) => {
+        state.current = v;
+      },
+    ),
   };
 });
 
@@ -122,7 +126,7 @@ describe("Shell — three-pane integration", () => {
   });
 
   it("renders TopicBar + ScrollbackPane + ComposeBox once a channel is selected", async () => {
-    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a" });
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     render(() => <Shell />);
     await waitFor(() => {
       expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
@@ -131,11 +135,20 @@ describe("Shell — three-pane integration", () => {
   });
 
   it("does NOT render TopicBar when the synthetic :server window is selected (channel-only per spec #20)", async () => {
-    selectionState.setSelSig({ networkSlug: "freenode", channelName: ":server" });
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: ":server", kind: "server" });
     const { container } = render(() => <Shell />);
     // ScrollbackPane still renders (server window has its own scrollback);
     // ComposeBox still renders (server-message read-only handled separately).
     // TopicBar must NOT — feature #20: channel-window-only.
+    await waitFor(() => {
+      expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
+    });
+    expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
+  });
+
+  it("does NOT render TopicBar when a query window is selected (channel-only per spec #20)", async () => {
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "alice", kind: "query" });
+    const { container } = render(() => <Shell />);
     await waitFor(() => {
       expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
     });
@@ -149,6 +162,7 @@ describe("Shell — three-pane integration", () => {
       expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
         networkSlug: "freenode",
         channelName: "#a",
+        kind: "channel",
       });
     });
   });
@@ -160,12 +174,13 @@ describe("Shell — three-pane integration", () => {
       expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
         networkSlug: "freenode",
         channelName: "#b",
+        kind: "channel",
       });
     });
   });
 
   it("Esc closes any open drawer", async () => {
-    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a" });
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
       expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
@@ -180,7 +195,7 @@ describe("Shell — three-pane integration", () => {
   });
 
   it("clicking ⚙ opens SettingsDrawer (.open class)", async () => {
-    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a" });
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
       expect(screen.getByLabelText(/open settings/i)).toBeInTheDocument();

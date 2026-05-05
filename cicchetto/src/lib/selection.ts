@@ -2,13 +2,14 @@ import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { loadInitialScrollback } from "./scrollback";
+import type { WindowKind } from "./windowKinds";
 
 // Per-channel selection store: which channel is currently focused +
 // per-channel unread counters. Module-singleton signal store mirroring
 // `auth.ts` / `socket.ts` / `scrollback.ts`.
 //
 // Lifted out of the original `networks.ts` god-module per A4. Owns:
-//   * `selectedChannel` — the (slug, name) tuple of the focused pane.
+//   * `selectedChannel` — the (slug, name, kind) tuple of the focused pane.
 //   * `unreadCounts` — per-ChannelKey count of WS-received messages
 //     while that channel was NOT selected. Cleared when a channel
 //     becomes selected.
@@ -23,8 +24,19 @@ import { loadInitialScrollback } from "./scrollback";
 // logout/rotation clears `selectedChannel` + `unreadCounts`. The
 // `prev != null && t !== prev` guard filters the initial run AND
 // cold-start login as no-ops.
+//
+// C4.0: `SelectedChannel` gains a `kind: WindowKind` discriminator,
+// replacing the band-aid `channelName !== ":server"` literal used in
+// Shell.tsx's TopicBar guard (Hotfix #2, 50a3d88). The TopicBar guard
+// now reads `sel().kind === "channel"` — directly asserts spec #20.
+// Every setSelectedChannel call site passes `kind` explicitly; no
+// defaults.
 
-export type SelectedChannel = { networkSlug: string; channelName: string } | null;
+export type SelectedChannel = {
+  networkSlug: string;
+  channelName: string;
+  kind: WindowKind;
+} | null;
 
 const exports = createRoot(() => {
   const [unreadCounts, setUnreadCounts] = createSignal<Record<ChannelKey, number>>({});

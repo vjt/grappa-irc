@@ -97,6 +97,7 @@ describe("Sidebar", () => {
     expect(sel.setSelectedChannel).toHaveBeenCalledWith({
       networkSlug: "freenode",
       channelName: "#italia",
+      kind: "channel",
     });
     expect(onSelect).toHaveBeenCalled();
   });

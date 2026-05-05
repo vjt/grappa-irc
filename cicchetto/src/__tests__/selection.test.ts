@@ -42,7 +42,11 @@ describe("selection store", () => {
     const key = channelKey("freenode", "#grappa");
     selection.bumpUnread(key);
     expect(selection.unreadCounts()[key]).toBe(1);
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     expect(selection.unreadCounts()[key]).toBeUndefined();
   });
 
@@ -51,13 +55,25 @@ describe("selection store", () => {
     const api = await import("../lib/api");
     vi.mocked(api.listMessages).mockResolvedValue([]);
     const selection = await import("../lib/selection");
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     await vi.waitFor(() => {
       expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#grappa");
     });
     expect(api.listMessages).toHaveBeenCalledTimes(1);
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     await vi.waitFor(() => {
       expect(api.listMessages).toHaveBeenCalledWith("tok", "freenode", "#cicchetto");
     });
@@ -70,7 +86,11 @@ describe("selection store", () => {
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
     selection.bumpUnread(key);
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     expect(selection.selectedChannel()).not.toBeNull();
     auth.setToken("tokB");
     await vi.waitFor(() => {
@@ -85,7 +105,11 @@ describe("selection store", () => {
     const selection = await import("../lib/selection");
     const key = channelKey("freenode", "#grappa");
     selection.bumpUnread(key);
-    selection.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     auth.setToken(null);
     await vi.waitFor(() => {
       expect(selection.selectedChannel()).toBeNull();

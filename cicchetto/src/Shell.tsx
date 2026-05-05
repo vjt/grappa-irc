@@ -51,7 +51,8 @@ const Shell: Component = () => {
     selectChannelByIndex: (idx) => {
       const list = flatChannels();
       const target = list[idx];
-      if (target) setSelectedChannel({ networkSlug: target.slug, channelName: target.name });
+      if (target)
+        setSelectedChannel({ networkSlug: target.slug, channelName: target.name, kind: "channel" });
     },
     nextUnread: () => {
       const list = flatChannels();
@@ -65,7 +66,7 @@ const Shell: Component = () => {
         const c = list[idx];
         if (!c) continue;
         if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
-          setSelectedChannel({ networkSlug: c.slug, channelName: c.name });
+          setSelectedChannel({ networkSlug: c.slug, channelName: c.name, kind: "channel" });
           return;
         }
       }
@@ -82,7 +83,7 @@ const Shell: Component = () => {
         const c = list[idx];
         if (!c) continue;
         if ((counts[channelKey(c.slug, c.name)] ?? 0) > 0) {
-          setSelectedChannel({ networkSlug: c.slug, channelName: c.name });
+          setSelectedChannel({ networkSlug: c.slug, channelName: c.name, kind: "channel" });
           return;
         }
       }
@@ -179,7 +180,7 @@ const Shell: Component = () => {
         >
           {(sel) => (
             <>
-              <Show when={sel().channelName !== ":server"}>
+              <Show when={sel().kind === "channel"}>
                 <TopicBar
                   networkSlug={sel().networkSlug}
                   channelName={sel().channelName}
