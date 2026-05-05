@@ -1846,5 +1846,5 @@ defmodule Grappa.Session.Server do
     :ok
   end
 
-  defp maybe_broadcast_mentions_bundle(_state), do: :ok
+  defp maybe_broadcast_mentions_bundle(_), do: :ok
 end
