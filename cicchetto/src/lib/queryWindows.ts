@@ -68,16 +68,19 @@ const exports = createRoot(() => {
    */
   const openQueryWindowState = (networkId: number, targetNick: string, openedAt: string): void => {
     const lowerNick = targetNick.toLowerCase();
+    let alreadyOpen = false;
     setQueryWindowsByNetwork((prev) => {
       const existing = prev[networkId] ?? [];
-      const alreadyOpen = existing.some((w) => w.targetNick.toLowerCase() === lowerNick);
+      alreadyOpen = existing.some((w) => w.targetNick.toLowerCase() === lowerNick);
       if (alreadyOpen) return prev;
       return {
         ...prev,
         [networkId]: [...existing, { targetNick, openedAt }],
       };
     });
-    pushOpenQueryWindow(networkId, targetNick);
+    if (!alreadyOpen) {
+      pushOpenQueryWindow(networkId, targetNick);
+    }
   };
 
   return {
