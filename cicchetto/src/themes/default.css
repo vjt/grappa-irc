@@ -567,6 +567,21 @@ body {
   color: var(--accent);
 }
 
+/* C7.6: clickable nick — pointer cursor + subtle hover underline.
+   Applied to <button> elements in scrollback so they render inline. */
+.nick-clickable {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  display: inline;
+}
+
+.nick-clickable:hover {
+  text-decoration: underline;
+}
+
 .scrollback-body {
   color: var(--fg);
 }

@@ -13,11 +13,13 @@ import { channelKey } from "./lib/channelKey";
 import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 import { mentionsUser } from "./lib/mentionMatch";
-import { user } from "./lib/networks";
+import { networks, user } from "./lib/networks";
 import { numericsByWindow } from "./lib/numericInline";
+import { openQueryWindowState } from "./lib/queryWindows";
 import { scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import UserContextMenu from "./UserContextMenu";
 
 // Right-pane component: pure projection of the per-channel scrollback list.
 // Mounted by `Shell.tsx` only when `selectedChannel()` is non-null; the
@@ -60,6 +62,12 @@ import type { WindowKind } from "./lib/windowKinds";
 // C7.4: Scroll-to-bottom floating button — appears when scrolled more than
 // SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
 // and resume auto-follow (resets atBottom to true).
+//
+// C7.6: Clickable nicks in scrollback — sender spans on PRIVMSG / NOTICE /
+// ACTION get .nick-clickable class. Left-click → open query window + focus.
+// Right-click → show UserContextMenu at cursor position (same component as
+// MembersPane, ZERO new components). ownModes is derived from membersByChannel
+// for the logged-in nick so op-gated items are correctly enabled/disabled.
 
 export type Props = {
   networkSlug: string;
@@ -131,26 +139,55 @@ const isDifferentDay = (aMs: number, bMs: number): boolean => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
-const renderBody = (msg: ScrollbackMessage): JSX.Element => {
+type NickHandlers = {
+  onNickClick: (nick: string) => void;
+  onNickContextMenu: (nick: string, e: MouseEvent) => void;
+};
+
+const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
+  // C7.6: sender button for content kinds — left-click (→ query) or
+  // right-click (→ UserContextMenu). Rendered as <button> to satisfy
+  // biome a11y rules (noStaticElementInteractions / useKeyWithClickEvents).
+  // Styled via .scrollback-sender.nick-clickable to appear inline.
+  const senderSpan = (label: string, nick: string): JSX.Element => (
+    <button
+      type="button"
+      class="scrollback-sender nick-clickable"
+      onClick={() => handlers.onNickClick(nick)}
+      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
+    >
+      {label}
+    </button>
+  );
+
   switch (msg.kind) {
     case "privmsg":
       return (
         <>
-          <span class="scrollback-sender">{`<${msg.sender}>`}</span>{" "}
+          {senderSpan(`<${msg.sender}>`, msg.sender)}{" "}
           <span class="scrollback-body">{msg.body}</span>
         </>
       );
     case "notice":
       return (
         <>
-          <span class="scrollback-sender">{`-${msg.sender}-`}</span>{" "}
+          {senderSpan(`-${msg.sender}-`, msg.sender)}{" "}
           <span class="scrollback-body">{msg.body}</span>
         </>
       );
     case "action":
       return (
         <span class="scrollback-body">
-          * {msg.sender} {msg.body}
+          *{"  "}
+          <button
+            type="button"
+            class="scrollback-sender nick-clickable"
+            onClick={() => handlers.onNickClick(msg.sender)}
+            onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(msg.sender, e)}
+          >
+            {msg.sender}
+          </button>{" "}
+          {msg.body}
         </span>
       );
     case "join":
@@ -228,12 +265,22 @@ const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
   "kick",
 ]);
 
-const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | null }> = (props) => {
+const ScrollbackLine: Component<{
+  msg: ScrollbackMessage;
+  userNick: string | null;
+  onNickClick: (nick: string) => void;
+  onNickContextMenu: (nick: string, e: MouseEvent) => void;
+}> = (props) => {
   const isMention = () =>
     props.msg.kind === "privmsg" && mentionsUser(props.msg.body, props.userNick);
 
   // C7.2: muted — presence/event kinds are visually de-emphasized.
   const isMuted = () => PRESENCE_KINDS.has(props.msg.kind);
+
+  const handlers: NickHandlers = {
+    onNickClick: props.onNickClick,
+    onNickContextMenu: props.onNickContextMenu,
+  };
 
   return (
     <div
@@ -249,7 +296,7 @@ const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | nul
       data-kind={props.msg.kind}
     >
       <span class="scrollback-time">{formatTime(props.msg.server_time)}</span>{" "}
-      {renderBody(props.msg)}
+      {renderBody(props.msg, handlers)}
     </div>
   );
 };
@@ -274,11 +321,42 @@ const ScrollbackPane: Component<Props> = (props) => {
   const [atBottom, setAtBottom] = createSignal(true);
   const [bannerState, setBannerState] = createSignal<BannerState>("hidden");
 
+  // C7.6: context menu state — null when closed.
+  type ContextMenuState = { targetNick: string; x: number; y: number };
+  const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
+
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
   const userNick = (): string | null => {
     const me = user();
     return me ? displayNick(me) : null;
+  };
+
+  // C7.6: networkId for UserContextMenu — derive from networks() by slug.
+  const networkId = (): number | undefined =>
+    networks()?.find((n) => n.slug === props.networkSlug)?.id;
+
+  // C7.6: ownModes — own nick's mode set in this channel (for op-gated items).
+  const ownModes = (): string[] => {
+    const nick = userNick();
+    if (!nick) return [];
+    const members = membersByChannel()[key()];
+    if (!members) return [];
+    return members.find((m) => m.nick === nick)?.modes ?? [];
+  };
+
+  // C7.6: left-click a nick → open query window + switch focus.
+  const handleNickClick = (nick: string): void => {
+    const nid = networkId();
+    if (nid === undefined) return;
+    openQueryWindowState(nid, nick, new Date().toISOString());
+    setSelectedChannel({ networkSlug: props.networkSlug, channelName: nick, kind: "query" });
+  };
+
+  // C7.6: right-click a nick → show UserContextMenu at cursor.
+  const handleNickContextMenu = (nick: string, e: MouseEvent): void => {
+    e.preventDefault();
+    setContextMenu({ targetNick: nick, x: e.clientX, y: e.clientY });
   };
 
   // C7.1: Build a mixed list of (day-separator | message) rows for rendering.
@@ -455,7 +533,14 @@ const ScrollbackPane: Component<Props> = (props) => {
                   </div>
                 );
               }
-              return <ScrollbackLine msg={row.msg} userNick={userNick()} />;
+              return (
+                <ScrollbackLine
+                  msg={row.msg}
+                  userNick={userNick()}
+                  onNickClick={handleNickClick}
+                  onNickContextMenu={handleNickContextMenu}
+                />
+              );
             }}
           </For>
         </Show>
@@ -488,6 +573,22 @@ const ScrollbackPane: Component<Props> = (props) => {
             )}
           </For>
         </div>
+      </Show>
+      {/* C7.6: nick right-click context menu. Rendered outside the scrollback
+          div so it positions freely in the viewport. Closed by backdrop or
+          Escape (handled inside UserContextMenu). */}
+      <Show when={contextMenu()}>
+        {(cm) => (
+          <UserContextMenu
+            networkSlug={props.networkSlug}
+            networkId={networkId() ?? 0}
+            channelName={props.channelName}
+            targetNick={cm().targetNick}
+            ownModes={ownModes()}
+            position={{ x: cm().x, y: cm().y }}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
       </Show>
     </div>
   );
