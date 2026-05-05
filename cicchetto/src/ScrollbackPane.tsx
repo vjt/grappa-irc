@@ -56,6 +56,10 @@ import type { WindowKind } from "./lib/windowKinds";
 // C7.2: Muted-events rendering — presence/op event rows get
 // .scrollback-muted (dimmer, smaller, italic) so PRIVMSG/NOTICE/ACTION
 // dominate visually. PRESENCE_KINDS is the closed set.
+//
+// C7.4: Scroll-to-bottom floating button — appears when scrolled more than
+// SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
+// and resume auto-follow (resets atBottom to true).
 
 export type Props = {
   networkSlug: string;
@@ -375,6 +379,14 @@ const ScrollbackPane: Component<Props> = (props) => {
     setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
   };
 
+  // C7.4: scroll-to-bottom click handler — forces scroll to tail and
+  // resumes auto-follow by setting atBottom(true).
+  const scrollToBottom = () => {
+    if (!listRef) return;
+    listRef.scrollTo({ top: listRef.scrollHeight, behavior: "smooth" });
+    setAtBottom(true);
+  };
+
   // JOIN-self banner render — pure, no scrollback persistence.
   const JoinBanner: Component = () => {
     const topic = () => topicByChannel()[key()] ?? null;
@@ -448,6 +460,18 @@ const ScrollbackPane: Component<Props> = (props) => {
           </For>
         </Show>
       </div>
+      {/* C7.4: scroll-to-bottom floating button — shown when NOT at bottom. */}
+      <Show when={!atBottom()}>
+        <button
+          type="button"
+          class="scroll-to-bottom-btn"
+          data-testid="scroll-to-bottom"
+          onClick={scrollToBottom}
+          aria-label="Scroll to bottom"
+        >
+          ↓
+        </button>
+      </Show>
       {/* C5.2: Ephemeral inline numeric feedback lines. */}
       <Show when={(numericsByWindow()[key()] ?? []).length > 0}>
         <div class="numeric-inline-pane" data-testid="numeric-inline-pane">
