@@ -33,12 +33,21 @@ import { token } from "./auth";
 // `selection.ts`, `subscribe.ts`. No on(token) cleanup needed —
 // `createResource` already keys on the bearer signal and re-fetches
 // automatically on rotation.
+//
+// BUG1-FIX: `mutateNetworks` is exported so `userTopic.ts` can patch
+// a single network's `nick` field in-place when the server broadcasts
+// `own_nick_changed` — no REST round-trip needed, and the reactive
+// consumers (subscribe.ts DM-listener loop, query-window own-nick skip)
+// see the updated nick immediately.
 
 const exports = createRoot(() => {
-  const [networks] = createResource<Network[], string | null>(token, async (t) => {
-    if (!t) return [];
-    return listNetworks(t);
-  });
+  const [networks, { mutate: mutateNetworksResource }] = createResource<Network[], string | null>(
+    token,
+    async (t) => {
+      if (!t) return [];
+      return listNetworks(t);
+    },
+  );
 
   const [user] = createResource<MeResponse | null, string | null>(token, async (t) => {
     if (!t) return null;
@@ -62,10 +71,22 @@ const exports = createRoot(() => {
     void refetchChannelsResource();
   };
 
-  return { networks, user, channelsBySlug, refetchChannels };
+  // Patch the nick for one network in the in-memory networks list.
+  // Called by userTopic.ts when `own_nick_changed` arrives so the
+  // DM-listener and query-window loops see the correct own-nick
+  // without waiting for the next GET /networks refetch.
+  const mutateNetworkNick = (networkId: number, nick: string): void => {
+    mutateNetworksResource((prev) => {
+      if (!prev) return prev;
+      return prev.map((n) => (n.id === networkId ? { ...n, nick } : n));
+    });
+  };
+
+  return { networks, user, channelsBySlug, refetchChannels, mutateNetworkNick };
 });
 
 export const networks = exports.networks;
 export const user = exports.user;
 export const channelsBySlug = exports.channelsBySlug;
 export const refetchChannels = exports.refetchChannels;
+export const mutateNetworkNick = exports.mutateNetworkNick;

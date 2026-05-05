@@ -4,7 +4,7 @@ import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { channelKey } from "./channelKey";
 import { setMentionsBundle } from "./mentionsWindow";
-import { channelsBySlug, refetchChannels } from "./networks";
+import { channelsBySlug, mutateNetworkNick, refetchChannels } from "./networks";
 import { appendNumericInline } from "./numericInline";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
@@ -168,6 +168,17 @@ createRoot(() => {
           text,
           severity: event.severity,
         });
+      } else if (payload.kind === "own_nick_changed") {
+        // BUG1-FIX: the live IRC nick may differ from the credential's
+        // configured nick after NickServ ghost recovery or an explicit /nick.
+        // Patch the in-memory networks list so the DM-listener loop and the
+        // query-window own-nick skip see the correct nick immediately — no
+        // REST round-trip needed. The `joined` set deduplication in
+        // subscribe.ts means the DM-listener createEffect will re-run and
+        // subscribe to the new own-nick topic on the next tick.
+        const networkId = payload.network_id as number;
+        const nick = payload.nick as string;
+        mutateNetworkNick(networkId, nick);
       }
     });
   });

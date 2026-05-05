@@ -705,6 +705,15 @@ defmodule Grappa.Session.Server do
     {:reply, :ok, state}
   end
 
+  # Returns the live IRC nick for this session — the nick that was
+  # actually registered with the upstream server (which may differ from
+  # the credential's configured nick after NickServ ghost recovery,
+  # nick collision suffixing, or an explicit /nick change). Public via
+  # `Grappa.Session.current_nick/2`.
+  def handle_call({:current_nick}, _, state) do
+    {:reply, {:ok, state.nick}, state}
+  end
+
   # Returns a snapshot of currently-joined channels
   # (`Map.keys(state.members)`) sorted alphabetically. Public via
   # `Grappa.Session.list_channels/2`. The "currently-joined" invariant
@@ -1129,6 +1138,7 @@ defmodule Grappa.Session.Server do
         {:cont, next_state, effects} = EventRouter.route(msg, %{state | labels_pending: labels_pending})
         final_state = apply_effects(effects, next_state)
         maybe_broadcast_channels_changed(state, final_state)
+        maybe_broadcast_own_nick_changed(state, final_state)
         {:noreply, final_state}
     end
   end
@@ -1448,6 +1458,7 @@ defmodule Grappa.Session.Server do
     {:cont, derived_state, effects} = EventRouter.route(msg, state)
     next_state = apply_effects(effects, derived_state)
     maybe_broadcast_channels_changed(state, next_state)
+    maybe_broadcast_own_nick_changed(state, next_state)
     {:noreply, next_state}
   end
 
@@ -1467,6 +1478,31 @@ defmodule Grappa.Session.Server do
 
     :ok
   end
+
+  # Broadcasts `own_nick_changed` on the user-level PubSub topic when the
+  # live IRC nick changes (NICK event, 001 RPL_WELCOME nick reconciliation).
+  # Cicchetto's userTopic handler updates the per-network nick in the
+  # networks store, which triggers reactive re-subscription to the correct
+  # own-nick DM topic. Without this broadcast, cicchetto subscribes to the
+  # CREDENTIAL nick (e.g. "grappa") while the live nick is "vjt-grappa" —
+  # inbound DMs are silently dropped.
+  @spec maybe_broadcast_own_nick_changed(state(), state()) :: :ok
+  defp maybe_broadcast_own_nick_changed(%{nick: prev_nick}, %{nick: next_nick} = next_state)
+       when prev_nick != next_nick do
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.user(next_state.subject_label),
+        {:event,
+         %{
+           kind: "own_nick_changed",
+           network_id: next_state.network_id,
+           nick: next_nick
+         }}
+      )
+  end
+
+  defp maybe_broadcast_own_nick_changed(_, _), do: :ok
 
   @spec apply_effects([EventRouter.effect()], state()) :: state()
   defp apply_effects([], state), do: state

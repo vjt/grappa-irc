@@ -519,6 +519,25 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns the live IRC nick for the session at `(subject, network_id)`.
+
+  The live nick may differ from the credential's configured nick after
+  NickServ ghost recovery, nick collision suffixing, or an explicit /nick
+  change. Returns `{:error, :no_session}` when the session is parked,
+  failed, or not yet bootstrapped — callers should fall back to the
+  credential's configured nick in that case.
+
+  Exposed on the facade so `GrappaWeb.NetworksController.index` can
+  advertise the real IRC nick to cicchetto without coupling the controller
+  directly to Session.Server internals.
+  """
+  @spec current_nick(subject(), integer()) :: {:ok, String.t()} | {:error, :no_session}
+  def current_nick(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, {:current_nick})
+  end
+
+  @doc """
   Returns a snapshot of the channel's member list in mIRC sort order
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
   Each entry: `%{nick: String.t(), modes: [String.t()]}`.
