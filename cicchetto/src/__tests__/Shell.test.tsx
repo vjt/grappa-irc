@@ -130,6 +130,18 @@ describe("Shell — three-pane integration", () => {
     expect(screen.getByPlaceholderText(/message #a/i)).toBeInTheDocument();
   });
 
+  it("does NOT render TopicBar when the synthetic :server window is selected (channel-only per spec #20)", async () => {
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: ":server" });
+    const { container } = render(() => <Shell />);
+    // ScrollbackPane still renders (server window has its own scrollback);
+    // ComposeBox still renders (server-message read-only handled separately).
+    // TopicBar must NOT — feature #20: channel-window-only.
+    await waitFor(() => {
+      expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
+    });
+    expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
+  });
+
   it("Alt+1 selects the first flat channel via keybindings", async () => {
     render(() => <Shell />);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "1", altKey: true }));
