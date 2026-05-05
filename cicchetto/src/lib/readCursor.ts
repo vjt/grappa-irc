@@ -26,6 +26,9 @@
 // MARKREAD endpoint, extend this module with an async flush function — the
 // localStorage shape stays as the synchronous fast path.
 
+import { createEffect, createRoot, on } from "solid-js";
+import { token } from "./auth";
+
 const KEY_PREFIX = "rc:";
 
 const storageKey = (networkSlug: string, channel: string): string =>
@@ -63,3 +66,18 @@ export const clearReadCursors = (): void => {
   }
   for (const k of keysToRemove) localStorage.removeItem(k);
 };
+
+// Identity-transition cleanup arm. Mirrors the pattern in scrollback.ts,
+// selection.ts, members.ts, mentions.ts, compose.ts, subscribe.ts.
+// `prev != null` filters both the initial run (prev === undefined) and the
+// cold-start login (prev === null) — only logout (tokA→null) and rotation
+// (tokA→tokB) trigger the wipe.
+createRoot(() => {
+  createEffect(
+    on(token, (t, prev) => {
+      if (prev != null && t !== prev) {
+        clearReadCursors();
+      }
+    }),
+  );
+});

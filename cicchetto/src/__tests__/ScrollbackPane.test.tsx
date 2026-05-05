@@ -88,6 +88,26 @@ vi.mock("../lib/channelTopic", () => ({
   topicByChannel: () => mockTopicByChannel(),
 }));
 
+// C7.3: mock readCursor so the module-level auth.ts import (which reads
+// localStorage during module init, before beforeEach can stub it) doesn't
+// crash the test suite. The mock wires getReadCursor / setReadCursor through
+// to localStorage directly — same contract, no Solid createRoot side effect.
+const KEY_PREFIX = "rc:";
+const storageKey = (networkSlug: string, channel: string) =>
+  `${KEY_PREFIX}${networkSlug}:${channel}`;
+vi.mock("../lib/readCursor", () => ({
+  getReadCursor: (networkSlug: string, channel: string): number | null => {
+    const raw = localStorage.getItem(storageKey(networkSlug, channel));
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  },
+  setReadCursor: (networkSlug: string, channel: string, serverTime: number): void => {
+    localStorage.setItem(storageKey(networkSlug, channel), String(serverTime));
+  },
+  clearReadCursors: vi.fn(),
+}));
+
 import ScrollbackPane, { resetShownBannersForTest } from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
@@ -1065,6 +1085,78 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const sender = document.querySelector(".scrollback-sender");
       expect(sender?.classList.contains("nick-clickable")).toBe(true);
+    });
+  });
+
+  // C7.3: unread marker rendering.
+  describe("unread marker (C7.3)", () => {
+    // readCursor is localStorage-backed; each test gets a clean slate.
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it("renders no unread-marker when no read cursor is set for the window", () => {
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
+    it("renders no unread-marker when cursor equals last message server_time (all read)", () => {
+      // cursor at or after all messages → nothing unread
+      localStorage.setItem("rc:freenode:#grappa", String(fixture[fixture.length - 1]?.server_time));
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
+    it("renders an unread-marker between read and unread messages when cursor is set mid-list", () => {
+      // cursor sits after msg id=1 (server_time 1_700_000_000_000)
+      // → msg id=2 and id=3 are unread (server_time > cursor)
+      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_000_000));
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toBeInTheDocument();
+      // Label must state the unread count (2 unread: msg 2 and msg 3)
+      expect(marker).toHaveTextContent("2 unread");
+    });
+
+    it("unread-marker appears BEFORE the first unread message in DOM order", () => {
+      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_000_000));
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      const lines = screen.getAllByTestId("scrollback-line");
+      // lines[0] = msg id=1 (read), then marker, then lines[1]=msg id=2, lines[2]=msg id=3
+      // DOM: marker must come after lines[0] but before lines[1]
+      const markerPos = marker.compareDocumentPosition(lines[1] as Node);
+      // DOCUMENT_POSITION_FOLLOWING (4) means lines[1] follows marker
+      expect(markerPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      const readPos = lines[0]?.compareDocumentPosition(marker);
+      // lines[0] should precede marker
+      expect(readPos !== undefined && readPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("renders unread count of 1 when only the last message is unread", () => {
+      // cursor sits after msg id=2 → only msg id=3 (server_time=1_700_000_002_000) is unread
+      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_001_000));
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toHaveTextContent("1 unread");
+    });
+
+    it("renders unread count of 3 when cursor is before all messages (all unread)", () => {
+      // cursor at 0 → all 3 messages are unread
+      localStorage.setItem("rc:freenode:#grappa", "0");
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toHaveTextContent("3 unread");
     });
   });
 

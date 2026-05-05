@@ -16,6 +16,7 @@ import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { networks, user } from "./lib/networks";
 import { numericsByWindow } from "./lib/numericInline";
 import { openQueryWindowState } from "./lib/queryWindows";
+import { getReadCursor, setReadCursor } from "./lib/readCursor";
 import { scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
@@ -58,6 +59,16 @@ import UserContextMenu from "./UserContextMenu";
 // C7.2: Muted-events rendering — presence/op event rows get
 // .scrollback-muted (dimmer, smaller, italic) so PRIVMSG/NOTICE/ACTION
 // dominate visually. PRESENCE_KINDS is the closed set.
+//
+// C7.3: Unread marker — when the user opens a channel with a stored read
+// cursor (via getReadCursor from readCursor.ts), messages after the cursor
+// are "unread". The rows() memo injects an `── XX unread messages ──`
+// marker row between the last read message and the first unread message.
+// On first mount of an unread window, the pane scrolls to the marker
+// (block: "start") so the user sees context-then-unread without manual
+// scroll. Cursor is advanced to the latest message's server_time when the
+// user reaches the bottom (atBottom = true). Client-side only — no server
+// MARKREAD per CLAUDE.md invariant.
 //
 // C7.4: Scroll-to-bottom floating button — appears when scrolled more than
 // SCROLL_BOTTOM_THRESHOLD_PX from the tail. Click → smooth-scroll to bottom
@@ -323,13 +334,20 @@ type BannerState = "hidden" | "visible";
 
 // C7.1: row types for the mixed separator+message rendering list.
 type SeparatorRow = { type: "separator"; label: string; id: string };
+// C7.3: unread-marker row — distinct variant so JSX render branch is a
+// clean discriminated union (no `kind` subfield conditionals inside SeparatorRow).
+type UnreadMarkerRow = { type: "unread-marker"; count: number; id: string };
 type MessageRow = { type: "message"; msg: ScrollbackMessage };
-type Row = SeparatorRow | MessageRow;
+type Row = SeparatorRow | UnreadMarkerRow | MessageRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
+  let markerRef: HTMLDivElement | undefined;
   const [atBottom, setAtBottom] = createSignal(true);
   const [bannerState, setBannerState] = createSignal<BannerState>("hidden");
+  // C7.3: track whether we've done the initial scroll-to-marker for this
+  // window mount. Reset on channel switch (key change).
+  const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
   // C7.6: context menu state — null when closed.
   type ContextMenuState = { targetNick: string; x: number; y: number };
@@ -369,15 +387,41 @@ const ScrollbackPane: Component<Props> = (props) => {
     setContextMenu({ targetNick: nick, x: e.clientX, y: e.clientY });
   };
 
-  // C7.1: Build a mixed list of (day-separator | message) rows for rendering.
-  // Separator injected BETWEEN consecutive rows that cross a local-TZ
-  // day boundary. The first message never gets a separator before it.
+  // C7.1 + C7.3: Build a mixed list of (day-separator | unread-marker | message)
+  // rows for rendering. Day-separator injected BETWEEN consecutive rows that
+  // cross a local-TZ day boundary. Unread-marker injected between the last
+  // read message and the first unread message when a read cursor exists.
+  // The first message never gets a day-separator before it.
+  //
+  // Unread computation (C7.3 / CLAUDE.md "derive, don't duplicate"):
+  //   cursor = getReadCursor(networkSlug, channelName) — localStorage, sync.
+  //   unread count = messages.filter(m => m.server_time > cursor).length
+  //   No signal needed for cursor — it's read once per channel mount.
+  //   The cursor is a stable value for the lifetime of this channel view;
+  //   it only advances when the user reads to the bottom (setReadCursor call).
   const rows = createMemo((): Row[] => {
     const msgs = messages();
     if (!msgs || msgs.length === 0) return [];
+    const cursor = getReadCursor(props.networkSlug, props.channelName);
+    // How many messages have server_time strictly after the cursor?
+    const unreadCount = cursor !== null ? msgs.filter((m) => m.server_time > cursor).length : 0;
+    // Only inject the marker if there are unread messages AND some read messages
+    // to show as context above it. When all messages are unread, put the marker
+    // at the very top (before index 0). When none are unread, skip the marker.
+    const injectMarker = cursor !== null && unreadCount > 0;
     const result: Row[] = [];
     let prevTime: number | null = null;
+    let markerInjected = false;
     for (const msg of msgs) {
+      // C7.3: inject unread-marker BEFORE the first message with server_time > cursor.
+      if (injectMarker && !markerInjected && cursor !== null && msg.server_time > cursor) {
+        result.push({ type: "unread-marker", count: unreadCount, id: "unread-marker" });
+        markerInjected = true;
+        // Day-separator logic: if the previous message (last read) and this first
+        // unread message are on different days, the day-separator goes AFTER the
+        // unread-marker so the date label describes the first unread message's day.
+        // (prevTime is already set to the last read message's time.)
+      }
       if (prevTime !== null && isDifferentDay(prevTime, msg.server_time)) {
         result.push({
           type: "separator",
@@ -435,11 +479,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   // so it re-runs only when (networkSlug, channelName) actually changes —
   // `defer: true` skips the initial mount run so the shouldShowBanner
   // effect's first-mount evaluation isn't pre-emptively cleared.
+  // C7.3: also reset markerScrolled so the next channel's unread marker
+  // gets its own scroll-to-marker behavior.
   createEffect(
     on(
       key,
       () => {
         setBannerState("hidden");
+        setMarkerScrolled(false);
       },
       { defer: true },
     ),
@@ -449,16 +496,49 @@ const ScrollbackPane: Component<Props> = (props) => {
   // was at the bottom before the update. The effect tracks
   // `messages().length` so it re-runs on every append, not on signal
   // identity (the whole record changes every WS event by design).
+  //
+  // C7.3: On the FIRST render of a channel with unread messages, scroll to
+  // the unread-marker instead of the tail. `markerScrolled` latches after
+  // the first scroll so subsequent appends follow the normal auto-scroll
+  // logic (tail-follow when atBottom, preserve position otherwise).
   createEffect(
     on(
       () => messages()?.length ?? 0,
       () => {
         if (!listRef) return;
+        // C7.3: first mount with unread — scroll to marker, not tail.
+        if (!markerScrolled() && markerRef) {
+          // scrollIntoView is not implemented in jsdom (test environment).
+          // Optional-chain so tests don't throw; real browsers have it.
+          markerRef.scrollIntoView?.({ block: "start" });
+          setMarkerScrolled(true);
+          // atBottom is false after scroll-to-marker (marker is not at tail).
+          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+          return;
+        }
         if (atBottom()) {
           listRef.scrollTop = listRef.scrollHeight;
         }
       },
     ),
+  );
+
+  // C7.3: Cursor advancement — when the user has scrolled to the bottom
+  // (atBottom = true), advance the read cursor to the latest message's
+  // server_time. This is the natural "I've seen everything" signal.
+  // Fires when atBottom transitions to true (e.g. user scrolls to bottom,
+  // or clicks the scroll-to-bottom button). Does NOT fire on focus-switch
+  // alone — user may switch in then immediately switch out without reading.
+  createEffect(
+    on(atBottom, (bottom) => {
+      if (!bottom) return;
+      const msgs = messages();
+      if (!msgs || msgs.length === 0) return;
+      const last = msgs[msgs.length - 1];
+      if (last === undefined) return;
+      setReadCursor(props.networkSlug, props.channelName, last.server_time);
+    }),
   );
 
   const onScroll = () => {
@@ -531,7 +611,7 @@ const ScrollbackPane: Component<Props> = (props) => {
           when={(messages()?.length ?? 0) > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}
         >
-          {/* C7.1: render mixed rows (separator + message). */}
+          {/* C7.1 + C7.3: render mixed rows (separator | unread-marker | message). */}
           <For each={rows()}>
             {(row) => {
               if (row.type === "separator") {
@@ -540,6 +620,17 @@ const ScrollbackPane: Component<Props> = (props) => {
                     <span class="scrollback-day-separator-line" />
                     <span class="scrollback-day-separator-label">{row.label}</span>
                     <span class="scrollback-day-separator-line" />
+                  </div>
+                );
+              }
+              if (row.type === "unread-marker") {
+                return (
+                  <div ref={markerRef} class="scrollback-unread-marker" data-testid="unread-marker">
+                    <span class="scrollback-unread-marker-line" />
+                    <span class="scrollback-unread-marker-label">
+                      {row.count} unread message{row.count !== 1 ? "s" : ""}
+                    </span>
+                    <span class="scrollback-unread-marker-line" />
                   </div>
                 );
               }
