@@ -52,6 +52,14 @@ vi.mock("../lib/members", () => ({
   seedFromTest: vi.fn(),
 }));
 
+vi.mock("../lib/channelTopic", () => ({
+  topicByChannel: () => ({}),
+  modesByChannel: () => ({}),
+  compactModeString: (modes: string[]) => (modes.length > 0 ? `+${modes.join("")}` : ""),
+  seedTopic: vi.fn(),
+  seedModes: vi.fn(),
+}));
+
 vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({}),
   bumpMention: vi.fn(),
@@ -85,6 +93,8 @@ vi.mock("../lib/queryWindows", () => ({
 
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
+  displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
+    me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
 }));
 
 vi.mock("../lib/channelKey", () => ({
