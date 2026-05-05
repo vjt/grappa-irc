@@ -1,6 +1,7 @@
 import { type Component, For, Show } from "solid-js";
 import { postPart } from "./lib/api";
 import { token } from "./lib/auth";
+import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
@@ -57,7 +58,15 @@ const Sidebar: Component<Props> = (props) => {
       <For each={networks()}>
         {(network) => (
           <section class="sidebar-network">
-            <h3>{network.slug}</h3>
+            <h3>
+              {network.slug}
+              {/* C8.3 — away visual indicator. Shows [away] badge when the
+                  user is in away state on this network. Driven by the
+                  away_confirmed server event via awayStatus.ts. */}
+              <Show when={awayByNetwork()[network.slug]}>
+                <span class="sidebar-away-badge">[away]</span>
+              </Show>
+            </h3>
             <ul>
               {/* Server window — always present, not closeable */}
               <li classList={{ selected: isSelected(network.slug, ":server") }}>

@@ -23,6 +23,9 @@ import {
   pushChannelUmode,
   pushChannelUnban,
   pushChannelVoice,
+  pushWatchlistAdd,
+  pushWatchlistDel,
+  pushWatchlistList,
 } from "./socket";
 
 // Per-channel compose state. Owns:
@@ -49,7 +52,10 @@ type ComposeState = {
   historyCursor: number | null; // null = bottom (live draft)
 };
 
-type SubmitResult = { ok: true } | { error: string };
+// ok: true = silent success (draft cleared, no feedback to user).
+// ok: string = success with inline feedback (e.g. watchlist list output).
+// error: string = failure, displayed inline; draft preserved.
+type SubmitResult = { ok: true | string } | { error: string };
 
 const empty = (): ComposeState => ({ draft: "", history: [], historyCursor: null });
 
@@ -410,13 +416,30 @@ const exports_ = createRoot(() => {
         case "links":
           return { error: "/links: server-side handler not yet implemented (future bucket)" };
         // ---------------------------------------------------------------
-        // Watchlist verbs — server-side /user_settings API not yet implemented.
-        // Emit inline errors as TODO stubs.
+        // Watchlist verbs — C8.3 real plumbing.
+        // Push on the user-level channel; server replies {patterns: string[]}.
+        // Render the current list inline so the user gets confirmation.
         // ---------------------------------------------------------------
-        case "watchlist":
+        case "watchlist": {
+          let result: { patterns: string[] };
+          if (cmd.action === "add") {
+            result = await pushWatchlistAdd(cmd.pattern);
+            return {
+              ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
+            };
+          }
+          if (cmd.action === "del") {
+            result = await pushWatchlistDel(cmd.pattern);
+            return {
+              ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
+            };
+          }
+          // action === "list"
+          result = await pushWatchlistList();
           return {
-            error: "/watch /highlight: user_settings API not yet implemented (future bucket)",
+            ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
           };
+        }
         // ---------------------------------------------------------------
         // Parser-level error (unknown verb or validation failure).
         // ---------------------------------------------------------------
