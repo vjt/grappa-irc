@@ -135,7 +135,12 @@ defmodule Grappa.QueryWindowsTest do
 
       {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
 
-      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "query_windows_list", windows: windows}
+                     },
+                     1_000
+
       # The full list must include the newly opened window
       assert is_map(windows)
       [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
@@ -153,7 +158,12 @@ defmodule Grappa.QueryWindowsTest do
       # Second open (idempotent) also broadcasts
       {:ok, _} = QueryWindows.open(user.id, net.id, "alice", user.name)
 
-      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "query_windows_list", windows: windows}
+                     },
+                     1_000
+
       assert [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
     end
   end
@@ -213,7 +223,12 @@ defmodule Grappa.QueryWindowsTest do
 
       :ok = QueryWindows.close(user.id, net.id, "alice", user.name)
 
-      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "query_windows_list", windows: windows}
+                     },
+                     1_000
+
       # Only bob should remain
       assert [%Window{target_nick: "bob"}] = Map.fetch!(windows, net.id)
     end
@@ -229,7 +244,12 @@ defmodule Grappa.QueryWindowsTest do
 
       :ok = QueryWindows.close(user.id, net.id, "alice", user.name)
 
-      assert_receive {:event, %{kind: "query_windows_list", windows: windows}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "query_windows_list", windows: windows}
+                     },
+                     1_000
+
       assert windows == %{}
     end
   end

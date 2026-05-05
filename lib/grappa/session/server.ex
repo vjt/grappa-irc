@@ -59,14 +59,14 @@ defmodule Grappa.Session.Server do
 
   ## Wire shape (broadcast contract)
 
-  PRIVMSG broadcasts emit `Grappa.Scrollback.Wire.message_event/1` on
-  the per-(subject, network, channel) topic built via
-  `Grappa.PubSub.Topic.channel/3`. `state.subject_label` is the
-  first segment (sub-task 2h, generalized in Task 6.5) so multi-user
-  + visitor instances cannot leak broadcasts across subjects —
-  payload-level iso (decision G3 dropped `user_id` from the wire)
-  needed routing-level iso to actually keep alice / vjt / visitor
-  PubSub mailboxes separate.
+  PRIVMSG broadcasts emit `Grappa.Scrollback.Wire.message_payload/1`
+  via `Grappa.PubSub.broadcast_event/2` on the per-(subject, network,
+  channel) topic built via `Grappa.PubSub.Topic.channel/3`.
+  `state.subject_label` is the first segment (sub-task 2h, generalized
+  in Task 6.5) so multi-user + visitor instances cannot leak broadcasts
+  across subjects — payload-level iso (decision G3 dropped `user_id`
+  from the wire) needed routing-level iso to actually keep alice / vjt
+  / visitor PubSub mailboxes separate.
 
   ## Outbound API (Task 9)
 
@@ -460,10 +460,9 @@ defmodule Grappa.Session.Server do
     case Scrollback.persist_event(attrs) do
       {:ok, message} ->
         :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
+          Grappa.PubSub.broadcast_event(
             Topic.channel(state.subject_label, state.network_slug, channel),
-            Wire.message_event(message)
+            Wire.message_payload(message)
           )
 
         case Client.send_topic(state.client, channel, body) do
@@ -1120,18 +1119,16 @@ defmodule Grappa.Session.Server do
         severity = NumericRouter.severity(numeric_code)
 
         :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
+          Grappa.PubSub.broadcast_event(
             Topic.user(state.subject_label),
-            {:event,
-             %{
-               kind: "numeric_routed",
-               numeric: numeric_code,
-               params: msg.params,
-               trailing: trailing,
-               target_window: target_window,
-               severity: severity
-             }}
+            %{
+              kind: "numeric_routed",
+              numeric: numeric_code,
+              params: msg.params,
+              trailing: trailing,
+              target_window: target_window,
+              severity: severity
+            }
           )
 
         # Also delegate so EventRouter can update state (e.g. 305/306 away_confirmed).
@@ -1233,10 +1230,9 @@ defmodule Grappa.Session.Server do
     case Scrollback.persist_event(attrs) do
       {:ok, message} ->
         :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
+          Grappa.PubSub.broadcast_event(
             Topic.channel(state.subject_label, state.network_slug, target),
-            Wire.message_event(message)
+            Wire.message_payload(message)
           )
 
         # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
@@ -1469,10 +1465,9 @@ defmodule Grappa.Session.Server do
 
     if prev_keys != next_keys do
       :ok =
-        Phoenix.PubSub.broadcast(
-          Grappa.PubSub,
+        Grappa.PubSub.broadcast_event(
           Topic.user(prev.subject_label),
-          {:event, %{kind: "channels_changed"}}
+          %{kind: "channels_changed"}
         )
     end
 
@@ -1490,15 +1485,13 @@ defmodule Grappa.Session.Server do
   defp maybe_broadcast_own_nick_changed(%{nick: prev_nick}, %{nick: next_nick} = next_state)
        when prev_nick != next_nick do
     :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
+      Grappa.PubSub.broadcast_event(
         Topic.user(next_state.subject_label),
-        {:event,
-         %{
-           kind: "own_nick_changed",
-           network_id: next_state.network_id,
-           nick: next_nick
-         }}
+        %{
+          kind: "own_nick_changed",
+          network_id: next_state.network_id,
+          nick: next_nick
+        }
       )
   end
 
@@ -1509,16 +1502,14 @@ defmodule Grappa.Session.Server do
 
   defp apply_effects([{:topic_changed, channel, entry} | rest], state) do
     :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
+      Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        {:event,
-         %{
-           kind: "topic_changed",
-           network: state.network_slug,
-           channel: channel,
-           topic: entry
-         }}
+        %{
+          kind: "topic_changed",
+          network: state.network_slug,
+          channel: channel,
+          topic: entry
+        }
       )
 
     apply_effects(rest, state)
@@ -1526,16 +1517,14 @@ defmodule Grappa.Session.Server do
 
   defp apply_effects([{:channel_modes_changed, channel, entry} | rest], state) do
     :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
+      Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        {:event,
-         %{
-           kind: "channel_modes_changed",
-           network: state.network_slug,
-           channel: channel,
-           modes: entry
-         }}
+        %{
+          kind: "channel_modes_changed",
+          network: state.network_slug,
+          channel: channel,
+          modes: entry
+        }
       )
 
     apply_effects(rest, state)
@@ -1551,13 +1540,12 @@ defmodule Grappa.Session.Server do
         # discriminator (Task 6.5 generalized "user_name" to
         # opaque subject_label so visitors map to a parallel
         # `"visitor:<uuid>"` root). `:network` is preloaded by
-        # `Scrollback.persist_event/1`; Wire.message_event
+        # `Scrollback.persist_event/1`; Wire.message_payload
         # pattern-matches on it.
         :ok =
-          Phoenix.PubSub.broadcast(
-            Grappa.PubSub,
+          Grappa.PubSub.broadcast_event(
             Topic.channel(state.subject_label, state.network_slug, attrs.channel),
-            Wire.message_event(message)
+            Wire.message_payload(message)
           )
 
       {:error, changeset} ->
@@ -1586,15 +1574,13 @@ defmodule Grappa.Session.Server do
     away_str = Atom.to_string(away_atom)
 
     :ok =
-      Phoenix.PubSub.broadcast(
-        Grappa.PubSub,
+      Grappa.PubSub.broadcast_event(
         Topic.user(state.subject_label),
-        {:event,
-         %{
-           kind: "away_confirmed",
-           network: state.network_slug,
-           state: away_str
-         }}
+        %{
+          kind: "away_confirmed",
+          network: state.network_slug,
+          state: away_str
+        }
       )
 
     apply_effects(rest, state)
@@ -1864,18 +1850,16 @@ defmodule Grappa.Session.Server do
       away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
 
       :ok =
-        Phoenix.PubSub.broadcast(
-          Grappa.PubSub,
+        Grappa.PubSub.broadcast_event(
           Topic.user(state.subject_label),
-          {:event,
-           %{
-             kind: "mentions_bundle",
-             network: state.network_slug,
-             away_started_at: away_started_iso,
-             away_ended_at: away_ended_iso,
-             away_reason: state.away_reason,
-             messages: message_payloads
-           }}
+          %{
+            kind: "mentions_bundle",
+            network: state.network_slug,
+            away_started_at: away_started_iso,
+            away_ended_at: away_ended_iso,
+            away_reason: state.away_reason,
+            messages: message_payloads
+          }
         )
     end
 

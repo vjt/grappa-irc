@@ -13,7 +13,18 @@ defmodule GrappaWeb.GrappaChannel do
      is the LOAD-BEARING check — `Phoenix.PubSub` topics are a
      global namespace, so without this any authn'd socket could
      subscribe to any other user's topic by string-typing it.
-  3. Subscribe to the topic on `Grappa.PubSub` and accept the join.
+  3. Accept the join. **The framework auto-installs a fastlane
+     subscription** on the channel topic when the join completes —
+     DO NOT call `Phoenix.PubSub.subscribe/2` manually here. Doing so
+     registers a SECOND subscriber (no metadata) on the same topic,
+     and any subsequent `Grappa.PubSub.broadcast_event/2` (sent as a
+     `%Phoenix.Socket.Broadcast{}` via the framework's channel-server
+     dispatcher) fans out to BOTH the manual subscriber (delivered as
+     a struct to `handle_info/2` → `push/3` → 1 WS frame) AND the
+     fastlane (encoded once and written directly to the transport →
+     another WS frame). Net effect: 1 broadcast → 2 frames per
+     message. This was BUG 6 — the sidebar unread badge bumped by 2
+     on every PRIVMSG.
   4. Kick off the after-join snapshot via `Process.send_after/3` with
      `:after_join` so the costly DB + session queries run after the
      join callback returns — `join/3` must be fast (Phoenix blocks the
@@ -106,11 +117,14 @@ defmodule GrappaWeb.GrappaChannel do
   - `"channel_modes_changed"` — `%{kind: "channel_modes_changed", network: slug, channel: chan, modes: entry}`
   - `"query_windows_list"` — `%{kind: "query_windows_list", windows: %{network_id => [%Window{}]}}`
 
-  On `{:event, payload}` from PubSub, push it to the connected socket
-  as an `"event"` push verbatim. The push payload shape is whatever
-  the broadcaster sent — this module does NOT reshape events. The
-  wire-shape contract lives at the broadcasting boundary
-  (`Grappa.Session.Server` via `Grappa.Scrollback.Wire`).
+  Server-side broadcasters call `Grappa.PubSub.broadcast_event(topic,
+  payload)`, which goes through the framework's channel-server
+  dispatcher and the per-socket fastlane — a single WS frame per
+  connected socket on the topic. The wire-shape contract lives at the
+  broadcasting boundary (`Grappa.Session.Server` via
+  `Grappa.Scrollback.Wire.message_payload/1`). This module does NOT
+  define `handle_info({:event, _}, _)` — there is no manual subscribe
+  and the fastlane bypasses `handle_info/2` entirely.
 
   Accepted topic shapes (single source of truth in `Grappa.PubSub.Topic`):
 
@@ -155,7 +169,9 @@ defmodule GrappaWeb.GrappaChannel do
   def join(topic, _, socket) do
     with {:ok, parsed} <- Topic.parse(topic),
          :ok <- authorize(parsed, socket) do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # NO manual `Phoenix.PubSub.subscribe/2` here — the framework's
+      # fastlane subscription (installed by Phoenix.Channel.Server.init/1)
+      # is the ONLY subscriber needed. See moduledoc + BUG 6.
       Process.send_after(self(), {:after_join, parsed}, 0)
       {:ok, socket}
     else
@@ -165,11 +181,6 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   @impl Phoenix.Channel
-  def handle_info({:event, payload}, socket) do
-    push(socket, "event", payload)
-    {:noreply, socket}
-  end
-
   def handle_info({:after_join, {:user, user_name}}, socket) do
     push_user_snapshot(user_name, socket)
     {:noreply, socket}
