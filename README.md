@@ -243,12 +243,31 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/join <#chan>` | Join a channel |
 | `/part [#chan] [reason]` | Part the active or named channel |
 | `/topic <text>` | Set topic on the active channel |
+| `/topic -delete` | Clear the topic (irssi convention) |
 | `/nick <newnick>` | Change nick on the active network |
 | `/msg <nick> <text>` | Send a private message (opens query window) |
+| `/query <nick>` / `/q <nick>` | Open a query window without sending |
+| `/whois <nick>` | Issue WHOIS; reply renders inline in active window |
+| `/op <nick>...` / `/deop <nick>...` | `MODE +o` / `MODE -o` on the active channel; multi-target chunked per ISUPPORT `MODES=` |
+| `/voice <nick>...` / `/devoice <nick>...` | `MODE +v` / `MODE -v` on the active channel |
+| `/kick <nick> [reason]` | KICK on the active channel |
+| `/ban <nick-or-mask>` / `/unban <mask>` | `MODE +b` / `MODE -b`; bare nick → `*!*@host` derived from WHOIS-userhost cache, fallback `nick!*@*` |
+| `/banlist` | `MODE #chan b`; replies render inline (planned: clickable for one-tap unban) |
+| `/invite <nick> [#chan]` | INVITE; active channel by default |
+| `/umode <modes>` | Set user-mode flags on own nick |
+| `/mode <target> <modes> [args]` | Raw `MODE` pass-through (escape hatch; no chunking applied) |
 | `/away [reason]` | Set explicit away with an optional reason. Bare `/away` (no reason) clears explicit away status. |
 | `/quit [reason]` | Nuclear logout: parks **all** bound networks (`PATCH /networks/:net` with `connection_state: "parked"`), QUITs each upstream, closes the WS, clears auth, redirects to `/login`. Re-login + `/connect <net>` to bring networks back. |
 | `/disconnect [network] [reason]` | Park one network (active-window's network if no arg). Bouncer stays parked across reboots until `/connect`. Visitor sessions: aliases to `/quit` (visitor credentials are ephemeral). |
 | `/connect <network>` | Unpark + respawn the named network. Works from `:parked` or `:failed`. |
+
+### Channel-window header (C3)
+
+Every channel window pins a header strip showing the topic (single-line, ellipsized — click to expand modal with full topic + setter nick + set-at timestamp) and a compact mode-string like `+nt` (hover for full mode list). Empty topic renders `(no topic set)` so the strip space is constant. Header is channel-only — query, server, and pseudo-windows have no topic strip.
+
+### JOIN-self banner (C3)
+
+When you join a channel, the channel window shows a one-time banner at the top: "You joined #chan", topic line, names list with PREFIX sigils (`@op`, `+voice`, plain), and a "N users, M ops" summary. Renders once per session per channel — switching back to the same channel later does not re-display. Pure render; not persisted as scrollback rows.
 
 ### Auto-away (S3)
 
