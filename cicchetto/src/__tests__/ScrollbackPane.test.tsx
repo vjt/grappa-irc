@@ -35,7 +35,19 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
-import ScrollbackPane from "../ScrollbackPane";
+// C3.2: mock membersByChannel for JOIN-self banner tests
+const mockMembersByChannel = vi.fn(() => ({}));
+vi.mock("../lib/members", () => ({
+  membersByChannel: () => mockMembersByChannel(),
+}));
+
+// C3.1/C3.2: mock channelTopic for topic display in banner
+const mockTopicByChannel = vi.fn(() => ({}));
+vi.mock("../lib/channelTopic", () => ({
+  topicByChannel: () => mockTopicByChannel(),
+}));
+
+import ScrollbackPane, { resetShownBannersForTest } from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
   {
@@ -74,6 +86,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   setScrollback({});
   setUserNick(null);
+  mockMembersByChannel.mockReturnValue({});
+  mockTopicByChannel.mockReturnValue({});
+  // Reset the join-banner shown-set between tests (test seam, see ScrollbackPane.tsx).
+  resetShownBannersForTest();
 });
 
 describe("ScrollbackPane", () => {
@@ -386,6 +402,184 @@ describe("ScrollbackPane", () => {
       ));
       const line = container.querySelector('[data-kind="topic"]');
       expect(line?.classList.contains("scrollback-mention")).toBe(false);
+    });
+  });
+
+  describe("JOIN-self banner (C3.2)", () => {
+    // Banner renders when own nick has a JOIN event in scrollback for this channel.
+    it("renders 'You joined #chan' banner when own nick JOIN event is in scrollback", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      expect(screen.getByTestId("join-banner")).toBeInTheDocument();
+      expect(screen.getByTestId("join-banner")).toHaveTextContent("You joined #grappa");
+    });
+
+    it("does NOT render banner when the JOIN sender is NOT own nick", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      expect(screen.queryByTestId("join-banner")).toBeNull();
+    });
+
+    it("does NOT render banner when there is no JOIN event in scrollback", () => {
+      setUserNick("vjt");
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      expect(screen.queryByTestId("join-banner")).toBeNull();
+    });
+
+    it("does NOT render banner when user is null (not resolved yet)", () => {
+      setUserNick(null);
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      expect(screen.queryByTestId("join-banner")).toBeNull();
+    });
+
+    it("renders topic line in banner when topic is cached", () => {
+      setUserNick("vjt");
+      mockTopicByChannel.mockReturnValue({
+        "freenode #grappa": { text: "Welcome to grappa IRC", set_by: "vjt", set_at: null },
+      });
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      const banner = screen.getByTestId("join-banner");
+      expect(banner).toHaveTextContent("Welcome to grappa IRC");
+    });
+
+    it("renders names list from members store in banner", () => {
+      setUserNick("vjt");
+      mockMembersByChannel.mockReturnValue({
+        "freenode #grappa": [
+          { nick: "vjt", modes: ["@"] },
+          { nick: "alice", modes: ["+"] },
+          { nick: "bob", modes: [] },
+        ],
+      });
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      const banner = screen.getByTestId("join-banner");
+      // @ prefix for ops, + for voiced
+      expect(banner).toHaveTextContent("@vjt");
+      expect(banner).toHaveTextContent("+alice");
+      expect(banner).toHaveTextContent("bob");
+    });
+
+    it("renders member count summary in banner", () => {
+      setUserNick("vjt");
+      mockMembersByChannel.mockReturnValue({
+        "freenode #grappa": [
+          { nick: "vjt", modes: ["@"] },
+          { nick: "alice", modes: [] },
+          { nick: "bob", modes: [] },
+        ],
+      });
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      const banner = screen.getByTestId("join-banner");
+      // 3 total users, 1 op
+      expect(banner).toHaveTextContent("3 users");
+      expect(banner).toHaveTextContent("1 op");
+    });
+
+    it("renders '(loading members…)' section when member list is empty", () => {
+      setUserNick("vjt");
+      mockMembersByChannel.mockReturnValue({});
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      const banner = screen.getByTestId("join-banner");
+      expect(banner).toHaveTextContent("loading members");
     });
   });
 });

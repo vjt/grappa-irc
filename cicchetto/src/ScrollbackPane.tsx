@@ -1,6 +1,17 @@
-import { type Component, createEffect, createSignal, For, type JSX, on, Show } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  type JSX,
+  on,
+  Show,
+} from "solid-js";
 import { displayNick, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
+import { topicByChannel } from "./lib/channelTopic";
+import { membersByChannel } from "./lib/members";
 import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
 import { scrollbackByChannel } from "./lib/scrollback";
@@ -21,6 +32,19 @@ import { scrollbackByChannel } from "./lib/scrollback";
 // Mention highlight (P4-1): privmsg lines whose `body` word-boundary
 // case-insensitive-matches the operator's own nick get .scrollback-mention
 // class. The matcher reads `networks.user()` for the nick.
+//
+// JOIN-self banner (C3.2): when the own nick's JOIN event appears in the
+// scrollback, render a banner at the top of the pane showing:
+//   - "You joined #chan"
+//   - Topic (from channelTopic store)
+//   - Names list with PREFIX sigils (@op, +voice, plain)
+//   - "N users, M ops" summary
+//
+// The banner shows once per session per channel. `shownBanners` is a
+// module-level Set; once a channel key is added, the banner never
+// re-renders for that channel for the lifetime of the page session.
+// This mirrors the spec: "Subsequent visits to the same channel within
+// the session don't re-render the banner."
 
 export type Props = {
   networkSlug: string;
@@ -28,6 +52,20 @@ export type Props = {
 };
 
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+
+// Module-level tracking of which channels have already shown the
+// JOIN-self banner this session. Intentionally not persisted to server
+// or localStorage — ephemeral, per page-load.
+//
+// Test seam: `resetShownBannersForTest()` lets unit tests wipe the Set
+// between cases without vi.resetModules() gymnastics. Named clearly;
+// never called in production code. Mirrors the `seedFromTest` pattern
+// in members.ts.
+const shownBanners = new Set<string>();
+
+export function resetShownBannersForTest(): void {
+  shownBanners.clear();
+}
 
 const formatTime = (epochMs: number): string => {
   const d = new Date(epochMs);
@@ -173,15 +211,51 @@ const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | nul
   );
 };
 
+// Returns the PREFIX sigil for a member: "@" for op, "+" for voiced, "" for plain.
+// Mirrors the MembersPane rendering convention and the IRC RFC PREFIX ISUPPORT.
+const memberSigil = (modes: string[]): string => {
+  if (modes.includes("@")) return "@";
+  if (modes.includes("+")) return "+";
+  return "";
+};
+
+type BannerState = "hidden" | "visible";
+
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
   const [atBottom, setAtBottom] = createSignal(true);
+  const [bannerState, setBannerState] = createSignal<BannerState>("hidden");
 
-  const messages = () => scrollbackByChannel()[channelKey(props.networkSlug, props.channelName)];
+  const key = () => channelKey(props.networkSlug, props.channelName);
+  const messages = () => scrollbackByChannel()[key()];
   const userNick = (): string | null => {
     const me = user();
     return me ? displayNick(me) : null;
   };
+
+  // JOIN-self detection: derive whether own nick has joined this channel
+  // from the scrollback. The memo re-runs when messages change; once the
+  // banner has been shown (key in shownBanners), it stays hidden.
+  const shouldShowBanner = createMemo((): boolean => {
+    const nick = userNick();
+    if (!nick) return false;
+    if (shownBanners.has(key())) return false;
+    const msgs = messages();
+    if (!msgs) return false;
+    return msgs.some((m) => m.kind === "join" && m.sender === nick);
+  });
+
+  // When shouldShowBanner transitions true → visible, mark the banner
+  // as shown so remounts of this component (channel re-select within
+  // the session) don't re-render it.
+  createEffect(
+    on(shouldShowBanner, (show) => {
+      if (show && !shownBanners.has(key())) {
+        shownBanners.add(key());
+        setBannerState("visible");
+      }
+    }),
+  );
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
   // was at the bottom before the update. The effect tracks
@@ -205,8 +279,57 @@ const ScrollbackPane: Component<Props> = (props) => {
     setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
   };
 
+  // JOIN-self banner render — pure, no scrollback persistence.
+  const JoinBanner: Component = () => {
+    const topic = () => topicByChannel()[key()] ?? null;
+    const members = () => membersByChannel()[key()] ?? null;
+    const opCount = () => members()?.filter((m) => m.modes.includes("@")).length ?? 0;
+    const totalCount = () => members()?.length ?? 0;
+    // Non-empty member list as a derived value for use in <Show> + <For>.
+    // Avoids non-null assertions by returning `undefined` (falsy) when
+    // the list is null or empty, letting <Show> gate cleanly.
+    const nonEmptyMembers = () => {
+      const list = members();
+      return list !== null && list.length > 0 ? list : undefined;
+    };
+
+    return (
+      <div class="join-banner" data-testid="join-banner">
+        <div class="join-banner-heading">You joined {props.channelName}</div>
+        <Show when={topic()?.text}>
+          {(text) => <div class="join-banner-topic">Topic: {text()}</div>}
+        </Show>
+        <Show
+          when={nonEmptyMembers()}
+          fallback={<div class="join-banner-members-loading">(loading members…)</div>}
+        >
+          {(memberList) => (
+            <>
+              <div class="join-banner-names">
+                <For each={memberList()}>
+                  {(m) => (
+                    <span class="join-banner-nick">
+                      {memberSigil(m.modes)}
+                      {m.nick}
+                    </span>
+                  )}
+                </For>
+              </div>
+              <div class="join-banner-summary">
+                {totalCount()} users, {opCount()} op{opCount() !== 1 ? "s" : ""}
+              </div>
+            </>
+          )}
+        </Show>
+      </div>
+    );
+  };
+
   return (
     <div class="scrollback-pane">
+      <Show when={bannerState() === "visible"}>
+        <JoinBanner />
+      </Show>
       <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
         <Show
           when={(messages()?.length ?? 0) > 0}
