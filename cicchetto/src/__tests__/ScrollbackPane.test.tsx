@@ -49,6 +49,27 @@ vi.mock("../lib/networks", () => ({
     const n = userNick();
     return n === null ? null : { kind: "user", id: "u1", name: n, inserted_at: "x" };
   },
+  networks: () => [{ id: 42, slug: "freenode", inserted_at: "", updated_at: "" }],
+}));
+
+// C7.6: queryWindows + socket mocked so UserContextMenu import doesn't crash.
+const mockOpenQueryWindowState = vi.fn();
+vi.mock("../lib/queryWindows", () => ({
+  openQueryWindowState: (...args: unknown[]) => mockOpenQueryWindowState(...args),
+  queryWindowsByNetwork: () => ({}),
+  closeQueryWindowState: vi.fn(),
+  setQueryWindowsByNetwork: vi.fn(),
+}));
+
+vi.mock("../lib/socket", () => ({
+  joinChannel: vi.fn(),
+  pushChannelOp: vi.fn(),
+  pushChannelDeop: vi.fn(),
+  pushChannelVoice: vi.fn(),
+  pushChannelDevoice: vi.fn(),
+  pushChannelKick: vi.fn(),
+  pushChannelBan: vi.fn(),
+  pushWhois: vi.fn(),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -970,6 +991,80 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       // Initially atBottom = true; button should not be visible.
       expect(screen.queryByTestId("scroll-to-bottom")).toBeNull();
+    });
+  });
+
+  // C7.6: Clickable nicks in scrollback.
+  describe("clickable nicks (C7.6)", () => {
+    it("clicking the sender span on a PRIVMSG line opens query window + focuses it", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const sender = document.querySelector(".scrollback-sender");
+      expect(sender).not.toBeNull();
+      sender?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(mockOpenQueryWindowState).toHaveBeenCalledWith(42, "alice", expect.any(String));
+      expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "alice",
+        kind: "query",
+      });
+    });
+
+    it("right-clicking the sender span renders the context-menu", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const sender = document.querySelector(".scrollback-sender");
+      expect(sender).not.toBeNull();
+      sender?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+      await waitFor(() => {
+        expect(document.querySelector('[role="menu"]')).not.toBeNull();
+      });
+    });
+
+    it("sender span has .nick-clickable class on PRIVMSG lines", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const sender = document.querySelector(".scrollback-sender");
+      expect(sender?.classList.contains("nick-clickable")).toBe(true);
     });
   });
 });
