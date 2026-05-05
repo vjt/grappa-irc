@@ -6,7 +6,8 @@ import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channe
 import { applyPresenceEvent } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
-import { channelsBySlug, user } from "./networks";
+import { channelsBySlug, networks, user } from "./networks";
+import { openQueryWindowState } from "./queryWindows";
 import { appendToScrollback } from "./scrollback";
 import { bumpUnread, selectedChannel } from "./selection";
 import { joinChannel } from "./socket";
@@ -44,6 +45,13 @@ import { joinChannel } from "./socket";
 // C3.2: JOIN-by-self detection: `message.kind === "join"` events whose
 // `sender` matches own nick are forwarded to `joinEvents.notifyJoin`
 // so ScrollbackPane can render the one-time join banner.
+//
+// C4.1: DM auto-open on incoming PRIVMSG. When an event arrives on the
+// own-nick channel (server routes incoming DMs to scrollback keyed by
+// the recipient's nick), subscribe auto-opens the sender's query window
+// via openQueryWindowState — but does NOT switch focus (focus-rule:
+// auto-open is focus-neutral, per spec #1). Case-insensitive own-nick
+// comparison matches IRC nick rules.
 
 // Full union of event payloads pushed by GrappaChannel on the
 // per-channel Phoenix topic. `kind` is the discriminator.
@@ -107,6 +115,24 @@ createRoot(() => {
           // (privmsg/notice/action/topic) are no-ops there. Dispatching
           // every event keeps the routing logic local to members.ts.
           applyPresenceEvent(key, payload.message);
+          // C4.1 — DM auto-open: if this channel IS the own-nick DM slot
+          // and the incoming event is a PRIVMSG, auto-open the sender's
+          // query window. Focus does NOT shift (focus-rule: auto-open is
+          // focus-neutral, per spec #1). `openQueryWindowState` is
+          // idempotent — repeated calls from the same sender are no-ops
+          // inside queryWindows.ts. `untrack` prevents the event handler
+          // from becoming reactive to user() or networks() changes.
+          if (payload.message.kind === "privmsg") {
+            const u = untrack(user);
+            const ownNick = u ? displayNick(u) : null;
+            if (ownNick && ch.name.toLowerCase() === ownNick.toLowerCase()) {
+              const nets = untrack(networks);
+              const networkId = nets?.find((n) => n.slug === slug)?.id;
+              if (networkId !== undefined) {
+                openQueryWindowState(networkId, payload.message.sender, new Date().toISOString());
+              }
+            }
+          }
           const sel = untrack(selectedChannel);
           const isSelected =
             sel !== null && sel.networkSlug === slug && sel.channelName === ch.name;
