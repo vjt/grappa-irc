@@ -6,7 +6,7 @@ import { membersByChannel } from "./members";
 import { networks } from "./networks";
 import { openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
-import { selectedChannel } from "./selection";
+import { selectedChannel, setSelectedChannel } from "./selection";
 import { parseSlash } from "./slashCommands";
 import {
   pushAwaySet,
@@ -219,23 +219,23 @@ const exports_ = createRoot(() => {
           result = { ok: true };
           break;
         case "msg": {
-          // /msg <target> <text> — send message AND open query window.
-          // Focus shifts per spec #1 (user action). Query window opened first
-          // so the server upserts the row; the PRIVMSG arrives afterward.
+          // /msg <target> <text> — open query window, switch focus (user
+          // action per spec #1), then send the PRIVMSG immediately.
           const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
-          if (networkId !== undefined) {
-            openQueryWindowState(networkId, cmd.target, new Date().toISOString());
-          }
+          if (networkId === undefined) return { error: "/msg: network not found" };
+          openQueryWindowState(networkId, cmd.target, new Date().toISOString());
+          setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
           await sendPrivmsg(networkSlug, cmd.target, cmd.body);
           result = { ok: true };
           break;
         }
         case "query": {
-          // /query <nick> / /q <nick> — open query window, no message sent.
-          // Focus shift is the caller's responsibility (user-action rule).
+          // /query <nick> / /q <nick> — open query window and switch focus.
+          // No message sent (spec #1: /query opens window without sending).
           const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
           if (networkId === undefined) return { error: "/query: network not found" };
           openQueryWindowState(networkId, cmd.target, new Date().toISOString());
+          setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
           result = { ok: true };
           break;
         }

@@ -598,45 +598,82 @@ describe("compose submit — T32 verbs", () => {
   });
 });
 
-// C2.2 — handler wiring for new verbs.
+// C2.2 / C4.3 — handler wiring for DM verbs.
+// /msg /query /q all open the query window AND switch focus (user-action).
 describe("compose submit — /query and /q DM verbs", () => {
-  it("/query <nick> opens query window via openQueryWindowState", async () => {
+  it("/query <nick> opens query window via openQueryWindowState AND switches focus", async () => {
     localStorage.setItem("grappa-token", "tok");
     const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/query alice");
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "alice",
+      kind: "query",
+    });
     expect(result).toEqual({ ok: true });
   });
 
-  it("/q <nick> opens query window (alias for /query)", async () => {
+  it("/q <nick> opens query window AND switches focus (alias for /query)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/q bob");
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "bob", expect.any(String));
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "bob",
+      kind: "query",
+    });
     expect(result).toEqual({ ok: true });
   });
 
-  it("/msg <nick> <text> opens query window AND sends PRIVMSG", async () => {
+  it("/msg <nick> <text> opens query window, switches focus, AND sends PRIVMSG", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
     vi.mocked(sb.sendMessage).mockResolvedValue();
     const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/msg alice ciao");
     const result = await compose.submit(k, "freenode", "#a");
 
     expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "alice",
+      kind: "query",
+    });
     expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "alice", "ciao");
     expect(result).toEqual({ ok: true });
+  });
+
+  it("/msg without active network returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const networks = await import("../lib/networks");
+    // Override networks to return empty list — no network found.
+    // The `networks` export is a Resource at compile-time but a vi.fn at test-
+    // time (mocked at module level). Access mock API via unknown cast.
+    (
+      networks.networks as unknown as { mockReturnValueOnce: (v: unknown) => void }
+    ).mockReturnValueOnce([]);
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/msg alice hello");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // networkId not found → inline error.
+    expect(result).toMatchObject({ error: expect.stringContaining("network not found") });
   });
 });
 
