@@ -3,7 +3,7 @@ import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
-import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
@@ -96,8 +96,11 @@ const BottomBar: Component<Props> = (props) => {
                     onClick={() => handleClick(network.slug, channel.name, "channel")}
                   >
                     {channel.name}
-                    <Show when={(unreadCounts()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-unread">{unreadCounts()[key]}</span>
+                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                    </Show>
+                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
                     </Show>
                     <Show when={(mentionCounts()[key] ?? 0) > 0}>
                       <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
@@ -120,8 +123,11 @@ const BottomBar: Component<Props> = (props) => {
                     onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                   >
                     {qw.targetNick}
-                    <Show when={(unreadCounts()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-unread">{unreadCounts()[key]}</span>
+                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                    </Show>
+                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
                     </Show>
                     <Show when={(mentionCounts()[key] ?? 0) > 0}>
                       <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>

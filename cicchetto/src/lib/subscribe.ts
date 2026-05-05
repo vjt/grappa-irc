@@ -9,7 +9,7 @@ import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
 import { openQueryWindowState } from "./queryWindows";
 import { appendToScrollback } from "./scrollback";
-import { bumpUnread, selectedChannel } from "./selection";
+import { bumpEventUnread, bumpMessageUnread, bumpUnread, selectedChannel } from "./selection";
 import { joinChannel } from "./socket";
 
 // WS subscription installer. Reactive side-effect module: imports for
@@ -138,6 +138,19 @@ createRoot(() => {
             sel !== null && sel.networkSlug === slug && sel.channelName === ch.name;
           if (isSelected) return;
           bumpUnread(key);
+          // C7.5: route the per-kind split counters. Content kinds bump
+          // messagesUnread (bold badge); presence kinds bump eventsUnread
+          // (dimmer indicator). bumpUnread above is kept for the aggregate
+          // count consumed by the mention-bumpMention side-effect path.
+          if (
+            payload.message.kind === "privmsg" ||
+            payload.message.kind === "notice" ||
+            payload.message.kind === "action"
+          ) {
+            bumpMessageUnread(key);
+          } else {
+            bumpEventUnread(key);
+          }
           // Mention bump (P4-1) — only PRIVMSGs whose body matches the
           // operator's own nick bump the red mention badge. Gated on
           // !isSelected so that tabbing INTO a channel clears the count

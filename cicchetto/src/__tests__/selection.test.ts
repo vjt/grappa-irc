@@ -116,4 +116,55 @@ describe("selection store", () => {
     });
     expect(selection.unreadCounts()[key]).toBeUndefined();
   });
+
+  // C7.5: msg-vs-events badge split.
+  describe("msg-vs-events badge split (C7.5)", () => {
+    it("bumpMessageUnread increments messagesUnread for the key", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.bumpMessageUnread(key);
+      selection.bumpMessageUnread(key);
+      expect(selection.messagesUnread()[key]).toBe(2);
+    });
+
+    it("bumpEventUnread increments eventsUnread for the key", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.bumpEventUnread(key);
+      expect(selection.eventsUnread()[key]).toBe(1);
+    });
+
+    it("setSelectedChannel clears both messagesUnread and eventsUnread for the key", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.bumpMessageUnread(key);
+      selection.bumpEventUnread(key);
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+
+    it("token rotation clears messagesUnread + eventsUnread", async () => {
+      localStorage.setItem("grappa-token", "tokA");
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.bumpMessageUnread(key);
+      selection.bumpEventUnread(key);
+      auth.setToken("tokB");
+      await vi.waitFor(() => {
+        expect(selection.messagesUnread()[key]).toBeUndefined();
+      });
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+  });
 });

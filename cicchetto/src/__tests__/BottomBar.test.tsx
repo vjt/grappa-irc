@@ -23,6 +23,8 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
   unreadCounts: () => ({ "freenode #bnc": 5 }),
+  messagesUnread: () => ({ "freenode #bnc": 5 }),
+  eventsUnread: () => ({}),
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -122,6 +124,8 @@ describe("BottomBar", () => {
       }),
       setSelectedChannel: vi.fn(),
       unreadCounts: () => ({}),
+      messagesUnread: () => ({}),
+      eventsUnread: () => ({}),
     }));
     vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
     vi.doMock("../lib/channelKey", () => ({
@@ -139,7 +143,7 @@ describe("BottomBar", () => {
 
   it("renders unread badge when unreadCounts > 0", () => {
     const { container } = render(() => <BottomBar />);
-    const unreadBadges = container.querySelectorAll(".bottom-bar-unread");
+    const unreadBadges = container.querySelectorAll(".bottom-bar-msg-unread");
     expect(unreadBadges.length).toBeGreaterThan(0);
     expect(unreadBadges[0]?.textContent).toBe("5");
   });

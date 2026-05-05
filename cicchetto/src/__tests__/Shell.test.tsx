@@ -42,6 +42,8 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => selectionState.selSig(),
   setSelectedChannel: selectionState.setSelectedChannelMock,
   unreadCounts: () => ({}),
+  messagesUnread: () => ({}),
+  eventsUnread: () => ({}),
 }));
 
 vi.mock("../lib/scrollback", () => ({
