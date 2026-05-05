@@ -2,9 +2,12 @@ import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
+import { isMobile } from "./lib/theme";
 
 // Top bar of the middle pane. Hosts:
-//  * left ☰ hamburger — opens the channel sidebar drawer (mobile only)
+//  * left ☰ hamburger — opens the channel sidebar drawer (DESKTOP ONLY;
+//    on mobile the sidebar is replaced by BottomBar, so this hamburger is
+//    hidden via isMobile() gating — C6.3 single-hamburger reshape)
 //  * channel name (bold accent)
 //  * topic strip: single-line ellipsized; "(no topic set)" placeholder
 //    when no topic is cached. Click/tap → modal expand with full topic,
@@ -12,7 +15,8 @@ import { membersByChannel } from "./lib/members";
 //  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
 //    Rendered only when modes are cached and non-empty (C3.1).
 //  * nick count from members.length
-//  * right ☰ hamburger — opens members drawer (mobile only)
+//  * right ☰ hamburger — opens members drawer (desktop + mobile; this is
+//    the SINGLE hamburger on mobile per spec #10)
 //  * ⚙ settings button — opens SettingsDrawer
 //
 // Modal state uses `"closed" | "open"` string-literal union per the
@@ -21,9 +25,10 @@ import { membersByChannel } from "./lib/members";
 // Always pinned at the top of the channel-window scrollback area — no
 // auto-collapse on scroll (vjt-blessed 2026-05-04).
 //
-// Hamburger buttons use display: none on desktop via CSS media query;
-// visible at ≤768px. Same DOM in both layouts so Shell.tsx doesn't have
-// to branch on isMobile() for layout — purely a CSS swap.
+// C6.3: Left hamburger hidden on mobile via <Show when={!isMobile()}>. The
+// right hamburger (members) remains on both desktop and mobile and becomes
+// the sole hamburger on mobile — providing thumb-friendly members access
+// without the channel sidebar that no longer exists on mobile.
 
 export type Props = {
   networkSlug: string;
@@ -64,14 +69,19 @@ const TopicBar: Component<Props> = (props) => {
 
   return (
     <div class="topic-bar">
-      <button
-        type="button"
-        class="topic-bar-hamburger"
-        aria-label="open channel sidebar"
-        onClick={props.onToggleSidebar}
-      >
-        ☰
-      </button>
+      {/* C6.3: left channel-sidebar hamburger hidden on mobile.
+          On mobile, channels live in BottomBar — no left drawer exists.
+          Only the right members hamburger survives as the single tap target. */}
+      <Show when={!isMobile()}>
+        <button
+          type="button"
+          class="topic-bar-hamburger"
+          aria-label="open channel sidebar"
+          onClick={props.onToggleSidebar}
+        >
+          ☰
+        </button>
+      </Show>
       <span class="topic-bar-channel">{props.channelName}</span>
       {/* Topic strip — always present; shows placeholder when no topic cached */}
       <button
