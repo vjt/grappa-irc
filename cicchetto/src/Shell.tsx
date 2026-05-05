@@ -189,7 +189,11 @@ const Shell: Component = () => {
                   onOpenSettings={() => setSettingsOpen(true)}
                 />
               </Show>
-              <ScrollbackPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
+              <ScrollbackPane
+                networkSlug={sel().networkSlug}
+                channelName={sel().channelName}
+                kind={sel().kind}
+              />
               <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
             </>
           )}
