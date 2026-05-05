@@ -263,15 +263,21 @@ createRoot(() => {
     const nets = networks();
     const u = user();
     if (!userName || !nets) return;
-    const ownNick = u ? displayNick(u) : null;
     for (const [networkIdStr, windowsList] of Object.entries(qwbn)) {
       const networkId = Number(networkIdStr);
       const net = nets.find((n) => n.id === networkId);
       if (!net) continue;
+      // Own-nick comparison uses the per-network IRC nick (net.nick, from the
+      // credential via GET /networks) rather than displayNick(user()) which
+      // returns user.name. When user.name coincides with a query window's
+      // targetNick (e.g. operator name "vjt", query target "vjt") but the IRC
+      // nick is different ("grappa"), displayNick-based comparison incorrectly
+      // skips the join. net.nick is the canonical per-network IRC nick to compare.
+      const perNetOwnNick = net.nick ?? (u ? displayNick(u) : null);
       for (const qw of windowsList) {
         // Skip own-nick — the dm-listener loop is the sole subscriber
         // for that topic and installs the correct re-keying handler.
-        if (ownNick && qw.targetNick.toLowerCase() === ownNick.toLowerCase()) continue;
+        if (perNetOwnNick && qw.targetNick.toLowerCase() === perNetOwnNick.toLowerCase()) continue;
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick);
@@ -290,6 +296,13 @@ createRoot(() => {
   // Joined-set key uses the own-nick key for the network so this
   // subscription is deduped against any future code path that joins
   // the same topic.
+  //
+  // Own-nick per network: prefer net.nick (the credential's configured
+  // IRC nick, returned by GET /networks) over displayNick(u) (user.name).
+  // user.name is the operator account name, which can differ from the IRC
+  // nick. When they differ, using displayNick would subscribe to the WRONG
+  // topic — the channel named after the operator account instead of the
+  // IRC nick the server broadcasts inbound DMs on.
   createEffect(() => {
     const t = token();
     const u = user();
@@ -297,9 +310,9 @@ createRoot(() => {
     if (!t) return;
     const userName = socketUserName();
     if (!userName || !u || !nets) return;
-    const ownNick = displayNick(u);
-    if (!ownNick) return;
     for (const net of nets) {
+      const ownNick = net.nick ?? displayNick(u);
+      if (!ownNick) continue;
       const key = channelKey(net.slug, ownNick);
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, ownNick);

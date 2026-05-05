@@ -85,6 +85,10 @@ export function displayNick(me: MeResponse): string {
 export type Network = {
   id: number;
   slug: string;
+  // nick is the per-network IRC nick as configured in the credential.
+  // Populated for user subjects (GET /networks includes it); absent for
+  // visitor subjects (visitors have no per-network credential row).
+  nick?: string;
   inserted_at: string;
   updated_at: string;
 };

@@ -54,21 +54,24 @@ defmodule GrappaWeb.NetworksController do
   @doc "`GET /networks` — list of network metadata for the bearer's subject."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
-    networks =
-      case conn.assigns.current_subject do
-        {:user, user} ->
+    case conn.assigns.current_subject do
+      {:user, user} ->
+        network_nicks =
           user
           |> Credentials.list_credentials_for_user()
-          |> Enum.map(& &1.network)
+          |> Enum.map(&{&1.network, &1.nick})
 
-        {:visitor, visitor} ->
+        render(conn, :index, networks: {:user, network_nicks})
+
+      {:visitor, visitor} ->
+        networks =
           case Networks.get_network_by_slug(visitor.network_slug) do
             {:ok, network} -> [network]
             {:error, :not_found} -> []
           end
-      end
 
-    render(conn, :index, networks: networks)
+        render(conn, :index, networks: {:visitor, networks})
+    end
   end
 
   @doc """

@@ -1117,3 +1117,96 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
     expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
   });
 });
+
+// DM live-WS gap — nick-clash regression.
+//
+// Bug: when operator's cicchetto user.name ("vjt") coincides with a query
+// window targetNick ("vjt") but the IRC nick on the network is different
+// ("grappa"), the query-windows-loop incorrectly skipped the join for the
+// "vjt" topic (comparing targetNick against displayNick(user()) = user.name
+// instead of net.nick). The DM-listener then captured the "vjt" topic with
+// the wrong re-keying handler, routing messages to channelKey("freenode",
+// "grappa") instead of channelKey("freenode", "vjt").
+//
+// Fix: use net.nick (per-network IRC nick from the credential, now included
+// in GET /networks response) for the own-nick comparison in both loops.
+describe("subscribe — nick-clash regression (user.name === targetNick, IRC nick differs)", () => {
+  const seedNickClashStubs = async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      // net.nick = "grappa" (IRC nick) !== user.name = "vjt" (operator account).
+      { id: 1, slug: "freenode", nick: "grappa", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    // user.name ("vjt") clashes with targetNick ("vjt") but NOT with IRC nick ("grappa").
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("joins channel:vjt via query-windows-loop even when user.name === targetNick", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem("grappa-subject", JSON.stringify({ kind: "user", id: "u1", name: "vjt" }));
+    await seedNickClashStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }],
+    });
+    const socket = await import("../lib/socket");
+    await loadStores();
+    // 1 channel (#grappa) + 1 query window (vjt) + 1 DM-listener (grappa IRC nick) = 3 joins.
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+    });
+    // query-windows-loop must join channel:vjt (targetNick != IRC nick "grappa").
+    expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "vjt");
+    // DM-listener must join channel:grappa (the actual IRC nick, from net.nick).
+    expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "grappa");
+  });
+
+  it("outbound DM echo (sender=grappa, channel=vjt) lands in channelKey freenode/vjt", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem("grappa-subject", JSON.stringify({ kind: "user", id: "u1", name: "vjt" }));
+    await seedNickClashStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }],
+    });
+    const store = await loadStores();
+    // 1 channel + 1 query window + 1 DM-listener = 3 handlers.
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    // Handler index 1 is the query-windows-loop join for "vjt".
+    // Fire an outbound DM echo: server broadcasts on channel:vjt with sender=grappa.
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const queryHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    queryHandler({
+      kind: "message",
+      message: {
+        id: 700,
+        network: "freenode",
+        channel: "vjt",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "grappa",
+        body: "E2E-CASE2-out-payload",
+        meta: {},
+      },
+    });
+    // Message must land in vjt's query window, NOT in any grappa key.
+    const vjtKey = channelKey("freenode", "vjt");
+    expect(store.scrollbackByChannel()[vjtKey]?.map((m) => m.body)).toEqual([
+      "E2E-CASE2-out-payload",
+    ]);
+    // grappa key must be untouched — no re-keying happened.
+    const grappaKey = channelKey("freenode", "grappa");
+    expect(store.scrollbackByChannel()[grappaKey]).toBeUndefined();
+  });
+});
