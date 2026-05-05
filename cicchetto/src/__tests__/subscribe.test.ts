@@ -49,6 +49,13 @@ vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({}),
 }));
 
+vi.mock("../lib/queryWindows", () => ({
+  openQueryWindowState: vi.fn(),
+  closeQueryWindowState: vi.fn(),
+  queryWindowsByNetwork: vi.fn(() => ({})),
+  setQueryWindowsByNetwork: vi.fn(),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -453,5 +460,141 @@ describe("subscribe — WS join effect", () => {
       expect(store.unreadCounts()[key]).toBeUndefined();
       expect(store.selectedChannel()).toBeNull();
     });
+  });
+});
+
+// C4.1 — DM auto-open on incoming PRIVMSG.
+//
+// When an incoming PRIVMSG arrives on the own-nick channel (the server
+// routes DMs to scrollback keyed by the recipient's nick), and no query
+// window exists for the sender, subscribe.ts should call
+// openQueryWindowState — but NOT setSelectedChannel (focus-rule: auto-
+// open is focus-neutral, per spec #1).
+describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
+  // Helper: fire the event handler installed for the Nth channel in join order.
+  const fireAtHandlerIndex = (idx: number, payload: unknown) => {
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const handler = eventCalls[idx]?.[1] as (p: unknown) => void;
+    handler(payload);
+  };
+
+  // stubs: channels include "alice" (own nick) as the DM channel.
+  const seedDmStubs = async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    ]);
+    // "alice" is the own nick — server routes incoming DMs to this channel slot.
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+      { name: "alice", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("incoming PRIVMSG to own nick from new sender opens query window; selection unchanged", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmStubs();
+    const qw = await import("../lib/queryWindows");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      // Both channels (#grappa + alice) joined.
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    // alice channel is index 1 (second channel in list).
+    fireAtHandlerIndex(1, {
+      kind: "message",
+      message: {
+        id: 200,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "hey",
+        meta: {},
+      },
+    });
+    // Query window should be opened for "bob" on network 1.
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "bob", expect.any(String));
+    // Focus must NOT change.
+    expect(store.selectedChannel()).toBeNull();
+  });
+
+  it("incoming PRIVMSG to own nick from sender with existing query window — no duplicate open; selection unchanged", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmStubs();
+    const qw = await import("../lib/queryWindows");
+    // Seed "bob" as already-open query window.
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "bob", openedAt: "2026-05-04T10:00:00Z" }],
+    });
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    fireAtHandlerIndex(1, {
+      kind: "message",
+      message: {
+        id: 201,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "hey again",
+        meta: {},
+      },
+    });
+    // openQueryWindowState still called (idempotent inside it), but
+    // selection must NOT change.
+    expect(store.selectedChannel()).toBeNull();
+    // We do NOT assert openQueryWindowState NOT called — the production
+    // code calls it; idempotency is enforced inside queryWindows.ts
+    // (already tested in queryWindows.test.ts). The key invariant here
+    // is focus-neutrality.
+  });
+
+  it("incoming PRIVMSG to a channel (not own nick) does NOT open query window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmStubs();
+    const qw = await import("../lib/queryWindows");
+    await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    // Fire on #grappa channel (index 0) — regular channel PRIVMSG.
+    fireAtHandlerIndex(0, {
+      kind: "message",
+      message: {
+        id: 202,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "hello channel",
+        meta: {},
+      },
+    });
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
   });
 });
