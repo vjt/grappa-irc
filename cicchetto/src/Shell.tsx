@@ -1,10 +1,12 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import BottomBar from "./BottomBar";
 import ComposeBox from "./ComposeBox";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { channelsBySlug, networks } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import { isMobile } from "./lib/theme";
 import MembersPane from "./MembersPane";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
@@ -12,21 +14,28 @@ import Sidebar from "./Sidebar";
 import TopicBar from "./TopicBar";
 
 // Three-pane responsive shell. Composition root for Sidebar / TopicBar /
-// ScrollbackPane / ComposeBox / MembersPane / SettingsDrawer.
+// ScrollbackPane / ComposeBox / MembersPane / SettingsDrawer / BottomBar.
 //
-// Drawer state (mobile, ≤768px) lives here:
-//   * sidebarOpen — left channel-list drawer
-//   * membersOpen — right members-list drawer
+// Drawer state lives here:
+//   * sidebarOpen — left channel-list drawer (desktop only; on mobile, channels
+//     live in BottomBar and the sidebar is not rendered at all)
+//   * membersOpen — right members-list drawer (desktop + mobile via single hamburger)
 //   * settingsOpen — full-cover settings overlay (desktop+mobile)
+//
+// Mobile layout (≤768px, isMobile() reactive signal from theme.ts):
+//   * JSX branches on isMobile() — NOT just CSS display toggling.
+//   * Mobile branch: TopicBar (single hamburger for members) → Scrollback
+//     → ComposeBox → BottomBar. Full-width. No left sidebar.
+//   * Desktop branch: unchanged three-pane layout (sidebar | main | members).
 //
 // Keybindings: Shell is the only consumer of `keybindings.registerHandlers`
 // + `install`. Action callbacks drive selection (Alt+1..9, Ctrl+N/P),
 // drawer state (Esc), compose focus (/), and tab-complete (Tab in
 // compose textarea). install() is idempotent; uninstall fires on unmount.
 //
-// Mobile layout follows from CSS media queries against
-// `--breakpoint-mobile: 768px`. Same DOM in both layouts; only display +
-// transform change. The .open classList drives the slide-in transition.
+// The sidebar auto-close effect fires on both branches. On mobile, it is a
+// harmless no-op: setSidebarOpen(false) writes a signal whose DOM node is
+// not rendered in the mobile branch.
 
 const Shell: Component = () => {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
@@ -120,9 +129,11 @@ const Shell: Component = () => {
   install();
   onCleanup(uninstall);
 
-  // Auto-close sidebar drawer when the user picks a channel (mobile UX).
+  // Auto-close sidebar drawer when the user picks a channel.
   // `defer: true` skips the initial run so we don't immediately close
   // a drawer the user just opened with the default selection.
+  // On mobile this is a harmless no-op: setSidebarOpen(false) writes to
+  // a signal whose corresponding DOM node is not rendered.
   createEffect(
     on(
       selectedChannel,
@@ -134,80 +145,168 @@ const Shell: Component = () => {
   );
 
   return (
-    <div class="shell">
-      <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
-        <Sidebar onSelect={() => setSidebarOpen(false)} />
-      </aside>
+    <Show
+      when={isMobile()}
+      fallback={
+        // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
+        <div class="shell">
+          <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
+            <Sidebar onSelect={() => setSidebarOpen(false)} />
+          </aside>
 
-      <Show when={sidebarOpen() || membersOpen()}>
-        <div
-          class="shell-drawer-backdrop open"
-          onClick={() => {
-            setSidebarOpen(false);
-            setMembersOpen(false);
-          }}
-          aria-hidden="true"
-        />
-      </Show>
+          <Show when={sidebarOpen() || membersOpen()}>
+            <div
+              class="shell-drawer-backdrop open"
+              onClick={() => {
+                setSidebarOpen(false);
+                setMembersOpen(false);
+              }}
+              aria-hidden="true"
+            />
+          </Show>
 
-      <section class="shell-main">
-        <Show
-          when={selectedChannel()}
-          fallback={
-            <>
-              <header class="shell-empty-toolbar">
-                <button
-                  type="button"
-                  class="topic-bar-hamburger"
-                  aria-label="open channel sidebar"
-                  onClick={() => setSidebarOpen((v) => !v)}
-                >
-                  ☰
-                </button>
-                <span class="shell-empty-toolbar-spacer" />
-                <button
-                  type="button"
-                  class="topic-bar-settings"
-                  aria-label="open settings"
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  ⚙
-                </button>
-              </header>
-              <p class="muted">select a channel to view scrollback</p>
-            </>
-          }
-        >
-          {(sel) => (
-            <>
-              <Show when={sel().kind === "channel"}>
-                <TopicBar
+          <section class="shell-main">
+            <Show
+              when={selectedChannel()}
+              fallback={
+                <>
+                  <header class="shell-empty-toolbar">
+                    <button
+                      type="button"
+                      class="topic-bar-hamburger"
+                      aria-label="open channel sidebar"
+                      onClick={() => setSidebarOpen((v) => !v)}
+                    >
+                      ☰
+                    </button>
+                    <span class="shell-empty-toolbar-spacer" />
+                    <button
+                      type="button"
+                      class="topic-bar-settings"
+                      aria-label="open settings"
+                      onClick={() => setSettingsOpen(true)}
+                    >
+                      ⚙
+                    </button>
+                  </header>
+                  <p class="muted">select a channel to view scrollback</p>
+                </>
+              }
+            >
+              {(sel) => (
+                <>
+                  <Show when={sel().kind === "channel"}>
+                    <TopicBar
+                      networkSlug={sel().networkSlug}
+                      channelName={sel().channelName}
+                      onToggleSidebar={() => setSidebarOpen((v) => !v)}
+                      onToggleMembers={() => setMembersOpen((v) => !v)}
+                      onOpenSettings={() => setSettingsOpen(true)}
+                    />
+                  </Show>
+                  <ScrollbackPane
+                    networkSlug={sel().networkSlug}
+                    channelName={sel().channelName}
+                    kind={sel().kind}
+                  />
+                  <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+                </>
+              )}
+            </Show>
+          </section>
+
+          <aside class="shell-members" classList={{ open: membersOpen() }}>
+            <Show when={selectedChannel()}>
+              {(sel) => (
+                <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
+              )}
+            </Show>
+          </aside>
+
+          <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+        </div>
+      }
+    >
+      {/* ── Mobile layout ──────────────────────────────────────────────
+          Spec #10 mobile reshape. Vertical order top→bottom:
+            TopicBar (single hamburger — members only; no channel hamburger)
+            Scrollback (1fr)
+            ComposeBox
+            BottomBar (window picker, horizontal scroll, UNDER compose)
+          Members pane: slide-in-from-right drawer toggled by the single
+          hamburger in TopicBar (aria-label "open members sidebar").
+          Channel sidebar (.shell-sidebar) is NOT rendered on mobile —
+          channels are navigated via BottomBar. This is a full JSX branch,
+          not a CSS-display toggle, so the sidebar DOM is absent entirely.
+      */}
+      <div class="shell shell-mobile">
+        <Show when={membersOpen()}>
+          <div
+            class="shell-drawer-backdrop open"
+            onClick={() => setMembersOpen(false)}
+            aria-hidden="true"
+          />
+        </Show>
+
+        <section class="shell-main">
+          <Show
+            when={selectedChannel()}
+            fallback={
+              <>
+                <header class="shell-empty-toolbar">
+                  <span class="shell-empty-toolbar-spacer" />
+                  <button
+                    type="button"
+                    class="topic-bar-settings"
+                    aria-label="open settings"
+                    onClick={() => setSettingsOpen(true)}
+                  >
+                    ⚙
+                  </button>
+                </header>
+                <p class="muted">select a channel below</p>
+              </>
+            }
+          >
+            {(sel) => (
+              <>
+                <Show when={sel().kind === "channel"}>
+                  {/* C6.3: on mobile, TopicBar is given onToggleSidebar as no-op
+                      (channel sidebar doesn't exist on mobile) and onToggleMembers
+                      as the single hamburger. TopicBar hides the sidebar hamburger
+                      on mobile via isMobile() gating inside TopicBar itself. */}
+                  <TopicBar
+                    networkSlug={sel().networkSlug}
+                    channelName={sel().channelName}
+                    onToggleSidebar={() => undefined}
+                    onToggleMembers={() => setMembersOpen((v) => !v)}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                  />
+                </Show>
+                <ScrollbackPane
                   networkSlug={sel().networkSlug}
                   channelName={sel().channelName}
-                  onToggleSidebar={() => setSidebarOpen((v) => !v)}
-                  onToggleMembers={() => setMembersOpen((v) => !v)}
-                  onOpenSettings={() => setSettingsOpen(true)}
+                  kind={sel().kind}
                 />
-              </Show>
-              <ScrollbackPane
-                networkSlug={sel().networkSlug}
-                channelName={sel().channelName}
-                kind={sel().kind}
-              />
-              <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
-            </>
-          )}
-        </Show>
-      </section>
+                <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+              </>
+            )}
+          </Show>
+        </section>
 
-      <aside class="shell-members" classList={{ open: membersOpen() }}>
-        <Show when={selectedChannel()}>
-          {(sel) => <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />}
-        </Show>
-      </aside>
+        <BottomBar />
 
-      <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
-    </div>
+        <aside class="shell-members" classList={{ open: membersOpen() }}>
+          <Show when={selectedChannel()}>
+            {(sel) => (
+              <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
+            )}
+          </Show>
+        </aside>
+
+        <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+      </div>
+    </Show>
   );
 };
 

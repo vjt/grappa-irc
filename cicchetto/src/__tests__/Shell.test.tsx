@@ -20,6 +20,9 @@ const selectionState = vi.hoisted(() => {
   };
 });
 
+// Mutable isMobile ref so individual tests can flip to mobile mode.
+const mobileState = vi.hoisted(() => ({ value: false }));
+
 vi.mock("@solidjs/router", () => ({
   useNavigate: () => vi.fn(),
 }));
@@ -81,6 +84,7 @@ vi.mock("../lib/compose", () => ({
 vi.mock("../lib/theme", () => ({
   getTheme: vi.fn(() => "auto"),
   setTheme: vi.fn(),
+  isMobile: () => mobileState.value,
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -110,6 +114,7 @@ import Shell from "../Shell";
 beforeEach(() => {
   vi.clearAllMocks();
   selectionState.setSelSig(null);
+  mobileState.value = false;
 });
 
 describe("Shell — three-pane integration", () => {
@@ -228,5 +233,45 @@ describe("Shell — three-pane integration", () => {
     fireEvent.click(screen.getByLabelText(/open settings/i));
     const settings = container.querySelector(".settings-drawer");
     expect(settings?.classList.contains("open")).toBe(true);
+  });
+});
+
+describe("Shell — mobile layout (isMobile = true)", () => {
+  // C6.1: on mobile, shell-sidebar is NOT rendered in the DOM.
+  // Channels live in the BottomBar; the left drawer goes away entirely.
+  it("shell-sidebar is absent from the DOM on mobile", () => {
+    mobileState.value = true;
+    const { container } = render(() => <Shell />);
+    expect(container.querySelector(".shell-sidebar")).toBeNull();
+  });
+
+  // C6.1: on mobile, a .bottom-bar element IS rendered (BottomBar).
+  it("bottom-bar IS rendered on mobile", () => {
+    mobileState.value = true;
+    const { container } = render(() => <Shell />);
+    expect(container.querySelector(".bottom-bar")).toBeTruthy();
+  });
+
+  // C6.3: on mobile, there is exactly ONE .topic-bar-hamburger (the members one).
+  // The channel-sidebar hamburger is removed on mobile.
+  it("exactly one .topic-bar-hamburger rendered on mobile (members only)", async () => {
+    mobileState.value = true;
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    const { container } = render(() => <Shell />);
+    await waitFor(() => {
+      expect(container.querySelectorAll(".topic-bar-hamburger").length).toBe(1);
+    });
+  });
+
+  // C6.3: on mobile, the single hamburger opens the members drawer.
+  it("single hamburger on mobile opens members drawer", async () => {
+    mobileState.value = true;
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    const { container } = render(() => <Shell />);
+    await waitFor(() => {
+      expect(container.querySelector(".topic-bar-hamburger")).toBeTruthy();
+    });
+    fireEvent.click(container.querySelector(".topic-bar-hamburger") as HTMLElement);
+    expect(container.querySelector(".shell-members")?.classList.contains("open")).toBe(true);
   });
 });
