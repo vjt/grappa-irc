@@ -279,7 +279,18 @@ Private messages get per-user "query" windows in the sidebar, persisted across l
 
 **Cluster-wide focus rule:** focus changes only on user actions (`/join` self, `/msg` `/query` `/q`, click on tab, click on nick). Incoming traffic — PRIVMSG, JOIN, PART, QUIT, MODE, autojoin window auto-creation — never steals focus. Enforced by invariant tests in `cicchetto/src/__tests__/focus-rule.test.ts`.
 
-### Channel ops submenu + numeric error rendering (C5)
+### Mobile layout (C6)
+
+At viewports ≤768px (`--breakpoint-mobile`) cicchetto switches to a mobile-first layout:
+
+- **Bottom tab-bar** (under the compose input): horizontally scrollable strip of all windows, grouped by network with a network-name chip. Ordering within each network: Server → channels → query/DM windows. Unread and mention badges render inline. Replaces the left sidebar for navigation on mobile.
+- **Single hamburger** (right-side, in the topic bar): toggles the members/nicks slide-in drawer. The left channel-sidebar hamburger is removed on mobile — channels are navigated via the bottom tab-bar.
+- **Full-width scrollback** — no left/right panes; compose and bottom-bar sit below it.
+- Desktop three-pane layout (sidebar | scrollback | members) is completely unchanged above 768px.
+
+The breakpoint is mirrored in TypeScript as the `isMobile()` reactive signal in `cicchetto/src/lib/theme.ts`.
+
+
 
 Right-click any nick in the members pane to open a context submenu. Items:
 
