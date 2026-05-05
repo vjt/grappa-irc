@@ -90,4 +90,43 @@ describe("networks resources", () => {
     const networks = await import("../lib/networks");
     expect(typeof networks.refetchChannels).toBe("function");
   });
+
+  // BUG1-FIX: mutateNetworkNick patches the nick for one network in-place.
+  it("mutateNetworkNick updates the nick for a matching network id", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([]);
+    vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+    const networks = await import("../lib/networks");
+    // Wait for the resource to resolve.
+    await vi.waitFor(() => {
+      const n = networks.networks();
+      expect(n?.length).toBe(1);
+    });
+    // Confirm initial nick from REST.
+    expect(networks.networks()?.[0]?.nick).toBe("grappa");
+    // Simulate own_nick_changed broadcast updating the live nick.
+    networks.mutateNetworkNick(7, "vjt-grappa");
+    expect(networks.networks()?.[0]?.nick).toBe("vjt-grappa");
+  });
+
+  it("mutateNetworkNick is a no-op for unknown network ids", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([]);
+    vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+    const networks = await import("../lib/networks");
+    await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
+    // Wrong id — should be a no-op.
+    networks.mutateNetworkNick(999, "should-not-appear");
+    expect(networks.networks()?.[0]?.nick).toBe("grappa");
+  });
 });

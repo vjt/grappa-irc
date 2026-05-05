@@ -30,6 +30,7 @@ vi.mock("../lib/networks", () => ({
   channelsBySlug: vi.fn(() => ({
     freenode: [{ name: "#grappa", joined: true, source: "autojoin" }],
   })),
+  mutateNetworkNick: vi.fn(),
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -241,6 +242,34 @@ describe("userTopic", () => {
         text: "[200]",
         severity: "ok",
       });
+    });
+  });
+
+  // BUG1-FIX: own_nick_changed event updates network nick in memory.
+  describe("own_nick_changed event (BUG1-FIX)", () => {
+    it("calls mutateNetworkNick with the new nick on own_nick_changed", async () => {
+      const networks = await import("../lib/networks");
+      channelMock.fireEvent({
+        kind: "own_nick_changed",
+        network_id: 42,
+        nick: "vjt-grappa",
+      });
+      expect(networks.mutateNetworkNick).toHaveBeenCalledWith(42, "vjt-grappa");
+    });
+
+    it("does NOT call mutateNetworkNick for unrelated events", async () => {
+      const networks = await import("../lib/networks");
+      channelMock.fireEvent({ kind: "channels_changed" });
+      expect(networks.mutateNetworkNick).not.toHaveBeenCalled();
+    });
+
+    it("handles repeated own_nick_changed events (nick rotation)", async () => {
+      const networks = await import("../lib/networks");
+      channelMock.fireEvent({ kind: "own_nick_changed", network_id: 1, nick: "grappa-1" });
+      channelMock.fireEvent({ kind: "own_nick_changed", network_id: 1, nick: "grappa-2" });
+      expect(networks.mutateNetworkNick).toHaveBeenCalledTimes(2);
+      expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(1, 1, "grappa-1");
+      expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(2, 1, "grappa-2");
     });
   });
 });
