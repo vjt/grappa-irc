@@ -4,9 +4,26 @@ import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { membersByChannel } from "./members";
 import { networks } from "./networks";
+import { openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
+import { selectedChannel } from "./selection";
 import { parseSlash } from "./slashCommands";
-import { pushAwaySet, pushAwayUnset } from "./socket";
+import {
+  pushAwaySet,
+  pushAwayUnset,
+  pushChannelBan,
+  pushChannelBanlist,
+  pushChannelDeop,
+  pushChannelDevoice,
+  pushChannelInvite,
+  pushChannelKick,
+  pushChannelMode,
+  pushChannelOp,
+  pushChannelTopicClear,
+  pushChannelUmode,
+  pushChannelUnban,
+  pushChannelVoice,
+} from "./socket";
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -131,6 +148,27 @@ const exports_ = createRoot(() => {
     const t = token();
     if (!t) return { error: "no session" };
 
+    // Active-channel context helper. Returns the channel name for the
+    // current active window, or null if not in a channel window (which
+    // would reject ops verbs that require a channel).
+    const getActiveChannel = (): string | null => {
+      const sel = selectedChannel();
+      if (!sel) return null;
+      const name = sel.channelName;
+      // Channel windows start with '#', '&', '+', or '!' per IRC spec.
+      // Query windows use a nick (no # prefix). Server/list/mentions
+      // pseudo-windows use synthetic keys that don't start with '#'.
+      if (!/^[#&+!]/.test(name)) return null;
+      return name;
+    };
+
+    // Require a channel window; emit inline error if not in one.
+    const requireChannel = (verb: string): string | { error: string } => {
+      const ch = getActiveChannel();
+      if (!ch) return { error: `/${verb} requires an active channel window` };
+      return ch;
+    };
+
     let result: SubmitResult;
     try {
       switch (cmd.kind) {
@@ -153,18 +191,54 @@ const exports_ = createRoot(() => {
           result = { ok: true };
           break;
         }
-        case "topic":
-          await postTopic(t, networkSlug, channelName, cmd.body);
+        case "topic-show": {
+          // Bare /topic — render cached topic inline. The cached topic
+          // lives in userTopic.ts; rendering is pure UI. Return a
+          // special error that ComposeBox can display inline.
+          // TODO(C3): wire to TopicBar's cached topic for inline render.
+          return { error: "/topic (bare) — inline render wired in C3 (TopicBar)" };
+        }
+        case "topic-set": {
+          // /topic <text> — set topic via REST (existing postTopic path).
+          await postTopic(t, networkSlug, channelName, cmd.text);
           result = { ok: true };
           break;
+        }
+        case "topic-clear": {
+          // /topic -delete — clear topic via channel event.
+          const sel = selectedChannel();
+          if (!sel) return { error: "/topic -delete requires an active channel window" };
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/topic -delete: network not found" };
+          pushChannelTopicClear(networkId, sel.channelName);
+          result = { ok: true };
+          break;
+        }
         case "nick":
           await postNick(t, networkSlug, cmd.nick);
           result = { ok: true };
           break;
-        case "msg":
+        case "msg": {
+          // /msg <target> <text> — send message AND open query window.
+          // Focus shifts per spec #1 (user action). Query window opened first
+          // so the server upserts the row; the PRIVMSG arrives afterward.
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId !== undefined) {
+            openQueryWindowState(networkId, cmd.target, new Date().toISOString());
+          }
           await sendPrivmsg(networkSlug, cmd.target, cmd.body);
           result = { ok: true };
           break;
+        }
+        case "query": {
+          // /query <nick> / /q <nick> — open query window, no message sent.
+          // Focus shift is the caller's responsibility (user-action rule).
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/query: network not found" };
+          openQueryWindowState(networkId, cmd.target, new Date().toISOString());
+          result = { ok: true };
+          break;
+        }
         case "quit": {
           // Nuclear: park ALL bound networks, then logout.
           // `Promise.allSettled` — partial PATCH failures do NOT block the
@@ -201,7 +275,7 @@ const exports_ = createRoot(() => {
         }
         case "connect": {
           // Unpark + respawn. Network slug guaranteed by parser
-          // (bare /connect surfaces as kind: "connect-error" instead).
+          // (bare /connect surfaces as kind: "error" instead).
           await patchNetwork(t, cmd.network, { connection_state: "connected" });
           result = { ok: true };
           break;
@@ -219,10 +293,135 @@ const exports_ = createRoot(() => {
           result = { ok: true };
           break;
         }
-        case "connect-error":
-          return { error: cmd.error };
-        case "unknown":
-          return { error: `unknown command: /${cmd.verb}` };
+        // ---------------------------------------------------------------
+        // Channel ops verbs — push on user-level channel to GrappaChannel.
+        // All require a channel window context (except umode and mode which
+        // accept their target explicitly).
+        // ---------------------------------------------------------------
+        case "op": {
+          const chanOrErr = requireChannel("op");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/op: network not found" };
+          pushChannelOp(networkId, chanOrErr, cmd.nicks);
+          result = { ok: true };
+          break;
+        }
+        case "deop": {
+          const chanOrErr = requireChannel("deop");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/deop: network not found" };
+          pushChannelDeop(networkId, chanOrErr, cmd.nicks);
+          result = { ok: true };
+          break;
+        }
+        case "voice": {
+          const chanOrErr = requireChannel("voice");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/voice: network not found" };
+          pushChannelVoice(networkId, chanOrErr, cmd.nicks);
+          result = { ok: true };
+          break;
+        }
+        case "devoice": {
+          const chanOrErr = requireChannel("devoice");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/devoice: network not found" };
+          pushChannelDevoice(networkId, chanOrErr, cmd.nicks);
+          result = { ok: true };
+          break;
+        }
+        case "kick": {
+          const chanOrErr = requireChannel("kick");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/kick: network not found" };
+          pushChannelKick(networkId, chanOrErr, cmd.nick, cmd.reason);
+          result = { ok: true };
+          break;
+        }
+        case "ban": {
+          const chanOrErr = requireChannel("ban");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/ban: network not found" };
+          pushChannelBan(networkId, chanOrErr, cmd.mask);
+          result = { ok: true };
+          break;
+        }
+        case "unban": {
+          const chanOrErr = requireChannel("unban");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/unban: network not found" };
+          pushChannelUnban(networkId, chanOrErr, cmd.mask);
+          result = { ok: true };
+          break;
+        }
+        case "banlist": {
+          const chanOrErr = requireChannel("banlist");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/banlist: network not found" };
+          pushChannelBanlist(networkId, chanOrErr);
+          result = { ok: true };
+          break;
+        }
+        case "invite": {
+          // /invite <nick> [#chan] — channel defaults to active window.
+          const chanOrErr = requireChannel("invite");
+          if (typeof chanOrErr !== "string") return chanOrErr;
+          const chan = cmd.channel ?? chanOrErr;
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/invite: network not found" };
+          pushChannelInvite(networkId, chan, cmd.nick);
+          result = { ok: true };
+          break;
+        }
+        case "umode": {
+          // /umode — user-mode on own nick, no channel context required.
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/umode: network not found" };
+          pushChannelUmode(networkId, cmd.modes);
+          result = { ok: true };
+          break;
+        }
+        case "mode": {
+          // /mode — raw verbatim, target explicit in args. No channel required.
+          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          if (networkId === undefined) return { error: "/mode: network not found" };
+          pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
+          result = { ok: true };
+          break;
+        }
+        // ---------------------------------------------------------------
+        // Info verbs — server-side handlers not yet implemented.
+        // Emit inline errors as TODO stubs (future bucket wiring).
+        // ---------------------------------------------------------------
+        case "who":
+          return { error: "/who: server-side handler not yet implemented (future bucket)" };
+        case "names":
+          return { error: "/names: server-side handler not yet implemented (future bucket)" };
+        case "list":
+          return { error: "/list: server-side handler not yet implemented (future bucket)" };
+        case "links":
+          return { error: "/links: server-side handler not yet implemented (future bucket)" };
+        // ---------------------------------------------------------------
+        // Watchlist verbs — server-side /user_settings API not yet implemented.
+        // Emit inline errors as TODO stubs.
+        // ---------------------------------------------------------------
+        case "watchlist":
+          return {
+            error: "/watch /highlight: user_settings API not yet implemented (future bucket)",
+          };
+        // ---------------------------------------------------------------
+        // Parser-level error (unknown verb or validation failure).
+        // ---------------------------------------------------------------
+        case "error":
+          return { error: cmd.message };
         default: {
           const _exhaustive: never = cmd;
           void _exhaustive;
