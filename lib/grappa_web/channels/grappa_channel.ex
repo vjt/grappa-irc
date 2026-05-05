@@ -550,26 +550,8 @@ defmodule GrappaWeb.GrappaChannel do
       {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
     else
       case safe_get_user(user_name) do
-        {:ok, user} ->
-          existing = UserSettings.get_highlight_patterns(user.id)
-
-          new_patterns =
-            if pattern in existing do
-              existing
-            else
-              existing ++ [pattern]
-            end
-
-          case UserSettings.set_highlight_patterns(user.id, new_patterns) do
-            {:ok, _} ->
-              {:reply, {:ok, %{patterns: new_patterns}}, socket}
-
-            {:error, _} ->
-              {:reply, {:error, %{reason: "save_failed"}}, socket}
-          end
-
-        :error ->
-          {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:ok, user} -> watchlist_add_for_user(user.id, pattern, socket)
+        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       end
     end
   end
@@ -584,26 +566,40 @@ defmodule GrappaWeb.GrappaChannel do
       {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
     else
       case safe_get_user(user_name) do
-        {:ok, user} ->
-          existing = UserSettings.get_highlight_patterns(user.id)
-
-          if pattern in existing do
-            new_patterns = List.delete(existing, pattern)
-
-            case UserSettings.set_highlight_patterns(user.id, new_patterns) do
-              {:ok, _} ->
-                {:reply, {:ok, %{patterns: new_patterns}}, socket}
-
-              {:error, _} ->
-                {:reply, {:error, %{reason: "save_failed"}}, socket}
-            end
-          else
-            {:reply, {:error, %{reason: "not_found"}}, socket}
-          end
-
-        :error ->
-          {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:ok, user} -> watchlist_del_for_user(user.id, pattern, socket)
+        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       end
+    end
+  end
+
+  # Watchlist add helper — extracted to keep handle_in nesting ≤ 2 levels.
+  @spec watchlist_add_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
+          {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
+  defp watchlist_add_for_user(user_id, pattern, socket) do
+    existing = UserSettings.get_highlight_patterns(user_id)
+    new_patterns = if pattern in existing, do: existing, else: [pattern | existing]
+
+    case UserSettings.set_highlight_patterns(user_id, new_patterns) do
+      {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
+      {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
+    end
+  end
+
+  # Watchlist del helper — extracted to keep handle_in nesting ≤ 2 levels.
+  @spec watchlist_del_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
+          {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
+  defp watchlist_del_for_user(user_id, pattern, socket) do
+    existing = UserSettings.get_highlight_patterns(user_id)
+
+    if pattern in existing do
+      new_patterns = List.delete(existing, pattern)
+
+      case UserSettings.set_highlight_patterns(user_id, new_patterns) do
+        {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
+        {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
+      end
+    else
+      {:reply, {:error, %{reason: "not_found"}}, socket}
     end
   end
 

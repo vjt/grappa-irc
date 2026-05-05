@@ -2839,7 +2839,7 @@ defmodule Grappa.Session.ServerTest do
       # server_time within [away_start_ms, now+buffer] so aggregate will find it.
       own_nick = "grappa-test"
 
-      {:ok, _msg} =
+      {:ok, _} =
         Grappa.ScrollbackHelpers.insert(%{
           user_id: user.id,
           network_id: network.id,
@@ -2864,7 +2864,7 @@ defmodule Grappa.Session.ServerTest do
                       }},
                      1_000
 
-      assert length(messages) >= 1
+      assert messages != []
       assert Enum.any?(messages, &(&1.channel == "#grappa"))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
