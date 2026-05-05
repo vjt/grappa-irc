@@ -2813,6 +2813,86 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} =
                Session.unset_auto_away({:user, Ecto.UUID.generate()}, 9_999_999)
     end
+
+    # C8 — mentions_bundle broadcast on back-from-away.
+    # Session.Server must aggregate mentions during the away interval and
+    # broadcast a `mentions_bundle` event on the user-level PubSub topic
+    # when the session returns from explicit away AND at least one match exists.
+    test "unset_explicit_away broadcasts mentions_bundle on user topic when matches found" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Subscribe to the user-level PubSub topic before the away round-trip.
+      user_topic = Topic.user(user.name)
+      Phoenix.PubSub.subscribe(Grappa.PubSub, user_topic)
+
+      # Set explicit away — records away_started_at.
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "lunch")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"))
+
+      # Insert a scrollback message DURING the away interval that mentions the
+      # session's nick ("grappa-test" per credential_fixture default nick).
+      # server_time within [away_start_ms, now+buffer] so aggregate will find it.
+      own_nick = "grappa-test"
+
+      {:ok, _msg} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#grappa",
+          server_time: System.system_time(:millisecond),
+          kind: :privmsg,
+          sender: "alice",
+          body: "hey #{own_nick}, you around?"
+        })
+
+      # Unset explicit away — triggers mentions_bundle broadcast.
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"))
+
+      # Assert mentions_bundle event arrives on the user-level topic.
+      assert_receive {:event,
+                      %{
+                        kind: "mentions_bundle",
+                        network: _,
+                        away_reason: "lunch",
+                        messages: messages
+                      }},
+                     1_000
+
+      assert length(messages) >= 1
+      assert Enum.any?(messages, &(&1.channel == "#grappa"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "unset_explicit_away does NOT broadcast mentions_bundle when no matches found" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      user_topic = Topic.user(user.name)
+      Phoenix.PubSub.subscribe(Grappa.PubSub, user_topic)
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"))
+
+      # No scrollback messages inserted during away interval.
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"))
+
+      # Should NOT receive any mentions_bundle event.
+      refute_receive {:event, %{kind: "mentions_bundle"}}, 300
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

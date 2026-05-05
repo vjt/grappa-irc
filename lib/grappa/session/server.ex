@@ -81,7 +81,7 @@ defmodule Grappa.Session.Server do
   use GenServer, restart: :transient
 
   alias Grappa.IRC.{AuthFSM, Client, Message}
-  alias Grappa.{Log, Scrollback, Session}
+  alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
   alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter}
@@ -1764,11 +1764,19 @@ defmodule Grappa.Session.Server do
   # Clear any active away state (explicit or auto). Issues bare `AWAY` upstream
   # to clear the status. Resets all away fields to idle defaults.
   #
+  # C8: before clearing the away window, aggregate mentions for user sessions
+  # (not visitors — they have no persisted scrollback) and broadcast a
+  # `mentions_bundle` event on the user-level PubSub topic when matches exist.
+  # The broadcast fires on BOTH explicit-away and auto-away cancel paths since
+  # both ultimately call this helper. Zero-match result suppresses the broadcast
+  # (no empty-window noise per spec #19).
+  #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise.
   @spec unset_away_internal(state(), String.t() | nil) :: state()
   defp unset_away_internal(state, nil) do
     :ok = Client.send_away_unset(state.client)
+    maybe_broadcast_mentions_bundle(state)
 
     %{
       state
@@ -1780,6 +1788,7 @@ defmodule Grappa.Session.Server do
 
   defp unset_away_internal(state, label) when is_binary(label) do
     :ok = Client.send_line(state.client, "@label=#{label} AWAY\r\n")
+    maybe_broadcast_mentions_bundle(state)
 
     %{
       state
@@ -1788,4 +1797,54 @@ defmodule Grappa.Session.Server do
         away_reason: nil
     }
   end
+
+  # C8: aggregate mentions during the away interval and broadcast
+  # `mentions_bundle` on the user-level PubSub topic when matches exist.
+  # Only runs for user sessions (not visitors); silently skips when
+  # `away_started_at` is nil (present state — should not happen in normal flow
+  # but guards against double-unset edge cases).
+  @spec maybe_broadcast_mentions_bundle(state()) :: :ok
+  defp maybe_broadcast_mentions_bundle(%{subject: {:user, user_id}} = state)
+       when is_binary(user_id) and not is_nil(state.away_started_at) do
+    away_start_ms = DateTime.to_unix(state.away_started_at, :millisecond)
+    away_end_ms = System.system_time(:millisecond)
+    watchlist = UserSettings.get_highlight_patterns(user_id)
+
+    messages = Mentions.aggregate_mentions(user_id, state.network_id, away_start_ms, away_end_ms, watchlist, state.nick)
+
+    if messages != [] do
+      message_payloads =
+        Enum.map(messages, fn m ->
+          %{
+            server_time: m.server_time,
+            channel: m.channel,
+            sender_nick: m.sender,
+            body: m.body,
+            kind: Atom.to_string(m.kind)
+          }
+        end)
+
+      away_started_iso = DateTime.to_iso8601(state.away_started_at)
+      away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
+
+      :ok =
+        Phoenix.PubSub.broadcast(
+          Grappa.PubSub,
+          Topic.user(state.subject_label),
+          {:event,
+           %{
+             kind: "mentions_bundle",
+             network: state.network_slug,
+             away_started_at: away_started_iso,
+             away_ended_at: away_ended_iso,
+             away_reason: state.away_reason,
+             messages: message_payloads
+           }}
+        )
+    end
+
+    :ok
+  end
+
+  defp maybe_broadcast_mentions_bundle(_state), do: :ok
 end
