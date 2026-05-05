@@ -52,6 +52,10 @@ import type { WindowKind } from "./lib/windowKinds";
 // C7.1: Day-separator rows — when consecutive messages cross a local-TZ
 // day boundary, render a `── <date> ──` separator row between them.
 // Pure client-side computation from server_time (epoch-ms).
+//
+// C7.2: Muted-events rendering — presence/op event rows get
+// .scrollback-muted (dimmer, smaller, italic) so PRIVMSG/NOTICE/ACTION
+// dominate visually. PRESENCE_KINDS is the closed set.
 
 export type Props = {
   networkSlug: string;
@@ -224,6 +228,9 @@ const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | nul
   const isMention = () =>
     props.msg.kind === "privmsg" && mentionsUser(props.msg.body, props.userNick);
 
+  // C7.2: muted — presence/event kinds are visually de-emphasized.
+  const isMuted = () => PRESENCE_KINDS.has(props.msg.kind);
+
   return (
     <div
       class="scrollback-line"
@@ -231,6 +238,7 @@ const ScrollbackLine: Component<{ msg: ScrollbackMessage; userNick: string | nul
         "scrollback-action": props.msg.kind === "action",
         "scrollback-notice": props.msg.kind === "notice",
         "scrollback-presence": PRESENCE_KINDS.has(props.msg.kind),
+        "scrollback-muted": isMuted(),
         "scrollback-mention": isMention(),
       }}
       data-testid="scrollback-line"

@@ -526,6 +526,17 @@ body {
   font-weight: bold;
 }
 
+/* C7.2: Muted events — presence/op kinds rendered with reduced contrast.
+   Mirrors the irssi dimmed-status-line convention. Smaller font + opacity
+   so PRIVMSG/NOTICE/ACTION lines dominate visually. The scrollback-muted
+   class is added alongside scrollback-presence (which already sets
+   color: var(--muted) + italic) so this rule reinforces + adds font-size
+   reduction without conflicting. */
+.scrollback-line.scrollback-muted {
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
 .scrollback-time {
   color: var(--muted);
 }

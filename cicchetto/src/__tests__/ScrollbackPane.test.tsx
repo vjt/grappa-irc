@@ -852,4 +852,114 @@ describe("ScrollbackPane", () => {
       expect(separators).toHaveLength(2);
     });
   });
+
+  // C7.2: Muted-events rendering.
+  describe("muted-event rendering (C7.2)", () => {
+    it("applies .scrollback-muted class to JOIN events", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "alice",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-muted")).toBe(true);
+    });
+
+    it("applies .scrollback-muted to PART, QUIT, MODE, NICK, TOPIC, KICK events", () => {
+      const mutedKinds: ScrollbackMessage["kind"][] = [
+        "part",
+        "quit",
+        "mode",
+        "nick_change",
+        "topic",
+        "kick",
+      ];
+      for (const kind of mutedKinds) {
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1_700_000_000_000,
+              kind,
+              sender: "alice",
+              body: null,
+              meta:
+                kind === "nick_change"
+                  ? { new_nick: "alice2" }
+                  : kind === "mode"
+                    ? { modes: "+o", args: [] }
+                    : kind === "kick"
+                      ? { target: "bob" }
+                      : {},
+            },
+          ],
+        });
+        const { unmount } = render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const line = screen.getByTestId("scrollback-line");
+        expect(line.classList.contains("scrollback-muted")).toBe(true);
+        unmount();
+        setScrollback({});
+      }
+    });
+
+    it("does NOT apply .scrollback-muted to PRIVMSG events", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_000_000,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-muted")).toBe(false);
+    });
+
+    it("does NOT apply .scrollback-muted to NOTICE or ACTION events", () => {
+      for (const kind of ["notice", "action"] as const) {
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1_700_000_000_000,
+              kind,
+              sender: "alice",
+              body: "something",
+              meta: {},
+            },
+          ],
+        });
+        const { unmount } = render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const line = screen.getByTestId("scrollback-line");
+        expect(line.classList.contains("scrollback-muted")).toBe(false);
+        unmount();
+        setScrollback({});
+      }
+    });
+  });
 });
