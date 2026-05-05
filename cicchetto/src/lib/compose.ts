@@ -4,6 +4,7 @@ import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { membersByChannel } from "./members";
 import { networks } from "./networks";
+import { appendNumericInline } from "./numericInline";
 import { openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
@@ -421,24 +422,19 @@ const exports_ = createRoot(() => {
         // Render the current list inline so the user gets confirmation.
         // ---------------------------------------------------------------
         case "watchlist": {
-          let result: { patterns: string[] };
+          let watchResult: { patterns: string[] };
           if (cmd.action === "add") {
-            result = await pushWatchlistAdd(cmd.pattern);
-            return {
-              ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
-            };
+            watchResult = await pushWatchlistAdd(cmd.pattern);
+          } else if (cmd.action === "del") {
+            watchResult = await pushWatchlistDel(cmd.pattern);
+          } else {
+            // action === "list"
+            watchResult = await pushWatchlistList();
           }
-          if (cmd.action === "del") {
-            result = await pushWatchlistDel(cmd.pattern);
-            return {
-              ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
-            };
-          }
-          // action === "list"
-          result = await pushWatchlistList();
-          return {
-            ok: `watchlist (${result.patterns.length}): ${result.patterns.join(", ") || "(empty)"}`,
+          result = {
+            ok: `watchlist (${watchResult.patterns.length}): ${watchResult.patterns.join(", ") || "(empty)"}`,
           };
+          break;
         }
         // ---------------------------------------------------------------
         // Parser-level error (unknown verb or validation failure).
@@ -463,6 +459,13 @@ const exports_ = createRoot(() => {
     if (state.draft.trim() !== "") pushHistory(key, state.draft);
     writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
     tabCycle = null;
+    // ok: string = success with inline feedback (e.g. watchlist list output).
+    // Push an ephemeral numeric-inline row so the user sees confirmation in
+    // the scrollback pane. Reuses the C5.2 numeric-inline infrastructure;
+    // numeric 0 is a sentinel (no real IRC numeric) — severity "ok" = info.
+    if (typeof result.ok === "string") {
+      appendNumericInline(key, { numeric: 0, text: result.ok, severity: "ok" });
+    }
     return result;
   };
 
