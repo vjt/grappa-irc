@@ -281,3 +281,11 @@ export function pushChannelTopicSet(networkId: number, channel: string, text: st
   if (_userChannel === null) return;
   _userChannel.push("topic_set", { network_id: networkId, channel, text });
 }
+
+// /whois <nick> → WHOIS nick — pushes on the user-level channel.
+// Server-side `handle_in("whois", ...)` handler in GrappaChannel is
+// pending (C5 gap: cicchetto side landed; server side deferred to next bucket).
+export function pushWhois(networkId: number, nick: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("whois", { network_id: networkId, nick });
+}
