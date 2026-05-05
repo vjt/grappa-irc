@@ -35,6 +35,13 @@ vi.mock("../lib/auth", () => ({
   socketUserName: vi.fn(() => "vjt"),
 }));
 
+vi.mock("../lib/queryWindows", () => ({
+  setQueryWindowsByNetwork: vi.fn(),
+  queryWindowsByNetwork: vi.fn(() => ({})),
+  closeQueryWindowState: vi.fn(),
+  openQueryWindowState: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -63,5 +70,44 @@ describe("userTopic", () => {
     const networks = await import("../lib/networks");
     channelMock.fireEvent({ kind: "message", body: "hi" });
     expect(networks.refetchChannels).not.toHaveBeenCalled();
+  });
+
+  // C1.3: query_windows_list event populates queryWindowsByNetwork state.
+  //
+  // The server sends string keys (JSON objects always have string keys),
+  // e.g. {"1": [{target_nick: "alice", opened_at: "..."}]}. cicchetto
+  // must coerce string keys to integers and snake_case field names to
+  // camelCase before calling setQueryWindowsByNetwork.
+  it("query_windows_list event calls setQueryWindowsByNetwork with parsed state", async () => {
+    const qw = await import("../lib/queryWindows");
+    channelMock.fireEvent({
+      kind: "query_windows_list",
+      windows: {
+        "1": [{ target_nick: "alice", opened_at: "2026-05-04T10:00:00Z" }],
+        "2": [
+          { target_nick: "bob", opened_at: "2026-05-04T11:00:00Z" },
+          { target_nick: "carol", opened_at: "2026-05-04T12:00:00Z" },
+        ],
+      },
+    });
+    expect(qw.setQueryWindowsByNetwork).toHaveBeenCalledWith({
+      1: [{ targetNick: "alice", openedAt: "2026-05-04T10:00:00Z" }],
+      2: [
+        { targetNick: "bob", openedAt: "2026-05-04T11:00:00Z" },
+        { targetNick: "carol", openedAt: "2026-05-04T12:00:00Z" },
+      ],
+    });
+  });
+
+  it("query_windows_list event with empty windows calls setQueryWindowsByNetwork({})", async () => {
+    const qw = await import("../lib/queryWindows");
+    channelMock.fireEvent({ kind: "query_windows_list", windows: {} });
+    expect(qw.setQueryWindowsByNetwork).toHaveBeenCalledWith({});
+  });
+
+  it("unrelated events do NOT call setQueryWindowsByNetwork", async () => {
+    const qw = await import("../lib/queryWindows");
+    channelMock.fireEvent({ kind: "channels_changed" });
+    expect(qw.setQueryWindowsByNetwork).not.toHaveBeenCalled();
   });
 });
