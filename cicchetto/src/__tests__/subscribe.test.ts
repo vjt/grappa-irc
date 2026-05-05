@@ -914,4 +914,206 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     });
     expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "vjt", expect.any(String));
   });
+
+  // Bug A fix: NOTICE/mode/join/part/quit/kick/topic/nick_change on the
+  // own-nick topic must NOT append to any scrollback key. These belong
+  // in the server-messages window (feature #4, deferred). The dm-listener
+  // handler drops them silently until that surface lands.
+  it("NOTICE on own-nick topic is dropped — no scrollback append to any key", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    // NOTICE from NickServ arriving on own-nick topic.
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 500,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "notice",
+        sender: "NickServ",
+        body: "This nick is registered.",
+        meta: {},
+      },
+    });
+    // Own-nick bucket must be empty — NOTICE dropped, not stored.
+    const ownKey = channelKey("freenode", "alice");
+    expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
+    // NickServ "nick" key must also be empty — no re-key either.
+    const nickServKey = channelKey("freenode", "NickServ");
+    expect(store.scrollbackByChannel()[nickServKey]).toBeUndefined();
+  });
+
+  it("non-PRIVMSG/action kinds (mode, join, part, quit, kick, nick_change) on own-nick topic are dropped", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    const ownKey = channelKey("freenode", "alice");
+    for (const kind of ["mode", "join", "part", "quit", "kick", "nick_change", "topic"] as const) {
+      dmHandler({
+        kind: "message",
+        message: {
+          id: 501,
+          network: "freenode",
+          channel: "alice",
+          server_time: 0,
+          kind,
+          sender: "server",
+          body: "",
+          meta: {},
+        },
+      });
+    }
+    // No event must have produced an append to any scrollback key.
+    expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
+  });
+
+  // Bug B (self-msg path): PRIVMSG with sender = ownNick (self-msg via
+  // `/msg alice body`) must append to the own-nick window key AND call
+  // openQueryWindowState(networkId, ownNick).
+  it("self-msg PRIVMSG (sender = ownNick) appends to own-nick window and opens own-nick query window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const qw = await import("../lib/queryWindows");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    // Operator sent `/msg alice hello yourself` — server echoes on own-nick topic.
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 502,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "alice",
+        body: "hello yourself",
+        meta: {},
+      },
+    });
+    // Must open the own-nick query window.
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    // Must append to own-nick key (channelKey("freenode", "alice")).
+    const ownKey = channelKey("freenode", "alice");
+    expect(store.scrollbackByChannel()[ownKey]?.map((m) => m.body)).toEqual(["hello yourself"]);
+  });
+});
+
+// query-windows-loop own-nick dedup rule.
+//
+// If a query window for targetNick = ownNick exists in queryWindowsByNetwork
+// (e.g. from a self-msg that auto-opened the own-nick window), the query-
+// windows-loop must NOT install an extra installChannelHandler on the own-
+// nick topic. The dm-listener loop is the SOLE handler for that topic.
+// Installing a channel-handler would pollute the own-nick window with ALL
+// traffic on that topic (NOTICEs from NickServ, PRIVMSGs from others, etc.)
+// because installChannelHandler routes everything to its fixed key.
+describe("subscribe — query-window loop skips own-nick topic (Bug A root cause)", () => {
+  const seedOwnNickQueryStubs = async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("own-nick query window does NOT cause an extra join beyond the dm-listener join", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedOwnNickQueryStubs();
+    const qw = await import("../lib/queryWindows");
+    // Simulate a query window for the own nick (opened via self-msg).
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "alice", openedAt: "2026-05-05T12:00:00Z" }],
+    });
+    const socket = await import("../lib/socket");
+    await loadStores();
+    // 1 channel + 1 DM-listener (alice) = 2 joins.
+    // The own-nick query window must NOT add a 3rd join — the dm-listener
+    // already owns the alice topic.
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+    });
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
+    // Exactly 2 calls — no extra join for the own-nick query window.
+    expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it("own-nick query window present — NOTICE on own-nick topic still dropped (no channel-handler pollution)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedOwnNickQueryStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "alice", openedAt: "2026-05-05T12:00:00Z" }],
+    });
+    const store = await loadStores();
+    // 1 channel + 1 DM-listener = 2 handlers.
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    // Fire NOTICE on the DM-listener handler (index 1).
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 600,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "notice",
+        sender: "NickServ",
+        body: "Password accepted.",
+        meta: {},
+      },
+    });
+    const ownKey = channelKey("freenode", "alice");
+    // NOTICE must not pollute the own-nick window even when a query
+    // window for alice exists.
+    expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
+  });
 });
