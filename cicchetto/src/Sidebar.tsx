@@ -5,7 +5,7 @@ import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
-import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
@@ -84,8 +84,11 @@ const Sidebar: Component<Props> = (props) => {
                         <span class="sidebar-channel-name" classList={{ parted: !channel.joined }}>
                           {channel.name}
                         </span>
-                        <Show when={(unreadCounts()[key] ?? 0) > 0}>
-                          <span class="sidebar-unread">{unreadCounts()[key]}</span>
+                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                        </Show>
+                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
                         </Show>
                         <Show when={(mentionCounts()[key] ?? 0) > 0}>
                           <span class="sidebar-mention">@{mentionCounts()[key]}</span>
@@ -116,8 +119,11 @@ const Sidebar: Component<Props> = (props) => {
                         class="sidebar-window-btn"
                       >
                         <span class="sidebar-channel-name">{qw.targetNick}</span>
-                        <Show when={(unreadCounts()[key] ?? 0) > 0}>
-                          <span class="sidebar-unread">{unreadCounts()[key]}</span>
+                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                        </Show>
+                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
                         </Show>
                         <Show when={(mentionCounts()[key] ?? 0) > 0}>
                           <span class="sidebar-mention">@{mentionCounts()[key]}</span>

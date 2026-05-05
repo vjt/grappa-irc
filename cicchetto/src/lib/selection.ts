@@ -31,6 +31,17 @@ import type { WindowKind } from "./windowKinds";
 // now reads `sel().kind === "channel"` — directly asserts spec #20.
 // Every setSelectedChannel call site passes `kind` explicitly; no
 // defaults.
+//
+// C7.5: msg-vs-events badge split. Per-window unread state is split into
+// two independent counters:
+//   * `messagesUnread` — bumped only on PRIVMSG / NOTICE / ACTION
+//     (content kinds). Bold/prominent badge in Sidebar + BottomBar.
+//   * `eventsUnread` — bumped only on JOIN / PART / QUIT / MODE / NICK /
+//     TOPIC (presence kinds). Dimmer indicator.
+// Both reset to zero when the window is focused (same as unreadCounts).
+// `bumpUnread` is kept for the mention-count side-effect path in
+// subscribe.ts that still needs the aggregate count for bumpMention.
+// `bumpMessageUnread` and `bumpEventUnread` are the new routed verbs.
 
 export type SelectedChannel = {
   networkSlug: string;
@@ -40,12 +51,16 @@ export type SelectedChannel = {
 
 const exports = createRoot(() => {
   const [unreadCounts, setUnreadCounts] = createSignal<Record<ChannelKey, number>>({});
+  const [messagesUnread, setMessagesUnread] = createSignal<Record<ChannelKey, number>>({});
+  const [eventsUnread, setEventsUnread] = createSignal<Record<ChannelKey, number>>({});
   const [selectedChannel, setSelectedChannel] = createSignal<SelectedChannel>(null);
 
   createEffect(
     on(token, (t, prev) => {
       if (prev != null && t !== prev) {
         setUnreadCounts({});
+        setMessagesUnread({});
+        setEventsUnread({});
         setSelectedChannel(null);
       }
     }),
@@ -53,6 +68,16 @@ const exports = createRoot(() => {
 
   const bumpUnread = (key: ChannelKey) => {
     setUnreadCounts((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+  };
+
+  // C7.5: content kinds bump messagesUnread.
+  const bumpMessageUnread = (key: ChannelKey) => {
+    setMessagesUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+  };
+
+  // C7.5: presence kinds bump eventsUnread.
+  const bumpEventUnread = (key: ChannelKey) => {
+    setEventsUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
   };
 
   createEffect(
@@ -64,16 +89,40 @@ const exports = createRoot(() => {
         const { [key]: _drop, ...rest } = prev;
         return rest;
       });
+      // C7.5: clear both split counters on focus.
+      setMessagesUnread((prev) => {
+        if (!(key in prev)) return prev;
+        const { [key]: _drop, ...rest } = prev;
+        return rest;
+      });
+      setEventsUnread((prev) => {
+        if (!(key in prev)) return prev;
+        const { [key]: _drop, ...rest } = prev;
+        return rest;
+      });
       // Fire-and-forget: the verb guards itself via scrollback's
       // loadedChannels Set.
       void loadInitialScrollback(sel.networkSlug, sel.channelName);
     }),
   );
 
-  return { unreadCounts, selectedChannel, setSelectedChannel, bumpUnread };
+  return {
+    unreadCounts,
+    messagesUnread,
+    eventsUnread,
+    selectedChannel,
+    setSelectedChannel,
+    bumpUnread,
+    bumpMessageUnread,
+    bumpEventUnread,
+  };
 });
 
 export const unreadCounts = exports.unreadCounts;
+export const messagesUnread = exports.messagesUnread;
+export const eventsUnread = exports.eventsUnread;
 export const selectedChannel = exports.selectedChannel;
 export const setSelectedChannel = exports.setSelectedChannel;
 export const bumpUnread = exports.bumpUnread;
+export const bumpMessageUnread = exports.bumpMessageUnread;
+export const bumpEventUnread = exports.bumpEventUnread;

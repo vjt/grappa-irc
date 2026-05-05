@@ -16,6 +16,8 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
   unreadCounts: () => ({ "freenode #bnc": 3 }),
+  messagesUnread: () => ({ "freenode #bnc": 3 }),
+  eventsUnread: () => ({}),
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -79,7 +81,7 @@ describe("Sidebar", () => {
 
   it("renders unread count for channels with messages while away", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
-    const unread = document.querySelector(".sidebar-unread");
+    const unread = document.querySelector(".sidebar-msg-unread");
     expect(unread?.textContent).toBe("3");
   });
 
@@ -112,6 +114,8 @@ describe("Sidebar", () => {
       selectedChannel: () => null,
       setSelectedChannel: vi.fn(),
       unreadCounts: () => ({}),
+      messagesUnread: () => ({}),
+      eventsUnread: () => ({}),
     }));
     vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
     vi.doMock("../lib/queryWindows", () => ({
