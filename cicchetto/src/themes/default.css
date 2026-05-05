@@ -633,6 +633,34 @@ body {
   user-select: none;
 }
 
+/* C7.3: Unread-marker row — renders `── XX unread messages ──` between
+   the last read message and the first unread message. Same horizontal-rule-
+   with-label form as the C7.1 day-separator; distinct color (accent-tinted)
+   and font weight to make "you left off here" visually different from the
+   date boundary. */
+
+.scrollback-unread-marker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  color: var(--accent);
+  font-size: 0.8em;
+  font-weight: bold;
+}
+
+.scrollback-unread-marker-line {
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.4;
+}
+
+.scrollback-unread-marker-label {
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* C7.4: Scroll-to-bottom floating button — lower-right of .scrollback-pane. */
 
 .scroll-to-bottom-btn {
