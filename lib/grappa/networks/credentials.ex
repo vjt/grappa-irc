@@ -84,6 +84,30 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  Removes `channel_name` from `autojoin_channels` on the `(user, network)`
+  credential. Called by `DELETE /networks/:slug/channels/:channel_id` so
+  that the next `GET /channels` response omits the closed channel entirely
+  (not just as `joined: false`). No-op if `channel_name` is not in the
+  autojoin list. Returns `{:ok, credential}` or `{:error, changeset}`.
+  """
+  @spec remove_autojoin_channel(User.t(), Network.t(), String.t()) ::
+          {:ok, Credential.t()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
+  def remove_autojoin_channel(%User{} = user, %Network{} = network, channel_name)
+      when is_binary(channel_name) do
+    case get_credential(user, network) do
+      {:ok, cred} ->
+        new_autojoin = Enum.reject(cred.autojoin_channels, &(&1 == channel_name))
+
+        cred
+        |> Credential.changeset(%{autojoin_channels: new_autojoin})
+        |> Repo.update()
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Returns the credential for `(user, network)` with `password_encrypted`
   already decrypted by Cloak. Raises `Ecto.NoResultsError` on miss —
   the operator-side mix tasks expect a missing binding to fail loudly.
