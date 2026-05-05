@@ -74,8 +74,8 @@ const BottomBar: Component<Props> = (props) => {
               type="button"
               role="tab"
               class="bottom-bar-tab"
-              classList={{ selected: isSelected(network.slug, ":server") }}
-              onClick={() => handleClick(network.slug, ":server", "server")}
+              classList={{ selected: isSelected(network.slug, "$server") }}
+              onClick={() => handleClick(network.slug, "$server", "server")}
             >
               Server
             </button>
