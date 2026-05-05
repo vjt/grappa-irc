@@ -500,6 +500,8 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* Needed for the floating scroll-to-bottom button (C7.4). */
+  position: relative;
 }
 
 .scrollback {
@@ -585,6 +587,33 @@ body {
 .scrollback-day-separator-label {
   white-space: nowrap;
   user-select: none;
+}
+
+/* C7.4: Scroll-to-bottom floating button — lower-right of .scrollback-pane. */
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 1rem;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 50%;
+  width: 2rem;
+  height: 2rem;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  line-height: 1;
+}
+
+.scroll-to-bottom-btn:hover {
+  opacity: 0.85;
 }
 
 /* ComposeBox */

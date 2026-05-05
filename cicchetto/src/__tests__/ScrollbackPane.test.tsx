@@ -962,4 +962,14 @@ describe("ScrollbackPane", () => {
       }
     });
   });
+
+  // C7.4: Scroll-to-bottom floating button.
+  describe("scroll-to-bottom button (C7.4)", () => {
+    it("does not render scroll-to-bottom button when at bottom (initial state)", () => {
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Initially atBottom = true; button should not be visible.
+      expect(screen.queryByTestId("scroll-to-bottom")).toBeNull();
+    });
+  });
 });
