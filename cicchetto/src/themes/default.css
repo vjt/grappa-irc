@@ -205,11 +205,17 @@ body {
   padding: 0;
 }
 
-.sidebar-network li button {
+.sidebar-network li {
+  display: flex;
+  align-items: stretch;
+}
+
+.sidebar-network li .sidebar-window-btn {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   background: transparent;
   color: var(--fg);
   border: none;
@@ -220,13 +226,30 @@ body {
   cursor: pointer;
 }
 
-.sidebar-network li button:hover {
+.sidebar-network li .sidebar-window-btn:hover {
   background: var(--border);
 }
 
-.sidebar-network li.selected button {
+.sidebar-network li.selected .sidebar-window-btn {
   background: var(--border);
   color: var(--accent);
+}
+
+.sidebar-close {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sidebar-close:hover {
+  background: var(--border);
+  color: var(--fg);
 }
 
 .sidebar-channel-name {
