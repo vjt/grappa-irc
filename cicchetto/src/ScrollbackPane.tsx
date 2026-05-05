@@ -15,6 +15,7 @@ import { membersByChannel } from "./lib/members";
 import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
 import { scrollbackByChannel } from "./lib/scrollback";
+import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 
 // Right-pane component: pure projection of the per-channel scrollback list.
@@ -252,12 +253,22 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   // When shouldShowBanner transitions true → visible, mark the banner
   // as shown so remounts of this component (channel re-select within
-  // the session) don't re-render it.
+  // the session) don't re-render it. Also switch focus to this channel
+  // (spec #7: /join-self switches focus automatically). This is a user
+  // action — the user issued /join — so the C4.2 cluster-wide focus-
+  // only-on-user-action rule is not violated; the rule guards against
+  // incoming-traffic focus shifts, not user-initiated ones.
   createEffect(
     on(shouldShowBanner, (show) => {
       if (show && !shownBanners.has(key())) {
         shownBanners.add(key());
         setBannerState("visible");
+        // C5.0: auto-focus-switch on own-nick JOIN.
+        setSelectedChannel({
+          networkSlug: props.networkSlug,
+          channelName: props.channelName,
+          kind: "channel",
+        });
       }
     }),
   );
