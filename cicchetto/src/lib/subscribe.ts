@@ -2,6 +2,7 @@ import { createEffect, createRoot, on, untrack } from "solid-js";
 import { type ChannelEvent, displayNick } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
 import { applyPresenceEvent } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
@@ -35,6 +36,21 @@ import { joinChannel } from "./socket";
 // selection cleanup → networks cleanup → subscribe cleanup → the join
 // effect re-runs against fresh state once the resources resolve under
 // the new bearer.
+//
+// C3.1: `topic_changed` and `channel_modes_changed` events are now
+// routed to `channelTopic.seedTopic` / `channelTopic.seedModes` so
+// TopicBar can display live topic + modes without a REST round-trip.
+//
+// C3.2: JOIN-by-self detection: `message.kind === "join"` events whose
+// `sender` matches own nick are forwarded to `joinEvents.notifyJoin`
+// so ScrollbackPane can render the one-time join banner.
+
+// Full union of event payloads pushed by GrappaChannel on the
+// per-channel Phoenix topic. `kind` is the discriminator.
+type WireEvent =
+  | ChannelEvent
+  | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
+  | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry };
 
 createRoot(() => {
   const joined = new Set<ChannelKey>();
@@ -69,7 +85,19 @@ createRoot(() => {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name);
-        phx.on("event", (payload: ChannelEvent) => {
+        phx.on("event", (payload: WireEvent) => {
+          // Topic cache update (C3.1) — seed the topic store so TopicBar
+          // always reflects the latest cached topic without a REST round-trip.
+          if (payload.kind === "topic_changed") {
+            seedTopic(key, payload.topic);
+            return;
+          }
+          // Channel-modes cache update (C3.1) — feed the modes store so
+          // TopicBar renders the compact mode-string live.
+          if (payload.kind === "channel_modes_changed") {
+            seedModes(key, payload.modes);
+            return;
+          }
           if (payload.kind !== "message") return;
           // Scrollback ingestion — every message kind appended.
           appendToScrollback(key, payload.message);

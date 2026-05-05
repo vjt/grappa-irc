@@ -1,16 +1,25 @@
-import type { Component } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
+import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 
 // Top bar of the middle pane. Hosts:
 //  * left ☰ hamburger — opens the channel sidebar drawer (mobile only)
 //  * channel name (bold accent)
-//  * topic placeholder (P4-1 ships empty; topic-derivation store lands
-//    in M-cluster polish — current state.topic isn't surfaced via the
-//    REST/WS contract today, so the bar reserves space for it)
+//  * topic strip: single-line ellipsized; "(no topic set)" placeholder
+//    when no topic is cached. Click/tap → modal expand with full topic,
+//    setter nick, and set-at timestamp (C3.1).
+//  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
+//    Rendered only when modes are cached and non-empty (C3.1).
 //  * nick count from members.length
 //  * right ☰ hamburger — opens members drawer (mobile only)
 //  * ⚙ settings button — opens SettingsDrawer
+//
+// Modal state uses `"closed" | "open"` string-literal union per the
+// closed-set rule (CLAUDE.md).
+//
+// Always pinned at the top of the channel-window scrollback area — no
+// auto-collapse on scroll (vjt-blessed 2026-05-04).
 //
 // Hamburger buttons use display: none on desktop via CSS media query;
 // visible at ≤768px. Same DOM in both layouts so Shell.tsx doesn't have
@@ -24,9 +33,34 @@ export type Props = {
   onOpenSettings: () => void;
 };
 
+type ModalState = "closed" | "open";
+
 const TopicBar: Component<Props> = (props) => {
+  const [modalState, setModalState] = createSignal<ModalState>("closed");
+
   const key = () => channelKey(props.networkSlug, props.channelName);
   const memberCount = () => membersByChannel()[key()]?.length ?? 0;
+
+  const topicEntry = () => topicByChannel()[key()] ?? null;
+  const topicText = () => topicEntry()?.text ?? null;
+  const modesEntry = () => modesByChannel()[key()] ?? null;
+  const modeStr = () => {
+    const entry = modesEntry();
+    if (!entry) return "";
+    return compactModeString(entry.modes);
+  };
+
+  const openModal = () => setModalState("open");
+  const closeModal = () => setModalState("closed");
+
+  const formatSetAt = (setAt: string | null): string => {
+    if (!setAt) return "(unknown time)";
+    try {
+      return new Date(setAt).toLocaleString();
+    } catch {
+      return setAt;
+    }
+  };
 
   return (
     <div class="topic-bar">
@@ -39,7 +73,22 @@ const TopicBar: Component<Props> = (props) => {
         ☰
       </button>
       <span class="topic-bar-channel">{props.channelName}</span>
-      <span class="topic-bar-topic">{/* P4-1 placeholder; topic store in M-cluster */}</span>
+      {/* Topic strip — always present; shows placeholder when no topic cached */}
+      <button
+        type="button"
+        class="topic-bar-topic"
+        onClick={openModal}
+        aria-label="expand topic"
+        title={topicText() ?? "(no topic set)"}
+      >
+        {topicText() ?? "(no topic set)"}
+      </button>
+      {/* Compact mode string — only rendered when modes are non-empty */}
+      <Show when={modeStr().length > 0}>
+        <span class="topic-bar-modes" title={modesEntry()?.modes.join(", ") ?? ""}>
+          {modeStr()}
+        </span>
+      </Show>
       <span class="topic-bar-count">{memberCount()} nicks</span>
       <button
         type="button"
@@ -57,6 +106,34 @@ const TopicBar: Component<Props> = (props) => {
       >
         ⚙
       </button>
+
+      {/* Topic modal — opens on topic strip click; shows full topic, setter, timestamp */}
+      <Show when={modalState() === "open"}>
+        <div class="topic-modal-backdrop" onClick={closeModal} aria-hidden="true" />
+        <div role="dialog" aria-modal="true" aria-label="Channel topic" class="topic-modal">
+          <div class="topic-modal-header">
+            <span class="topic-modal-title">Channel topic: {props.channelName}</span>
+            <button
+              type="button"
+              class="topic-modal-close"
+              aria-label="close topic"
+              onClick={closeModal}
+            >
+              ✕
+            </button>
+          </div>
+          <div class="topic-modal-body">
+            <p class="topic-modal-text">{topicText() ?? "(no topic set)"}</p>
+            <Show when={topicEntry() !== null}>
+              <p class="topic-modal-meta">
+                Set by: {topicEntry()?.set_by ?? "(unknown)"}
+                {" — "}
+                {formatSetAt(topicEntry()?.set_at ?? null)}
+              </p>
+            </Show>
+          </div>
+        </div>
+      </Show>
     </div>
   );
 };
