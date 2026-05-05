@@ -1,3 +1,4 @@
+import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
 import { type ChannelEvent, displayNick } from "./api";
 import { socketUserName, token } from "./auth";
@@ -7,7 +8,7 @@ import { applyPresenceEvent } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
-import { openQueryWindowState } from "./queryWindows";
+import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { appendToScrollback } from "./scrollback";
 import { bumpEventUnread, bumpMessageUnread, bumpUnread, selectedChannel } from "./selection";
 import { joinChannel } from "./socket";
@@ -21,13 +22,29 @@ import { joinChannel } from "./socket";
 //     `socket.channel(topic)` (returns the existing handle), but the
 //     Set keeps the handler-install step explicit and lets future
 //     Phase-5 PART logic mirror with a `leave + delete`.
-//   * The createEffect that fires once `user()` + `channelsBySlug()`
-//     resolve, fans out `joinChannel(...)` per channel, installs an
-//     `"event"` handler that ingests messages into `scrollback` and
-//     bumps `selection.unreadCounts` when the channel is not the
-//     currently-selected one. Selection is read with `untrack` so the
-//     join effect itself isn't reactive to selection changes
-//     (joining is one-shot per channel; selection is high-frequency).
+//   * Three createEffects, sharing one `routeMessage` body:
+//     1. Channels loop — iterates `channelsBySlug()`. Subscribes to
+//        every real IRC channel topic. Key = channelKey(slug, name).
+//     2. Query-windows loop — iterates `queryWindowsByNetwork()`.
+//        Subscribes to the per-(slug, targetNick) topic for every
+//        open DM window. The server broadcasts outbound `/msg <nick>`
+//        echoes here; subscribing makes those messages appear live
+//        in the query pane without a reload (DM live-WS gap fix).
+//     3. DM-listener loop — iterates `networks()`. Subscribes to the
+//        own-nick topic per network (`grappa:user:<u>/network:<slug>/
+//        channel:<ownNick>`). The server broadcasts INBOUND DMs here
+//        (the IRC `PRIVMSG <ownNick> :body` line persists with
+//        `channel = ownNick`). The handler RE-KEYS the append to
+//        the sender's nick — so an incoming reply from `vjt` lands
+//        in the `vjt` query window's scrollback, NOT in an invisible
+//        own-nick bucket. Always auto-opens the sender's window
+//        (idempotent inside queryWindows.ts).
+//
+// All three effects share `routeMessage` so the privmsg/channel
+// ingestion paths are byte-identical downstream — per the user's
+// directive: "they should be practically the same." Only the iteration
+// source and key derivation differ; everything else (scrollback append,
+// presence apply, unread split, mention bump) is one code path.
 //
 // Identity-scoped cleanup mirrors the on(token) arms in `scrollback.ts`
 // and `selection.ts`: logout/rotation clears `joined`. Module-import
@@ -38,20 +55,23 @@ import { joinChannel } from "./socket";
 // effect re-runs against fresh state once the resources resolve under
 // the new bearer.
 //
-// C3.1: `topic_changed` and `channel_modes_changed` events are now
-// routed to `channelTopic.seedTopic` / `channelTopic.seedModes` so
-// TopicBar can display live topic + modes without a REST round-trip.
+// C3.1: `topic_changed` and `channel_modes_changed` events route to
+// `channelTopic.seedTopic` / `channelTopic.seedModes` so TopicBar can
+// display live topic + modes without a REST round-trip.
 //
 // C3.2: JOIN-by-self detection: `message.kind === "join"` events whose
 // `sender` matches own nick are forwarded to `joinEvents.notifyJoin`
 // so ScrollbackPane can render the one-time join banner.
 //
-// C4.1: DM auto-open on incoming PRIVMSG. When an event arrives on the
-// own-nick channel (server routes incoming DMs to scrollback keyed by
-// the recipient's nick), subscribe auto-opens the sender's query window
-// via openQueryWindowState — but does NOT switch focus (focus-rule:
-// auto-open is focus-neutral, per spec #1). Case-insensitive own-nick
-// comparison matches IRC nick rules.
+// C4.1 / DM live-WS gap: the auto-open + re-key behaviour for inbound
+// DMs lives in the DM-listener loop. Earlier versions tried to detect
+// inbound DMs from inside the channels-loop handler by checking
+// `name === ownNick`, but that required cicchetto to fake an own-nick
+// channel in the channelsBySlug response — which never happens in
+// production (channels list is real IRC channels only). The dedicated
+// DM-listener loop subscribes to the own-nick topic explicitly and
+// re-keys the append to `channelKey(slug, sender)` so the message
+// lands where the user looks for it.
 
 // Full union of event payloads pushed by GrappaChannel on the
 // per-channel Phoenix topic. `kind` is the discriminator.
@@ -71,6 +91,117 @@ createRoot(() => {
     }),
   );
 
+  // Shared message-routing body. Given a slug + the rendered window's
+  // (key, displayName), drives every downstream side-effect for a
+  // `kind: "message"` payload: scrollback append, presence apply,
+  // unread split, mention bump.
+  //
+  // `displayName` is the channel-name segment used to compare against
+  // selectedChannel.channelName (the rendered window's identity, not
+  // necessarily the topic's channel param). For channels and query
+  // windows it equals the topic's channel param; for the DM-listener
+  // loop it equals the sender's nick (the rendered DM window).
+  const routeMessage = (
+    slug: string,
+    key: ChannelKey,
+    displayName: string,
+    message: ChannelEvent["message"],
+  ): void => {
+    appendToScrollback(key, message);
+    // Members presence delta (P4-1 Q4) — applyPresenceEvent filters
+    // by kind: presence kinds (join/part/quit/nick_change/mode/kick)
+    // mutate the per-channel member list; content kinds are no-ops
+    // there. Dispatching every event keeps routing local to members.ts.
+    applyPresenceEvent(key, message);
+    const sel = untrack(selectedChannel);
+    const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;
+    if (isSelected) return;
+    bumpUnread(key);
+    // C7.5: per-kind split counters. Content kinds bump messagesUnread
+    // (bold badge); presence kinds bump eventsUnread (dimmer indicator).
+    if (message.kind === "privmsg" || message.kind === "notice" || message.kind === "action") {
+      bumpMessageUnread(key);
+    } else {
+      bumpEventUnread(key);
+    }
+    // Mention bump (P4-1) — only PRIVMSGs whose body matches the
+    // operator's own nick bump the red mention badge. Gated on
+    // !isSelected so tabbing into the channel clears the count and
+    // incoming mentions on the OPEN channel don't double-signal (the
+    // line itself gets .scrollback-mention highlight).
+    if (message.kind === "privmsg") {
+      const u = untrack(user);
+      if (u && mentionsUser(message.body, displayNick(u))) {
+        bumpMention(key);
+      }
+    }
+  };
+
+  // Handler for channel-shape topics (real IRC channels + query
+  // windows). Topic/modes events seed their respective stores; message
+  // events route through `routeMessage` with key = channelKey(slug, name).
+  // The C4.1 "auto-open on PRIVMSG to own nick" arm has migrated to
+  // the dedicated DM-listener handler — this handler is now purely
+  // about its own topic.
+  const installChannelHandler = (phx: Channel, slug: string, name: string, key: ChannelKey) => {
+    phx.on("event", (payload: WireEvent) => {
+      if (payload.kind === "topic_changed") {
+        seedTopic(key, payload.topic);
+        return;
+      }
+      if (payload.kind === "channel_modes_changed") {
+        seedModes(key, payload.modes);
+        return;
+      }
+      if (payload.kind !== "message") return;
+      routeMessage(slug, key, name, payload.message);
+    });
+  };
+
+  // Handler for the per-network DM-listener (own-nick topic). Every
+  // PRIVMSG arriving here is an INBOUND DM from `payload.message.sender`
+  // (because the server persists `PRIVMSG <ownNick> :body` with
+  // `channel = ownNick`, then broadcasts on that topic). Two side-
+  // effects: (1) auto-open the sender's query window so the pane
+  // appears in the sidebar immediately; (2) re-key the message append
+  // to `channelKey(slug, sender)` so it lands in the conversation
+  // partner's window instead of an invisible own-nick bucket.
+  //
+  // Non-PRIVMSG events on the own-nick topic (NOTICE-from-services,
+  // mode +i, etc.) route through the normal channel-handler shape via
+  // `routeMessage` with the own-nick key — they're rare and the
+  // own-nick window currently isn't rendered anywhere; the safer
+  // default is to ingest them so the data isn't lost when a future
+  // "server-messages window" surface attaches.
+  const installDmListenerHandler = (
+    phx: Channel,
+    slug: string,
+    networkId: number,
+    ownNick: string,
+  ) => {
+    const ownNickKey = channelKey(slug, ownNick);
+    phx.on("event", (payload: WireEvent) => {
+      if (payload.kind === "topic_changed" || payload.kind === "channel_modes_changed") {
+        // Topic / modes on the own-nick "channel" make no sense — the
+        // server never emits these for a nick target. Defensive drop.
+        return;
+      }
+      if (payload.kind !== "message") return;
+      const message = payload.message;
+      if (message.kind === "privmsg" || message.kind === "action") {
+        // Inbound DM — auto-open + re-key.
+        openQueryWindowState(networkId, message.sender, new Date().toISOString());
+        const senderKey = channelKey(slug, message.sender);
+        routeMessage(slug, senderKey, message.sender, message);
+        return;
+      }
+      // Other event kinds on the own-nick topic — store under the
+      // own-nick key for future surfaces (no UI today).
+      routeMessage(slug, ownNickKey, ownNick, message);
+    });
+  };
+
+  // Channels loop — one join per real IRC channel in channelsBySlug.
   createEffect(() => {
     // Channel topics are addressed by the server's socket-side
     // user_name (set by UserSocket.assign_subject — `"visitor:<uuid>"`
@@ -93,79 +224,63 @@ createRoot(() => {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name);
-        phx.on("event", (payload: WireEvent) => {
-          // Topic cache update (C3.1) — seed the topic store so TopicBar
-          // always reflects the latest cached topic without a REST round-trip.
-          if (payload.kind === "topic_changed") {
-            seedTopic(key, payload.topic);
-            return;
-          }
-          // Channel-modes cache update (C3.1) — feed the modes store so
-          // TopicBar renders the compact mode-string live.
-          if (payload.kind === "channel_modes_changed") {
-            seedModes(key, payload.modes);
-            return;
-          }
-          if (payload.kind !== "message") return;
-          // Scrollback ingestion — every message kind appended.
-          appendToScrollback(key, payload.message);
-          // Members presence delta (P4-1 Q4) — applyPresenceEvent
-          // filters by kind: presence kinds (join/part/quit/nick_change/
-          // mode/kick) mutate the per-channel member list; content kinds
-          // (privmsg/notice/action/topic) are no-ops there. Dispatching
-          // every event keeps the routing logic local to members.ts.
-          applyPresenceEvent(key, payload.message);
-          // C4.1 — DM auto-open: if this channel IS the own-nick DM slot
-          // and the incoming event is a PRIVMSG, auto-open the sender's
-          // query window. Focus does NOT shift (focus-rule: auto-open is
-          // focus-neutral, per spec #1). `openQueryWindowState` is
-          // idempotent — repeated calls from the same sender are no-ops
-          // inside queryWindows.ts. `untrack` prevents the event handler
-          // from becoming reactive to user() or networks() changes.
-          if (payload.message.kind === "privmsg") {
-            const u = untrack(user);
-            const ownNick = u ? displayNick(u) : null;
-            if (ownNick && ch.name.toLowerCase() === ownNick.toLowerCase()) {
-              const nets = untrack(networks);
-              const networkId = nets?.find((n) => n.slug === slug)?.id;
-              if (networkId !== undefined) {
-                openQueryWindowState(networkId, payload.message.sender, new Date().toISOString());
-              }
-            }
-          }
-          const sel = untrack(selectedChannel);
-          const isSelected =
-            sel !== null && sel.networkSlug === slug && sel.channelName === ch.name;
-          if (isSelected) return;
-          bumpUnread(key);
-          // C7.5: route the per-kind split counters. Content kinds bump
-          // messagesUnread (bold badge); presence kinds bump eventsUnread
-          // (dimmer indicator). bumpUnread above is kept for the aggregate
-          // count consumed by the mention-bumpMention side-effect path.
-          if (
-            payload.message.kind === "privmsg" ||
-            payload.message.kind === "notice" ||
-            payload.message.kind === "action"
-          ) {
-            bumpMessageUnread(key);
-          } else {
-            bumpEventUnread(key);
-          }
-          // Mention bump (P4-1) — only PRIVMSGs whose body matches the
-          // operator's own nick bump the red mention badge. Gated on
-          // !isSelected so that tabbing INTO a channel clears the count
-          // (selection.bumpMention's selectedChannel-cleared effect)
-          // and incoming mentions on the OPEN channel don't double-
-          // signal (the line itself gets .scrollback-mention highlight).
-          if (payload.message.kind === "privmsg") {
-            const u = untrack(user);
-            if (u && mentionsUser(payload.message.body, displayNick(u))) {
-              bumpMention(key);
-            }
-          }
-        });
+        installChannelHandler(phx, slug, ch.name, key);
         joined.add(key);
       }
+    }
+  });
+
+  // Query-windows loop — one join per (networkId, targetNick) tuple in
+  // queryWindowsByNetwork. Catches outbound DM echoes (the server
+  // broadcasts the operator's own `/msg <target> body` on the
+  // (slug, target) topic). When the auto-open from the DM-listener
+  // adds a new entry, this effect re-runs and joins the new topic so
+  // ongoing exchanges flow without a reload.
+  createEffect(() => {
+    const t = token();
+    const qwbn = queryWindowsByNetwork();
+    if (!t) return;
+    const userName = socketUserName();
+    const nets = networks();
+    if (!userName || !nets) return;
+    for (const [networkIdStr, windowsList] of Object.entries(qwbn)) {
+      const networkId = Number(networkIdStr);
+      const net = nets.find((n) => n.id === networkId);
+      if (!net) continue;
+      for (const qw of windowsList) {
+        const key = channelKey(net.slug, qw.targetNick);
+        if (joined.has(key)) continue;
+        const phx = joinChannel(userName, net.slug, qw.targetNick);
+        installChannelHandler(phx, net.slug, qw.targetNick, key);
+        joined.add(key);
+      }
+    }
+  });
+
+  // DM-listener loop — one join per network targeting the own-nick
+  // topic. Always-on subscription so inbound DMs from any sender
+  // (known or first-contact) are captured + auto-opened + re-keyed.
+  // Without this, the first inbound from a new sender would land at
+  // a topic nobody is subscribed to and be silently dropped.
+  //
+  // Joined-set key uses the own-nick key for the network so this
+  // subscription is deduped against any future code path that joins
+  // the same topic.
+  createEffect(() => {
+    const t = token();
+    const u = user();
+    const nets = networks();
+    if (!t) return;
+    const userName = socketUserName();
+    if (!userName || !u || !nets) return;
+    const ownNick = displayNick(u);
+    if (!ownNick) return;
+    for (const net of nets) {
+      const key = channelKey(net.slug, ownNick);
+      if (joined.has(key)) continue;
+      const phx = joinChannel(userName, net.slug, ownNick);
+      installDmListenerHandler(phx, net.slug, net.id, ownNick);
+      joined.add(key);
     }
   });
 });

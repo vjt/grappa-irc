@@ -56,10 +56,18 @@ vi.mock("../lib/queryWindows", () => ({
   setQueryWindowsByNetwork: vi.fn(),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
+  // Reset queryWindowsByNetwork mock implementation — vi.clearAllMocks
+  // wipes call history but NOT implementation overrides set via
+  // mockReturnValue in prior tests. Without this, the C4.1 "existing
+  // query window" test's seeded {1: [bob]} leaks into the next test
+  // and the new query-window subscribe effect (DM live-WS gap fix)
+  // produces an extra unexpected join.
+  const qw = await import("../lib/queryWindows");
+  vi.mocked(qw.queryWindowsByNetwork).mockImplementation(() => ({}));
 });
 
 const seedStubs = async () => {
@@ -126,10 +134,14 @@ describe("subscribe — WS join effect", () => {
     const socket = await import("../lib/socket");
     await loadStores();
     await vi.waitFor(() => {
-      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      // 2 real channels + 1 DM-listener (own-nick topic) = 3 joins.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#cicchetto");
+    // DM-listener join uses the operator's own nick as the channel
+    // segment — server broadcasts inbound PRIVMSGs on this topic.
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
     expect(mockChannel.on).toHaveBeenCalledWith("event", expect.any(Function));
   });
 
@@ -276,7 +288,8 @@ describe("subscribe — WS join effect", () => {
       const store = await loadStores();
 
       await vi.waitFor(() => {
-        expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+        // 2 channels + 1 DM-listener = 3.
+        expect(socket.joinChannel).toHaveBeenCalledTimes(3);
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
 
@@ -312,8 +325,11 @@ describe("subscribe — WS join effect", () => {
       expect(store.unreadCounts()[key]).toBeUndefined();
       expect(store.selectedChannel()).toBeNull();
 
+      // Wait for the DM-listener join under bob's own nick — it lags the
+      // channel joins because user() re-fetches asynchronously. Once it
+      // fires, the channel joins are guaranteed to have happened too.
       await vi.waitFor(() => {
-        expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+        expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "bob");
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
@@ -484,10 +500,13 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     vi.mocked(api.listNetworks).mockResolvedValue([
       { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
     ]);
-    // "alice" is the own nick — server routes incoming DMs to this channel slot.
+    // Production: own-nick is NEVER in the channels list. The
+    // DM-listener loop subscribes to the own-nick topic per network
+    // independently. With the new design, faking own-nick as a channel
+    // would dedupe the DM-listener subscription away. Keep channels
+    // realistic — one real IRC channel only.
     vi.mocked(api.listChannels).mockResolvedValue([
       { name: "#grappa", joined: true, source: "autojoin" },
-      { name: "alice", joined: true, source: "autojoin" },
     ]);
     vi.mocked(api.me).mockResolvedValue({
       kind: "user",
@@ -508,10 +527,11 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     const qw = await import("../lib/queryWindows");
     const store = await loadStores();
     await vi.waitFor(() => {
-      // Both channels (#grappa + alice) joined.
+      // 1 channel (#grappa) + 1 DM-listener (alice topic) = 2 joins.
       expect(mockChannel.on).toHaveBeenCalledTimes(2);
     });
-    // alice channel is index 1 (second channel in list).
+    // DM-listener handler is index 1 (channels-loop runs first, then
+    // dm-listener loop).
     fireAtHandlerIndex(1, {
       kind: "message",
       message: {
@@ -539,15 +559,20 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     );
     await seedDmStubs();
     const qw = await import("../lib/queryWindows");
-    // Seed "bob" as already-open query window.
+    // Seed "bob" as already-open query window — adds a third
+    // joinChannel call from the query-window subscribe effect. Layout:
+    // 1 channel (#grappa) + 1 query window (bob) + 1 DM-listener
+    // (alice topic) = 3 handler installs.
     vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
       1: [{ targetNick: "bob", openedAt: "2026-05-04T10:00:00Z" }],
     });
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
-    fireAtHandlerIndex(1, {
+    // DM-listener handler is index 2 (channels-loop, then query-window
+    // loop, then dm-listener loop).
+    fireAtHandlerIndex(2, {
       kind: "message",
       message: {
         id: 201,
@@ -579,6 +604,7 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     const qw = await import("../lib/queryWindows");
     await loadStores();
     await vi.waitFor(() => {
+      // 1 channel + 1 DM-listener = 2.
       expect(mockChannel.on).toHaveBeenCalledTimes(2);
     });
     // Fire on #grappa channel (index 0) — regular channel PRIVMSG.
@@ -596,5 +622,296 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
       },
     });
     expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+  });
+});
+
+// DM live-WS gap fix — query-window subscribe path.
+//
+// Bug: prior to this fix, subscribe.ts only joined topics for real
+// IRC channels (channelsBySlug). DM topics — `grappa:user:<u>/network:
+// <slug>/channel:<targetNick>` — were never joined, so outbound `/msg
+// <nick>` echoes and incoming replies didn't appear in the query pane
+// without a page reload. The fix: a second createEffect iterates over
+// queryWindowsByNetwork() and joins one topic per (networkId, target-
+// Nick), funneled through the SAME installHandler as the channel loop.
+describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
+  // Standard channel + network stubs; query windows are seeded per-test.
+  const seedQueryStubs = async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("joins the channel-shape topic for every open query window targeting <targetNick>", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedQueryStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }],
+    });
+    const socket = await import("../lib/socket");
+    await loadStores();
+    // 1 channel (#grappa) + 1 query window (vjt) + 1 DM-listener
+    // (alice topic) = 3 join calls.
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+    });
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
+    // Query topic uses the targetNick as the channel-name segment —
+    // matches the server-side broadcast on Topic.channel(user,
+    // network_slug, target) for outbound `/msg vjt body`.
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt");
+  });
+
+  it("multiple query windows on the same network → each joined exactly once", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedQueryStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [
+        { targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" },
+        { targetNick: "carol", openedAt: "2026-05-05T11:00:00Z" },
+      ],
+    });
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      // 1 channel + 2 query windows + 1 DM-listener = 4.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+    });
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt");
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "carol");
+  });
+
+  it("incoming PRIVMSG on a query topic appends to the query window's scrollback", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedQueryStubs();
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
+      1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }],
+    });
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      // 1 channel + 1 query window + 1 DM-listener = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    // Handler index 1 is the query-window join (channels first, then
+    // query windows, then DM-listener). Fire an inbound reply from vjt
+    // — the topic param is "vjt" (the targetNick), so the message
+    // lands at channelKey("freenode", "vjt").
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const queryHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    queryHandler({
+      kind: "message",
+      message: {
+        id: 300,
+        network: "freenode",
+        channel: "vjt",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "vjt",
+        body: "hi back",
+        meta: {},
+      },
+    });
+    const key = channelKey("freenode", "vjt");
+    expect(store.scrollbackByChannel()[key]?.map((m) => m.body)).toEqual(["hi back"]);
+  });
+
+  it("opening a NEW query window mid-session triggers a fresh join (effect reactive on queryWindowsByNetwork)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedQueryStubs();
+    // Drive reactivity through a real Solid signal underlying the
+    // mock — the effect tracks function calls, so swapping the mock
+    // implementation between a tracked-getter and asserting the
+    // re-run mirrors the production "openQueryWindowState() pushes
+    // a new entry" path. Direct mockReturnValue swaps don't notify
+    // Solid because there's no signal between the mock and the effect.
+    const { createSignal } = await import("solid-js");
+    const [windows, setWindows] = createSignal<
+      Record<number, Array<{ targetNick: string; openedAt: string }>>
+    >({});
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockImplementation(() => windows());
+    const socket = await import("../lib/socket");
+    await loadStores();
+    // Initially: 1 channel + 1 DM-listener (alice topic), no query
+    // windows → 2 joins.
+    await vi.waitFor(() => {
+      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+    });
+    // Simulate openQueryWindowState pushing "vjt" into the windows
+    // signal — the production path is qw.openQueryWindowState calling
+    // setQueryWindowsByNetwork, which is exactly this shape.
+    setWindows({ 1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }] });
+    await vi.waitFor(() => {
+      // +1 join for the new query window (vjt).
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+    });
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt");
+  });
+
+  it("query-window join is deduped — re-render of the same window list does not re-join", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedQueryStubs();
+    const { createSignal } = await import("solid-js");
+    const [windows, setWindows] = createSignal<
+      Record<number, Array<{ targetNick: string; openedAt: string }>>
+    >({ 1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }] });
+    const qw = await import("../lib/queryWindows");
+    vi.mocked(qw.queryWindowsByNetwork).mockImplementation(() => windows());
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      // 1 channel + 1 query window + 1 DM-listener = 3.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+    });
+    // Re-emit the same list (new array reference, same targetNicks) —
+    // the `joined` Set must dedupe and skip the second join.
+    setWindows({ 1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }] });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+  });
+});
+
+// DM-listener — per-network own-nick topic subscription.
+//
+// The server persists inbound DMs (`PRIVMSG <ownNick> :body` from a
+// remote sender) at `channel = ownNick`, then broadcasts on the
+// own-nick topic. Without a dedicated subscription, the message is
+// silently dropped (channels list never includes own-nick; query-
+// windows list only catches OUTBOUND echoes). The DM-listener loop
+// closes that gap by always subscribing to the own-nick topic per
+// network and re-keying the append to `channelKey(slug, sender)` so
+// the message appears in the conversation partner's pane.
+describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => {
+  const seedDmListenerStubs = async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("subscribes to the own-nick topic per network", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      // 1 channel + 1 DM-listener = 2.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+    });
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
+  });
+
+  it("inbound PRIVMSG on own-nick topic re-keys to sender's window scrollback", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    // Handler index 1 is the DM-listener (channels first, then dm-
+    // listener). Fire an inbound DM from vjt.
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 400,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "vjt",
+        body: "hi alice",
+        meta: {},
+      },
+    });
+    // Message lands in vjt's window (NOT alice's own-nick bucket).
+    const vjtKey = channelKey("freenode", "vjt");
+    expect(store.scrollbackByChannel()[vjtKey]?.map((m) => m.body)).toEqual(["hi alice"]);
+    // Own-nick bucket stays empty for the PRIVMSG case.
+    const ownKey = channelKey("freenode", "alice");
+    expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
+  });
+
+  it("inbound PRIVMSG on own-nick topic auto-opens the sender's query window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const qw = await import("../lib/queryWindows");
+    await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+    });
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 401,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "vjt",
+        body: "hello",
+        meta: {},
+      },
+    });
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "vjt", expect.any(String));
   });
 });
