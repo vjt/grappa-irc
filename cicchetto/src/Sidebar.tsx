@@ -69,10 +69,10 @@ const Sidebar: Component<Props> = (props) => {
             </h3>
             <ul>
               {/* Server window — always present, not closeable */}
-              <li classList={{ selected: isSelected(network.slug, ":server") }}>
+              <li classList={{ selected: isSelected(network.slug, "$server") }}>
                 <button
                   type="button"
-                  onClick={() => handleClick(network.slug, ":server", "server")}
+                  onClick={() => handleClick(network.slug, "$server", "server")}
                   class="sidebar-window-btn"
                 >
                   <span class="sidebar-channel-name">Server</span>

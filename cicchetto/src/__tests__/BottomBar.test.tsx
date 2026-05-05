@@ -93,7 +93,7 @@ describe("BottomBar", () => {
     fireEvent.click(screen.getAllByText("Server")[0] as HTMLElement);
     expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
       networkSlug: "freenode",
-      channelName: ":server",
+      channelName: "$server",
       kind: "server",
     });
   });
