@@ -162,6 +162,48 @@ describe("subscribe — WS join effect", () => {
     expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBe(1);
   });
 
+  // BUG6: badge showed "2" for 1 PRIVMSG and "+2" per subsequent message.
+  // Root cause: bumpMessageUnread must fire EXACTLY ONCE per incoming PRIVMSG.
+  // This test asserts the split counters directly — the displayed badge is
+  // messagesUnread (not the aggregate unreadCounts).
+  it("BUG6: one PRIVMSG bumps messagesUnread by 1, not 2", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    const key = channelKey("freenode", "#grappa");
+    fireMessageEvent("#grappa", { id: 10, body: "msg1" });
+    expect(store.messagesUnread()[key]).toBe(1);
+    expect(store.eventsUnread()[key]).toBeUndefined();
+
+    fireMessageEvent("#grappa", { id: 11, body: "msg2" });
+    expect(store.messagesUnread()[key]).toBe(2);
+    expect(store.eventsUnread()[key]).toBeUndefined();
+  });
+
+  it("BUG6: one JOIN event bumps eventsUnread by 1, not messagesUnread", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    const key = channelKey("freenode", "#grappa");
+    fireMessageEvent("#grappa", { id: 20, kind: "join", sender: "carol" });
+    expect(store.eventsUnread()[key]).toBe(1);
+    expect(store.messagesUnread()[key]).toBeUndefined();
+  });
+
   it("does not increment unread when the event arrives on the selected channel", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
