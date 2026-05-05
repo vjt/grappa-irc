@@ -289,3 +289,43 @@ export function pushWhois(networkId: number, nick: string): void {
   if (_userChannel === null) return;
   _userChannel.push("whois", { network_id: networkId, nick });
 }
+
+// C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level
+// channel; server-side GrappaChannel.handle_in("watchlist", ...) handlers
+// are the authority (added in C8 server-side commit). The Promise resolves
+// with {patterns: string[]} on success, rejects on server error or timeout.
+//
+// Pattern semantics: forward-only (changing the list does NOT re-aggregate
+// past scrollback; only future mentions are filtered by the new list).
+export function pushWatchlistAdd(pattern: string): Promise<{ patterns: string[] }> {
+  const ch = _userChannel;
+  if (ch === null) return Promise.reject(new Error("not connected"));
+  return new Promise((resolve, reject) => {
+    ch.push("watchlist", { action: "add", pattern })
+      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
+      .receive("error", (err: unknown) => reject(err))
+      .receive("timeout", () => reject(new Error("timeout")));
+  });
+}
+
+export function pushWatchlistDel(pattern: string): Promise<{ patterns: string[] }> {
+  const ch = _userChannel;
+  if (ch === null) return Promise.reject(new Error("not connected"));
+  return new Promise((resolve, reject) => {
+    ch.push("watchlist", { action: "del", pattern })
+      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
+      .receive("error", (err: unknown) => reject(err))
+      .receive("timeout", () => reject(new Error("timeout")));
+  });
+}
+
+export function pushWatchlistList(): Promise<{ patterns: string[] }> {
+  const ch = _userChannel;
+  if (ch === null) return Promise.reject(new Error("not connected"));
+  return new Promise((resolve, reject) => {
+    ch.push("watchlist", { action: "list", pattern: undefined })
+      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
+      .receive("error", (err: unknown) => reject(err))
+      .receive("timeout", () => reject(new Error("timeout")));
+  });
+}

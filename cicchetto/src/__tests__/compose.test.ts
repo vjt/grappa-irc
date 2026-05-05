@@ -47,6 +47,10 @@ vi.mock("../lib/socket", () => ({
   pushChannelMode: vi.fn(),
   pushChannelTopicClear: vi.fn(),
   notifyClientClosing: vi.fn(),
+  // C8.3 — watchlist push helpers.
+  pushWatchlistAdd: vi.fn().mockResolvedValue({ patterns: ["myname"] }),
+  pushWatchlistDel: vi.fn().mockResolvedValue({ patterns: [] }),
+  pushWatchlistList: vi.fn().mockResolvedValue({ patterns: ["myname"] }),
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
@@ -924,24 +928,40 @@ describe("compose submit — info verbs (TODO stubs)", () => {
   });
 });
 
-describe("compose submit — watchlist verbs (TODO stubs)", () => {
-  it("/watch add <pattern> returns inline error (user_settings API not yet implemented)", async () => {
+describe("compose submit — watchlist verbs (C8.3)", () => {
+  it("/watch add <pattern> calls pushWatchlistAdd and returns patterns inline", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/watch add myname");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+    expect(socket.pushWatchlistAdd).toHaveBeenCalledWith("myname");
+    expect(result).toMatchObject({ ok: expect.stringContaining("myname") });
   });
 
-  it("/highlight list returns inline error (user_settings API not yet implemented)", async () => {
+  it("/highlight list calls pushWatchlistList and returns patterns inline", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/highlight list");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+    expect(socket.pushWatchlistList).toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: expect.stringContaining("watchlist") });
+  });
+
+  it("/watch del <pattern> calls pushWatchlistDel and returns patterns inline", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/watch del myname");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(socket.pushWatchlistDel).toHaveBeenCalledWith("myname");
+    expect(result).toMatchObject({ ok: expect.stringContaining("watchlist") });
   });
 });

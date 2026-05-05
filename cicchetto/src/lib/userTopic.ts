@@ -1,6 +1,7 @@
 import { createEffect, createRoot, untrack } from "solid-js";
 import type { NumericRouted } from "./api";
 import { socketUserName, token } from "./auth";
+import { setAwayState } from "./awayStatus";
 import { channelKey } from "./channelKey";
 import { setMentionsBundle } from "./mentionsWindow";
 import { channelsBySlug, refetchChannels } from "./networks";
@@ -151,6 +152,12 @@ createRoot(() => {
         ) {
           setSelectedChannel({ networkSlug, channelName: "", kind: "mentions" });
         }
+      } else if (payload.kind === "away_confirmed") {
+        // C8.3 — away visual indicator. Server broadcasts away_confirmed
+        // with state: "away" | "present" on both set and cancel paths.
+        // Update the awayByNetwork signal so the Sidebar can show [away].
+        const networkSlug = payload.network as string;
+        setAwayState(networkSlug, (payload.state as string) === "away");
       } else if (payload.kind === "numeric_routed") {
         // C5.2 — route numeric feedback to the correct window's inline store.
         const event = payload as unknown as NumericRouted;
