@@ -257,6 +257,9 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/umode <modes>` | Set user-mode flags on own nick |
 | `/mode <target> <modes> [args]` | Raw `MODE` pass-through (escape hatch; no chunking applied) |
 | `/away [reason]` | Set explicit away with an optional reason. Bare `/away` (no reason) clears explicit away status. |
+| `/watch add <pattern>` | Add pattern to watchlist (alias: `/highlight add`). Replies with updated list inline. |
+| `/watch del <pattern>` | Remove pattern from watchlist (alias: `/highlight del`). |
+| `/watch list` | Show current watchlist (alias: `/highlight list`). |
 | `/quit [reason]` | Nuclear logout: parks **all** bound networks (`PATCH /networks/:net` with `connection_state: "parked"`), QUITs each upstream, closes the WS, clears auth, redirects to `/login`. Re-login + `/connect <net>` to bring networks back. |
 | `/disconnect [network] [reason]` | Park one network (active-window's network if no arg). Bouncer stays parked across reboots until `/connect`. Visitor sessions: aliases to `/quit` (visitor credentials are ephemeral). |
 | `/connect <network>` | Unpark + respawn the named network. Works from `:parked` or `:failed`. |
@@ -301,6 +304,23 @@ Seven visual and UX improvements to the message history pane:
 - **Msg vs events badges (C7.5)** — unread indicators split into two counters: **messages** (PRIVMSG / NOTICE / ACTION → bold accent badge) and **events** (JOIN / PART / QUIT / NICK / MODE / TOPIC / KICK → dimmer muted indicator). Both reset to zero on window focus. Both desktop Sidebar and mobile BottomBar show the split.
 - **Clickable nicks (C7.6)** — sender buttons in PRIVMSG / NOTICE / ACTION lines are interactive: left-click opens a query (DM) window and switches focus; right-click shows the same `UserContextMenu` as the members pane (op/deop/voice/kick/ban/WHOIS/query). Zero new components.
 - **Watchlist highlight (C7.7)** — PRIVMSG / NOTICE / ACTION lines where the body matches the watchlist get `.scrollback-highlight` (soft accent left-border). MVP: watchlist = own nick only. Named separately from `.scrollback-mention` so a future `/watch` verb can extend it to a configurable nick list without touching the mention rendering path.
+
+### Mentions window + watchlist (C8)
+
+Three features shipped together:
+
+- **Mentions-while-away window (C8.1)** — when returning from away (explicit or auto), the server aggregates all PRIVMSG/NOTICE/ACTION lines whose body matches the watchlist during the away interval and broadcasts a `mentions_bundle` event on the user-level Phoenix Channel. Cicchetto receives this, stores the bundle, and auto-opens a `:mentions` pseudo-window in the channel pane. The window shows a header with count, away interval, and reason, then one clickable row per message (time · channel · sender · body). Watchlist matches render with `.scrollback-highlight`.
+- **Click-to-context (C8.2)** — clicking a row in the mentions window sets the read-cursor to `serverTime - 1` and switches focus to the source channel. ScrollbackPane's existing unread-marker scroll infrastructure (C7.3) positions the view just above the referenced message.
+- **Away indicator + watchlist verbs (C8.3)** — the Sidebar now shows a `[away]` badge next to any network where the user is currently away (driven by the server's `away_confirmed` event). `/watch` and `/highlight` (synonyms) are now real rather than stubs: they push to the server's `watchlist` channel handler and display the updated pattern list inline. Three sub-verbs: `add <pattern>`, `del <pattern>`, `list`.
+
+Watchlist is forward-only: changing patterns does not re-aggregate past scrollback; only future messages are filtered against the new list.
+
+| Verb | Effect |
+|------|--------|
+| `/watch add <pattern>` | Add pattern to watchlist; replies with updated list |
+| `/watch del <pattern>` | Remove pattern from watchlist |
+| `/watch list` | Show current watchlist |
+| `/highlight …` | Alias for `/watch …` |
 
 Right-click any nick in the members pane to open a context submenu. Items:
 
