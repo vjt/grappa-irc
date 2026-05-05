@@ -7,6 +7,7 @@ import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, networks, user } from "./lib/networks";
+import { setReadCursor } from "./lib/readCursor";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import MembersPane from "./MembersPane";
@@ -50,6 +51,24 @@ const Shell: Component = () => {
   const ownNick = (): string | null => {
     const u = user();
     return u ? displayNick(u) : null;
+  };
+
+  // C8.2 — click-to-context handler for MentionsWindow rows.
+  // Sets read cursor to serverTime-1 so ScrollbackPane's unread-marker
+  // appears just before the clicked message, then switches focus to the
+  // source channel. The existing C7.3 scroll-to-marker infrastructure in
+  // ScrollbackPane handles the visual scroll.
+  const handleMentionClicked = (args: {
+    networkSlug: string;
+    channel: string;
+    serverTime: number;
+  }) => {
+    setReadCursor(args.networkSlug, args.channel, args.serverTime - 1);
+    setSelectedChannel({
+      networkSlug: args.networkSlug,
+      channelName: args.channel,
+      kind: "channel",
+    });
   };
 
   // Linear flat list of (slug, channel) tuples for Alt+1..9 + next/prev
@@ -243,9 +262,7 @@ const Shell: Component = () => {
                         }
                       }
                       ownNick={ownNick()}
-                      onMentionClicked={(_args) => {
-                        // C8.2 — TODO: switch focus to channel + scroll-to-timestamp.
-                      }}
+                      onMentionClicked={handleMentionClicked}
                     />
                   </Show>
                 </>
@@ -345,9 +362,7 @@ const Shell: Component = () => {
                       }
                     }
                     ownNick={ownNick()}
-                    onMentionClicked={(_args) => {
-                      // C8.2 — TODO: switch focus to channel + scroll-to-timestamp.
-                    }}
+                    onMentionClicked={handleMentionClicked}
                   />
                 </Show>
               </>
