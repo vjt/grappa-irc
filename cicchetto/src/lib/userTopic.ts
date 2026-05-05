@@ -1,7 +1,11 @@
-import { createEffect, createRoot } from "solid-js";
+import { createEffect, createRoot, untrack } from "solid-js";
+import type { NumericRouted } from "./api";
 import { socketUserName, token } from "./auth";
-import { refetchChannels } from "./networks";
+import { channelKey } from "./channelKey";
+import { channelsBySlug, refetchChannels } from "./networks";
+import { appendNumericInline } from "./numericInline";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
+import { selectedChannel } from "./selection";
 import { joinUser } from "./socket";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -18,6 +22,18 @@ import { joinUser } from "./socket";
 // C1.3: also handles `query_windows_list` push. The server sends string
 // map keys (JSON objects always have string keys) and snake_case field
 // names; we coerce to integer keys + camelCase before storing.
+//
+// C5.2: handles `numeric_routed` push. Routes the numeric line to the
+// per-window numericInline store keyed by window identity. Routing:
+//   - "active" or "server" → active window (selectedChannel). "server"
+//     falls back to active because the server-messages window isn't
+//     implemented yet (flagged as spec gap).
+//   - "channel" → channelKey(slug, target). Network slug is resolved by
+//     searching channelsBySlug() for the first network containing that
+//     channel (heuristic; gaps in multi-network same-channel covered by
+//     falling back to the active window if no match found).
+//   - "query" → channelKey(slug, target) using the same slug heuristic.
+//   - "list" / "mentions" → active window (pseudo-windows not yet live).
 //
 // Identity-scoped: re-evaluates when `user()` resolves under a fresh
 // bearer. The Phoenix Channel handle is per-tab and persists across
@@ -40,6 +56,40 @@ function parseWindowsMap(raw: unknown): Record<number, QueryWindow[]> {
     }));
   }
   return result;
+}
+
+// Resolve the window key string for a `numeric_routed` event.
+// `selectedChannel()` is read with `untrack` so this function doesn't
+// create reactive dependencies in the event handler call site.
+function resolveNumericWindowKey(event: NumericRouted): string {
+  const sel = untrack(selectedChannel);
+  const activeKey = sel !== null ? channelKey(sel.networkSlug, sel.channelName) : "active";
+
+  const { kind, target } = event.target_window;
+
+  // "active" → whatever window is focused.
+  // "server" → fallback to active (server-messages window not yet live).
+  // "list" / "mentions" → pseudo-windows not yet live; fall back to active.
+  if (kind === "active" || kind === "server" || kind === "list" || kind === "mentions") {
+    return activeKey;
+  }
+
+  // "channel" / "query" → find the network slug by searching channelsBySlug.
+  if ((kind === "channel" || kind === "query") && target !== null) {
+    const cbs = untrack(channelsBySlug);
+    if (cbs) {
+      for (const [slug, channels] of Object.entries(cbs)) {
+        const lowerTarget = target.toLowerCase();
+        if (channels.some((ch) => ch.name.toLowerCase() === lowerTarget)) {
+          return channelKey(slug, target);
+        }
+      }
+    }
+    // No match found — fall back to active window.
+    return activeKey;
+  }
+
+  return activeKey;
 }
 
 createRoot(() => {
@@ -70,6 +120,16 @@ createRoot(() => {
         refetchChannels();
       } else if (payload.kind === "query_windows_list") {
         setQueryWindowsByNetwork(parseWindowsMap(payload.windows));
+      } else if (payload.kind === "numeric_routed") {
+        // C5.2 — route numeric feedback to the correct window's inline store.
+        const event = payload as unknown as NumericRouted;
+        const windowKey = resolveNumericWindowKey(event);
+        const text = event.trailing ?? `[${event.numeric}]`;
+        appendNumericInline(windowKey, {
+          numeric: event.numeric,
+          text,
+          severity: event.severity,
+        });
       }
     });
   });

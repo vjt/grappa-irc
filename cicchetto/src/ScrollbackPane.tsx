@@ -14,6 +14,7 @@ import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
+import { numericsByWindow } from "./lib/numericInline";
 import { scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
@@ -371,6 +372,23 @@ const ScrollbackPane: Component<Props> = (props) => {
           <For each={messages()}>{(msg) => <ScrollbackLine msg={msg} userNick={userNick()} />}</For>
         </Show>
       </div>
+      {/* C5.2: Ephemeral inline numeric feedback lines. */}
+      <Show when={(numericsByWindow()[key()] ?? []).length > 0}>
+        <div class="numeric-inline-pane" data-testid="numeric-inline-pane">
+          <For each={numericsByWindow()[key()] ?? []}>
+            {(line) => (
+              <div
+                class="numeric-inline-line"
+                classList={{ "numeric-error": line.severity === "error" }}
+                data-testid="numeric-inline-line"
+                data-severity={line.severity}
+              >
+                * {line.text}
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
     </div>
   );
 };
