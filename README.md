@@ -269,6 +269,16 @@ Every channel window pins a header strip showing the topic (single-line, ellipsi
 
 When you join a channel, the channel window shows a one-time banner at the top: "You joined #chan", topic line, names list with PREFIX sigils (`@op`, `+voice`, plain), and a "N users, M ops" summary. Renders once per session per channel — switching back to the same channel later does not re-display. Pure render; not persisted as scrollback rows.
 
+### DM (query) windows + focus rule (C4)
+
+Private messages get per-user "query" windows in the sidebar, persisted across logins/devices on the server (`query_windows` table, see C1). Three ways to open one:
+
+- **`/msg <nick> <text>`** — opens the query window, switches focus to it, and sends the message.
+- **`/query <nick>`** / **`/q <nick>`** — opens the window and switches focus, no message sent.
+- **Incoming PRIVMSG from a sender with no existing query window** — auto-opens the window in the sidebar **but does NOT switch focus** (the unread badge bumps; the user clicks to switch).
+
+**Cluster-wide focus rule:** focus changes only on user actions (`/join` self, `/msg` `/query` `/q`, click on tab, click on nick). Incoming traffic — PRIVMSG, JOIN, PART, QUIT, MODE, autojoin window auto-creation — never steals focus. Enforced by invariant tests in `cicchetto/src/__tests__/focus-rule.test.ts`.
+
 ### Auto-away (S3)
 
 When the last browser tab closes (or sends a `pagehide` / `beforeunload` hint), grappa starts a **30-second debounce timer**. If no tab reconnects within that window, the bouncer sends `AWAY :auto-away (web client disconnected)` upstream on every connected network. When a tab reconnects the timer is cancelled and (if auto-away was active) `AWAY` is cleared immediately.
