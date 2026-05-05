@@ -59,7 +59,7 @@ vi.mock("../lib/queryWindows", () => ({
 
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
 vi.mock("../lib/selection", () => ({
-  selectedChannel: vi.fn(() => ({ networkSlug: "freenode", channelName: "#a" })),
+  selectedChannel: vi.fn(() => ({ networkSlug: "freenode", channelName: "#a", kind: "channel" })),
   setSelectedChannel: vi.fn(),
   unreadCounts: vi.fn(() => ({})),
   bumpUnread: vi.fn(),
@@ -769,6 +769,7 @@ describe("compose submit — channel ops verbs", () => {
     vi.mocked(sel.selectedChannel).mockReturnValueOnce({
       networkSlug: "freenode",
       channelName: "alice",
+      kind: "query",
     });
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");

@@ -6,6 +6,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
+import type { WindowKind } from "./lib/windowKinds";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -33,8 +34,8 @@ const Sidebar: Component<Props> = (props) => {
     return s !== null && s.networkSlug === slug && s.channelName === name;
   };
 
-  const handleClick = (slug: string, name: string) => {
-    setSelectedChannel({ networkSlug: slug, channelName: name });
+  const handleClick = (slug: string, name: string, kind: WindowKind) => {
+    setSelectedChannel({ networkSlug: slug, channelName: name, kind });
     props.onSelect?.();
   };
 
@@ -62,7 +63,7 @@ const Sidebar: Component<Props> = (props) => {
               <li classList={{ selected: isSelected(network.slug, ":server") }}>
                 <button
                   type="button"
-                  onClick={() => handleClick(network.slug, ":server")}
+                  onClick={() => handleClick(network.slug, ":server", "server")}
                   class="sidebar-window-btn"
                 >
                   <span class="sidebar-channel-name">Server</span>
@@ -77,7 +78,7 @@ const Sidebar: Component<Props> = (props) => {
                     <li classList={{ selected: isSelected(network.slug, channel.name) }}>
                       <button
                         type="button"
-                        onClick={() => handleClick(network.slug, channel.name)}
+                        onClick={() => handleClick(network.slug, channel.name, "channel")}
                         class="sidebar-window-btn"
                       >
                         <span class="sidebar-channel-name" classList={{ parted: !channel.joined }}>
@@ -111,7 +112,7 @@ const Sidebar: Component<Props> = (props) => {
                     <li classList={{ selected: isSelected(network.slug, qw.targetNick) }}>
                       <button
                         type="button"
-                        onClick={() => handleClick(network.slug, qw.targetNick)}
+                        onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                         class="sidebar-window-btn"
                       >
                         <span class="sidebar-channel-name">{qw.targetNick}</span>

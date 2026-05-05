@@ -152,7 +152,11 @@ describe("subscribe — WS join effect", () => {
     await vi.waitFor(() => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
-    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     fireMessageEvent("#grappa", { id: 1, body: "hi" });
     expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
   });
@@ -215,7 +219,11 @@ describe("subscribe — WS join effect", () => {
       expect(mockChannel.on).toHaveBeenCalled();
     });
     fireMessageEvent("#grappa", { id: 42, server_time: 100, body: "from ws" });
-    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
     await vi.waitFor(() => {
       expect(api.listMessages).toHaveBeenCalled();
     });
@@ -269,7 +277,11 @@ describe("subscribe — WS join effect", () => {
       const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
       expect(store.unreadCounts()[key]).toBe(1);
-      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
       expect(store.selectedChannel()).not.toBeNull();
 
       const api = await import("../lib/api");
@@ -314,7 +326,11 @@ describe("subscribe — WS join effect", () => {
       });
 
       // Selection on OTHER channel; mention arrives on #grappa.
-      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
 
       fireMessageEvent("#grappa", { id: 100, kind: "privmsg", body: "hey alice come look" });
 
@@ -335,7 +351,11 @@ describe("subscribe — WS join effect", () => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
 
-      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
       fireMessageEvent("#grappa", { id: 101, kind: "privmsg", body: "hey alice" });
 
       expect(mentions.bumpMention).not.toHaveBeenCalled();
@@ -354,7 +374,11 @@ describe("subscribe — WS join effect", () => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
 
-      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#cicchetto" });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
       fireMessageEvent("#grappa", { id: 102, kind: "privmsg", body: "no mention here" });
 
       expect(mentions.bumpMention).not.toHaveBeenCalled();
@@ -415,7 +439,11 @@ describe("subscribe — WS join effect", () => {
       const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]?.length).toBe(1);
       expect(store.unreadCounts()[key]).toBe(1);
-      store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa" });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
 
       auth.setToken(null);
 
