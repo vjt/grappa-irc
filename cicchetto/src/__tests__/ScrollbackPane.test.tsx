@@ -752,4 +752,104 @@ describe("ScrollbackPane", () => {
       expect(lines[0]).toHaveTextContent("info in cicchetto");
     });
   });
+
+  // C7.1: Day-separator lines.
+  describe("day-separator lines (C7.1)", () => {
+    it("renders no day-separator when all messages are on the same day", () => {
+      const sameDayMsgs: ScrollbackMessage[] = [
+        {
+          id: 1,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "hello",
+          meta: {},
+        },
+        {
+          id: 2,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_001,
+          kind: "privmsg",
+          sender: "bob",
+          body: "world",
+          meta: {},
+        },
+      ];
+      setScrollback({ "freenode #grappa": sameDayMsgs });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.queryByTestId("day-separator")).toBeNull();
+    });
+
+    it("renders a day-separator between messages on different days", () => {
+      const twoDayMsgs: ScrollbackMessage[] = [
+        {
+          id: 1,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "yesterday",
+          meta: {},
+        },
+        {
+          id: 2,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000 + 86_400_000,
+          kind: "privmsg",
+          sender: "bob",
+          body: "today",
+          meta: {},
+        },
+      ];
+      setScrollback({ "freenode #grappa": twoDayMsgs });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const separators = screen.getAllByTestId("day-separator");
+      expect(separators).toHaveLength(1);
+      expect(screen.getAllByTestId("scrollback-line")).toHaveLength(2);
+    });
+
+    it("renders multiple day-separators for messages across 3 days", () => {
+      const threeDayMsgs: ScrollbackMessage[] = [
+        {
+          id: 1,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "day1",
+          meta: {},
+        },
+        {
+          id: 2,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000 + 86_400_000,
+          kind: "privmsg",
+          sender: "bob",
+          body: "day2",
+          meta: {},
+        },
+        {
+          id: 3,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000 + 2 * 86_400_000,
+          kind: "privmsg",
+          sender: "carol",
+          body: "day3",
+          meta: {},
+        },
+      ];
+      setScrollback({ "freenode #grappa": threeDayMsgs });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const separators = screen.getAllByTestId("day-separator");
+      expect(separators).toHaveLength(2);
+    });
+  });
 });

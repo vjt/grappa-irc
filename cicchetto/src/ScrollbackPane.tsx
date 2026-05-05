@@ -48,6 +48,10 @@ import type { WindowKind } from "./lib/windowKinds";
 // re-renders for that channel for the lifetime of the page session.
 // This mirrors the spec: "Subsequent visits to the same channel within
 // the session don't re-render the banner."
+//
+// C7.1: Day-separator rows — when consecutive messages cross a local-TZ
+// day boundary, render a `── <date> ──` separator row between them.
+// Pure client-side computation from server_time (epoch-ms).
 
 export type Props = {
   networkSlug: string;
@@ -77,6 +81,29 @@ const formatTime = (epochMs: number): string => {
   const mm = d.getMinutes().toString().padStart(2, "0");
   const ss = d.getSeconds().toString().padStart(2, "0");
   return `${hh}:${mm}:${ss}`;
+};
+
+// Format epoch-ms as a human-readable date label (e.g. "Saturday, May 3")
+// in the user's local timezone. Used for day-separator rows (C7.1).
+const formatDateLabel = (epochMs: number): string => {
+  return new Date(epochMs).toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+};
+
+// Returns true if a and b fall on different calendar days in local TZ.
+// Comparison is by (year, month, date) triple so DST transitions don't
+// produce false positives.
+const isDifferentDay = (aMs: number, bMs: number): boolean => {
+  const a = new Date(aMs);
+  const b = new Date(bMs);
+  return (
+    a.getFullYear() !== b.getFullYear() ||
+    a.getMonth() !== b.getMonth() ||
+    a.getDate() !== b.getDate()
+  );
 };
 
 // Wire-shape source-of-truth: the server's `Grappa.Scrollback.Message.kind()`
@@ -225,6 +252,11 @@ const memberSigil = (modes: string[]): string => {
 
 type BannerState = "hidden" | "visible";
 
+// C7.1: row types for the mixed separator+message rendering list.
+type SeparatorRow = { type: "separator"; label: string; id: string };
+type MessageRow = { type: "message"; msg: ScrollbackMessage };
+type Row = SeparatorRow | MessageRow;
+
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
   const [atBottom, setAtBottom] = createSignal(true);
@@ -236,6 +268,28 @@ const ScrollbackPane: Component<Props> = (props) => {
     const me = user();
     return me ? displayNick(me) : null;
   };
+
+  // C7.1: Build a mixed list of (day-separator | message) rows for rendering.
+  // Separator injected BETWEEN consecutive rows that cross a local-TZ
+  // day boundary. The first message never gets a separator before it.
+  const rows = createMemo((): Row[] => {
+    const msgs = messages();
+    if (!msgs || msgs.length === 0) return [];
+    const result: Row[] = [];
+    let prevTime: number | null = null;
+    for (const msg of msgs) {
+      if (prevTime !== null && isDifferentDay(prevTime, msg.server_time)) {
+        result.push({
+          type: "separator",
+          label: formatDateLabel(msg.server_time),
+          id: `sep-${msg.id}`,
+        });
+      }
+      result.push({ type: "message", msg });
+      prevTime = msg.server_time;
+    }
+    return result;
+  });
 
   // JOIN-self detection: derive whether own nick has joined this channel
   // from the scrollback. The memo re-runs when messages change; once the
@@ -369,7 +423,21 @@ const ScrollbackPane: Component<Props> = (props) => {
           when={(messages()?.length ?? 0) > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}
         >
-          <For each={messages()}>{(msg) => <ScrollbackLine msg={msg} userNick={userNick()} />}</For>
+          {/* C7.1: render mixed rows (separator + message). */}
+          <For each={rows()}>
+            {(row) => {
+              if (row.type === "separator") {
+                return (
+                  <div class="scrollback-day-separator" data-testid="day-separator">
+                    <span class="scrollback-day-separator-line" />
+                    <span class="scrollback-day-separator-label">{row.label}</span>
+                    <span class="scrollback-day-separator-line" />
+                  </div>
+                );
+              }
+              return <ScrollbackLine msg={row.msg} userNick={userNick()} />;
+            }}
+          </For>
         </Show>
       </div>
       {/* C5.2: Ephemeral inline numeric feedback lines. */}

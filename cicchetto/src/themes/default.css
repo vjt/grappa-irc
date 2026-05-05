@@ -552,6 +552,30 @@ body {
   font-style: italic;
 }
 
+/* C7.1: Day-separator row — renders `── Saturday, May 4 ──` between
+   messages that cross a local-TZ day boundary. The separator is a flex
+   row with two growing lines flanking the date label. */
+
+.scrollback-day-separator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.scrollback-day-separator-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.scrollback-day-separator-label {
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* ComposeBox */
 
 .compose-box {
