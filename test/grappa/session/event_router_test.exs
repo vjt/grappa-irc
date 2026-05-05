@@ -94,6 +94,67 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.body == "auth banner"
       assert attrs.meta == %{}
     end
+
+    # BUG2 fix-up: server-origin NOTICEs (target = own nick, not a channel)
+    # must be routed to the "$server" synthetic channel. When the upstream
+    # sends with a server prefix, the sender must be the server hostname —
+    # NOT an empty string (which fails valid_sender?) and NOT nil.
+    test "server-origin NOTICE (target=nick) routes to $server with sender=server_host" do
+      state = base_state()
+
+      m = msg(:notice, ["vjt", "Welcome to AzzurraNet"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "irc.azzurra.chat"
+      assert attrs.body == "Welcome to AzzurraNet"
+    end
+
+    # BUG2 fix-up: server-origin NOTICE with NO prefix (nil) must use the
+    # anonymous_sender sentinel ("*") — not "" which fails valid_sender?.
+    test "server-origin NOTICE with nil prefix uses anonymous_sender sentinel" do
+      state = base_state()
+
+      m = msg(:notice, ["vjt", "server banner"], nil)
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == Message.anonymous_sender()
+    end
+
+    # BUG2 fix-up: MOTD numeric (372 RPL_MOTD) routes to "$server" with
+    # sender = server hostname from the numeric's prefix. Previously sender
+    # was hardcoded to "" which fails valid_sender? and causes changeset
+    # rejection → every MOTD line silently dropped.
+    test "372 RPL_MOTD routes to $server with sender from numeric prefix" do
+      state = base_state()
+
+      m = msg({:numeric, 372}, ["vjt", "- Welcome to this IRC server"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "irc.azzurra.chat"
+      assert is_binary(attrs.body) and attrs.body != ""
+    end
+
+    # BUG2 fix-up: MOTD numeric with nil prefix uses anonymous_sender sentinel.
+    test "372 RPL_MOTD with nil prefix uses anonymous_sender sentinel" do
+      state = base_state()
+
+      m = msg({:numeric, 372}, ["vjt", "- MOTD line"], nil)
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == Message.anonymous_sender()
+    end
   end
 
   describe "route/2 — :join" do

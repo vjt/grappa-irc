@@ -79,5 +79,22 @@ defmodule Grappa.Scrollback.MessageTest do
       refute cs.valid?
       assert {"is not a valid IRC identifier", _} = cs.errors[:channel]
     end
+
+    # BUG2 fix-up: "$server" is the synthetic channel for server-origin NOTICEs
+    # and MOTD lines. It does not begin with a channel-sigil character and is not
+    # a valid IRC nick — the changeset validator must accept it explicitly so
+    # EventRouter can persist server-window rows without a changeset rejection.
+    test "accepts the $server synthetic channel (server-messages window)" do
+      cs =
+        Message.changeset(%Message{}, %{
+          @valid_attrs
+          | channel: "$server",
+            kind: :notice,
+            sender: "irc.azzurra.chat",
+            body: "Welcome to the server"
+        })
+
+      assert cs.valid?, "expected $server synthetic to produce a valid changeset"
+    end
   end
 end

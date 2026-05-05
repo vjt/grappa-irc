@@ -235,6 +235,10 @@ defmodule Grappa.Scrollback.Message do
   # IRC PRIVMSG accepts both channel targets (#chan, &local, etc.) and nick
   # targets for direct messages. The `:channel` column stores the PRIVMSG
   # target verbatim, so the constraint must accept both shapes (C4 fix-up).
+  # BUG2 fix-up: "$server" is the Grappa-internal synthetic channel for
+  # server-origin NOTICEs and MOTD lines. It is not a valid IRC channel or
+  # nick — add it as an explicit third branch so EventRouter can persist
+  # server-window rows without changeset rejection.
   @spec valid_target?(term()) :: boolean()
-  defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.valid_nick?(s)
+  defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.valid_nick?(s) or s == "$server"
 end
