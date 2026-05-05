@@ -94,7 +94,7 @@ beforeEach(() => {
 
 describe("ScrollbackPane", () => {
   it("renders an empty placeholder when no messages exist for the channel", () => {
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
   });
 
@@ -103,7 +103,7 @@ describe("ScrollbackPane", () => {
     // before render; this assertion would have stayed green even if
     // ScrollbackPane stopped tracking the signal reactively. With a
     // real Solid signal the test fails fast on a non-reactive refactor.
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
 
     setScrollback({ "freenode #grappa": fixture });
@@ -115,7 +115,7 @@ describe("ScrollbackPane", () => {
 
   it("renders one line per message with kind-specific shape", () => {
     setScrollback({ "freenode #grappa": fixture });
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
     const lines = screen.getAllByTestId("scrollback-line");
     expect(lines).toHaveLength(3);
     expect(lines[0]?.dataset.kind).toBe("privmsg");
@@ -238,7 +238,7 @@ describe("ScrollbackPane", () => {
       },
     ];
     setScrollback({ "n #c": allKinds });
-    render(() => <ScrollbackPane networkSlug="n" channelName="#c" />);
+    render(() => <ScrollbackPane networkSlug="n" channelName="#c" kind="channel" />);
     const lines = screen.getAllByTestId("scrollback-line");
     expect(lines).toHaveLength(10);
 
@@ -285,7 +285,7 @@ describe("ScrollbackPane", () => {
         },
       ],
     });
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#cicchetto" />);
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#cicchetto" kind="channel" />);
     const lines = screen.getAllByTestId("scrollback-line");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toHaveTextContent("different channel");
@@ -296,7 +296,7 @@ describe("ScrollbackPane", () => {
   // ComposeBox.test.tsx.
   it("does NOT render the inline compose form (P4-1 split)", () => {
     setScrollback({ "freenode #grappa": fixture });
-    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
     expect(document.querySelector("textarea")).toBeNull();
     expect(document.querySelector("form.compose")).toBeNull();
   });
@@ -319,7 +319,7 @@ describe("ScrollbackPane", () => {
         ],
       });
       const { container } = render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+        <ScrollbackPane networkSlug="freenode" channelName="#a" kind="channel" />
       ));
       const line = container.querySelector('[data-kind="privmsg"]');
       expect(line?.classList.contains("scrollback-mention")).toBe(true);
@@ -342,7 +342,7 @@ describe("ScrollbackPane", () => {
         ],
       });
       const { container } = render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+        <ScrollbackPane networkSlug="freenode" channelName="#a" kind="channel" />
       ));
       const line = container.querySelector('[data-kind="privmsg"]');
       expect(line?.classList.contains("scrollback-mention")).toBe(true);
@@ -365,7 +365,7 @@ describe("ScrollbackPane", () => {
         ],
       });
       const { container } = render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+        <ScrollbackPane networkSlug="freenode" channelName="#a" kind="channel" />
       ));
       const line = container.querySelector('[data-kind="privmsg"]');
       expect(line?.classList.contains("scrollback-mention")).toBe(false);
@@ -374,7 +374,7 @@ describe("ScrollbackPane", () => {
     it("no-mention privmsg has no .scrollback-mention class", () => {
       setUserNick("vjt");
       setScrollback({ "freenode #grappa": fixture });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const lines = screen.getAllByTestId("scrollback-line");
       for (const line of lines) {
         expect(line.classList.contains("scrollback-mention")).toBe(false);
@@ -398,7 +398,7 @@ describe("ScrollbackPane", () => {
         ],
       });
       const { container } = render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#a" />
+        <ScrollbackPane networkSlug="freenode" channelName="#a" kind="channel" />
       ));
       const line = container.querySelector('[data-kind="topic"]');
       expect(line?.classList.contains("scrollback-mention")).toBe(false);
@@ -423,7 +423,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       expect(screen.getByTestId("join-banner")).toBeInTheDocument();
       expect(screen.getByTestId("join-banner")).toHaveTextContent("You joined #grappa");
     });
@@ -444,14 +444,14 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       expect(screen.queryByTestId("join-banner")).toBeNull();
     });
 
     it("does NOT render banner when there is no JOIN event in scrollback", () => {
       setUserNick("vjt");
       setScrollback({ "freenode #grappa": fixture });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       expect(screen.queryByTestId("join-banner")).toBeNull();
     });
 
@@ -471,7 +471,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       expect(screen.queryByTestId("join-banner")).toBeNull();
     });
 
@@ -494,7 +494,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const banner = screen.getByTestId("join-banner");
       expect(banner).toHaveTextContent("Welcome to grappa IRC");
     });
@@ -522,7 +522,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const banner = screen.getByTestId("join-banner");
       // @ prefix for ops, + for voiced
       expect(banner).toHaveTextContent("@vjt");
@@ -553,7 +553,7 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const banner = screen.getByTestId("join-banner");
       // 3 total users, 1 op
       expect(banner).toHaveTextContent("3 users");
@@ -577,9 +577,49 @@ describe("ScrollbackPane", () => {
           },
         ],
       });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" />);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const banner = screen.getByTestId("join-banner");
       expect(banner).toHaveTextContent("loading members");
+    });
+
+    it("does NOT render banner for query window kind (channel-only per spec #7)", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode some-nick": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "some-nick",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="some-nick" kind="query" />);
+      expect(screen.queryByTestId("join-banner")).toBeNull();
+    });
+
+    it("does NOT render banner for server window kind", () => {
+      setUserNick("vjt");
+      setScrollback({
+        "freenode :server": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: ":server",
+            server_time: 1_700_000_000_000,
+            kind: "join",
+            sender: "vjt",
+            body: null,
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName=":server" kind="server" />);
+      expect(screen.queryByTestId("join-banner")).toBeNull();
     });
   });
 });

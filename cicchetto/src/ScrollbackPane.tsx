@@ -15,6 +15,7 @@ import { membersByChannel } from "./lib/members";
 import { mentionsUser } from "./lib/mentionMatch";
 import { user } from "./lib/networks";
 import { scrollbackByChannel } from "./lib/scrollback";
+import type { WindowKind } from "./lib/windowKinds";
 
 // Right-pane component: pure projection of the per-channel scrollback list.
 // Mounted by `Shell.tsx` only when `selectedChannel()` is non-null; the
@@ -49,6 +50,7 @@ import { scrollbackByChannel } from "./lib/scrollback";
 export type Props = {
   networkSlug: string;
   channelName: string;
+  kind: WindowKind;
 };
 
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
@@ -236,7 +238,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // JOIN-self detection: derive whether own nick has joined this channel
   // from the scrollback. The memo re-runs when messages change; once the
   // banner has been shown (key in shownBanners), it stays hidden.
+  // Channel-window-only per spec #7 — query/server/list/mentions windows
+  // have no JOIN concept; gate on kind first.
   const shouldShowBanner = createMemo((): boolean => {
+    if (props.kind !== "channel") return false;
     const nick = userNick();
     if (!nick) return false;
     if (shownBanners.has(key())) return false;
@@ -255,6 +260,23 @@ const ScrollbackPane: Component<Props> = (props) => {
         setBannerState("visible");
       }
     }),
+  );
+
+  // Reset banner display on channel switch (Solid's <Show> reuses the
+  // ScrollbackPane component instance across selectedChannel changes; the
+  // local `bannerState` signal would otherwise leak the previous channel's
+  // "visible" latch into the new channel's first render). Tracks `key()`
+  // so it re-runs only when (networkSlug, channelName) actually changes —
+  // `defer: true` skips the initial mount run so the shouldShowBanner
+  // effect's first-mount evaluation isn't pre-emptively cleared.
+  createEffect(
+    on(
+      key,
+      () => {
+        setBannerState("hidden");
+      },
+      { defer: true },
+    ),
   );
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
