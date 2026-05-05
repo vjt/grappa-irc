@@ -1,13 +1,16 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import BottomBar from "./BottomBar";
 import ComposeBox from "./ComposeBox";
+import { displayNick } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
-import { channelsBySlug, networks } from "./lib/networks";
+import { mentionsBundleBySlug } from "./lib/mentionsWindow";
+import { channelsBySlug, networks, user } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import MembersPane from "./MembersPane";
+import MentionsWindow from "./MentionsWindow";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
 import Sidebar from "./Sidebar";
@@ -41,6 +44,13 @@ const Shell: Component = () => {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  // Own-nick derived from the authenticated user. Used by MentionsWindow
+  // to highlight rows where the body matches the operator's nick.
+  const ownNick = (): string | null => {
+    const u = user();
+    return u ? displayNick(u) : null;
+  };
 
   // Linear flat list of (slug, channel) tuples for Alt+1..9 + next/prev
   // unread navigation. Read inside handlers so it picks up fresh state
@@ -204,12 +214,40 @@ const Shell: Component = () => {
                       onOpenSettings={() => setSettingsOpen(true)}
                     />
                   </Show>
-                  <ScrollbackPane
-                    networkSlug={sel().networkSlug}
-                    channelName={sel().channelName}
-                    kind={sel().kind}
-                  />
-                  <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+                  <Show
+                    when={sel().kind === "mentions"}
+                    fallback={
+                      <>
+                        <ScrollbackPane
+                          networkSlug={sel().networkSlug}
+                          channelName={sel().channelName}
+                          kind={sel().kind}
+                        />
+                        <ComposeBox
+                          networkSlug={sel().networkSlug}
+                          channelName={sel().channelName}
+                        />
+                      </>
+                    }
+                  >
+                    {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
+                        onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
+                    <MentionsWindow
+                      bundle={
+                        mentionsBundleBySlug()[sel().networkSlug] ?? {
+                          network_slug: sel().networkSlug,
+                          away_started_at: "",
+                          away_ended_at: "",
+                          away_reason: null,
+                          messages: [],
+                        }
+                      }
+                      ownNick={ownNick()}
+                      onMentionClicked={(_args) => {
+                        // C8.2 — TODO: switch focus to channel + scroll-to-timestamp.
+                      }}
+                    />
+                  </Show>
                 </>
               )}
             </Show>
@@ -283,12 +321,35 @@ const Shell: Component = () => {
                     onOpenSettings={() => setSettingsOpen(true)}
                   />
                 </Show>
-                <ScrollbackPane
-                  networkSlug={sel().networkSlug}
-                  channelName={sel().channelName}
-                  kind={sel().kind}
-                />
-                <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+                <Show
+                  when={sel().kind === "mentions"}
+                  fallback={
+                    <>
+                      <ScrollbackPane
+                        networkSlug={sel().networkSlug}
+                        channelName={sel().channelName}
+                        kind={sel().kind}
+                      />
+                      <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
+                    </>
+                  }
+                >
+                  <MentionsWindow
+                    bundle={
+                      mentionsBundleBySlug()[sel().networkSlug] ?? {
+                        network_slug: sel().networkSlug,
+                        away_started_at: "",
+                        away_ended_at: "",
+                        away_reason: null,
+                        messages: [],
+                      }
+                    }
+                    ownNick={ownNick()}
+                    onMentionClicked={(_args) => {
+                      // C8.2 — TODO: switch focus to channel + scroll-to-timestamp.
+                    }}
+                  />
+                </Show>
               </>
             )}
           </Show>
