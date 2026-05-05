@@ -10,7 +10,13 @@ import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { appendToScrollback } from "./scrollback";
-import { bumpEventUnread, bumpMessageUnread, bumpUnread, selectedChannel } from "./selection";
+import {
+  bumpEventUnread,
+  bumpMessageUnread,
+  bumpUnread,
+  selectedChannel,
+  setSelectedChannel,
+} from "./selection";
 import { joinChannel } from "./socket";
 
 // WS subscription installer. Reactive side-effect module: imports for
@@ -107,11 +113,21 @@ createRoot(() => {
   // necessarily the topic's channel param). For channels and query
   // windows it equals the topic's channel param; for the DM-listener
   // loop it equals the sender's nick (the rendered DM window).
+  //
+  // `ownNick` gates two BUG5b rules:
+  //   - Own presence events (join/part/quit/nick_change from own nick)
+  //     never bump unread — the operator drove those actions.
+  //   - Own PRIVMSGs/ACTIONs already skip via the isSelected check when
+  //     sent from the compose box; the DM-listener re-keys them to the
+  //     DM window which may not be selected, but own-sent messages in an
+  //     unselected window do still bump (correct — the operator changed
+  //     windows between sending and receiving the echo).
   const routeMessage = (
     slug: string,
     key: ChannelKey,
     displayName: string,
     message: ChannelEvent["message"],
+    ownNick: string | null,
   ): void => {
     appendToScrollback(key, message);
     // Members presence delta (P4-1 Q4) — applyPresenceEvent filters
@@ -119,6 +135,21 @@ createRoot(() => {
     // mutate the per-channel member list; content kinds are no-ops
     // there. Dispatching every event keeps routing local to members.ts.
     applyPresenceEvent(key, message);
+
+    // BUG5b: own-action presence events (join/part/quit/nick_change)
+    // must never bump unread — the operator owns those actions and has
+    // already seen them. Gate before the isSelected check so own events
+    // on both selected and non-selected channels are suppressed.
+    const isOwnNick = ownNick !== null && message.sender.toLowerCase() === ownNick.toLowerCase();
+    const isPresenceKind =
+      message.kind === "join" ||
+      message.kind === "part" ||
+      message.kind === "quit" ||
+      message.kind === "nick_change" ||
+      message.kind === "mode" ||
+      message.kind === "kick";
+    if (isOwnNick && isPresenceKind) return;
+
     const sel = untrack(selectedChannel);
     const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;
     if (isSelected) return;
@@ -149,7 +180,23 @@ createRoot(() => {
   // The C4.1 "auto-open on PRIVMSG to own nick" arm has migrated to
   // the dedicated DM-listener handler — this handler is now purely
   // about its own topic.
-  const installChannelHandler = (phx: Channel, slug: string, name: string, key: ChannelKey) => {
+  //
+  // BUG4: self-JOIN auto-focus. When `message.kind === "join"` and
+  // `sender === ownNick`, call `setSelectedChannel` so the operator
+  // lands in the new channel immediately. Mirrors irssi's auto-focus.
+  //
+  // BUG5a: self-PART window dismiss. When `message.kind === "part"` and
+  // `sender === ownNick`, call `setSelectedChannel(null)` to clear the
+  // focused window. The sidebar removes the channel from the list via
+  // the channels_changed broadcast; without this, ScrollbackPane shows
+  // a ghost window with a blank header.
+  const installChannelHandler = (
+    phx: Channel,
+    slug: string,
+    name: string,
+    key: ChannelKey,
+    ownNick: string | null,
+  ) => {
     phx.on("event", (payload: WireEvent) => {
       if (payload.kind === "topic_changed") {
         seedTopic(key, payload.topic);
@@ -160,7 +207,28 @@ createRoot(() => {
         return;
       }
       if (payload.kind !== "message") return;
-      routeMessage(slug, key, name, payload.message);
+
+      const { message } = payload;
+
+      // BUG4: own JOIN → auto-focus the channel.
+      if (
+        message.kind === "join" &&
+        ownNick !== null &&
+        message.sender.toLowerCase() === ownNick.toLowerCase()
+      ) {
+        setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
+      }
+
+      // BUG5a: own PART → dismiss the focused window.
+      if (
+        message.kind === "part" &&
+        ownNick !== null &&
+        message.sender.toLowerCase() === ownNick.toLowerCase()
+      ) {
+        setSelectedChannel(null);
+      }
+
+      routeMessage(slug, key, name, message, ownNick);
     });
   };
 
@@ -185,7 +253,7 @@ createRoot(() => {
     phx: Channel,
     slug: string,
     networkId: number,
-    _ownNick: string,
+    ownNick: string,
   ) => {
     phx.on("event", (payload: WireEvent) => {
       if (payload.kind === "topic_changed" || payload.kind === "channel_modes_changed") {
@@ -202,7 +270,7 @@ createRoot(() => {
         // for inbound (sender = other), it lands in sender's window.
         openQueryWindowState(networkId, message.sender, new Date().toISOString());
         const senderKey = channelKey(slug, message.sender);
-        routeMessage(slug, senderKey, message.sender, message);
+        routeMessage(slug, senderKey, message.sender, message, ownNick);
         return;
       }
       // NOTICE, mode, join, part, quit, kick, nick_change, topic, etc.
@@ -229,13 +297,21 @@ createRoot(() => {
     const cbs = channelsBySlug();
     if (!t) return;
     const name = socketUserName();
+    const nets = networks();
+    const u = user();
     if (!name || !cbs) return;
     for (const [slug, list] of Object.entries(cbs)) {
+      // Resolve ownNick for this slug so BUG4/BUG5 handlers can detect
+      // self-JOIN / self-PART events. net.nick (live IRC nick from
+      // Session.Server via GET /networks) is preferred over displayNick(u)
+      // (user.name) — they differ after NickServ ghost recovery.
+      const net = nets?.find((n) => n.slug === slug) ?? null;
+      const ownNick = net?.nick ?? (u ? displayNick(u) : null) ?? null;
       for (const ch of list) {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name);
-        installChannelHandler(phx, slug, ch.name, key);
+        installChannelHandler(phx, slug, ch.name, key, ownNick);
         joined.add(key);
       }
     }
@@ -281,7 +357,11 @@ createRoot(() => {
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick);
-        installChannelHandler(phx, net.slug, qw.targetNick, key);
+        // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
+        // presence suppression) works for query topics too. BUG4/BUG5a
+        // (self-JOIN auto-focus / self-PART dismiss) are not expected on query
+        // topics but handled correctly as no-ops if they ever arrive.
+        installChannelHandler(phx, net.slug, qw.targetNick, key, perNetOwnNick);
         joined.add(key);
       }
     }

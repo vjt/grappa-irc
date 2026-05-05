@@ -1210,3 +1210,311 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
     expect(store.scrollbackByChannel()[grappaKey]).toBeUndefined();
   });
 });
+
+// BUG4: self-JOIN auto-focus.
+//
+// When the server echoes a JOIN event with sender === ownNick, the channel
+// handler must call setSelectedChannel for the new channel so the user
+// lands in it immediately — mirroring irssi's auto-focus on /join.
+// Without this, typing /join #foo sends the user to #foo server-side but
+// leaves the cicchetto UI stuck in whatever window was previously selected.
+describe("subscribe — BUG4: self-JOIN auto-focus", () => {
+  const seedWithNick = async (ircNick: string) => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", nick: ircNick, inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("self-JOIN event auto-focuses the new channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    // Fire a join event from own nick on #grappa.
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 99,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "join",
+        sender: "alice",
+        body: null,
+        meta: {},
+      },
+    });
+
+    expect(store.selectedChannel()).toEqual({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+  });
+
+  it("other-user JOIN event does NOT change selectedChannel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 100,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "join",
+        sender: "bob",
+        body: null,
+        meta: {},
+      },
+    });
+
+    // selectedChannel must remain null (no window was focused before).
+    expect(store.selectedChannel()).toBeNull();
+  });
+});
+
+// BUG5a: self-PART window dismiss.
+//
+// When the server echoes a PART event with sender === ownNick, the channel
+// handler must call setSelectedChannel(null) to clear the focused window.
+// Without this, the sidebar removes the channel from the list (via
+// channels_changed) but the ScrollbackPane keeps showing the old channel's
+// content with a blank header — a stuck ghost window.
+describe("subscribe — BUG5a: self-PART window dismiss", () => {
+  const seedWithNick = async (ircNick: string) => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", nick: ircNick, inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("self-PART event clears selectedChannel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    // Pre-select the channel to simulate being focused in #grappa.
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
+    expect(store.selectedChannel()).not.toBeNull();
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 101,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "part",
+        sender: "alice",
+        body: "Leaving",
+        meta: {},
+      },
+    });
+
+    expect(store.selectedChannel()).toBeNull();
+  });
+
+  it("other-user PART does NOT clear selectedChannel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 102,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "part",
+        sender: "bob",
+        body: "cya",
+        meta: {},
+      },
+    });
+
+    // Still selected — only own PART clears the window.
+    expect(store.selectedChannel()).toEqual({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+  });
+});
+
+// BUG5b: own-action events must not bump unread counters.
+//
+// A self-JOIN or self-PART event arriving while the channel is not selected
+// must NOT increment any unread counter. Only other users' presence events
+// (and PRIVMSGs from others) should bump unread. Own-sent messages and
+// own-action events are already visible to the operator — they drove the
+// action, so bumping unread is misleading.
+describe("subscribe — BUG5b: own-action events do not bump unread", () => {
+  const seedWithNick = async (ircNick: string) => {
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", nick: ircNick, inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+  };
+
+  it("self-JOIN does NOT bump unread counter for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 103,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "join",
+        sender: "alice",
+        body: null,
+        meta: {},
+      },
+    });
+
+    const key = channelKey("freenode", "#grappa");
+    expect(store.unreadCounts()[key]).toBeUndefined();
+  });
+
+  it("self-PART does NOT bump unread counter for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 104,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "part",
+        sender: "alice",
+        body: "leaving",
+        meta: {},
+      },
+    });
+
+    const key = channelKey("freenode", "#grappa");
+    expect(store.unreadCounts()[key]).toBeUndefined();
+  });
+
+  it("other-user JOIN DOES bump eventsUnread", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 105,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "join",
+        sender: "carol",
+        body: null,
+        meta: {},
+      },
+    });
+
+    const key = channelKey("freenode", "#grappa");
+    expect(store.unreadCounts()[key]).toBe(1);
+  });
+});
