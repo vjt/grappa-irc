@@ -50,7 +50,7 @@ defmodule Grappa.Session do
   # `send_*`, `whereis/2`).
   use Boundary,
     top_level?: true,
-    deps: [Grappa.IRC, Grappa.Log, Grappa.PubSub, Grappa.Scrollback],
+    deps: [Grappa.IRC, Grappa.Log, Grappa.Mentions, Grappa.PubSub, Grappa.Scrollback, Grappa.UserSettings],
     exports: [Backoff, Server]
 
   alias Grappa.IRC.{AuthFSM, Identifier}
