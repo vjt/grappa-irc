@@ -686,13 +686,19 @@ defmodule Grappa.Session.EventRouter do
   # has content. Previously these hit the catch-all and were silently dropped.
   # NumericRouter marks them as :delegated so no numeric_routed event fires —
   # this persist path is the canonical surface for MOTD text.
+  #
+  # BUG2 fix-up: sender was hardcoded to "" which fails Identifier.valid_sender?
+  # and caused every changeset to be rejected. Use Message.sender_nick/1 instead
+  # — for numerics with a server prefix it returns the server hostname, for
+  # prefix-less lines it returns the anonymous_sender sentinel ("*"). Both are
+  # accepted by valid_sender?.
   def route(
-        %Message{command: {:numeric, motd_numeric}, params: [_ | rest]},
+        %Message{command: {:numeric, motd_numeric}, params: [_ | rest]} = msg,
         state
       )
       when motd_numeric in [375, 372, 376] do
     body = List.last(rest)
-    sender = ""
+    sender = Message.sender_nick(msg)
 
     if is_binary(body) do
       {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
