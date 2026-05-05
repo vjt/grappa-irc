@@ -227,7 +227,9 @@ describe("focus-rule — incoming traffic never changes selectedChannel", () => 
 
     const sel = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 2 channels (#grappa + alice) + 0 DM-listener (deduped, alice in channels)
+      // + 1 $server = 3 handlers.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     sel.setSelectedChannel({
       networkSlug: "freenode",

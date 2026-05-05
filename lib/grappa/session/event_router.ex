@@ -186,7 +186,9 @@ defmodule Grappa.Session.EventRouter do
   end
 
   def route(%Message{command: :notice, params: [channel, body]} = msg, state)
-      when is_binary(channel) and is_binary(body) do
+      when is_binary(channel) and is_binary(body) and
+             byte_size(channel) > 0 and
+             binary_part(channel, 0, 1) in ["#", "&", "!", "+"] do
     {state, eff} = build_persist(state, :notice, channel, Message.sender_nick(msg), body, %{})
     {:cont, state, [eff]}
   end
@@ -677,6 +679,48 @@ defmodule Grappa.Session.EventRouter do
   # and cicchetto derives the display from away_state, not this numeric.
   def route(%Message{command: {:numeric, 306}}, state) do
     {:cont, state, [{:away_confirmed, :away}]}
+  end
+
+  # BUG2: MOTD numerics (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD)
+  # persist to the synthetic "$server" channel so the server-messages window
+  # has content. Previously these hit the catch-all and were silently dropped.
+  # NumericRouter marks them as :delegated so no numeric_routed event fires —
+  # this persist path is the canonical surface for MOTD text.
+  def route(
+        %Message{command: {:numeric, motd_numeric}, params: [_ | rest]},
+        state
+      )
+      when motd_numeric in [375, 372, 376] do
+    body = List.last(rest)
+    sender = ""
+
+    if is_binary(body) do
+      {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
+      {:cont, state, [eff]}
+    else
+      {:cont, state, []}
+    end
+  end
+
+  # BUG2: server-origin NOTICEs whose "channel" target is not a real IRC channel
+  # (i.e. the target is the user's own nick — server sends `NOTICE nick :text`)
+  # are re-routed to the "$server" synthetic channel. This captures connection
+  # banners, auth prompts, and flood warnings that servers send as server-level
+  # notices rather than channel notices.
+  # Pattern matching on the first byte of `target`:
+  #   - '#', '&', '!', '+' (ASCII 35, 38, 33, 43) → real channel → pass to
+  #     the existing channel-notice handler below.
+  #   - Anything else (nick or server name) → server-origin → "$server".
+  def route(
+        %Message{command: :notice, params: [target, body]} = msg,
+        state
+      )
+      when is_binary(target) and is_binary(body) and
+             byte_size(target) > 0 and
+             binary_part(target, 0, 1) not in ["#", "&", "!", "+"] do
+    sender = Message.sender_nick(msg)
+    {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
+    {:cont, state, [eff]}
   end
 
   def route(%Message{} = _, state), do: {:cont, state, []}

@@ -134,14 +134,16 @@ describe("subscribe — WS join effect", () => {
     const socket = await import("../lib/socket");
     await loadStores();
     await vi.waitFor(() => {
-      // 2 real channels + 1 DM-listener (own-nick topic) = 3 joins.
-      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+      // 2 real channels + 1 DM-listener (own-nick topic) + 1 $server = 4 joins.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#cicchetto");
     // DM-listener join uses the operator's own nick as the channel
     // segment — server broadcasts inbound PRIVMSGs on this topic.
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
+    // BUG2: server-messages loop joins the $server synthetic channel.
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "$server");
     expect(mockChannel.on).toHaveBeenCalledWith("event", expect.any(Function));
   });
 
@@ -288,8 +290,8 @@ describe("subscribe — WS join effect", () => {
       const store = await loadStores();
 
       await vi.waitFor(() => {
-        // 2 channels + 1 DM-listener = 3.
-        expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+        // 2 channels + 1 DM-listener + 1 $server = 4.
+        expect(socket.joinChannel).toHaveBeenCalledTimes(4);
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
 
@@ -527,11 +529,12 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     const qw = await import("../lib/queryWindows");
     const store = await loadStores();
     await vi.waitFor(() => {
-      // 1 channel (#grappa) + 1 DM-listener (alice topic) = 2 joins.
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel (#grappa) + 1 DM-listener (alice topic) + 1 $server = 3 joins.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     // DM-listener handler is index 1 (channels-loop runs first, then
-    // dm-listener loop).
+    // dm-listener loop; $server loop may run before or after — we look for
+    // the handler by finding the call that fires on the alice DM topic).
     fireAtHandlerIndex(1, {
       kind: "message",
       message: {
@@ -562,16 +565,16 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     // Seed "bob" as already-open query window — adds a third
     // joinChannel call from the query-window subscribe effect. Layout:
     // 1 channel (#grappa) + 1 query window (bob) + 1 DM-listener
-    // (alice topic) = 3 handler installs.
+    // (alice topic) + 1 $server = 4 handler installs.
     vi.mocked(qw.queryWindowsByNetwork).mockReturnValue({
       1: [{ targetNick: "bob", openedAt: "2026-05-04T10:00:00Z" }],
     });
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+      expect(mockChannel.on).toHaveBeenCalledTimes(4);
     });
     // DM-listener handler is index 2 (channels-loop, then query-window
-    // loop, then dm-listener loop).
+    // loop, then dm-listener loop; $server may be at index 3).
     fireAtHandlerIndex(2, {
       kind: "message",
       message: {
@@ -604,8 +607,8 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
     const qw = await import("../lib/queryWindows");
     await loadStores();
     await vi.waitFor(() => {
-      // 1 channel + 1 DM-listener = 2.
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     // Fire on #grappa channel (index 0) — regular channel PRIVMSG.
     fireAtHandlerIndex(0, {
@@ -667,9 +670,9 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     const socket = await import("../lib/socket");
     await loadStores();
     // 1 channel (#grappa) + 1 query window (vjt) + 1 DM-listener
-    // (alice topic) = 3 join calls.
+    // (alice topic) + 1 $server = 4 join calls.
     await vi.waitFor(() => {
-      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
     // Query topic uses the targetNick as the channel-name segment —
@@ -695,8 +698,8 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     const socket = await import("../lib/socket");
     await loadStores();
     await vi.waitFor(() => {
-      // 1 channel + 2 query windows + 1 DM-listener = 4.
-      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+      // 1 channel + 2 query windows + 1 DM-listener + 1 $server = 5.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(5);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt");
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "carol");
@@ -715,8 +718,8 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     });
     const store = await loadStores();
     await vi.waitFor(() => {
-      // 1 channel + 1 query window + 1 DM-listener = 3.
-      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+      // 1 channel + 1 query window + 1 DM-listener + 1 $server = 4.
+      expect(mockChannel.on).toHaveBeenCalledTimes(4);
     });
     // Handler index 1 is the query-window join (channels first, then
     // query windows, then DM-listener). Fire an inbound reply from vjt
@@ -762,10 +765,10 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     vi.mocked(qw.queryWindowsByNetwork).mockImplementation(() => windows());
     const socket = await import("../lib/socket");
     await loadStores();
-    // Initially: 1 channel + 1 DM-listener (alice topic), no query
-    // windows → 2 joins.
+    // Initially: 1 channel + 1 DM-listener (alice topic) + 1 $server, no query
+    // windows → 3 joins.
     await vi.waitFor(() => {
-      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
     // Simulate openQueryWindowState pushing "vjt" into the windows
     // signal — the production path is qw.openQueryWindowState calling
@@ -773,7 +776,7 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     setWindows({ 1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }] });
     await vi.waitFor(() => {
       // +1 join for the new query window (vjt).
-      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt");
   });
@@ -794,14 +797,14 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     const socket = await import("../lib/socket");
     await loadStores();
     await vi.waitFor(() => {
-      // 1 channel + 1 query window + 1 DM-listener = 3.
-      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+      // 1 channel + 1 query window + 1 DM-listener + 1 $server = 4.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
     // Re-emit the same list (new array reference, same targetNicks) —
     // the `joined` Set must dedupe and skip the second join.
     setWindows({ 1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }] });
     await new Promise((r) => setTimeout(r, 10));
-    expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+    expect(socket.joinChannel).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -843,8 +846,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     const socket = await import("../lib/socket");
     await loadStores();
     await vi.waitFor(() => {
-      // 1 channel + 1 DM-listener = 2.
-      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
   });
@@ -858,10 +861,11 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     await seedDmListenerStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     // Handler index 1 is the DM-listener (channels first, then dm-
-    // listener). Fire an inbound DM from vjt.
+    // listener, then $server). Fire an inbound DM from vjt.
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
     dmHandler({
@@ -895,7 +899,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     const qw = await import("../lib/queryWindows");
     await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
@@ -928,7 +933,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     await seedDmListenerStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
@@ -963,7 +969,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     await seedDmListenerStubs();
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
@@ -1000,7 +1007,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     const qw = await import("../lib/queryWindows");
     const store = await loadStores();
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      // 1 channel + 1 DM-listener + 1 $server = 3.
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
@@ -1067,16 +1075,17 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
     });
     const socket = await import("../lib/socket");
     await loadStores();
-    // 1 channel + 1 DM-listener (alice) = 2 joins.
-    // The own-nick query window must NOT add a 3rd join — the dm-listener
+    // 1 channel + 1 DM-listener (alice) + 1 $server = 3 joins.
+    // The own-nick query window must NOT add a 4th join — the dm-listener
     // already owns the alice topic.
     await vi.waitFor(() => {
-      expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa");
     expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice");
-    // Exactly 2 calls — no extra join for the own-nick query window.
-    expect(socket.joinChannel).toHaveBeenCalledTimes(2);
+    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "$server");
+    // Exactly 3 calls — no extra join for the own-nick query window.
+    expect(socket.joinChannel).toHaveBeenCalledTimes(3);
   });
 
   it("own-nick query window present — NOTICE on own-nick topic still dropped (no channel-handler pollution)", async () => {
@@ -1091,9 +1100,9 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
       1: [{ targetNick: "alice", openedAt: "2026-05-05T12:00:00Z" }],
     });
     const store = await loadStores();
-    // 1 channel + 1 DM-listener = 2 handlers.
+    // 1 channel + 1 DM-listener + 1 $server = 3 handlers.
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(2);
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
     });
     // Fire NOTICE on the DM-listener handler (index 1).
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
@@ -1160,14 +1169,16 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
     });
     const socket = await import("../lib/socket");
     await loadStores();
-    // 1 channel (#grappa) + 1 query window (vjt) + 1 DM-listener (grappa IRC nick) = 3 joins.
+    // 1 channel (#grappa) + 1 query window (vjt) + 1 DM-listener (grappa IRC nick) + 1 $server = 4 joins.
     await vi.waitFor(() => {
-      expect(socket.joinChannel).toHaveBeenCalledTimes(3);
+      expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
     // query-windows-loop must join channel:vjt (targetNick != IRC nick "grappa").
     expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "vjt");
     // DM-listener must join channel:grappa (the actual IRC nick, from net.nick).
     expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "grappa");
+    // $server loop joins $server.
+    expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "$server");
   });
 
   it("outbound DM echo (sender=grappa, channel=vjt) lands in channelKey freenode/vjt", async () => {
@@ -1179,9 +1190,9 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
       1: [{ targetNick: "vjt", openedAt: "2026-05-05T10:00:00Z" }],
     });
     const store = await loadStores();
-    // 1 channel + 1 query window + 1 DM-listener = 3 handlers.
+    // 1 channel + 1 query window + 1 DM-listener + 1 $server = 4 handlers.
     await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+      expect(mockChannel.on).toHaveBeenCalledTimes(4);
     });
     // Handler index 1 is the query-windows-loop join for "vjt".
     // Fire an outbound DM echo: server broadcasts on channel:vjt with sender=grappa.

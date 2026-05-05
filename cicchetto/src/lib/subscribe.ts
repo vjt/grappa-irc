@@ -400,4 +400,30 @@ createRoot(() => {
       joined.add(key);
     }
   });
+
+  // BUG2: server-messages loop — one join per network targeting the "$server"
+  // synthetic channel. The server persists MOTD lines (375/372/376) and
+  // server-origin NOTICEs (those addressed to the user's nick, not a channel)
+  // to scrollback with channel = "$server". Without this subscription,
+  // Cicchetto would never receive those events and the :server window stays
+  // empty forever.
+  //
+  // Uses `installChannelHandler` with ownNick=null — no self-JOIN/PART can
+  // arrive on the "$server" topic, so BUG4/5 detection is intentionally
+  // disabled. The key uses the literal "$server" string, matching how the
+  // server persists and broadcasts these rows.
+  createEffect(() => {
+    const t = token();
+    const nets = networks();
+    if (!t) return;
+    const userName = socketUserName();
+    if (!userName || !nets) return;
+    for (const net of nets) {
+      const key = channelKey(net.slug, "$server");
+      if (joined.has(key)) continue;
+      const phx = joinChannel(userName, net.slug, "$server");
+      installChannelHandler(phx, net.slug, "$server", key, null);
+      joined.add(key);
+    }
+  });
 });
