@@ -279,6 +279,25 @@ Private messages get per-user "query" windows in the sidebar, persisted across l
 
 **Cluster-wide focus rule:** focus changes only on user actions (`/join` self, `/msg` `/query` `/q`, click on tab, click on nick). Incoming traffic — PRIVMSG, JOIN, PART, QUIT, MODE, autojoin window auto-creation — never steals focus. Enforced by invariant tests in `cicchetto/src/__tests__/focus-rule.test.ts`.
 
+### Channel ops submenu + numeric error rendering (C5)
+
+Right-click any nick in the members pane to open a context submenu. Items:
+
+| Action | Command | Requires |
+|--------|---------|----------|
+| **Op** | `MODE #chan +o nick` | `@` op |
+| **Deop** | `MODE #chan -o nick` | `@` op |
+| **Voice** | `MODE #chan +v nick` | `@` op |
+| **Devoice** | `MODE #chan -v nick` | `@` op |
+| **Kick** | `KICK #chan nick` | `@` op |
+| **Ban** | `MODE #chan +b nick!*@*` | `@` op |
+| **WHOIS** | `WHOIS nick` | — |
+| **Query** | open DM window | — |
+
+Items requiring `@` are shown **greyed out** (not hidden) when you lack the mode — irssi convention. WHOIS and Query are always enabled.
+
+IRC numeric replies from the upstream server (error 482 "not an operator", 401 "no such nick", etc.) are routed back to the window that triggered them and displayed as ephemeral inline lines **below the scrollback**. Failure-class numerics (IRC codes ≥ 400) render in **red** using the existing `--mode-op` red token; info-class numerics render in muted color.
+
 ### Auto-away (S3)
 
 When the last browser tab closes (or sends a `pagehide` / `beforeunload` hint), grappa starts a **30-second debounce timer**. If no tab reconnects within that window, the bouncer sends `AWAY :auto-away (web client disconnected)` upstream on every connected network. When a tab reconnects the timer is cancelled and (if auto-away was active) `AWAY` is cleared immediately.
