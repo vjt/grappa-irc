@@ -27,6 +27,10 @@ export type SeededUser = {
   password: string;
   identifier: string;
   token: string;
+  // Wire-shape JSON of `LoginResult.subject` — written verbatim into
+  // the `grappa-subject` localStorage key by cicchettoPage.loginAs() so
+  // cicchetto's auth.ts sees a complete bootstrapped identity.
+  subjectJson: string;
 };
 
 export async function login(identifier: string, password: string): Promise<LoginResult> {

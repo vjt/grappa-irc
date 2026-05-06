@@ -146,7 +146,7 @@ docker compose up --build --wait grappa-e2e-seeder
 # Phase 2: long-running services. seeder already completed; the dep
 # chain (grappa-test depends_on seeder) sees it as done and skips it.
 LONG_RUNNING=(hub leaf-v4 leaf-v6 services grappa-test nginx-test)
-docker compose up --wait "${LONG_RUNNING[@]}" "$@"
+docker compose up --wait "${LONG_RUNNING[@]}"
 
 # Now run the test suite. `compose run` exit code propagates.
 # `--name e2e-runner` keeps the container's docker-DNS PTR short.
@@ -159,4 +159,9 @@ docker compose up --wait "${LONG_RUNNING[@]}" "$@"
 # `CONNECTTIMEOUT=30s` then forces SetAccess. Net effect: ~30s
 # pre-welcome stall on every peer connect. Keeping the runtime
 # container name short sidesteps the whole truncation path.
-docker compose run --rm --name e2e-runner playwright-runner
+#
+# Extra args (e.g. `--grep mN-`) are forwarded to playwright AFTER the
+# image's CMD (`npx playwright test`). compose run treats everything
+# after the service name as the override command, so we have to
+# re-state the command and append "$@".
+docker compose run --rm --name e2e-runner playwright-runner npx playwright test "$@"
