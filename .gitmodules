@@ -1,0 +1,3 @@
+[submodule "cicchetto/e2e/infra"]
+	path = cicchetto/e2e/infra
+	url = git@github.com:vjt/azzurra-testnet.git
