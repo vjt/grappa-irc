@@ -25,10 +25,19 @@ import {
   selectChannel,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { assertMessagePersisted } from "../fixtures/grappaApi";
+import { assertMessagePersisted, joinChannel } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
+
+// M9 PARTs the seeded `#bofh` channel as the action under test, which
+// destroys shared state for any subsequent spec that assumes #bofh is
+// joined (e.g. webkit BUG7 specs). Restore the seed-time joined state
+// after the test asserts so the suite remains order-independent.
+test.afterEach(async () => {
+  const vjt = getSeededVjt();
+  await joinChannel(vjt.token, NETWORK_SLUG, CHANNEL);
+});
 
 test("M9 — sidebar X-button PARTs the channel and dismisses the window", async ({ page }) => {
   const vjt = getSeededVjt();

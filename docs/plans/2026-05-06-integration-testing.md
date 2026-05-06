@@ -232,12 +232,36 @@ reveal: (a) WS suspend on keyboard show, (b) reactivity glitch, (c) CSS
 overflow swallow, (d) something else. S4's failing test + Playwright trace
 will pin the actual cause.
 
-- [ ] Implement fix.
-- [ ] BUG7 spec flips to GREEN.
-- [ ] No regressions in M1-M12.
+- [x] **Outcome (2026-05-06)**: trace pinned the failure at
+  `selectChannel(NETWORK_SLUG, CHANNEL)`, BEFORE compose-send. Mobile
+  layout (Shell.tsx mobile JSX branch, ≤ 768px) replaces the sidebar
+  with `<BottomBar />`; the page-object's selectors keyed off
+  `.sidebar-network h3` / `.sidebar-window-btn` had no match in the
+  mobile DOM. Page-object grew viewport-detection
+  (`isMobileViewport(page)`) and a mobile branch using
+  `.bottom-bar-network` / `.bottom-bar-tab`. With mobile scaffolding
+  in place, both BUG7 specs flip GREEN in 2.0–2.5s — the actual paint-
+  path hypotheses (WS suspend / reactivity / overflow swallow) do NOT
+  reproduce in Playwright iPhone 15 emulation. The bug surface is
+  real iOS Safari (visualViewport on virtual-keyboard show + actual
+  keyboard chrome occlusion) which the headless WebKit doesn't model.
+- [x] **Spec contract change**: BUG7 specs downgraded from
+  "regression-pin RED on prod head" to "positive guard rail" — they
+  assert the iOS-shaped input path round-trips on every commit. A
+  future reproduction (real-iOS DevTools-over-USB) is the path to the
+  actual fix; this isn't a regression that lives in code we can
+  reach from CI.
+- [x] **Test isolation fix**: M9 PARTs `#bofh` as the action under
+  test. Without restoration, subsequent specs (BUG7 webkit project)
+  failed at selectChannel because `#bofh` no longer existed in the
+  bottom-bar tablist. Added `joinChannel()` helper to grappaApi
+  fixture + `afterEach` restore in M9 — keeps suite order-independent.
+- [x] No regressions: `bash scripts/integration.sh` exit=0, 14 passed
+  (12 chromium + 2 webkit-iphone-15) + 1 skipped (M8 `.fixme` BUG8
+  banner pin) in 16s.
 
 **Exit criterion**: full suite green on chromium + webkit. Deploy +
-manual confirm on real iPhone.
+manual confirm on real iPhone (deferred to a real-iOS-only session).
 
 ### S6 — CI integration
 
