@@ -224,6 +224,106 @@ describe("subscribe — WS join effect", () => {
     expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
   });
 
+  // Live-reading cursor advance: when a NEW msg arrives on the
+  // currently-FOCUSED window, the marker should disappear by itself
+  // (the user is reading it live; nothing should be unread).
+  // Mechanism: subscribe.ts's routeMessage sees isSelected → advances
+  // the read cursor to the new msg's server_time.
+  //
+  // Without this advance, the marker stays pinned at whatever older
+  // server_time the user moved-on-from previously, AND new live msgs
+  // pile up on top of it inflating the unread count without bound.
+  // (Reported user pain: "we'll keep on increasing the number of
+  // unread messages as they arrive".)
+  it("advances rc cursor when an inbound msg lands on the SELECTED window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    // Sentinel cursor (older than the inbound msg)
+    localStorage.setItem("rc:freenode:#grappa", "100");
+    fireMessageEvent("#grappa", {
+      id: 7,
+      server_time: 200,
+      body: "live read",
+      sender: "bob",
+    });
+    expect(localStorage.getItem("rc:freenode:#grappa")).toBe("200");
+  });
+
+  it("advances rc cursor when an own-sent msg echoes back on the SELECTED window", async () => {
+    // Own-sent msg = REST POST + WS broadcast roundtrip. The WS echo
+    // hits routeMessage with sender === ownNick and isSelected = true.
+    // Same cursor-advance branch covers this — one code path, every
+    // door (CLAUDE.md). Without this, the user types in their own
+    // window and the marker stays put even though THEY just produced
+    // the new msg.
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    localStorage.setItem("rc:freenode:#grappa", "100");
+    fireMessageEvent("#grappa", {
+      id: 8,
+      server_time: 300,
+      body: "own echo",
+      sender: "alice",
+    });
+    expect(localStorage.getItem("rc:freenode:#grappa")).toBe("300");
+  });
+
+  it("does NOT advance rc cursor when msg arrives on a NON-selected window", async () => {
+    // Anti-spec guard: only the focused window's cursor moves on live
+    // ingest. A msg arriving on #cicchetto while user is on #grappa
+    // must leave rc:#cicchetto alone — its marker should appear when
+    // the user later switches to #cicchetto.
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    localStorage.setItem("rc:freenode:#cicchetto", "100");
+    fireMessageEvent("#cicchetto", {
+      id: 9,
+      server_time: 500,
+      body: "background msg",
+      sender: "bob",
+    });
+    expect(localStorage.getItem("rc:freenode:#cicchetto")).toBe("100");
+  });
+
   it("incoming PRIVMSG event appends to scrollbackByChannel for that channel", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
