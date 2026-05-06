@@ -16,7 +16,7 @@ import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { networks, user } from "./lib/networks";
 import { numericsByWindow } from "./lib/numericInline";
 import { openQueryWindowState } from "./lib/queryWindows";
-import { getReadCursor, setReadCursor } from "./lib/readCursor";
+import { getReadCursor } from "./lib/readCursor";
 import { scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
@@ -425,7 +425,8 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   unread count = messages.filter(m => m.server_time > cursor).length
   //   No signal needed for cursor — it's read once per channel mount.
   //   The cursor is a stable value for the lifetime of this channel view;
-  //   it only advances when the user reads to the bottom (setReadCursor call).
+  //   it only advances when the user navigates AWAY from the window
+  //   (selection.ts on(selectedChannel)'s focus-leave hook).
   const rows = createMemo((): Row[] => {
     const msgs = messages();
     if (!msgs || msgs.length === 0) return [];
@@ -551,22 +552,16 @@ const ScrollbackPane: Component<Props> = (props) => {
     ),
   );
 
-  // C7.3: Cursor advancement — when the user has scrolled to the bottom
-  // (atBottom = true), advance the read cursor to the latest message's
-  // server_time. This is the natural "I've seen everything" signal.
-  // Fires when atBottom transitions to true (e.g. user scrolls to bottom,
-  // or clicks the scroll-to-bottom button). Does NOT fire on focus-switch
-  // alone — user may switch in then immediately switch out without reading.
-  createEffect(
-    on(atBottom, (bottom) => {
-      if (!bottom) return;
-      const msgs = messages();
-      if (!msgs || msgs.length === 0) return;
-      const last = msgs[msgs.length - 1];
-      if (last === undefined) return;
-      setReadCursor(props.networkSlug, props.channelName, last.server_time);
-    }),
-  );
+  // Cursor advancement is owned by selection.ts (on focus-leave). Per
+  // the marker spec: a marker is shown ONCE per "I read this window"
+  // event — leaving the window is the "I've moved on" signal that
+  // advances the cursor. Doing it here on `atBottom` had two bugs:
+  // (1) the createSignal initial true fired the effect on mount before
+  // the user could see anything; (2) any auto-follow scroll on a new
+  // message kept atBottom true and re-advanced the cursor on every
+  // append, hiding the marker on the focused window before the user
+  // moved away. The selection-store leave hook lives at
+  // `lib/selection.ts`'s `on(selectedChannel)` effect.
 
   const onScroll = () => {
     if (!listRef) return;

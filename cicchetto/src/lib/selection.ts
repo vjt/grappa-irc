@@ -1,7 +1,8 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
-import { loadInitialScrollback } from "./scrollback";
+import { setReadCursor } from "./readCursor";
+import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import type { WindowKind } from "./windowKinds";
 
 // Per-channel selection store: which channel is currently focused +
@@ -81,7 +82,44 @@ const exports = createRoot(() => {
   };
 
   createEffect(
-    on(selectedChannel, (sel) => {
+    on(selectedChannel, (sel, prev) => {
+      // Read-cursor advance on focus-leave. When the user moves focus
+      // AWAY from a window (or to null), advance THAT window's cursor
+      // to the server_time of its last visible message. Next visit
+      // shows no marker (everything seen). Subsequent inbound msgs
+      // bump server_time past cursor → marker reappears on next visit.
+      //
+      // Why on leave rather than on focus or on every WS append:
+      //   * On focus: would hide the marker before the user could
+      //     read past it (the bug fix this implements).
+      //   * On WS append while focused: same problem one tick later.
+      //   * On leave: the user has demonstrably moved on; "I've seen
+      //     what was here" is the right semantic.
+      //
+      // Guards:
+      //   * `prev === undefined` → initial run on mount; nothing to
+      //     leave from.
+      //   * `prev === null` → previous selection was already null;
+      //     nothing to leave from (cold start, post-logout).
+      //   * `prev.key === sel?.key` → re-selecting the same window
+      //     (e.g. component re-render fires the effect with identical
+      //     value); not a leave.
+      //   * No msgs in prev's scrollback → nothing to mark as read;
+      //     skip the localStorage write to avoid pinning a stale 0.
+      if (prev !== undefined && prev !== null) {
+        const prevKey = channelKey(prev.networkSlug, prev.channelName);
+        const selKey = sel ? channelKey(sel.networkSlug, sel.channelName) : null;
+        if (prevKey !== selKey) {
+          const msgs = scrollbackByChannel()[prevKey];
+          if (msgs && msgs.length > 0) {
+            const last = msgs[msgs.length - 1];
+            if (last !== undefined) {
+              setReadCursor(prev.networkSlug, prev.channelName, last.server_time);
+            }
+          }
+        }
+      }
+
       if (!sel) return;
       const key = channelKey(sel.networkSlug, sel.channelName);
       setUnreadCounts((prev) => {
