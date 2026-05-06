@@ -43,7 +43,7 @@ cicchetto/e2e/
 │   ├── m11-irssi-nick.spec.ts
 │   ├── m12-passive-events.spec.ts
 │   └── bug7-ios-own-msg-visible.spec.ts   # webkit + iPhone 15 — must FAIL on prod
-├── package.json            # bun deps: @playwright/test, irc-framework, typescript
+├── package.json            # node deps: @playwright/test, irc-framework, typescript
 └── README.md               # how to run, how to add a spec, how to debug
 ```
 
@@ -52,11 +52,13 @@ cicchetto/e2e/
 - **Playwright over Puppeteer/CDP**: native WebKit driver (closest non-
   device approximation of iOS Safari), built-in iPhone device descriptors,
   trace viewer for post-mortem, no manual sleep loops.
-- **Bun + `irc-framework` over Python pydle**: cicchetto already runs
-  Bun end-to-end (build + vitest); keeping the runner in the same
-  toolchain means one process tree, one lockfile, fixtures import
-  cleanly into specs. Fall-back-to-Node-22 path is one knob in
-  `package.json` if Playwright-on-Bun bites.
+- **Node 22 + `irc-framework` over Python pydle**: runner stays on
+  Playwright's official base image (`mcr.microsoft.com/playwright`),
+  which ships Node + browsers (chromium/firefox/webkit) preinstalled.
+  Cicchetto-build stays on Bun (separate container) — one toolchain
+  per container, no derivation acrobatics. The runner is the only
+  e2e/ Node consumer, so this doesn't bring Node back into cicchetto/
+  proper.
 - **Bahamut + services from `vjt/infra`**: the user maintains a testnet
   repo with full Azzurra-shaped services (Bahamut + ChanServ/NickServ/
   OperServ). Adopting it gives us NickServ/SASL fidelity that a vanilla
@@ -93,20 +95,47 @@ on a deterministic port; `nc localhost 6667` shows a Bahamut welcome.
 
 ### S1 — Compose: stitch grappa + nginx + runner into the testnet
 
-- [ ] `cicchetto/e2e/compose.yaml` extends infra's compose-file via
-  `include:` directive (Compose v2.20+) — adds `grappa`, `nginx-test`
-  (separate from prod nginx so ports don't collide), `playwright-runner`.
-- [ ] grappa points at `irc://bahamut-test:6667` via env override
-  (no host-DNS dep). Verify TLS verify_none stays on (already prod default).
-- [ ] nginx-test serves cicchetto build at `http://cicchetto-test:80`.
-- [ ] runner waits on healthchecks (grappa /healthz, bahamut connect,
-  nginx 200) before launching tests.
-- [ ] `scripts/integration.sh` — wrapper: `docker compose -f
-  cicchetto/e2e/compose.yaml up --abort-on-container-exit playwright-runner`
-  + tear-down on exit.
+- [x] `cicchetto/e2e/compose.yaml` extends infra's compose-file via
+  `include:` directive — adds `grappa-test` (build target), `nginx-test`
+  (reuses prod `infra/nginx.conf` via `grappa` network alias on
+  grappa-test), `cicchetto-build-test` (oneshot SPA build),
+  `playwright-runner` (mcr.microsoft.com/playwright:v1.59.1-jammy).
+- [x] grappa-test points at `bahamut-test:6667` (hub network alias on
+  the shared `grappa-e2e` bridge); no host-DNS dep.
+- [x] nginx-test serves SPA from `runtime/e2e/cicchetto-dist` (host
+  bind-mount, mirrors prod `runtime/cicchetto-dist`).
+- [x] All deps wired via healthchecks + `service_healthy` /
+  `service_completed_successfully` conditions.
+- [x] `scripts/integration.sh` — wrapper. Two-phase orchestration:
+  `compose up --wait <long-running services>` then `compose run
+  --rm playwright-runner`. Splitting boot from run avoids the
+  `--abort-on-container-exit` (and `--exit-code-from`) gotcha where
+  cert-init's normal exit kills the in-progress build phase.
+- [x] Trap-on-EXIT teardown via `compose down -v`. `KEEP_STACK=1`
+  opt-out for iterative debug.
+
+Operator-side ergonomics shaken out during S1:
+
+- macOS GID=20 (`staff`) collides with hexpm/elixir's Debian system
+  `tty` group at GID 20 → `groupadd -g 20` exits 4. Wrapper exports
+  `CONTAINER_UID/GID=$(id -u/-g)` only on Linux; macOS keeps the
+  compose default of 1000:1000 because Docker Desktop's bind-mount
+  layer translates ownership transparently.
+- Bun cache + cicchetto dist live in host bind-mounts under `runtime/`
+  (not named volumes) — same shape as `scripts/bun.sh`. Named volume
+  is root-owned on first create, fails AccessDenied under the dropped
+  UID.
+- Runner image's `/work/node_modules` is preserved over the source
+  bind-mount via a named volume — without it, the bind hides the
+  npm-installed deps and Playwright fails with "Cannot find package
+  '@playwright/test'".
+- nginx.conf hardcodes `upstream grappa:4000`. Adding `grappa` as a
+  network alias on grappa-test lets us reuse the prod nginx.conf
+  verbatim (production fidelity, no e2e-specific drift).
 
 **Exit criterion**: `scripts/integration.sh` boots full stack, runs
-empty-test-suite, exits 0. `docker compose ps` shows all services healthy.
+the smoke spec (chromium, 2 tests: SPA root + /healthz proxy), exits
+0. (S1 verified 2026-05-06: `2 passed (6.4s)`.)
 
 ### S2 — Fixtures: ircClient + grappaApi + seedData
 
@@ -218,10 +247,7 @@ These are tracked separately, not part of this plan's exit criteria.
 3. **Headless browser default per spec**: chromium baseline + webkit
    opt-in for iOS-shaped specs (M3, M6, BUG7). Most-signal-per-cycle
    default. Webkit-only is too slow for the full matrix.
-4. **Runner toolchain**: **Bun**, not Node. Cicchetto already runs Bun
-   end-to-end (build + tests via vitest); the runner stays in the same
-   toolchain. If Playwright-on-Bun bites later, fall back to Node 22
-   in the same `cicchetto/e2e/package.json` (single-knob change).
+4. **Runner toolchain**: **Node 22** on the official `mcr.microsoft.com/playwright:v1.x-jammy` base image. Playwright ships Node + browsers (Chromium/Firefox/WebKit) preinstalled — re-deriving Bun on top is gratuitous when only the *runner* needs Node and the rest of cicchetto stays on Bun (separate container). One toolchain per container; no double-derivation.
 
 ## Out of scope for this plan
 
