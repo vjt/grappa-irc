@@ -1,16 +1,16 @@
 // M1 — peer PRIVMSG to a channel that cicchetto is currently focused on.
 //
-// Manual matrix: irssi (peer) sends to a channel the cic user is
+// Manual matrix: irssi (peer) sends to a channel the cicchetto user is
 // currently viewing. Expected:
-//   - the message appears in cic's scrollback
+//   - the message appears in cicchetto's scrollback
 //   - NO unread badge bumps in the sidebar (focused channel == read)
 //   - NO mention badge (peer doesn't mention own nick)
 //
 // Wiring:
 //   - peer connects via IrcPeer (uses bahamut-test alias → leaf-v4)
-//   - peer JOINs #bofh (cic is autojoined there via the seeder)
-//   - cic loginAs() (token + subject pre-seeded into localStorage)
-//   - cic selectChannel(#bofh) — explicit, even though autojoin makes
+//   - peer JOINs #bofh (cicchetto is autojoined there via the seeder)
+//   - cicchetto loginAs() (token + subject pre-seeded into localStorage)
+//   - cicchetto selectChannel(#bofh) — explicit, even though autojoin makes
 //     it the only candidate, so the spec reads as "vjt is focused"
 //   - peer PRIVMSGs the channel
 //   - assert: scrollback has the new line; no msg-unread badge

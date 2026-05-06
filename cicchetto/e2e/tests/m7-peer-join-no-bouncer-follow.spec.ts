@@ -6,9 +6,9 @@
 //   - cicchetto sidebar gains NO entry for that channel
 //
 // The negative assertion needs a sync point: we have to know that any
-// IRC activity from the peer that COULD have surfaced in cic has had
+// IRC activity from the peer that COULD have surfaced in cicchetto has had
 // time to propagate. We do that by chaining a second JOIN to #bofh
-// (where grappa IS) and waiting for THAT join event to render in cic
+// (where grappa IS) and waiting for THAT join event to render in cicchetto
 // scrollback. Once that arrives, we know all earlier peer→IRC traffic
 // (including the #other JOIN) has been processed by the leaf and
 // either pushed by grappa or correctly ignored.
@@ -48,12 +48,12 @@ test("M7 — peer JOIN on unbound channel does NOT add sidebar entry", async ({ 
     // OUTSIDE_CHANNEL, so the leaf does not forward this JOIN to grappa.
     await peer.join(OUTSIDE_CHANNEL);
     // Peer joins #bofh — grappa IS in #bofh, so the leaf forwards this
-    // JOIN to grappa, which pushes a `join` scrollback row to cic via WS.
+    // JOIN to grappa, which pushes a `join` scrollback row to cicchetto via WS.
     await peer.join(BOUND_CHANNEL);
 
     // Sync point. The peer JOIN row appearing in #bofh proves grappa
     // has processed all earlier peer activity in IRC stream order;
-    // anything #m7-outside was going to surface in cic would have by now.
+    // anything #m7-outside was going to surface in cicchetto would have by now.
     await expect(scrollbackLine(page, "join", `${PEER_NICK} has joined`)).toBeVisible({
       timeout: 5_000,
     });

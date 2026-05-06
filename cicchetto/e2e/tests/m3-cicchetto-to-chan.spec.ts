@@ -1,17 +1,17 @@
-// M3 — cic-driven PRIVMSG to a channel: type in compose, assert
+// M3 — cicchetto-driven PRIVMSG to a channel: type in compose, assert
 // the row renders in scrollback as own-message.
 //
-// Manual matrix: vjt types a message in cic's #bofh compose box.
+// Manual matrix: vjt types a message in cicchetto's #bofh compose box.
 // Expected:
 //   - the message persists server-side (round-trip through grappa →
 //     leaf → grappa echo path)
-//   - the row appears in cic's scrollback with sender = own nick
+//   - the row appears in cicchetto's scrollback with sender = own nick
 //   - no msg-unread badge bump (focused channel)
 //
-// This is the FIRST cic-write spec — exercises composeSend + the
+// This is the FIRST cicchetto-write spec — exercises composeSend + the
 // own-message WS echo (the BUG 6 single-bump path landed at 7817bf8).
 // No peer needed: grappa fastlane-pushes own messages back to all
-// subscribers of the channel topic, so cic's own page sees its own
+// subscribers of the channel topic, so cicchetto's own page sees its own
 // row arrive via WS within milliseconds.
 //
 // `@webkit @iphone-15-pro` is intentionally NOT yet on this spec —
@@ -31,9 +31,9 @@ import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-const MESSAGE_BODY = "M3: cic-driven outbound";
+const MESSAGE_BODY = "M3: cicchetto-driven outbound";
 
-test("M3 — cic compose to focused channel renders own-msg, no unread", async ({ page }) => {
+test("M3 — cicchetto compose to focused channel renders own-msg, no unread", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });

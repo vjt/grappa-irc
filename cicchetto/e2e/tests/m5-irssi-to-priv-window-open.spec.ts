@@ -1,7 +1,7 @@
-// M5 — peer PRIVMSG to vjt's nick when cic ALREADY has the query
+// M5 — peer PRIVMSG to vjt's nick when cicchetto ALREADY has the query
 // window open AND focused on it. Expected:
 //   - DM persists server-side
-//   - the row renders in cic's currently-focused query scrollback
+//   - the row renders in cicchetto's currently-focused query scrollback
 //   - NO msg-unread badge bumps (focused window invariant; mirror of
 //     M1's focused-channel rule, here applied to the DM topic)
 //
@@ -36,7 +36,7 @@ test("M5 — inbound DM to focused query window renders inline, no unread", asyn
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   // /query opens the window AND focuses it without sending anything.
-  // After this, cic is on the (slug, PEER_NICK) query window, sidebar
+  // After this, cicchetto is on the (slug, PEER_NICK) query window, sidebar
   // shows the entry, no scrollback yet (no DM exchanged).
   await composeSend(page, `/query ${PEER_NICK}`);
   await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NICK)).toHaveCount(1, { timeout: 5_000 });

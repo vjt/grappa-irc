@@ -105,7 +105,7 @@ export function sidebarMentionBadge(page: Page, networkSlug: string, windowName:
 // initial scrollback REST fetch landed AND that the WS topic
 // subscription completed. Specs that fire IRC traffic immediately
 // after focus would otherwise race the WS subscribe (observed: M1's
-// peer PRIVMSG arriving server-side BEFORE cic's joinChannel for
+// peer PRIVMSG arriving server-side BEFORE cicchetto's joinChannel for
 // `#bofh` — channel persisted the row, but no WS push reached the
 // browser, DOM assertion times out). Pass `awaitWsReady: false` for
 // the Server / DM / list / mentions windows where the join-line
