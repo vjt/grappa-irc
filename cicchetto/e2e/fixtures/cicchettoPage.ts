@@ -163,3 +163,27 @@ export function scrollbackLine(page: Page, kind: string, bodyContains: string) {
 export function composeTextarea(page: Page) {
   return page.locator(".compose-box textarea");
 }
+
+// Type a body into the focused window's compose textarea and submit
+// (Enter, no shift). Returns once the textarea is empty (compose.ts
+// clears the draft on successful submit) — that's the synchronous
+// signal the slash-command / privmsg path consumed the input.
+//
+// Use for both regular PRIVMSG bodies AND slash-commands (`/msg`,
+// `/query`, `/join`, `/me`, etc.) — compose.ts dispatches by leading
+// `/` so the same textarea handles all kinds.
+//
+// Why fill-then-press rather than `pressSequentially`: `fill` is
+// O(1) on Playwright's side (one DOM update), `pressSequentially`
+// emits N keydown events which the Solid signal flushes between
+// every char. Both work; `fill` is faster and the spec doesn't care
+// about per-keystroke side-effects.
+export async function composeSend(page: Page, body: string): Promise<void> {
+  const ta = composeTextarea(page);
+  await ta.fill(body);
+  await ta.press("Enter");
+  // Successful submit clears the draft → textarea empties. If the
+  // submit fails (e.g. /msg with no network), the textarea retains
+  // the body — wait would time out, surfacing the failure.
+  await expect(ta).toHaveValue("", { timeout: 5_000 });
+}
