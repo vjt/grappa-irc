@@ -88,24 +88,32 @@ vi.mock("../lib/channelTopic", () => ({
   topicByChannel: () => mockTopicByChannel(),
 }));
 
-// C7.3: mock readCursor so the module-level auth.ts import (which reads
-// localStorage during module init, before beforeEach can stub it) doesn't
-// crash the test suite. The mock wires getReadCursor / setReadCursor through
-// to localStorage directly — same contract, no Solid createRoot side effect.
+// C7.3: mock readCursor with a SIGNAL-BACKED stand-in that mirrors the
+// production module's reactive contract. The real readCursor.ts pulls in
+// auth.ts at module load (which reads localStorage during init, before
+// beforeEach can stub it) and we want isolation. But the mock MUST be
+// reactive — otherwise ScrollbackPane's `rows` createMemo cannot re-run
+// when the cursor advances, and the unread-marker stays pinned with a
+// stale count (the very bug this test suite must catch).
 const KEY_PREFIX = "rc:";
 const storageKey = (networkSlug: string, channel: string) =>
   `${KEY_PREFIX}${networkSlug}:${channel}`;
+const cacheKey = (networkSlug: string, channel: string) => `${networkSlug} ${channel}`;
+const [readCursorStore, setReadCursorStore] = createSignal<Record<string, number>>({});
+const seedReadCursor = (networkSlug: string, channel: string, serverTime: number) => {
+  localStorage.setItem(storageKey(networkSlug, channel), String(serverTime));
+  setReadCursorStore((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: serverTime }));
+};
 vi.mock("../lib/readCursor", () => ({
   getReadCursor: (networkSlug: string, channel: string): number | null => {
-    const raw = localStorage.getItem(storageKey(networkSlug, channel));
-    if (raw === null) return null;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : null;
+    const v = readCursorStore()[cacheKey(networkSlug, channel)];
+    return v === undefined ? null : v;
   },
   setReadCursor: (networkSlug: string, channel: string, serverTime: number): void => {
     localStorage.setItem(storageKey(networkSlug, channel), String(serverTime));
+    setReadCursorStore((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: serverTime }));
   },
-  clearReadCursors: vi.fn(),
+  clearReadCursors: vi.fn(() => setReadCursorStore({})),
 }));
 
 import ScrollbackPane, { resetShownBannersForTest } from "../ScrollbackPane";
@@ -1117,13 +1125,15 @@ describe("ScrollbackPane", () => {
 
   // C7.3: unread marker rendering.
   describe("unread marker (C7.3)", () => {
-    // readCursor is localStorage-backed; each test gets a clean slate.
+    // readCursor is signal-backed (mock mirrors prod). Each test gets a clean slate.
     beforeEach(() => {
       localStorage.clear();
+      setReadCursorStore({});
     });
 
     afterEach(() => {
       localStorage.clear();
+      setReadCursorStore({});
     });
 
     it("renders no unread-marker when no read cursor is set for the window", () => {
@@ -1134,7 +1144,7 @@ describe("ScrollbackPane", () => {
 
     it("renders no unread-marker when cursor equals last message server_time (all read)", () => {
       // cursor at or after all messages → nothing unread
-      localStorage.setItem("rc:freenode:#grappa", String(fixture[fixture.length - 1]?.server_time));
+      seedReadCursor("freenode", "#grappa", fixture[fixture.length - 1]?.server_time ?? 0);
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       expect(screen.queryByTestId("unread-marker")).toBeNull();
@@ -1143,7 +1153,7 @@ describe("ScrollbackPane", () => {
     it("renders an unread-marker between read and unread messages when cursor is set mid-list", () => {
       // cursor sits after msg id=1 (server_time 1_700_000_000_000)
       // → msg id=2 and id=3 are unread (server_time > cursor)
-      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_000_000));
+      seedReadCursor("freenode", "#grappa", 1_700_000_000_000);
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const marker = screen.getByTestId("unread-marker");
@@ -1153,7 +1163,7 @@ describe("ScrollbackPane", () => {
     });
 
     it("unread-marker appears BEFORE the first unread message in DOM order", () => {
-      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_000_000));
+      seedReadCursor("freenode", "#grappa", 1_700_000_000_000);
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const marker = screen.getByTestId("unread-marker");
@@ -1170,7 +1180,7 @@ describe("ScrollbackPane", () => {
 
     it("renders unread count of 1 when only the last message is unread", () => {
       // cursor sits after msg id=2 → only msg id=3 (server_time=1_700_000_002_000) is unread
-      localStorage.setItem("rc:freenode:#grappa", String(1_700_000_001_000));
+      seedReadCursor("freenode", "#grappa", 1_700_000_001_000);
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const marker = screen.getByTestId("unread-marker");
@@ -1179,11 +1189,113 @@ describe("ScrollbackPane", () => {
 
     it("renders unread count of 3 when cursor is before all messages (all unread)", () => {
       // cursor at 0 → all 3 messages are unread
-      localStorage.setItem("rc:freenode:#grappa", "0");
+      seedReadCursor("freenode", "#grappa", 0);
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const marker = screen.getByTestId("unread-marker");
       expect(marker).toHaveTextContent("3 unread");
+    });
+
+    // Bug A repro (vjt step 5–8): the marker must DISAPPEAR when the cursor
+    // advances past every visible msg's server_time — even when the
+    // advance happens after the scrollback append, mid-mount.
+    //
+    // Production sequence (subscribe.ts routeMessage):
+    //   1. appendToScrollback(key, msg)         — signal write
+    //   2. setReadCursor(slug, name, msg.time)  — MUST be a signal write
+    // The `rows` createMemo in ScrollbackPane reads BOTH signals. After
+    // step 1 it invalidates and re-evaluates with the OLD cursor, injects
+    // the marker. After step 2 it MUST invalidate again and re-evaluate
+    // with the NEW cursor → marker disappears.
+    //
+    // Pre-fix: getReadCursor was a synchronous localStorage read (not
+    // tracked). Step 2's localStorage write didn't trigger memo
+    // invalidation. The marker stayed pinned with "1 unread" pointing at
+    // the just-arrived msg — vjt's exact symptom.
+    //
+    // The mid-test cursor advance MUST go through the mocked setReadCursor
+    // API (the same call subscribe.ts makes in production) so a
+    // non-reactive readCursor module would surface the bug here.
+    it("Bug A: marker disappears after live-cursor advance lands post-mount", async () => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      // Seed: 4 unread msgs from peer, cursor at 0 → marker shows "4 unread".
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 10, server_time: 100, sender: "vjt", body: "msg1" },
+        { ...proto, id: 11, server_time: 101, sender: "vjt", body: "msg2" },
+        { ...proto, id: 12, server_time: 102, sender: "vjt", body: "msg3" },
+        { ...proto, id: 13, server_time: 103, sender: "vjt", body: "msg4" },
+      ];
+      seedReadCursor("freenode", "#grappa", 0);
+      setScrollback({ "freenode #grappa": fourUnread });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Initial render: marker visible with all 4 unread.
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("4 unread");
+
+      // Mimic subscribe.ts step 5+: own-msg arrives via WS echo.
+      // appendToScrollback fires FIRST (memo re-evaluates with stale cursor),
+      // then setReadCursor fires (memo MUST re-evaluate with fresh cursor →
+      // marker disappears). Both are signal writes; in production the
+      // subscribe.ts handler does both inline back-to-back.
+      const ownMsg: ScrollbackMessage = {
+        id: 14,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 200,
+        kind: "privmsg",
+        sender: "alice",
+        body: "live reply",
+        meta: {},
+      };
+      setScrollback({ "freenode #grappa": [...fourUnread, ownMsg] });
+      // Use the mocked setReadCursor (the prod API) — a non-reactive
+      // implementation would silently fail to re-trigger the memo here.
+      setReadCursor("freenode", "#grappa", 200);
+
+      await waitFor(() => {
+        // RED pre-fix: marker is still in the DOM, possibly with "1 unread".
+        // GREEN post-fix: marker is gone — cursor caught up to the latest msg.
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+    });
+
+    // Bug A repro variant (vjt steps 7–8): subsequent send/receive after
+    // the marker has already been cleared must NOT resurrect it.
+    it("Bug A: marker stays absent after a SECOND post-mount cursor advance", async () => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const initial: ScrollbackMessage[] = [
+        { ...proto, id: 20, server_time: 100, sender: "vjt", body: "old" },
+      ];
+      seedReadCursor("freenode", "#grappa", 100);
+      setScrollback({ "freenode #grappa": initial });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Cursor caught up — no marker.
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+
+      // Send a new own-msg: append + cursor-advance (via mocked setReadCursor).
+      const ownMsg: ScrollbackMessage = {
+        id: 21,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 200,
+        kind: "privmsg",
+        sender: "alice",
+        body: "fresh",
+        meta: {},
+      };
+      setScrollback({ "freenode #grappa": [...initial, ownMsg] });
+      setReadCursor("freenode", "#grappa", 200);
+
+      await waitFor(() => {
+        // RED pre-fix: memo re-runs on append with stale cursor=100, sees
+        // ownMsg.server_time(200) > 100 → injects marker with "1 unread"
+        // pointing at the just-sent msg. Cursor advance never re-runs the memo.
+        // GREEN post-fix: cursor advance invalidates the memo → marker absent.
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
     });
   });
 
