@@ -1,7 +1,7 @@
 // Global keybindings: one window keydown listener dispatching to a
 // handler interface. Vanilla — no third-party library; the binding
-// surface (Alt+1..9, Ctrl+N/P, /, Esc, Tab, Shift+Tab) is too small
-// to justify a dep + bundle weight.
+// surface (Alt+1..9, Ctrl+N/P, Esc, Tab, Shift+Tab, irssi-style
+// auto-focus) is too small to justify a dep + bundle weight.
 //
 // Two-stage init:
 //   1. registerHandlers(...) — consumers (Shell.tsx) wire their action
@@ -17,7 +17,7 @@ export type KeybindingHandlers = {
   selectChannelByIndex: (idx: number) => void; // Alt+1..9 → idx 0..8
   nextUnread: () => void; // Ctrl+N
   prevUnread: () => void; // Ctrl+P
-  focusCompose: () => void; // /
+  insertIntoCompose: (char: string) => void; // any printable key off-compose
   closeDrawer: () => void; // Esc
   cycleNickComplete: (forward: boolean) => void; // Tab (true) / Shift+Tab (false)
 };
@@ -53,14 +53,6 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
 
-  // / focuses the compose box, but ONLY when the user isn't already
-  // typing in an input — otherwise typing literal "/" gets eaten.
-  if (e.key === "/" && !isTypingTarget(e.target)) {
-    e.preventDefault();
-    handlers.focusCompose();
-    return;
-  }
-
   if (e.altKey && /^[1-9]$/.test(e.key)) {
     e.preventDefault();
     handlers.selectChannelByIndex(Number(e.key) - 1);
@@ -76,6 +68,24 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.ctrlKey && e.key.toLowerCase() === "p") {
     e.preventDefault();
     handlers.prevUnread();
+    return;
+  }
+
+  // irssi-shaped auto-focus: any printable key with no modifiers, fired
+  // anywhere except a typing surface, redirects into the compose box.
+  // `key.length === 1` filters out named keys (Tab, Escape, Arrow*,
+  // F1..) which all have multi-char `key` values; printable chars
+  // (letters, digits, punctuation, whitespace) are length 1.
+  if (
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.altKey &&
+    !e.isComposing &&
+    e.key.length === 1 &&
+    !isTypingTarget(e.target)
+  ) {
+    e.preventDefault();
+    handlers.insertIntoCompose(e.key);
     return;
   }
 }
