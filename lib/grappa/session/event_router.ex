@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouter do
               | {:reply, iodata()}                -- send a line upstream
               | {:topic_changed, channel, topic_entry()}
               | {:channel_modes_changed, channel, channel_mode_entry()}
-              | {:members_seeded, channel}        -- 366 RPL_ENDOFNAMES landed
+              | {:members_seeded, channel, members} -- 366 RPL_ENDOFNAMES landed; carries snapshot
 
   This shape was extracted per the 2026-04-27 architecture review
   (finding A6, CP10 D4) and mirrors `Grappa.IRC.AuthFSM` from D2 — the
@@ -167,7 +167,7 @@ defmodule Grappa.Session.EventRouter do
           | {:topic_changed, String.t(), topic_entry()}
           | {:channel_modes_changed, String.t(), channel_mode_entry()}
           | {:away_confirmed, :present | :away}
-          | {:members_seeded, String.t()}
+          | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -633,7 +633,8 @@ defmodule Grappa.Session.EventRouter do
         state
       )
       when is_binary(channel) do
-    {:cont, state, [{:members_seeded, channel}]}
+    members = Map.get(state.members, channel, %{})
+    {:cont, state, [{:members_seeded, channel, members}]}
   end
 
   # 311 RPL_WHOISUSER: `:server 311 own_nick target user host * :realname`.

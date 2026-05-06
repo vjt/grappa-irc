@@ -46,50 +46,58 @@ describe("members.loadMembers (snapshot)", () => {
   });
 });
 
-describe("members.reloadMembers (members_seeded race fix)", () => {
-  it("bypasses the once-per-channel gate and re-fetches", async () => {
-    // Bug repro: a fresh /join races against the server's 353 RPL_NAMREPLY.
-    // The initial loadMembers fires from MembersPane on mount, races the
-    // 353, and locks loadedChannels with an empty list. The 366
-    // RPL_ENDOFNAMES broadcast (members_seeded WS event) calls
-    // reloadMembers, which MUST clear the gate and re-fetch — otherwise
-    // the empty snapshot persists until page reload.
+describe("members.seedMembers (members_seeded race fix)", () => {
+  it("seeds membersByChannel from a payload — no fetch", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.listMembers)
-      .mockResolvedValueOnce([]) // first call: race lost, empty snapshot
-      .mockResolvedValueOnce([
-        { nick: "vjt", modes: [] },
-        { nick: "bob", modes: ["@"] },
-      ]);
+    const members = await import("../lib/members");
+    const key = channelKey("freenode", "#grappa");
+
+    members.seedMembers(key, [
+      { nick: "vjt", modes: ["@"] },
+      { nick: "alice", modes: [] },
+    ]);
+
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "vjt", modes: ["@"] },
+      { nick: "alice", modes: [] },
+    ]);
+    expect(api.listMembers).not.toHaveBeenCalled();
+  });
+
+  it("seedMembers marks the channel as loaded — subsequent loadMembers is a no-op", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMembers).mockResolvedValue([{ nick: "stale", modes: [] }]);
+    const members = await import("../lib/members");
+    const key = channelKey("freenode", "#grappa");
+
+    members.seedMembers(key, [{ nick: "vjt", modes: ["@"] }]);
+    await members.loadMembers("freenode", "#grappa");
+
+    expect(api.listMembers).not.toHaveBeenCalled();
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "vjt", modes: ["@"] }]);
+  });
+
+  it("seedMembers overwrites a prior loadMembers result", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMembers).mockResolvedValue([]);
 
     const members = await import("../lib/members");
     await members.loadMembers("freenode", "#grappa");
     const key = channelKey("freenode", "#grappa");
     expect(members.membersByChannel()[key]).toEqual([]);
 
-    await members.reloadMembers("freenode", "#grappa");
+    members.seedMembers(key, [
+      { nick: "vjt", modes: [] },
+      { nick: "bob", modes: ["@"] },
+    ]);
 
-    expect(api.listMembers).toHaveBeenCalledTimes(2);
     expect(members.membersByChannel()[key]).toEqual([
       { nick: "vjt", modes: [] },
       { nick: "bob", modes: ["@"] },
     ]);
-  });
-
-  it("is safe to call without a prior loadMembers", async () => {
-    // Defensive: subscribe.ts may receive members_seeded for a channel
-    // whose MembersPane has not mounted yet (sidebar re-render race). The
-    // verb must not throw and should populate the store correctly.
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMembers).mockResolvedValue([{ nick: "vjt", modes: [] }]);
-
-    const members = await import("../lib/members");
-    await members.reloadMembers("freenode", "#grappa");
-
-    const key = channelKey("freenode", "#grappa");
-    expect(members.membersByChannel()[key]).toEqual([{ nick: "vjt", modes: [] }]);
   });
 });
 

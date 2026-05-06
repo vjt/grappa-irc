@@ -5,7 +5,8 @@ import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
-import { applyPresenceEvent, reloadMembers } from "./members";
+import { applyPresenceEvent, seedMembers } from "./members";
+import type { MemberEntry } from "./memberTypes";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
@@ -93,7 +94,7 @@ type WireEvent =
   | ChannelEvent
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
   | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
-  | { kind: "members_seeded"; network: string; channel: string };
+  | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] };
 
 createRoot(() => {
   const joined = new Set<ChannelKey>();
@@ -230,11 +231,11 @@ createRoot(() => {
         return;
       }
       if (payload.kind === "members_seeded") {
-        // Server's 366 RPL_ENDOFNAMES landed: state.members[channel] is
-        // now populated. Re-fetch GET /members to overwrite any empty
-        // snapshot the racing initial load may have captured. Idempotent:
-        // bypasses the once-per-channel gate, then re-marks it on success.
-        void reloadMembers(slug, name);
+        // Server's 366 RPL_ENDOFNAMES landed and the broadcast carries the
+        // full sorted members snapshot. Seed directly — no second fetch
+        // needed. Eliminates the WS-subscribed-but-no-fetch-yet race
+        // window that an HTTP re-fetch would still be vulnerable to.
+        seedMembers(key, payload.members);
         return;
       }
       if (payload.kind !== "message") return;

@@ -1535,14 +1535,25 @@ defmodule Grappa.Session.Server do
   # Without this, a fresh /join lands in the sidebar before bahamut's 353
   # arrives; cicchetto's MembersPane fetch returns an empty list and the
   # one-shot loadedChannels gate prevents a re-fetch until page reload.
-  defp apply_effects([{:members_seeded, channel} | rest], state) do
+  defp apply_effects([{:members_seeded, channel, members_map} | rest], state) do
+    # Sort + serialize the same way list_members/3 does — the wire payload
+    # is identical to a GET /members snapshot, so the cicchetto seed path
+    # is a single signal write with no extra fetch (the race window between
+    # WS subscribe and HTTP fetch is what made the old re-fetch design
+    # flaky on slow JOIN sequences).
+    members =
+      members_map
+      |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
+      |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
+
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
         %{
           kind: "members_seeded",
           network: state.network_slug,
-          channel: channel
+          channel: channel,
+          members: members
         }
       )
 

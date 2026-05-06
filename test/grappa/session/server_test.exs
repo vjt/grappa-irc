@@ -756,10 +756,19 @@ defmodule Grappa.Session.ServerTest do
                        payload: %{
                          kind: "members_seeded",
                          network: _,
-                         channel: "#test"
+                         channel: "#test",
+                         members: members
                        }
                      },
                      1_000
+
+      # The payload carries the FULL sorted snapshot — same shape as
+      # GET /members. Cicchetto seeds membersByChannel directly; no
+      # second fetch needed.
+      assert members == [
+               %{nick: "grappa-test", modes: ["@"]},
+               %{nick: "alice", modes: []}
+             ]
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
