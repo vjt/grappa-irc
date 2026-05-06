@@ -14,7 +14,16 @@ config :grappa, Grappa.Repo,
   # true still works — Sandbox owns the conn per test; concurrency
   # comes from interleaved checkouts, not concurrent file writes.
   pool_size: 1,
-  busy_timeout: 30_000
+  busy_timeout: 30_000,
+  # CI runner is slower than local dev (single-vCPU + coveralls
+  # instrumentation overhead). Default DBConnection queue_target=50ms /
+  # queue_interval=1000ms triggers `queue_timeout` on Sandbox checkout
+  # under sustained load even though the conn would have become
+  # available shortly. Bumped both to give CI headroom; the cap is
+  # still bounded so genuine deadlocks surface as failures rather
+  # than infinite hangs.
+  queue_target: 5_000,
+  queue_interval: 30_000
 
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
