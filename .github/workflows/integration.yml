@@ -75,6 +75,23 @@ jobs:
             exit 1;
           }
 
+      - name: Upgrade docker compose plugin
+        # Runner-shipped docker compose is too old to grok the
+        # cicchetto/e2e/compose.yaml `include:` + per-service override
+        # pattern (`services.leaf-v6 conflicts with imported resource`).
+        # Newer compose merges per-service overrides into the included
+        # file's service definition; older compose treats them as a
+        # duplicate-resource error. Pin to v5.0.2 — matches the local
+        # dev environment (CI/dev parity) so a workflow that passes
+        # locally also passes on the runner.
+        run: |
+          COMPOSE_VER=v5.0.2
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
+            -o ~/.docker/cli-plugins/docker-compose
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+
       - name: Run integration suite
         # `bash scripts/integration.sh` boots the stack, runs the
         # Playwright suite, tears the stack down on EXIT trap. Exit
