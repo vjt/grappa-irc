@@ -1,6 +1,6 @@
-// M9 — cic-driven PART via the sidebar X-button.
+// M9 — cicchetto-driven PART via the sidebar X-button.
 //
-// User clicks the `×` button next to a channel in the sidebar; cic
+// User clicks the `×` button next to a channel in the sidebar; cicchetto
 // fires REST POST /networks/:slug/channels/:chan/part (Sidebar.tsx
 // handleCloseChannel → postPart) which makes grappa send PART to the
 // leaf. Leaf echoes the PART back, grappa persists + broadcasts on

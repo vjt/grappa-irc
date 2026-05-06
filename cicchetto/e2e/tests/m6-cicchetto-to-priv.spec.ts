@@ -1,4 +1,4 @@
-// M6 — cic-driven PRIVMSG to a nick (DM): /msg target body opens
+// M6 — cicchetto-driven PRIVMSG to a nick (DM): /msg target body opens
 // the query window, switches focus, and renders the own-msg.
 //
 // Manual matrix: vjt types `/msg <nick> <body>` in the active
@@ -6,14 +6,14 @@
 //   - DM persists server-side at channel = <target>
 //   - query window for <target> appears in sidebar (auto-opened by
 //     compose.ts's /msg handler via openQueryWindowState)
-//   - cic auto-focuses the new query window
+//   - cicchetto auto-focuses the new query window
 //   - own message renders in that window's scrollback
 //   - no msg-unread badge (focused)
 //
 // A peer is online to act as the DM target — without a present nick,
 // the leaf would NOTICE back "no such nick" and grappa would not
 // persist a DM row (msg goes to leaf which rejects, no echo). The
-// peer is otherwise silent: this is a cic-only assertion, the peer's
+// peer is otherwise silent: this is a cicchetto-only assertion, the peer's
 // inbound side is M5's job.
 //
 // Page-object's selectChannel helper isn't used to switch to the DM
@@ -35,9 +35,9 @@ import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../
 
 const PEER_NICK = "m6-peer";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-const MESSAGE_BODY = "M6: cic-driven DM outbound";
+const MESSAGE_BODY = "M6: cicchetto-driven DM outbound";
 
-test("M6 — cic /msg opens query window, focuses, renders own-msg", async ({ page }) => {
+test("M6 — cicchetto /msg opens query window, focuses, renders own-msg", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   // Start in a real channel so the compose box is visible (Server

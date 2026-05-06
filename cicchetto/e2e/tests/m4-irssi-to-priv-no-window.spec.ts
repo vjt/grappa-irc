@@ -1,12 +1,12 @@
-// M4 — peer PRIVMSG to vjt's nick when cic has NO query window open
+// M4 — peer PRIVMSG to vjt's nick when cicchetto has NO query window open
 // for that peer. Expected:
 //   - DM persists server-side at channel = NETWORK_NICK (the inbound
 //     DM target — grappa stores using the recipient nick as channel)
-//   - cic auto-opens a query window keyed on the SENDER nick
+//   - cicchetto auto-opens a query window keyed on the SENDER nick
 //     (subscribe.ts DM-listener loop calls openQueryWindowState then
 //     re-keys the append from own-nick to sender — see subscribe.ts
 //     "C4.1 / DM live-WS gap" comment)
-//   - msg-unread badge on the auto-opened window shows "1" (cic is
+//   - msg-unread badge on the auto-opened window shows "1" (cicchetto is
 //     focused on #bofh, not the new DM window)
 //   - clicking the DM window: scrollback renders the body AND the
 //     badge clears (selection.ts isSelected gate)
@@ -69,7 +69,7 @@ test("M4 — inbound DM auto-opens query window with unread, clears on focus", a
     // Sidebar gains exactly one entry for the sender nick.
     await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NICK)).toHaveCount(1, { timeout: 5_000 });
 
-    // Unread badge "1" — cic still on #bofh, query window is
+    // Unread badge "1" — cicchetto still on #bofh, query window is
     // unfocused by definition. Asserted BEFORE the click-to-inspect
     // because clicking would clear it (selection.ts isSelected gate).
     await expect(sidebarMessageBadge(page, NETWORK_SLUG, PEER_NICK)).toHaveText("1", {
