@@ -470,4 +470,115 @@ describe("selection store", () => {
       expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
     });
   });
+  // Badge clear on browser-focus-regain — symmetric counterpart to the
+  // browser-blur cursor-advance arm. When the focused window's browser tab
+  // regains focus, badges (unread / messages / events) for that window
+  // must clear — same semantic as cicchetto-select clear, just triggered
+  // by visibility transition instead of selection change.
+  //
+  // Without this, a user who blurs the browser, accumulates unread badge
+  // bumps via subscribe.ts (effective-focus = false → bump), and then
+  // returns to the browser would still see the badge sitting on the
+  // currently-selected window even though they're now actively reading.
+  describe("badge clear on browser-focus-regain", () => {
+    it("badges for selected window clear when browser regains focus", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // Simulate the subscribe.ts blurred-arrival path: badges bumped
+      // because effective-focus was false at msg arrival.
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      selection.bumpUnread(key);
+      selection.bumpMessageUnread(key);
+      selection.bumpEventUnread(key);
+      expect(selection.unreadCounts()[key]).toBe(1);
+      expect(selection.messagesUnread()[key]).toBe(1);
+      expect(selection.eventsUnread()[key]).toBe(1);
+
+      // Browser regains focus → user is now reading → badges should clear.
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(selection.unreadCounts()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+
+    it("badges for OTHER (non-selected) windows are NOT touched on focus-regain", async () => {
+      // Anti-spec guard: focus-regain only clears the SELECTED window's
+      // badges. A msg accumulated on a different window while away must
+      // remain visibly unread until the user navigates there.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const selKey = channelKey("freenode", "#grappa");
+      const otherKey = channelKey("freenode", "#cicchetto");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      selection.bumpMessageUnread(selKey);
+      selection.bumpMessageUnread(otherKey);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(selection.messagesUnread()[selKey]).toBeUndefined();
+      // Other window's badge survives — user hasn't read it yet.
+      expect(selection.messagesUnread()[otherKey]).toBe(1);
+    });
+
+    it("focus-regain with no selected window is a no-op", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      // No setSelectedChannel — selection is null.
+      selection.bumpMessageUnread(key);
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      // Badge for unselected channel left intact (focus-regain found no
+      // selection to clear).
+      expect(selection.messagesUnread()[key]).toBe(1);
+    });
+
+    it("initial visibility=true does NOT spuriously clear bumped badges", async () => {
+      // Mirror of the cursor-advance "initial run" guard. Module load fires
+      // the visibility effect with prev===undefined; that initial run must
+      // not clear pre-existing badges (e.g. from history-restore on cold
+      // start or future cross-tab sync).
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // Bump AFTER selection (the select path itself clears badges; we want
+      // to assert the visibility-effect's initial run does not double-clear
+      // a fresh bump).
+      selection.bumpMessageUnread(key);
+      // No setVisibilityForTest — visibility stays true (initial state).
+      await Promise.resolve();
+
+      expect(selection.messagesUnread()[key]).toBe(1);
+    });
+  });
 });

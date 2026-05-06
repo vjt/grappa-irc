@@ -97,6 +97,30 @@ const exports = createRoot(() => {
     setReadCursor(networkSlug, channelName, last.server_time);
   };
 
+  // Shared badge-clear helper used by both the cicchetto-select arm
+  // (focus arrives via selection change) and the browser-focus-regain arm
+  // (focus arrives via visibility transition). Same semantic: "user is now
+  // actively reading this window; nothing should be unread." Wipes all
+  // three badge stores for the (slug, channel) pair.
+  const clearBadgesForWindow = (networkSlug: string, channelName: string): void => {
+    const key = channelKey(networkSlug, channelName);
+    setUnreadCounts((prev) => {
+      if (!(key in prev) || prev[key] === 0) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+    setMessagesUnread((prev) => {
+      if (!(key in prev)) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+    setEventsUnread((prev) => {
+      if (!(key in prev)) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+  };
+
   createEffect(
     on(selectedChannel, (sel, prev) => {
       // Read-cursor advance on focus-leave. When the user moves focus
@@ -131,52 +155,46 @@ const exports = createRoot(() => {
       }
 
       if (!sel) return;
-      const key = channelKey(sel.networkSlug, sel.channelName);
-      setUnreadCounts((prev) => {
-        if (!(key in prev) || prev[key] === 0) return prev;
-        const { [key]: _drop, ...rest } = prev;
-        return rest;
-      });
-      // C7.5: clear both split counters on focus.
-      setMessagesUnread((prev) => {
-        if (!(key in prev)) return prev;
-        const { [key]: _drop, ...rest } = prev;
-        return rest;
-      });
-      setEventsUnread((prev) => {
-        if (!(key in prev)) return prev;
-        const { [key]: _drop, ...rest } = prev;
-        return rest;
-      });
+      // C7.5: clear all three badge stores on focus.
+      clearBadgesForWindow(sel.networkSlug, sel.channelName);
       // Fire-and-forget: the verb guards itself via scrollback's
       // loadedChannels Set.
       void loadInitialScrollback(sel.networkSlug, sel.channelName);
     }),
   );
 
-  // Browser-blur arm. When the operator's browser tab loses focus
-  // (Cmd-Tab, minimize, Page Visibility hidden, PWA backgrounded), advance
-  // the currently-selected window's cursor — same semantic as a cicchetto-
-  // leave. Without this, returning to the browser would show no marker for
-  // msgs that landed in the focused window while the user was demonstrably
-  // away (subscribe.ts now skips the live-cursor-advance on hidden tabs,
-  // so those msgs accumulate above the stale cursor — but the cursor
-  // itself must be marked-as-read at the moment of leave so the marker
-  // appears at the right boundary).
+  // Browser visibility arm — symmetric pair of transitions on the same
+  // signal:
   //
-  // Guards:
+  //   TRUE → FALSE (browser blur): advance the selected window's cursor.
+  //     Same semantic as a cicchetto-leave; the user has demonstrably moved
+  //     on. Without this, returning to the browser would show no marker for
+  //     msgs that landed while the user was away (subscribe.ts skips the
+  //     live-cursor-advance on hidden tabs, so msgs accumulate above the
+  //     stale cursor — the cursor must be marked-as-read at the moment of
+  //     leave so the marker surfaces at the right boundary).
+  //
+  //   FALSE → TRUE (browser focus regain): clear the selected window's
+  //     badges. Same semantic as cicchetto-select; the user is now reading
+  //     and badges sitting on the focused window are immediately stale.
+  //     Without this, badges accumulated by subscribe.ts during the blur
+  //     period would persist until the user navigated away and back.
+  //
+  // Guards (both arms):
   //   * `prev === undefined` → initial run on module load; not a transition.
-  //   * `visible === true` → focus regain (or initial true): no-op. Cursor
-  //     advance only happens at the LEAVE moment (true → false).
-  //   * No selected window → nothing to advance.
-  //   * Empty scrollback → advanceCursorForWindow no-ops internally.
+  //   * No selected window → nothing to act on.
+  //   * advanceCursorForWindow / clearBadgesForWindow no-op internally on
+  //     empty scrollback / absent badges.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
-      if (!(prev === true && visible === false)) return;
       const sel = untrack(selectedChannel);
       if (!sel) return;
-      advanceCursorForWindow(sel.networkSlug, sel.channelName);
+      if (prev === true && visible === false) {
+        advanceCursorForWindow(sel.networkSlug, sel.channelName);
+      } else if (prev === false && visible === true) {
+        clearBadgesForWindow(sel.networkSlug, sel.channelName);
+      }
     }),
   );
 
