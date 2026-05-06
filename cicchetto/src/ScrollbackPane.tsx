@@ -355,7 +355,18 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
+  // BUG1-fix carry-forward: `user.name` is the operator account name,
+  // which can diverge from the live IRC nick after a NickServ ghost
+  // recovery (e.g. account "vjt", IRC nick "vjt-grappa"). The
+  // per-network credential's `nick` (returned by GET /networks and
+  // updated live via the `own_nick_changed` user-topic event) is the
+  // canonical IRC nick to compare scrollback senders against.
+  // subscribe.ts already does this for BUG4/BUG5; the JOIN-banner +
+  // mention-highlight + ownModes paths here need the same overlay or
+  // they silently drop on every credential where account != nick.
   const userNick = (): string | null => {
+    const net = networks()?.find((n) => n.slug === props.networkSlug);
+    if (net?.nick) return net.nick;
     const me = user();
     return me ? displayNick(me) : null;
   };

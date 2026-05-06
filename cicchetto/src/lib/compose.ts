@@ -190,6 +190,21 @@ const exports_ = createRoot(() => {
           break;
         case "join":
           await postJoin(t, networkSlug, cmd.channel);
+          // Auto-focus the new channel client-side, mirroring the
+          // /msg + /query handlers below. The user just typed /join
+          // — focus follows intent. Doing this here (instead of
+          // relying on subscribe.ts BUG4 self-JOIN handler) closes
+          // a race: the JOIN message is broadcast on the per-channel
+          // WS topic IMMEDIATELY after channels_changed fires, but
+          // cic's subscribe.ts only joins that topic AFTER the REST
+          // refetch from channels_changed completes. Phoenix PubSub
+          // doesn't replay to late subscribers, so the BUG4 handler's
+          // setSelectedChannel never fired in practice. With user-
+          // intent-driven focus here, the autojoin / sajoin / NickServ-
+          // driven JOIN paths still go through the subscribe.ts handler
+          // (no race for those — channel was already joined when JOIN
+          // event arrives via WS).
+          setSelectedChannel({ networkSlug, channelName: cmd.channel, kind: "channel" });
           result = { ok: true };
           break;
         case "part": {
