@@ -24,6 +24,7 @@ vi.mock("../lib/api", () => ({
   listNetworks: vi.fn(),
   listChannels: vi.fn(),
   listMessages: vi.fn(),
+  listMembers: vi.fn(),
   sendMessage: vi.fn(),
   me: vi.fn(),
   login: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock("../lib/socket", () => ({
 vi.mock("../lib/members", () => ({
   applyPresenceEvent: vi.fn(),
   loadMembers: vi.fn(),
-  reloadMembers: vi.fn(),
+  seedMembers: vi.fn(),
   membersByChannel: vi.fn(() => ({})),
   seedFromTest: vi.fn(),
 }));
@@ -1822,7 +1823,7 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
   // must re-fetch GET /members to overwrite any empty snapshot the racing
   // initial loadMembers may have produced.
   describe("members_seeded WS event", () => {
-    it("fires reloadMembers for the channel when members_seeded payload arrives", async () => {
+    it("seeds members directly from members_seeded payload — no fetch", async () => {
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -1831,11 +1832,11 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
       await seedStubs();
       await loadStores();
       const members = await import("../lib/members");
+      const api = await import("../lib/api");
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
 
-      // Find the channel handler and dispatch a members_seeded payload.
       const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
         p: unknown,
       ) => void;
@@ -1843,9 +1844,19 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         kind: "members_seeded",
         network: "freenode",
         channel: "#grappa",
+        members: [
+          { nick: "vjt", modes: ["@"] },
+          { nick: "alice", modes: [] },
+        ],
       });
 
-      expect(members.reloadMembers).toHaveBeenCalledWith("freenode", "#grappa");
+      const key = channelKey("freenode", "#grappa");
+      expect(members.seedMembers).toHaveBeenCalledWith(key, [
+        { nick: "vjt", modes: ["@"] },
+        { nick: "alice", modes: [] },
+      ]);
+      // Critical: NO HTTP fetch — the WS payload is authoritative.
+      expect(api.listMembers).not.toHaveBeenCalled();
     });
 
     it("does NOT route members_seeded as a message (no scrollback append, no unread bump)", async () => {
@@ -1868,6 +1879,7 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         kind: "members_seeded",
         network: "freenode",
         channel: "#grappa",
+        members: [],
       });
 
       const key = channelKey("freenode", "#grappa");

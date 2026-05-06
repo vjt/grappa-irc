@@ -64,20 +64,19 @@ const exports_ = createRoot(() => {
     }
   };
 
-  // Force re-fetch — bypasses the once-per-channel gate. Called from
+  // Direct seed from a server-provided members snapshot — used by
   // subscribe.ts when the server emits a `members_seeded` event (366
-  // RPL_ENDOFNAMES landed), which means state.members[channel] is now
-  // populated and any earlier loadMembers race that returned an empty
-  // list can be re-issued. Without this, a fresh /join lands in the
-  // sidebar with an empty MembersPane until the next page reload.
+  // RPL_ENDOFNAMES landed). The payload carries the full sorted snapshot,
+  // so this is a single signal write — NO second HTTP fetch. Eliminates
+  // the race window between WS subscribe and HTTP fetch that the older
+  // re-fetch design was still vulnerable to.
   //
-  // Idempotent: invalidates the gate, then runs loadMembers (which
-  // re-marks the gate as it succeeds). Concurrent calls dedupe via the
-  // gate after the first one runs through.
-  const reloadMembers = async (slug: string, name: string): Promise<void> => {
-    const key = channelKey(slug, name);
-    loadedChannels.delete(key);
-    await loadMembers(slug, name);
+  // Marks the channel as loaded so the once-per-channel gate skips a
+  // future MembersPane mount's loadMembers call (the seeded snapshot is
+  // authoritative for the JOIN moment).
+  const seedMembers = (key: ChannelKey, list: ChannelMembers): void => {
+    loadedChannels.add(key);
+    setMembersByChannel((prev) => ({ ...prev, [key]: list }));
   };
 
   const applyPresenceEvent = (key: ChannelKey, msg: ScrollbackMessage): void => {
@@ -143,7 +142,7 @@ const exports_ = createRoot(() => {
   return {
     membersByChannel,
     loadMembers,
-    reloadMembers,
+    seedMembers,
     applyPresenceEvent,
     seedFromTest,
   };
@@ -151,6 +150,6 @@ const exports_ = createRoot(() => {
 
 export const membersByChannel = exports_.membersByChannel;
 export const loadMembers = exports_.loadMembers;
-export const reloadMembers = exports_.reloadMembers;
+export const seedMembers = exports_.seedMembers;
 export const applyPresenceEvent = exports_.applyPresenceEvent;
 export const seedFromTest = exports_.seedFromTest;
