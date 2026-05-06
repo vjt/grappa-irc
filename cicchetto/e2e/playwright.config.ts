@@ -33,6 +33,11 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      // Mirror of webkit-iphone-15's grep — only specs WITHOUT
+      // `@webkit` run on the desktop project. Without this gate,
+      // `@webkit`-tagged specs (BUG7 + variants) attempt `tap()` on a
+      // non-touch context and throw "The page does not support tap".
+      grepInvert: /@webkit/,
     },
     {
       name: "webkit-iphone-15",
