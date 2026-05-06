@@ -1,6 +1,7 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createEffect, createRoot, createSignal, on, untrack } from "solid-js";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { isDocumentVisible } from "./documentVisibility";
 import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import type { WindowKind } from "./windowKinds";
@@ -81,6 +82,21 @@ const exports = createRoot(() => {
     setEventsUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
   };
 
+  // Shared cursor-advance helper used by both the cicchetto-leave arm
+  // (selectedChannel transitions away from a window) and the browser-blur
+  // arm (the focused window's browser tab loses focus). Both arms have
+  // identical semantics: "user has demonstrably moved on from this window;
+  // mark its current scrollback tail as read." Same guards: empty
+  // scrollback → no-op (nothing to mark).
+  const advanceCursorForWindow = (networkSlug: string, channelName: string): void => {
+    const k = channelKey(networkSlug, channelName);
+    const msgs = scrollbackByChannel()[k];
+    if (!msgs || msgs.length === 0) return;
+    const last = msgs[msgs.length - 1];
+    if (last === undefined) return;
+    setReadCursor(networkSlug, channelName, last.server_time);
+  };
+
   createEffect(
     on(selectedChannel, (sel, prev) => {
       // Read-cursor advance on focus-leave. When the user moves focus
@@ -105,18 +121,12 @@ const exports = createRoot(() => {
       //     (e.g. component re-render fires the effect with identical
       //     value); not a leave.
       //   * No msgs in prev's scrollback → nothing to mark as read;
-      //     skip the localStorage write to avoid pinning a stale 0.
+      //     advanceCursorForWindow handles this internally.
       if (prev !== undefined && prev !== null) {
         const prevKey = channelKey(prev.networkSlug, prev.channelName);
         const selKey = sel ? channelKey(sel.networkSlug, sel.channelName) : null;
         if (prevKey !== selKey) {
-          const msgs = scrollbackByChannel()[prevKey];
-          if (msgs && msgs.length > 0) {
-            const last = msgs[msgs.length - 1];
-            if (last !== undefined) {
-              setReadCursor(prev.networkSlug, prev.channelName, last.server_time);
-            }
-          }
+          advanceCursorForWindow(prev.networkSlug, prev.channelName);
         }
       }
 
@@ -141,6 +151,32 @@ const exports = createRoot(() => {
       // Fire-and-forget: the verb guards itself via scrollback's
       // loadedChannels Set.
       void loadInitialScrollback(sel.networkSlug, sel.channelName);
+    }),
+  );
+
+  // Browser-blur arm. When the operator's browser tab loses focus
+  // (Cmd-Tab, minimize, Page Visibility hidden, PWA backgrounded), advance
+  // the currently-selected window's cursor — same semantic as a cicchetto-
+  // leave. Without this, returning to the browser would show no marker for
+  // msgs that landed in the focused window while the user was demonstrably
+  // away (subscribe.ts now skips the live-cursor-advance on hidden tabs,
+  // so those msgs accumulate above the stale cursor — but the cursor
+  // itself must be marked-as-read at the moment of leave so the marker
+  // appears at the right boundary).
+  //
+  // Guards:
+  //   * `prev === undefined` → initial run on module load; not a transition.
+  //   * `visible === true` → focus regain (or initial true): no-op. Cursor
+  //     advance only happens at the LEAVE moment (true → false).
+  //   * No selected window → nothing to advance.
+  //   * Empty scrollback → advanceCursorForWindow no-ops internally.
+  createEffect(
+    on(isDocumentVisible, (visible, prev) => {
+      if (prev === undefined) return;
+      if (!(prev === true && visible === false)) return;
+      const sel = untrack(selectedChannel);
+      if (!sel) return;
+      advanceCursorForWindow(sel.networkSlug, sel.channelName);
     }),
   );
 
