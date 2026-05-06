@@ -139,8 +139,7 @@ the smoke spec (chromium, 2 tests: SPA root + /healthz proxy), exits
 
 ### S2 — Fixtures: ircClient + grappaApi + seedData
 
-- [x] `fixtures/ircClient.ts` — raw IRC client over `node:net` (~150
-  LOC, no third-party dep). Typed verbs:
+- [x] `fixtures/ircClient.ts` — wraps `irc-framework`:
   ```
   const peer = await IrcPeer.connect({nick: "vjt-peer"});
   await peer.join("#bofh");
@@ -148,10 +147,8 @@ the smoke spec (chromium, 2 tests: SPA root + /healthz proxy), exits
   await peer.part("#bofh", "bye");
   await peer.disconnect("done");
   ```
-  `irc-framework` was dropped: it unconditionally writes `CAP LS 302`
-  before NICK/USER, and bahamut never replies to CAP for non-registered
-  clients. Raw client sidesteps the cap-negotiation hang. Connection
-  target via `E2E_IRC_HOST` / `E2E_IRC_PORT` env (set in compose.yaml).
+  Connection target via `E2E_IRC_HOST` / `E2E_IRC_PORT` env (set in
+  compose.yaml).
 - [x] `fixtures/grappaApi.ts` — REST client. `login(identifier, password)
   → bearer token` and `assertMessagePersisted({token, networkSlug,
   channel, sender, body})` polling `GET /networks/:slug/channels/:chan

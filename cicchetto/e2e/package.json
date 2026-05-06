@@ -11,6 +11,7 @@
   "devDependencies": {
     "@playwright/test": "1.59.1",
     "@types/node": "22.10.0",
+    "irc-framework": "4.14.0",
     "typescript": "5.7.2"
   }
 }
