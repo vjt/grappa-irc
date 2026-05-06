@@ -72,24 +72,34 @@ fi
 # bun + nginx containers drop to UID 1000 (or the host UID on Linux),
 # so any write fails with AccessDenied. Host bind-mount inherits the
 # operator's UID — `mkdir -p` from this script lands as the operator.
-mkdir -p "$REPO_ROOT/runtime/bun-cache" "$REPO_ROOT/runtime/e2e/cicchetto-dist"
+mkdir -p \
+    "$REPO_ROOT/runtime/bun-cache" \
+    "$REPO_ROOT/runtime/e2e/cicchetto-dist" \
+    "$REPO_ROOT/runtime/e2e/grappa-runtime"
 
 cleanup() {
-    # Always tear down — even on Ctrl-C or a runner crash. -v wipes
-    # named volumes (e2e_runtime sqlite, e2e_cicchetto_dist) so each
-    # invocation gets a clean slate. _build / deps caches stay (they
-    # have their own named volumes that survive `down -v` only because
-    # compose doesn't list them in this stack's `volumes:` section…
-    # actually they DO survive only because they're in the stack —
-    # so -v wipes them too on every run, paying the warm-cache cost).
+    # Always tear down — even on Ctrl-C or a runner crash. `down -v`
+    # wipes named volumes (e2e_deps, e2e_build, e2e_mix, e2e_hex,
+    # e2e_runner_node_modules) — but the grappa runtime DB lives in a
+    # HOST bind-mount (runtime/e2e/grappa-runtime) NOT a named volume,
+    # because a fresh named volume is root-owned and the container
+    # drops to UID 1000 (sqlite open fails with database_open_failed).
+    # So we explicitly nuke the bind-mount dir here — without it, the
+    # next run inherits the previous run's user/network rows and the
+    # seeder fails on the duplicate.
     #
-    # The right knob is to let the user opt out via KEEP_STACK=1 for
-    # iterative debugging.
+    # The cicchetto-dist bind-mount is a build output (idempotent —
+    # bun rebuild overwrites it); not strictly necessary to wipe but
+    # we do it for symmetry with the grappa DB.
+    #
+    # KEEP_STACK=1 opts out for iterative debugging.
     if [ "${KEEP_STACK:-}" != "1" ]; then
         docker compose down -v --remove-orphans 2>&1 || true
+        rm -rf "$REPO_ROOT/runtime/e2e/grappa-runtime" "$REPO_ROOT/runtime/e2e/cicchetto-dist"
     else
         echo "KEEP_STACK=1 — leaving stack up. Tear down with:"
         echo "  cd $E2E_DIR && docker compose down -v"
+        echo "  rm -rf $REPO_ROOT/runtime/e2e/grappa-runtime $REPO_ROOT/runtime/e2e/cicchetto-dist"
     fi
 }
 trap cleanup EXIT
@@ -101,30 +111,52 @@ docker compose build playwright-runner
 
 # Orchestration shape:
 #
-#   docker compose up --build -d --wait <long-running services>
+#   docker compose up --build -d --wait grappa-e2e-seeder
+#   docker compose up        -d --wait <long-running services>
 #   docker compose run playwright-runner   # blocks; exit code = test result
 #
-# We can't use `compose up --exit-code-from runner` because that flag
-# implies `--abort-on-container-exit`, which fires on the FIRST oneshot
-# exit (cert-init exits 0 by design, immediately killing the rest of
-# the stack via SIGTERM mid-build → cicchetto-build-test 137 → fail).
-# Splitting boot from run sidesteps the all-or-nothing semantics.
+# Why split the seeder from the long-running set:
+#   `up --build --wait <multi-service-list>` recreates / restarts oneshot
+#   service_completed_successfully deps in unexpected ways (observed:
+#   the seeder ran twice, second invocation failed on duplicate user
+#   row). Booting the seeder first as its own `up --wait` lets it
+#   complete cleanly; the second `up --wait` for the long-running set
+#   then sees seeder as already-completed and skips it.
+#
+# Why we can't use `compose up --exit-code-from runner`:
+#   that flag implies `--abort-on-container-exit`, which fires on the
+#   FIRST oneshot exit (cert-init exits 0 by design, immediately
+#   killing the rest of the stack via SIGTERM mid-build →
+#   cicchetto-build-test 137 → fail). Splitting boot from run sidesteps
+#   the all-or-nothing semantics.
 #
 # `--wait` blocks `up -d` until every dependency reaches its terminal
 # state (`service_healthy` for grappa/hub/nginx, `service_completed_
-# successfully` for cert-init + cicchetto-build-test). The runner is
-# excluded from the dep graph it cares about (no service depends on
-# it), so `--wait` returns once everything else is ready.
+# successfully` for cert-init + cicchetto-build-test + seeder). The
+# runner is excluded from the dep graph it cares about (no service
+# depends on it), so `--wait` returns once everything else is ready.
 #
 # Then `compose run playwright-runner` starts the runner in foreground,
 # attaches stdout/stderr, and exits with the runner's exit code.
 
-# Long-running services to bring up + wait on.
-LONG_RUNNING=(hub leaf-v4 leaf-v6 services grappa-test nginx-test)
+# Phase 1: seeder oneshot. Its image is also grappa:e2e (same as
+# grappa-test) so --build here warms the cache for both.
+docker compose up --build --wait grappa-e2e-seeder
 
-# Boot everything except the runner. --wait blocks until all healthy /
-# oneshots completed.
-docker compose up --build --wait "${LONG_RUNNING[@]}" "$@"
+# Phase 2: long-running services. seeder already completed; the dep
+# chain (grappa-test depends_on seeder) sees it as done and skips it.
+LONG_RUNNING=(hub leaf-v4 leaf-v6 services grappa-test nginx-test)
+docker compose up --wait "${LONG_RUNNING[@]}" "$@"
 
 # Now run the test suite. `compose run` exit code propagates.
-docker compose run --rm playwright-runner
+# `--name e2e-runner` keeps the container's docker-DNS PTR short.
+# Default `compose run` synthesises a long name like
+# `grappa-e2e-playwright-runner-run-<hex>` (45 chars), which combined
+# with the network suffix `.grappa-e2e_grappa-e2e` (22 chars) overflows
+# bahamut's 63-char `HOSTLEN` cap in `dn_expand` (res.c:1064): the
+# function returns -1, `proc_answer` aborts mid-parse, the DNS request
+# stays PENDING for ~28s of retries, and `check_pings`'s
+# `CONNECTTIMEOUT=30s` then forces SetAccess. Net effect: ~30s
+# pre-welcome stall on every peer connect. Keeping the runtime
+# container name short sidesteps the whole truncation path.
+docker compose run --rm --name e2e-runner playwright-runner

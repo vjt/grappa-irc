@@ -38,6 +38,9 @@ services:
   # by docker DNS (`bahamut-test:6667`) over the shared bridge — no
   # need to expose 6667/6697 on the host (would clash with anything
   # else listening there, e.g. a real irssi).
+  # Hub stays purely an S2S router (`grappa-e2e` reachable only so the
+  # leaf can find it via DNS for the SERVER linkup; clients never
+  # connect here). Aliased only for diagnostics.
   hub:
     ports: !override []
     networks:
@@ -45,13 +48,80 @@ services:
       leaf4-net: null
       leaf6-net: null
       grappa-e2e:
-        aliases: [hub.azzurra.chat, bahamut-test]
+        aliases: [hub.azzurra.chat]
 
+  # Per vjt: client connections (both grappa-test the bouncer AND the
+  # playwright-runner peer) ALWAYS go to a leaf, never the hub. Hubs
+  # are S2S routers; user-facing IRC servers are leaves. The
+  # `bahamut-test` alias here is the ONE name everything points at.
   leaf-v4:
     ports: !override []
+    networks:
+      leaf4-net: null
+      grappa-e2e:
+        aliases: [leaf4.azzurra.chat, bahamut-test]
 
   leaf-v6:
     ports: !override []
+
+  # One-shot seeder. Boots the schema (ecto.migrate) and writes the
+  # baseline (one user `vjt` + one bahamut-test bind w/ autojoin
+  # `["#bofh"]`) into the e2e_runtime sqlite DB BEFORE grappa-test
+  # starts — so when grappa-test's Bootstrap reads the credentials,
+  # the row is already there and the upstream IRC session spawns
+  # immediately.
+  #
+  # Why a sidecar instead of running mix tasks from the runner:
+  #   - Boundary: the runner is a pure REST/IRC client, not a
+  #     container manager. `docker exec` from inside a container
+  #     requires either docker.sock mount (privilege escalation) or
+  #     a separate docker daemon (CI complication). The sidecar is
+  #     the same image as grappa-test and shares the e2e_runtime
+  #     volume — it's a normal mix-task invocation, not a remote
+  #     control surface.
+  #   - Production fidelity: matches the operator's prod ritual
+  #     (mix grappa.create_user / mix grappa.bind_network) verbatim,
+  #     so a mix-task regression surfaces here first.
+  #
+  # Hardcoded creds are TEST-ONLY (the e2e_runtime DB is wiped on
+  # every `compose down -v`); see fixtures/seedData.ts for the
+  # constants the runner reads back.
+  grappa-e2e-seeder:
+    build:
+      context: ../..
+      target: build
+      args:
+        CONTAINER_UID: ${CONTAINER_UID:-1000}
+        CONTAINER_GID: ${CONTAINER_GID:-1000}
+    image: grappa:e2e
+    pull_policy: never
+    container_name: grappa-e2e-seeder
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - e2e_deps:/app/deps
+      - e2e_build:/app/_build
+      - e2e_mix:/app/.mix
+      - e2e_hex:/app/.hex
+      - ../..:/app
+      - ../../runtime/e2e/grappa-runtime:/app/runtime
+    environment:
+      MIX_ENV: dev
+      ELIXIR_ERL_OPTIONS: "+fnu"
+      GRAPPA_CAPTCHA_PROVIDER: disabled
+    command:
+      - "sh"
+      - "-c"
+      - |
+        set -e
+        mix ecto.create
+        mix ecto.migrate
+        mix grappa.create_user --name vjt --password test-password-not-secret
+        mix grappa.bind_network --user vjt --network bahamut-test \
+          --server bahamut-test:6667 --no-tls --nick vjt-grappa \
+          --auth none --autojoin '#bofh'
+    networks:
+      grappa-e2e: {}
 
   grappa-test:
     build:
@@ -69,6 +139,15 @@ services:
     depends_on:
       hub:
         condition: service_healthy
+      # NOTE: deliberately NO `depends_on grappa-e2e-seeder
+      # service_completed_successfully` here. With the dep declared,
+      # `compose up grappa-test --wait` re-starts the (already-exited
+      # zero) seeder a SECOND time, which fails on the duplicate user
+      # row and trips the whole stack. The seeder is orchestrated
+      # entirely from scripts/integration.sh's two-phase boot sequence
+      # (phase 1: `up --wait grappa-e2e-seeder`; phase 2: `up --wait
+      # grappa-test ...`) so this dep is enforced by the wrapper, not
+      # compose semantics.
     volumes:
       # Share the dev image's named volumes so deps + _build are warm
       # across runs. Different project name (grappa-e2e) means these
@@ -81,12 +160,17 @@ services:
       # Bind-mount source from the worktree root (../..). Same shape as
       # compose.yaml — live source, not a release.
       - ../..:/app
-      # Per-stack runtime (sqlite) — named volume so it's wiped with
-      # `compose down -v` and never collides with the dev DB.
-      - e2e_runtime:/app/runtime
+      # Per-stack runtime (sqlite). Host bind-mount under
+      # runtime/e2e/grappa-runtime so the directory ownership matches
+      # the operator's UID — same gotcha as bun-cache + cicchetto-dist
+      # (see cicchetto-build-test): a fresh named volume is root-owned
+      # and the container drops to UID 1000, causing the sqlite open
+      # to fail with `database_open_failed`. Bind-mount inherits the
+      # host UID via Docker Desktop's translation on macOS / direct
+      # uid-match on Linux.
+      - ../../runtime/e2e/grappa-runtime:/app/runtime
     environment:
       MIX_ENV: dev
-      DATABASE_PATH: /app/runtime/grappa_e2e.db
       ELIXIR_ERL_OPTIONS: "+fnu"
       # Captcha disabled — the test suite drives signup directly via
       # mix tasks; the captcha gate is a separate spec when it lands.
@@ -207,7 +291,6 @@ volumes:
   e2e_build:
   e2e_mix:
   e2e_hex:
-  e2e_runtime:
   e2e_runner_node_modules:
 
 networks:
