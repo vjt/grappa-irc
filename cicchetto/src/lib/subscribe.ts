@@ -159,17 +159,19 @@ createRoot(() => {
     // arrivals must accumulate as unread so the marker surfaces on return.
     const isEffectivelyFocused = isSelected && isDocumentVisible();
     if (isEffectivelyFocused) {
-      // Live-reading cursor advance: the user is staring at this
-      // window right now, so the new msg counts as "already seen".
-      // Advance the read cursor to this msg's server_time so the
-      // unread-marker stays hidden (and doesn't pile up future
-      // arrivals into a growing block of "unread"). Covers both
-      // inbound msgs from peers AND own-sent msgs (REST POST + WS
-      // echo roundtrip — the WS path lands here with sender ===
-      // ownNick). Without this advance, a focused window
-      // accumulates msgs above the user's stale cursor and the
-      // marker resurfaces as soon as they switch away and back.
-      setReadCursor(slug, displayName, message.server_time);
+      // No badge bump — the user is reading this window right now.
+      // But the read-cursor only advances on USER PARTICIPATION (own-msg).
+      // Peer msgs arriving on a focused window leave the cursor in place,
+      // so any pre-existing unread-marker stays put — the user can still
+      // see the boundary between "what I had read before" and "what
+      // arrived since". The marker clears on:
+      //   * own-msg in this window (user typed → cursor advances here);
+      //   * window leave (selection.ts leave-arm advances cursor);
+      //   * browser blur (selection.ts visibility-blur arm).
+      // None of those are passive arrivals from peers.
+      if (isOwnNick) {
+        setReadCursor(slug, displayName, message.server_time);
+      }
       return;
     }
     bumpUnread(key);
