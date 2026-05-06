@@ -72,10 +72,16 @@ fi
 # bun + nginx containers drop to UID 1000 (or the host UID on Linux),
 # so any write fails with AccessDenied. Host bind-mount inherits the
 # operator's UID — `mkdir -p` from this script lands as the operator.
+#
+# Path note: compose.yaml's bind-mounts are RELATIVE to cicchetto/e2e/
+# (`../../runtime/...`), which from a worktree resolves under SRC_ROOT
+# (the worktree dir), NOT REPO_ROOT (main repo). bun-cache stays under
+# REPO_ROOT because it's a shared cache across all worktrees + the dev
+# stack — collision-free, and not part of the e2e isolation contract.
 mkdir -p \
     "$REPO_ROOT/runtime/bun-cache" \
-    "$REPO_ROOT/runtime/e2e/cicchetto-dist" \
-    "$REPO_ROOT/runtime/e2e/grappa-runtime"
+    "$SRC_ROOT/runtime/e2e/cicchetto-dist" \
+    "$SRC_ROOT/runtime/e2e/grappa-runtime"
 
 cleanup() {
     # Always tear down — even on Ctrl-C or a runner crash. `down -v`
@@ -85,8 +91,16 @@ cleanup() {
     # because a fresh named volume is root-owned and the container
     # drops to UID 1000 (sqlite open fails with database_open_failed).
     # So we explicitly nuke the bind-mount dir here — without it, the
-    # next run inherits the previous run's user/network rows and the
-    # seeder fails on the duplicate.
+    # next run inherits the previous run's user/network/scrollback rows
+    # and assertions over scrollback contents resolve to ghost matches
+    # from earlier runs (observed: M1 strict-mode-violation on 5 dup
+    # PRIVMSG rows from 5 prior runs).
+    #
+    # Wipe the WORKTREE path ($SRC_ROOT), NOT the main repo path
+    # ($REPO_ROOT) — the compose.yaml mounts `../../runtime/...`
+    # relative to cicchetto/e2e/, which from a worktree is the
+    # worktree's runtime dir. The same bug shape would silently break
+    # isolation if `mkdir` and `rm` referenced different paths.
     #
     # The cicchetto-dist bind-mount is a build output (idempotent —
     # bun rebuild overwrites it); not strictly necessary to wipe but
@@ -95,11 +109,11 @@ cleanup() {
     # KEEP_STACK=1 opts out for iterative debugging.
     if [ "${KEEP_STACK:-}" != "1" ]; then
         docker compose down -v --remove-orphans 2>&1 || true
-        rm -rf "$REPO_ROOT/runtime/e2e/grappa-runtime" "$REPO_ROOT/runtime/e2e/cicchetto-dist"
+        rm -rf "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
     else
         echo "KEEP_STACK=1 — leaving stack up. Tear down with:"
         echo "  cd $E2E_DIR && docker compose down -v"
-        echo "  rm -rf $REPO_ROOT/runtime/e2e/grappa-runtime $REPO_ROOT/runtime/e2e/cicchetto-dist"
+        echo "  rm -rf $SRC_ROOT/runtime/e2e/grappa-runtime $SRC_ROOT/runtime/e2e/cicchetto-dist"
     fi
 }
 trap cleanup EXIT

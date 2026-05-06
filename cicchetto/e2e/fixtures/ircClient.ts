@@ -33,6 +33,23 @@ export class IrcPeer {
     const client = new Client();
     const peer = new IrcPeer(client, opts.nick);
 
+    // Diagnostic: surface every irc-framework event during register so a
+    // timeout failure shows what bahamut sent (RPL_*, ERR_*, NOTICE,
+    // socket close, etc.) instead of just "timeout". `raw` fires for
+    // every wire-line; we tag with the nick so multiple parallel peers
+    // don't blur in the log.
+    if (process.env.E2E_PEER_DEBUG === "1") {
+      client.on("raw", (event: { line: string; from_server: boolean }) => {
+        if (!event.from_server) return;
+        // eslint-disable-next-line no-console
+        console.log(`[peer:${opts.nick}] <- ${event.line}`);
+      });
+      client.on("socket close", () => {
+        // eslint-disable-next-line no-console
+        console.log(`[peer:${opts.nick}] socket close`);
+      });
+    }
+
     const registered = once(client, "registered", REGISTER_TIMEOUT_MS, `register ${opts.nick}`);
 
     client.connect({
