@@ -250,40 +250,22 @@ describe("subscribe — WS join effect", () => {
   // pile up on top of it inflating the unread count without bound.
   // (Reported user pain: "we'll keep on increasing the number of
   // unread messages as they arrive".)
-  it("advances rc cursor when an inbound msg lands on the SELECTED window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    localStorage.setItem(
-      "grappa-subject",
-      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-    );
-    await seedStubs();
-    const store = await loadStores();
-    await vi.waitFor(() => {
-      expect(mockChannel.on).toHaveBeenCalled();
-    });
-    store.setSelectedChannel({
-      networkSlug: "freenode",
-      channelName: "#grappa",
-      kind: "channel",
-    });
-    // Sentinel cursor (older than the inbound msg)
-    localStorage.setItem("rc:freenode:#grappa", "100");
-    fireMessageEvent("#grappa", {
-      id: 7,
-      server_time: 200,
-      body: "live read",
-      sender: "bob",
-    });
-    expect(localStorage.getItem("rc:freenode:#grappa")).toBe("200");
-  });
-
-  it("advances rc cursor when an own-sent msg echoes back on the SELECTED window", async () => {
+  // Cursor-advance spec (revised after the unread-marker UX fix):
+  //
+  //   own-msg on focused window → advance cursor (user demonstrated
+  //     participation; the marker SHOULD clear).
+  //   peer-msg on focused window → cursor STAYS (the user is reading,
+  //     so no badge bump, but the marker should NOT disappear just
+  //     because someone else spoke — the user can still scroll back to
+  //     read it. Marker clears via leave-arm or own-msg only).
+  //
+  // This is the symmetric counterpart to the focused/blurred split:
+  // marker resets on user *participation* (own-msg, leave, switch),
+  // not on passive arrivals.
+  it("advances rc cursor when an OWN-SENT msg lands on the SELECTED window", async () => {
     // Own-sent msg = REST POST + WS broadcast roundtrip. The WS echo
     // hits routeMessage with sender === ownNick and isSelected = true.
-    // Same cursor-advance branch covers this — one code path, every
-    // door (CLAUDE.md). Without this, the user types in their own
-    // window and the marker stays put even though THEY just produced
-    // the new msg.
+    // The user typed and submitted — clear the marker.
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
@@ -307,6 +289,44 @@ describe("subscribe — WS join effect", () => {
       sender: "alice",
     });
     expect(localStorage.getItem("rc:freenode:#grappa")).toBe("300");
+  });
+
+  it("does NOT advance rc cursor when a PEER msg lands on the SELECTED window", async () => {
+    // Marker-preservation spec: a peer's msg arriving on the focused
+    // window must NOT clobber the read-cursor. The user is reading
+    // (effective focus = true), so no badge bump — but the existing
+    // marker stays put. Without this, the marker would silently
+    // disappear every time a peer talked, defeating the "where was I?"
+    // boundary the marker provides.
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+    const sentinel = "100";
+    localStorage.setItem("rc:freenode:#grappa", sentinel);
+    fireMessageEvent("#grappa", {
+      id: 7,
+      server_time: 200,
+      body: "peer talked",
+      sender: "bob",
+    });
+    // Cursor untouched — the marker (if any) survives this peer msg.
+    expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
+    // Still no badge bump — user IS reading.
+    const key = channelKey("freenode", "#grappa");
+    expect(store.unreadCounts()[key]).toBeUndefined();
+    expect(store.messagesUnread()[key]).toBeUndefined();
   });
 
   it("does NOT advance rc cursor when msg arrives on a NON-selected window", async () => {
@@ -383,12 +403,9 @@ describe("subscribe — WS join effect", () => {
       expect(store.messagesUnread()[key]).toBe(1);
     });
 
-    it("selected + browser VISIBLE: incoming msg advances cursor (unchanged behavior)", async () => {
-      // Sanity guard: visible+selected path still does live-reading.
-      // Same as the existing `advances rc cursor when an inbound msg lands
-      // on the SELECTED window` test; duplicated here so a regression in
-      // the new gate (e.g. `isDocumentVisible() &&` swapped to `||`)
-      // surfaces in the new describe block.
+    it("selected + browser VISIBLE + OWN msg: cursor advances (own participation)", async () => {
+      // Sanity guard for the visibility AND own-msg gate combo.
+      // Effective-focus + sender == ownNick → cursor advance (marker clear).
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -411,10 +428,46 @@ describe("subscribe — WS join effect", () => {
         id: 51,
         server_time: 600,
         body: "live",
-        sender: "bob",
+        sender: "alice",
       });
 
       expect(localStorage.getItem("rc:freenode:#grappa")).toBe("600");
+    });
+
+    it("selected + browser VISIBLE + PEER msg: cursor STAYS (marker preserved)", async () => {
+      // The new spec: peer-msg on focused window does NOT clobber the
+      // cursor. User is reading (no badge bump), but the marker boundary
+      // is left intact — only own-msg or window leave clears it.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibleForTest(true);
+      localStorage.setItem("rc:freenode:#grappa", "100");
+
+      fireMessageEvent("#grappa", {
+        id: 52,
+        server_time: 700,
+        body: "peer talks",
+        sender: "bob",
+      });
+
+      // Cursor untouched.
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("100");
+      // No badge bump — user IS reading.
+      const key = channelKey("freenode", "#grappa");
+      expect(store.unreadCounts()[key]).toBeUndefined();
     });
   });
 
