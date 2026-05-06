@@ -1,0 +1,221 @@
+# grappa — integration testing stack (cicchetto/e2e)
+#
+# A self-contained docker compose that boots:
+#   - the azzurra-testnet (hub + leaf-v4 + leaf-v6 + services), via the
+#     submodule at infra/compose.yaml — Bahamut + Anope-shape services so
+#     CAP/SASL/NickServ behave like real Azzurra.
+#   - grappa (dev image, build target — same source as `scripts/test.sh`),
+#     pointed at irc://hub:6667 via env override (no host-DNS dependency).
+#   - cicchetto-build-test (oneshot) — builds the SPA into a named volume.
+#   - nginx-test — same image + nginx.conf as prod; serves the SPA dist
+#     and reverse-proxies grappa-test:4000.
+#   - playwright-runner — Bun-based, runs the e2e suite against
+#     http://nginx-test:80 from inside the docker network.
+#
+# Run: scripts/integration.sh (from worktree root). NEVER raw docker compose
+# from outside that wrapper — it sets up tear-down on exit.
+#
+# Why all-in-one stack vs reusing dev/prod compose:
+#   - port collisions: a dev `docker compose up` already binds :4000
+#     (grappa) and :6667 (a test would clash if it also published).
+#     Integration stack publishes nothing on the host — services talk
+#     intra-network only. The runner reaches nginx-test by docker DNS.
+#   - test isolation: separate sqlite db (runtime/grappa_test.db inside
+#     the e2e named volume), separate cicchetto dist named volume, no
+#     shared state with dev or prod.
+#   - reproducibility: a contributor can `docker compose up` the dev
+#     stack AND `scripts/integration.sh` simultaneously without
+#     conflict.
+
+name: grappa-e2e
+
+include:
+  # azzurra-testnet — hub + leaves + services. Pinned via submodule SHA.
+  - path: ./infra/compose.yaml
+
+services:
+  # Drop the testnet's host port publishes. The runner talks to hub
+  # by docker DNS (`bahamut-test:6667`) over the shared bridge — no
+  # need to expose 6667/6697 on the host (would clash with anything
+  # else listening there, e.g. a real irssi).
+  hub:
+    ports: !override []
+    networks:
+      svc-net: null
+      leaf4-net: null
+      leaf6-net: null
+      grappa-e2e:
+        aliases: [hub.azzurra.chat, bahamut-test]
+
+  leaf-v4:
+    ports: !override []
+
+  leaf-v6:
+    ports: !override []
+
+  grappa-test:
+    build:
+      context: ../..
+      target: build
+      args:
+        CONTAINER_UID: ${CONTAINER_UID:-1000}
+        CONTAINER_GID: ${CONTAINER_GID:-1000}
+    image: grappa:e2e
+    pull_policy: never
+    container_name: grappa-e2e-grappa
+    hostname: grappa-test
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    depends_on:
+      hub:
+        condition: service_healthy
+    volumes:
+      # Share the dev image's named volumes so deps + _build are warm
+      # across runs. Different project name (grappa-e2e) means these
+      # are distinct from the dev stack's grappa_deps / grappa_build —
+      # first run is cold, subsequent runs reuse.
+      - e2e_deps:/app/deps
+      - e2e_build:/app/_build
+      - e2e_mix:/app/.mix
+      - e2e_hex:/app/.hex
+      # Bind-mount source from the worktree root (../..). Same shape as
+      # compose.yaml — live source, not a release.
+      - ../..:/app
+      # Per-stack runtime (sqlite) — named volume so it's wiped with
+      # `compose down -v` and never collides with the dev DB.
+      - e2e_runtime:/app/runtime
+    environment:
+      MIX_ENV: dev
+      DATABASE_PATH: /app/runtime/grappa_e2e.db
+      ELIXIR_ERL_OPTIONS: "+fnu"
+      # Captcha disabled — the test suite drives signup directly via
+      # mix tasks; the captcha gate is a separate spec when it lands.
+      GRAPPA_CAPTCHA_PROVIDER: disabled
+    command: ["mix", "phx.server"]
+    networks:
+      grappa-e2e:
+        # Alias so nginx-test can reach us via the same `grappa`
+        # hostname the prod nginx.conf hardcodes — lets us reuse
+        # infra/nginx.conf verbatim (production fidelity), no e2e-
+        # specific nginx config drift.
+        aliases: [grappa, grappa-test]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 60s
+      retries: 30
+
+  cicchetto-build-test:
+    image: oven/bun:1
+    # Use the operator's UID/GID so writes to the bind-mounted host
+    # cache dir + the dist named volume match host ownership. Mirrors
+    # scripts/bun.sh's --user pattern. CONTAINER_UID/GID are exported
+    # by scripts/integration.sh on Linux; on macOS they default to
+    # 1000 and Docker Desktop's bind-mount layer translates ownership
+    # transparently — the cache works either way because it lives in
+    # a host bind-mount that already exists with the operator's UID
+    # (see scripts/integration.sh's mkdir -p in the prelude).
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - ../../cicchetto:/app
+      # Host bind-mount for the bun install cache, shared with the
+      # dev `scripts/bun.sh` cache at runtime/bun-cache. Named volume
+      # would be root-owned on first create → AccessDenied under the
+      # dropped UID; bind-mount inherits the operator's ownership.
+      - ../../runtime/bun-cache:/cache
+      # Host bind-mount for the dist output too — same reason. Lives
+      # under runtime/e2e/cicchetto-dist (separate from the prod
+      # deploy's runtime/cicchetto-dist so they can't collide).
+      - ../../runtime/e2e/cicchetto-dist:/app/dist
+    tmpfs:
+      - /tmp:exec,uid=${CONTAINER_UID:-1000},gid=${CONTAINER_GID:-1000}
+    environment:
+      HOME: /tmp
+      BUN_INSTALL_CACHE_DIR: /cache
+    command: ["sh", "-c", "bun install --frozen-lockfile && bun run build"]
+
+  nginx-test:
+    image: nginx:alpine
+    container_name: grappa-e2e-nginx
+    hostname: nginx-test
+    depends_on:
+      grappa-test:
+        condition: service_healthy
+      cicchetto-build-test:
+        condition: service_completed_successfully
+    volumes:
+      - ../../infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../infra/snippets:/etc/nginx/snippets:ro
+      - ../../runtime/e2e/cicchetto-dist:/usr/share/nginx/html:ro
+    networks:
+      grappa-e2e:
+        aliases: [nginx-test]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 30
+
+  # The runner. Official Playwright base image (Node + chromium/
+  # firefox/webkit preinstalled). Has direct docker-network access to
+  # hub (`bahamut-test:6667` via the hub alias) and nginx-test
+  # (`http://nginx-test:80`). No host port publish — the runner exits
+  # on its own and `--abort-on-container-exit` tears the whole stack
+  # down with it.
+  playwright-runner:
+    build:
+      context: .
+      dockerfile: ./runner/Dockerfile
+    container_name: grappa-e2e-runner
+    depends_on:
+      nginx-test:
+        condition: service_healthy
+    volumes:
+      # Source mount so spec edits hot-reload without rebuild.
+      - .:/work
+      # Preserve the image's pre-installed node_modules over the
+      # bind-mount above. Without this, `.:/work` overlays /work
+      # entirely, hiding the npm install done at build time, and
+      # Playwright fails with "Cannot find package '@playwright/
+      # test'". Named volume seeds itself from the image on first
+      # mount.
+      - e2e_runner_node_modules:/work/node_modules
+      # Persist Playwright HTML reports + traces to host for post-
+      # mortem (test-results/ + playwright-report/ — gitignored at
+      # cicchetto/e2e/.gitignore).
+      - ./test-results:/work/test-results
+      - ./playwright-report:/work/playwright-report
+    working_dir: /work
+    environment:
+      CI: "1"
+      # The base URL specs hit. `nginx-test` resolves via the docker
+      # bridge (alias defined on the nginx-test service above).
+      E2E_BASE_URL: http://nginx-test
+      # Hub address for ircClient.ts fixture — talks plain IRC to the
+      # bahamut-test alias.
+      E2E_IRC_HOST: bahamut-test
+      E2E_IRC_PORT: "6667"
+    networks:
+      grappa-e2e: {}
+    command: ["npx", "playwright", "test"]
+
+volumes:
+  e2e_deps:
+  e2e_build:
+  e2e_mix:
+  e2e_hex:
+  e2e_runtime:
+  e2e_runner_node_modules:
+
+networks:
+  # Single shared bridge so runner can reach grappa-test, nginx-test,
+  # and hub (via the alias declared on hub's `networks:` override
+  # above). The testnet's internal svc-net / leaf4-net / leaf6-net
+  # bridges keep doing their S2S job — those are inherited from
+  # infra/compose.yaml unchanged. We just add hub to one more bridge
+  # (grappa-e2e) so it's reachable from grappa-test + the runner.
+  grappa-e2e:
+    driver: bridge
