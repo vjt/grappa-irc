@@ -22,19 +22,20 @@ We need a deterministic, reproducible integration harness that:
 
 ```
 cicchetto/e2e/
-├── compose.yaml            # full testnet (vjt/infra-derived) + grappa + nginx + runner
-├── playwright.config.ts    # webkit + iPhone 15 Pro device, Chromium for parity
+├── infra/                  # git submodule → vjt/azzurra-testnet @ pinned SHA
+├── compose.yaml            # extends infra/compose.yaml + adds grappa, nginx-test, runner
+├── playwright.config.ts    # chromium baseline, webkit + iPhone 15 device for iOS-shaped specs
 ├── fixtures/
-│   ├── ircClient.ts        # node `irc-framework` wrapper — typed PRIVMSG/JOIN/PART verbs
-│   ├── grappaApi.ts        # bind_network / create_user via mix-task SSH-into-grappa
+│   ├── ircClient.ts        # `irc-framework` wrapper — typed PRIVMSG/JOIN/PART verbs
+│   ├── grappaApi.ts        # bind_network / create_user via `docker exec` mix-task
 │   └── seedData.ts         # default user `vjt`, peer `vjt-peer`, network `bahamut-test`
 ├── tests/
 │   ├── m1-irssi-to-chan-focused.spec.ts
 │   ├── m2-irssi-to-chan-defocused.spec.ts
-│   ├── m3-cic-to-chan.spec.ts
+│   ├── m3-cic-to-chan.spec.ts            # @webkit
 │   ├── m4-irssi-to-priv-no-window.spec.ts
 │   ├── m5-irssi-to-priv-window-open.spec.ts
-│   ├── m6-cic-to-priv.spec.ts
+│   ├── m6-cic-to-priv.spec.ts            # @webkit
 │   ├── m7-peer-join-no-bouncer-follow.spec.ts
 │   ├── m8-cic-join.spec.ts
 │   ├── m9-cic-part-x-click.spec.ts
@@ -42,7 +43,7 @@ cicchetto/e2e/
 │   ├── m11-irssi-nick.spec.ts
 │   ├── m12-passive-events.spec.ts
 │   └── bug7-ios-own-msg-visible.spec.ts   # webkit + iPhone 15 — must FAIL on prod
-├── package.json            # deps: @playwright/test, irc-framework, typescript
+├── package.json            # bun deps: @playwright/test, irc-framework, typescript
 └── README.md               # how to run, how to add a spec, how to debug
 ```
 
@@ -51,9 +52,11 @@ cicchetto/e2e/
 - **Playwright over Puppeteer/CDP**: native WebKit driver (closest non-
   device approximation of iOS Safari), built-in iPhone device descriptors,
   trace viewer for post-mortem, no manual sleep loops.
-- **Node + `irc-framework` over Python pydle**: keeps the runner mono-
-  language (TypeScript end-to-end), one Bun/Node process tree, fixtures
-  importable directly into specs.
+- **Bun + `irc-framework` over Python pydle**: cicchetto already runs
+  Bun end-to-end (build + vitest); keeping the runner in the same
+  toolchain means one process tree, one lockfile, fixtures import
+  cleanly into specs. Fall-back-to-Node-22 path is one knob in
+  `package.json` if Playwright-on-Bun bites.
 - **Bahamut + services from `vjt/infra`**: the user maintains a testnet
   repo with full Azzurra-shaped services (Bahamut + ChanServ/NickServ/
   OperServ). Adopting it gives us NickServ/SASL fidelity that a vanilla
@@ -64,18 +67,26 @@ cicchetto/e2e/
 
 ## Plan (bite-sized, reviewable steps)
 
-### S0 — Adopt vjt/infra testnet (preflight)
+### S0 — Adopt azzurra-testnet (preflight)
 
-- [ ] Read `https://github.com/vjt/infra` README + compose layout
-  (orchestrator does this once, posts summary to vjt for confirmation).
-- [ ] Decide adoption shape: vendored copy in `cicchetto/e2e/infra/` OR
-  git submodule. Submodule = upstream sync wins, but adds a `git submodule
-  update --init` step. Vendor = self-contained, drift over time. Recommend
-  **submodule** with pinned SHA, doc says "to upgrade testnet, bump SHA".
-- [ ] Verify infra compose works standalone: `cd cicchetto/e2e/infra
-  && docker compose up`, then `nc localhost 6667` → expect IRC banner
-  from Bahamut.
-- [ ] Pin a known-good upstream SHA. Document in plan.
+- [x] Read `https://github.com/vjt/azzurra-testnet` README + compose
+  layout. Plan B scaffold: hub + leaf-v4 + leaf-v6 + services (Bahamut
+  + Anope-shape services), one image-built-thrice, hub on host port
+  6667/6697.
+- [x] Repo prep: `vjt/infra` had `main` empty (README only) with two
+  feature branches carrying the actual work. Merged
+  `fix/services-binary-path` → `main` (ff, +17 files / 1052 lines),
+  pushed, deleted `feat/plan-b-bootstrap` + `fix/services-binary-path`,
+  renamed `vjt/infra` → `vjt/azzurra-testnet`.
+- [x] Adoption shape: **submodule** at `cicchetto/e2e/infra/`, pinned
+  to SHA `21e1c90` (current `main` head).
+- [x] Verify standalone boot: `cd cicchetto/e2e/infra && cp
+  .env.example .env && docker compose up --build --wait` →
+  hub/leaf-v4/leaf-v6/services all `Healthy`. Real registration
+  against `localhost:6667` returned RPL_001 + ISUPPORT + MOTD +
+  Azzurra NOTICE block ("There are 5 users and 6 invisible on 3
+  servers"). Bahamut + S2S links + services proven boot. SHA `21e1c90`
+  pinned. (S0 verified 2026-05-06.)
 
 **Exit criterion**: `cicchetto/e2e/infra` boots a working IRC testnet
 on a deterministic port; `nc localhost 6667` shows a Bahamut welcome.
@@ -190,23 +201,27 @@ Once M1-M12 + BUG7 are green and CI-pinned, expand:
 
 These are tracked separately, not part of this plan's exit criteria.
 
-## Open decisions to confirm before S0
+## Decisions confirmed (2026-05-06, vjt)
 
-1. **vjt/infra adoption shape**: submodule (recommended) vs vendored
-   copy. **Default: submodule pinned to a SHA.**
-2. **Grappa user seeding mechanism**: `docker exec` into running container
-   for `mix grappa.bind_network`, or wire up a dedicated REST endpoint
-   `/test/seed` available only in MIX_ENV=test. **Default: docker exec**
-   — matches existing operator workflow, no new surface.
-3. **Headless browser default per spec**: chromium (fast) with explicit
-   webkit opt-in for iOS-shaped specs, or webkit-only (slowest, most
-   faithful). **Default: chromium baseline + webkit for M3/M6/BUG7.**
-4. **Node vs Bun for the runner**: Bun matches the rest of cicchetto
-   tooling but Playwright support on Bun is shaky. **Default: Node 22
-   for the runner only (`cicchetto/e2e/package.json`); rest of cicchetto
-   stays Bun.**
-
-If any of (1-4) need different defaults, update before S0 starts.
+1. **Testnet adoption shape**: submodule pinned to a SHA, at
+   `cicchetto/e2e/infra/`. Repo lives at
+   `git@github.com:vjt/azzurra-testnet.git` (renamed from `vjt/infra` —
+   merged-to-main + deleted feature branches before adoption).
+   Pinned SHA: `21e1c90` (current `azzurra-testnet@main` as of S0).
+   To upgrade testnet: `cd cicchetto/e2e/infra && git fetch && git
+   checkout <sha> && cd ../../.. && git add cicchetto/e2e/infra && git
+   commit -m "bump testnet SHA"`.
+2. **Grappa user seeding mechanism**: `docker exec` into the running
+   `grappa` container for `mix grappa.bind_network` / `mix
+   grappa.create_user`. Matches existing operator workflow — no new
+   `/test/seed` REST surface.
+3. **Headless browser default per spec**: chromium baseline + webkit
+   opt-in for iOS-shaped specs (M3, M6, BUG7). Most-signal-per-cycle
+   default. Webkit-only is too slow for the full matrix.
+4. **Runner toolchain**: **Bun**, not Node. Cicchetto already runs Bun
+   end-to-end (build + tests via vitest); the runner stays in the same
+   toolchain. If Playwright-on-Bun bites later, fall back to Node 22
+   in the same `cicchetto/e2e/package.json` (single-knob change).
 
 ## Out of scope for this plan
 
