@@ -738,12 +738,35 @@ defmodule Grappa.Session.EventRouterTest do
              }
     end
 
-    test "366 RPL_ENDOFNAMES is a no-op (end marker)" do
-      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+    test "366 RPL_ENDOFNAMES emits :members_seeded effect with the channel's members snapshot" do
+      # The cicchetto client's GET /members fetch races against bahamut's
+      # 353 RPL_NAMREPLY arrival on JOIN. Before the seeded event, a fresh
+      # /join landed in the sidebar with an empty members pane until the
+      # next page reload. The :members_seeded effect is the WS push that
+      # tells the client "OK now state.members[channel] is populated, go
+      # re-fetch (or reconcile)." Emitted on 366 (end-of-NAMES) so the
+      # client doesn't see partial state from intermediate 353 lines on
+      # large channels.
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"vjt" => [], "alice" => ["@"]}}
+        })
 
       m = msg({:numeric, 366}, ["vjt", "#italia", "End of /NAMES list."], {:server, "irc"})
 
-      assert {:cont, ^state, []} = EventRouter.route(m, state)
+      assert {:cont, ^state, [{:members_seeded, "#italia"}]} = EventRouter.route(m, state)
+    end
+
+    test "366 for a channel with no members entry still emits :members_seeded (empty channel)" do
+      # Defensive: a 366 with no preceding 353 (zero-member channel, unlikely
+      # but possible for a freshly-created channel) should still emit the
+      # event so the client can clear its loading state — never leave it
+      # waiting on an event that never comes.
+      state = base_state()
+
+      m = msg({:numeric, 366}, ["vjt", "#empty", "End of /NAMES list."], {:server, "irc"})
+
+      assert {:cont, ^state, [{:members_seeded, "#empty"}]} = EventRouter.route(m, state)
     end
   end
 

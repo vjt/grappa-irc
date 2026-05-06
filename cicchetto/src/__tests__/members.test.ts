@@ -46,6 +46,53 @@ describe("members.loadMembers (snapshot)", () => {
   });
 });
 
+describe("members.reloadMembers (members_seeded race fix)", () => {
+  it("bypasses the once-per-channel gate and re-fetches", async () => {
+    // Bug repro: a fresh /join races against the server's 353 RPL_NAMREPLY.
+    // The initial loadMembers fires from MembersPane on mount, races the
+    // 353, and locks loadedChannels with an empty list. The 366
+    // RPL_ENDOFNAMES broadcast (members_seeded WS event) calls
+    // reloadMembers, which MUST clear the gate and re-fetch — otherwise
+    // the empty snapshot persists until page reload.
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMembers)
+      .mockResolvedValueOnce([]) // first call: race lost, empty snapshot
+      .mockResolvedValueOnce([
+        { nick: "vjt", modes: [] },
+        { nick: "bob", modes: ["@"] },
+      ]);
+
+    const members = await import("../lib/members");
+    await members.loadMembers("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
+    expect(members.membersByChannel()[key]).toEqual([]);
+
+    await members.reloadMembers("freenode", "#grappa");
+
+    expect(api.listMembers).toHaveBeenCalledTimes(2);
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "vjt", modes: [] },
+      { nick: "bob", modes: ["@"] },
+    ]);
+  });
+
+  it("is safe to call without a prior loadMembers", async () => {
+    // Defensive: subscribe.ts may receive members_seeded for a channel
+    // whose MembersPane has not mounted yet (sidebar re-render race). The
+    // verb must not throw and should populate the store correctly.
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMembers).mockResolvedValue([{ nick: "vjt", modes: [] }]);
+
+    const members = await import("../lib/members");
+    await members.reloadMembers("freenode", "#grappa");
+
+    const key = channelKey("freenode", "#grappa");
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "vjt", modes: [] }]);
+  });
+});
+
 describe("members.applyPresenceEvent", () => {
   it(":join inserts the sender (modes: []) at the end", async () => {
     localStorage.setItem("grappa-token", "tok");

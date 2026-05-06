@@ -720,6 +720,50 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "366 RPL_ENDOFNAMES broadcasts members_seeded on the channel topic" do
+      # Bug fix: cicchetto's GET /members races against bahamut's NAMES
+      # arrival on /join. The members_seeded broadcast tells the client
+      # "state.members[channel] is now populated; re-fetch is safe."
+      # Without this, a fresh /join sidebar entry has an empty MembersPane
+      # until page reload.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #test :@grappa-test alice\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #test :End of /NAMES list.\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "members_seeded",
+                         network: _,
+                         channel: "#test"
+                       }
+                     },
+                     1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "QUIT removes nick from every channel + persists one row per channel" do
       handler = fn state, line ->
         if String.starts_with?(line, "USER ") do
