@@ -4,6 +4,7 @@ import { type ChannelEvent, displayNick } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
+import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
@@ -153,7 +154,11 @@ createRoot(() => {
 
     const sel = untrack(selectedChannel);
     const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;
-    if (isSelected) {
+    // Effective focus = cicchetto-selected AND browser-tab visible+focused.
+    // A selected window in a hidden/blurred tab is NOT being read live —
+    // arrivals must accumulate as unread so the marker surfaces on return.
+    const isEffectivelyFocused = isSelected && isDocumentVisible();
+    if (isEffectivelyFocused) {
       // Live-reading cursor advance: the user is staring at this
       // window right now, so the new msg counts as "already seen".
       // Advance the read cursor to this msg's server_time so the
@@ -177,9 +182,10 @@ createRoot(() => {
     }
     // Mention bump (P4-1) — only PRIVMSGs whose body matches the
     // operator's own nick bump the red mention badge. Gated on
-    // !isSelected so tabbing into the channel clears the count and
-    // incoming mentions on the OPEN channel don't double-signal (the
-    // line itself gets .scrollback-mention highlight).
+    // !isEffectivelyFocused so tabbing into the channel clears the count and
+    // incoming mentions on the OPEN+focused channel don't double-signal (the
+    // line itself gets .scrollback-mention highlight). A selected-but-
+    // blurred window still bumps mentions — the user IS away.
     if (message.kind === "privmsg") {
       const u = untrack(user);
       if (u && mentionsUser(message.body, displayNick(u))) {

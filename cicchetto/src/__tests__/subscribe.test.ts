@@ -56,10 +56,25 @@ vi.mock("../lib/queryWindows", () => ({
   setQueryWindowsByNetwork: vi.fn(),
 }));
 
+// documentVisibility — controllable via setVisibleForTest(). Defaults to
+// true so existing tests (written when isSelected was the only gate)
+// continue to assert "selected + visible" semantics. New tests flip the
+// signal to false to exercise the "selected but blurred" branch.
+let visibleForTest = true;
+vi.mock("../lib/documentVisibility", () => ({
+  isDocumentVisible: () => visibleForTest,
+}));
+const setVisibleForTest = (v: boolean) => {
+  visibleForTest = v;
+};
+
 beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
+  // Default visibility back to true between tests so leftover state from a
+  // hidden-tab test doesn't bleed into the next.
+  setVisibleForTest(true);
   // Reset queryWindowsByNetwork mock implementation — vi.clearAllMocks
   // wipes call history but NOT implementation overrides set via
   // mockReturnValue in prior tests. Without this, the C4.1 "existing
@@ -322,6 +337,85 @@ describe("subscribe — WS join effect", () => {
       sender: "bob",
     });
     expect(localStorage.getItem("rc:freenode:#cicchetto")).toBe("100");
+  });
+
+  // Effective-focus gating (browser visibility tier — unread-marker bug fix).
+  //
+  // Spec: "effective-focused" := isCichettoSelected AND isDocumentVisible().
+  // Only effective-focused windows trigger the live-reading cursor advance
+  // and skip the unread bump. A cicchetto-selected-but-browser-blurred
+  // window must accumulate unread (the user is not actively reading).
+  describe("isDocumentVisible gate (effective focus)", () => {
+    it("selected + browser HIDDEN: incoming msg bumps unread, does NOT advance cursor", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      // User has #grappa visually selected but Cmd-Tabbed away from the browser.
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibleForTest(false);
+      const sentinel = "100";
+      localStorage.setItem("rc:freenode:#grappa", sentinel);
+
+      fireMessageEvent("#grappa", {
+        id: 50,
+        server_time: 500,
+        body: "msg while away",
+        sender: "bob",
+      });
+
+      const key = channelKey("freenode", "#grappa");
+      // Cursor untouched — we're not actually reading; the marker must
+      // surface when the user returns to this window.
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
+      // Unread accumulators bump (the user missed this msg).
+      expect(store.unreadCounts()[key]).toBe(1);
+      expect(store.messagesUnread()[key]).toBe(1);
+    });
+
+    it("selected + browser VISIBLE: incoming msg advances cursor (unchanged behavior)", async () => {
+      // Sanity guard: visible+selected path still does live-reading.
+      // Same as the existing `advances rc cursor when an inbound msg lands
+      // on the SELECTED window` test; duplicated here so a regression in
+      // the new gate (e.g. `isDocumentVisible() &&` swapped to `||`)
+      // surfaces in the new describe block.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibleForTest(true);
+      localStorage.setItem("rc:freenode:#grappa", "100");
+
+      fireMessageEvent("#grappa", {
+        id: 51,
+        server_time: 600,
+        body: "live",
+        sender: "bob",
+      });
+
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("600");
+    });
   });
 
   it("incoming PRIVMSG event appends to scrollbackByChannel for that channel", async () => {
