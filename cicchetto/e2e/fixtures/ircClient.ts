@@ -22,12 +22,21 @@ const PORT = Number(process.env.E2E_IRC_PORT ?? "6667");
 const REGISTER_TIMEOUT_MS = 10_000;
 const JOIN_TIMEOUT_MS = 5_000;
 const PART_TIMEOUT_MS = 5_000;
+const NICK_TIMEOUT_MS = 5_000;
 
 export class IrcPeer {
-  private constructor(
-    private readonly client: Client,
-    public readonly nick: string,
-  ) {}
+  private readonly client: Client;
+
+  // Public so callers can derive locator strings from the live nick.
+  // Mutable because `changeNick` updates it after a successful upstream
+  // rename — readonly would force callers to thread the new value
+  // manually for every post-rename verb.
+  public nick: string;
+
+  private constructor(client: Client, nick: string) {
+    this.client = client;
+    this.nick = nick;
+  }
 
   static async connect(opts: { nick: string }): Promise<IrcPeer> {
     const client = new Client();
@@ -86,6 +95,13 @@ export class IrcPeer {
     this.client.say(target, body);
   }
 
+  // Send a CTCP ACTION (the wire shape of `/me text`). Same fire-and-
+  // queue semantics as `privmsg` — `irc-framework` doesn't echo own
+  // commands, observe grappa state for delivery confirmation.
+  action(target: string, body: string): void {
+    this.client.action(target, body);
+  }
+
   async part(channel: string, reason: string): Promise<void> {
     const parted = onceMatching(
       this.client,
@@ -97,6 +113,25 @@ export class IrcPeer {
     );
     this.client.part(channel, reason);
     await parted;
+  }
+
+  // Change own nick. Resolves after the upstream `nick` event with
+  // matching old→new transition. Updates `this.nick` so subsequent
+  // verbs use the new nick. The `irc-framework` event payload is
+  // `{nick: oldNick, new_nick: newNick}` per the lib's own naming.
+  async changeNick(newNick: string): Promise<void> {
+    const oldNick = this.nick;
+    const renamed = onceMatching(
+      this.client,
+      "nick",
+      (event: { nick: string; new_nick: string }) =>
+        event.nick === oldNick && event.new_nick === newNick,
+      NICK_TIMEOUT_MS,
+      `nick ${oldNick} → ${newNick}`,
+    );
+    this.client.changeNick(newNick);
+    await renamed;
+    this.nick = newNick;
   }
 
   async disconnect(reason: string): Promise<void> {
