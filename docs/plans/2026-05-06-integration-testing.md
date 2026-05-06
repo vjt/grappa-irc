@@ -265,15 +265,26 @@ manual confirm on real iPhone (deferred to a real-iOS-only session).
 
 ### S6 — CI integration
 
-- [ ] GitHub Actions workflow `.github/workflows/integration.yml`:
-  - Runs on PRs touching `lib/**`, `cicchetto/src/**`, `cicchetto/e2e/**`.
-  - `docker compose -f cicchetto/e2e/compose.yaml up --abort-on-container-exit`
-  - Uploads Playwright traces as artifacts on failure.
-- [ ] Add `scripts/integration.sh` to the canonical scripts table in
+- [x] GitHub Actions workflow `.github/workflows/integration.yml`:
+  - Runs on PRs (and main pushes) touching `lib/**`, `cicchetto/src/**`,
+    `cicchetto/e2e/**`, `config/**`, `priv/**`, `mix.exs`, `mix.lock`,
+    or the workflow file itself. Doc-only / scripts-only / CI-only
+    changes don't trigger this; the existing Elixir-only `ci.yml`
+    workflow handles unit-level gates on every push.
+  - Submodule init via `submodules: recursive` (azzurra-testnet is
+    public, default GITHUB_TOKEN works — no deploy-key plumbing).
+  - Runs `bash scripts/integration.sh` end-to-end (boot stack,
+    Playwright suite, EXIT-trap teardown).
+  - Uploads `cicchetto/e2e/test-results/` (Playwright traces,
+    screenshots, videos) AND `cicchetto/e2e/playwright-report/` (HTML
+    report) as artifacts on failure, 14d retention.
+  - 25-minute job timeout — covers cold image pull (~6-8 min) + suite
+    (~16s warm).
+- [x] `scripts/integration.sh` added to the canonical scripts table in
   CLAUDE.md.
 
 **Exit criterion**: CI runs full suite on PR. Failure surfaces trace
-viewer link.
+viewer link via the artifacts UI.
 
 ### S7 — Extend coverage (post-MVP)
 

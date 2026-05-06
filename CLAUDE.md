@@ -80,6 +80,7 @@ scripts/dialyzer.sh          # mix dialyzer
 scripts/format.sh            # mix format
 scripts/format.sh --check    # mix format --check-formatted (CI mode)
 scripts/check.sh             # full mix ci.check (every gate)
+scripts/integration.sh       # full e2e suite (testnet + grappa + nginx + Playwright)
 scripts/db.sh                # sqlite3 against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f

@@ -1,0 +1,102 @@
+name: integration
+
+# E2E integration suite — boots the full stack (azzurra-testnet + grappa
+# + nginx + cicchetto SPA build + Playwright runner) via
+# `scripts/integration.sh` and runs the M1-M12 + BUG7 matrix on chromium
+# and webkit-iphone-15 projects.
+#
+# Path-filtered: only runs on changes that could break end-to-end
+# behavior. Doc-only / CI-only / scripts/* changes don't trigger this
+# (the Elixir-only ci.yml workflow handles unit-level gates on every
+# push).
+#
+# Stack timing: cold ~6-8 min for the testnet+grappa+nginx images +
+# Playwright base pull; warm with cache it's faster but we don't cache
+# docker layers cross-runs (would need a registry push). Suite itself
+# runs in ~16s once everything is up.
+#
+# Failure artifacts: Playwright writes traces (zip), screenshots, and
+# videos to cicchetto/e2e/test-results/ on test failure (configured in
+# playwright.config.ts: trace=on-first-retry, screenshot=only-on-failure,
+# video=retain-on-failure). The HTML report lands in
+# cicchetto/e2e/playwright-report/. Both are uploaded as artifacts when
+# the job fails — the trace zip is the primary debug surface, opens in
+# `npx playwright show-trace <zip>`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "cicchetto/src/**"
+      - "cicchetto/e2e/**"
+      - "config/**"
+      - "priv/**"
+      - "mix.exs"
+      - "mix.lock"
+      - ".github/workflows/integration.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "cicchetto/src/**"
+      - "cicchetto/e2e/**"
+      - "config/**"
+      - "priv/**"
+      - "mix.exs"
+      - "mix.lock"
+      - ".github/workflows/integration.yml"
+
+# Avoid duplicate runs on PRs from same-repo branches; cancel an
+# in-flight run if a newer commit lands on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: cicchetto + grappa + azzurra-testnet
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          # azzurra-testnet (cicchetto/e2e/infra) is a public submodule —
+          # `recursive` initializes it via the default GITHUB_TOKEN
+          # (public-repo HTTPS, no deploy key needed). Without this the
+          # script bails at the submodule-empty check.
+          submodules: recursive
+
+      - name: Verify submodule populated
+        run: |
+          test -d cicchetto/e2e/infra/bahamut || {
+            echo "azzurra-testnet submodule looks empty";
+            exit 1;
+          }
+
+      - name: Run integration suite
+        # `bash scripts/integration.sh` boots the stack, runs the
+        # Playwright suite, tears the stack down on EXIT trap. Exit
+        # code is the runner's exit code (test result), propagated.
+        run: bash scripts/integration.sh
+
+      - name: Upload Playwright traces (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: cicchetto/e2e/test-results/
+          # 14d is enough to triage; default 90d wastes storage on
+          # a noisy suite during the early CI shakedown phase.
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload Playwright HTML report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: cicchetto/e2e/playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore

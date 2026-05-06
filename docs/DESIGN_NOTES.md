@@ -1896,6 +1896,38 @@ re-run between specs.
 
 ---
 
+## 2026-05-06 — Integration suite wired into GitHub Actions (S6)
+
+`.github/workflows/integration.yml` runs `scripts/integration.sh`
+on PRs and main pushes that touch `lib/**`, `cicchetto/src/**`,
+`cicchetto/e2e/**`, `config/**`, `priv/**`, `mix.exs`, or `mix.lock`.
+Doc-only / scripts-only / CI-only changes skip it (the existing
+Elixir-only `ci.yml` workflow already covers unit-level gates on
+every push). Failure uploads Playwright traces + HTML report as
+14d artifacts so a regression investigation has the trace-viewer
+input without a re-run.
+
+### Why path-filtered, not run-on-everything
+
+The integration job is the heaviest in the repo — cold image pull
+(~6-8 min) + Playwright base + browser binaries. Running it on
+README typo PRs burns CI minutes for no signal. The path filter is
+the only-thing-changed boundary: if a PR touches no code, no infra,
+no e2e fixtures, the suite has nothing to verify. The unit-level
+`ci.yml` runs unconditionally and still catches everything else.
+
+### Why `submodules: recursive`, not a deploy-key shape
+
+The `azzurra-testnet` submodule URL is public
+(`git@github.com:vjt/azzurra-testnet.git` resolves to the same repo
+that responds 200 on HTTPS). `submodules: recursive` with the default
+`GITHUB_TOKEN` succeeds via HTTPS-with-token. No deploy-key plumbing
+or org-secrets dance needed. If the testnet ever moves private, the
+fix is to provision a deploy key + switch to
+`ssh-key: ${{ secrets.SUBMODULE_DEPLOY_KEY }}`.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
