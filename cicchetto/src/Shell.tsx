@@ -34,8 +34,9 @@ import TopicBar from "./TopicBar";
 //
 // Keybindings: Shell is the only consumer of `keybindings.registerHandlers`
 // + `install`. Action callbacks drive selection (Alt+1..9, Ctrl+N/P),
-// drawer state (Esc), compose focus (/), and tab-complete (Tab in
-// compose textarea). install() is idempotent; uninstall fires on unmount.
+// drawer state (Esc), irssi-style compose auto-focus + insert (any
+// printable key off-compose), and tab-complete (Tab in compose textarea).
+// install() is idempotent; uninstall fires on unmount.
 //
 // The sidebar auto-close effect fires on both branches. On mobile, it is a
 // harmless no-op: setSidebarOpen(false) writes a signal whose DOM node is
@@ -126,9 +127,21 @@ const Shell: Component = () => {
         }
       }
     },
-    focusCompose: () => {
+    insertIntoCompose: (char: string) => {
+      const sel = selectedChannel();
+      if (!sel) return;
+      const key = channelKey(sel.networkSlug, sel.channelName);
+      const next = getDraft(key) + char;
+      setDraft(key, next);
       const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
-      ta?.focus();
+      if (!ta) return;
+      ta.focus();
+      // Solid signal write doesn't immediately reflect in the textarea;
+      // schedule the caret placement on the next microtask so the value
+      // update has flushed.
+      queueMicrotask(() => {
+        ta.setSelectionRange(next.length, next.length);
+      });
     },
     closeDrawer: () => {
       setSidebarOpen(false);
