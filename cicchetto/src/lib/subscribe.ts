@@ -9,6 +9,7 @@ import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
+import { setReadCursor } from "./readCursor";
 import { appendToScrollback } from "./scrollback";
 import {
   bumpEventUnread,
@@ -152,7 +153,20 @@ createRoot(() => {
 
     const sel = untrack(selectedChannel);
     const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;
-    if (isSelected) return;
+    if (isSelected) {
+      // Live-reading cursor advance: the user is staring at this
+      // window right now, so the new msg counts as "already seen".
+      // Advance the read cursor to this msg's server_time so the
+      // unread-marker stays hidden (and doesn't pile up future
+      // arrivals into a growing block of "unread"). Covers both
+      // inbound msgs from peers AND own-sent msgs (REST POST + WS
+      // echo roundtrip — the WS path lands here with sender ===
+      // ownNick). Without this advance, a focused window
+      // accumulates msgs above the user's stale cursor and the
+      // marker resurfaces as soon as they switch away and back.
+      setReadCursor(slug, displayName, message.server_time);
+      return;
+    }
     bumpUnread(key);
     // C7.5: per-kind split counters. Content kinds bump messagesUnread
     // (bold badge); presence kinds bump eventsUnread (dimmer indicator).
