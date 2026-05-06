@@ -167,4 +167,141 @@ describe("selection store", () => {
       expect(selection.eventsUnread()[key]).toBeUndefined();
     });
   });
+
+  // Read-cursor advance on focus-leave.
+  //
+  // Spec: when the user moves focus AWAY from a window, that window's
+  // read-cursor advances to the server_time of the last message visible
+  // in its scrollback at the moment of leave. Next visit: no marker
+  // (everything seen). New incoming msgs while away → server_time
+  // exceeds cursor → marker reappears on next visit.
+  //
+  // Anti-spec (the bug this guards against): cursor advancing on FOCUS
+  // (or on every WS append) hides the marker before the user has had
+  // a chance to see it. Cursor advancing only on LEAVE preserves the
+  // "unread until you've moved on" semantic.
+  describe("read-cursor advance on focus-leave", () => {
+    it("switching from A to B advances rc:A to A's last msg server_time", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const aKey = channelKey("freenode", "#grappa");
+      // Seed #grappa scrollback with two messages.
+      scrollback.appendToScrollback(aKey, {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1_700_000_000_000,
+        kind: "privmsg",
+        sender: "alice",
+        body: "hi",
+        meta: {},
+      });
+      scrollback.appendToScrollback(aKey, {
+        id: 2,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1_700_000_001_000,
+        kind: "privmsg",
+        sender: "bob",
+        body: "hey",
+        meta: {},
+      });
+      // Focus #grappa, then leave to #cicchetto.
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // Cursor not yet set on focus alone — only on leave.
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
+      // After leave: cursor advanced to last msg's server_time.
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(String(1_700_000_001_000));
+    });
+
+    it("switching from A to null (deselect) also advances rc:A", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const aKey = channelKey("freenode", "#grappa");
+      scrollback.appendToScrollback(aKey, {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1_700_000_005_000,
+        kind: "privmsg",
+        sender: "alice",
+        body: "bye",
+        meta: {},
+      });
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      selection.setSelectedChannel(null);
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(String(1_700_000_005_000));
+    });
+
+    it("leaving a window with no scrollback yet does NOT write a cursor", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      // No seeded scrollback — only the focus + leave dance.
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#empty",
+        kind: "channel",
+      });
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#other",
+        kind: "channel",
+      });
+      // No cursor written for #empty: nothing to mark as read.
+      expect(localStorage.getItem("rc:freenode:#empty")).toBeNull();
+    });
+
+    it("re-selecting the same window does NOT advance the cursor (no leave occurred)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const aKey = channelKey("freenode", "#grappa");
+      scrollback.appendToScrollback(aKey, {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1_700_000_000_000,
+        kind: "privmsg",
+        sender: "alice",
+        body: "hi",
+        meta: {},
+      });
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // Seed a sentinel cursor — re-select must NOT touch it.
+      localStorage.setItem("rc:freenode:#grappa", "999");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("999");
+    });
+  });
 });
