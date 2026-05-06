@@ -1,11 +1,11 @@
 ---
 name: orchestrate
-description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. Resumes after /clear by reusing the existing Monitor task — user can /clear freely to save tokens.
+description: Babysit a sibling Claude Code session in another tmux pane through a long-running plan. On every idle, ask the session if /clear is useful; if yes, sibling Writes its self-contained next-prompt body to /tmp/orchestrate-next.txt, orchestrator runs /clear and tells sibling to Read+execute that file (no paste-buffer). Halt on design questions or unexpected deviations. Resumes after /clear by re-reading the per-pane state file — user can /clear freely to save tokens.
 ---
 
 # Orchestrate
 
-Drive a sibling Claude Code session in another tmux pane through a long-running plan with hands-off context refresh. The user `/clear`s the orchestrator freely to save tokens; the Monitor process survives `/clear` so orchestration resumes automatically.
+Drive a sibling Claude Code session in another tmux pane through a long-running plan with hands-off context refresh. The user `/clear`s the orchestrator freely to save tokens; the per-pane state file on `/tmp` survives `/clear` so orchestration resumes automatically.
 
 ## Why /clear, not /compact
 
@@ -17,32 +17,47 @@ Earlier versions of this skill used `/compact <prompt-body>`. Switched to `/clea
 
 Tradeoff: no auto-summary safety net. The prompt body MUST be fully self-contained (file paths, commit SHAs, exact next-step). Tell the sibling that explicitly when asking for the prompt.
 
+## Architecture: bg-bash + per-event wakeup
+
+The original design used a persistent polling loop launched via a per-line streaming long-running tool. This harness doesn't expose that surface — the deferred-tool list has `Task*`, `Cron*`, `ScheduleWakeup`, plus `Bash` (with `run_in_background: true` for fire-and-forget shells whose only notification is at completion).
+
+`Cron*` looked usable (1-min ticks) but cron-fired prompts in this harness fail upstream with HTTP 500 on most fires (direct user-typed prompts from the same session work fine — it's a cron-path-specific issue). `ScheduleWakeup` is gated to `/loop` dynamic mode only.
+
+The viable shape exploits the per-completion notification of `Bash run_in_background: true`:
+
+- **`lib/wakeup-tick.sh <PANE>`** is the one-shot tick: captures the pane, computes the busy/idle state and ctx %, diffs against the previous tick's state stored in `/tmp/orchestrate-state-<pane>.json`, and prints exactly one event line:
+  - `BOOT state=<idle|busy> ctx=NN%` — first tick after STALE/FRESH state.
+  - `IDLE ctx=NN%` — busy → idle transition.
+  - `BUSY ctx=NN%` — idle → busy transition.
+  - `CTX-BUMP NN% state=<...>` — entered a new ≥10%-bucket at ≥30%.
+  - `HEARTBEAT state=<...> ctx=NN%` — no event in ≥1800s.
+  - `SAME state=<...> ctx=NN%` — no transition; orchestrator may ignore.
+  - `PANE-MISSING` — the tmux pane is gone.
+
+- **`lib/wait-for-event.sh <PANE>`** loops `wakeup-tick.sh` every 60s internally, swallowing SAME events, and exits 0 on the first interesting event line. Run via `Bash run_in_background: true, timeout: 3600000` — the harness fires a task-completion notification when it exits, giving per-event wakeup with no polling on the orchestrator side.
+
+The state file IS the durable handoff between wakeups and across orchestrator `/clear`s — there is no long-lived process, only the file.
+
 ## Setup
 
-### Step 1 — check for existing Monitor (resume case)
-
-**Don't trust TaskList alone.** It has a blind spot for Monitor tasks that survived a prior `/clear` — they keep running but disappear from `TaskList`. `ps` and the status-line counter see them just fine, so the resume check is OS-level:
+### Step 1 — check for existing state (resume case)
 
 ```bash
 .claude/skills/orchestrate/lib/resume-check.sh <SIBLING_PANE_ID>
-# → "RESUMING pid=NNN"   (a monitor for this sibling is already running)
-# → "FRESH"              (no monitor → arm one via Step 2)
+# → "RESUMING age=NNs"   (state file exists, last_emit < 600s ago)
+# → "STALE   age=NNs"    (state file exists but ≥600s old — treat as fresh)
+# → "FRESH"              (no state file → first invocation)
 ```
 
-The script greps `pgrep -f` for `lib/monitor.sh <SIBLING_PANE_ID>` — both pieces are literal in `/proc/<pid>/cmdline` because the Monitor tool starts the script directly, so detection is a one-shot, no eval-quoting hazards.
-
-If the script prints `RESUMING pid=...`:
-- **Do not** re-arm the Monitor.
+If `RESUMING`:
+- **Do not** wipe the state file.
 - **Do not** clear or interrupt the sibling pane.
-- `TaskList` may be empty here — harness blind spot, not a missing monitor.
 - Re-read the active plan + active checkpoint so you know what "as planned" means.
-- Wait for the next event from the surviving Monitor — it'll deliver to this fresh session as soon as one fires.
+- Schedule the next tick (Step 2.4) and wait — the next wake will pick up the in-flight session.
 
-If it prints `FRESH`, no Monitor exists → fall through to Step 2 (first-invocation setup).
+If `STALE` or `FRESH`, fall through to Step 2.
 
-### Step 2 — first invocation only
-
-If no Monitor exists:
+### Step 2 — first invocation
 
 1. Identify panes:
    ```bash
@@ -52,21 +67,49 @@ If no Monitor exists:
 
 2. Read the active plan: invoke `/start` to get the workflow context, then read the relevant `docs/plans/*.md` so you know the sub-task order. Read `docs/checkpoints/*.md` with `status: active` for current state.
 
-3. Arm the Monitor (persistent, 60s poll). Emits BOOT, BUSY, IDLE, CTX-BUMP (≥70%), and HEARTBEAT (every 30 min). The polling logic lives in `lib/monitor.sh` (busy detection, ctx parsing, event emission — all in one place, easy to iterate on without re-pasting heredoc walls of bash):
+3. If `STALE`, wipe the old state file: `rm -f /tmp/orchestrate-state-<id>.json`. (The leading `%` from the pane id is stripped in the filename.)
 
-   Use the `Monitor` tool with:
-   - `command`: `/srv/grappa/.claude/skills/orchestrate/lib/monitor.sh <SIBLING_PANE_ID>`
-   - `persistent`: `true`
-   - `timeout_ms`: `3600000`
-   - `description`: `grappa pane %<id> idle/ctx watch`
+4. Fire the first tick — it emits `BOOT` and seeds the state file:
+   ```bash
+   .claude/skills/orchestrate/lib/wakeup-tick.sh <SIBLING_PANE_ID>
+   ```
+   Read the emitted event line and apply the decision tree below.
 
-   The stable cmdline (`bash lib/monitor.sh %NNN`) is what makes `resume-check.sh` reliable — see Step 1.
+5. Arm the next-event wait:
+   ```
+   Bash(
+     command: "/Users/mbarnaba/code/grappa/.claude/skills/orchestrate/lib/wait-for-event.sh <SIBLING_PANE_ID>",
+     run_in_background: true,
+     timeout: 3600000,
+     description: "wait for next event from pane <SIBLING_PANE_ID>"
+   )
+   ```
 
-   Busy detection (in `lib/monitor.sh`): a line in the last 15 must carry `…` AND a spinner timer `(NNs` / `(Nm Ms`, OR an explicit `Press up to edit` / `esc to interrupt` prompt. Bare `…` is NOT enough: truncated task descriptions (`tok…`, `… +N completed`, `… +N pending`) used to produce false-busy events for ~30 minutes during CP10 S6.
+   When the script exits (on first non-SAME event), the harness fires a task-completion notification. Read the task output via `TaskOutput` (block: false) to get the event line, apply the decision tree, then re-arm another `wait-for-event.sh` in the background. One arm = one event = one wakeup.
 
-## Decision tree per idle event
+### Busy detector (in `lib/wakeup-tick.sh`)
 
-When IDLE event fires:
+A line in the last 15 must carry `… (` (the spinner shape: ellipsis + space + open-paren that introduces the parenthesized status — `(NNs · ...)` once the timer arms, `(thinking)` / `(almost done ...)` in the pre-timer phase) — OR an explicit `Press up to edit` / `esc to interrupt` prompt. Bare `…` is NOT enough: truncated task descriptions (`tok…`, `… +N completed`, `… +N pending`) used to produce false-busy events for ~30 minutes during CP10 S6.
+
+Idle debounce: a single idle read after a busy read can be a transient tool-call gap. The tick script re-captures after 5s and only classifies as IDLE if still idle on the second read.
+
+## Decision tree per event
+
+When a tick prints an event line, branch on it:
+
+| Event | Action |
+|-------|--------|
+| `BOOT state=idle` | Capture pane (`tail -50`), orient on what just landed, then schedule next tick |
+| `BOOT state=busy` | Sibling is mid-work; schedule next tick, no intervention |
+| `IDLE ctx=NN%` | Run the IDLE decision tree below |
+| `BUSY ctx=NN%` | Sibling started new work; schedule next tick |
+| `CTX-BUMP NN%` at ≥70% | Proactively suggest clear-cycle (don't wait for IDLE) |
+| `HEARTBEAT state=busy` | Long-running task. Capture pane to confirm legit progress; schedule next tick |
+| `HEARTBEAT state=idle` | Sibling stuck waiting for input? Capture and decide |
+| `SAME state=*` | No-op, just reschedule |
+| `PANE-MISSING` | Halt + ping user. Don't reschedule |
+
+On IDLE event:
 
 1. Capture: `tmux capture-pane -t <PANE_ID> -p | tail -50`
 2. Inspect last assistant message. Categorize:
@@ -77,7 +120,7 @@ When IDLE event fires:
    | Session asks design question (X vs Y, which approach?) | **Halt + ping user** |
    | Plan deviation (sub-task skipped or reordered without OK) | **Halt + ping user** |
    | Codebase review gate fires (per CLAUDE.md threshold) | **Halt + ping user** |
-   | Background agents still running (e.g. parallel review agents) | False idle — ignore, wait for next event |
+   | Background agents still running (e.g. parallel review agents) | False idle — ignore, reschedule |
    | User typed in pane directly | Watching only — don't intervene |
 
    Live deploys / pushes / shared-infra writes default to halt; if the user has explicitly authorized autopilot for the run, treat them as plan-aligned and let sibling proceed.
@@ -89,9 +132,11 @@ When IDLE event fires:
 
    **Why file handoff, not pane scrape:** the prompt body is large + can be many KB. Going through tmux scrollback (sibling prints body → orchestrator captures → reconstructs from line-wrap → loads into paste-buffer → pastes back) is fragile (line-wrap concat ambiguity, ANSI artifacts, `<system-reminder>` bleed) and bloats both sessions' context. File handoff: sibling Writes once, orchestrator instructs sibling to Read it post-clear. Zero paste-buffer, zero scraping.
 
-4. On reply (next idle event — Monitor may MISS the busy window for fast replies, see Pitfalls):
+4. On reply (next IDLE event — the 60s tick may MISS the busy window for fast replies, see Pitfalls):
    - Reply contains literal `NO CLEAR` → send `go on with <next step> per plan.`
    - Reply contains literal `CLEAR` → run `/clear`, then send a short directive: `read /tmp/orchestrate-next.txt and execute it.` Sibling Reads + acts. No paste-buffer.
+
+5. Always re-arm the next tick before returning.
 
 ## Sending text to the sibling pane
 
@@ -140,32 +185,34 @@ When you halt:
 - One-line summary to user: what landed, what's pending, what the Q is.
 - Do not send anything to the sibling pane.
 - Do not run /clear.
-- Wait for user direction.
+- Do not reschedule the next tick — wait for user direction. (Decide explicitly: if you want passive monitoring to continue while you halt, schedule the next tick and just don't act on its events until the user replies.)
 
 After user direction:
 - Translate into the appropriate send-keys sequence to the sibling pane.
-- Resume normal idle-event handling.
+- Resume normal tick-event handling (re-arm ScheduleWakeup if you stopped).
 
 ## Resume after /clear (orchestrator side)
 
-The Monitor process survives `/clear`. The user clears the orchestrator session freely to save tokens. On `/orchestrate` invocation post-`/clear`:
+The state file at `/tmp/orchestrate-state-<pane>.json` survives orchestrator `/clear`. The user clears the orchestrator session freely to save tokens. On `/orchestrate` invocation post-`/clear`:
 
-1. **Run the Step-1 resume check** (ps + status-line, NOT just TaskList — see Setup Step 1). If a monitor is found, you're resuming. Skip Monitor setup entirely.
+1. Run `lib/resume-check.sh <PANE_ID>`. If `RESUMING`, you're picking up a live session.
 2. Re-read the active plan + active CP so you have the "as planned" frame again.
 3. Capture the current pane state once: `tmux capture-pane -t <PANE_ID> -p | tail -30` — orient yourself on which sub-task is in flight or just landed.
-4. Wait for the next event from the existing Monitor. No re-arming, no interruption.
+4. Re-arm the ScheduleWakeup tick (it's not durable across `/clear` — only the state file is).
+5. Wait for the next tick to fire.
 
-If `/exit` was used instead of `/clear`, the Monitor is gone — re-arm via Step 2 of Setup.
+If the ScheduleWakeup chain was broken (orchestrator `/exit`'d, harness restarted), the state file may show `RESUMING` but no tick is scheduled — re-arming in step 4 covers this. If `STALE`, treat as fresh (Step 2 of Setup).
 
 ## Pitfalls (learned in S29 of CP07 + CP08/CP09 Phase 2/3 + CP10 S6)
 
 - **Don't interrupt the session mid-generation.** If the sibling is still writing the prompt body and you ask another question, you destroy the prompt. Wait for full IDLE.
-- **Spinner words vary wildly.** Cooked, Crunched, Sautéed, Churned, Baked, Cogitated, Worked, Whipped, Brewing, Stewed, Boondoggling, Mulling, Quantumizing, Forging, Spinning, Befuddling, Undulating, Zigzagging, Proofing, Osmosing, Transfiguring, Crystallizing, Reticulating, Billowing, Calculating, Discombobulating, Imagining, Hullaballooing, Pouncing, Channeling, Spelunking, Thundering, Smooshing — don't match words; match the timer signature `\([0-9]+[ms]` paired with `…` on the same line.
-- **Bare `…` is NOT a busy signal.** Truncated task descriptions (`tok…`, `M3, H11, M2, M12 — already organic…`), task-list compaction (`… +N completed`, `… +N pending`), and sibling-printed punctuation all carry `…` while the session is fully idle. The fixed regex requires the timer signature on the same line. The earlier "match `…` ellipsis, not specific words" rule (CP08-era) was too loose — fixed CP10 S6 after a stalled sibling reported BUSY for ~30 min while truly idle.
+- **Spinner words vary wildly.** Cooked, Crunched, Sautéed, Churned, Baked, Cogitated, Worked, Whipped, Brewing, Stewed, Boondoggling, Mulling, Quantumizing, Forging, Spinning, Befuddling, Undulating, Zigzagging, Proofing, Osmosing, Transfiguring, Crystallizing, Reticulating, Billowing, Calculating, Discombobulating, Imagining, Hullaballooing, Pouncing, Channeling, Spelunking, Thundering, Smooshing — don't match words; match the spinner shape `… (` paired with parenthesized status.
+- **Bare `…` is NOT a busy signal.** Truncated task descriptions (`tok…`, `M3, H11, M2, M12 — already organic…`), task-list compaction (`… +N completed`, `… +N pending`), and sibling-printed punctuation all carry `…` while the session is fully idle. The fixed regex requires `… (` (ellipsis + space + open-paren) on the same line. The earlier "match `…` ellipsis, not specific words" rule (CP08-era) was too loose — fixed CP10 S6 after a stalled sibling reported BUSY for ~30 min while truly idle.
 - **`paste again to expand` is just a hint**, not an error. (Legacy paste-buffer path only — file handoff avoids the warning entirely.)
 - **`/clear` confirmed by `🧠 TBD` in status line** (fresh conversation, no tokens). After the sibling Reads the prompt file and starts working, ctx jumps to a small % (e.g. 5–10%), confirming turn 1 landed in a clean session. If you still see the pre-clear ctx %, `/clear` didn't fire — re-run the sequence.
-- **Monitor's 60s poll misses fast NO-CLEAR / CLEAR replies.** When sibling answers in <60s the busy→idle transition completes inside one polling window; no IDLE event fires because `prev_state` was never `busy`. After sending a clear-ask, peek the pane proactively after ~2 min instead of waiting for events.
+- **60s tick can MISS fast NO-CLEAR / CLEAR replies.** When sibling answers in <60s the busy→idle transition completes inside one tick window; no IDLE event fires because `prev_state` was never updated to `busy`. After sending a clear-ask, peek the pane proactively after ~2 min instead of waiting for events.
 - **Background agents leave the spinner gone but work continues.** If pane shows `N local agents` or task list with `◻`/`◼` items, it's a false idle even if no spinner is up. Don't propose clear, wait. With the new busy detector this is mostly handled (no spurious BUSY) but the IDLE event after the agents finish IS the right signal — just don't act if you see active agent rows.
 - **Halt at human-required steps** even on autopilot. iPhone/device tests, explicit user-tagged tasks (`◼ HALT for ...`), real-credential operations the user hasn't pre-authorized.
 - **Self-contained prompt files only.** With `/compact` an auto-summary covers gaps. With `/clear`, the prompt body in `/tmp/orchestrate-next.txt` is the ENTIRE context the sibling has after wipe. Sibling MUST bake in: every sub-task SHA so far, file paths, exact first action, all carried-forward state from any "deferred to next sub-task" notes. Tell sibling that explicitly when asking for the file.
-- **Stale Monitor processes survive the orchestrator's `/clear`.** TaskList may not surface them but the `N monitors` status-line counter exposes them, and `lib/resume-check.sh` finds them by script path. To kill an orphan: `pgrep -f "lib/monitor.sh %<SIBLING_ID>" | xargs -r kill`. The harness surfaces a `failed` notification with the orphan's task ID, confirming the kill.
+- **ScheduleWakeup chains break on `/exit`.** The state file persists but the wake-up timer is in-session-only. After a hard restart, re-arm ScheduleWakeup or the orchestrator will go silent forever. Resume-check returning `RESUMING` does NOT mean a tick is queued — only that the state file is fresh.
+- **State files survive everything.** A stale `/tmp/orchestrate-state-<pane>.json` from yesterday's session will trigger `RESUMING` if you re-orchestrate within 10 min of the last_emit. The 600s freshness window in resume-check.sh is conservative; if you suspect false-resume, `rm -f /tmp/orchestrate-state-<pane>.json` and start fresh.
