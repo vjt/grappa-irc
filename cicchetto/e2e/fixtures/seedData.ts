@@ -24,17 +24,26 @@ export const NETWORK_NICK = "vjt-grappa";
 export const AUTOJOIN_CHANNELS = ["#bofh"];
 
 const TOKEN_ENV_VAR = "E2E_VJT_TOKEN";
+const SUBJECT_ENV_VAR = "E2E_VJT_SUBJECT";
 
 export default async function globalSetup(): Promise<void> {
   const result = await login(VJT_IDENTIFIER, VJT_PASSWORD);
   process.env[TOKEN_ENV_VAR] = result.token;
+  // Stash the subject envelope as JSON. cicchettoPage.loginAs() seeds
+  // it into localStorage before page bootstrap so cicchetto's auth.ts
+  // sees a complete identity (token + subject) without driving the
+  // login form. Cic reads `grappa-subject` to compute the socket
+  // user_name (auth.ts socketUserName) — without it, the WS join
+  // payload is wrong and channel topics are rejected as `forbidden`.
+  process.env[SUBJECT_ENV_VAR] = JSON.stringify(result.subject);
 }
 
 export function getSeededVjt(): SeededUser {
   const token = process.env[TOKEN_ENV_VAR];
-  if (!token) {
+  const subjectJson = process.env[SUBJECT_ENV_VAR];
+  if (!token || !subjectJson) {
     throw new Error(
-      `getSeededVjt: ${TOKEN_ENV_VAR} not set. Did playwright globalSetup run?`,
+      `getSeededVjt: ${TOKEN_ENV_VAR}/${SUBJECT_ENV_VAR} not set. Did playwright globalSetup run?`,
     );
   }
   return {
@@ -42,5 +51,6 @@ export function getSeededVjt(): SeededUser {
     password: VJT_PASSWORD,
     identifier: VJT_IDENTIFIER,
     token,
+    subjectJson,
   };
 }
