@@ -139,27 +139,66 @@ the smoke spec (chromium, 2 tests: SPA root + /healthz proxy), exits
 
 ### S2 — Fixtures: ircClient + grappaApi + seedData
 
-- [ ] `fixtures/ircClient.ts` — wraps `irc-framework`:
+- [x] `fixtures/ircClient.ts` — raw IRC client over `node:net` (~150
+  LOC, no third-party dep). Typed verbs:
   ```
-  const peer = await IrcPeer.connect({host: "bahamut-test", nick: "vjt-peer"});
+  const peer = await IrcPeer.connect({nick: "vjt-peer"});
   await peer.join("#bofh");
-  await peer.privmsg("#bofh", "hello");
-  await peer.privmsg("vjt-grappa", "DM hello");
+  peer.privmsg("#bofh", "hello");
   await peer.part("#bofh", "bye");
-  await peer.disconnect();
+  await peer.disconnect("done");
   ```
-- [ ] `fixtures/grappaApi.ts` — opens `docker exec` into grappa container
-  and runs `mix grappa.create_user` / `mix grappa.bind_network --auth ...`
-  to seed. Returns a Bearer token (login via REST against grappa).
-- [ ] `fixtures/seedData.ts` — Playwright global setup. Creates user `vjt`
-  bound to `bahamut-test` network with autojoin `["#bofh"]`, returns the
-  token. Tests start with this baseline.
-- [ ] One smoke test `tests/_smoke.spec.ts` — peer connects, joins #bofh,
-  sends one privmsg, asserts grappa persisted it via DB query (final
-  sanity that the harness wires up correctly).
+  `irc-framework` was dropped: it unconditionally writes `CAP LS 302`
+  before NICK/USER, and bahamut never replies to CAP for non-registered
+  clients. Raw client sidesteps the cap-negotiation hang. Connection
+  target via `E2E_IRC_HOST` / `E2E_IRC_PORT` env (set in compose.yaml).
+- [x] `fixtures/grappaApi.ts` — REST client. `login(identifier, password)
+  → bearer token` and `assertMessagePersisted({token, networkSlug,
+  channel, sender, body})` polling `GET /networks/:slug/channels/:chan
+  /messages` until the row appears (5s ceiling, 100ms tick).
+- [x] `fixtures/seedData.ts` — Playwright global setup. Logs in as the
+  pre-seeded user `vjt` and stashes the bearer token in
+  `process.env.E2E_VJT_TOKEN` for specs to read via `getSeededVjt()`.
+  USER + NETWORK ROW SEEDING is NOT done here — it lives in the
+  `grappa-e2e-seeder` sidecar (compose.yaml) which runs `mix
+  grappa.create_user` / `mix grappa.bind_network` BEFORE grappa-test
+  boots. Runner stays a pure REST/IRC client (no docker.sock, no
+  docker CLI in the runner image).
+- [x] `tests/_smoke.spec.ts` — peer connects, joins #bofh, sends one
+  privmsg, asserts grappa persisted it via `GET /networks/:slug/
+  channels/:chan/messages`.
+
+Operator-side gotchas shaken out during S2:
+
+- `compose run --rm playwright-runner` synthesises a long container
+  name like `grappa-e2e-playwright-runner-run-<hex>` (45+ chars).
+  Combined with the docker network suffix `.grappa-e2e_grappa-e2e`
+  (22 chars), the docker DNS PTR exceeds bahamut's `HOSTLEN=63` cap
+  in `dn_expand` (res.c:1064). `dn_expand` returns -1, `proc_answer`
+  aborts mid-parse, the DNS request stays PENDING for ~28s of
+  retries, and `check_pings`'s `CONNECTTIMEOUT=30s` then forces
+  SetAccess — peer welcome arrives ~30s late, blowing past
+  Playwright's 10s register timeout. Fix: `compose run --rm --name
+  e2e-runner playwright-runner` in `scripts/integration.sh` keeps
+  the runtime container name short. Diagnosed via `strace -p 1` on
+  the hub during a pristine peer connect, decoding the raw PTR
+  response (`-s 300`).
+- Bahamut + `compose up --wait` recreate-on-restart of `service_
+  completed_successfully` deps causes the seeder to run TWICE on a
+  multi-service `up` invocation; second run trips on the duplicate
+  user row. Fix: drop the `depends_on grappa-e2e-seeder` on
+  `grappa-test` and split the boot into two phases in
+  `scripts/integration.sh` (phase 1 `up --wait grappa-e2e-seeder`,
+  phase 2 `up --wait <long-running>`); phase 2 sees seeder as
+  already-completed and skips it.
+- `runtime/e2e/grappa-runtime` is a host bind-mount (NOT a named
+  volume) for the same UID/AccessDenied reason as `runtime/bun-cache`.
+  Cleanup wipes the dir explicitly because `compose down -v` only
+  touches named volumes — without the wipe, the next run inherits
+  the previous seeded rows.
 
 **Exit criterion**: smoke test green. Harness proven independently of any
-specific bug.
+specific bug. (S2 verified 2026-05-06: `1 passed (5.9s)`.)
 
 ### S3 — Port matrix M1-M12 (the work that proves the harness)
 
@@ -240,10 +279,19 @@ These are tracked separately, not part of this plan's exit criteria.
    To upgrade testnet: `cd cicchetto/e2e/infra && git fetch && git
    checkout <sha> && cd ../../.. && git add cicchetto/e2e/infra && git
    commit -m "bump testnet SHA"`.
-2. **Grappa user seeding mechanism**: `docker exec` into the running
-   `grappa` container for `mix grappa.bind_network` / `mix
-   grappa.create_user`. Matches existing operator workflow — no new
-   `/test/seed` REST surface.
+2. **Grappa user seeding mechanism**: a one-shot `grappa-e2e-seeder`
+   sidecar that shares the `e2e_runtime` sqlite volume with
+   `grappa-test` and exits BEFORE `grappa-test` boots (`depends_on`
+   `service_completed_successfully`). Runs `mix ecto.migrate`,
+   `mix grappa.create_user`, `mix grappa.bind_network` against the
+   shared volume. **Default: sidecar.** S2 originally proposed
+   `docker exec` from the runner, but that requires either a docker
+   socket bind-mount (privilege escalation) or a separate docker
+   daemon (CI complication) — the runner stays a pure REST/IRC
+   client, never a container manager. The sidecar uses the same image
+   as `grappa-test`, so the seeding ritual is byte-for-byte identical
+   to the operator's prod workflow (mix-task regressions surface
+   here first).
 3. **Headless browser default per spec**: chromium baseline + webkit
    opt-in for iOS-shaped specs (M3, M6, BUG7). Most-signal-per-cycle
    default. Webkit-only is too slow for the full matrix.

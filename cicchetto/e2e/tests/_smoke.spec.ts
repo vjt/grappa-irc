@@ -1,18 +1,47 @@
-// Smoke spec — verifies the harness wires up correctly. No assertions
-// against grappa or cicchetto yet; the only signal we care about is
-// "Playwright launched, navigated to baseURL, got an HTTP response".
+// S2 smoke spec — proves the full e2e harness wires up:
 //
-// Real specs replace this in S2-S3.
+//   testnet (Bahamut) ↔ peer (irc-framework)
+//                    ↔ grappa-test (live IRC session for vjt, autojoined #bofh)
+//                    ↔ REST /messages (assertion door)
+//
+// Flow:
+//   1. login fixture provided by globalSetup (token seeded)
+//   2. spawn vjt-peer, JOIN #bofh, PRIVMSG, then disconnect
+//   3. poll grappa's REST messages endpoint until the row appears
+//
+// No cicchetto involvement — the harness signal we want is "grappa's
+// session ↔ scrollback path is alive end-to-end". UI-shaped specs land
+// in S3 once this baseline is green.
 
 import { test, expect } from "@playwright/test";
+import { IrcPeer } from "../fixtures/ircClient";
+import { assertMessagePersisted } from "../fixtures/grappaApi";
+import { getSeededVjt, NETWORK_SLUG, AUTOJOIN_CHANNELS } from "../fixtures/seedData";
 
-test("nginx-test serves something on /", async ({ page }) => {
-  const response = await page.goto("/");
-  expect(response, "page.goto returned no response").not.toBeNull();
-  expect(response!.status(), "expected non-error status").toBeLessThan(500);
-});
+const PEER_NICK = "vjt-peer";
+const CHANNEL = AUTOJOIN_CHANNELS[0];
+const MESSAGE_BODY = "smoke-test hello from peer";
 
-test("grappa /healthz proxies through nginx", async ({ request }) => {
-  const response = await request.get("/healthz");
-  expect(response.status()).toBe(200);
+test("peer PRIVMSG to #bofh persists in grappa scrollback", async () => {
+  const vjt = getSeededVjt();
+
+  const peer = await IrcPeer.connect({ nick: PEER_NICK });
+  try {
+    await peer.join(CHANNEL);
+    peer.privmsg(CHANNEL, MESSAGE_BODY);
+
+    await assertMessagePersisted({
+      token: vjt.token,
+      networkSlug: NETWORK_SLUG,
+      channel: CHANNEL,
+      sender: PEER_NICK,
+      body: MESSAGE_BODY,
+    });
+  } finally {
+    await peer.disconnect("smoke done");
+  }
+
+  // Sanity: the seeded login token is non-empty (catches a regression
+  // where globalSetup silently no-ops).
+  expect(vjt.token.length).toBeGreaterThan(0);
 });

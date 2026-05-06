@@ -14,6 +14,7 @@ const baseURL = process.env.E2E_BASE_URL ?? "http://nginx-test";
 
 export default defineConfig({
   testDir: "./tests",
+  globalSetup: "./fixtures/seedData.ts",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
