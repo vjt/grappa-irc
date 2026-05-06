@@ -1,0 +1,11 @@
+# Playwright + Node artifacts
+node_modules/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Compose secrets / state
+.env
+
+# OS
+.DS_Store
