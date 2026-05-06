@@ -58,12 +58,19 @@ export async function login(identifier: string, password: string): Promise<Login
 // 100ms tick / 5s ceiling matches the per-bucket spec in plan S2;
 // longer ceilings are caller-overridable once a single spec needs it
 // (don't raise the default).
+//
+// `body` is optional — presence kinds (:join / :part / :quit) persist
+// with body = null in the wire shape, so passing `body: ""` would
+// never match. Omit `body` for those kinds and pass `kind: "join"`
+// (or "part" etc.) to match by kind alone. For PRIVMSG/NOTICE/ACTION
+// pass `body` (and optionally `kind: "privmsg"`) for exact-body match.
 export type AssertMessageOpts = {
   token: string;
   networkSlug: string;
   channel: string;
   sender: string;
-  body: string;
+  body?: string;
+  kind?: string;
   timeoutMs?: number;
   intervalMs?: number;
 };
@@ -93,18 +100,42 @@ export async function assertMessagePersisted(opts: AssertMessageOpts): Promise<v
     if (response.ok) {
       const messages = (await response.json()) as WireMessage[];
       const matched = messages.find(
-        (m) => m.sender === opts.sender && m.body === opts.body,
+        (m) =>
+          m.sender === opts.sender &&
+          (opts.body === undefined || m.body === opts.body) &&
+          (opts.kind === undefined || m.kind === opts.kind),
       );
       if (matched) return;
-      lastSeen = messages.map((m) => `${m.sender}: ${m.body}`);
+      lastSeen = messages.map((m) => `${m.kind}/${m.sender}: ${m.body}`);
     }
     await sleep(intervalMs);
   }
   throw new Error(
-    `assertMessagePersisted: timeout after ${timeoutMs}ms — channel=${opts.channel} sender=${opts.sender} body=${JSON.stringify(opts.body)}; last seen: ${JSON.stringify(lastSeen)}`,
+    `assertMessagePersisted: timeout after ${timeoutMs}ms — channel=${opts.channel} sender=${opts.sender} body=${JSON.stringify(opts.body)} kind=${JSON.stringify(opts.kind)}; last seen: ${JSON.stringify(lastSeen)}`,
   );
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// PART a channel via REST DELETE (mirrors `cicchetto/src/lib/api.ts`'s
+// `postPart`, but framed for the runner's GRAPPA_BASE_URL). Used by
+// test cleanup hooks to undo `/join`'s autojoin-persistence side-effect
+// — the channel survives across test runs in `Networks.Credential.
+// autojoin` otherwise. Idempotent: 404 if the channel was never joined
+// is treated as success by the caller (afterEach catches and ignores).
+export async function partChannel(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`partChannel: unexpected status ${res.status}`);
+  }
 }
