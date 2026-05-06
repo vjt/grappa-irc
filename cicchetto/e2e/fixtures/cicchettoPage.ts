@@ -97,14 +97,46 @@ export function sidebarMentionBadge(page: Page, networkSlug: string, windowName:
 // Click the sidebar window to focus it. Solid's reactive flush + the
 // shell's auto-close-sidebar effect happen synchronously; the channel
 // becomes selected before this resolves.
+//
+// `awaitWsReady` (default `true`): after focus, wait for the
+// auto-joined own-nick JOIN line to render in the scrollback. That
+// line is persisted server-side at session boot AND fanned out on the
+// per-channel WS topic; its presence in the DOM proves BOTH that the
+// initial scrollback REST fetch landed AND that the WS topic
+// subscription completed. Specs that fire IRC traffic immediately
+// after focus would otherwise race the WS subscribe (observed: M1's
+// peer PRIVMSG arriving server-side BEFORE cic's joinChannel for
+// `#bofh` — channel persisted the row, but no WS push reached the
+// browser, DOM assertion times out). Pass `awaitWsReady: false` for
+// the Server / DM / list / mentions windows where the join-line
+// heuristic doesn't apply.
+//
+// Own-nick is derived from the seed (NETWORK_NICK) — kept here as the
+// `ownNick` parameter rather than imported from seedData so this
+// helper has zero coupling to the seed-time constants beyond the
+// caller's own awareness.
 export async function selectChannel(
   page: Page,
   networkSlug: string,
   windowName: string,
+  opts: { awaitWsReady?: boolean; ownNick?: string } = {},
 ): Promise<void> {
+  const awaitWsReady = opts.awaitWsReady ?? true;
   await sidebarWindow(page, networkSlug, windowName)
     .locator(".sidebar-window-btn")
     .click();
+  if (awaitWsReady && opts.ownNick) {
+    // The auto-joined self-JOIN line carries `<ownNick> has joined
+    // <channel>`. Match on both substrings so a peer's later JOIN to
+    // the same channel doesn't false-positive (peer nick differs).
+    await expect(
+      page
+        .locator('[data-testid="scrollback-line"][data-kind="join"]')
+        .filter({ hasText: opts.ownNick })
+        .filter({ hasText: windowName })
+        .first(),
+    ).toBeVisible({ timeout: 10_000 });
+  }
 }
 
 // Scrollback accessors ──────────────────────────────────────────────

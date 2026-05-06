@@ -282,6 +282,9 @@ services:
       # bahamut-test alias.
       E2E_IRC_HOST: bahamut-test
       E2E_IRC_PORT: "6667"
+      # Verbose IRC peer wire-trace. Off by default; flip to "1" for
+      # debugging registration / nick collision / throttle issues.
+      E2E_PEER_DEBUG: "0"
     networks:
       grappa-e2e: {}
     command: ["npx", "playwright", "test"]

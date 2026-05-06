@@ -28,16 +28,16 @@ import {
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
-import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
-const PEER_NICK = "vjt-peer";
+const PEER_NICK = "m1-peer";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const MESSAGE_BODY = "M1: focused-channel inbound";
 
 test("M1 — peer PRIVMSG to focused channel renders inline, no unread", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
-  await selectChannel(page, NETWORK_SLUG, CHANNEL);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   // Sanity: compose textarea visible — confirms the focus actually
   // landed on a writable channel (server windows have no compose).
