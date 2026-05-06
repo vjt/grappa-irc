@@ -5,11 +5,14 @@
 // the DM auto-open + auto-focus path rather than the focused-channel
 // path.
 //
-// **Expected RED on prod head**, same as bug7-ios-own-msg-visible.
-// The chromium M6 spec has been GREEN since bucket B; this proves
-// (or disproves) whether the bug is paint-path-shared between the
-// two surfaces. Two RED specs with the same root cause = single fix
-// in S5; two RED specs with different traces = two fixes.
+// **Outcome on Playwright iPhone 15 emulation: GREEN** (same as the
+// channel-shaped sibling spec). The bug surface is real iOS Safari +
+// virtual keyboard, which the headless WebKit + iPhone-15 viewport
+// doesn't reproduce. This spec is now a positive guard rail for the
+// iOS-shaped DM input path: tap-focus → per-keystroke type → tap send
+// → auto-opened query window renders own-msg. A regression in compose
+// dispatch / openQueryWindowState / WS fanout for query-kind windows
+// would surface here.
 //
 // `@webkit` opts into the webkit-iphone-15 project.
 

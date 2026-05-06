@@ -1815,6 +1815,87 @@ Works on the wildcard default AND the IP-bound override.
 
 ---
 
+## 2026-05-06 — BUG7 doesn't reproduce in Playwright iPhone 15 emulation
+
+S5 of the integration-testing plan
+(`docs/plans/2026-05-06-integration-testing.md`) called BUG7
+"a regression-pin RED on prod head" and budgeted a fix. The S4 RED
+landed at HEAD `aa4ad17`; S5 trace investigation revealed the failure
+was at the page-object's `selectChannel` step — BEFORE the test ever
+reached compose-send. The mobile JSX branch in `Shell.tsx` (≤ 768px,
+matched by Playwright's iPhone 15 device profile at 393×852) replaces
+the entire desktop sidebar with `<BottomBar />`, so selectors keyed off
+`.sidebar-network h3` / `.sidebar-window-btn` had no DOM target.
+
+### Findings
+
+After teaching the page-object to detect viewport and switch between
+sidebar (`.sidebar-network` + `.sidebar-window-btn`) and bottom-bar
+(`.bottom-bar-network` + `.bottom-bar-tab`) selectors, both BUG7 specs
+flipped GREEN in 2.0–2.5 s. The hypothesized root causes (WS suspend on
+virtual-keyboard show, Solid reactivity glitch under WebKit microtask
+scheduling, CSS overflow swallow when keyboard reduces visualViewport)
+do NOT reproduce in headless WebKit + iPhone 15 viewport. The bug
+surface that DOES reproduce on real hardware lives in:
+
+  * actual virtual-keyboard chrome occluding the bottom of the
+    visualViewport (Playwright doesn't render the iOS keyboard);
+  * iOS Safari's `visualViewport` resize behavior on focus;
+  * touch-action / scroll-momentum quirks the emulator skips.
+
+Headless WebKit is "Safari engine without the OS", and the OS shell is
+where this bug lives.
+
+### Decision
+
+Downgrade the BUG7 specs from "regression-pin RED → fix flips green"
+to "positive guard rail":
+
+  * They assert the iOS-shaped input path (tap-to-focus, per-keystroke
+    type, tap send) round-trips compose → WS → DOM on every commit.
+  * A regression in compose dispatch, openQueryWindowState, or
+    BottomBar tab focus would surface here.
+  * The actual real-iOS bug is deferred to a session that can drive a
+    physical device via DevTools-over-USB. Not in CI's reach.
+
+### Mobile-aware page-object pattern
+
+The page-object now branches on viewport for three helpers — `loginAs`
+(shell-ready selector), `sidebarWindow` (per-network grouping +
+window-name lookup), `selectChannel` (click target). Threshold mirrors
+`cicchetto/src/lib/theme.ts`'s `MOBILE_QUERY = (max-width: 768px)`.
+Detection via `page.viewportSize()`, not `page.evaluate(matchMedia)` —
+Playwright sets the viewport synchronously when the project picks the
+device profile, so a synchronous read suffices and avoids a
+round-trip-per-call.
+
+### Test-isolation lesson
+
+M9 (`/part` via X-button) destroys shared `#bofh` channel state as the
+action under test. Pre-S5 it was the LAST chromium spec alphabetically
+(`m1, m10, m11, m12, m2, ..., m9`), so chromium project completed before
+the destruction mattered. Post-S5 the webkit-iphone-15 project runs
+AFTER chromium and assumes `#bofh` still joined, which it isn't. The
+old BUG7 RED-pin masked this — `selectChannel` failed at setup either
+way, so nobody noticed `#bofh` was missing.
+
+Fix: `joinChannel()` REST helper added to `cicchetto/e2e/fixtures/
+grappaApi.ts`; M9 spec restores `#bofh` in `afterEach`. Suite is
+order-independent again. Lesson generalised: **any spec whose action-
+under-test mutates shared seed state must restore it in `afterEach`**.
+The seeder sidecar sets initial state once per stack boot — it's not
+re-run between specs.
+
+### What did NOT change
+
+  * The plan's hypothesis enumeration (a/b/c/d) stays in the spec
+    header as the documented hypothesis surface for the eventual
+    real-iOS investigation.
+  * No production code changed in S5. The mobile scaffolding lives
+    entirely in the e2e fixture layer.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

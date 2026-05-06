@@ -139,3 +139,28 @@ export async function partChannel(
     throw new Error(`partChannel: unexpected status ${res.status}`);
   }
 }
+
+// JOIN a channel via REST POST (mirrors `cicchetto/src/lib/api.ts`'s
+// `postJoin`). Used by tests that PART a seeded channel and need to
+// restore it for subsequent specs (M9, in particular — without restore,
+// later specs that assume #bofh is joined fail at selectChannel because
+// the BottomBar tab no longer exists). 200/201/202 = success; the body
+// shape isn't read.
+export async function joinChannel(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/channels`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ name: channelName }),
+  });
+  if (!res.ok) {
+    throw new Error(`joinChannel: unexpected status ${res.status}`);
+  }
+}

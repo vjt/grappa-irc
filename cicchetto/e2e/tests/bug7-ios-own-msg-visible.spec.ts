@@ -7,14 +7,20 @@
 // either doesn't appear, appears late, or scrolls out of the visible
 // viewport (covered by the virtual keyboard / hidden by overflow).
 //
-// **Documented failure mode — first commit lands this RED on prod head.**
-// The fact that this fails IS the regression-pin. The fix lands as a
-// separate commit (S5) that flips this green. The plan doc enumerates
-// hypotheses for the root cause: (a) WS suspend on virtual-keyboard
-// show, (b) reactivity glitch under WebKit's microtask scheduling,
-// (c) CSS overflow swallow when keyboard reduces visualViewport, (d)
-// something else. The Playwright trace from this RED run is the input
-// to the S5 fix design.
+// **Outcome on Playwright iPhone 15 emulation: GREEN.** Once the
+// page-object grew a mobile-aware `selectChannel` (BottomBar tablist
+// instead of `.sidebar-network`) the spec reaches compose-send and
+// the own-msg renders within the 5s window — i.e. the bug does NOT
+// reproduce in headless WebKit + iPhone-15 viewport. The hypothesis
+// surface that *does* reproduce on real hardware (visualViewport
+// shrinkage on virtual-keyboard show, real keyboard chrome occlusion,
+// touch-action quirks the emulator doesn't model) lives outside the
+// emulator's faithful behavior. So the spec downgrades from
+// "regression-pin RED on prod head" to "positive guard rail":
+// it asserts the iOS-shaped input path (tap-to-focus, per-keystroke
+// type, tap send) round-trips through compose → WS → DOM on every
+// commit. A future real-iOS reproduction (manual tcpdump + real-
+// device DevTools-over-USB) is the path to the actual fix.
 //
 // Why a webkit + iPhone 15 device emulation, not just chromium: WebKit
 // + virtual-keyboard interactions are the trigger surface. Plain

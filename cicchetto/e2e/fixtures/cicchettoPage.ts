@@ -19,31 +19,62 @@
 // Missing it = `forbidden` reject from authorize/2 server-side.
 //
 // Selector contract (kept in lockstep with cicchetto/src/Sidebar.tsx +
-// ScrollbackPane.tsx + ComposeBox.tsx):
-//   .sidebar-network li        — one per sidebar window (server, channel, query)
-//   .sidebar-channel-name      — the visible window name span
-//   .sidebar-msg-unread        — message-unread badge (when > 0)
-//   .sidebar-events-unread     — event-unread badge (when > 0)
-//   .sidebar-mention           — `@N` mention badge (when > 0)
-//   .sidebar-close             — × close button (channel + query only)
-//   [data-testid="scrollback"] — scrollback list container
-//   [data-testid="scrollback-line"] — per-message row (data-kind=privmsg|action|join|...)
-//   .compose-box textarea      — the compose textarea
+// BottomBar.tsx + ScrollbackPane.tsx + ComposeBox.tsx):
+//
+//   Desktop sidebar (viewport > 768px — Shell.tsx desktop branch):
+//     .sidebar-network li        — one per sidebar window (server, channel, query)
+//     .sidebar-window-btn        — the clickable name button inside <li>
+//     .sidebar-channel-name      — the visible window name span
+//     .sidebar-msg-unread        — message-unread badge (when > 0)
+//     .sidebar-events-unread     — event-unread badge (when > 0)
+//     .sidebar-mention           — `@N` mention badge (when > 0)
+//     .sidebar-close             — × close button (channel + query only)
+//
+//   Mobile bottom-bar (viewport ≤ 768px — Shell.tsx mobile branch
+//   replaces the sidebar entirely with <BottomBar />):
+//     .bottom-bar                — role="tablist" container
+//     .bottom-bar-network        — per-network grouping
+//     .bottom-bar-network-chip   — network slug label inside the group
+//     .bottom-bar-tab            — clickable window button (server/channel/query)
+//     .bottom-bar-msg-unread / -events-unread / -mention — badges
+//     (no close button on mobile by design — see BottomBar.tsx)
+//
+//   Shared:
+//     [data-testid="scrollback"] — scrollback list container
+//     [data-testid="scrollback-line"] — per-message row (data-kind=privmsg|action|join|...)
+//     .compose-box textarea      — the compose textarea
 //
 // Channel-bound assertions key off the visible name (`#bofh`,
-// `vjt-peer`). Sidebar items are scoped per-network via the
-// `.sidebar-network` group whose `<h3>` text matches the network slug,
-// so two networks with overlapping channel names don't cross-match.
+// `vjt-peer`). Window items are scoped per-network: desktop via
+// `.sidebar-network` matched by `<h3>` text; mobile via
+// `.bottom-bar-network` matched by `.bottom-bar-network-chip` text.
+// Same uniqueness guarantee holds on both layouts.
+//
+// Viewport branching: helpers that need to render against the right
+// layout (loginAs shell-ready, sidebarWindow, selectChannel click)
+// detect mobile via `isMobileViewport(page)`. Threshold mirrors
+// cicchetto/src/lib/theme.ts MOBILE_QUERY = `(max-width: 768px)`.
+// Playwright's iPhone 15 device has viewport 393×852 → mobile branch.
 
 import { type Page, expect } from "@playwright/test";
 import type { SeededUser } from "./grappaApi";
 
 const SHELL_READY_TIMEOUT_MS = 10_000;
+const MOBILE_BREAKPOINT_PX = 768;
+
+// Mirror of cicchetto/src/lib/theme.ts isMobile() — viewport width
+// at-or-below 768px is the mobile branch in Shell.tsx. Playwright sets
+// viewport via `devices["iPhone 15"]` (393×852) for the
+// webkit-iphone-15 project; the desktop chromium project gets the
+// default 1280×720 from devices["Desktop Chrome"].
+function isMobileViewport(page: Page): boolean {
+  const sz = page.viewportSize();
+  return sz !== null && sz.width <= MOBILE_BREAKPOINT_PX;
+}
 
 // Seed a token + subject into localStorage so cicchetto boots already
 // authenticated, then load the SPA and wait for the shell to be ready
-// (sidebar populated with at least one network section). Returns the
-// page so callers can chain into ChannelView helpers.
+// (sidebar/bottom-bar populated with at least one network section).
 export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   // addInitScript runs BEFORE any page script — guarantees the
   // localStorage values are present when auth.ts's `createSignal`
@@ -58,24 +89,45 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   );
   await page.goto("/");
 
-  // Shell-ready signal: the sidebar's network section appears once
-  // `networks()` resource resolves. Until then the page renders the
-  // login form OR an empty pre-resource state.
-  await expect(page.locator(".sidebar-network h3").first()).toBeVisible({
+  // Shell-ready signal: a per-network section appears once the
+  // `networks()` resource resolves. Selector differs by layout — desktop
+  // renders `.sidebar-network h3`, mobile renders
+  // `.bottom-bar-network-chip` (the `.sidebar-network` DOM is absent
+  // entirely in the mobile JSX branch, so a single OR-style selector
+  // would be more brittle than a viewport-conditioned one).
+  const readySelector = isMobileViewport(page)
+    ? ".bottom-bar-network-chip"
+    : ".sidebar-network h3";
+  await expect(page.locator(readySelector).first()).toBeVisible({
     timeout: SHELL_READY_TIMEOUT_MS,
   });
 }
 
-// Sidebar accessors ─────────────────────────────────────────────────
+// Sidebar / bottom-bar accessors ────────────────────────────────────
 
-// One sidebar window row by visible name, scoped to a network section.
-// Matches across all window kinds (server, channel, query) — the
-// channel-name span is shared.
+// One window row by visible name, scoped to a network section.
+// On desktop returns the `<li>` inside `.sidebar-network`; on mobile
+// returns the `.bottom-bar-tab` inside `.bottom-bar-network`. Callers
+// (close button click, badge lookup, count assertions) treat both as
+// "the per-window container" — the badge selectors below mirror the
+// branching so a `.toHaveCount(1)` assertion works identically on
+// either layout.
 export function sidebarWindow(page: Page, networkSlug: string, windowName: string) {
-  // Scope to the section whose <h3> exactly matches the network slug.
+  if (isMobileViewport(page)) {
+    // BottomBar.tsx: `.bottom-bar-network` group is identified by its
+    // `.bottom-bar-network-chip` text child. Tabs inside have visible
+    // text matching the window name (`Server` for $server, `#bofh` for
+    // channels, raw nick for queries). filter+hasText is the only
+    // robust way — no per-tab data attribute exists yet.
+    const section = page.locator(".bottom-bar-network", {
+      has: page.locator(".bottom-bar-network-chip", { hasText: networkSlug }),
+    });
+    return section.locator(".bottom-bar-tab", { hasText: windowName });
+  }
+  // Desktop: scope to the section whose <h3> exactly matches the slug.
   // Solid renders the slug as the first text node of the h3 (followed
-  // by an optional [away] badge), so we use `:scope > h3` and
-  // `getByText` with `exact:false` to tolerate the badge suffix.
+  // by an optional [away] badge), so hasText accepts substring match
+  // and tolerates the badge suffix.
   const section = page.locator(".sidebar-network", {
     has: page.locator("h3", { hasText: networkSlug }),
   });
@@ -83,20 +135,27 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
 }
 
 export function sidebarMessageBadge(page: Page, networkSlug: string, windowName: string) {
-  return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-msg-unread");
+  const cls = isMobileViewport(page) ? ".bottom-bar-msg-unread" : ".sidebar-msg-unread";
+  return sidebarWindow(page, networkSlug, windowName).locator(cls);
 }
 
 export function sidebarEventsBadge(page: Page, networkSlug: string, windowName: string) {
-  return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-events-unread");
+  const cls = isMobileViewport(page) ? ".bottom-bar-events-unread" : ".sidebar-events-unread";
+  return sidebarWindow(page, networkSlug, windowName).locator(cls);
 }
 
 export function sidebarMentionBadge(page: Page, networkSlug: string, windowName: string) {
-  return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-mention");
+  const cls = isMobileViewport(page) ? ".bottom-bar-mention" : ".sidebar-mention";
+  return sidebarWindow(page, networkSlug, windowName).locator(cls);
 }
 
-// Click the sidebar window to focus it. Solid's reactive flush + the
-// shell's auto-close-sidebar effect happen synchronously; the channel
-// becomes selected before this resolves.
+// Click the window to focus it. Solid's reactive flush + the shell's
+// auto-close-sidebar effect happen synchronously; the channel becomes
+// selected before this resolves.
+//
+// Layout-aware click target: desktop uses `.sidebar-window-btn` inside
+// the `<li>`; mobile clicks the `.bottom-bar-tab` directly (no inner
+// button — the tab IS the button).
 //
 // `awaitWsReady` (default `true`): after focus, wait for the
 // auto-joined own-nick JOIN line to render in the scrollback. That
@@ -122,9 +181,18 @@ export async function selectChannel(
   opts: { awaitWsReady?: boolean; ownNick?: string } = {},
 ): Promise<void> {
   const awaitWsReady = opts.awaitWsReady ?? true;
-  await sidebarWindow(page, networkSlug, windowName)
-    .locator(".sidebar-window-btn")
-    .click();
+  const target = sidebarWindow(page, networkSlug, windowName);
+  if (isMobileViewport(page)) {
+    // The tab IS the button on mobile — click it directly. Use tap()
+    // to match the touch event chain a real iOS user produces; the
+    // iPhone 15 device profile has hasTouch:true, so click() would
+    // fall back to a synthesized mouse event that the BottomBar
+    // tablist still handles, but tap() exercises the same path the
+    // production user does.
+    await target.tap();
+  } else {
+    await target.locator(".sidebar-window-btn").click();
+  }
   if (awaitWsReady && opts.ownNick) {
     // The auto-joined self-JOIN line carries `<ownNick> has joined
     // <channel>`. Match on both substrings so a peer's later JOIN to
