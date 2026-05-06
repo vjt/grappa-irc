@@ -64,6 +64,22 @@ const exports_ = createRoot(() => {
     }
   };
 
+  // Force re-fetch — bypasses the once-per-channel gate. Called from
+  // subscribe.ts when the server emits a `members_seeded` event (366
+  // RPL_ENDOFNAMES landed), which means state.members[channel] is now
+  // populated and any earlier loadMembers race that returned an empty
+  // list can be re-issued. Without this, a fresh /join lands in the
+  // sidebar with an empty MembersPane until the next page reload.
+  //
+  // Idempotent: invalidates the gate, then runs loadMembers (which
+  // re-marks the gate as it succeeds). Concurrent calls dedupe via the
+  // gate after the first one runs through.
+  const reloadMembers = async (slug: string, name: string): Promise<void> => {
+    const key = channelKey(slug, name);
+    loadedChannels.delete(key);
+    await loadMembers(slug, name);
+  };
+
   const applyPresenceEvent = (key: ChannelKey, msg: ScrollbackMessage): void => {
     setMembersByChannel((prev) => {
       const current = prev[key] ?? [];
@@ -127,6 +143,7 @@ const exports_ = createRoot(() => {
   return {
     membersByChannel,
     loadMembers,
+    reloadMembers,
     applyPresenceEvent,
     seedFromTest,
   };
@@ -134,5 +151,6 @@ const exports_ = createRoot(() => {
 
 export const membersByChannel = exports_.membersByChannel;
 export const loadMembers = exports_.loadMembers;
+export const reloadMembers = exports_.reloadMembers;
 export const applyPresenceEvent = exports_.applyPresenceEvent;
 export const seedFromTest = exports_.seedFromTest;

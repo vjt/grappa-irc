@@ -40,6 +40,7 @@ vi.mock("../lib/socket", () => ({
 vi.mock("../lib/members", () => ({
   applyPresenceEvent: vi.fn(),
   loadMembers: vi.fn(),
+  reloadMembers: vi.fn(),
   membersByChannel: vi.fn(() => ({})),
   seedFromTest: vi.fn(),
 }));
@@ -1816,5 +1817,62 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
 
     const key = channelKey("freenode", "#grappa");
     expect(store.unreadCounts()[key]).toBe(1);
+  });
+  // members_seeded WS event — server's 366 RPL_ENDOFNAMES landed; client
+  // must re-fetch GET /members to overwrite any empty snapshot the racing
+  // initial loadMembers may have produced.
+  describe("members_seeded WS event", () => {
+    it("fires reloadMembers for the channel when members_seeded payload arrives", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const members = await import("../lib/members");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      // Find the channel handler and dispatch a members_seeded payload.
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "members_seeded",
+        network: "freenode",
+        channel: "#grappa",
+      });
+
+      expect(members.reloadMembers).toHaveBeenCalledWith("freenode", "#grappa");
+    });
+
+    it("does NOT route members_seeded as a message (no scrollback append, no unread bump)", async () => {
+      // Sanity: members_seeded is a control event. It must not flow through
+      // routeMessage and accidentally bump unread or append a row.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "members_seeded",
+        network: "freenode",
+        channel: "#grappa",
+      });
+
+      const key = channelKey("freenode", "#grappa");
+      expect(store.scrollbackByChannel()[key]).toBeUndefined();
+      expect(store.unreadCounts()[key]).toBeUndefined();
+    });
   });
 });

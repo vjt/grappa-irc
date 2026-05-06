@@ -5,7 +5,7 @@ import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
-import { applyPresenceEvent } from "./members";
+import { applyPresenceEvent, reloadMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
@@ -92,7 +92,8 @@ import { joinChannel } from "./socket";
 type WireEvent =
   | ChannelEvent
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
-  | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry };
+  | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
+  | { kind: "members_seeded"; network: string; channel: string };
 
 createRoot(() => {
   const joined = new Set<ChannelKey>();
@@ -226,6 +227,14 @@ createRoot(() => {
       }
       if (payload.kind === "channel_modes_changed") {
         seedModes(key, payload.modes);
+        return;
+      }
+      if (payload.kind === "members_seeded") {
+        // Server's 366 RPL_ENDOFNAMES landed: state.members[channel] is
+        // now populated. Re-fetch GET /members to overwrite any empty
+        // snapshot the racing initial load may have captured. Idempotent:
+        // bypasses the once-per-channel gate, then re-marks it on success.
+        void reloadMembers(slug, name);
         return;
       }
       if (payload.kind !== "message") return;

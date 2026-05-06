@@ -1530,6 +1530,25 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # Emitted on 366 RPL_ENDOFNAMES — tells cicchetto that state.members[channel]
+  # is now fully populated and any racing GET /members can be re-issued.
+  # Without this, a fresh /join lands in the sidebar before bahamut's 353
+  # arrives; cicchetto's MembersPane fetch returns an empty list and the
+  # one-shot loadedChannels gate prevents a re-fetch until page reload.
+  defp apply_effects([{:members_seeded, channel} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        %{
+          kind: "members_seeded",
+          network: state.network_slug,
+          channel: channel
+        }
+      )
+
+    apply_effects(rest, state)
+  end
+
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)
 
