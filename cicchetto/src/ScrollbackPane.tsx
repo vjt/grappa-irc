@@ -155,6 +155,22 @@ const isDifferentDay = (aMs: number, bMs: number): boolean => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
+// Strip the CTCP ACTION envelope (`\x01ACTION ...\x01`) from a body for
+// rendering. The server stores the wire-form body verbatim per the
+// CLAUDE.md "preserved as-is" rule (round-trip fidelity for ACTION
+// and other CTCP verbs); the display layer unwraps the envelope when
+// the kind discriminator already classifies the row as `:action`.
+// Defensive: if the envelope isn't there (e.g. a future server-side
+// pre-strip lands), fall through to the raw body.
+const CTCP_ACTION_PREFIX = "\x01ACTION ";
+const CTCP_DELIMITER = "\x01";
+const stripCtcpAction = (body: string | null): string => {
+  if (!body) return "";
+  if (!body.startsWith(CTCP_ACTION_PREFIX)) return body;
+  const inner = body.slice(CTCP_ACTION_PREFIX.length);
+  return inner.endsWith(CTCP_DELIMITER) ? inner.slice(0, -1) : inner;
+};
+
 type NickHandlers = {
   onNickClick: (nick: string) => void;
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
@@ -203,7 +219,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
           >
             {msg.sender}
           </button>{" "}
-          {msg.body}
+          {stripCtcpAction(msg.body)}
         </span>
       );
     case "join":

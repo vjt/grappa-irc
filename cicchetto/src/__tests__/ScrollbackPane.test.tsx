@@ -191,6 +191,33 @@ describe("ScrollbackPane", () => {
     expect(lines[2]).toHaveTextContent("topic locked");
   });
 
+  it("strips the CTCP ACTION envelope at the action render layer", () => {
+    // Server-side persists the wire-form body verbatim per the CLAUDE.md
+    // CTCP "preserved as-is" rule (round-trip fidelity for ACTION + future
+    // CTCP verbs). The renderer's :action branch unwraps the
+    // `\x01ACTION ...\x01` envelope so the user sees just the inner text.
+    // M10 (e2e) pins the same invariant against a real bahamut peer.
+    const ctcpAction: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "n",
+        channel: "#c",
+        server_time: 1,
+        kind: "action",
+        sender: "bob",
+        body: "\x01ACTION waves at the channel\x01",
+        meta: {},
+      },
+    ];
+    setScrollback({ "freenode #grappa": ctcpAction });
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+    const line = screen.getByTestId("scrollback-line");
+    expect(line.dataset.kind).toBe("action");
+    expect(line).toHaveTextContent("* bob waves at the channel");
+    expect(line.textContent ?? "").not.toContain("\x01");
+    expect(line.textContent ?? "").not.toContain("ACTION ");
+  });
+
   it("renders all ten server kinds without falling through to PRIVMSG framing", () => {
     // Server `Grappa.Scrollback.Message.kind()` enum: ten kinds. Phase 5
     // presence-event capture will emit any of them on the wire; the
