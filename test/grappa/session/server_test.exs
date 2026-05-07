@@ -3223,4 +3223,124 @@ defmodule Grappa.Session.ServerTest do
                Session.send_topic_clear({:user, Ecto.UUID.generate()}, 999_999, "#x")
     end
   end
+
+  describe "CP13 — numeric routing persists :notice rows with meta" do
+    # NumericRouter routes the numeric to a window; Session.Server persists
+    # the trailing text as a `:notice` row carrying meta=%{numeric, severity}
+    # in that window's scrollback. Pre-CP13 this path broadcast a
+    # `numeric_routed` ephemeral event; CP13 makes it durable + replayable.
+
+    test "404 ERR_CANNOTSENDTOCHAN persists on the channel with severity :error" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 404 vjt #sniffo :Cannot send to channel\r\n")
+
+      assert_message_event(
+        kind: :notice,
+        body: "Cannot send to channel",
+        channel: "#sniffo",
+        network: network.slug,
+        meta: %{numeric: 404, severity: :error}
+      )
+
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
+      assert row.kind == :notice
+      assert row.body == "Cannot send to channel"
+      assert row.meta.numeric == 404
+      # In the broadcast (in-memory struct, no DB round-trip) severity is
+      # the atom :error. After Repo round-trip via Scrollback.fetch the
+      # value comes back as a string ("error") because Jason serializes
+      # atom values to strings and Meta.@known_keys atomizes only KEYS.
+      # See `Grappa.Scrollback.Meta` moduledoc on the value-side stringification.
+      assert row.meta.severity == "error"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "421 ERR_UNKNOWNCOMMAND (deny-listed) persists on $server" do
+      # 421 is in @active_numerics → routes to {:server, nil} regardless of
+      # params (BLEH-as-nick problem). Chosen over 432/433/437 because the
+      # latter trigger the AuthFSM's nick-rejection path mid-handshake.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "$server")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 421 vjt BLEH :Unknown command\r\n")
+
+      assert_message_event(
+        kind: :notice,
+        channel: "$server",
+        network: network.slug,
+        meta: %{numeric: 421, severity: :error}
+      )
+
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10)
+      assert row.kind == :notice
+      assert row.meta.numeric == 421
+      assert row.meta.severity == "error"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "401 ERR_NOSUCHNICK persists on the queried nick (query window)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "ghost")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 401 vjt ghost :No such nick/channel\r\n")
+
+      assert_message_event(
+        kind: :notice,
+        channel: "ghost",
+        network: network.slug,
+        meta: %{numeric: 401, severity: :error}
+      )
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "delegated numeric (372 MOTD) does NOT double-persist via the routing path" do
+      # 372 is :delegated → existing MOTD handler in EventRouter persists it.
+      # If the new routing path also persisted, we'd get two rows on $server.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "$server")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 372 vjt :- Welcome to TestNet\r\n")
+
+      # Exactly one event for this MOTD line.
+      assert_message_event(
+        kind: :notice,
+        channel: "$server",
+        network: network.slug
+      )
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 100
+
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10)
+      # MOTD path persists with empty meta — confirms it came from the
+      # delegated handler, not the routed path (which would set numeric+severity).
+      assert row.meta == %{}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end

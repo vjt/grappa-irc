@@ -1091,14 +1091,27 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | modes_per_chunk: modes_per_chunk}}
   end
 
-  # S4.2/S4.4 — Numeric routing: route numerics through NumericRouter and
-  # broadcast `numeric_routed` event. Delegated numerics are passed through
-  # to the existing delegate/2 path unchanged.
+  # CP13 server-window cluster: numeric routing produces a persisted
+  # `:notice` row carrying the human-readable trailing text + meta
+  # `%{numeric: code, severity: :ok | :error}`. Pre-CP13 this path
+  # broadcast a `numeric_routed` event over the user topic + an
+  # ephemeral cicchetto-side store; the new shape uses the same
+  # `:persist` effect every other scrollback writer uses, so numerics
+  # appear inline in the routed window's scrollback (queryable via
+  # REST, replayable on reconnect, indexed by (network, channel,
+  # server_time) like everything else).
   #
-  # The `labels_pending` entry for the matched label (if any) is consumed
-  # here (removed from state) so the map stays bounded. `last_command_window`
-  # is NOT updated here — it's a command-send-time snapshot, not a
-  # numeric-arrival-time one.
+  # Routing decisions from NumericRouter map to the `channel` field
+  # of the persisted row:
+  #   `{:server, nil}` → `"$server"` (synthetic window)
+  #   `{:channel, c}`  → `c`
+  #   `{:query, n}`    → `n` (query window for nick `n`)
+  #   `:delegated`     → bypass; existing handlers own the numeric.
+  #
+  # The `labels_pending` entry for the matched label (if any) is
+  # consumed here (removed from state) so the map stays bounded.
+  # `last_command_window` is NOT updated here — it's a command-send-
+  # time snapshot, not a numeric-arrival-time one.
   def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state) do
     router_state = build_router_state(state)
 
@@ -1111,28 +1124,46 @@ defmodule Grappa.Session.Server do
         # Consume label if matched (keeps labels_pending bounded).
         label = Message.tag(msg, "label")
         labels_pending = if label, do: Map.delete(state.labels_pending, label), else: state.labels_pending
+        state_with_labels = %{state | labels_pending: labels_pending}
 
         numeric_code = numeric_code(msg)
         trailing = List.last(msg.params)
+        sender = Message.sender_nick(msg)
 
-        target_window = routing_to_window_map(routing)
-        severity = NumericRouter.severity(numeric_code)
+        # Persist the numeric as a `:notice` row in the routed window —
+        # iff the trailing param is a string (defensive: malformed numerics
+        # with no trailing text are dropped silently rather than crashing
+        # the changeset on body=nil for body-required kind :notice).
+        persist_state =
+          if is_binary(trailing) do
+            channel = routing_to_channel(routing)
+            severity = NumericRouter.severity(numeric_code)
+            meta = %{numeric: numeric_code, severity: severity}
 
-        :ok =
-          Grappa.PubSub.broadcast_event(
-            Topic.user(state.subject_label),
-            %{
-              kind: "numeric_routed",
-              numeric: numeric_code,
-              params: msg.params,
-              trailing: trailing,
-              target_window: target_window,
-              severity: severity
-            }
-          )
+            attrs =
+              Session.put_subject_id(
+                %{
+                  network_id: state.network_id,
+                  channel: channel,
+                  server_time: System.system_time(:millisecond),
+                  sender: sender,
+                  body: trailing,
+                  meta: meta
+                },
+                state.subject
+              )
 
-        # Also delegate so EventRouter can update state (e.g. 305/306 away_confirmed).
-        {:cont, next_state, effects} = EventRouter.route(msg, %{state | labels_pending: labels_pending})
+            apply_effects([{:persist, :notice, attrs}], state_with_labels)
+          else
+            state_with_labels
+          end
+
+        # Also delegate so EventRouter can update state (e.g. 305/306
+        # away_confirmed). EventRouter's catch-all returns `[]` for
+        # numerics we haven't given dedicated handlers, so this is a
+        # no-op for most numerics; the state mutations it owns (e.g.
+        # AWAY confirmation) still flow.
+        {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
         final_state = apply_effects(effects, next_state)
         maybe_broadcast_channels_changed(state, final_state)
         maybe_broadcast_own_nick_changed(state, final_state)
@@ -1426,15 +1457,16 @@ defmodule Grappa.Session.Server do
   @spec numeric_code(Message.t()) :: 1..999
   defp numeric_code(%Message{command: {:numeric, code}}), do: code
 
-  # Converts a routing_decision tuple to the wire map shape for the event.
-  # Only called for non-:delegated routing decisions (the :delegated branch in
-  # the numeric handler calls delegate/2 directly). The type is narrowed to
-  # `{kind, target}` tuples only; :delegated never arrives here at runtime.
-  @spec routing_to_window_map({:channel, String.t()} | {:query, String.t()} | {:server, nil}) :: %{
-          kind: atom(),
-          target: String.t() | nil
-        }
-  defp routing_to_window_map({kind, target}), do: %{kind: kind, target: target}
+  # Maps a NumericRouter routing decision (non-:delegated branch) to the
+  # `channel` field of the persisted `:notice` row. CP13: `{:server, nil}`
+  # routes to the synthetic `"$server"` window; `{:channel, c}` and
+  # `{:query, n}` route directly to the named target. Mirrors
+  # `Grappa.Scrollback.Message.@valid_target?` accept set.
+  @spec routing_to_channel({:channel, String.t()} | {:query, String.t()} | {:server, nil}) ::
+          String.t()
+  defp routing_to_channel({:channel, c}) when is_binary(c), do: c
+  defp routing_to_channel({:query, n}) when is_binary(n), do: n
+  defp routing_to_channel({:server, nil}), do: "$server"
   #
   # Channels-list mutation (self-JOIN / self-PART / self-KICK changes the
   # `state.members` keyset) fires a fan-out broadcast on the per-user
