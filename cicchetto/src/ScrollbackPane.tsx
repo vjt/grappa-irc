@@ -14,7 +14,6 @@ import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { networks, user } from "./lib/networks";
-import { numericsByWindow } from "./lib/numericInline";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { scrollbackByChannel } from "./lib/scrollback";
@@ -679,23 +678,6 @@ const ScrollbackPane: Component<Props> = (props) => {
         >
           ↓
         </button>
-      </Show>
-      {/* C5.2: Ephemeral inline numeric feedback lines. */}
-      <Show when={(numericsByWindow()[key()] ?? []).length > 0}>
-        <div class="numeric-inline-pane" data-testid="numeric-inline-pane">
-          <For each={numericsByWindow()[key()] ?? []}>
-            {(line) => (
-              <div
-                class="numeric-inline-line"
-                classList={{ "numeric-error": line.severity === "error" }}
-                data-testid="numeric-inline-line"
-                data-severity={line.severity}
-              >
-                * {line.text}
-              </div>
-            )}
-          </For>
-        </div>
       </Show>
       {/* C7.6: nick right-click context menu. Rendered outside the scrollback
           div so it positions freely in the viewport. Closed by backdrop or

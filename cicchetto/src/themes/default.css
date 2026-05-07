@@ -866,30 +866,6 @@ body {
   cursor: pointer;
 }
 
-/* Numeric inline feedback (C5.2 / C5.3) — ephemeral IRC numeric replies below scrollback */
-
-.numeric-inline-pane {
-  padding: 0.25rem 1rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  border-top: 1px solid var(--border);
-}
-
-.numeric-inline-line {
-  color: var(--muted);
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: 0.05rem 0;
-}
-
-/* Failure-class numerics (severity: "error", IRC codes ≥400) render in red.
-   Reuses --mode-op — the existing red token used for @op nicks and mention
-   badges (irssi-dark: #d77070; mirc-light: #7f0000). No new color token
-   introduced per total-consistency rule. */
-.numeric-inline-line.numeric-error {
-  color: var(--mode-op);
-}
-
 /* UserContextMenu (C5.1) — right-click ops submenu on member nicks */
 
 .context-menu-backdrop {
