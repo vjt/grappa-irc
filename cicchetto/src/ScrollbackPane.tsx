@@ -323,6 +323,8 @@ const ScrollbackLine: Component<{
       classList={{
         "scrollback-action": props.msg.kind === "action",
         "scrollback-notice": props.msg.kind === "notice",
+        "scrollback-notice-error":
+          props.msg.kind === "notice" && props.msg.meta?.severity === "error",
         "scrollback-presence": PRESENCE_KINDS.has(props.msg.kind),
         "scrollback-muted": isMuted(),
         "scrollback-mention": isMention(),
