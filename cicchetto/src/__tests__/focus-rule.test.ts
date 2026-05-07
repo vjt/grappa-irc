@@ -40,7 +40,6 @@ vi.mock("../lib/socket", () => ({
 
 vi.mock("../lib/members", () => ({
   applyPresenceEvent: vi.fn(),
-  loadMembers: vi.fn(),
   membersByChannel: vi.fn(() => ({})),
   seedFromTest: vi.fn(),
 }));

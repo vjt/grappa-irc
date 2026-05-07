@@ -56,7 +56,6 @@ vi.mock("../lib/scrollback", () => ({
 
 vi.mock("../lib/members", () => ({
   membersByChannel: () => ({}),
-  loadMembers: vi.fn(),
   applyPresenceEvent: vi.fn(),
   seedFromTest: vi.fn(),
 }));
