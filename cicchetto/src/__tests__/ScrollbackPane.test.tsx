@@ -1297,4 +1297,67 @@ describe("ScrollbackPane", () => {
       expect(line.classList.contains("scrollback-highlight")).toBe(false);
     });
   });
+
+  // CP13 — :notice rows with meta.severity === "error" (server-routed
+  // failure-class numerics) get the .scrollback-notice-error class so
+  // they render red. Non-error severity (or missing meta) → no class,
+  // falls back to plain .scrollback-notice rendering.
+  describe("notice severity rendering (CP13)", () => {
+    const errorNotice: ScrollbackMessage = {
+      id: 1,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 1,
+      kind: "notice",
+      sender: "irc.test.org",
+      body: "Cannot send to channel",
+      meta: { numeric: 404, severity: "error" },
+    };
+
+    const okNotice: ScrollbackMessage = {
+      id: 2,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 2,
+      kind: "notice",
+      sender: "irc.test.org",
+      body: "Now away",
+      meta: { numeric: 306, severity: "ok" },
+    };
+
+    const bareNotice: ScrollbackMessage = {
+      id: 3,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 3,
+      kind: "notice",
+      sender: "ChanServ",
+      body: "lock",
+      meta: {},
+    };
+
+    it("applies .scrollback-notice-error to :notice with meta.severity=error", () => {
+      setScrollback({ "freenode #grappa": [errorNotice] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-notice-error")).toBe(true);
+      expect(line.classList.contains("scrollback-notice")).toBe(true);
+    });
+
+    it("does NOT apply .scrollback-notice-error to :notice with meta.severity=ok", () => {
+      setScrollback({ "freenode #grappa": [okNotice] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-notice-error")).toBe(false);
+      expect(line.classList.contains("scrollback-notice")).toBe(true);
+    });
+
+    it("does NOT apply .scrollback-notice-error to :notice with empty meta", () => {
+      setScrollback({ "freenode #grappa": [bareNotice] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-notice-error")).toBe(false);
+      expect(line.classList.contains("scrollback-notice")).toBe(true);
+    });
+  });
 });

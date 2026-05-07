@@ -604,6 +604,15 @@ body {
   color: var(--muted);
 }
 
+/* CP13: error-severity notices (server-routed numerics with code ≥ 400)
+   render in red. Reuses --mode-op (the existing red token used for @op
+   nicks and mention badges) per total-consistency rule — no new color
+   token introduced. The class wins over .scrollback-notice via the
+   later cascade order. */
+.scrollback-notice-error {
+  color: var(--mode-op);
+}
+
 .scrollback-presence {
   color: var(--muted);
   font-style: italic;
