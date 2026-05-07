@@ -1,168 +1,55 @@
 #!/usr/bin/env bash
-# scripts/integration.sh — boot the integration testing stack and run
-# the Playwright suite, then tear down.
+# scripts/integration.sh — boot the integration testing stack (via
+# scripts/testnet.sh), run the Playwright suite, then tear down.
 #
-# The stack lives at cicchetto/e2e/compose.yaml and includes the
-# azzurra-testnet submodule (hub + leaves + services), grappa (dev
-# image), nginx-test, cicchetto-build-test, and the playwright-runner
-# itself. Stack uses no host port publishes — runs cleanly alongside
-# dev/prod stacks.
+# Stack management lives in scripts/testnet.sh — bring up / probe /
+# tear down the testnet without running tests by calling that directly.
+# This script wraps it with a one-shot Playwright run + automatic
+# tear-down on exit.
 #
 # Usage:
 #   scripts/integration.sh                      # full suite
 #   scripts/integration.sh --grep mysmoke       # passes through to playwright
 #
-# Worktree-aware: SRC_ROOT is the worktree (or main) the script is run
-# from. Compose project name is derived from the e2e/ compose `name:`
-# field (`grappa-e2e`), so this stack is always distinct from the
-# dev/prod project.
-#
 # Behavior:
-#   - --build forces image rebuilds on every invocation. The dev image
-#     is fast on warm cache; the runner image is a Playwright base
-#     pull on first run only.
-#   - --abort-on-container-exit ties the runner's exit to the whole
-#     stack: when the runner finishes, compose stops everything.
-#   - Trap on EXIT runs `compose down -v` so a failed run leaves no
-#     dangling containers, networks, or volumes (named volumes are
-#     wiped — sqlite e2e DB is ephemeral, intentionally).
-#   - Exit code is the runner's exit code, propagated through compose.
+#   - testnet.sh up brings up hub + leaves + services + grappa-test +
+#     nginx (idempotent — kills any prior testnet first).
+#   - The runner is built + executed via `compose run`, exit code
+#     propagated.
+#   - Trap on EXIT runs `testnet.sh down` so a failed run leaves no
+#     dangling containers, networks, or volumes.
+#   - KEEP_STACK=1 opts out of the tear-down for iterative debugging
+#     (delegates to the same opt-out in testnet.sh down behavior:
+#     just don't call it).
 
 set -euo pipefail
 
 . "$(dirname "$0")/_lib.sh"
 
 E2E_DIR="$SRC_ROOT/cicchetto/e2e"
-
-if [ ! -f "$E2E_DIR/compose.yaml" ]; then
-    die "missing $E2E_DIR/compose.yaml — is the cicchetto/e2e/infra submodule initialized? Run: git submodule update --init"
-fi
-
-if [ ! -d "$E2E_DIR/infra/bahamut" ]; then
-    die "azzurra-testnet submodule looks empty. Run: git submodule update --init"
-fi
-
-# Default .env for the testnet — the submodule expects it. Operator
-# can pre-supply for non-defaults; otherwise we copy the example so the
-# stack boots out of the box.
-if [ ! -f "$E2E_DIR/infra/.env" ]; then
-    cp "$E2E_DIR/infra/.env.example" "$E2E_DIR/infra/.env"
-fi
-
-cd "$E2E_DIR"
-
-# UID/GID handling: macOS Docker Desktop's bind-mount layer translates
-# ownership transparently, so the container can stay 1000:1000 even
-# though the host is 501:20. On Linux, exporting `id -u/-g` only when
-# they're not 1000 keeps the build cache hot for the typical 1000:1000
-# dev box (and for CI runners) while still letting non-default-UID
-# Linux operators (e.g. on a NAS) override.
-#
-# The macOS GID=20 (staff) collides with hexpm/elixir's Debian system
-# `tty` group at GID 20 — `groupadd -g 20` exits 4. Skip the override
-# on macOS entirely.
-if [ "$(uname -s)" = "Linux" ]; then
-    export CONTAINER_UID="${CONTAINER_UID:-$(id -u)}"
-    export CONTAINER_GID="${CONTAINER_GID:-$(id -g)}"
-fi
-
-# Pre-create host bind-mount targets for the bun install cache + the
-# cicchetto e2e dist. Mirrors scripts/bun.sh's mkdir -p prelude. Named
-# volumes won't work here: a fresh named volume is root-owned, but the
-# bun + nginx containers drop to UID 1000 (or the host UID on Linux),
-# so any write fails with AccessDenied. Host bind-mount inherits the
-# operator's UID — `mkdir -p` from this script lands as the operator.
-#
-# Path note: compose.yaml's bind-mounts are RELATIVE to cicchetto/e2e/
-# (`../../runtime/...`), which from a worktree resolves under SRC_ROOT
-# (the worktree dir), NOT REPO_ROOT (main repo). bun-cache stays under
-# REPO_ROOT because it's a shared cache across all worktrees + the dev
-# stack — collision-free, and not part of the e2e isolation contract.
-mkdir -p \
-    "$REPO_ROOT/runtime/bun-cache" \
-    "$SRC_ROOT/runtime/e2e/cicchetto-dist" \
-    "$SRC_ROOT/runtime/e2e/grappa-runtime"
+TESTNET="$(dirname "$0")/testnet.sh"
 
 cleanup() {
-    # Always tear down — even on Ctrl-C or a runner crash. `down -v`
-    # wipes named volumes (e2e_deps, e2e_build, e2e_mix, e2e_hex,
-    # e2e_runner_node_modules) — but the grappa runtime DB lives in a
-    # HOST bind-mount (runtime/e2e/grappa-runtime) NOT a named volume,
-    # because a fresh named volume is root-owned and the container
-    # drops to UID 1000 (sqlite open fails with database_open_failed).
-    # So we explicitly nuke the bind-mount dir here — without it, the
-    # next run inherits the previous run's user/network/scrollback rows
-    # and assertions over scrollback contents resolve to ghost matches
-    # from earlier runs (observed: M1 strict-mode-violation on 5 dup
-    # PRIVMSG rows from 5 prior runs).
-    #
-    # Wipe the WORKTREE path ($SRC_ROOT), NOT the main repo path
-    # ($REPO_ROOT) — the compose.yaml mounts `../../runtime/...`
-    # relative to cicchetto/e2e/, which from a worktree is the
-    # worktree's runtime dir. The same bug shape would silently break
-    # isolation if `mkdir` and `rm` referenced different paths.
-    #
-    # The cicchetto-dist bind-mount is a build output (idempotent —
-    # bun rebuild overwrites it); not strictly necessary to wipe but
-    # we do it for symmetry with the grappa DB.
-    #
-    # KEEP_STACK=1 opts out for iterative debugging.
     if [ "${KEEP_STACK:-}" != "1" ]; then
-        docker compose down -v --remove-orphans 2>&1 || true
-        rm -rf "$SRC_ROOT/runtime/e2e/grappa-runtime" "$SRC_ROOT/runtime/e2e/cicchetto-dist"
+        "$TESTNET" down 2>&1 || true
     else
         echo "KEEP_STACK=1 — leaving stack up. Tear down with:"
-        echo "  cd $E2E_DIR && docker compose down -v"
-        echo "  rm -rf $SRC_ROOT/runtime/e2e/grappa-runtime $SRC_ROOT/runtime/e2e/cicchetto-dist"
+        echo "  scripts/testnet.sh down"
     fi
 }
 trap cleanup EXIT
 
-# Build the runner image first (so the abort-on-exit trigger fires
-# correctly — if --abort-on-container-exit catches an early build
-# failure on a different service, debugging is messy).
+# Bring up the testnet (idempotent — kills any leftover containers
+# first; rebuilds bahamut + grappa images as needed).
+"$TESTNET" up
+
+cd "$E2E_DIR"
+
+# Build the runner image (separate from `testnet up` because the runner
+# is e2e-suite-specific, not part of the testnet stack contract).
 docker compose build playwright-runner
 
-# Orchestration shape:
-#
-#   docker compose up --build -d --wait grappa-e2e-seeder
-#   docker compose up        -d --wait <long-running services>
-#   docker compose run playwright-runner   # blocks; exit code = test result
-#
-# Why split the seeder from the long-running set:
-#   `up --build --wait <multi-service-list>` recreates / restarts oneshot
-#   service_completed_successfully deps in unexpected ways (observed:
-#   the seeder ran twice, second invocation failed on duplicate user
-#   row). Booting the seeder first as its own `up --wait` lets it
-#   complete cleanly; the second `up --wait` for the long-running set
-#   then sees seeder as already-completed and skips it.
-#
-# Why we can't use `compose up --exit-code-from runner`:
-#   that flag implies `--abort-on-container-exit`, which fires on the
-#   FIRST oneshot exit (cert-init exits 0 by design, immediately
-#   killing the rest of the stack via SIGTERM mid-build →
-#   cicchetto-build-test 137 → fail). Splitting boot from run sidesteps
-#   the all-or-nothing semantics.
-#
-# `--wait` blocks `up -d` until every dependency reaches its terminal
-# state (`service_healthy` for grappa/hub/nginx, `service_completed_
-# successfully` for cert-init + cicchetto-build-test + seeder). The
-# runner is excluded from the dep graph it cares about (no service
-# depends on it), so `--wait` returns once everything else is ready.
-#
-# Then `compose run playwright-runner` starts the runner in foreground,
-# attaches stdout/stderr, and exits with the runner's exit code.
-
-# Phase 1: seeder oneshot. Its image is also grappa:e2e (same as
-# grappa-test) so --build here warms the cache for both.
-docker compose up --build --wait grappa-e2e-seeder
-
-# Phase 2: long-running services. seeder already completed; the dep
-# chain (grappa-test depends_on seeder) sees it as done and skips it.
-LONG_RUNNING=(hub leaf-v4 leaf-v6 services grappa-test nginx-test)
-docker compose up --wait "${LONG_RUNNING[@]}"
-
-# Now run the test suite. `compose run` exit code propagates.
+# Run the test suite. `compose run` exit code propagates.
 # `--name e2e-runner` keeps the container's docker-DNS PTR short.
 # Default `compose run` synthesises a long name like
 # `grappa-e2e-playwright-runner-run-<hex>` (45 chars), which combined

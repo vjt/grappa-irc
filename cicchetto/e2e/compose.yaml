@@ -38,17 +38,23 @@ services:
   # by docker DNS (`bahamut-test:6667`) over the shared bridge — no
   # need to expose 6667/6697 on the host (would clash with anything
   # else listening there, e.g. a real irssi).
-  # Hub stays purely an S2S router (`grappa-e2e` reachable only so the
-  # leaf can find it via DNS for the SERVER linkup; clients never
-  # connect here). Aliased only for diagnostics.
+  # Hub stays purely an S2S router; clients (the bouncer + the runner
+  # peer) ALWAYS go through a leaf. We INTENTIONALLY do NOT add the hub
+  # to the `grappa-e2e` bridge here, and we do NOT alias
+  # `hub.azzurra.chat` on it — doing so poisons the hub's DNS for its
+  # own name across the leaf-net side: docker's embedded DNS, when a
+  # container is multi-homed and the same alias is registered on
+  # multiple networks, returns the alias's address on the network with
+  # the highest internal precedence (empirically the most-recently
+  # attached one), so leaf4 querying `hub.azzurra.chat` gets the hub's
+  # `grappa-e2e` IP — which leaf4 has no route to — and the autoconnect
+  # fails with "No C/N conf lines" hub-side because the inbound source
+  # IP doesn't match any C: line. Symptom is split-mode permanently
+  # active leaf-side: 0 servers in /STATS, no auto-op on JOIN, MODE
+  # rejected with 482. Keep the hub OFF grappa-e2e and only the leaf
+  # carries the `bahamut-test` alias for client traffic.
   hub:
     ports: !override []
-    networks:
-      svc-net: null
-      leaf4-net: null
-      leaf6-net: null
-      grappa-e2e:
-        aliases: [hub.azzurra.chat]
 
   # Per vjt: client connections (both grappa-test the bouncer AND the
   # playwright-runner peer) ALWAYS go to a leaf, never the hub. Hubs
@@ -286,7 +292,7 @@ services:
       E2E_IRC_PORT: "6667"
       # Verbose IRC peer wire-trace. Off by default; flip to "1" for
       # debugging registration / nick collision / throttle issues.
-      E2E_PEER_DEBUG: "0"
+      E2E_PEER_DEBUG: "1"
     networks:
       grappa-e2e: {}
     command: ["npx", "playwright", "test"]
