@@ -84,9 +84,7 @@ const Sidebar: Component<Props> = (props) => {
   const pseudoChannelsForNetwork = (slug: string, networkId: number): PseudoRow[] => {
     const states = windowStateByChannel();
     const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
-    const queries = new Set(
-      (queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick),
-    );
+    const queries = new Set((queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick));
     const prefix = `${slug} `;
     const out: PseudoRow[] = [];
     for (const [key, state] of Object.entries(states)) {
