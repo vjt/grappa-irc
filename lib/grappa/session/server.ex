@@ -1765,8 +1765,20 @@ defmodule Grappa.Session.Server do
       )
 
     case Scrollback.persist_event(attrs) do
-      {:ok, _} ->
-        :ok
+      {:ok, message} ->
+        # Broadcast the persisted notice as a regular `kind: "message"`
+        # wire event so cic appends it to the channel's scrollback in
+        # real time. Without this push, the notice row exists in the DB
+        # but cic only sees it on the NEXT loadInitialScrollback (which
+        # is `loadedChannels`-gated and won't re-fire). Symmetric with
+        # the `:persist` effect arm — the only difference is that
+        # `:join_failed` carries an extra typed event below for the
+        # state-machine flip.
+        :ok =
+          Grappa.PubSub.broadcast_event(
+            Topic.channel(state.subject_label, state.network_slug, channel),
+            Wire.message_payload(message)
+          )
 
       {:error, changeset} ->
         Logger.error("scrollback insert failed for join_failed",
