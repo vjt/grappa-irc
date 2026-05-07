@@ -165,6 +165,28 @@ defmodule Grappa.Session.Server do
   @type credential_failer :: (String.t() -> :ok)
 
   @typedoc """
+  Per-channel window state (CP15 — event-driven windows). The Session
+  Server is the single source of truth; cic projects from broadcast
+  events on the per-channel topic.
+
+  - `:joined` — own-nick JOIN echo received (B1).
+  - `:failed` — server replied with a join failure numeric (B2).
+  - `:kicked` — own-nick was the target of a KICK (B3).
+  - `:parted` — currently unused (PART removes the entry entirely; cic
+    derives `:archived` from absence + scrollback presence via B4 archive
+    surface).
+  - `:parked` — T32 disconnect/connect: connection is intentionally idle
+    (B3 wires the broadcast).
+  - `:pending` — currently implicit (no entry while a JOIN is in flight);
+    B2 may promote to an explicit value when the in-flight map lands.
+
+  Map key is the channel string, case-preserved like `state.members`;
+  read sites normalize via `String.downcase/1` when correlating against
+  IRC's case-insensitive RFC 2812 §2.2 comparisons.
+  """
+  @type window_state :: :pending | :joined | :failed | :kicked | :parked
+
+  @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
   `network_id` key `Grappa.Session.start_session/3` merges in. The
   `subject` field is already in `start_opts/0` (Task 6.5 — subject
@@ -201,6 +223,14 @@ defmodule Grappa.Session.Server do
           topics: %{String.t() => EventRouter.topic_entry()},
           channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
           userhost_cache: EventRouter.userhost_cache(),
+          # CP15 B1: per-channel window state. Sibling to `members` —
+          # identical lifetime + supervision (in-process map, derived on
+          # boot from autojoin's natural transition flow per Q5; no
+          # persistence). Self-JOIN echo writes :joined; B2 adds :failed,
+          # B3 adds :kicked / :parted / :parked. Absence = :pending while
+          # an autojoin is in flight; absence after PART = :archived
+          # (derived externally by cic from the archive surface, B4).
+          window_states: %{String.t() => window_state()},
           autojoin: [String.t()],
           client: pid() | nil,
           notify_pid: pid() | nil,
@@ -309,6 +339,7 @@ defmodule Grappa.Session.Server do
       topics: %{},
       channel_modes: %{},
       userhost_cache: %{},
+      window_states: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
@@ -1589,6 +1620,27 @@ defmodule Grappa.Session.Server do
         }
       )
 
+    apply_effects(rest, state)
+  end
+
+  # CP15 B1: own-nick JOIN echo received → window transitions to :joined.
+  # Updates the in-process window_states map AND broadcasts on the
+  # per-channel topic so cic flips render state without polling. Cic
+  # subscribes via the same per-channel topic that already carries
+  # `members_seeded` + persisted-row events; no new transport.
+  defp apply_effects([{:joined, channel} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        %{
+          kind: "joined",
+          network: state.network_slug,
+          channel: channel,
+          state: "joined"
+        }
+      )
+
+    state = %{state | window_states: Map.put(state.window_states, channel, :joined)}
     apply_effects(rest, state)
   end
 
