@@ -81,6 +81,19 @@ const shouldKeepInOwnNickQuery = (msg: ScrollbackMessage, ownNick: string | null
 
 const exports = createRoot(() => {
   const loadedChannels = new Set<ChannelKey>();
+  // CP14 B2: per-key in-flight Set guards against scroll-burst fan-out
+  // (the user flicks the scrollbar; the browser fires `scroll` 5+ times
+  // in a frame and the onScroll handler would otherwise dispatch 5+
+  // identical REST requests). While a key is in `loadMoreInFlight`, a
+  // second `loadMore` call for the same key is a no-op. Released in
+  // `finally` so a transient REST error doesn't permanently lock out
+  // future retries — only the exhausted-latch is forward-only.
+  const loadMoreInFlight = new Set<ChannelKey>();
+  // CP14 B2: end-of-history latch. When `loadMore` returns 0 fresh
+  // rows, the channel is exhausted — the server has no rows older than
+  // our current oldest. Subsequent calls are no-ops. Latch is forward-
+  // only; cleared on identity transition alongside `loadedChannels`.
+  const loadMoreExhausted = new Set<ChannelKey>();
   const [scrollbackByChannel, setScrollbackByChannel] = createSignal<
     Record<ChannelKey, ScrollbackMessage[]>
   >({});
@@ -95,6 +108,8 @@ const exports = createRoot(() => {
     on(token, (t, prev) => {
       if (prev != null && t !== prev) {
         loadedChannels.clear();
+        loadMoreInFlight.clear();
+        loadMoreExhausted.clear();
         setScrollbackByChannel({});
       }
     }),
@@ -174,19 +189,44 @@ const exports = createRoot(() => {
     const t = token();
     if (!t) return;
     const key = channelKey(slug, name);
+    // CP14 B2 gates — order matters:
+    //   1. Exhausted latch first: if the channel has no older rows on
+    //      the server, every scroll-to-top would otherwise hit REST
+    //      and get an empty page back. One-line short-circuit.
+    //   2. In-flight guard second: a parallel scroll-burst converges
+    //      onto a single REST request; the second call returns void
+    //      while the first is still pending.
+    if (loadMoreExhausted.has(key)) return;
+    if (loadMoreInFlight.has(key)) return;
     const current = scrollbackByChannel()[key];
     if (!current || current.length === 0) return;
     const oldest = current[0];
     if (!oldest) return;
+    loadMoreInFlight.add(key);
     try {
       const page = await listMessages(t, slug, name, oldest.server_time);
       // Apply own-nick filter to load-more pages too — same
       // history-pollution risk as the initial-load page.
       const ownNick = ownNickIfOwnNickQuery(slug, name);
       const filtered = ownNick ? page.filter((m) => shouldKeepInOwnNickQuery(m, ownNick)) : page;
-      mergeIntoScrollback(key, filtered);
+      // CP14 B2: empty page from the server (or wholly-filtered page
+      // for own-nick queries) means there's no older history to
+      // load. Latch the channel so subsequent scroll-to-top events
+      // don't re-fetch. Use the unfiltered page length here — an
+      // own-nick query that filters away N notice rows but had real
+      // older privmsgs deserves another fetch round; only a wholly
+      // empty REST response is the genuine end-of-history signal.
+      if (page.length === 0) {
+        loadMoreExhausted.add(key);
+      } else {
+        mergeIntoScrollback(key, filtered);
+      }
     } catch {
-      // No-op for walking skeleton; user can retry by scrolling again.
+      // Transient error — do NOT latch as exhausted. The user can
+      // retry by scrolling again; the in-flight guard releases via
+      // the finally clause below.
+    } finally {
+      loadMoreInFlight.delete(key);
     }
   };
 
