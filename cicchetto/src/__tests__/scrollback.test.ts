@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Network, ScrollbackMessage } from "../lib/api";
+import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 
-// Boundary: mock REST (`lib/api`) + `lib/networks` (for own-nick
-// resolution used by the own-nick query filter). `scrollback.ts`
-// exposes pure verbs (`loadInitialScrollback`, `loadMore`,
-// `sendMessage`, `appendToScrollback`) that read/write the per-channel
-// signal store without any WS coupling — the WS path is exercised by
+// Boundary: mock REST (`lib/api`) only. CP14 B3 removed `lib/networks`
+// dependency from `scrollback.ts` (the own-nick query filter that
+// needed it is gone — server-side `:dm_with` now provides bidirectional
+// DM history without client-side filtering). The store exposes pure
+// verbs (`loadInitialScrollback`, `loadMore`, `sendMessage`,
+// `appendToScrollback`) that read/write the per-channel signal store
+// without any WS coupling — the WS path is exercised by
 // `subscribe.test.ts` separately.
 
 vi.mock("../lib/api", () => ({
@@ -18,16 +20,6 @@ vi.mock("../lib/api", () => ({
   login: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
-}));
-
-// Default: one network "freenode" with no nick (most existing tests
-// don't set own-nick and shouldn't be affected by the filter).
-// Own-nick filter tests override via seedNetworkWithNick() helper.
-vi.mock("../lib/networks", () => ({
-  networks: vi.fn(() => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
-  user: vi.fn(() => null),
-  channelsBySlug: vi.fn(() => ({})),
-  refetchChannels: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -194,220 +186,6 @@ describe("scrollback verbs", () => {
       meta: {},
     });
     expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.body)).toEqual(["first", "second"]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Own-nick query filter — shouldKeepInOwnNickQuery
-// ---------------------------------------------------------------------------
-//
-// When the scrollback channel key targets the operator's own IRC nick
-// (i.e. the query "window" is the operator talking to themselves),
-// REST history must only show self-msg rows (kind=privmsg/action,
-// sender===ownNick). NOTICEs from services/servers AND inbound PRIVMSGs
-// from other nicks must be filtered out — they are history-pollution
-// artefacts from the server-side persistence keying (IRC PRIVMSG/NOTICE
-// to target="grappa" is stored as channel="grappa" regardless of source).
-//
-// The filter is applied in `loadInitialScrollback` (REST page) and
-// `appendToScrollback` (live WS defensive gate).
-
-// Helper: build a minimal ScrollbackMessage with sensible defaults.
-const msg = (
-  overrides: Partial<ScrollbackMessage> & { kind: ScrollbackMessage["kind"] },
-): ScrollbackMessage => ({
-  id: 1,
-  network: "freenode",
-  channel: "grappa",
-  server_time: 100,
-  sender: "grappa",
-  body: "hi",
-  meta: {},
-  ...overrides,
-});
-
-describe("shouldKeepInOwnNickQuery — unit (via loadInitialScrollback filter)", () => {
-  // These tests drive the filter by seeding listMessages with rows that
-  // should be filtered and asserting they never appear in the store.
-  // The network mock supplies own-nick = "grappa" for slug "freenode".
-
-  const seedNetworkWithNick = async (nick: string) => {
-    const nets = await import("../lib/networks");
-    // networks is a SolidJS Resource — cast to MockedFunction to seed
-    // the return value for the own-nick resolution in scrollback.ts.
-    (nets.networks as unknown as { mockReturnValue(v: Network[]): void }).mockReturnValue([
-      { id: 1, slug: "freenode", nick, inserted_at: "x", updated_at: "y" },
-    ]);
-  };
-
-  it("keeps self-msg (kind=privmsg, sender=ownNick) in own-nick query window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 1, kind: "privmsg", sender: "grappa", body: "self-msg" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([1]);
-  });
-
-  it("keeps self-action (kind=action, sender=ownNick) in own-nick query window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 2, kind: "action", sender: "grappa", body: "/me does thing" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([2]);
-  });
-
-  it("filters NOTICE from NickServ (service) out of own-nick query window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 3, kind: "notice", sender: "NickServ", body: "identify your nick" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]).toEqual([]);
-  });
-
-  it("filters NOTICE from server hostname (sender contains dot) out of own-nick query window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 4, kind: "notice", sender: "raccooncity.azzurra.chat", body: "welcome" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]).toEqual([]);
-  });
-
-  it("filters inbound PRIVMSG from another user out of own-nick query window", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 5, kind: "privmsg", sender: "vjt", body: "hey grappa" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]).toEqual([]);
-  });
-
-  it("does not filter own-nick query window when network.nick is absent (visitor case)", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    // Network has no nick field — visitor / unknown: no filter applied.
-    const nets = await import("../lib/networks");
-    (nets.networks as unknown as { mockReturnValue(v: Network[]): void }).mockReturnValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
-    ]);
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 6, kind: "notice", sender: "NickServ", body: "identify" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    // Channel name "grappa" but no nick configured → pass through.
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([6]);
-  });
-
-  it("does not filter regular channel scrollback (non-own-nick target)", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 7, kind: "notice", sender: "ChanServ", channel: "#grappa", body: "welcome" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    // "#grappa" !== "grappa" → not own-nick key → no filter.
-    await scrollback.loadInitialScrollback("freenode", "#grappa");
-    const key = channelKey("freenode", "#grappa");
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([7]);
-  });
-
-  it("mixes kept + filtered rows — only self-msgs survive", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMessages).mockResolvedValue([
-      msg({ id: 10, kind: "privmsg", sender: "grappa", body: "my note" }),
-      msg({ id: 11, kind: "notice", sender: "NickServ", body: "hi" }),
-      msg({ id: 12, kind: "privmsg", sender: "vjt", body: "inbound dm" }),
-      msg({ id: 13, kind: "action", sender: "grappa", body: "stretches" }),
-    ]);
-    const scrollback = await import("../lib/scrollback");
-    await scrollback.loadInitialScrollback("freenode", "grappa");
-    const key = channelKey("freenode", "grappa");
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([10, 13]);
-  });
-});
-
-describe("appendToScrollback — own-nick query filter (defensive WS gate)", () => {
-  const seedNetworkWithNick = async (nick: string) => {
-    const nets = await import("../lib/networks");
-    (nets.networks as unknown as { mockReturnValue(v: Network[]): void }).mockReturnValue([
-      { id: 1, slug: "freenode", nick, inserted_at: "x", updated_at: "y" },
-    ]);
-  };
-
-  it("drops NOTICE appended to own-nick query channel key", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const scrollback = await import("../lib/scrollback");
-    const key = channelKey("freenode", "grappa");
-    scrollback.appendToScrollback(
-      key,
-      msg({ id: 20, kind: "notice", sender: "NickServ", body: "identify" }),
-    );
-    expect(scrollback.scrollbackByChannel()[key] ?? []).toEqual([]);
-  });
-
-  it("drops inbound PRIVMSG from other user appended to own-nick query channel key", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const scrollback = await import("../lib/scrollback");
-    const key = channelKey("freenode", "grappa");
-    scrollback.appendToScrollback(
-      key,
-      msg({ id: 21, kind: "privmsg", sender: "vjt", body: "hey" }),
-    );
-    expect(scrollback.scrollbackByChannel()[key] ?? []).toEqual([]);
-  });
-
-  it("keeps self-msg appended to own-nick query channel key", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const scrollback = await import("../lib/scrollback");
-    const key = channelKey("freenode", "grappa");
-    scrollback.appendToScrollback(
-      key,
-      msg({ id: 22, kind: "privmsg", sender: "grappa", body: "my-note" }),
-    );
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([22]);
-  });
-
-  it("passes through all messages on non-own-nick channel keys", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    await seedNetworkWithNick("grappa");
-    const scrollback = await import("../lib/scrollback");
-    const key = channelKey("freenode", "#grappa");
-    scrollback.appendToScrollback(
-      key,
-      msg({ id: 23, kind: "notice", sender: "ChanServ", channel: "#grappa", body: "welcome" }),
-    );
-    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([23]);
   });
 });
 
