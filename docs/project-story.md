@@ -1166,3 +1166,162 @@ when vjt said "sure push no problem". The next cluster trajectory
 (text-polish polish-deferred → M2 NickServ-IDP → anon-webirc → P4-V)
 inherits an admission stack that has been stress-tested in
 production by the only test that could have stress-tested it.
+
+## S40 — 2026-05-07 — CP15 event-driven windows: the model moves to the server
+
+The cluster's name was the spec. cicchetto used to assume window
+state — POST `/channels` succeeded, the sidebar entry appeared,
+the members pane fetched once via REST and cached. When the
+assumption matched IRC reality you couldn't tell anything was
+wrong. When it diverged — invite-only refusal, kick, T32 park
+once it lands, the WS reconnect race that drops the post-deploy
+`members_seeded` broadcast — the UI silently lied. Members
+rendered empty, ghost windows pinned, the compose box accepted
+text into channels we couldn't post in. The optimistic STATE
+pattern was structurally incapable of representing JOIN failure
+or KICK; cic was the source of truth for state cic could not
+actually observe. The fix was to admit that and move the state
+machine to where the truth lived: the server.
+
+The arc spread across six buckets and a docs sweep. B1 added the
+typed `:joined` event on JOIN echo from the server side, simplest
+possible scope to prove the wire shape. B2 added `:join_failed`
+with reason + numeric, and the in-flight JOIN map server-side so
+the failure could route back to the originating channel rather
+than the user-level fallback. B3 added `:parted` and `:kicked`
+plus the `push_channel_snapshot` extension that meant cic's
+members pane stopped polling and started listening. B4 added the
+REST `/networks/:slug/archive` endpoint plus the cic Sidebar
+archive section: the reciprocal of the active list, surfacing
+targets that had scrollback rows but weren't currently joined.
+B5 was where cic finally caught up — `lib/windowState.ts` mirror
+module, `lib/subscribe.ts` dispatch, drop the optimistic STATE
+assumption, drop the `loadMembers` REST verb. The members pane
+became event-driven for real: server pushes `members_seeded` on
+after_join AND on every upstream 366 RPL_ENDOFNAMES, cic has no
+remaining reason to call `GET /members`. B6 was the e2e matrix
+against the real Bahamut testnet — and the bucket where the
+cluster's actual lessons surfaced.
+
+Three pre-existing bugs the e2e matrix made visible. The first
+was a sidebar projection that was keyed too narrowly: the helper
+emitted a row for state == "pending" channels not yet in the
+live channels list, but failed/kicked/parked windows whose
+channel never reached the live list had no sidebar entry at all.
+The fix was small — rename + extend to all four non-joined
+states — but the lesson was structural. When state lives in two
+stores, the projection MUST key on the store that's
+authoritative for the question being asked. The sidebar's
+question is "what windows exist?"; the answer is
+`windowStateByChannel`, not `channelsBySlug`. Future state
+additions — the T32 `:parked` once disconnect/connect verbs ship,
+any SASL-gated `:locked` if that ever happens — inherit the
+synthetic-row treatment mechanically as long as they go in the
+authoritative store. The contract makes new states a server
+change, not a UI rewrite.
+
+The second bug was a Jason crash at the WS edge that explained a
+"DM windows you close stay open server-side" mystery dating back
+weeks. `Grappa.QueryWindows.broadcast_windows_list/2` was sending
+raw `%Window{}` structs over PubSub. The struct doesn't derive
+`Jason.Encoder`; Phoenix's `fastlane!/1` crashed at fan-out; the
+crash dropped the user-channel process; any subsequent
+`close_query_window` push from cic landed on a dying ref and was
+silently lost. The fix was a `Grappa.QueryWindows.Wire` module,
+sibling to the existing `Grappa.Scrollback.Wire`. Both
+broadcasts and channel pushes delegate through it. The wire
+module pattern — context-owned JSON-encodable wire conversion,
+controllers + channels delegate — became the project's standard
+mid-cluster, retroactively justified by a bug whose root cause
+was structural, not local. The lesson generalised: persisting a
+struct over PubSub does NOT auto-render it as JSON. Wire-shape
+conversion is a per-context responsibility, owned by the context,
+not implicit in `Phoenix.PubSub.broadcast/3`.
+
+The third bug was small and instructive. The `:join_failed`
+effect arm persisted the failure reason as a `:notice` scrollback
+row but only broadcast the typed `kind: "join_failed"` event —
+never the wire-shape `kind: "message"` event for the persisted
+notice. cic's scrollback view is once-per-channel-loaded, so the
+notice landed in the DB but never in the live view unless the
+user reloaded the page. Fix: pair every `:persist` effect with a
+`kind: "message"` push if the row needs to land in the live view.
+Typed window-state events and persisted message events are
+parallel channels in the wire contract; a row in the DB does not
+imply a row on the screen.
+
+The testnet rabbit-hole almost made the cluster a different
+shape. Three days of e2e flake suddenly made sense once we
+OPER'd up + ran `/STATS l` against the testnet hub. The leaf's
+autoconnect class connfreq was 180 seconds default; first dial
+fired before the hub was ready, then the leaf waited three
+minutes to retry — past test runtime. The bahamut hub had
+NO_CHANOPS_WHEN_SPLIT compiled in, denying auto-op on fresh
+channels for five minutes after daemon boot even with the link
+up, blocking every fixture that needed chanop privs. The
+`hub.azzurra.chat` alias on the wrong docker bridge was
+poisoning leaf4's view of the hub, resolving to an unreachable
+IP. Three intertwined infra bugs, each invisible from inside cic
+or grappa. The fixes landed in `vjt/azzurra-testnet@e023db1` +
+`@afd3ae8` + `compose.yaml`, plus a new `scripts/testnet.sh`
+wrapper for iterative debugging (`up | down | status | logs <svc>
+| probe | shell <svc>`) and an `integration.sh` refactor that
+shrunk from 165 LOC to ~60 by delegating stack lifecycle. The
+flake budget the cluster spent on testnet plumbing paid off: the
+e2e matrix is now stable enough to run unattended on every PR.
+
+Browser smoke caught one last surprise. The kicked-flow
+synthetic row appeared MISSING on prod despite the deploy
+succeeding. Root cause: the prod tab was running pre-deploy JS
+(`index-Tsa4Tfom.js` instead of post-deploy `index-CiYQNUz0.js`).
+Asset-hash cache-busting works for fresh sessions but not for
+already-open tabs. Hard reload, the synthetic row was there.
+Captured in the cicchetto-browser-smoke memory as step zero of
+the smoke procedure: hard-reload the prod tab first, before
+anything else.
+
+The deferred parked flow is the bridge to the next cluster.
+`cp15-b6-parked.spec.ts` doesn't exist yet because flipping
+`connection_state: "parked"` requires the T32 PATCH
+`/networks/:slug` REST surface plus cic's `/disconnect` /
+`/connect` ComposeBox arms. Both land in `channel-client-polish`,
+the cluster that opens next, with T32 first because the parked-
+flow e2e is gated on it. The synthetic-row + greyed-class
+treatment is already in place for `:parked` thanks to the
+sidebar projection's authoritative key being
+`windowStateByChannel`. Once T32 ships, the e2e is mechanical.
+
+**Law:** when client-side state is "what the client expects to be
+true," it lies. The server owns the system state; the client
+mirrors. Optimistic UI is acceptable as a render-tick latency
+cover (cic's `setPending` on `/join` flips the row to pending
+synchronously for visual feedback) but never as the source of
+truth. Every state transition is a server-emitted typed event;
+absence-keys derive from the existing presence-message stream.
+The `windowStateByChannel` mirror is the contract: any new state
+goes there, any projection keying off "what windows exist" reads
+from there, the rest is mechanical.
+
+**Law:** wire-shape conversion is a context responsibility, not a
+Phoenix-PubSub responsibility. PubSub will happily fan out a
+struct that crashes at the WS edge. `Jason.Encoder` derive on
+schemas hides the bug at compile time but doesn't fix it: the
+storage shape rarely matches the wire shape, and "the schema
+encodes but the wire-shape is wrong" is a bigger class of bug
+than "the schema doesn't encode." Wire modules per context —
+`Grappa.Scrollback.Wire`, `Grappa.QueryWindows.Wire`,
+`Grappa.Networks.Wire` — are the standard. Controllers + channels
++ broadcasts all delegate through them. PubSub broadcast +
+Channel push payloads MUST be JSON-encodable, and the wire
+module is the place where that's enforced.
+
+**Law:** the e2e suite is the only place pre-existing bugs from
+parallel-channel design choices surface. Three bugs all preceded
+CP15 by weeks; all were invisible to the unit suite, the
+integration suite, and casual browser smoke. The e2e matrix
+walked the full window-state transition graph for the first
+time, and each bug was a "the test found something the
+integration was hiding" moment. When you build the matrix that
+exercises every state transition end-to-end, the bugs you find
+are not new — they're the ones that the half-coverage matrix had
+been letting through.
