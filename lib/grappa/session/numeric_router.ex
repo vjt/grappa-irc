@@ -2,61 +2,66 @@ defmodule Grappa.Session.NumericRouter do
   @moduledoc """
   Pure routing matrix for IRC server numerics.
 
-  Implements the numeric-to-window routing strategy documented in spec
-  feature #21 ("User-action numeric replies route to originating/natural
-  window"). Returns a routing decision that `Grappa.Session.Server` uses
-  to determine which cicchetto window receives the `numeric_routed` event.
+  Implements the numeric-to-window routing strategy from CP13 (server-window
+  cluster). Returns a `routing_decision()` that `Grappa.Session.Server` uses
+  to decide which window receives the persisted `:notice` row carrying the
+  numeric's trailing text.
 
-  ## Routing strategy (spec feature #21)
+  ## Routing strategy (CP13)
 
-  Priority order (highest to lowest):
+  Priority order (highest → lowest):
 
-  1. **Label-based**: if the numeric carries an IRCv3 `label` message-tag
-     AND that label is in `state.labels_pending`, the registered
-     `origin_window` wins unconditionally. This is the perfect-correlation
-     path when the upstream supports the `labeled-response` cap.
+  1. **Label-based** (IRCv3 `labeled-response` cap): if the numeric carries
+     a `label` message-tag AND the label is registered in `labels_pending`,
+     the recorded `origin_window` wins unconditionally — perfect-correlation
+     path.
 
-  2. **Param-derived** (by numeric class):
-     - **Channel-param numerics** (404, 442, 471, 472, 473, 474, 475, 477,
-       478, 482, 367, 368) — extract the channel name from params and route
-       to `{:channel, "#chan"}`.
-     - **Nick-param numerics** (401) — extract the nick from params; if a
-       query window is open for that nick (case-insensitive), route to
-       `{:query, nick}`; otherwise fall through to `:active`.
-     - **No-useful-param numerics** (432, 433, 437, 421, 461, 305, 306) —
-       go to `:active` resolution.
+  2. **Delegated**: WHOIS (311–319), WHO (352/315), NAMES (353/366),
+     LIST (321/322/323), LINKS (364/365), MOTD (375/372/376) — owned by
+     dedicated handlers in `EventRouter`. We return `:delegated`; the caller
+     skips the matrix.
 
-  3. **Active resolution**: `:active` resolves against `last_command_window`
-     from Session.Server state. If `last_command_window` is set, the
-     decision mirrors that window's `{kind, target}`. If nil, `{:active, nil}`
-     is returned (cicchetto uses whatever window is currently focused).
+  3. **Active deny list** (`@active_numerics`): a small set of numerics
+     whose params look nick-shaped but the "nick" is not a routing
+     destination — it's the rejected nick (433/432), the unknown command
+     name (421), the offending command's argument list (461), or just an
+     ack (305/306/437). These ALWAYS go to `{:server, nil}`. Without this
+     deny list, the param-scan below would happily route 433's
+     "BLEH-as-nick" to a query window.
 
-  4. **Delegated numerics**: WHOIS (311–319), WHO (352/315), NAMES (353/366),
-     LIST (321/322/323), LINKS (364/365), MOTD (375/372/376) are already
-     handled by their dedicated features (#2, #14, #15, #16, #4) in
-     `EventRouter`. This module returns `:delegated` for them; the caller
-     must skip the routing matrix and let the existing handlers own these.
+  4. **Param scan** (the general case): walk `params`, skipping
+     `params[0]` (own-nick echo) and the last element (trailing
+     human-readable text). Take the first match in this priority:
+
+     a. `^[#&!+]` → channel name → `{:channel, name}`.
+     b. `valid_nick?/1` AND `!= own_nick` AND no `.` (excludes server
+        hostnames whose syntax overlaps with nicks) → `{:query, nick}`.
+     c. else → `{:server, nil}`.
+
+  ## Design notes
+
+  * The deny list is closed-set on purpose — adding a numeric to it is a
+    deliberate "this looks routable but isn't" call. Unknown numerics fall
+    through the param scan; if they have a channel-shaped param they go
+    there, otherwise `$server`. This is the safe default — at worst a row
+    lands on `$server` instead of a more specific window. No silent loss.
+  * `last_command_window` resolution is gone from this module. It survives
+    in `Server.ex` only for labeled-response correlation bookkeeping.
+    Pre-CP13 the router used it as the `:active` fallback target, but the
+    new design's "scan-then-server" fallback is cleaner — no dependency on
+    command-send-time state.
 
   ## Purity contract
 
-  This module has NO side effects. It reads:
+  No side effects. Reads:
     - The `%Grappa.IRC.Message{}` struct (tags + params).
-    - A state subset: `open_query_nicks`, `last_command_window`,
-      `labels_pending`.
+    - A state subset: `own_nick`, `labels_pending`.
 
-  Callers (Session.Server) extract the relevant state fields and pass them
-  in. Never add Repo calls, Logger, or PubSub here.
-
-  ## Types
-
-  `routing_decision/0` is the closed set of outcomes. `window_kind/0`
-  mirrors the `kind:` discriminator used in the `numeric_routed` channel event.
-
-  See also: `Grappa.Session.Server` for `last_command_window` and
-  `labels_pending` state fields; `Grappa.Session.EventRouter` for
-  delegated numeric handling.
+  See also: `Grappa.Session.Server` for the `labels_pending` map;
+  `Grappa.Session.EventRouter` for delegated numeric handling.
   """
 
+  alias Grappa.IRC.Identifier
   alias Grappa.IRC.Message
 
   @typedoc """
@@ -64,48 +69,37 @@ defmodule Grappa.Session.NumericRouter do
 
     * `{:channel, chan}` — route to the named channel's window.
     * `{:query, nick}` — route to the DM/query window for nick.
-    * `{:server, nil}` — route to the server-messages pseudo-window.
-    * `{:list, nil}` — route to the /list pseudo-window.
-    * `{:mentions, nil}` — route to the mentions pseudo-window.
-    * `{:active, nil}` — route to whichever window is currently focused in
-      cicchetto (or whichever `last_command_window` points to — see S4.3).
+    * `{:server, nil}` — route to the `$server` synthetic window.
     * `:delegated` — numeric is owned by a dedicated handler; skip the matrix.
   """
   @type routing_decision ::
-          {window_kind(), String.t() | nil}
-          | {:active, nil}
+          {:channel, String.t()}
+          | {:query, String.t()}
+          | {:server, nil}
           | :delegated
 
   @typedoc """
   Window kind discriminator — mirrors the `kind:` atom in `window_ref()`.
   """
-  @type window_kind :: :channel | :query | :server | :list | :mentions
+  @type window_kind :: :channel | :query | :server
 
   @typedoc """
   A window reference: the `kind:` discriminator + optional `target:` name.
-  This mirrors the `last_command_window` shape in `Session.Server.state()`.
   """
   @type window_ref :: %{kind: window_kind(), target: String.t() | nil}
 
   @typedoc """
   The state subset this module reads. Session.Server extracts these fields
-  and passes them in to keep NumericRouter pure (no GenServer calls, no Repo).
+  and passes them in to keep NumericRouter pure.
 
-    * `open_query_nicks` — a `MapSet` of **lowercased** nick strings for
-      which the user currently has an open DM window. Currently always empty
-      (QueryWindows dep would cause a compile-time cycle Session → QW → Networks
-      → Session); a PubSub-driven cache is the planned upgrade path if the
-      heuristic is needed in production.
-    * `last_command_window` — the most-recently-used window for a
-      cicchetto-originated command; `nil` when no command has been issued
-      in this session yet. Set by Session.Server on every outbound command.
-    * `labels_pending` — `%{label_string => window_ref}` tracking in-flight
-      labeled-response correlations. Bounded to in-flight commands (typically
-      <10); Session.Server cleans up on numeric arrival.
+    * `own_nick` — the user's current IRC nick. Used to skip `params[0]`
+      (which is always the own-nick echo) and to filter the param scan
+      (a routed numeric's own-nick mention is never a destination).
+    * `labels_pending` — `%{label_string => window_ref}` tracking
+      labeled-response correlations. Bounded by in-flight commands.
   """
   @type router_state :: %{
-          required(:open_query_nicks) => MapSet.t(),
-          required(:last_command_window) => window_ref() | nil,
+          required(:own_nick) => String.t() | nil,
           required(:labels_pending) => %{String.t() => window_ref()}
         }
 
@@ -113,63 +107,28 @@ defmodule Grappa.Session.NumericRouter do
   # Numeric class lookup tables (compile-time)
   # ---------------------------------------------------------------------------
 
-  # Channel-param numerics: the channel name appears in params (typically at
-  # index 1 after own-nick, but pattern extraction handles both 2-param and
-  # 3-param shapes).
-  @channel_param_numerics MapSet.new([
-                            # 404 ERR_CANNOTSENDTOCHAN — tried to speak in +m without voice
-                            404,
-                            # 442 ERR_NOTONCHANNEL — e.g. tried to PART a channel not in
-                            442,
-                            # 471 ERR_CHANNELISFULL — JOIN rejected, channel limit (+l)
-                            471,
-                            # 472 ERR_UNKNOWNMODE — unknown mode character for channel
-                            472,
-                            # 473 ERR_INVITEONLYCHAN — JOIN rejected, invite-only (+i)
-                            473,
-                            # 474 ERR_BANNEDFROMCHAN — JOIN rejected, user is banned
-                            474,
-                            # 475 ERR_BADCHANNELKEY — JOIN rejected, wrong key (+k)
-                            475,
-                            # 477 ERR_NOCHANMODES — channel doesn't support modes
-                            477,
-                            # 478 ERR_BANLISTFULL — ban list is full
-                            478,
-                            # 482 ERR_CHANOPRIVSNEEDED — need op to do this
-                            482,
-                            # 367 RPL_BANLIST — a ban list entry
-                            367,
-                            # 368 RPL_ENDOFBANLIST — end of ban list
-                            368
-                          ])
-
-  # Nick-param numerics: the target nick appears in params at index 1.
-  @nick_param_numerics MapSet.new([
-                         # 401 ERR_NOSUCHNICK — nick or channel doesn't exist
-                         401
-                       ])
-
-  # Active (param-less) numerics: no useful param for routing; use
-  # last_command_window or focus heuristic.
+  # Active deny list: numerics whose params look nick-shaped but the
+  # token is NOT a routing destination — it's the rejected/offending
+  # input. Always go to `{:server, nil}`. Closed set; expand deliberately.
   @active_numerics MapSet.new([
+                     # 305 RPL_UNAWAY — upstream confirmed away unset
+                     305,
+                     # 306 RPL_NOWAWAY — upstream confirmed away set
+                     306,
+                     # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
+                     421,
                      # 432 ERR_ERRONEUSNICKNAME — bad nick format in /nick
                      432,
                      # 433 ERR_NICKNAMEINUSE — nick taken in /nick
                      433,
                      # 437 ERR_UNAVAILRESOURCE — nick temporarily unavailable
                      437,
-                     # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
-                     421,
                      # 461 ERR_NEEDMOREPARAMS — command missing required params
-                     461,
-                     # 305 RPL_UNAWAY — upstream confirmed away unset
-                     305,
-                     # 306 RPL_NOWAWAY — upstream confirmed away set
-                     306
+                     461
                    ])
 
-  # Delegated numerics: already handled by dedicated EventRouter/Server handlers.
-  # This router returns :delegated; the caller must skip the matrix for these.
+  # Delegated numerics: already handled by dedicated EventRouter/Server
+  # handlers. `:delegated` short-circuits the matrix; the caller defers.
   @delegated_numerics MapSet.new([
                         # WHOIS replies (311–319)
                         311,
@@ -205,16 +164,15 @@ defmodule Grappa.Session.NumericRouter do
   Builds a `router_state()` from its components.
 
   Callers (Session.Server) use this constructor rather than building the map
-  literal directly — Dialyzer can verify the opaque `MapSet.t()` subtype via
-  the function's return spec, avoiding `call_without_opaque` false-positives
-  at the `route/2` call site.
+  literal directly — Dialyzer can verify the opaque types via the function's
+  return spec, avoiding `call_without_opaque` false-positives at the
+  `route/2` call site.
   """
-  @spec new_router_state(MapSet.t(), window_ref() | nil, %{String.t() => window_ref()}) ::
+  @spec new_router_state(String.t() | nil, %{String.t() => window_ref()}) ::
           router_state()
-  def new_router_state(open_query_nicks, last_command_window, labels_pending) do
+  def new_router_state(own_nick, labels_pending) do
     %{
-      open_query_nicks: open_query_nicks,
-      last_command_window: last_command_window,
+      own_nick: own_nick,
       labels_pending: labels_pending
     }
   end
@@ -222,23 +180,23 @@ defmodule Grappa.Session.NumericRouter do
   @doc """
   Routes one numeric `%Message{}` to a `routing_decision()`.
 
-  Priority: labeled-response (S4.2) > param-derived > active fallback (S4.3).
+  Priority: label-override > delegated > active-deny → `{:server, nil}` >
+  param scan (channel-prefix → nick-shaped non-own non-host → fallback
+  `{:server, nil}`).
 
-  Delegated numerics return `:delegated` immediately — the caller must not
-  broadcast a `numeric_routed` event for these; the dedicated handlers own them.
+  Delegated numerics return `:delegated` immediately — the caller must
+  skip persistence; the dedicated handlers own them.
 
   `state` must satisfy `router_state()` — Session.Server builds this view
   from its own state before calling.
   """
   @spec route(Message.t(), router_state()) :: routing_decision()
   def route(%Message{command: {:numeric, code}} = msg, state) do
-    # Step 1: label-based override (S4.2 labeled-response)
     case label_lookup(msg, state) do
       {:ok, window_ref} ->
         window_ref_to_decision(window_ref)
 
       :miss ->
-        # Step 2: param-derived routing by numeric class
         param_derived_route(code, msg, state)
     end
   end
@@ -257,7 +215,6 @@ defmodule Grappa.Session.NumericRouter do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  # Step 1: check if the numeric has a @label tag that matches a pending label.
   @spec label_lookup(Message.t(), router_state()) :: {:ok, window_ref()} | :miss
   defp label_lookup(%Message{} = msg, state) do
     case Message.tag(msg, "label") do
@@ -272,59 +229,85 @@ defmodule Grappa.Session.NumericRouter do
     end
   end
 
-  # Step 2: param-derived routing.
-  # MapSet.member?/2 cannot be used in guards, so we use cond instead.
   @spec param_derived_route(1..999, Message.t(), router_state()) :: routing_decision()
   defp param_derived_route(code, msg, state) do
     cond do
       MapSet.member?(@delegated_numerics, code) ->
         :delegated
 
-      MapSet.member?(@channel_param_numerics, code) ->
-        route_channel_param(msg, state)
-
-      MapSet.member?(@nick_param_numerics, code) ->
-        route_nick_param(msg, state)
-
       MapSet.member?(@active_numerics, code) ->
-        resolve_active(state)
+        {:server, nil}
 
-      # Unknown numeric → active (don't crash on vendor extensions)
       true ->
-        resolve_active(state)
+        scan_params(msg.params, state)
     end
   end
 
-  # Channel-param: channel name is at params[1] (after own-nick at params[0]).
-  defp route_channel_param(%Message{params: [_, channel | _]}, _)
-       when is_binary(channel) do
-    {:channel, channel}
-  end
+  # Walk the params skipping params[0] (own-nick echo) and the last element
+  # (trailing human-readable text). The first channel-prefix param wins; if
+  # none, the first nick-shaped non-own non-host param wins; else $server.
+  @spec scan_params([term()], router_state()) :: routing_decision()
+  defp scan_params(params, state) when is_list(params) do
+    candidates = candidate_params(params)
+    own_nick = state.own_nick
 
-  # Malformed numeric with no channel param — fall back to active.
-  defp route_channel_param(%Message{params: _}, state) do
-    resolve_active(state)
-  end
+    case Enum.find(candidates, &channel_prefix?/1) do
+      chan when is_binary(chan) ->
+        {:channel, chan}
 
-  # Nick-param: nick is at params[1]. Case-insensitive lookup against open query windows.
-  defp route_nick_param(%Message{params: [_, nick | _]}, state) when is_binary(nick) do
-    if MapSet.member?(state.open_query_nicks, String.downcase(nick)) do
-      {:query, nick}
-    else
-      resolve_active(state)
+      nil ->
+        case Enum.find(candidates, &query_candidate?(&1, own_nick)) do
+          nick when is_binary(nick) -> {:query, nick}
+          nil -> {:server, nil}
+        end
     end
   end
 
-  defp route_nick_param(%Message{params: _}, state) do
-    resolve_active(state)
+  # params[0] = own-nick echo, last = trailing human-readable text. Drop both.
+  # Empty / 1-elem / 2-elem param lists yield no candidates.
+  @spec candidate_params([term()]) :: [term()]
+  defp candidate_params([]), do: []
+  defp candidate_params([_only]), do: []
+  defp candidate_params([_first, _last]), do: []
+
+  defp candidate_params([_first | rest]) do
+    # rest still has the trailing element at its tail — drop it.
+    Enum.drop(rest, -1)
   end
 
-  # Active resolution: last_command_window > {:active, nil}.
-  defp resolve_active(%{last_command_window: %{kind: kind, target: target}}),
-    do: {kind, target}
+  @spec channel_prefix?(term()) :: boolean()
+  defp channel_prefix?(<<c, _::binary>>) when c in [?#, ?&, ?!, ?+], do: true
+  defp channel_prefix?(_), do: false
 
-  defp resolve_active(_), do: {:active, nil}
+  # A token is a query-window candidate iff:
+  #   * it's a syntactically valid IRC nick, AND
+  #   * it isn't the own-nick echo (case-insensitive), AND
+  #   * it doesn't contain a `.` (excludes server hostnames whose syntax
+  #     overlaps with nicks via the [|]\\`_^{} chars but always carry dots).
+  # The `.` exclusion is defensive belt-and-braces: `Identifier.valid_nick?`
+  # already rejects dots via `\w` in the regex, but if the regex evolves to
+  # accept dotted nicks (some IRCds allow them) this scan still excludes
+  # server hostnames.
+  @spec query_candidate?(term(), String.t() | nil) :: boolean()
+  defp query_candidate?(token, own_nick) when is_binary(token) do
+    Identifier.valid_nick?(token) and
+      not String.contains?(token, ".") and
+      not nick_eq?(token, own_nick)
+  end
 
-  # Convert a window_ref to a routing_decision tuple.
-  defp window_ref_to_decision(%{kind: kind, target: target}), do: {kind, target}
+  defp query_candidate?(_, _), do: false
+
+  @spec nick_eq?(String.t(), String.t() | nil) :: boolean()
+  defp nick_eq?(_, nil), do: false
+  defp nick_eq?(a, b) when is_binary(a) and is_binary(b), do: String.downcase(a) == String.downcase(b)
+
+  @spec window_ref_to_decision(window_ref()) :: routing_decision()
+  defp window_ref_to_decision(%{kind: :channel, target: target}) when is_binary(target),
+    do: {:channel, target}
+
+  defp window_ref_to_decision(%{kind: :query, target: target}) when is_binary(target),
+    do: {:query, target}
+
+  defp window_ref_to_decision(%{kind: :server, target: nil}),
+    do: {:server, nil}
 end

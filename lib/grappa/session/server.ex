@@ -1409,24 +1409,17 @@ defmodule Grappa.Session.Server do
   defp label_tag(label) when is_binary(label), do: "@label=#{label} "
 
   # ---------------------------------------------------------------------------
-  # S4.3 — NumericRouter state builder + helpers
+  # NumericRouter state builder
   # ---------------------------------------------------------------------------
 
-  # Builds the `NumericRouter.router_state()` subset from full Session.Server
-  # state. `open_query_nicks` is always empty — querying `QueryWindows` from
-  # Session.Server would introduce a compile-time cycle (Session → QueryWindows
-  # → Networks → Session). The label-based path (S4.2) and `last_command_window`
-  # fallback (S4.3) cover the dominant routing cases; the open-query-nicks
-  # heuristic for unlabeled 401 replies is a future enhancement if needed
-  # (requires a PubSub-driven cache in Session.Server state, not a direct DB
-  # read, to avoid the cycle). Uses the NumericRouter constructor so Dialyzer
-  # can verify the opaque MapSet.t() subtype via the function spec.
+  # Builds the `NumericRouter.router_state()` view from full Session.Server
+  # state. CP13: the router only needs `own_nick` (to skip the params[0]
+  # echo and exclude self-mentions from query candidates) and
+  # `labels_pending` (for labeled-response correlation). It no longer reads
+  # `last_command_window` or `open_query_nicks` — the new "scan-then-server"
+  # fallback is purely syntactic on params.
   defp build_router_state(state) do
-    NumericRouter.new_router_state(
-      MapSet.new(),
-      state.last_command_window,
-      state.labels_pending
-    )
+    NumericRouter.new_router_state(state.nick, state.labels_pending)
   end
 
   # Extracts the integer numeric code from a numeric Message.
@@ -1437,7 +1430,7 @@ defmodule Grappa.Session.Server do
   # Only called for non-:delegated routing decisions (the :delegated branch in
   # the numeric handler calls delegate/2 directly). The type is narrowed to
   # `{kind, target}` tuples only; :delegated never arrives here at runtime.
-  @spec routing_to_window_map({:channel, String.t()} | {:query, String.t()} | {:active, nil} | {:server, nil}) :: %{
+  @spec routing_to_window_map({:channel, String.t()} | {:query, String.t()} | {:server, nil}) :: %{
           kind: atom(),
           target: String.t() | nil
         }
