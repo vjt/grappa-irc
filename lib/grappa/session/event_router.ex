@@ -82,6 +82,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
+  alias Grappa.IRC.Identifier
   alias Grappa.IRC.Message
   alias Grappa.Session
 
@@ -723,15 +724,31 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # BUG2: server-origin NOTICEs whose "channel" target is not a real IRC channel
-  # (i.e. the target is the user's own nick — server sends `NOTICE nick :text`)
-  # are re-routed to the "$server" synthetic channel. This captures connection
-  # banners, auth prompts, and flood warnings that servers send as server-level
-  # notices rather than channel notices.
-  # Pattern matching on the first byte of `target`:
-  #   - '#', '&', '!', '+' (ASCII 35, 38, 33, 43) → real channel → pass to
-  #     the existing channel-notice handler below.
-  #   - Anything else (nick or server name) → server-origin → "$server".
+  # CP13 server-window cluster: NOTICE addressed to a non-channel target
+  # (server sends `NOTICE <ourNick> :text` or `NOTICE <ourNick> :[ #chan ] msg`)
+  # gets sorted into one of three windows via a priority chain:
+  #
+  #   1. **ChanServ-bracketed** — Anope/Atheme/InspIRCd ChanServ wraps
+  #      access-channel messages as `[ #chan ]: text`. We persist them on
+  #      the bracketed channel with the prefix stripped so they appear
+  #      inline with the channel's scrollback. Falls through to the next
+  #      clause if the body doesn't parse — empirical brittleness, but
+  #      no graceful upstream IRC standard exists.
+  #   2. **Services sender** (`~r/Serv$/i`) — NickServ, ChanServ
+  #      (when not bracketed), MemoServ, BotServ, OperServ, HostServ,
+  #      etc. → `$server` synthetic window.
+  #   3. **Server hostname sender** (`.` in sender) — connection
+  #      banners, /MOTD-style numerics, k-line warnings → `$server`.
+  #   4. **Regular user nick** — peer sent us a non-CTCP NOTICE; persist
+  #      on `channel = sender_nick` so it lands in the same query window
+  #      a PRIVMSG-to-own-nick would.
+  #
+  # Pre-CP13 this single matcher greedy-routed everything to `$server` —
+  # the new chain preserves NickServ/MOTD behavior while restoring
+  # ChanServ inline + per-user notices.
+  @chanserv_bracket_regex ~r/^\[\s*(#\S+)\s*\]\s*:?\s*(.*)$/s
+  @services_sender_regex ~r/Serv$/i
+
   def route(
         %Message{command: :notice, params: [target, body]} = msg,
         state
@@ -740,11 +757,59 @@ defmodule Grappa.Session.EventRouter do
              byte_size(target) > 0 and
              binary_part(target, 0, 1) not in ["#", "&", "!", "+"] do
     sender = Message.sender_nick(msg)
-    {state, eff} = build_persist(state, :notice, "$server", sender, body, %{})
+    {channel, body_to_persist} = route_non_channel_notice(sender, body)
+    {state, eff} = build_persist(state, :notice, channel, sender, body_to_persist, %{})
     {:cont, state, [eff]}
   end
 
   def route(%Message{} = _, state), do: {:cont, state, []}
+
+  # Decide which window a non-channel NOTICE lands in + the body to persist.
+  # Pure: takes sender + body, returns {channel, body}. The ChanServ branch
+  # rewrites body to drop the `[ #chan ]:` prefix; other branches return
+  # body unchanged.
+  @spec route_non_channel_notice(String.t(), String.t()) :: {String.t(), String.t()}
+  defp route_non_channel_notice(sender, body) do
+    case chanserv_bracket_match(sender, body) do
+      {_, _} = bracket -> bracket
+      nil -> route_non_channel_notice_non_chanserv(sender, body)
+    end
+  end
+
+  @spec route_non_channel_notice_non_chanserv(String.t(), String.t()) ::
+          {String.t(), String.t()}
+  defp route_non_channel_notice_non_chanserv(sender, body) do
+    cond do
+      Regex.match?(@services_sender_regex, sender) ->
+        {"$server", body}
+
+      String.contains?(sender, ".") ->
+        {"$server", body}
+
+      Identifier.valid_nick?(sender) ->
+        # Regular user nick → me; persist on channel = sender_nick so it
+        # lands in the same query window a PRIVMSG-to-own-nick would.
+        {sender, body}
+
+      true ->
+        # Anonymous-sender sentinel ("*") or other non-nick senders we
+        # can't attribute. Fall back to $server so the row still lands
+        # somewhere — losing it would mask connection-time diagnostics.
+        {"$server", body}
+    end
+  end
+
+  @spec chanserv_bracket_match(String.t(), String.t()) :: {String.t(), String.t()} | nil
+  defp chanserv_bracket_match(sender, body) do
+    if String.downcase(sender) == "chanserv" do
+      case Regex.run(@chanserv_bracket_regex, body) do
+        [_, channel, stripped_body] -> {channel, stripped_body}
+        _ -> nil
+      end
+    else
+      nil
+    end
+  end
 
   # CTCP framing: \x01<verb> ...\x01 — CLAUDE.md preserves verbatim in
   # scrollback body. ACTION (CTCP /me) is the only verb that earns its
