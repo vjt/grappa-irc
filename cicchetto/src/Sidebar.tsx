@@ -76,6 +76,25 @@ const Sidebar: Component<Props> = (props) => {
                   class="sidebar-window-btn"
                 >
                   <span class="sidebar-channel-name">Server</span>
+                  {/* CP13 — server-window receives :notice rows for server-routed
+                      numerics + NickServ + MOTD + ChanServ-fallback. Same badge
+                      treatment as channels so unread counts surface uniformly. */}
+                  {(() => {
+                    const key = channelKey(network.slug, "$server");
+                    return (
+                      <>
+                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                        </Show>
+                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
+                        </Show>
+                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                          <span class="sidebar-mention">@{mentionCounts()[key]}</span>
+                        </Show>
+                      </>
+                    );
+                  })()}
                 </button>
               </li>
 

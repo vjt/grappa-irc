@@ -23,12 +23,12 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
   unreadCounts: () => ({ "freenode #bnc": 5 }),
-  messagesUnread: () => ({ "freenode #bnc": 5 }),
-  eventsUnread: () => ({}),
+  messagesUnread: () => ({ "freenode #bnc": 5, "freenode $server": 4 }),
+  eventsUnread: () => ({ "freenode $server": 1 }),
 }));
 
 vi.mock("../lib/mentions", () => ({
-  mentionCounts: () => ({ "freenode #italia": 2 }),
+  mentionCounts: () => ({ "freenode #italia": 2, "freenode $server": 3 }),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -64,6 +64,18 @@ describe("BottomBar", () => {
     render(() => <BottomBar />);
     const serverTabs = screen.getAllByText("Server");
     expect(serverTabs.length).toBe(2);
+  });
+
+  // CP13 — Server tab also surfaces the 3 badge classes.
+  it("renders all 3 badge classes on the Server tab when counts present", () => {
+    render(() => <BottomBar />);
+    const serverTab = screen.getAllByText("Server")[0] as HTMLElement;
+    const msg = serverTab.querySelector(".bottom-bar-msg-unread");
+    const events = serverTab.querySelector(".bottom-bar-events-unread");
+    const mention = serverTab.querySelector(".bottom-bar-mention");
+    expect(msg?.textContent).toBe("4");
+    expect(events?.textContent).toBe("1");
+    expect(mention?.textContent).toBe("@3");
   });
 
   it("renders channel tabs within each network", () => {
@@ -142,17 +154,19 @@ describe("BottomBar", () => {
   });
 
   it("renders unread badge when unreadCounts > 0", () => {
-    const { container } = render(() => <BottomBar />);
-    const unreadBadges = container.querySelectorAll(".bottom-bar-msg-unread");
-    expect(unreadBadges.length).toBeGreaterThan(0);
-    expect(unreadBadges[0]?.textContent).toBe("5");
+    render(() => <BottomBar />);
+    // Scope to the #bnc tab — the Server tab also has a msg-unread badge
+    // since CP13 (S8). The test asserts the channel-side badge specifically.
+    const bncTab = screen.getByText("#bnc");
+    const unread = bncTab.querySelector(".bottom-bar-msg-unread");
+    expect(unread?.textContent).toBe("5");
   });
 
   it("renders mention badge when mentionCounts > 0", () => {
-    const { container } = render(() => <BottomBar />);
-    const mentionBadges = container.querySelectorAll(".bottom-bar-mention");
-    expect(mentionBadges.length).toBeGreaterThan(0);
-    expect(mentionBadges[0]?.textContent).toBe("@2");
+    render(() => <BottomBar />);
+    const italiaTab = screen.getByText("#italia");
+    const mention = italiaTab.querySelector(".bottom-bar-mention");
+    expect(mention?.textContent).toBe("@2");
   });
 
   it("has role='tablist' on the bottom-bar container", () => {

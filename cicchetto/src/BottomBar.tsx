@@ -78,6 +78,25 @@ const BottomBar: Component<Props> = (props) => {
               onClick={() => handleClick(network.slug, "$server", "server")}
             >
               Server
+              {/* CP13 — server-window receives :notice rows for server-routed
+                  numerics + NickServ + MOTD + ChanServ-fallback. Same badge
+                  treatment as channels so unread counts surface uniformly. */}
+              {(() => {
+                const key = channelKey(network.slug, "$server");
+                return (
+                  <>
+                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                    </Show>
+                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
+                    </Show>
+                    <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                      <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
+                    </Show>
+                  </>
+                );
+              })()}
             </button>
 
             {/* Channel windows */}
