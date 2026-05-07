@@ -498,49 +498,8 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
-    # Q1: self-KICK (target == state.nick) drops the channel key entirely.
-    # Symmetric with self-PART. Other-user KICK preserves the inner-nick
-    # delete.
-    # S2.3: self-KICK also drops topics + channel_modes cache entries.
-    # S2.4: evict userhost_cache for the kicked nick (same channel-overlap
-    # logic as PART).
-    chan_key = normalize_channel(channel)
-
     {members, topics, channel_modes, userhost_cache} =
-      cond do
-        target == state.nick ->
-          new_members = Map.delete(state.members, channel)
-          cache = Map.get(state, :userhost_cache, %{})
-
-          # Self-kicked: evict own entry (we're gone from this channel; if we
-          # were only in this channel, nothing left to cache for ourselves).
-          new_cache =
-            if channels_with_member(new_members, target) == [] do
-              Map.delete(cache, normalize_nick(target))
-            else
-              cache
-            end
-
-          {new_members, Map.delete(Map.get(state, :topics, %{}), chan_key),
-           Map.delete(Map.get(state, :channel_modes, %{}), chan_key), new_cache}
-
-        Map.has_key?(state.members, channel) ->
-          new_members = Map.update!(state.members, channel, &Map.delete(&1, target))
-          cache = Map.get(state, :userhost_cache, %{})
-
-          new_cache =
-            if channels_with_member(new_members, target) == [] do
-              Map.delete(cache, normalize_nick(target))
-            else
-              cache
-            end
-
-          {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
-
-        true ->
-          {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}),
-           Map.get(state, :userhost_cache, %{})}
-      end
+      kick_state_update(state, channel, target)
 
     {state, eff} =
       build_persist(
@@ -832,6 +791,51 @@ defmodule Grappa.Session.EventRouter do
   end
 
   def route(%Message{} = _, state), do: {:cont, state, []}
+
+  # Q1: self-KICK (target == state.nick) drops the channel key entirely —
+  # symmetric with self-PART. Other-user KICK preserves the inner-nick
+  # delete. S2.3: self-KICK also drops topics + channel_modes cache
+  # entries. S2.4: evict userhost_cache for the kicked nick (same
+  # channel-overlap logic as PART). Extracted from the route clause to
+  # keep cyclomatic complexity below the Credo gate.
+  @spec kick_state_update(state(), String.t(), String.t()) ::
+          {%{String.t() => %{String.t() => [String.t()]}}, %{String.t() => topic_entry()},
+           %{String.t() => channel_mode_entry()}, userhost_cache()}
+  defp kick_state_update(state, channel, target) do
+    chan_key = normalize_channel(channel)
+    cache = Map.get(state, :userhost_cache, %{})
+
+    cond do
+      target == state.nick ->
+        new_members = Map.delete(state.members, channel)
+        new_cache = evict_cache_if_no_overlap(cache, new_members, target)
+
+        {new_members, Map.delete(Map.get(state, :topics, %{}), chan_key),
+         Map.delete(Map.get(state, :channel_modes, %{}), chan_key), new_cache}
+
+      Map.has_key?(state.members, channel) ->
+        new_members = Map.update!(state.members, channel, &Map.delete(&1, target))
+        new_cache = evict_cache_if_no_overlap(cache, new_members, target)
+
+        {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
+
+      true ->
+        {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), cache}
+    end
+  end
+
+  @spec evict_cache_if_no_overlap(
+          userhost_cache(),
+          %{String.t() => %{String.t() => [String.t()]}},
+          String.t()
+        ) :: userhost_cache()
+  defp evict_cache_if_no_overlap(cache, members_after, nick) do
+    if channels_with_member(members_after, nick) == [] do
+      Map.delete(cache, normalize_nick(nick))
+    else
+      cache
+    end
+  end
 
   # Decide which window a non-channel NOTICE lands in + the body to persist.
   # Pure: takes sender + body, returns {channel, body}. The ChanServ branch

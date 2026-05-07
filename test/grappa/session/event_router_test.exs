@@ -913,7 +913,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:part, ["#grappa", "byebye"], {:nick, "vjt", "u", "h"})
 
-      assert {:cont, _new_state, [{:persist, :part, _}, {:parted, "#grappa"}]} =
+      assert {:cont, _, [{:persist, :part, _}, {:parted, "#grappa"}]} =
                EventRouter.route(m, state)
     end
 
@@ -977,7 +977,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:kick, ["#grappa", "vjt", "behave"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _new_state, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "behave"}]} =
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "behave"}]} =
                EventRouter.route(m, state)
     end
 
