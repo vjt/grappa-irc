@@ -23,6 +23,9 @@ const REGISTER_TIMEOUT_MS = 10_000;
 const JOIN_TIMEOUT_MS = 5_000;
 const PART_TIMEOUT_MS = 5_000;
 const NICK_TIMEOUT_MS = 5_000;
+const MODE_TIMEOUT_MS = 5_000;
+const KICK_TIMEOUT_MS = 5_000;
+const OPER_TIMEOUT_MS = 5_000;
 
 export class IrcPeer {
   private readonly client: Client;
@@ -113,6 +116,72 @@ export class IrcPeer {
     );
     this.client.part(channel, reason);
     await parted;
+  }
+
+  // Set channel modes. Resolves once upstream echoes the MODE event for
+  // the target channel matching the requested raw_modes string.
+  // Examples: `mode("#chan", "+i")`, `mode("#chan", "+o", "nick")`,
+  // `mode("#chan", "+b", "*!*@evil")`. Param-bearing modes accept a
+  // single extra arg (matching irc-framework's `mode(ch, m, extra_args)`
+  // signature; arrays are also accepted by the lib for batched ops).
+  //
+  // Predicate matches `raw_modes` rather than the parsed `modes` array
+  // because some servers (bahamut included) echo the modes back with
+  // adjacent-mode-letter packing (`+ot`) where the test asked for `+o`
+  // alone — `raw_modes.includes(rawModes.replace(/^[+-]/, ''))` would
+  // be a stricter check, but for our use sites (single-letter modes)
+  // the literal echo is reliable enough.
+  async mode(channel: string, rawModes: string, extraArg?: string): Promise<void> {
+    const modeEcho = onceMatching(
+      this.client,
+      "mode",
+      (event: { target: string; raw_modes: string }) =>
+        event.target === channel && event.raw_modes === rawModes,
+      MODE_TIMEOUT_MS,
+      `mode ${channel} ${rawModes}${extraArg ? " " + extraArg : ""}`,
+    );
+    this.client.mode(channel, rawModes, extraArg);
+    await modeEcho;
+  }
+
+  // KICK a target nick from a channel with a reason. Resolves once
+  // upstream echoes the KICK on the channel topic. Caller must be op
+  // (`+o`) on the channel — bahamut otherwise emits 482
+  // ERR_CHANOPRIVSNEEDED and this resolves never (the test times out).
+  async kick(channel: string, target: string, reason: string): Promise<void> {
+    const kicked = onceMatching(
+      this.client,
+      "kick",
+      (event: { nick: string; kicked: string; channel: string }) =>
+        event.nick === this.nick && event.kicked === target && event.channel === channel,
+      KICK_TIMEOUT_MS,
+      `kick ${channel} ${target}`,
+    );
+    this.client.raw(["KICK", channel, target, reason]);
+    await kicked;
+  }
+
+  // /OPER up to ircop. Required to bypass bahamut's "no ops on new
+  // channels in split-mode" gate that otherwise locks every freshly
+  // created channel out of any kind of mode-setting (including +i, +k,
+  // +o). Resolves on 381 RPL_YOUREOPER.
+  //
+  // Reason this matters for e2e: the testnet leaf isn't S2S-linked to
+  // the hub at the time peer clients connect (255 reports `0 servers`),
+  // so bahamut keeps the leaf in split-mode permanently — fresh JOINers
+  // never auto-op. Without ircop bypass, the peer can JOIN but cannot
+  // MODE +i / MODE +o anyone, including itself. With +O (and the
+  // configured `OaARD` flagset on the leaf's O: line), ircops issue
+  // MODE / SAMODE freely on any channel they're in.
+  async oper(name: string, password: string): Promise<void> {
+    const opered = once(
+      this.client,
+      "rpl_youreoper",
+      OPER_TIMEOUT_MS,
+      `oper ${name}`,
+    );
+    this.client.raw(["OPER", name, password]);
+    await opered;
   }
 
   // Change own nick. Resolves after the upstream `nick` event with
