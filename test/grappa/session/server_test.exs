@@ -925,6 +925,237 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "CP15 B2 — in_flight_joins map" do
+    test "Session.Server starts with empty in_flight_joins map" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      state = :sys.get_state(pid)
+      assert state.in_flight_joins == %{}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test ":send_join cast inserts into in_flight_joins keyed by lowercase channel" do
+      # CP15 B2 contract: every outbound JOIN — cic-initiated via the
+      # Session.send_join/3 cast — records {channel, at_ms, label?} in
+      # state.in_flight_joins keyed by String.downcase/1 of the channel
+      # so a later 471/473/474/475/403/405 numeric can correlate even
+      # when the upstream echoes a case-folded channel name.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      state = :sys.get_state(pid)
+      assert {channel, at_ms, label} = Map.fetch!(state.in_flight_joins, "#sniffo")
+      assert channel == "#Sniffo"
+      assert is_integer(at_ms)
+      assert label == nil
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "001 autojoin loop inserts one in_flight_joins entry per channel" do
+      # The 001 RPL_WELCOME handler calls Client.send_join/2 for each
+      # autojoin channel; B2 threads state mutation through the loop so
+      # every autojoined channel ends up tracked in in_flight_joins —
+      # without this, an autojoin failure numeric (471 etc.) cannot be
+      # correlated and falls through to the $server window unannotated.
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#Sniffo", "#OTHER"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #Sniffo\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #OTHER\r\n"))
+
+      # Sync via PING/PONG before sampling state — the autojoin Enum
+      # mutation runs in handle_info and we need to wait for it to
+      # commit before reading state via :sys.get_state.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+
+      assert {"#Sniffo", _, nil} = Map.fetch!(state.in_flight_joins, "#sniffo")
+      assert {"#OTHER", _, nil} = Map.fetch!(state.in_flight_joins, "#other")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "473 ERR_INVITEONLYCHAN broadcasts kind: join_failed + sets state.window_states/failure_reasons" do
+      # End-to-end CP15 B2: cic-initiated JOIN → in_flight_joins insert →
+      # upstream 473 → EventRouter emits {:join_failed, ...} → Server
+      # apply_effects arm persists :notice + flips window state + broadcasts
+      # the typed event on the per-channel topic. All three concerns must
+      # land in one cycle for cic to render the failure correctly.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 473 grappa-test #sniffo :Cannot join channel (+i)\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "join_failed",
+                         network: net_slug,
+                         channel: "#sniffo",
+                         state: "failed",
+                         reason: "Cannot join channel (+i)",
+                         numeric: 473
+                       }
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      # Sync via PING/PONG before sampling state — apply_effects runs in
+      # handle_info, same trick as the B1 self-JOIN test.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#sniffo"] == :failed
+      assert state.window_failure_reasons["#sniffo"] == "Cannot join channel (+i)"
+      # In-flight entry stripped — a re-issued JOIN gets a fresh slot.
+      refute Map.has_key?(state.in_flight_joins, "#sniffo")
+
+      # Persisted :notice row carries the numeric in meta so cic can
+      # render the failure differently from a plain server NOTICE.
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 10)
+      assert row.kind == :notice
+      assert row.body == "Cannot join channel (+i)"
+      assert row.meta == %{numeric: 473}
+
+      # Regression: NumericRouter @delegated_numerics must include 473 so
+      # the param-derived $server scan-route does NOT also persist a row
+      # for the same numeric. Without delegation the channel would get
+      # one notice (apply_effects) AND $server would get one notice (scan
+      # route) — the failure would surface twice.
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "473 with no in-flight entry does NOT emit join_failed broadcast (regression)" do
+      # No-match: the failure numeric arrives without an in-flight tracker
+      # (server-emitted, or post-TTL-sweep). EventRouter must NOT emit
+      # :join_failed; the existing NumericRouter $server route persists
+      # it as a server-window notice. The per-channel topic stays silent.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      topic = Topic.channel(user.name, network.slug, "#sniffo")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      # Feed 473 BEFORE any send_join — in_flight_joins is empty.
+      IRCServer.feed(
+        server,
+        ":irc.test.org 473 grappa-test #sniffo :Cannot join channel (+i)\r\n"
+      )
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "join_failed"}}, 200
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.window_states, "#sniffo")
+      refute Map.has_key?(state.window_failure_reasons, "#sniffo")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "TTL: in_flight_joins entries older than 30s are swept on next :send_join insert" do
+      # Lazy O(1)-amortized TTL keeps the map bounded under upstream silence.
+      # Test seeds an old entry directly via :sys.replace_state/2 — same
+      # `(channel, at_ms, label)` shape the production helper writes — then
+      # casts a fresh :send_join. The new insert runs a sweep first,
+      # dropping any entry whose at_ms is more than 30s behind monotonic
+      # now. Avoids Process.sleep(31_000) (too slow) and avoids injecting
+      # a clock fn (overkill — we control what's seeded).
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      stale_at = System.monotonic_time(:millisecond) - 60_000
+
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{state | in_flight_joins: %{"#stale" => {"#stale", stale_at, nil}}}
+        end)
+
+      :ok = Session.send_join({:user, user.id}, network.id, "#fresh")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #fresh\r\n"))
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.in_flight_joins, "#stale")
+      assert {"#fresh", _, nil} = Map.fetch!(state.in_flight_joins, "#fresh")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "TTL: in_flight_joins entries within 30s are kept on next :send_join insert" do
+      # Sweep boundary check — entries less than 30s old must survive.
+      # Without this, a JOIN issued ~25s before another JOIN would lose
+      # its in-flight tracker prematurely and a real failure numeric
+      # afterwards would fall through unannotated.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      recent_at = System.monotonic_time(:millisecond) - 5_000
+
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{state | in_flight_joins: %{"#recent" => {"#recent", recent_at, nil}}}
+        end)
+
+      :ok = Session.send_join({:user, user.id}, network.id, "#fresh")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #fresh\r\n"))
+
+      state = :sys.get_state(pid)
+      assert {"#recent", ^recent_at, nil} = Map.fetch!(state.in_flight_joins, "#recent")
+      assert {"#fresh", _, nil} = Map.fetch!(state.in_flight_joins, "#fresh")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "list_members/3 snapshot" do
     test "returns members in mIRC sort: @ ops first, + voiced second, plain last" do
       handler = fn state, line ->

@@ -72,7 +72,10 @@ defmodule Grappa.Session.NumericRouterTest do
     property "any channel-prefix in any candidate position wins over later params" do
       check all(
               numeric <- integer(400..499),
-              numeric not in [421, 432, 433, 437, 461],
+              # Pre-CP13 active/deny + CP15 B2 join-failure delegated codes
+              # short-circuit before the param scan; exclude both classes so
+              # the property exercises the channel-prefix fallthrough only.
+              numeric not in [421, 432, 433, 437, 461, 471, 473, 474, 475, 403, 405],
               chan_body <- string(:alphanumeric, min_length: 1, max_length: 20)
             ) do
         chan = "#" <> chan_body
@@ -159,7 +162,34 @@ defmodule Grappa.Session.NumericRouterTest do
   # Delegated numerics → :delegated
   # ---------------------------------------------------------------------------
 
-  @delegated_numerics [311, 312, 313, 317, 318, 319, 352, 315, 353, 366, 321, 322, 323, 364, 365, 375, 372, 376]
+  @delegated_numerics [
+    # WHOIS / WHO / NAMES / LIST / LINKS / MOTD (pre-CP15)
+    311,
+    312,
+    313,
+    317,
+    318,
+    319,
+    352,
+    315,
+    353,
+    366,
+    321,
+    322,
+    323,
+    364,
+    365,
+    375,
+    372,
+    376,
+    # CP15 B2 — JOIN failure numerics (EventRouter handles them now)
+    471,
+    473,
+    474,
+    475,
+    403,
+    405
+  ]
 
   describe "delegated numerics → :delegated" do
     property "all delegated numerics return :delegated" do

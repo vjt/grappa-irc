@@ -169,6 +169,7 @@ defmodule Grappa.Session.EventRouter do
           | {:away_confirmed, :present | :away}
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
           | {:joined, String.t()}
+          | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -683,6 +684,38 @@ defmodule Grappa.Session.EventRouter do
   def route(%Message{command: {:numeric, 1}, params: [welcomed_nick | _]}, state)
       when is_binary(welcomed_nick) do
     {:cont, %{state | nick: welcomed_nick}, []}
+  end
+
+  # CP15 B2 — JOIN failure numerics. Six codes carry the same shape:
+  #   :server <code> <own_nick_echo> <channel> :<reason>
+  # When the channel matches an in-flight JOIN (case-insensitive RFC 2812
+  # §2.2 lookup against state.in_flight_joins), emit {:join_failed, ch,
+  # reason, numeric} and strip the entry from state. NumericRouter marks
+  # these codes :delegated so the existing scan-based persist path doesn't
+  # double-process — the apply_effects arm in Session.Server is the
+  # canonical persist + broadcast surface.
+  #
+  # No-match (server emits an unsolicited 471/473/etc., or the in-flight
+  # entry was already swept by TTL): fall through with no effect — the
+  # caller's NumericRouter $server route persists it as a server message.
+  @join_failure_numerics [471, 473, 474, 475, 403, 405]
+
+  def route(
+        %Message{command: {:numeric, code}, params: [_, channel, reason | _]},
+        state
+      )
+      when code in @join_failure_numerics and is_binary(channel) and is_binary(reason) do
+    key = String.downcase(channel)
+    in_flight = Map.get(state, :in_flight_joins, %{})
+
+    case Map.fetch(in_flight, key) do
+      {:ok, _} ->
+        next_state = %{state | in_flight_joins: Map.delete(in_flight, key)}
+        {:cont, next_state, [{:join_failed, channel, reason, code}]}
+
+      :error ->
+        {:cont, state, []}
+    end
   end
 
   # 305 RPL_UNAWAY: upstream confirmed away status cleared ("You are no longer
