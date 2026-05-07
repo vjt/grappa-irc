@@ -366,6 +366,29 @@ export async function listMembers(
   return body.members;
 }
 
+// Mirror of `GrappaWeb.ArchiveJSON.index/1` (CP15 B4) — wire shape:
+//   { "archive": [{"target", "kind", "last_activity", "row_count"}] }
+// Server-side `Scrollback.list_archive/3` already sorts by
+// `last_activity` DESC and excludes the active keyset (joined channels +
+// open query windows) + the `$server` pseudo-channel. The unwrap below
+// returns the inner array; the envelope is a stylistic mirror of
+// MembersJSON's `{"members": [...]}` shape.
+export type ArchiveEntry = {
+  target: string;
+  kind: "channel" | "query";
+  last_activity: number;
+  row_count: number;
+};
+
+export async function listArchive(token: string, networkSlug: string): Promise<ArchiveEntry[]> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/archive`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as { archive: ArchiveEntry[] };
+  return body.archive;
+}
+
 // Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`
 // upstream through the session. The upstream replays the NICK back via
 // `EventRouter`'s NICK handler which fans out per-channel `:nick_change`
