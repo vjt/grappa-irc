@@ -120,21 +120,40 @@ fixed in C8):**
   15 consecutive runs zero failures; the C2 cluster's stop_session
   race fix almost certainly closed it.)
 
-- **Channel-window must show "not connected" state when upstream
-  is failing.** Currently when the IRC session can't reach upstream
-  (TCP/TLS `:closed`, backoff loop, never registered) cicchetto's
-  channel pane renders identically to a healthy-but-empty channel:
-  scrollback shows historical sqlite rows + members pane shows
-  "no members yet" + sidebar lists the channel as if joined. Operator
-  has no signal that the network is in a connect-failure state.
-  Surfaced live 2026-05-04 during channel-client-polish e2e: azzurra
-  on `irc.azzurra.chat` blackhole-closing TLS handshakes for hours;
-  bug invisible in UI until RPC-inspected. Bundle into channel-client-polish
-  C-side rendering work — `connection_state` enum from S1 (T32) gives
-  the server-side signal; cicchetto needs an empty-state branch when
-  network is `:failed` (or session is in unreachable backoff). Natural
-  fit for C1 (window-list refactor) or C3 (channel-header) bucket;
-  pin during execution.
+- (CP15 CLOSED 2026-05-07 the "channel-window must show 'not
+  connected' state when upstream is failing" item — the
+  `windowStateByChannel` mirror + synthetic-row + greyed-class
+  treatment cover `:failed` / `:kicked` end-to-end. Parked / T32
+  follow-up below.)
+
+- **CP15 B6 follow-up** — `cp15-b6-pending-to-failed-invite-only.
+  spec.ts` passes on retry #1 every time, flakes once on first
+  attempt. Sub-second timing race between cic's synchronous
+  `setPending` fire and the typed `join_failed` broadcast arrival
+  back over WS. Same render code path is reliably green via
+  `cp15-b6-kicked.spec.ts` AND verified by prod browser smoke on
+  `#services` / `#operhelp`. Not blocking — kicked spec exercises
+  the same render path. Worth a tighter `wait_for` sentinel keyed
+  on the typed event vs. relying on render-tick timing.
+
+- **Parked (T32) e2e flow** — `cp15-b6-parked.spec.ts` doesn't
+  exist yet. Blocked on T32 PATCH `/networks/:slug` REST surface
+  + cic `/disconnect` / `/connect` ComposeBox arms (tracked in
+  `project_t32_disconnect_verb` memory). Lands with the
+  `channel-client-polish` cluster's T32 line item; the synthetic-
+  row + greyed-class treatment is already in place for `:parked`
+  thanks to CP15 B6, so the spec is mechanical once T32 ships.
+
+- **`cicchetto/e2e/infra` submodule pointer drift on main** —
+  main's `.gitmodules` pins `afd3ae8` (testnet
+  NO_CHANOPS_WHEN_SPLIT fix from CP15 B6), but the working copy is
+  at `e023db1` (leaf autoconnect connfreq 180s → 2s, lands ON TOP
+  of `afd3ae8`). The leaf-autoconnect fix landed in the working
+  copy during CP15 B6 but was never committed to main's submodule
+  pointer — `afd3ae8` no longer exists in upstream (rewritten /
+  squashed). Bump main's submodule pointer to `e023db1` (or its
+  current upstream tip) in a docs-adjacent infra commit; verify
+  `scripts/integration.sh` still green afterwards.
 
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
