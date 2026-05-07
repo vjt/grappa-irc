@@ -256,6 +256,21 @@ defmodule Grappa.Session.Server do
           # tagged tuple. Cleared when the channel transitions out of
           # :failed (next successful JOIN, /part, etc.).
           window_failure_reasons: %{String.t() => String.t()},
+          # CP15 B3: per-channel failure numeric (471/473/474/475/403/405)
+          # mirrored alongside window_failure_reasons so the cold-WS-subscribe
+          # snapshot push (push_window_state_if_known) can carry the same
+          # `numeric` field the event-time broadcast carries. Numerics are
+          # stable cross-language identifiers — they're the right key for a
+          # future client-side i18n layer that maps numeric → localized
+          # template (server-side reasons are upstream-language-locked).
+          window_failure_numerics: %{String.t() => pos_integer()},
+          # CP15 B3: per-channel `by + reason` from the most recent self-target
+          # KICK. Same motivation as window_failure_numerics — keeps the
+          # snapshot push payload byte-identical to the event-time broadcast
+          # so cic doesn't need a separate REST hop to render the kick banner
+          # on a deploy-reconnect. Cleared on next successful self-JOIN
+          # (window transitions out of :kicked).
+          window_kicked_meta: %{String.t() => %{by: String.t(), reason: String.t() | nil}},
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
           # Keyed by lowercase channel so the failure-numeric correlation
@@ -373,6 +388,8 @@ defmodule Grappa.Session.Server do
       userhost_cache: %{},
       window_states: %{},
       window_failure_reasons: %{},
+      window_failure_numerics: %{},
+      window_kicked_meta: %{},
       in_flight_joins: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
@@ -823,6 +840,36 @@ defmodule Grappa.Session.Server do
     case Map.get(state.channel_modes, chan_key) do
       nil -> {:reply, {:error, :no_modes}, state}
       entry -> {:reply, {:ok, entry}, state}
+    end
+  end
+
+  # CP15 B3: returns the snapshot-ready window-state payload for `channel`.
+  # Server-side assembles the full event-shape map (kind/state/reason/
+  # numeric/by) so the channel-side push_window_state_if_known/4 stays a
+  # one-liner — single source of truth for the snapshot projection. Byte-
+  # identical to the event-time broadcast emitted by the corresponding
+  # apply_effects arm. Returns {:error, :not_tracked} when the channel
+  # has no recorded state (operator never joined, or transient :pending).
+  def handle_call({:get_window_state, channel}, _, state) when is_binary(channel) do
+    case Map.get(state.window_states, channel) do
+      nil ->
+        {:reply, {:error, :not_tracked}, state}
+
+      :joined ->
+        {:reply, {:ok, window_state_payload(state, channel, :joined)}, state}
+
+      :failed ->
+        {:reply, {:ok, window_state_payload(state, channel, :failed)}, state}
+
+      :kicked ->
+        {:reply, {:ok, window_state_payload(state, channel, :kicked)}, state}
+
+      :parked ->
+        # T32 lays the slot but no producer yet — treat as not_tracked
+        # until the disconnect verbs land. Keeps the snapshot push
+        # forward-compatible without forcing cic to handle a payload it
+        # doesn't yet render.
+        {:reply, {:error, :not_tracked}, state}
     end
   end
 
@@ -1674,7 +1721,17 @@ defmodule Grappa.Session.Server do
         }
       )
 
-    state = %{state | window_states: Map.put(state.window_states, channel, :joined)}
+    # Joining wipes any prior :failed / :kicked snapshot mirrors —
+    # otherwise a successful re-join would leave stale by/reason/numeric
+    # in state and the next snapshot push for this channel would lie.
+    state = %{
+      state
+      | window_states: Map.put(state.window_states, channel, :joined),
+        window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
+        window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
+        window_kicked_meta: Map.delete(state.window_kicked_meta, channel)
+    }
+
     apply_effects(rest, state)
   end
 
@@ -1735,7 +1792,8 @@ defmodule Grappa.Session.Server do
     state = %{
       state
       | window_states: Map.put(state.window_states, channel, :failed),
-        window_failure_reasons: Map.put(state.window_failure_reasons, channel, reason)
+        window_failure_reasons: Map.put(state.window_failure_reasons, channel, reason),
+        window_failure_numerics: Map.put(state.window_failure_numerics, channel, numeric)
     }
 
     apply_effects(rest, state)
@@ -1752,7 +1810,9 @@ defmodule Grappa.Session.Server do
     state = %{
       state
       | window_states: Map.delete(state.window_states, channel),
-        window_failure_reasons: Map.delete(state.window_failure_reasons, channel)
+        window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
+        window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
+        window_kicked_meta: Map.delete(state.window_kicked_meta, channel)
     }
 
     apply_effects(rest, state)
@@ -1781,7 +1841,12 @@ defmodule Grappa.Session.Server do
         }
       )
 
-    state = %{state | window_states: Map.put(state.window_states, channel, :kicked)}
+    state = %{
+      state
+      | window_states: Map.put(state.window_states, channel, :kicked),
+        window_kicked_meta: Map.put(state.window_kicked_meta, channel, %{by: by, reason: reason})
+    }
+
     apply_effects(rest, state)
   end
 
@@ -1884,6 +1949,48 @@ defmodule Grappa.Session.Server do
       end
 
     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
+  end
+
+  # CP15 B3: assembles the snapshot-ready window-state event payload for
+  # the cold-WS-subscribe push (handle_call({:get_window_state, _}, ...)).
+  # Single source of truth for the projection — must stay byte-identical
+  # to the event-time payloads emitted in the apply_effects arms above.
+  # Three variants share network + channel + state; :failed adds reason +
+  # numeric (the latter is the stable cross-language key for a future
+  # cic-side i18n layer); :kicked adds by + reason from window_kicked_meta.
+  @spec window_state_payload(state(), String.t(), :joined | :failed | :kicked) ::
+          Grappa.Session.window_state_snapshot()
+  defp window_state_payload(state, channel, :joined) do
+    %{
+      kind: "joined",
+      network: state.network_slug,
+      channel: channel,
+      state: "joined"
+    }
+  end
+
+  defp window_state_payload(state, channel, :failed) do
+    %{
+      kind: "join_failed",
+      network: state.network_slug,
+      channel: channel,
+      state: "failed",
+      reason: Map.get(state.window_failure_reasons, channel),
+      numeric: Map.get(state.window_failure_numerics, channel)
+    }
+  end
+
+  defp window_state_payload(state, channel, :kicked) do
+    meta = Map.get(state.window_kicked_meta, channel, %{by: nil, reason: nil})
+
+    %{
+      kind: "kicked",
+      network: state.network_slug,
+      channel: channel,
+      state: "kicked",
+      by: meta.by,
+      reason: meta.reason
+    }
   end
 
   # One-shot send + clear of the synchronous-login readiness signal
