@@ -3,8 +3,10 @@ defmodule Grappa.Session.NumericRouterTest do
   Unit + property tests for `Grappa.Session.NumericRouter`.
 
   Tests assert ROUTING OUTCOMES (the decision tuple), not call sequences.
-  Property tests enumerate numeric class membership; unit tests verify
-  param extraction + query-window fallback logic.
+  The CP13 rewrite removed `last_command_window` resolution and the
+  `:active` decision; the new shape is label > delegated > active-deny
+  → `{:server, nil}` > param scan → `{:channel, x}` | `{:query, x}` |
+  `{:server, nil}`.
   """
   use ExUnit.Case, async: true
 
@@ -25,149 +27,136 @@ defmodule Grappa.Session.NumericRouterTest do
     %Message{command: {:numeric, numeric}, params: params, tags: %{"label" => label}}
   end
 
-  defp state_with_query(nicks) when is_list(nicks) do
-    %{open_query_nicks: MapSet.new(nicks)}
-  end
-
-  defp state_no_query, do: %{open_query_nicks: MapSet.new()}
-
-  defp state_with_last_window(kind, target) do
+  defp state(opts \\ []) do
     %{
-      open_query_nicks: MapSet.new(),
-      last_command_window: %{kind: kind, target: target},
-      labels_pending: %{}
-    }
-  end
-
-  defp state_with_label(label, kind, target) do
-    %{
-      open_query_nicks: MapSet.new(),
-      last_command_window: nil,
-      labels_pending: %{label => %{kind: kind, target: target}}
+      own_nick: Keyword.get(opts, :own_nick, "vjt"),
+      labels_pending: Keyword.get(opts, :labels_pending, %{})
     }
   end
 
   # ---------------------------------------------------------------------------
-  # S4.1 — channel-param numerics → :channel
+  # Param scan: channel-prefix wins
   # ---------------------------------------------------------------------------
 
-  @channel_param_numerics [404, 442, 471, 472, 473, 474, 475, 477, 478, 482, 367, 368]
-
-  describe "channel-param numerics → {:channel, chan}" do
-    property "all channel-param numerics with a channel param route to {:channel, chan}" do
-      check all(
-              numeric <- member_of(@channel_param_numerics),
-              chan <- string(:ascii, min_length: 2),
-              # channel names start with # & etc. — we use a simple valid form
-              chan = "#" <> String.replace(chan, ~r/[#\s\x00\r\n,]/, "a"),
-              String.length(chan) > 1
-            ) do
-        m = msg(numeric, ["own_nick", chan, "some trailing"])
-        assert {:channel, ^chan} = NumericRouter.route(m, state_no_query())
-      end
-    end
-
+  describe "param scan — channel-prefix → {:channel, chan}" do
     test "404 ERR_CANNOTSENDTOCHAN extracts channel from params" do
-      m = msg(404, ["own", "#sniffo", "Cannot send to channel"])
-      assert {:channel, "#sniffo"} = NumericRouter.route(m, state_no_query())
+      m = msg(404, ["vjt", "#sniffo", "Cannot send to channel"])
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, state())
     end
 
     test "482 ERR_CHANOPRIVSNEEDED extracts channel from params" do
-      m = msg(482, ["own", "#sniffo", "You're not channel operator"])
-      assert {:channel, "#sniffo"} = NumericRouter.route(m, state_no_query())
+      m = msg(482, ["vjt", "#sniffo", "You're not channel operator"])
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, state())
     end
 
-    test "367 RPL_BANLIST extracts channel from params" do
-      m = msg(367, ["own", "#sniffo", "*!*@host", "setter", "1234567890"])
-      assert {:channel, "#sniffo"} = NumericRouter.route(m, state_no_query())
+    test "367 RPL_BANLIST extracts channel even with extra params" do
+      m = msg(367, ["vjt", "#sniffo", "*!*@host", "setter", "1234567890"])
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, state())
     end
 
-    test "368 RPL_ENDOFBANLIST extracts channel from params" do
-      m = msg(368, ["own", "#sniffo", "End of channel ban list"])
-      assert {:channel, "#sniffo"} = NumericRouter.route(m, state_no_query())
+    test "channel & prefix is recognised" do
+      m = msg(404, ["vjt", "&local", "Cannot send"])
+      assert {:channel, "&local"} = NumericRouter.route(m, state())
     end
 
-    test "471 ERR_CHANNELISFULL extracts channel" do
-      m = msg(471, ["own", "#full", "Cannot join channel (+l)"])
-      assert {:channel, "#full"} = NumericRouter.route(m, state_no_query())
-    end
-  end
-
-  # ---------------------------------------------------------------------------
-  # S4.1 — nick-param numerics → :query or :active
-  # ---------------------------------------------------------------------------
-
-  describe "nick-param numerics → {:query, nick} or {:active, nil}" do
-    test "401 ERR_NOSUCHNICK routes to query window when open" do
-      m = msg(401, ["own", "someguy", "No such nick"])
-      state = state_with_query(["someguy"])
-      assert {:query, "someguy"} = NumericRouter.route(m, state)
+    test "channel ! prefix is recognised" do
+      m = msg(404, ["vjt", "!safechan", "Cannot send"])
+      assert {:channel, "!safechan"} = NumericRouter.route(m, state())
     end
 
-    test "401 ERR_NOSUCHNICK routes to :active when no query window" do
-      m = msg(401, ["own", "someguy", "No such nick"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
+    test "channel + prefix is recognised" do
+      m = msg(404, ["vjt", "+modeless", "Cannot send"])
+      assert {:channel, "+modeless"} = NumericRouter.route(m, state())
     end
 
-    test "405 ERR_TOOMANYCHANNELS routes to :active (no nick param)" do
-      # 405 has a channel in param 1 — treated as active since channel not joined
-      m = msg(405, ["own", "#toomanychans", "You have joined too many channels"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
-    end
-
-    test "nick comparison for query lookup is case-insensitive" do
-      m = msg(401, ["own", "SOMEGUY", "No such nick"])
-      state = state_with_query(["someguy"])
-      assert {:query, "SOMEGUY"} = NumericRouter.route(m, state)
-    end
-
-    property "401 routes to query when nick matches (case-insensitive)" do
-      check all(nick <- string(:ascii, min_length: 1, max_length: 20)) do
-        nick = nick |> String.replace(~r/[\s\x00\r\n]/, "a") |> then(fn n -> if n == "", do: "a", else: n end)
-        m = msg(401, ["own", nick, "No such nick"])
-        state = state_with_query([String.downcase(nick)])
-        assert {:query, ^nick} = NumericRouter.route(m, state)
+    property "any channel-prefix in any candidate position wins over later params" do
+      check all(
+              numeric <- integer(400..499),
+              numeric not in [421, 432, 433, 437, 461],
+              chan_body <- string(:alphanumeric, min_length: 1, max_length: 20)
+            ) do
+        chan = "#" <> chan_body
+        m = msg(numeric, ["vjt", chan, "trailing text"])
+        assert {:channel, ^chan} = NumericRouter.route(m, state())
       end
     end
   end
 
   # ---------------------------------------------------------------------------
-  # S4.1 — param-less numerics → :active
+  # Param scan: nick-shaped → {:query, nick}
   # ---------------------------------------------------------------------------
 
-  @active_numerics [432, 433, 437, 421, 461, 305, 306]
+  describe "param scan — valid nick (non-own, no dot) → {:query, nick}" do
+    test "401 ERR_NOSUCHNICK routes to query window for the nick" do
+      m = msg(401, ["vjt", "someguy", "No such nick"])
+      assert {:query, "someguy"} = NumericRouter.route(m, state())
+    end
 
-  describe "param-less / no-useful-param numerics → {:active, nil}" do
-    property "all param-less numerics route to {:active, nil}" do
+    test "preserves the case of the nick in the decision" do
+      m = msg(401, ["vjt", "SomeGuy", "No such nick"])
+      assert {:query, "SomeGuy"} = NumericRouter.route(m, state())
+    end
+
+    test "skips own-nick (case-insensitive) — falls through to {:server, nil}" do
+      # 401 echoing only own-nick + trailing → no candidate → server.
+      m = msg(401, ["vjt", "VJT", "No such nick"])
+      assert {:server, nil} = NumericRouter.route(m, state(own_nick: "vjt"))
+    end
+
+    test "skips server hostnames (contain '.')" do
+      # 999 (unknown numeric) with hostname-shaped param → not a query.
+      m = msg(999, ["vjt", "irc.azzurra.chat", "some text"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Active deny list: nick-shaped tokens that are NOT destinations
+  # ---------------------------------------------------------------------------
+
+  @active_numerics [305, 306, 421, 432, 433, 437, 461]
+
+  describe "@active_numerics deny list → {:server, nil}" do
+    property "all @active_numerics route to {:server, nil} regardless of params" do
       check all(numeric <- member_of(@active_numerics)) do
-        m = msg(numeric, ["own", "some trailing message"])
-        assert {:active, nil} = NumericRouter.route(m, state_no_query())
+        m = msg(numeric, ["vjt", "looks_like_a_nick", "trailing"])
+        assert {:server, nil} = NumericRouter.route(m, state())
       end
     end
 
-    test "432 ERR_ERRONEUSNICKNAME routes to :active" do
-      m = msg(432, ["own", "bad_nick", "Erroneous nickname"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
+    test "433 ERR_NICKNAMEINUSE: rejected nick is NOT a query destination" do
+      m = msg(433, ["vjt", "takenick", "Nickname is already in use"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "433 ERR_NICKNAMEINUSE routes to :active" do
-      m = msg(433, ["own", "takenick", "Nickname is already in use"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
+    test "432 ERR_ERRONEUSNICKNAME: bad nick is NOT a query destination" do
+      m = msg(432, ["vjt", "bad_nick", "Erroneous nickname"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "305 RPL_UNAWAY routes to :active" do
-      m = msg(305, ["own", "You are no longer marked as being away"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
+    test "421 ERR_UNKNOWNCOMMAND: unknown verb is NOT a query destination" do
+      m = msg(421, ["vjt", "BLEH", "Unknown command"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "306 RPL_NOWAWAY routes to :active" do
-      m = msg(306, ["own", "You have been marked as being away"])
-      assert {:active, nil} = NumericRouter.route(m, state_no_query())
+    test "461 ERR_NEEDMOREPARAMS: command name is NOT a query destination" do
+      m = msg(461, ["vjt", "MODE", "Not enough parameters"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "305 RPL_UNAWAY routes to $server" do
+      m = msg(305, ["vjt", "You are no longer marked as being away"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "306 RPL_NOWAWAY routes to $server" do
+      m = msg(306, ["vjt", "You have been marked as being away"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
   end
 
   # ---------------------------------------------------------------------------
-  # S4.1 — delegated numerics → :delegated
+  # Delegated numerics → :delegated
   # ---------------------------------------------------------------------------
 
   @delegated_numerics [311, 312, 313, 317, 318, 319, 352, 315, 353, 366, 321, 322, 323, 364, 365, 375, 372, 376]
@@ -175,98 +164,93 @@ defmodule Grappa.Session.NumericRouterTest do
   describe "delegated numerics → :delegated" do
     property "all delegated numerics return :delegated" do
       check all(numeric <- member_of(@delegated_numerics)) do
-        m = msg(numeric, ["own", "some data"])
-        assert :delegated = NumericRouter.route(m, state_no_query())
+        m = msg(numeric, ["vjt", "some data"])
+        assert :delegated = NumericRouter.route(m, state())
       end
     end
 
     test "311 RPL_WHOISUSER is delegated" do
-      m = msg(311, ["own", "nick", "user", "host", "*", "realname"])
-      assert :delegated = NumericRouter.route(m, state_no_query())
+      m = msg(311, ["vjt", "nick", "user", "host", "*", "realname"])
+      assert :delegated = NumericRouter.route(m, state())
     end
 
     test "322 RPL_LIST is delegated" do
-      m = msg(322, ["own", "#chan", "42", "a channel topic"])
-      assert :delegated = NumericRouter.route(m, state_no_query())
+      m = msg(322, ["vjt", "#chan", "42", "a channel topic"])
+      assert :delegated = NumericRouter.route(m, state())
     end
   end
 
   # ---------------------------------------------------------------------------
-  # S4.2 — labeled-response: label-based routing overrides param-derived
+  # Labeled-response: label-based routing overrides everything else
   # ---------------------------------------------------------------------------
 
   describe "labeled-response override" do
-    test "label in pending labels overrides param-derived channel routing" do
-      # Even though 404 would normally extract #chan from params,
-      # a label echoed back routes to the labeled origin window
-      m = msg_tagged(404, ["own", "#other-chan", "Cannot send"], "abc123")
-      state = state_with_label("abc123", :channel, "#mychan")
+    test "label override wins over channel param scan" do
+      m = msg_tagged(404, ["vjt", "#other-chan", "Cannot send"], "abc123")
+
+      state =
+        state(labels_pending: %{"abc123" => %{kind: :channel, target: "#mychan"}})
+
       assert {:channel, "#mychan"} = NumericRouter.route(m, state)
     end
 
-    test "label in pending labels overrides :active routing" do
-      m = msg_tagged(432, ["own", "bad", "Erroneous nickname"], "xyz789")
-      state = state_with_label("xyz789", :query, "someguy")
+    test "label override wins over @active_numerics deny" do
+      m = msg_tagged(432, ["vjt", "bad", "Erroneous nickname"], "xyz789")
+
+      state =
+        state(labels_pending: %{"xyz789" => %{kind: :query, target: "someguy"}})
+
       assert {:query, "someguy"} = NumericRouter.route(m, state)
     end
 
-    test "unknown label falls through to param-derived routing" do
-      m = msg_tagged(404, ["own", "#sniffo", "Cannot send"], "unknown-label")
+    test "label override can target $server explicitly" do
+      m = msg_tagged(404, ["vjt", "#chan", "x"], "lbl")
+      state = state(labels_pending: %{"lbl" => %{kind: :server, target: nil}})
+      assert {:server, nil} = NumericRouter.route(m, state)
+    end
 
-      state = %{
-        open_query_nicks: MapSet.new(),
-        last_command_window: nil,
-        labels_pending: %{"different-label" => %{kind: :channel, target: "#other"}}
-      }
+    test "unknown label tag falls through to param-derived routing" do
+      m = msg_tagged(404, ["vjt", "#sniffo", "Cannot send"], "unknown-label")
+
+      state =
+        state(labels_pending: %{"different-label" => %{kind: :channel, target: "#other"}})
 
       assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
     end
 
     test "no label tag falls through to param-derived routing" do
-      m = msg(404, ["own", "#sniffo", "Cannot send"])
+      m = msg(404, ["vjt", "#sniffo", "Cannot send"])
 
-      state = %{
-        open_query_nicks: MapSet.new(),
-        last_command_window: nil,
-        labels_pending: %{"abc" => %{kind: :channel, target: "#other"}}
-      }
+      state =
+        state(labels_pending: %{"abc" => %{kind: :channel, target: "#other"}})
 
       assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
     end
   end
 
   # ---------------------------------------------------------------------------
-  # S4.3 — last_command_window fallback for :active resolution
+  # Edge: short / empty params → {:server, nil}
   # ---------------------------------------------------------------------------
 
-  describe "last_command_window fallback" do
-    test ":active routes to last_command_window when set" do
-      m = msg(432, ["own", "badnick", "Erroneous nickname"])
-      state = state_with_last_window(:channel, "#sniffo")
-      assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
+  describe "short param lists → {:server, nil}" do
+    test "1-elem params (own-nick only) → server" do
+      m = msg(999, ["vjt"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test ":active routes to {:active, nil} when last_command_window is nil" do
-      m = msg(432, ["own", "badnick", "Erroneous nickname"])
-
-      state = %{
-        open_query_nicks: MapSet.new(),
-        last_command_window: nil,
-        labels_pending: %{}
-      }
-
-      assert {:active, nil} = NumericRouter.route(m, state)
+    test "2-elem params (own-nick + trailing) → no candidate → server" do
+      m = msg(999, ["vjt", "trailing"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "last_command_window for query kind" do
-      m = msg(421, ["own", "UNKNOWNCMD", "Unknown command"])
-      state = state_with_last_window(:query, "someguy")
-      assert {:query, "someguy"} = NumericRouter.route(m, state)
+    test "empty params → server" do
+      m = msg(999, [])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
   end
 
   # ---------------------------------------------------------------------------
-  # severity/2
+  # severity/1
   # ---------------------------------------------------------------------------
 
   describe "severity/1" do
@@ -277,12 +261,14 @@ defmodule Grappa.Session.NumericRouterTest do
       assert :error = NumericRouter.severity(471)
     end
 
-    test "2xx numerics are :ok severity" do
-      assert :ok = NumericRouter.severity(305)
-      assert :ok = NumericRouter.severity(306)
+    test "5xx numerics are :error severity" do
+      assert :error = NumericRouter.severity(500)
     end
 
-    test "3xx numerics are :ok severity" do
+    test "1xx/2xx/3xx numerics are :ok severity" do
+      assert :ok = NumericRouter.severity(1)
+      assert :ok = NumericRouter.severity(305)
+      assert :ok = NumericRouter.severity(306)
       assert :ok = NumericRouter.severity(367)
       assert :ok = NumericRouter.severity(368)
     end
