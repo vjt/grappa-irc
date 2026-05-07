@@ -4,9 +4,8 @@ defmodule Grappa.QueryWindows.Wire do
   `Grappa.QueryWindows.Window` rows.
 
   Two doors emit this contract: the user-channel push at after_join
-  (`GrappaWeb.GrappaChannel.push_query_windows_list/2`) and the
-  PubSub broadcast fired on every `QueryWindows.open/4` /
-  `.close/4` (`Grappa.QueryWindows.broadcast_windows_list/2`).
+  in `GrappaWeb.GrappaChannel` and the PubSub broadcast fired on
+  every `Grappa.QueryWindows.open/4` / `Grappa.QueryWindows.close/4`.
 
   Why a wire module: the raw `%Window{}` struct doesn't
   derive `Jason.Encoder`, so JSON serialization at the WS edge

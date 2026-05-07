@@ -65,13 +65,12 @@ defmodule Grappa.QueryWindows do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.Networks, Grappa.PubSub, Grappa.Repo],
-    exports: [Window]
+    exports: [Window, Wire]
 
   import Ecto.Query
 
   alias Grappa.PubSub.Topic
-  alias Grappa.QueryWindows.Window
-  alias Grappa.QueryWindows.Wire
+  alias Grappa.QueryWindows.{Window, Wire}
   alias Grappa.Repo
 
   # ---------------------------------------------------------------------------
@@ -202,7 +201,7 @@ defmodule Grappa.QueryWindows do
 
   @spec broadcast_windows_list(Ecto.UUID.t(), String.t()) :: :ok
   defp broadcast_windows_list(user_id, user_name) do
-    windows = list_for_user(user_id) |> Wire.render_grouped()
+    windows = Wire.render_grouped(list_for_user(user_id))
 
     :ok =
       Grappa.PubSub.broadcast_event(
