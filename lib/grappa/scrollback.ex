@@ -94,6 +94,7 @@ defmodule Grappa.Scrollback do
   @spec persist_event(%{
           optional(:user_id) => Ecto.UUID.t(),
           optional(:visitor_id) => Ecto.UUID.t(),
+          optional(:dm_with) => String.t() | nil,
           required(:network_id) => integer(),
           required(:channel) => String.t(),
           required(:server_time) => integer(),
@@ -110,6 +111,55 @@ defmodule Grappa.Scrollback do
       {:error, _} = err -> err
     end
   end
+
+  @doc """
+  CP14 B3 — derive the normalized "DM peer" for a (target, sender,
+  own_nick) triple. Returns the peer nick (binary) if the triple is a
+  DM exchange between `own_nick` and a peer; `nil` if the triple is a
+  channel message, a $server-window message, or any other non-DM
+  shape. Caller passes the result as `:dm_with` in the
+  `persist_event/1` attrs map; the field is ignored by the schema for
+  non-PRIVMSG kinds (they always get `nil` here regardless).
+
+  Rules (PRIVMSG / ACTION only — services and server NOTICEs use the
+  `$server` window, never a DM):
+
+    * Inbound:  target == own_nick (case-insensitive) → peer = sender
+    * Outbound: sender == own_nick (case-insensitive) AND target is
+      nick-shaped (no `#`/`&`/`!`/`+` sigil and not "$server") →
+      peer = target
+    * Otherwise: nil
+
+  `own_nick` may be nil briefly during connection setup before
+  registration assigns the negotiated nick — guard against it here so
+  EventRouter's `state.nick` doesn't have to nil-check at every call
+  site.
+
+  Single source of truth for the DM-detection predicate so the
+  EventRouter inbound path and the Session.Server outbound path stay
+  byte-aligned (CLAUDE.md "implement once, reuse everywhere").
+  """
+  @spec dm_peer(Message.kind(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
+  def dm_peer(kind, target, sender, own_nick)
+      when kind in [:privmsg, :action] and is_binary(target) and is_binary(sender) and
+             is_binary(own_nick) do
+    own = String.downcase(own_nick)
+
+    cond do
+      String.downcase(target) == own -> sender
+      String.downcase(sender) == own and nick_shaped?(target) -> target
+      true -> nil
+    end
+  end
+
+  def dm_peer(_, _, _, _), do: nil
+
+  defp nick_shaped?("$server"), do: false
+
+  defp nick_shaped?(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
+    do: false
+
+  defp nick_shaped?(_), do: true
 
   @doc """
   Fetches up to `limit` messages for `(subject, network_id, channel)`,
@@ -146,13 +196,49 @@ defmodule Grappa.Scrollback do
 
     Message
     |> subject_where(subject)
-    |> where([m], m.network_id == ^network_id and m.channel == ^channel)
+    |> where([m], m.network_id == ^network_id)
+    |> channel_or_dm_where(channel)
     |> maybe_before(before)
     |> order_by([m], desc: m.server_time, desc: m.id)
     |> limit(^capped)
     |> preload(:network)
     |> Repo.all()
   end
+
+  # CP14 B3 — channel-vs-DM dispatch.
+  #
+  # Channel-shaped names (#chan, &local, !local, +mode) and the
+  # synthetic "$server" pseudo-channel resolve to a pure
+  # `channel == ^name` filter — these can never be DM rows, so the
+  # `:dm_with` index is irrelevant.
+  #
+  # Peer-shaped names (anything else, i.e. nick-shaped) resolve to
+  # the union of `(channel == ^name) OR (dm_with == ^name)` so a DM
+  # window for `peer` returns both:
+  #   * outbound — own_nick → peer (channel = peer)
+  #   * inbound — peer → own_nick (channel = own_nick, dm_with = peer
+  #     populated at persist by EventRouter).
+  #
+  # Includes pre-CP14-B3 inbound rows where dm_with is nil — those
+  # never pulled in via this branch (pre-existing inbound history for
+  # peers fetched as own_nick keeps showing under the own-nick
+  # window). Backfill in the migration covers as many historical
+  # rows as the current credential's nick can identify; the
+  # write-time path covers everything from CP14 B3 forward.
+  defp channel_or_dm_where(query, channel) when is_binary(channel) do
+    if dm_eligible?(channel) do
+      where(query, [m], m.channel == ^channel or m.dm_with == ^channel)
+    else
+      where(query, [m], m.channel == ^channel)
+    end
+  end
+
+  defp dm_eligible?("$server"), do: false
+
+  defp dm_eligible?(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
+    do: false
+
+  defp dm_eligible?(_), do: true
 
   defp subject_where(query, {:user, user_id}) when is_binary(user_id),
     do: where(query, [m], m.user_id == ^user_id)
