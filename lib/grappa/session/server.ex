@@ -1253,7 +1253,14 @@ defmodule Grappa.Session.Server do
           kind: :privmsg,
           sender: state.nick,
           body: body,
-          meta: %{}
+          meta: %{},
+          # CP14 B3 — outbound DM detection. `Scrollback.dm_peer/4` is
+          # the single source for the rule (channel msg vs DM): for
+          # outbound, target is the peer iff target is nick-shaped (no
+          # #/&/!/+ sigil and not "$server"). The EventRouter inbound
+          # path uses the same fn, so both halves of every DM thread
+          # land with matching `dm_with` values.
+          dm_with: Scrollback.dm_peer(:privmsg, target, state.nick, state.nick)
         },
         state.subject
       )
