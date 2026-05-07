@@ -168,6 +168,7 @@ defmodule Grappa.Session.EventRouter do
           | {:channel_modes_changed, String.t(), channel_mode_entry()}
           | {:away_confirmed, :present | :away}
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
+          | {:joined, String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -233,7 +234,17 @@ defmodule Grappa.Session.EventRouter do
         %{}
       )
 
-    {:cont, state, [eff]}
+    # CP15 B1: self-JOIN echo promotes the per-channel window to :joined.
+    # Other-user JOINs land as scrollback rows only — no window-state
+    # transition (the operator may already be in this channel observing).
+    effects =
+      if sender == state.nick do
+        [eff, {:joined, channel}]
+      else
+        [eff]
+      end
+
+    {:cont, state, effects}
   end
 
   def route(%Message{command: :part, params: [channel | rest]} = msg, state)
