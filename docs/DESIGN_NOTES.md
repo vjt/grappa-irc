@@ -1928,6 +1928,155 @@ fix is to provision a deploy key + switch to
 
 ---
 
+## 2026-05-07 — CP15 event-driven window state model
+
+cicchetto used to assume window state. POST `/channels` succeeded,
+the sidebar entry appeared, the members pane fetched once via REST
+and cached. When the assumption matched IRC reality (you joined a
+channel and stayed in it) the UI was correct; when reality
+diverged (invite-only refusal, kick, T32 park, WS reconnect race
+that dropped the post-deploy `members_seeded` broadcast), the UI
+silently lied. Members rendered empty, ghost windows pinned, the
+compose box accepted text into channels we couldn't post in. The
+optimistic STATE pattern was structurally incapable of representing
+JOIN failure, KICK, or any future :parked transition; cic was the
+source of truth for state cic could not actually observe.
+
+CP15 moved the window-state machine to the server. `Grappa.Session.
+Server` owns three sibling maps keyed on channel name —
+`window_states %{channel => :pending | :joined | :failed | :kicked
+| :parked}`, `window_failure_reasons` + `window_failure_numerics`
+for `:failed`, `window_kicked_meta` for `:kicked`. State
+transitions emit typed events on the per-channel topic
+(`grappa:network:{net}/channel:{chan}`) with shapes
+`kind: "joined" | "join_failed" | "kicked" | "members_seeded"`,
+plus the pre-existing `kind: "message"` for persisted scrollback
+rows. cic's `lib/windowState.ts` mirrors the server's three-map
+split as three module-singleton signal stores;
+`lib/subscribe.ts` dispatches each typed event to the matching
+setter. The pre-B5 `loadMembers` REST verb went away entirely —
+`members_seeded` fires on after_join AND on every upstream 366
+RPL_ENDOFNAMES, so cic has no remaining reason to call
+`GET /members`. `:parted` is intentionally NOT broadcast: cic
+derives "key removed from `windowStateByChannel`" from the
+existing `:part` presence message when `sender === ownNick`,
+and the absence-key projects to the archive surface (B4) without
+a parallel typed event.
+
+### Two patterns this cluster pinned for project-wide reuse
+
+**Wire modules.** B6 surfaced a Jason crash in
+`Grappa.QueryWindows.broadcast_windows_list/2`: the function was
+sending raw `%Window{}` structs over PubSub, and the struct
+doesn't derive `Jason.Encoder`. `Phoenix.Socket.V2.JSONSerializer.
+fastlane!/1` crashed at the WS edge during fan-out, the crash
+dropped the user-channel process, and any subsequent
+`close_query_window` push from cic landed on a dying ref and was
+lost — explaining a long-suspected "DM windows you close stay
+open server-side" bug that pre-dated CP15. Fix:
+`Grappa.QueryWindows.Wire.render_grouped/1`, sibling to
+`Grappa.Scrollback.Wire`. Both `broadcast_windows_list/2` (PubSub
+side) and `GrappaWeb.GrappaChannel.push_query_windows_list/2`
+(Channel push side) now delegate. The wire module pattern is now
+the project's STANDARD for any context that emits over PubSub or
+pushes over Phoenix Channels: contexts own the JSON-encodable wire
+conversion; controllers + channels delegate. PubSub broadcast
+payloads MUST be JSON-encodable. Raw `%Schema{}` structs over
+PubSub are forbidden because the failure mode is a fastlane! crash
+at the boundary, not a compile-time error or a unit-test
+assertion miss.
+
+**Synthetic sidebar rows keyed on windowState.** B6 also surfaced
+the dual fact that `pendingChannelsForNetwork` (the projection
+that emits a sidebar row for state == "pending" channels not yet
+in `channelsBySlug`) had been written too narrowly: a failed JOIN
+to an invite-only channel landed in `windowStateByChannel` as
+`:failed` but never reached `channelsBySlug`, so the sidebar
+rendered NO entry at all — directly contradicting the intent doc's
+"Sidebar entry greyed/dim" rule. The fix renames the helper to
+`pseudoChannelsForNetwork` and extends it to all four non-joined
+states (`:pending`, `:failed`, `:kicked`, `:parked`). Same
+projection: emit a sidebar row whenever `windowStateByChannel`
+carries the key but `channelsBySlug` doesn't. The architecturally
+load-bearing piece: the **sidebar projection's authoritative key
+is `windowStateByChannel`, not `channelsBySlug`**. The live
+channels list feeds into the projection but is one source among
+several. New states (e.g. T32 `:parked` once the disconnect/connect
+verbs land) inherit the synthetic-row + greyed-class treatment
+mechanically as long as they go in `windowStateByChannel` —
+they do not require touching the sidebar projection.
+
+### Three bug-fix learnings
+
+The B6 e2e matrix surfaced three pre-existing bugs that the unit
+suite + browser smoke had been silently masking:
+
+1. **Sidebar synthetic-row coverage** (commit `1c80907`). The
+   projection was keyed too narrowly per the synthetic-rows
+   pattern above; failed/kicked/parked windows whose channel never
+   reached `channelsBySlug` had no sidebar row. The fix made the
+   projection key on `windowStateByChannel` directly. Lesson:
+   when state lives in two stores, the projection MUST key on the
+   store that's authoritative for the question being asked. The
+   sidebar projection's question is "what windows exist?"; the
+   answer is `windowStateByChannel`, not the live-channels list.
+
+2. **QueryWindows Jason crash** (commits `21c791e` + `3570d11`).
+   See the wire-modules pattern above. Lesson: persisting a row
+   does NOT auto-broadcast it; persisting a struct over PubSub
+   does NOT auto-render it as JSON. Wire-shape conversion is a
+   per-context responsibility, owned by the context, not implicit
+   in `Phoenix.PubSub.broadcast/3`.
+
+3. **`join_failed` notice silent on cic** (commit `595cd96`). The
+   `apply_effects [{:join_failed, ...}]` arm persisted the failure
+   reason as a `:notice` scrollback row but only broadcast the
+   typed `kind: "join_failed"` event — never the wire-shape
+   `kind: "message"` event for the persisted notice. cic's
+   `loadInitialScrollback` is `loadedChannels`-gated (once-per-
+   channel), so the notice landed in the DB but never in the live
+   scrollback view unless the user reloaded the page. Fix:
+   broadcast `Wire.message_payload/1` in the `:join_failed` arm
+   too. Lesson: typed window-state events and persisted message
+   events are PARALLEL channels in the wire contract; every
+   `:persist` effect must be paired with a `kind: "message"` push
+   if the row needs to land in the LIVE scrollback view (vs. a
+   cold reload).
+
+### Stale-bundle reload gotcha
+
+Browser smoke after the B6 deploy initially reproduced the kicked-
+sidebar bug — synthetic row missing — even though the deploy had
+landed cleanly server-side. Root cause: the prod tab held the
+pre-deploy bundle (`index-Tsa4Tfom.js`) instead of the post-deploy
+bundle (`index-CiYQNUz0.js`). Asset-hash cache-busting works for
+fresh sessions but not for already-open tabs. Mitigation: hard-
+reload the prod tab post-deploy before browser smoke. Captured in
+`feedback_cicchetto_browser_smoke` memory + flagged in CLAUDE.md's
+Per-bucket cadence note.
+
+### Deferred: parked (T32) flow + the one flake
+
+The parked-state e2e (`cp15-b6-parked.spec.ts`) is BLOCKED on T32:
+flipping `connection_state: "parked"` requires the PATCH
+`/networks/:slug` REST surface + cic's `/disconnect` / `/connect`
+ComposeBox arms, both of which land in the `channel-client-polish`
+cluster (`project_t32_disconnect_verb` memory). The synthetic-row
++ greyed-class treatment is already in place for `:parked` — the
+e2e is the only missing piece, and it's a mechanical addition once
+T32 ships.
+
+`cp15-b6-pending-to-failed-invite-only.spec.ts` passes on retry #1
+every time but flakes once on the first attempt — a sub-second
+race between the synchronous `setPending` fire and the typed
+`join_failed` broadcast arriving back over WS. Same render code
+path is reliably green via `cp15-b6-kicked.spec.ts` AND verified
+by prod browser smoke on `#services` / `#operhelp`. Followup
+filed in todo.md "B6 follow-up": tighten the wait_for sentinel on
+the typed event vs. relying on render-tick timing.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
