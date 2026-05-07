@@ -285,7 +285,25 @@ Private messages get per-user "query" windows in the sidebar, persisted across l
 
 ### Archive section (CP15 B4)
 
-Each network section in the sidebar gets a collapsed `<details>` "Archive" beneath the active windows. Lists targets with scrollback rows that are NOT in the active set (joined channels + open queries). Sourced from `GET /networks/:slug/archive`, lazy-fetched on first expand. Each entry is clickable: opens the read-only window for past channels (B5 wires the "Join" affordance) or revives the query window for past DMs. `$server` is system surface — always active, never archived. The active/archive boundary is **user-action driven** (PART or window-close → archived; KICK or T32 disconnect keeps the window in active sidebar, greyed).
+Each network section in the sidebar gets a collapsed `<details>` "Archive" beneath the active windows. Lists targets with scrollback rows that are NOT in the active set (joined channels + open queries). Sourced from `GET /networks/:slug/archive`, lazy-fetched on first expand. Each entry is clickable: opens the read-only window for past channels (re-JOIN via `/join` from compose) or revives the query window for past DMs. `$server` is system surface — always active, never archived. The active/archive boundary is **user-action driven** (PART or window-close → archived; KICK or T32 disconnect keeps the window in active sidebar, greyed). The rendered list is **filtered at render time** to drop entries that have been re-activated since the lazy fetch (operator JOINs an archived channel → it disappears from archive on the same tick the live row appears in active).
+
+### Window state model (CP15 B5)
+
+`cicchetto/src/lib/windowState.ts` mirrors the server-side window-state machine (`Grappa.Session.Server`'s `window_states` + `window_failure_{reasons,numerics}` + `window_kicked_meta` maps). Three module-singleton signal stores keyed on `(networkSlug, channelName)`:
+
+- `windowStateByChannel`: `"pending" | "joined" | "failed" | "kicked" | "parked"` — absence = archived.
+- `windowFailureByChannel`: `{reason, numeric}` for `:failed` (471/473/474/475/403/405).
+- `windowKickedMetaByChannel`: `{by, reason}` for `:kicked`.
+
+The server emits typed events on the per-channel topic — `kind: "joined" | "join_failed" | "kicked"` — that `cicchetto/src/lib/subscribe.ts` dispatches to the matching setter. `:parted` is intentionally NOT broadcast: its projection is "key removed from windowStateByChannel" (cic derives it from the existing `:part` presence message when `sender === ownNick`).
+
+Render branches:
+
+- **MembersPane** branches on `windowStateByChannel[key]`: state ∉ {joined} → "not joined" muted text; state == joined && empty → "loading…" muted; state == joined && filled → render the list. The pre-B5 `loadMembers` REST gate went away — server pushes `members_seeded` on after_join (CP15 B3) AND on every 366 RPL_ENDOFNAMES, so cic has no remaining reason to fetch `GET /members`.
+- **ComposeBox** adds `.compose-box-greyed` + "(not joined)" inline label when state ∈ {failed, kicked, parked}. Compose stays functional — the operator can still type `/join` / `/part` to recover.
+- **Sidebar** adds `.sidebar-window-greyed` to channel + query rows whose state ∈ {failed, kicked, parked}. Synthetic pending sidebar row when state == "pending" and the channel is NOT yet in `channelsBySlug` (operator just clicked `/join`, awaiting upstream echo). When the typed `joined` event lands, `channelsBySlug` refetches via the `channels_changed` heartbeat and the row continues life under the channelsBySlug branch.
+
+`/join` from compose calls `setPending(channelKey)` immediately for visual feedback. The pending entry also pre-subscribes the per-channel Phoenix topic (one createEffect iterates `windowStateByChannel()` for `"pending"` entries) so the upstream JOIN echo broadcast lands on a live subscriber — closing the race where Phoenix PubSub would drop broadcasts to a topic cic hadn't yet joined.
 
 ### Mobile layout (C6)
 
