@@ -43,7 +43,29 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
 - **Phoenix Channels is the streaming surface, not SSE.** Topics are
   `grappa:user:{user}`, `grappa:network:{net}`, and
   `grappa:network:{net}/channel:{chan}`. The `phoenix.js` client lib
-  handles reconnect + replay.
+  handles reconnect + replay. PubSub broadcast + Channel push payloads
+  MUST be JSON-encodable — convert structs to wire shape via a
+  context-owned `*.Wire` module (`Grappa.Scrollback.Wire`,
+  `Grappa.QueryWindows.Wire`). Raw `%Schema{}` structs over PubSub
+  crashed Phoenix's `fastlane!/1` at the WS edge during fan-out
+  (CP15 B6 finding); `Jason.Encoder` derive on schemas is NOT
+  enough because the schema's wire shape rarely matches the
+  storage shape. Wire conversion is per-context responsibility.
+- **Window state model lives on the server.** `Grappa.Session.Server`
+  owns `window_states %{channel => :pending | :joined | :failed |
+  :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
+  + `window_kicked_meta` maps. Transitions emit typed events on the
+  per-channel topic (`kind: "joined" | "join_failed" | "kicked" |
+  "members_seeded"`); cic's `lib/windowState.ts` mirrors via
+  `lib/subscribe.ts` dispatch. cic NEVER originates state — no
+  optimistic STATE assumptions, no parallel client-side state
+  machine. Adding a new state (e.g. SASL-gated `:locked`) requires
+  server changes; cic just mirrors. The cic-side
+  `windowStateByChannel` store is the AUTHORITATIVE sidebar
+  projection key — `channelsBySlug` feeds into it but is not the
+  sole source. New states automatically inherit synthetic-row +
+  greyed-class treatment as long as they land in
+  `windowStateByChannel`.
 
 ## Tech Stack
 
