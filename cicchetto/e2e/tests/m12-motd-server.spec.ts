@@ -13,14 +13,15 @@
 // Cicchetto's Sidebar always renders the `$server` window slot
 // (Sidebar.tsx:71 — "always present, not closeable"); selecting it
 // loads scrollback from REST keyed on channel="$server", and the
-// non-typable read-only pane shows MOTD + future server NOTICEs.
+// pane shows MOTD + future server NOTICEs. CP13 S9 added a compose
+// box (slash-only) — the read-only constraint from BUG2d is reverted.
 //
 // Spec asserts:
 //   - server-side: at least one :notice row persisted under $server
 //     within the timeout (deterministic — bahamut always sends MOTD)
 //   - cicchetto: clicking the Server window button focuses the pane,
-//     scrollback contains a notice line, compose box is HIDDEN
-//     (Shell.tsx — server windows are read-only per BUG2d fix).
+//     scrollback contains a notice line, compose box IS PRESENT
+//     (CP13 S9 — slash-only enforced inside compose.ts).
 
 import { test, expect } from "@playwright/test";
 import {
@@ -33,33 +34,22 @@ import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SERVER_CHANNEL = "$server";
 
-test("M12 — MOTD persists into $server channel + cicchetto Server window renders read-only", async ({ page }) => {
+test("M12 — MOTD persists into $server channel + cicchetto Server window renders with compose box", async ({ page }) => {
   const vjt = getSeededVjt();
 
   // Server-side first door: at least one :notice row exists for the
   // synthetic $server channel. Bahamut sends MOTD as part of the
-  // post-registration handshake, so this is deterministic. We don't
-  // pin sender (could be "bahamut-test" or "*") or body — any
-  // notice row is sufficient evidence of routing.
+  // post-registration handshake, so this is deterministic.
   await assertMessagePersisted({
     token: vjt.token,
     networkSlug: NETWORK_SLUG,
     channel: SERVER_CHANNEL,
-    // Per BUG2 fix-up, sender is `Message.sender_nick(msg)` — for
-    // numerics with a server prefix this is the leaf hostname as the
-    // server announces itself in the prefix (RPL_001 / numerics use the
-    // server's self-declared name, NOT the docker DNS alias). Bahamut's
-    // testnet leaf identifies as `leaf4.azzurra.chat` per its config
-    // (see cicchetto/e2e/infra/bahamut/leaf-v4.conf — server name).
     sender: "leaf4.azzurra.chat",
     kind: "notice",
   });
 
   // Client-side: log in + click the Server window (always-present
-  // sidebar slot). Sidebar.tsx renders the synthetic "$server" channel
-  // with the visible label "Server" (literal channel name is hidden
-  // from the user — `$server` is the wire identifier only). Locate
-  // by the rendered label instead of the wire name.
+  // sidebar slot).
   await loginAs(page, vjt);
   const serverEntry = page
     .locator(".sidebar-network")
@@ -73,8 +63,7 @@ test("M12 — MOTD persists into $server channel + cicchetto Server window rende
   // :notice — count gives a kind-agnostic "any traffic" check).
   await expect(scrollbackLines(page).first()).toBeVisible({ timeout: 5_000 });
 
-  // BUG2d invariant: the Server window is read-only — no compose
-  // textarea (Shell.tsx Show-fallback gates the ComposeBox on
-  // `sel().kind !== "server"`).
-  await expect(composeTextarea(page)).toHaveCount(0);
+  // CP13 S9: ComposeBox now renders on the Server window — slash-only
+  // enforced inside compose.ts, no read-only DOM-suppression.
+  await expect(composeTextarea(page)).toHaveCount(1);
 });
