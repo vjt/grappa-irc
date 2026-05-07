@@ -641,7 +641,27 @@ single bucket (5+ TDD steps). B4 + B5 + B6 are cic-touching and
 require browser smoke + (B5/B6) Playwright e2e per the discipline
 memos.
 
-## Decisions pinned
+## Decisions pinned 2026-05-07 vjt
 
-(Empty — vjt sign-off pending. Add "Decisions pinned 2026-05-NN
-vjt" section here once Q1–Q8 resolutions confirmed.)
+vjt signed off all 8 deferred-question resolutions wholesale on
+2026-05-07, post-CP14 close, pre-B1-worktree-open. The "Open
+questions — recommended resolutions" section above is now
+authoritative for the cluster:
+
+- **Q1** — visitor JOIN path emits the same `:joined` events; no
+  special-case. RED test pins both subjects.
+- **Q2** — bootstrap autojoin failures emit the same `:join_failed`
+  shape; no `:autojoin_failed` variant.
+- **Q3** — single `GET /networks/:slug/archive` endpoint returning
+  a flat `[{target, kind, last_activity, row_count}]` list.
+- **Q4** — `window_states` lives on `Session.Server.state()` as an
+  in-process map; no ETS, no Registry.
+- **Q5** — derived on boot from autojoin's natural transition flow;
+  no new persistence table.
+- **Q6** — mobile BottomBar archive is nested per-network (not a
+  global tab), mirroring desktop Sidebar.
+- **Q7** — `/join` parser already present at
+  `cicchetto/src/lib/slashCommands.ts:133-137`; archive's "Join
+  channel" button reuses `postCreateChannel`.
+- **Q8** — 3-layer attribution priority for failure numerics:
+  labeled-response → in-flight JOIN map → `$server` fallback.
