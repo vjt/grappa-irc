@@ -120,6 +120,8 @@ services:
         mix grappa.bind_network --user vjt --network bahamut-test \
           --server bahamut-test:6667 --no-tls --nick vjt-grappa \
           --auth none --autojoin '#bofh'
+        mix grappa.seed_scrollback --user vjt --network bahamut-test \
+          --channel '#bofh' --count 200 --sender seed-bot
     networks:
       grappa-e2e: {}
 
