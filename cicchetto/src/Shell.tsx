@@ -255,13 +255,13 @@ const Shell: Component = () => {
                           channelName={sel().channelName}
                           kind={sel().kind}
                         />
-                        {/* Server window is read-only — no compose box (BUG 2d fix). */}
-                        <Show when={sel().kind !== "server"}>
-                          <ComposeBox
-                            networkSlug={sel().networkSlug}
-                            channelName={sel().channelName}
-                          />
-                        </Show>
+                        {/* CP13 S9: ComposeBox renders on $server too —
+                            slash-only is enforced inside compose.ts so plain
+                            text gets rejected with a friendly error. */}
+                        <ComposeBox
+                          networkSlug={sel().networkSlug}
+                          channelName={sel().channelName}
+                        />
                       </>
                     }
                   >
@@ -363,13 +363,10 @@ const Shell: Component = () => {
                         channelName={sel().channelName}
                         kind={sel().kind}
                       />
-                      {/* Server window is read-only — no compose box (BUG 2d fix). */}
-                      <Show when={sel().kind !== "server"}>
-                        <ComposeBox
-                          networkSlug={sel().networkSlug}
-                          channelName={sel().channelName}
-                        />
-                      </Show>
+                      {/* CP13 S9: ComposeBox renders on $server too —
+                          slash-only is enforced inside compose.ts so plain
+                          text gets rejected with a friendly error. */}
+                      <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
                     </>
                   }
                 >

@@ -171,24 +171,26 @@ describe("Shell — three-pane integration", () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: ":server", kind: "server" });
     const { container } = render(() => <Shell />);
     // ScrollbackPane still renders (server window has its own scrollback).
-    // ComposeBox must NOT render — server window is read-only (BUG 2d fix).
-    // TopicBar must NOT — feature #20: channel-window-only.
+    // CP13 S9 — ComposeBox now DOES render on $server (slash-only gate
+    // enforced inside compose.ts), reverting the BUG 2d behavior.
+    // TopicBar must NOT render — feature #20: channel-window-only.
     await waitFor(() => {
       expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
     });
     expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
-    expect(container.querySelector(".compose-box")).not.toBeInTheDocument();
+    expect(container.querySelector(".compose-box")).toBeInTheDocument();
   });
 
-  // BUG 2d: server window is read-only — compose box must not render on desktop either.
-  // Uses $server (the actual channel name) to verify the production path.
-  it("BUG 2d: compose-box is NOT rendered on desktop when server window is selected", async () => {
+  // CP13 S9: server window now accepts slash-commands via the regular
+  // compose-box. Plain text is rejected inside compose.ts with a friendly
+  // error. The compose-box itself must render on both desktop and mobile.
+  it("CP13: compose-box IS rendered on desktop when server window is selected", async () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "$server", kind: "server" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
       expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
     });
-    expect(container.querySelector(".compose-box")).not.toBeInTheDocument();
+    expect(container.querySelector(".compose-box")).toBeInTheDocument();
   });
 
   it("does NOT render TopicBar when a query window is selected (channel-only per spec #20)", async () => {
@@ -345,14 +347,15 @@ describe("Shell — mobile layout (isMobile = true)", () => {
     expect(container.querySelector(".shell-members")?.classList.contains("open")).toBe(true);
   });
 
-  // BUG 2d: server window is read-only — compose box must not render on mobile either.
-  it("BUG 2d: compose-box is NOT rendered on mobile when server window is selected", async () => {
+  // CP13 S9: server window now renders compose-box on mobile too — slash-only
+  // gate is in compose.ts.
+  it("CP13: compose-box IS rendered on mobile when server window is selected", async () => {
     mobileState.value = true;
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "$server", kind: "server" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
       expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
     });
-    expect(container.querySelector(".compose-box")).not.toBeInTheDocument();
+    expect(container.querySelector(".compose-box")).toBeInTheDocument();
   });
 });
