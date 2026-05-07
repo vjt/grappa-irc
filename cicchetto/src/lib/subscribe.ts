@@ -21,7 +21,7 @@ import {
   setSelectedChannel,
 } from "./selection";
 import { joinChannel } from "./socket";
-import { setFailed, setJoined, setKicked, setParted } from "./windowState";
+import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from "./windowState";
 
 // WS subscription installer. Reactive side-effect module: imports for
 // effect, exports nothing public. The app entry (`main.tsx`) imports
@@ -393,6 +393,47 @@ createRoot(() => {
         installChannelHandler(phx, slug, ch.name, key, ownNick);
         joined.add(key);
       }
+    }
+  });
+
+  // CP15 B5 fix - pending-channel pre-subscribe loop. Catches the race
+  // where the server broadcasts the typed `joined` event (and the
+  // subsequent JOIN presence message + channels_changed heartbeat)
+  // BEFORE channels_changed triggers the channelsBySlug refetch +
+  // channels-loop join. Phoenix PubSub doesn't replay to late
+  // subscribers, so without this loop the JOIN events drop on the
+  // floor until the next page reload.
+  //
+  // setPending fires synchronously from compose.ts on `/join`, so this
+  // effect re-runs immediately and joins the per-channel topic
+  // (typically before the upstream JOIN echo even lands). When
+  // channels_changed later fires + channelsBySlug refetches, the
+  // channels-loop sees the key in `joined` and skips the duplicate.
+  //
+  // Same for any other path that sets state to pending (auto-rejoin
+  // after disconnect, etc.) - subscribe lives at the WS-topic boundary,
+  // not at the user-action boundary.
+  createEffect(() => {
+    const t = token();
+    const states = windowStateByChannel();
+    if (!t) return;
+    const name = socketUserName();
+    const nets = networks();
+    const u = user();
+    if (!name || !nets) return;
+    for (const [key, state] of Object.entries(states)) {
+      if (state !== "pending") continue;
+      const sepIdx = key.indexOf(" ");
+      if (sepIdx < 0) continue;
+      const slug = key.slice(0, sepIdx);
+      const channelName = key.slice(sepIdx + 1);
+      const typedKey = channelKey(slug, channelName);
+      if (joined.has(typedKey)) continue;
+      const net = nets.find((n) => n.slug === slug) ?? null;
+      const ownNick = net?.nick ?? (u ? displayNick(u) : null) ?? null;
+      const phx = joinChannel(name, slug, channelName);
+      installChannelHandler(phx, slug, channelName, typedKey, ownNick);
+      joined.add(typedKey);
     }
   });
 
