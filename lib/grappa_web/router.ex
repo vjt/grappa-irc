@@ -86,6 +86,8 @@ defmodule GrappaWeb.Router do
 
     get "/channels/:channel_id/members", MembersController, :index
 
+    get "/archive", ArchiveController, :index
+
     post "/nick", NickController, :create
   end
 end
