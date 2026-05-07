@@ -83,7 +83,7 @@ defmodule Grappa.Session.EventRouter do
   """
 
   alias Grappa.IRC.{Identifier, Message}
-  alias Grappa.Session
+  alias Grappa.{Scrollback, Session}
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -966,7 +966,15 @@ defmodule Grappa.Session.EventRouter do
           server_time: System.system_time(:millisecond),
           sender: sender,
           body: body,
-          meta: meta
+          meta: meta,
+          # CP14 B3 — populate the normalized "DM peer" column at
+          # persist time so DM (query) windows can fetch BOTH sides of
+          # the conversation in a single query, and so own-nick
+          # rotation doesn't shard inbound history. `Scrollback.dm_peer/4`
+          # is the single source of the rule; nil for non-DM rows
+          # (channel messages, presence events, NOTICE-from-services,
+          # etc.) — the schema accepts nil for the column.
+          dm_with: Scrollback.dm_peer(kind, channel, sender, state.nick)
         },
         state.subject
       )
