@@ -282,7 +282,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{}
     end
 
-    test "JOIN-self clears stale state.members[channel] then adds self" do
+    test "JOIN-self clears stale state.members[channel] then adds self + emits {:joined, channel}" do
       # Stale state from a previous session (operator reconnect, BNC bug):
       state =
         base_state(%{
@@ -291,12 +291,30 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:join, ["#italia"], {:nick, "vjt", "u", "h"})
 
-      assert {:cont, new_state, [{:persist, :join, _}]} =
+      assert {:cont, new_state, [{:persist, :join, _}, {:joined, "#italia"}]} =
                EventRouter.route(m, state)
 
       # Stale users wiped; only self remains. 353 RPL_NAMREPLY arrives
       # immediately after and re-populates the rest.
       assert new_state.members["#italia"] == %{"vjt" => []}
+    end
+
+    test "JOIN-self emits {:joined, channel} for visitor subject (Q1: uniform path)" do
+      # Q1 pinning: visitor JOIN echo flows through the same EventRouter
+      # clause and emits the same :joined effect — no special-case branch.
+      # The subject only discriminates persist target downstream.
+      visitor_id = "00000000-0000-0000-0000-000000000099"
+
+      state =
+        base_state(%{
+          subject: {:visitor, visitor_id},
+          members: %{"#italia" => %{"vjt" => []}}
+        })
+
+      m = msg(:join, ["#italia"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, [{:persist, :join, _}, {:joined, "#italia"}]} =
+               EventRouter.route(m, state)
     end
 
     test "JOIN-other to an unknown channel creates the channel entry" do
@@ -307,6 +325,16 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
 
       assert new_state.members["#new"] == %{"alice" => []}
+    end
+
+    test "JOIN-other does NOT emit {:joined, channel} effect (regression)" do
+      # Only self-JOIN promotes the window to :joined — other-user JOINs
+      # land in scrollback as :persist :join rows with no state transition.
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
+      m = msg(:join, ["#italia"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:joined, _}, &1))
     end
   end
 
