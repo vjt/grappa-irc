@@ -150,6 +150,11 @@ config :logger, :console,
     :numeric,
     :sasl_user,
     :nick,
+    # Numeric severity (CP13 server-window cluster): :ok for 1xx/2xx/3xx,
+    # :error for 4xx/5xx — rides the :notice persist for routed numerics
+    # so log lines are color-greppable. Mirrors Scrollback.Meta.@known_keys
+    # (A18 sync rule — meta_test.exs catches drift).
+    :severity,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a
