@@ -24,7 +24,6 @@ vi.mock("../lib/api", () => ({
   listNetworks: vi.fn(),
   listChannels: vi.fn(),
   listMessages: vi.fn(),
-  listMembers: vi.fn(),
   sendMessage: vi.fn(),
   me: vi.fn(),
   login: vi.fn(),
@@ -40,10 +39,20 @@ vi.mock("../lib/socket", () => ({
 
 vi.mock("../lib/members", () => ({
   applyPresenceEvent: vi.fn(),
-  loadMembers: vi.fn(),
   seedMembers: vi.fn(),
   membersByChannel: vi.fn(() => ({})),
   seedFromTest: vi.fn(),
+}));
+
+vi.mock("../lib/windowState", () => ({
+  setPending: vi.fn(),
+  setJoined: vi.fn(),
+  setFailed: vi.fn(),
+  setKicked: vi.fn(),
+  setParted: vi.fn(),
+  windowStateByChannel: vi.fn(() => ({})),
+  windowFailureByChannel: vi.fn(() => ({})),
+  windowKickedMetaByChannel: vi.fn(() => ({})),
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -1819,11 +1828,12 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
     const key = channelKey("freenode", "#grappa");
     expect(store.unreadCounts()[key]).toBe(1);
   });
-  // members_seeded WS event — server's 366 RPL_ENDOFNAMES landed; client
-  // must re-fetch GET /members to overwrite any empty snapshot the racing
-  // initial loadMembers may have produced.
+  // members_seeded WS event — server pushes the full sorted snapshot on
+  // after_join AND on every 366 RPL_ENDOFNAMES. CP15 B5 dropped the
+  // GET /members REST fetch path entirely; this is the sole bootstrap
+  // surface for the members list.
   describe("members_seeded WS event", () => {
-    it("seeds members directly from members_seeded payload — no fetch", async () => {
+    it("seeds members directly from members_seeded payload", async () => {
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -1832,7 +1842,6 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
       await seedStubs();
       await loadStores();
       const members = await import("../lib/members");
-      const api = await import("../lib/api");
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
@@ -1855,8 +1864,6 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         { nick: "vjt", modes: ["@"] },
         { nick: "alice", modes: [] },
       ]);
-      // Critical: NO HTTP fetch — the WS payload is authoritative.
-      expect(api.listMembers).not.toHaveBeenCalled();
     });
 
     it("does NOT route members_seeded as a message (no scrollback append, no unread bump)", async () => {
@@ -1882,6 +1889,203 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         members: [],
       });
 
+      const key = channelKey("freenode", "#grappa");
+      expect(store.scrollbackByChannel()[key]).toBeUndefined();
+      expect(store.unreadCounts()[key]).toBeUndefined();
+    });
+  });
+
+  // CP15 B5 — typed window-state events: server-side apply_effects arms
+  // broadcast `kind: "joined" | "join_failed" | "kicked"` on the per-
+  // channel topic. `:parted` is intentionally NOT broadcast — its
+  // projection is "key removed from windowStateByChannel" (the archive
+  // section in Sidebar derives from it). Cic's subscribe.ts dispatches
+  // each kind to the matching windowState setter; the snapshot push
+  // uses byte-identical payloads so the same handler arms cover both
+  // cold-WS-resubscribe (`push_window_state_if_known`) and event-time
+  // broadcast paths.
+  describe("window-state WS events", () => {
+    it("'joined' event fires setJoined for the (slug, channel) key", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "joined",
+        network: "freenode",
+        channel: "#grappa",
+        state: "joined",
+      });
+      expect(ws.setJoined).toHaveBeenCalledWith(channelKey("freenode", "#grappa"));
+    });
+
+    it("'join_failed' event fires setFailed with reason + numeric", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#grappa",
+        state: "failed",
+        reason: "Cannot join channel (+i)",
+        numeric: 473,
+      });
+      expect(ws.setFailed).toHaveBeenCalledWith(
+        channelKey("freenode", "#grappa"),
+        "Cannot join channel (+i)",
+        473,
+      );
+    });
+
+    it("'join_failed' event with null reason still fires setFailed", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#grappa",
+        state: "failed",
+        reason: null,
+        numeric: 471,
+      });
+      expect(ws.setFailed).toHaveBeenCalledWith(channelKey("freenode", "#grappa"), null, 471);
+    });
+
+    it("'kicked' event fires setKicked with by + reason", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "kicked",
+        network: "freenode",
+        channel: "#grappa",
+        state: "kicked",
+        by: "op",
+        reason: "behave",
+      });
+      expect(ws.setKicked).toHaveBeenCalledWith(channelKey("freenode", "#grappa"), "op", "behave");
+    });
+
+    it("own-PART message fires setParted (absence is the projection)", async () => {
+      // Server intentionally does NOT broadcast `kind: "parted"` — the
+      // signal is the absence of the window_states entry. Cic derives
+      // it from the existing :part presence message: when the operator
+      // PARTs (sender === ownNick && kind === "part"), drop the
+      // windowState entry. Same install site as BUG5a self-PART
+      // dismiss; setParted is the projection mirror.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      // Own-nick PART on #grappa.
+      fireMessageEvent("#grappa", { id: 50, kind: "part", sender: "alice" });
+      expect(ws.setParted).toHaveBeenCalledWith(channelKey("freenode", "#grappa"));
+    });
+
+    it("peer PART does NOT fire setParted (only own-PART projects to absence)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      fireMessageEvent("#grappa", { id: 51, kind: "part", sender: "bob" });
+      expect(ws.setParted).not.toHaveBeenCalled();
+    });
+
+    it("window-state events do NOT route as messages (no scrollback append, no unread)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "joined",
+        network: "freenode",
+        channel: "#grappa",
+        state: "joined",
+      });
+      handler({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#grappa",
+        state: "failed",
+        reason: "Cannot join channel (+i)",
+        numeric: 473,
+      });
+      handler({
+        kind: "kicked",
+        network: "freenode",
+        channel: "#grappa",
+        state: "kicked",
+        by: "op",
+        reason: "behave",
+      });
       const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]).toBeUndefined();
       expect(store.unreadCounts()[key]).toBeUndefined();

@@ -21,6 +21,7 @@ import {
   setSelectedChannel,
 } from "./selection";
 import { joinChannel } from "./socket";
+import { setFailed, setJoined, setKicked, setParted } from "./windowState";
 
 // WS subscription installer. Reactive side-effect module: imports for
 // effect, exports nothing public. The app entry (`main.tsx`) imports
@@ -94,7 +95,31 @@ type WireEvent =
   | ChannelEvent
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
   | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
-  | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] };
+  | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] }
+  // CP15 B5: typed window-state events. Server-side apply_effects arms
+  // broadcast these on the per-channel topic; the snapshot push
+  // (push_window_state_if_known) uses byte-identical payloads so
+  // cic dispatches one handler arm regardless of origin path.
+  // `:parted` is intentionally NOT broadcast — its projection is
+  // "key removed from windowStateByChannel"; cic derives it from the
+  // existing :part presence message when sender === ownNick.
+  | { kind: "joined"; network: string; channel: string; state: "joined" }
+  | {
+      kind: "join_failed";
+      network: string;
+      channel: string;
+      state: "failed";
+      reason: string | null;
+      numeric: number;
+    }
+  | {
+      kind: "kicked";
+      network: string;
+      channel: string;
+      state: "kicked";
+      by: string | null;
+      reason: string | null;
+    };
 
 createRoot(() => {
   const joined = new Set<ChannelKey>();
@@ -238,6 +263,23 @@ createRoot(() => {
         seedMembers(key, payload.members);
         return;
       }
+      // CP15 B5: typed window-state events. Same install site as
+      // members_seeded so cic flips the rendered window state without
+      // polling. setJoined clears any prior failure/kicked metadata
+      // for the key so a successful re-join doesn't carry stale
+      // by/reason/numeric in the maps.
+      if (payload.kind === "joined") {
+        setJoined(key);
+        return;
+      }
+      if (payload.kind === "join_failed") {
+        setFailed(key, payload.reason, payload.numeric);
+        return;
+      }
+      if (payload.kind === "kicked") {
+        setKicked(key, payload.by, payload.reason);
+        return;
+      }
       if (payload.kind !== "message") return;
 
       const { message } = payload;
@@ -258,6 +300,11 @@ createRoot(() => {
         message.sender.toLowerCase() === ownNick.toLowerCase()
       ) {
         setSelectedChannel(null);
+        // CP15 B5: own-PART projects to absence in the windowState map.
+        // Server intentionally does NOT broadcast `kind: "parted"` —
+        // cic derives the projection here, mirroring the same
+        // own-nick gate used for the focus dismiss above.
+        setParted(key);
       }
 
       routeMessage(slug, key, name, message, ownNick);
