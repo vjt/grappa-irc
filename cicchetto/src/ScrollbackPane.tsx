@@ -13,6 +13,7 @@ import { channelKey } from "./lib/channelKey";
 import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
+import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
@@ -154,6 +155,45 @@ const isDifferentDay = (aMs: number, bMs: number): boolean => {
 // `body`-only lookup is the contract.
 const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
 
+// CP13 S10: render an IRC body string with mIRC formatting expanded into
+// per-run <span> elements. Plain text (no control chars) collapses into a
+// single Run and renders as one <span>; the no-formatting fast path is
+// the common case so this stays cheap. Each Run gets a class for each
+// active toggle attribute + inline style for fg/bg colors (the palette is
+// 16 fixed values — we don't generate per-color CSS classes).
+const renderRun = (run: Run): JSX.Element => {
+  const style: Record<string, string> = {};
+  // Reverse swaps fg/bg. mIRC reverses the rendered colors AND falls back
+  // to the terminal default when fg/bg aren't set, but in a web context
+  // we don't have a "terminal default" — fall back to plain text colors
+  // and let the .scrollback-mirc-reverse class style the swap (CSS owns
+  // the visual). Inline style still applies the explicit fg/bg if set.
+  if (run.fg !== undefined) {
+    style[run.reverse ? "background-color" : "color"] = MIRC_PALETTE_16[run.fg] ?? "";
+  }
+  if (run.bg !== undefined) {
+    style[run.reverse ? "color" : "background-color"] = MIRC_PALETTE_16[run.bg] ?? "";
+  }
+  return (
+    <span
+      classList={{
+        "scrollback-mirc-bold": run.bold,
+        "scrollback-mirc-italic": run.italic,
+        "scrollback-mirc-underline": run.underline,
+        "scrollback-mirc-reverse": run.reverse && run.fg === undefined && run.bg === undefined,
+      }}
+      style={style}
+    >
+      {run.text}
+    </span>
+  );
+};
+
+const MircBody: Component<{ body: string }> = (props) => {
+  const runs = (): Run[] => parseMircFormat(props.body);
+  return <For each={runs()}>{renderRun}</For>;
+};
+
 // Strip the CTCP ACTION envelope (`\x01ACTION ...\x01`) from a body for
 // rendering. The server stores the wire-form body verbatim per the
 // CLAUDE.md "preserved as-is" rule (round-trip fidelity for ACTION
@@ -196,14 +236,18 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       return (
         <>
           {senderSpan(`<${msg.sender}>`, msg.sender)}{" "}
-          <span class="scrollback-body">{msg.body}</span>
+          <span class="scrollback-body">
+            <MircBody body={msg.body ?? ""} />
+          </span>
         </>
       );
     case "notice":
       return (
         <>
           {senderSpan(`-${msg.sender}-`, msg.sender)}{" "}
-          <span class="scrollback-body">{msg.body}</span>
+          <span class="scrollback-body">
+            <MircBody body={msg.body ?? ""} />
+          </span>
         </>
       );
     case "action":
@@ -218,7 +262,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
           >
             {msg.sender}
           </button>{" "}
-          {stripCtcpAction(msg.body)}
+          <MircBody body={stripCtcpAction(msg.body)} />
         </span>
       );
     case "join":

@@ -613,6 +613,27 @@ body {
   color: var(--mode-op);
 }
 
+/* CP13 S10: mIRC inline formatting toggles. Each Run rendered by
+   parseMircFormat is a <span> with one or more of these classes for
+   the active toggles. Color codes (fg/bg) ride inline style on the
+   same <span> — no per-color CSS class proliferation. */
+.scrollback-mirc-bold {
+  font-weight: bold;
+}
+.scrollback-mirc-italic {
+  font-style: italic;
+}
+.scrollback-mirc-underline {
+  text-decoration: underline;
+}
+/* Reverse without explicit fg/bg: invert via filter so plain text
+   stays readable on whatever the surrounding background is. With
+   explicit fg/bg the renderRun helper swaps them on the inline style
+   instead and this class is not applied. */
+.scrollback-mirc-reverse {
+  filter: invert(1);
+}
+
 .scrollback-presence {
   color: var(--muted);
   font-style: italic;
