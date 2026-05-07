@@ -151,6 +151,13 @@ const exports_ = createRoot(() => {
     // wants the same outcome whether or not a token is in play.
     if (cmd.kind === "empty") return { error: "empty" };
 
+    // CP13 S9 — $server window only accepts slash-commands. The window
+    // has no IRC target a PRIVMSG could go to. Plain text gets a friendly
+    // error instead of silently failing or vanishing.
+    if (channelName === "$server" && cmd.kind === "privmsg") {
+      return { error: "Server window accepts only slash-commands. Try /raw <line>" };
+    }
+
     const t = token();
     if (!t) return { error: "no session" };
 

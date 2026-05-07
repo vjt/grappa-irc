@@ -994,3 +994,45 @@ describe("compose submit — watchlist verbs (C8.3)", () => {
     expect(compose.getDraft(k)).toBe("");
   });
 });
+
+// CP13 S9 — $server window slash-only gate.
+describe("compose submit — $server slash-only gate (CP13 S9)", () => {
+  it("rejects plain text on $server with a friendly error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "$server");
+    compose.setDraft(k, "hello world");
+    const result = await compose.submit(k, "freenode", "$server");
+    expect(result).toEqual({
+      error: "Server window accepts only slash-commands. Try /raw <line>",
+    });
+    // Draft preserved on rejection so the user can edit and retry.
+    expect(compose.getDraft(k)).toBe("hello world");
+  });
+
+  it("accepts /raw on $server (passes through to slash dispatch)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "$server");
+    // /raw isn't implemented as a known slash today — it falls through to
+    // "unknown command", which is fine: the gate didn't reject it.
+    compose.setDraft(k, "/raw PING :test");
+    const result = await compose.submit(k, "freenode", "$server");
+    expect(result).not.toEqual({
+      error: "Server window accepts only slash-commands. Try /raw <line>",
+    });
+  });
+
+  it("does NOT apply the gate to channels (plain text on #foo dispatches)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "regular message");
+    const result = await compose.submit(k, "freenode", "#a");
+    // Channel privmsg path returns either {ok: true} on success or some
+    // other error — but NOT the $server-specific gate error.
+    expect(result).not.toEqual({
+      error: "Server window accepts only slash-commands. Try /raw <line>",
+    });
+  });
+});
