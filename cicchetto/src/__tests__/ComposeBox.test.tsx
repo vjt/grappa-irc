@@ -14,10 +14,17 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
+let mockWindowState: Record<string, string> = {};
+
+vi.mock("../lib/windowState", () => ({
+  windowStateByChannel: () => mockWindowState,
+}));
+
 import ComposeBox from "../ComposeBox";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockWindowState = {};
 });
 
 describe("ComposeBox", () => {
@@ -104,6 +111,74 @@ describe("ComposeBox", () => {
   });
 
   it("textarea has no `disabled` attribute (regression guard for focus loss)", () => {
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    expect(ta.hasAttribute("disabled")).toBe(false);
+  });
+
+  // CP15 B5: greyed-state visual when window state is failed/kicked/parked.
+  // The form root gets `.compose-box-greyed`; an inline "(not joined)"
+  // label sits beneath the textarea. Compose stays functional — the
+  // operator can still type `/join` / `/part`. The visual cue tells
+  // them their typing won't reach the channel without a re-join.
+  it("renders .compose-box-greyed when state=failed", () => {
+    mockWindowState = { "freenode #a": "failed" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+  });
+
+  it("renders .compose-box-greyed when state=kicked", () => {
+    mockWindowState = { "freenode #a": "kicked" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+  });
+
+  it("renders .compose-box-greyed when state=parked", () => {
+    mockWindowState = { "freenode #a": "parked" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+  });
+
+  it("renders the '(not joined)' label when state=failed", () => {
+    mockWindowState = { "freenode #a": "failed" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(screen.getByText(/\(not joined\)/i)).toBeInTheDocument();
+  });
+
+  it("does NOT render .compose-box-greyed when state=joined", () => {
+    mockWindowState = { "freenode #a": "joined" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(false);
+    expect(screen.queryByText(/\(not joined\)/i)).toBeNull();
+  });
+
+  it("does NOT render .compose-box-greyed when state=pending", () => {
+    // Pending = JOIN in flight. Compose stays normal; the operator
+    // typed JOIN and is awaiting the upstream echo.
+    mockWindowState = { "freenode #a": "pending" };
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(false);
+    expect(screen.queryByText(/\(not joined\)/i)).toBeNull();
+  });
+
+  it("does NOT render .compose-box-greyed for query windows (no state entry)", () => {
+    // Query windows (DMs) have no window-state entry — they're always
+    // "live" (no JOIN gate). Absence of the entry must not grey the
+    // compose box, otherwise every DM looks broken.
+    mockWindowState = {};
+    render(() => <ComposeBox networkSlug="freenode" channelName="vjt" />);
+    const form = document.querySelector(".compose-box");
+    expect(form?.classList.contains("compose-box-greyed")).toBe(false);
+    expect(screen.queryByText(/\(not joined\)/i)).toBeNull();
+  });
+
+  it("compose textarea remains functional when greyed (operator can still type /join)", () => {
+    mockWindowState = { "freenode #a": "failed" };
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
     expect(ta.hasAttribute("disabled")).toBe(false);

@@ -1,6 +1,7 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { windowStateByChannel } from "./lib/windowState";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
 // dispatches submit on Enter; arrow keys walk per-channel history.
@@ -11,16 +12,29 @@ import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compos
 // hop indirection avoids ComposeBox having to know about the global
 // keybinding install; selecting a different focused element won't fire
 // the wrong tab handler.
+//
+// CP15 B5: greyed-state visual when window state is failed/kicked/parked.
+// The form root gets `.compose-box-greyed`; an inline "(not joined)"
+// label sits beneath the textarea. Compose stays functional — operator
+// can still type `/join` / `/part`. Query windows (no state entry) and
+// state == "joined" / "pending" render the normal form; pending is the
+// post-click optimistic visual feedback while the JOIN echo is in flight.
 
 export type Props = {
   networkSlug: string;
   channelName: string;
 };
 
+const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
+
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
+  const greyed = (): boolean => {
+    const s = windowStateByChannel()[key()];
+    return s !== undefined && NOT_JOINED_STATES.has(s);
+  };
 
   const onInput = (e: Event) => {
     const value = (e.currentTarget as HTMLTextAreaElement).value;
@@ -73,7 +87,7 @@ const ComposeBox: Component<Props> = (props) => {
   return (
     <>
       <form
-        class="compose-box"
+        class={`compose-box${greyed() ? " compose-box-greyed" : ""}`}
         onSubmit={(e) => {
           e.preventDefault();
           void doSubmit();
@@ -91,6 +105,9 @@ const ComposeBox: Component<Props> = (props) => {
           send
         </button>
       </form>
+      <Show when={greyed()}>
+        <p class="compose-box-not-joined muted">(not joined)</p>
+      </Show>
       <Show when={error()}>
         {(msg) => (
           <p class="compose-box-error" role="alert">
