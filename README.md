@@ -301,9 +301,11 @@ Render branches:
 
 - **MembersPane** branches on `windowStateByChannel[key]`: state ∉ {joined} → "not joined" muted text; state == joined && empty → "loading…" muted; state == joined && filled → render the list. The pre-B5 `loadMembers` REST gate went away — server pushes `members_seeded` on after_join (CP15 B3) AND on every 366 RPL_ENDOFNAMES, so cic has no remaining reason to fetch `GET /members`.
 - **ComposeBox** adds `.compose-box-greyed` + "(not joined)" inline label when state ∈ {failed, kicked, parked}. Compose stays functional — the operator can still type `/join` / `/part` to recover.
-- **Sidebar** adds `.sidebar-window-greyed` to channel + query rows whose state ∈ {failed, kicked, parked}. Synthetic pending sidebar row when state == "pending" and the channel is NOT yet in `channelsBySlug` (operator just clicked `/join`, awaiting upstream echo). When the typed `joined` event lands, `channelsBySlug` refetches via the `channels_changed` heartbeat and the row continues life under the channelsBySlug branch.
+- **Sidebar** adds `.sidebar-window-greyed` to channel + query rows whose state ∈ {failed, kicked, parked}. Synthetic sidebar row whenever `windowStateByChannel` carries the key but `channelsBySlug` doesn't — covers `:pending` (just-typed `/join`, awaiting upstream echo, `.sidebar-window-pending`) AND the three non-joined post-state cases `failed | kicked | parked` (greyed). Without the synthetic row a failed JOIN to an invite-only channel or a KICK from a room you'd previously left in `channelsBySlug` would have NO sidebar entry at all. When the typed `joined` event lands, `channelsBySlug` refetches via the `channels_changed` heartbeat and the row continues life under the channelsBySlug branch.
 
 `/join` from compose calls `setPending(channelKey)` immediately for visual feedback. The pending entry also pre-subscribes the per-channel Phoenix topic (one createEffect iterates `windowStateByChannel()` for `"pending"` entries) so the upstream JOIN echo broadcast lands on a live subscriber — closing the race where Phoenix PubSub would drop broadcasts to a topic cic hadn't yet joined.
+
+The full window-state transition matrix is e2e-covered as of CP15 B6: `cicchetto/e2e/tests/cp15-b6-*.spec.ts` exercises `pending → joined`, `pending → failed` (invite-only), `joined → kicked`, `joined → parted → archive → re-joined`, and the archived-query revival cycle against the real Bahamut testnet via `scripts/integration.sh`.
 
 ### Mobile layout (C6)
 
