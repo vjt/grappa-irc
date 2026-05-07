@@ -229,6 +229,71 @@ defmodule Grappa.ScrollbackTest do
       end
     end
 
+    # CP14 B3: `:dm_with` is a normalized "DM peer" column populated at
+    # persist-time on PRIVMSGs whose `target == own_nick` OR `sender ==
+    # own_nick`. Solves the "DM history shows only outbound" bug
+    # permanently — also resilient to own-nick rotation, since the column
+    # is computed from whichever side is the peer at persist time, never
+    # from a possibly-stale own-nick lookup at fetch.
+    #
+    # `persist_event/1` is the simple persist surface — caller injects the
+    # already-computed `:dm_with` (the EventRouter's `build_persist` is the
+    # canonical site, where `state.nick` is in scope). The schema casts
+    # the field; no per-kind validation. nil for non-DM rows (channel
+    # messages, presence events, etc.).
+    test "persists :dm_with attribute when caller injects it (DM PRIVMSG to own-nick)",
+         %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        # `target = own_nick` so peer = sender = "vjt-peer"
+        channel: "vjt-grappa",
+        server_time: 0,
+        kind: :privmsg,
+        sender: "vjt-peer",
+        body: "hey",
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:ok, %Message{dm_with: "vjt-peer"}} = Scrollback.persist_event(attrs)
+    end
+
+    test "persists :dm_with attribute when caller injects it (DM PRIVMSG from own-nick)",
+         %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        # outbound: target = peer, sender = own_nick
+        channel: "vjt-peer",
+        server_time: 0,
+        kind: :privmsg,
+        sender: "vjt-grappa",
+        body: "ciao",
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:ok, %Message{dm_with: "vjt-peer"}} = Scrollback.persist_event(attrs)
+    end
+
+    test "persists :dm_with = nil for non-DM (channel) PRIVMSG when caller injects nil",
+         %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :privmsg,
+        sender: "alice",
+        body: "channel msg",
+        meta: %{},
+        dm_with: nil
+      }
+
+      assert {:ok, %Message{dm_with: nil}} = Scrollback.persist_event(attrs)
+    end
+
     test "rejects body=nil for :privmsg (per-kind body validation)", %{user: user, network: net} do
       attrs = %{
         user_id: user.id,
@@ -418,6 +483,205 @@ defmodule Grappa.ScrollbackTest do
       assert_raise FunctionClauseError, fn ->
         Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 0)
       end
+    end
+  end
+
+  # CP14 B3 — DM history bidirectional via :dm_with.
+  #
+  # Bug: cic's loadInitialScrollback(peer) for a DM (query) window
+  # only fetched ?channel=peer; outbound messages persist there
+  # (channel=peer when own_nick sends to peer) but inbound persist on
+  # channel=own_nick (IRC framing). So query window showed only
+  # outbound. The :dm_with column normalizes the "DM peer" so a
+  # single fetch returns both directions. Server detects peer-shaped
+  # channel name (no #/&/!/+ sigil, not "$server") and adds an
+  # or_where(dm_with: ^channel) branch.
+  describe "fetch/5 — :dm_with bidirectional DM (CP14 B3)" do
+    test "peer-shaped channel returns inbound (dm_with == peer) AND outbound (channel == peer) merged",
+         %{user: user, network: net} do
+      # Outbound: vjt-grappa → vjt-peer (channel=peer, dm_with=peer).
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-peer",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "ciao",
+          meta: %{},
+          dm_with: "vjt-peer"
+        })
+
+      # Inbound: vjt-peer → vjt-grappa (channel=own_nick, dm_with=peer).
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "vjt-peer",
+          body: "ehi",
+          meta: %{},
+          dm_with: "vjt-peer"
+        })
+
+      # Channel-keyed row with same peer name as a string but different
+      # context — e.g. "#vjt-peer" wouldn't fall here because of the
+      # sigil — but a non-DM row with channel == "other-peer" should NOT
+      # appear in a fetch for "vjt-peer".
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "other-peer",
+          server_time: 150,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "to a third party",
+          meta: %{},
+          dm_with: "other-peer"
+        })
+
+      # Fetch for the DM window for vjt-peer — both directions present,
+      # sorted desc by server_time.
+      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-peer", nil, 10)
+      assert Enum.map(page, &{&1.server_time, &1.body}) == [{200, "ehi"}, {100, "ciao"}]
+    end
+
+    test "peer-shaped channel does NOT pull rows from other peers' DM threads",
+         %{user: user, network: net} do
+      # Inbound from peer-A in vjt-grappa's window.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "peer-a",
+          body: "from A",
+          meta: %{},
+          dm_with: "peer-a"
+        })
+
+      # Inbound from peer-B in vjt-grappa's window.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "peer-b",
+          body: "from B",
+          meta: %{},
+          dm_with: "peer-b"
+        })
+
+      page_a = Scrollback.fetch({:user, user.id}, net.id, "peer-a", nil, 10)
+      assert Enum.map(page_a, & &1.body) == ["from A"]
+
+      page_b = Scrollback.fetch({:user, user.id}, net.id, "peer-b", nil, 10)
+      assert Enum.map(page_b, & &1.body) == ["from B"]
+    end
+
+    test "channel-shaped target (#chan) ignores dm_with — pure channel-keyed fetch",
+         %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "#sniffo",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "alice",
+          body: "channel msg",
+          meta: %{},
+          dm_with: nil
+        })
+
+      # A defensive belt-and-suspenders row: pretend a DM exists with
+      # dm_with = "#sniffo" (impossible in practice, but if it did,
+      # fetch on "#sniffo" must NOT pull it via the dm_with branch
+      # because channel-shaped names short-circuit dm_with merging).
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "evil",
+          body: "spoof",
+          meta: %{},
+          dm_with: "#sniffo"
+        })
+
+      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10)
+      assert Enum.map(page, & &1.body) == ["channel msg"]
+    end
+
+    test "$server target ignores dm_with — pure channel-keyed fetch",
+         %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "$server",
+          server_time: 100,
+          kind: :notice,
+          sender: "raccooncity.azzurra.chat",
+          body: "MOTD line",
+          meta: %{},
+          dm_with: nil
+        })
+
+      page = Scrollback.fetch({:user, user.id}, net.id, "$server", nil, 10)
+      assert Enum.map(page, & &1.body) == ["MOTD line"]
+    end
+
+    test "DM fetch is per-subject — alice's DMs are not visible when fetching as vjt",
+         %{user: vjt, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      # Both vjt and alice have a DM thread with the same peer "common-peer".
+      # Inbound to vjt (channel = vjt's own nick "vjt-grappa", dm_with = peer).
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: vjt.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "common-peer",
+          body: "to vjt",
+          meta: %{},
+          dm_with: "common-peer"
+        })
+
+      # Inbound to alice (channel = alice's own nick "alice-grappa",
+      # dm_with = peer).
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: alice.id,
+          network_id: net.id,
+          channel: "alice-grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "common-peer",
+          body: "to alice",
+          meta: %{},
+          dm_with: "common-peer"
+        })
+
+      vjt_page = Scrollback.fetch({:user, vjt.id}, net.id, "common-peer", nil, 10)
+      assert Enum.map(vjt_page, & &1.body) == ["to vjt"]
+
+      alice_page = Scrollback.fetch({:user, alice.id}, net.id, "common-peer", nil, 10)
+      assert Enum.map(alice_page, & &1.body) == ["to alice"]
     end
   end
 

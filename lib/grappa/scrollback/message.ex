@@ -137,6 +137,7 @@ defmodule Grappa.Scrollback.Message do
           sender: String.t(),
           body: String.t() | nil,
           meta: Meta.t(),
+          dm_with: String.t() | nil,
           inserted_at: DateTime.t() | nil
         }
 
@@ -150,6 +151,15 @@ defmodule Grappa.Scrollback.Message do
     field :sender, :string
     field :body, :string
     field :meta, Grappa.Scrollback.Meta, default: %{}
+    # CP14 B3: normalized "DM peer" column. Populated at persist time
+    # by `Grappa.Session.EventRouter.build_persist/6` when (kind ==
+    # :privmsg AND target == own_nick) → dm_with = sender, OR when
+    # (kind == :privmsg AND sender == own_nick AND target is nick-
+    # shaped) → dm_with = target. nil otherwise (channel messages,
+    # presence events). Lets `Scrollback.fetch/5` merge inbound +
+    # outbound DM history in a single query, immune to own-nick
+    # rotation. See migration `20260507151920_add_dm_with_to_messages`.
+    field :dm_with, :string
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
@@ -184,7 +194,8 @@ defmodule Grappa.Scrollback.Message do
       :kind,
       :sender,
       :body,
-      :meta
+      :meta,
+      :dm_with
     ])
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> validate_subject_xor()
