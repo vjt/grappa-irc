@@ -1360,4 +1360,76 @@ describe("ScrollbackPane", () => {
       expect(line.classList.contains("scrollback-notice")).toBe(true);
     });
   });
+
+  // CP13 S10 — mIRC formatting: privmsg/notice/action bodies render
+  // through parseMircFormat so bold/color/etc. produce per-Run <span>s.
+  describe("mIRC body formatting (CP13 S10)", () => {
+    it("renders a plain body as a single span (fast path)", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello world",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const bodyEl = document.querySelector(".scrollback-body");
+      // One <span> for the single Run.
+      expect(bodyEl?.querySelectorAll("span").length).toBe(1);
+      expect(bodyEl?.textContent).toBe("hello world");
+    });
+
+    it("renders bold-bracketed body as multi-span with .scrollback-mirc-bold", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "a\x02bold\x02c",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const bodyEl = document.querySelector(".scrollback-body");
+      const spans = bodyEl?.querySelectorAll("span");
+      expect(spans?.length).toBe(3);
+      expect(spans?.[1]?.classList.contains("scrollback-mirc-bold")).toBe(true);
+      expect(spans?.[1]?.textContent).toBe("bold");
+      expect(spans?.[0]?.classList.contains("scrollback-mirc-bold")).toBe(false);
+    });
+
+    it("renders fg color via inline style", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "\x034red\x03",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const bodyEl = document.querySelector(".scrollback-body");
+      const colored = bodyEl?.querySelector("span") as HTMLElement | null | undefined;
+      // mIRC color 4 = red (#ff0000); jsdom parses inline style.
+      expect(colored?.style.color).toBe("rgb(255, 0, 0)");
+    });
+  });
 });
