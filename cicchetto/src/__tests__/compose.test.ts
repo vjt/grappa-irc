@@ -76,7 +76,6 @@ vi.mock("../lib/scrollback", () => ({
 vi.mock("../lib/members", () => ({
   membersByChannel: vi.fn(() => ({})),
   applyPresenceEvent: vi.fn(),
-  loadMembers: vi.fn(),
 }));
 
 // Mock auth to provide logout for /quit flow. `token` must return a value
@@ -97,6 +96,18 @@ vi.mock("../lib/networks", () => ({
   user: vi.fn(() => null),
   channelsBySlug: vi.fn(() => ({})),
   refetchChannels: vi.fn(),
+}));
+
+// CP15 B5: /join sets windowState to "pending" for immediate visual feedback.
+vi.mock("../lib/windowState", () => ({
+  setPending: vi.fn(),
+  setJoined: vi.fn(),
+  setFailed: vi.fn(),
+  setKicked: vi.fn(),
+  setParted: vi.fn(),
+  windowStateByChannel: vi.fn(() => ({})),
+  windowFailureByChannel: vi.fn(() => ({})),
+  windowKickedMetaByChannel: vi.fn(() => ({})),
 }));
 
 beforeEach(() => {
@@ -256,6 +267,27 @@ describe("compose submit — slash command dispatch", () => {
 
     expect(api.postJoin).toHaveBeenCalledWith("tok", "freenode", "#italia");
     expect(result).toEqual({ ok: true });
+  });
+
+  // CP15 B5: /join must set windowState[(slug, target)] = "pending"
+  // immediately for visual feedback. The pre-B5 path used to mutate
+  // channelsBySlug optimistically, which the channels_changed
+  // heartbeat then "corrected" if upstream rejected the JOIN — a
+  // race-prone double source of truth. Now: setPending is the
+  // optimistic visual; the joined state arrives via the typed
+  // `kind: "joined"` event broadcast from the server's apply_effects.
+  it("/join sets windowState pending for the target (B5 — drop optimistic STATE assumption)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.postJoin).mockResolvedValue();
+    const ws = await import("../lib/windowState");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/join #italia");
+    await compose.submit(k, "freenode", "#a");
+
+    expect(ws.setPending).toHaveBeenCalledWith(channelKey("freenode", "#italia"));
   });
 
   it("/part with no arg parts the current channel", async () => {

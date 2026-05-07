@@ -1,7 +1,7 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
 import { logout, token } from "./auth";
-import type { ChannelKey } from "./channelKey";
+import { type ChannelKey, channelKey } from "./channelKey";
 import { membersByChannel } from "./members";
 import { networks } from "./networks";
 import { openQueryWindowState } from "./queryWindows";
@@ -27,6 +27,7 @@ import {
   pushWatchlistDel,
   pushWatchlistList,
 } from "./socket";
+import { setPending } from "./windowState";
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -196,6 +197,17 @@ const exports_ = createRoot(() => {
           break;
         case "join":
           await postJoin(t, networkSlug, cmd.channel);
+          // CP15 B5: optimistic visual feedback. Server emits typed
+          // `kind: "joined" | "join_failed"` once upstream echoes; cic
+          // sets state=pending immediately so the sidebar / pane reflect
+          // the JOIN-in-flight state before the WS event arrives. The
+          // pre-B5 path used to mutate channelsBySlug optimistically,
+          // which the channels_changed heartbeat had to "correct" if
+          // upstream rejected — a race-prone double source of truth.
+          // With the typed event surface, channelsBySlug stays the sole
+          // truth for the joined channels list; windowState carries the
+          // transition state.
+          setPending(channelKey(networkSlug, cmd.channel));
           // Auto-focus the new channel client-side, mirroring the
           // /msg + /query handlers below. The user just typed /join
           // — focus follows intent. Doing this here (instead of
