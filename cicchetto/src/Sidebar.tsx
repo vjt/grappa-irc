@@ -9,6 +9,7 @@ import { channelsBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import { windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -25,6 +26,23 @@ import type { WindowKind } from "./lib/windowKinds";
 //
 // onSelect is fired AFTER the selection state is updated — Shell.tsx
 // uses it to auto-close the mobile sidebar drawer.
+//
+// CP15 B5 — windowState visual cues:
+//   * Channel/query rows whose state ∈ {failed, kicked, parked} get
+//     `.sidebar-window-greyed` so the operator sees the row is no
+//     longer live (the row stays in place to keep history
+//     accessible — archiving on every failure would punish the
+//     victim and lose the scrollback).
+//   * Pending channels NOT yet in `channelsBySlug` (operator just
+//     clicked JOIN; awaiting upstream echo) render as a synthetic
+//     pending sidebar row for immediate feedback. When the server
+//     echoes JOIN, channelsBySlug refetches via the channels_changed
+//     heartbeat and the row continues life under the channelsBySlug
+//     branch (state transitions pending → joined; greyed class falls
+//     off). The dedup gate skips the synthetic row when the channel
+//     is already in channelsBySlug.
+
+const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 
 export type Props = {
   onSelect?: () => void;
@@ -34,6 +52,30 @@ const Sidebar: Component<Props> = (props) => {
   const isSelected = (slug: string, name: string): boolean => {
     const s = selectedChannel();
     return s !== null && s.networkSlug === slug && s.channelName === name;
+  };
+
+  const isGreyed = (slug: string, name: string): boolean => {
+    const s = windowStateByChannel()[channelKey(slug, name)];
+    return s !== undefined && NOT_JOINED_STATES.has(s);
+  };
+
+  // Pending channel rows: keys whose state == "pending" and the
+  // (slug, name) is NOT already rendered by the channelsBySlug
+  // branch. Returns the channel-name segment so the For renders
+  // synthetic rows alongside the real ones.
+  const pendingChannelsForNetwork = (slug: string): string[] => {
+    const states = windowStateByChannel();
+    const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
+    const prefix = `${slug} `;
+    const out: string[] = [];
+    for (const [key, state] of Object.entries(states)) {
+      if (state !== "pending") continue;
+      if (!key.startsWith(prefix)) continue;
+      const name = key.slice(prefix.length);
+      if (live.has(name)) continue;
+      out.push(name);
+    }
+    return out;
   };
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
@@ -108,7 +150,7 @@ const Sidebar: Component<Props> = (props) => {
                       <button
                         type="button"
                         onClick={() => handleClick(network.slug, channel.name, "channel")}
-                        class="sidebar-window-btn"
+                        class={`sidebar-window-btn${isGreyed(network.slug, channel.name) ? " sidebar-window-greyed" : ""}`}
                       >
                         <span class="sidebar-channel-name" classList={{ parted: !channel.joined }}>
                           {channel.name}
@@ -136,6 +178,27 @@ const Sidebar: Component<Props> = (props) => {
                 }}
               </For>
 
+              {/* CP15 B5 — pending channel rows: synthetic entries for
+                  channels the operator JOINed that haven't appeared in
+                  channelsBySlug yet. Rendered as a sidebar row with
+                  pending styling so the operator sees immediate feedback
+                  before the upstream JOIN echo lands. The dedup gate in
+                  pendingChannelsForNetwork drops any key already in
+                  channelsBySlug. */}
+              <For each={pendingChannelsForNetwork(network.slug)}>
+                {(name) => (
+                  <li classList={{ selected: isSelected(network.slug, name) }}>
+                    <button
+                      type="button"
+                      onClick={() => handleClick(network.slug, name, "channel")}
+                      class="sidebar-window-btn sidebar-window-pending"
+                    >
+                      <span class="sidebar-channel-name pending">{name}</span>
+                    </button>
+                  </li>
+                )}
+              </For>
+
               {/* Query (DM) windows */}
               <For each={queryWindowsByNetwork()[network.id] ?? []}>
                 {(qw) => {
@@ -145,7 +208,7 @@ const Sidebar: Component<Props> = (props) => {
                       <button
                         type="button"
                         onClick={() => handleClick(network.slug, qw.targetNick, "query")}
-                        class="sidebar-window-btn"
+                        class={`sidebar-window-btn${isGreyed(network.slug, qw.targetNick) ? " sidebar-window-greyed" : ""}`}
                       >
                         <span class="sidebar-channel-name">{qw.targetNick}</span>
                         <Show when={(messagesUnread()[key] ?? 0) > 0}>

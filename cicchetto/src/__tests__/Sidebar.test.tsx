@@ -61,6 +61,12 @@ vi.mock("../lib/auth", () => ({
   socketUserName: () => "alice",
 }));
 
+let mockWindowState: Record<string, string> = {};
+
+vi.mock("../lib/windowState", () => ({
+  windowStateByChannel: () => mockWindowState,
+}));
+
 import * as apiMod from "../lib/api";
 import * as archiveMod from "../lib/archive";
 // Capture mocked module references at import time, before any resetModules
@@ -70,6 +76,7 @@ import Sidebar from "../Sidebar";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockWindowState = {};
 });
 
 describe("Sidebar", () => {
@@ -262,6 +269,88 @@ describe("Sidebar", () => {
         channelName: "vjt-peer",
         kind: "query",
       });
+    });
+  });
+
+  // CP15 B5 — windowState visual cues. Failed/kicked/parked channels +
+  // queries get `.sidebar-window-greyed` on the row's button. Pending
+  // channels NOT yet in `channelsBySlug` (operator just clicked JOIN
+  // and waiting for the upstream echo) render as a synthetic sidebar
+  // row so the operator sees immediate feedback. The actual joined
+  // list still flows from `channelsBySlug` (heartbeat refetch).
+  describe("CP15 B5 — windowState visual cues", () => {
+    it("channel rows get .sidebar-window-greyed when state=failed", () => {
+      mockWindowState = { "freenode #italia": "failed" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("channel rows get .sidebar-window-greyed when state=kicked", () => {
+      mockWindowState = { "freenode #italia": "kicked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("channel rows get .sidebar-window-greyed when state=parked", () => {
+      mockWindowState = { "freenode #italia": "parked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("channel rows do NOT get .sidebar-window-greyed when state=joined", () => {
+      mockWindowState = { "freenode #italia": "joined" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(false);
+    });
+
+    it("channel rows do NOT get .sidebar-window-greyed when no state entry", () => {
+      mockWindowState = {};
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(false);
+    });
+
+    it("query rows get .sidebar-window-greyed when state=failed (DM target gone)", () => {
+      // DMs don't transition to failed in the IRC sense, but the state
+      // map shape is the same — apply uniformly so future state kinds
+      // ride the same render branch without per-kind plumbing.
+      mockWindowState = { "freenode alice": "kicked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("alice").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("renders a pending sidebar row for a channel in state=pending NOT yet in channelsBySlug", () => {
+      // Operator clicked JOIN — networks.ts setPending fires; the
+      // sidebar shows the row immediately (visual feedback). When the
+      // server emits `joined`, channelsBySlug refetches via the
+      // channels_changed heartbeat and the same row continues life
+      // under the channelsBySlug branch (state transitions from
+      // pending → joined and the greyed class falls off).
+      mockWindowState = { "freenode #new-room": "pending" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      expect(screen.getByText("#new-room")).toBeInTheDocument();
+    });
+
+    it("does NOT duplicate a pending row when the channel IS already in channelsBySlug", () => {
+      // #italia is in channelsBySlug + state=pending. The row should
+      // appear EXACTLY ONCE — channelsBySlug branch wins; the synthetic
+      // pending row only fires when channelsBySlug doesn't already
+      // carry the channel.
+      mockWindowState = { "freenode #italia": "pending" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const matches = screen.getAllByText("#italia");
+      expect(matches.length).toBe(1);
     });
   });
 });
