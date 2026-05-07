@@ -71,6 +71,7 @@ defmodule Grappa.QueryWindows do
 
   alias Grappa.PubSub.Topic
   alias Grappa.QueryWindows.Window
+  alias Grappa.QueryWindows.Wire
   alias Grappa.Repo
 
   # ---------------------------------------------------------------------------
@@ -201,7 +202,7 @@ defmodule Grappa.QueryWindows do
 
   @spec broadcast_windows_list(Ecto.UUID.t(), String.t()) :: :ok
   defp broadcast_windows_list(user_id, user_name) do
-    windows = list_for_user(user_id)
+    windows = list_for_user(user_id) |> Wire.render_grouped()
 
     :ok =
       Grappa.PubSub.broadcast_event(

@@ -141,9 +141,12 @@ defmodule Grappa.QueryWindowsTest do
                      },
                      1_000
 
-      # The full list must include the newly opened window
+      # The full list must include the newly opened window — wire shape
+      # is the per-`Grappa.QueryWindows.Wire` map, NOT the raw struct
+      # (struct doesn't derive Jason.Encoder; broadcasting a struct
+      # crashed the channel during fan-out — fixed CP15 B6).
       assert is_map(windows)
-      [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
+      assert [%{target_nick: "alice", network_id: _, opened_at: _}] = Map.fetch!(windows, net.id)
     end
 
     test "broadcast after second (idempotent) open still fires with current list" do
@@ -164,7 +167,7 @@ defmodule Grappa.QueryWindowsTest do
                      },
                      1_000
 
-      assert [%Window{target_nick: "alice"}] = Map.fetch!(windows, net.id)
+      assert [%{target_nick: "alice", network_id: _, opened_at: _}] = Map.fetch!(windows, net.id)
     end
   end
 
@@ -229,8 +232,8 @@ defmodule Grappa.QueryWindowsTest do
                      },
                      1_000
 
-      # Only bob should remain
-      assert [%Window{target_nick: "bob"}] = Map.fetch!(windows, net.id)
+      # Only bob should remain — wire shape per `Grappa.QueryWindows.Wire`.
+      assert [%{target_nick: "bob", network_id: _, opened_at: _}] = Map.fetch!(windows, net.id)
     end
 
     test "broadcasts empty windows map when last window closed" do

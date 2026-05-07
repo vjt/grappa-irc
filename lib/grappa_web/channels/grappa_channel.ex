@@ -658,28 +658,17 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # Pushes query_windows_list for `user`.
+  # Pushes query_windows_list for `user`. Wire-rendering delegated to
+  # `Grappa.QueryWindows.Wire` so the after_join push and the per-
+  # mutation `broadcast_windows_list` (fired from `QueryWindows.open/4`
+  # / `.close/4`) share one shape — and crucially one Jason-encodable
+  # form. A struct-shaped payload crashes the channel during fan-out
+  # (`%Window{}` doesn't derive Jason.Encoder), which in turn loses
+  # any subsequent push on the same channel ref.
   @spec push_query_windows_list(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
   defp push_query_windows_list(%Accounts.User{} = user, socket) do
-    windows =
-      user.id
-      |> QueryWindows.list_for_user()
-      |> Map.new(fn {network_id, ws} -> {network_id, Enum.map(ws, &render_query_window/1)} end)
-
+    windows = user.id |> QueryWindows.list_for_user() |> QueryWindows.Wire.render_grouped()
     push(socket, "event", %{kind: "query_windows_list", windows: windows})
-  end
-
-  @spec render_query_window(QueryWindows.Window.t()) :: %{
-          required(:network_id) => integer(),
-          required(:target_nick) => String.t(),
-          required(:opened_at) => String.t()
-        }
-  defp render_query_window(%QueryWindows.Window{} = w) do
-    %{
-      network_id: w.network_id,
-      target_nick: w.target_nick,
-      opened_at: DateTime.to_iso8601(w.opened_at)
-    }
   end
 
   # For every (network, channel) the user has an active session for, pushes
