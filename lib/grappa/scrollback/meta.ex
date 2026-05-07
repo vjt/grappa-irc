@@ -53,12 +53,15 @@ defmodule Grappa.Scrollback.Meta do
 
   ## Per-kind expected shapes
 
-      :privmsg | :notice | :action | :topic   →  %{}                       (body carries content)
-      :join    | :part                        →  %{}                       (channel + sender suffice)
-      :quit                                   →  %{}                       (body carries optional reason)
-      :nick_change                            →  %{new_nick: String.t()}
-      :mode                                   →  %{modes: String.t(), args: [String.t()]}
-      :kick                                   →  %{target: String.t()}     (body carries reason)
+      :privmsg | :action | :topic   →  %{}                       (body carries content)
+      :notice                       →  %{} OR %{numeric: 1..999, severity: :ok | :error}
+                                                                 (server numerics route to :notice
+                                                                  via NumericRouter; bare NOTICE has %{})
+      :join    | :part              →  %{}                       (channel + sender suffice)
+      :quit                         →  %{}                       (body carries optional reason)
+      :nick_change                  →  %{new_nick: String.t()}
+      :mode                         →  %{modes: String.t(), args: [String.t()]}
+      :kick                         →  %{target: String.t()}     (body carries reason)
 
   Phase 1 only writes `:privmsg` rows where `meta = %{}` so Phase 1
   exercises only the empty-map path. The allowlist + atomization is
@@ -76,9 +79,9 @@ defmodule Grappa.Scrollback.Meta do
   shapes in the type would require a discriminated union keyed on
   `Message.kind`, which is the schema's job, not this map's.
   """
-  @type t :: %{optional(:target | :new_nick | :modes | :args) => term()}
+  @type t :: %{optional(:target | :new_nick | :modes | :args | :numeric | :severity) => term()}
 
-  @known_keys ~w[target new_nick modes args]a
+  @known_keys ~w[target new_nick modes args numeric severity]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -87,7 +90,7 @@ defmodule Grappa.Scrollback.Meta do
   architecture review A18, and a unit test catches drift at test time
   without runtime mutation of Logger config.
   """
-  @spec known_keys() :: [:target | :new_nick | :modes | :args, ...]
+  @spec known_keys() :: [:target | :new_nick | :modes | :args | :numeric | :severity, ...]
   def known_keys, do: @known_keys
 
   @impl Ecto.Type

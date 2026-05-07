@@ -16,10 +16,14 @@ defmodule Grappa.Scrollback.MetaTest do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{target: "alice"})
       assert {:ok, %{new_nick: "vjt2"}} = Meta.cast(%{new_nick: "vjt2"})
       assert {:ok, %{modes: "+o", args: ["alice"]}} = Meta.cast(%{modes: "+o", args: ["alice"]})
+      assert {:ok, %{numeric: 401, severity: :error}} =
+               Meta.cast(%{numeric: 401, severity: :error})
     end
 
     test "string-keyed map: known keys atomized" do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{"target" => "alice"})
+      assert {:ok, %{numeric: 401, severity: "error"}} =
+               Meta.cast(%{"numeric" => 401, "severity" => "error"})
     end
 
     test "atom-keyed map: unknown atoms downgraded to strings (defensive)" do
@@ -62,6 +66,12 @@ defmodule Grappa.Scrollback.MetaTest do
     test "atomizes allowlisted string keys (mimics post-Jason-decode shape)" do
       assert {:ok, %{target: "alice"}} = Meta.load(%{"target" => "alice"})
       assert {:ok, %{new_nick: "vjt2"}} = Meta.load(%{"new_nick" => "vjt2"})
+      # CP13: numeric metadata round-trips through JSON storage as
+      # %{numeric: 401, severity: "error"} — :severity comes back as a
+      # string because Jason serializes atom values to strings; consumers
+      # compare against the string form.
+      assert {:ok, %{numeric: 401, severity: "error"}} =
+               Meta.load(%{"numeric" => 401, "severity" => "error"})
     end
 
     test "leaves unknown string keys as strings (security boundary)" do
