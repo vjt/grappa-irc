@@ -61,8 +61,7 @@ defmodule Grappa.Session.NumericRouter do
   `Grappa.Session.EventRouter` for delegated numeric handling.
   """
 
-  alias Grappa.IRC.Identifier
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
 
   @typedoc """
   The resolved routing destination for a numeric.
@@ -246,7 +245,8 @@ defmodule Grappa.Session.NumericRouter do
   # Walk the params skipping params[0] (own-nick echo) and the last element
   # (trailing human-readable text). The first channel-prefix param wins; if
   # none, the first nick-shaped non-own non-host param wins; else $server.
-  @spec scan_params([term()], router_state()) :: routing_decision()
+  @spec scan_params([term()], router_state()) ::
+          {:channel, String.t()} | {:query, String.t()} | {:server, nil}
   defp scan_params(params, state) when is_list(params) do
     candidates = candidate_params(params)
     own_nick = state.own_nick
@@ -265,12 +265,12 @@ defmodule Grappa.Session.NumericRouter do
 
   # params[0] = own-nick echo, last = trailing human-readable text. Drop both.
   # Empty / 1-elem / 2-elem param lists yield no candidates.
-  @spec candidate_params([term()]) :: [term()]
+  @spec candidate_params([String.t()]) :: [String.t()]
   defp candidate_params([]), do: []
-  defp candidate_params([_only]), do: []
-  defp candidate_params([_first, _last]), do: []
+  defp candidate_params([_]), do: []
+  defp candidate_params([_, _]), do: []
 
-  defp candidate_params([_first | rest]) do
+  defp candidate_params([_ | rest]) do
     # rest still has the trailing element at its tail — drop it.
     Enum.drop(rest, -1)
   end
@@ -301,7 +301,8 @@ defmodule Grappa.Session.NumericRouter do
   defp nick_eq?(_, nil), do: false
   defp nick_eq?(a, b) when is_binary(a) and is_binary(b), do: String.downcase(a) == String.downcase(b)
 
-  @spec window_ref_to_decision(window_ref()) :: routing_decision()
+  @spec window_ref_to_decision(window_ref()) ::
+          {:channel, String.t()} | {:query, String.t()} | {:server, nil}
   defp window_ref_to_decision(%{kind: :channel, target: target}) when is_binary(target),
     do: {:channel, target}
 

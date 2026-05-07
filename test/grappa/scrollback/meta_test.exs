@@ -16,12 +16,14 @@ defmodule Grappa.Scrollback.MetaTest do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{target: "alice"})
       assert {:ok, %{new_nick: "vjt2"}} = Meta.cast(%{new_nick: "vjt2"})
       assert {:ok, %{modes: "+o", args: ["alice"]}} = Meta.cast(%{modes: "+o", args: ["alice"]})
+
       assert {:ok, %{numeric: 401, severity: :error}} =
                Meta.cast(%{numeric: 401, severity: :error})
     end
 
     test "string-keyed map: known keys atomized" do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{"target" => "alice"})
+
       assert {:ok, %{numeric: 401, severity: "error"}} =
                Meta.cast(%{"numeric" => 401, "severity" => "error"})
     end

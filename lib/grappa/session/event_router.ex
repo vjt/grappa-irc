@@ -82,8 +82,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.Identifier
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
   alias Grappa.Session
 
   @typedoc """
