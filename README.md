@@ -220,6 +220,7 @@ All endpoints are authenticated except `POST /auth/login` and `POST /auth/regist
 | `GET`  | `/networks/:net/channels/:chan/messages?before=<ts>&limit=N` | Paginated scrollback |
 | `POST` | `/networks/:net/channels/:chan/messages` | Send |
 | `GET`  | `/networks/:net/channels/:chan/members` | Nicks + modes |
+| `GET`  | `/networks/:net/archive` | Archived windows: targets with scrollback rows that are NOT currently active (joined channels + open queries excluded). Powers cicchetto's per-network collapsed Archive section. `$server` always excluded. |
 | `POST` | `/networks/:net/raw` | Escape hatch: send a raw IRC line |
 | `WS`   | `/socket/websocket` | Phoenix Channels endpoint (multiplexed pub/sub) |
 
@@ -281,6 +282,10 @@ Private messages get per-user "query" windows in the sidebar, persisted across l
 - **Incoming PRIVMSG from a sender with no existing query window** — auto-opens the window in the sidebar **but does NOT switch focus** (the unread badge bumps; the user clicks to switch).
 
 **Cluster-wide focus rule:** focus changes only on user actions (`/join` self, `/msg` `/query` `/q`, click on tab, click on nick). Incoming traffic — PRIVMSG, JOIN, PART, QUIT, MODE, autojoin window auto-creation — never steals focus. Enforced by invariant tests in `cicchetto/src/__tests__/focus-rule.test.ts`.
+
+### Archive section (CP15 B4)
+
+Each network section in the sidebar gets a collapsed `<details>` "Archive" beneath the active windows. Lists targets with scrollback rows that are NOT in the active set (joined channels + open queries). Sourced from `GET /networks/:slug/archive`, lazy-fetched on first expand. Each entry is clickable: opens the read-only window for past channels (B5 wires the "Join" affordance) or revives the query window for past DMs. `$server` is system surface — always active, never archived. The active/archive boundary is **user-action driven** (PART or window-close → archived; KICK or T32 disconnect keeps the window in active sidebar, greyed).
 
 ### Mobile layout (C6)
 
