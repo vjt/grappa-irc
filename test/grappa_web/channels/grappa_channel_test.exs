@@ -228,6 +228,147 @@ defmodule GrappaWeb.GrappaChannelTest do
       # No topic_changed push; no crash
       refute_push("event", %{kind: "topic_changed"}, 100)
       refute_push("event", %{kind: "channel_modes_changed"}, 100)
+      # CP15 B3 closes the deploy-reconnect race for window_state +
+      # members too; cold subscribe with no session must not push these.
+      refute_push("event", %{kind: "joined"}, 100)
+      refute_push("event", %{kind: "kicked"}, 100)
+      refute_push("event", %{kind: "join_failed"}, 100)
+      refute_push("event", %{kind: "members_seeded"}, 100)
+    end
+
+    test "after-join snapshot: pushes cached members_seeded if session has members for channel (CP15 B3)" do
+      # B3 deploy-reconnect race fix: cic reconnects to a session whose
+      # members_seeded broadcast already fired before the WS subscribe
+      # landed → without snapshot push, cic's members pane stays empty.
+      # The snapshot push closes the race by re-emitting the seeded list
+      # on the cold subscribe.
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      welcome_session_on_channel(irc_server, "#snap")
+
+      # Seed members via 353 RPL_NAMREPLY + 366 RPL_ENDOFNAMES.
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 353 grappa-snap = #snap :@op_a +voice_a plain_b\r\n"
+      )
+
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 366 grappa-snap #snap :End of /NAMES list\r\n"
+      )
+
+      flush_server(irc_server)
+
+      topic = Topic.channel(user.name, network.slug, "#snap")
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "members_seeded",
+        channel: "#snap",
+        members: members
+      })
+
+      assert Enum.any?(members, &match?(%{nick: "op_a"}, &1))
+      assert Enum.any?(members, &match?(%{nick: "voice_a"}, &1))
+      assert Enum.any?(members, &match?(%{nick: "plain_b"}, &1))
+    end
+
+    test "after-join snapshot: pushes window_state joined when session is in :joined state (CP15 B3)" do
+      # Same race motivation as members_seeded: B1's :joined broadcast
+      # may have fired before WS subscribe; the snapshot push must
+      # re-emit it so cic transitions the window from :pending to
+      # :joined on reconnect without polling.
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      # welcome_session_on_channel feeds the self-JOIN echo, which sets
+      # window_states["#snap"] = :joined via the B1 apply_effects arm.
+      welcome_session_on_channel(irc_server, "#snap")
+
+      topic = Topic.channel(user.name, network.slug, "#snap")
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "joined",
+        channel: "#snap",
+        state: "joined"
+      })
+    end
+
+    test "after-join snapshot: pushes window_state kicked with by + reason when session is :kicked (CP15 B3)" do
+      # Snapshot payload must be byte-identical to the event-time
+      # broadcast — including by + reason — so cic's renderer doesn't
+      # branch on origin. Validates the window_kicked_meta mirror map.
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      welcome_session_on_channel(irc_server, "#snap")
+
+      # Drive into :kicked via an inbound KICK targeting our nick.
+      IRCServer.feed(irc_server, ":alice!u@h KICK #snap grappa-snap :behave\r\n")
+      flush_server(irc_server)
+
+      topic = Topic.channel(user.name, network.slug, "#snap")
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "kicked",
+        channel: "#snap",
+        state: "kicked",
+        by: "alice",
+        reason: "behave"
+      })
+    end
+
+    test "after-join snapshot: pushes window_state join_failed with reason + numeric when session is :failed (CP15 B3)" do
+      # Validates the window_failure_numerics mirror — the snapshot
+      # carries `numeric` as a stable cross-language key for a future
+      # cic-side i18n layer (server-provided reasons are
+      # upstream-language-locked; numerics are RFC).
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "JOIN #snap"))
+
+      # Now feed a 473 ERR_INVITEONLYCHAN — autojoin recorded
+      # in_flight_joins["#snap"] so the failure correlates and
+      # window_states["#snap"] flips to :failed.
+      IRCServer.feed(
+        irc_server,
+        ":irc.test.org 473 grappa-snap #snap :Cannot join channel (+i)\r\n"
+      )
+
+      flush_server(irc_server)
+
+      topic = Topic.channel(user.name, network.slug, "#snap")
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "join_failed",
+        channel: "#snap",
+        state: "failed",
+        reason: "Cannot join channel (+i)",
+        numeric: 473
+      })
     end
   end
 

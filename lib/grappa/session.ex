@@ -591,6 +591,46 @@ defmodule Grappa.Session do
     call_session(subject, network_id, {:get_channel_modes, channel})
   end
 
+  @typedoc """
+  CP15 B3 — snapshot-ready window-state payload returned by
+  `get_window_state/3`. Byte-identical to the event-time broadcast cic
+  receives via Phoenix.PubSub for the same transition. One shape per
+  window state; cic's event handler does NOT discriminate on
+  snapshot-vs-event.
+  """
+  @type window_state_snapshot ::
+          %{
+            required(:kind) => String.t(),
+            required(:network) => String.t(),
+            required(:channel) => String.t(),
+            required(:state) => String.t(),
+            optional(:reason) => String.t() | nil,
+            optional(:numeric) => pos_integer(),
+            optional(:by) => String.t()
+          }
+
+  @doc """
+  Returns the snapshot-ready window-state payload for `channel` in the
+  given session.
+
+  Single source of truth for the cold-WS-subscribe push: cic reconnects
+  → channel after_join calls this → if the window has a known state,
+  push the returned payload as `event` on the socket. Payload shape is
+  byte-identical to the event-time broadcast for the same kind so
+  cic's renderer doesn't branch on origin.
+
+  Returns `{:error, :not_tracked}` for channels with no recorded
+  window state (operator never joined, or the channel is in transient
+  `:pending` while an autojoin is in flight).
+  """
+  @spec get_window_state(subject(), integer(), String.t()) ::
+          {:ok, window_state_snapshot()}
+          | {:error, :not_tracked | :no_session}
+  def get_window_state(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:get_window_state, channel})
+  end
+
   @doc """
   Returns the cached userhost entry for `nick` in the given session.
 

@@ -633,6 +633,10 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # Pushes cached topic_changed + channel_modes_changed for a single channel.
+  # CP15 B3: also pushes cached members_seeded + window_state to close the
+  # deploy-reconnect race — cic reconnects to a session whose original
+  # broadcasts already fired before the WS subscribe, so without these
+  # the members pane stays empty and the window stays in :pending.
   @spec push_channel_snapshot(String.t(), String.t(), String.t(), Phoenix.Socket.t()) :: :ok
   defp push_channel_snapshot(user_name, network_slug, channel, socket) do
     case safe_get_user(user_name) do
@@ -642,6 +646,8 @@ defmodule GrappaWeb.GrappaChannel do
             subject = {:user, user.id}
             push_topic_if_cached(subject, network, channel, socket)
             push_modes_if_cached(subject, network, channel, socket)
+            push_members_if_seeded(subject, network, channel, socket)
+            push_window_state_if_known(subject, network, channel, socket)
 
           {:error, :not_found} ->
             :ok
@@ -732,6 +738,54 @@ defmodule GrappaWeb.GrappaChannel do
           channel: channel,
           modes: entry
         })
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  # CP15 B3: pushes the cached members list for the channel as a
+  # `members_seeded` event, mirroring the broadcast emitted by the 366
+  # RPL_ENDOFNAMES apply_effects arm. Closes the deploy-reconnect race
+  # where cic subscribes after the original broadcast fired. Empty
+  # members list is treated as no-cache (skip) — an empty channel is
+  # indistinguishable from "NAMES hasn't completed yet" at this surface.
+  @spec push_members_if_seeded(Session.subject(), Network.t(), String.t(), Phoenix.Socket.t()) ::
+          :ok
+  defp push_members_if_seeded(subject, %Network{} = network, channel, socket) do
+    case Session.list_members(subject, network.id, channel) do
+      {:ok, [_ | _] = members} ->
+        push(socket, "event", %{
+          kind: "members_seeded",
+          network: network.slug,
+          channel: channel,
+          members: members
+        })
+
+      {:ok, []} ->
+        :ok
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  # CP15 B3: pushes the snapshot-ready window-state payload assembled by
+  # `Session.get_window_state/3`. Payload is byte-identical to the
+  # event-time broadcast for the same kind so cic's renderer doesn't
+  # branch on snapshot-vs-event origin. Closes the deploy-reconnect race
+  # where cic stays in :pending after subscribing to a session whose
+  # :joined / :failed / :kicked broadcast already fired.
+  @spec push_window_state_if_known(
+          Session.subject(),
+          Network.t(),
+          String.t(),
+          Phoenix.Socket.t()
+        ) :: :ok
+  defp push_window_state_if_known(subject, %Network{} = network, channel, socket) do
+    case Session.get_window_state(subject, network.id, channel) do
+      {:ok, payload} ->
+        push(socket, "event", payload)
 
       {:error, _} ->
         :ok
