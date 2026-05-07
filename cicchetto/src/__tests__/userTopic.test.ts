@@ -27,9 +27,6 @@ vi.mock("../lib/networks", () => ({
   user: vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" })),
   refetchChannels: vi.fn(),
   networks: vi.fn(() => []),
-  channelsBySlug: vi.fn(() => ({
-    freenode: [{ name: "#grappa", joined: true, source: "autojoin" }],
-  })),
   mutateNetworkNick: vi.fn(),
 }));
 
@@ -43,32 +40,6 @@ vi.mock("../lib/queryWindows", () => ({
   queryWindowsByNetwork: vi.fn(() => ({})),
   closeQueryWindowState: vi.fn(),
   openQueryWindowState: vi.fn(),
-}));
-
-// C5.2: mock numericInline so we can assert appendNumericInline calls
-// without depending on the Solid signal machinery.
-const mockAppendNumericInline = vi.fn();
-vi.mock("../lib/numericInline", () => ({
-  appendNumericInline: (...args: unknown[]) => mockAppendNumericInline(...args),
-  numericsByWindow: vi.fn(() => ({})),
-}));
-
-// C5.2: mock selection so we can control selectedChannel in routing tests.
-// The mock return type is typed explicitly to include null (the initial value)
-// and the SelectedChannel-compatible shape needed for routing assertions.
-const mockSelectedChannel: {
-  mockReturnValue: (v: { networkSlug: string; channelName: string; kind: string } | null) => void;
-} & (() => { networkSlug: string; channelName: string; kind: string } | null) = vi.fn(
-  () => null as { networkSlug: string; channelName: string; kind: string } | null,
-);
-vi.mock("../lib/selection", () => ({
-  selectedChannel: () => mockSelectedChannel(),
-  setSelectedChannel: vi.fn(),
-}));
-
-// C5.2: mock channelKey to return deterministic strings without real logic.
-vi.mock("../lib/channelKey", () => ({
-  channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
 describe("userTopic", () => {
@@ -138,111 +109,6 @@ describe("userTopic", () => {
     const qw = await import("../lib/queryWindows");
     channelMock.fireEvent({ kind: "channels_changed" });
     expect(qw.setQueryWindowsByNetwork).not.toHaveBeenCalled();
-  });
-
-  // C5.2: numeric_routed event routing.
-  describe("numeric_routed event (C5.2)", () => {
-    it("routes error numeric to active window when target is 'active'", async () => {
-      mockSelectedChannel.mockReturnValue({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      channelMock.fireEvent({
-        kind: "numeric_routed",
-        numeric: 482,
-        params: ["vjt", "#grappa", "You're not channel operator"],
-        trailing: "You're not channel operator",
-        target_window: { kind: "active", target: null },
-        severity: "error",
-      });
-      expect(mockAppendNumericInline).toHaveBeenCalledWith("freenode #grappa", {
-        numeric: 482,
-        text: "You're not channel operator",
-        severity: "error",
-      });
-    });
-
-    it("routes to active window when target is 'server' (fallback)", async () => {
-      mockSelectedChannel.mockReturnValue({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      channelMock.fireEvent({
-        kind: "numeric_routed",
-        numeric: 265,
-        params: [],
-        trailing: "Current local users",
-        target_window: { kind: "server", target: null },
-        severity: "ok",
-      });
-      expect(mockAppendNumericInline).toHaveBeenCalledWith("freenode #grappa", {
-        numeric: 265,
-        text: "Current local users",
-        severity: "ok",
-      });
-    });
-
-    it("routes channel-kind numeric to the named channel window", async () => {
-      // channelsBySlug mock returns freenode: [{name: "#grappa"}].
-      channelMock.fireEvent({
-        kind: "numeric_routed",
-        numeric: 482,
-        params: ["vjt", "#grappa", "Not an operator"],
-        trailing: "Not an operator",
-        target_window: { kind: "channel", target: "#grappa" },
-        severity: "error",
-      });
-      expect(mockAppendNumericInline).toHaveBeenCalledWith("freenode #grappa", {
-        numeric: 482,
-        text: "Not an operator",
-        severity: "error",
-      });
-    });
-
-    it("falls back to active window when channel target not found in channelsBySlug", async () => {
-      mockSelectedChannel.mockReturnValue({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      channelMock.fireEvent({
-        kind: "numeric_routed",
-        numeric: 403,
-        params: ["vjt", "#unknown"],
-        trailing: "No such channel",
-        target_window: { kind: "channel", target: "#unknown" },
-        severity: "error",
-      });
-      // Falls back to active window key.
-      expect(mockAppendNumericInline).toHaveBeenCalledWith("freenode #grappa", {
-        numeric: 403,
-        text: "No such channel",
-        severity: "error",
-      });
-    });
-
-    it("uses numeric code as text when trailing is null", async () => {
-      mockSelectedChannel.mockReturnValue({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      channelMock.fireEvent({
-        kind: "numeric_routed",
-        numeric: 200,
-        params: [],
-        trailing: null,
-        target_window: { kind: "active", target: null },
-        severity: "ok",
-      });
-      expect(mockAppendNumericInline).toHaveBeenCalledWith("freenode #grappa", {
-        numeric: 200,
-        text: "[200]",
-        severity: "ok",
-      });
-    });
   });
 
   // BUG1-FIX: own_nick_changed event updates network nick in memory.

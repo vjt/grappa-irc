@@ -4,7 +4,6 @@ import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { membersByChannel } from "./members";
 import { networks } from "./networks";
-import { appendNumericInline } from "./numericInline";
 import { openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
@@ -474,13 +473,14 @@ const exports_ = createRoot(() => {
     if (state.draft.trim() !== "") pushHistory(key, state.draft);
     writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
     tabCycle = null;
-    // ok: string = success with inline feedback (e.g. watchlist list output).
-    // Push an ephemeral numeric-inline row so the user sees confirmation in
-    // the scrollback pane. Reuses the C5.2 numeric-inline infrastructure;
-    // numeric 0 is a sentinel (no real IRC numeric) — severity "ok" = info.
-    if (typeof result.ok === "string") {
-      appendNumericInline(key, { numeric: 0, text: result.ok, severity: "ok" });
-    }
+    // CP13: pre-CP13 a `result.ok: string` (e.g. /watch list output) was
+    // surfaced as an ephemeral numeric-inline row in the scrollback pane.
+    // The numericInline infrastructure is gone in CP13 (server numerics
+    // now persist as :notice rows in their routed window). Inline ok-info
+    // feedback for client-side commands is intentionally not surfaced
+    // here yet — the commands themselves either persist their own row or
+    // operate silently. Re-add via the ComposeBox `error` signal arm
+    // (with severity styling) if a future cluster needs it.
     return result;
   };
 

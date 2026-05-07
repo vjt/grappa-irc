@@ -148,26 +148,6 @@ export type ChannelEvent = {
   message: ScrollbackMessage;
 };
 
-// Wire shape of the `numeric_routed` PubSub event broadcast by
-// `Grappa.Session.Server` (S4.2/S4.4) on the user-level topic.
-// Severity mirrors the server-side `NumericRouter.severity/1` atom set:
-//   :ok → "ok"   (numerics < 400)
-//   :error → "error"  (numerics ≥ 400, failure-class)
-// Phoenix Channels JSON-encodes atoms as strings on the wire.
-// target_window.kind mirrors the server-side `window_kind()` atom set:
-//   :channel | :query | :server | :list | :mentions | :active
-export type NumericRouted = {
-  kind: "numeric_routed";
-  numeric: number;
-  params: string[];
-  trailing: string | null;
-  target_window: {
-    kind: "channel" | "query" | "server" | "list" | "mentions" | "active";
-    target: string | null;
-  };
-  severity: "ok" | "error";
-};
-
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;

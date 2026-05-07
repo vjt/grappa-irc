@@ -1,14 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 
-// C8.3 fix-up — compose.ts calls appendNumericInline for watchlist ok-string feedback.
-const mockAppendNumericInline = vi.fn();
-vi.mock("../lib/numericInline", () => ({
-  appendNumericInline: (...args: unknown[]) => mockAppendNumericInline(...args),
-  clearNumericInline: vi.fn(),
-  numericsByWindow: vi.fn(() => ({})),
-}));
-
 vi.mock("../lib/api", () => {
   class ApiError extends Error {
     readonly status: number;
@@ -111,7 +103,6 @@ beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
-  mockAppendNumericInline.mockClear();
 });
 
 describe("compose draft state", () => {
@@ -1001,43 +992,5 @@ describe("compose submit — watchlist verbs (C8.3)", () => {
     compose.setDraft(k, "/watch del myname");
     await compose.submit(k, "freenode", "#a");
     expect(compose.getDraft(k)).toBe("");
-  });
-
-  // C8.3 fix-up BUG #2: ok: string feedback must push an ephemeral inline row.
-  it("/watch list pushes an ephemeral inline row via appendNumericInline", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch list");
-    await compose.submit(k, "freenode", "#a");
-    // appendNumericInline must have been called with the channel key and ok-severity line.
-    expect(mockAppendNumericInline).toHaveBeenCalledWith(
-      k,
-      expect.objectContaining({ severity: "ok", text: expect.stringContaining("watchlist") }),
-    );
-  });
-
-  it("/watch add <pattern> pushes an ephemeral inline row via appendNumericInline", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch add myname");
-    await compose.submit(k, "freenode", "#a");
-    expect(mockAppendNumericInline).toHaveBeenCalledWith(
-      k,
-      expect.objectContaining({ severity: "ok", text: expect.stringContaining("watchlist") }),
-    );
-  });
-
-  it("/watch del <pattern> pushes an ephemeral inline row via appendNumericInline", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const compose = await import("../lib/compose");
-    const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/watch del myname");
-    await compose.submit(k, "freenode", "#a");
-    expect(mockAppendNumericInline).toHaveBeenCalledWith(
-      k,
-      expect.objectContaining({ severity: "ok", text: expect.stringContaining("watchlist") }),
-    );
   });
 });

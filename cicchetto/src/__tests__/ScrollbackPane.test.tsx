@@ -2,7 +2,6 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
-import type { NumericInlineLine } from "../lib/numericInline";
 
 // C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
 // setSelectedChannel is called when own nick's JOIN event shows up.
@@ -10,17 +9,6 @@ const mockSetSelectedChannel = vi.fn();
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: (ch: unknown) => mockSetSelectedChannel(ch),
   selectedChannel: () => null,
-}));
-
-// C5.2 — numericsByWindow: real Solid signal so render tests are reactive.
-const [numericsByWindowStore, setNumericsByWindowStore] = createSignal<
-  Record<string, NumericInlineLine[]>
->({});
-vi.mock("../lib/numericInline", () => ({
-  numericsByWindow: () => numericsByWindowStore(),
-  appendNumericInline: vi.fn(),
-  clearNumericInline: vi.fn(),
-  MAX_INLINE_PER_WINDOW: 20,
 }));
 
 // Mock the store boundary, not the REST/WS plumbing — ScrollbackPane is
@@ -160,7 +148,6 @@ beforeEach(() => {
   // Reset the join-banner shown-set between tests (test seam, see ScrollbackPane.tsx).
   resetShownBannersForTest();
   mockSetSelectedChannel.mockClear();
-  setNumericsByWindowStore({});
 });
 
 describe("ScrollbackPane", () => {
@@ -772,60 +759,6 @@ describe("ScrollbackPane", () => {
       // Give reactive effects time to settle.
       await new Promise((r) => setTimeout(r, 20));
       expect(mockSetSelectedChannel).not.toHaveBeenCalled();
-    });
-  });
-
-  // C5.2: inline numeric rendering.
-  describe("inline numeric lines (C5.2)", () => {
-    it("renders numeric inline lines for the current window key", async () => {
-      setNumericsByWindowStore({
-        "freenode #grappa": [
-          { numeric: 482, text: "You're not channel operator", severity: "error" },
-          { numeric: 265, text: "Current local users", severity: "ok" },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const lines = screen.getAllByTestId("numeric-inline-line");
-      expect(lines).toHaveLength(2);
-      expect(lines[0]).toHaveTextContent("You're not channel operator");
-      expect(lines[1]).toHaveTextContent("Current local users");
-    });
-
-    it("applies .numeric-error class to error-severity lines", async () => {
-      setNumericsByWindowStore({
-        "freenode #grappa": [{ numeric: 482, text: "Not an op", severity: "error" }],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const line = screen.getByTestId("numeric-inline-line");
-      expect(line.classList.contains("numeric-error")).toBe(true);
-    });
-
-    it("does NOT apply .numeric-error class to ok-severity lines", async () => {
-      setNumericsByWindowStore({
-        "freenode #grappa": [{ numeric: 265, text: "Info", severity: "ok" }],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const line = screen.getByTestId("numeric-inline-line");
-      expect(line.classList.contains("numeric-error")).toBe(false);
-    });
-
-    it("does not render the numeric-inline-pane when list is empty", () => {
-      setNumericsByWindowStore({ "freenode #grappa": [] });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("numeric-inline-pane")).toBeNull();
-    });
-
-    it("scopes lines to the current (slug, channel) window key", () => {
-      setNumericsByWindowStore({
-        "freenode #grappa": [{ numeric: 482, text: "error in grappa", severity: "error" }],
-        "freenode #cicchetto": [{ numeric: 265, text: "info in cicchetto", severity: "ok" }],
-      });
-      render(() => (
-        <ScrollbackPane networkSlug="freenode" channelName="#cicchetto" kind="channel" />
-      ));
-      const lines = screen.getAllByTestId("numeric-inline-line");
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toHaveTextContent("info in cicchetto");
     });
   });
 
