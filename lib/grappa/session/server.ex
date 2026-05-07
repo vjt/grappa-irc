@@ -187,6 +187,24 @@ defmodule Grappa.Session.Server do
   @type window_state :: :pending | :joined | :failed | :kicked | :parked
 
   @typedoc """
+  In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
+  JOIN — both cic-initiated `Session.send_join/3` casts and the 001
+  RPL_WELCOME autojoin loop — keyed by `String.downcase/1` of the
+  channel so a 471/473/474/475/403/405 failure numeric can correlate
+  even when the upstream echoes a case-folded channel name.
+
+  - `channel` — case-preserved as written by the caller (the form we
+    use when broadcasting `kind: "join_failed"`, so cic addresses the
+    same window the user typed).
+  - `at_ms` — `System.monotonic_time(:millisecond)` at insert time.
+    Drives the lazy 30s TTL sweep on next insert.
+  - `label` — labeled-response correlation tag if the upstream caps
+    `labeled-response`; else `nil`. Layer 1 (label-match) and layer 2
+    (channel-param fallback) per the impl plan Q8 resolution.
+  """
+  @type in_flight_join :: {channel :: String.t(), at_ms :: integer(), label :: String.t() | nil}
+
+  @typedoc """
   Internal init arg — `t:Grappa.Session.start_opts/0` plus the
   `network_id` key `Grappa.Session.start_session/3` merges in. The
   `subject` field is already in `start_opts/0` (Task 6.5 — subject
@@ -231,6 +249,20 @@ defmodule Grappa.Session.Server do
           # an autojoin is in flight; absence after PART = :archived
           # (derived externally by cic from the archive surface, B4).
           window_states: %{String.t() => window_state()},
+          # CP15 B2: per-channel failure reason for windows in :failed state
+          # (471/473/474/475/403/405). Sibling to `window_states`, separate
+          # map because the reason is text and only present for failures —
+          # mixing it into the atom-valued window_states map would force a
+          # tagged tuple. Cleared when the channel transitions out of
+          # :failed (next successful JOIN, /part, etc.).
+          window_failure_reasons: %{String.t() => String.t()},
+          # CP15 B2: in-flight JOINs awaiting upstream confirmation
+          # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
+          # Keyed by lowercase channel so the failure-numeric correlation
+          # is case-insensitive per RFC 2812 §2.2; entry is stripped on
+          # either resolution. Lazy 30s TTL sweep on next insert keeps the
+          # map bounded under upstream silence.
+          in_flight_joins: %{String.t() => in_flight_join()},
           autojoin: [String.t()],
           client: pid() | nil,
           notify_pid: pid() | nil,
@@ -340,6 +372,8 @@ defmodule Grappa.Session.Server do
       channel_modes: %{},
       userhost_cache: %{},
       window_states: %{},
+      window_failure_reasons: %{},
+      in_flight_joins: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
@@ -815,7 +849,7 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_cast({:send_join, channel}, state) when is_binary(channel) do
     :ok = Client.send_join(state.client, channel)
-    {:noreply, state}
+    {:noreply, record_in_flight_join(state, channel)}
   end
 
   def handle_cast({:send_part, channel}, state) when is_binary(channel) do
@@ -928,15 +962,20 @@ defmodule Grappa.Session.Server do
         state
       )
       when is_binary(welcomed_nick) do
-    Enum.each(state.autojoin, fn channel ->
-      case Client.send_join(state.client, channel) do
-        :ok ->
-          :ok
+    state =
+      state.autojoin
+      |> Enum.reduce(state, fn channel, acc ->
+        case Client.send_join(acc.client, channel) do
+          :ok ->
+            record_in_flight_join(acc, channel)
 
-        {:error, :invalid_line} ->
-          Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
-      end
-    end)
+          {:error, :invalid_line} ->
+            Logger.warning("autojoin skipped: invalid channel name", channel: inspect(channel))
+            acc
+        end
+      end)
+      |> maybe_fire_notify()
+      |> maybe_stage_pending_password()
 
     if welcomed_nick != state.nick do
       Logger.info("nick reconciled at registration",
@@ -950,11 +989,6 @@ defmodule Grappa.Session.Server do
     # failure starts the exponential ladder at count=1 again instead of
     # whatever depth the previous outage reached.
     Backoff.record_success(state.subject, state.network_id)
-
-    state =
-      state
-      |> maybe_fire_notify()
-      |> maybe_stage_pending_password()
 
     delegate(msg, state)
   end
@@ -1644,6 +1678,69 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # CP15 B2: JOIN failure numeric (471/473/474/475/403/405) correlated
+  # against an in-flight JOIN. Three concerns, one arm:
+  #   1. State — window_states[channel] = :failed, window_failure_reasons
+  #      records the human-readable reason. Cic projects from these via
+  #      the typed broadcast below; the maps are also the source of truth
+  #      for any future REST snapshot fetch.
+  #   2. Persistence — write a :notice row on the channel scrollback so
+  #      the failure shows in window history (and survives reconnect).
+  #      `sender = state.nick` matches Identifier.valid_sender? same as
+  #      MOTD's BUG2 fix; meta.numeric is the only structured datum cic
+  #      needs to render the failure differently from a regular notice.
+  #   3. Event broadcast — typed `kind: "join_failed"` payload on the
+  #      per-channel topic (sibling to the B1 `joined` event). Cic flips
+  #      the window's render state without polling.
+  defp apply_effects([{:join_failed, channel, reason, numeric} | rest], state) do
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: channel,
+          server_time: System.system_time(:millisecond),
+          kind: :notice,
+          sender: state.nick,
+          body: reason,
+          meta: %{numeric: numeric}
+        },
+        state.subject
+      )
+
+    case Scrollback.persist_event(attrs) do
+      {:ok, _} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.error("scrollback insert failed for join_failed",
+          channel: channel,
+          numeric: numeric,
+          error: inspect(changeset.errors)
+        )
+    end
+
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        %{
+          kind: "join_failed",
+          network: state.network_slug,
+          channel: channel,
+          state: "failed",
+          reason: reason,
+          numeric: numeric
+        }
+      )
+
+    state = %{
+      state
+      | window_states: Map.put(state.window_states, channel, :failed),
+        window_failure_reasons: Map.put(state.window_failure_reasons, channel, reason)
+    }
+
+    apply_effects(rest, state)
+  end
+
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)
 
@@ -1756,6 +1853,33 @@ defmodule Grappa.Session.Server do
   end
 
   defp maybe_fire_notify(state), do: state
+
+  # CP15 B2: record an outbound JOIN as in-flight, keyed by lowercase
+  # channel for case-insensitive correlation against failure-numeric
+  # echoes (RFC 2812 §2.2). Both `Session.send_join/3` casts and the
+  # 001 RPL_WELCOME autojoin loop call through here so the tracking
+  # behavior is identical regardless of who initiated the JOIN.
+  # Label is `nil` for now — labeled-response correlation lands later.
+  #
+  # Lazy O(1)-amortized TTL: every insert sweeps entries older than
+  # @in_flight_join_ttl_ms first. Bounds the map under upstream silence
+  # without a separate Process.send_after timer.
+  @in_flight_join_ttl_ms 30_000
+
+  @spec record_in_flight_join(state(), String.t()) :: state()
+  defp record_in_flight_join(state, channel) when is_binary(channel) do
+    now_ms = System.monotonic_time(:millisecond)
+    cutoff = now_ms - @in_flight_join_ttl_ms
+
+    swept =
+      state.in_flight_joins
+      |> Enum.reject(fn {_, {_, at_ms, _}} -> at_ms < cutoff end)
+      |> Map.new()
+
+    key = String.downcase(channel)
+    entry = {channel, now_ms, nil}
+    %{state | in_flight_joins: Map.put(swept, key, entry)}
+  end
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,
   # alphabetical by nick (caller `Enum.sort_by` does the secondary).

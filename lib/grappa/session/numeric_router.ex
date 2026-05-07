@@ -152,7 +152,21 @@ defmodule Grappa.Session.NumericRouter do
                         # MOTD replies (375, 372, 376)
                         375,
                         372,
-                        376
+                        376,
+                        # CP15 B2 — JOIN failure numerics. EventRouter
+                        # correlates against state.in_flight_joins and
+                        # emits {:join_failed, ch, reason, code}. The
+                        # apply_effects arm in Session.Server persists a
+                        # :notice row + broadcasts on the per-channel
+                        # topic — without delegation, the param-derived
+                        # scan-route also persists the same numeric on
+                        # `$server`, doubling the row.
+                        471,
+                        473,
+                        474,
+                        475,
+                        403,
+                        405
                       ])
 
   # ---------------------------------------------------------------------------

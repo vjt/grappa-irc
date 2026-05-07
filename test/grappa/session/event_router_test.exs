@@ -37,6 +37,15 @@ defmodule Grappa.Session.EventRouterTest do
     %Message{command: command, params: params, prefix: prefix, tags: %{}}
   end
 
+  # CP15 B2: helper for in_flight_joins fixture state. Records `channel`
+  # case-preserved with key `String.downcase(channel)` to match the
+  # production insert path in `record_in_flight_join/2`.
+  defp in_flight_state(channel) do
+    base_state(%{
+      in_flight_joins: %{String.downcase(channel) => {channel, 12_345, nil}}
+    })
+  end
+
   describe "route/2 — fallthrough" do
     test "unknown command leaves state unchanged with no effects" do
       state = base_state()
@@ -335,6 +344,80 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:joined, _}, &1))
+    end
+  end
+
+  describe "route/2 — :join_failed numerics (CP15 B2)" do
+    # Failure-numeric param shape (RFC 2812 + InspIRCd/UnrealIRCd practice):
+    #   :server <code> <own_nick_echo> <channel> :<reason>
+    # so `params[0]` is the welcomed nick echo, `params[1]` is the channel
+    # the JOIN was rejected for, and `params[2]` is the human-readable reason.
+    # The router emits {:join_failed, channel, reason, numeric} when the
+    # echoed channel matches an in-flight JOIN (case-insensitive RFC 2812
+    # §2.2 lookup) and strips the matched entry from the returned next_state
+    # so a re-issued JOIN can be tracked again without stale interference.
+
+    for {numeric, reason} <- [
+          {471, "Cannot join channel (+l)"},
+          {473, "Cannot join channel (+i)"},
+          {474, "Cannot join channel (+b)"},
+          {475, "Cannot join channel (+k)"},
+          {403, "No such channel"},
+          {405, "You have joined too many channels"}
+        ] do
+      test "#{numeric} on in-flight #channel emits {:join_failed, _, _, #{numeric}} + strips entry" do
+        state = in_flight_state("#sniffo")
+
+        m =
+          msg(
+            {:numeric, unquote(numeric)},
+            ["vjt", "#sniffo", unquote(reason)],
+            {:server, "irc.test.org"}
+          )
+
+        assert {:cont, next_state, [{:join_failed, "#sniffo", reason, unquote(numeric)}]} =
+                 EventRouter.route(m, state)
+
+        assert reason == unquote(reason)
+        # Entry stripped so a re-issued JOIN gets a fresh in-flight slot
+        # instead of correlating against a stale {at_ms, label}.
+        refute Map.has_key?(next_state.in_flight_joins, "#sniffo")
+      end
+
+      test "#{numeric} matches case-insensitively (server echoes #SNIFFO, in-flight is #sniffo)" do
+        # RFC 2812 §2.2 — channel comparisons are case-insensitive. Server
+        # may echo a case-folded channel name; correlation must still hit.
+        state = in_flight_state("#sniffo")
+
+        m =
+          msg(
+            {:numeric, unquote(numeric)},
+            ["vjt", "#SNIFFO", unquote(reason)],
+            {:server, "irc.test.org"}
+          )
+
+        assert {:cont, next_state, [{:join_failed, "#SNIFFO", _, unquote(numeric)}]} =
+                 EventRouter.route(m, state)
+
+        refute Map.has_key?(next_state.in_flight_joins, "#sniffo")
+      end
+
+      test "#{numeric} with no in-flight entry emits NO :join_failed effect" do
+        # Falls through to NumericRouter's existing $server route via the
+        # scan-router path (re-asserted in Session.Server integration).
+        # EventRouter itself returns no :join_failed and leaves state alone.
+        state = base_state(%{in_flight_joins: %{}})
+
+        m =
+          msg(
+            {:numeric, unquote(numeric)},
+            ["vjt", "#sniffo", unquote(reason)],
+            {:server, "irc.test.org"}
+          )
+
+        assert {:cont, ^state, effects} = EventRouter.route(m, state)
+        refute Enum.any?(effects, &match?({:join_failed, _, _, _}, &1))
+      end
     end
   end
 
