@@ -1,5 +1,6 @@
 import { type Component, For, Show } from "solid-js";
 import { postPart } from "./lib/api";
+import { archivedBySlug, loadArchive } from "./lib/archive";
 import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
@@ -170,6 +171,42 @@ const Sidebar: Component<Props> = (props) => {
                 }}
               </For>
             </ul>
+
+            {/* CP15 B4 — Archive section, collapsed by default. Lazy fetch
+                on first expand via the toggle event; entries clickable to
+                set selection. Channel kind keeps the channel-shaped name;
+                query kind opens the DM window for the target nick. */}
+            <details
+              class="sidebar-archive"
+              onToggle={(e) => {
+                if ((e.currentTarget as HTMLDetailsElement).open) {
+                  void loadArchive(network.slug);
+                }
+              }}
+            >
+              <summary>Archive</summary>
+              <ul>
+                <For each={archivedBySlug()[network.slug] ?? []}>
+                  {(entry) => (
+                    <li>
+                      <button
+                        type="button"
+                        class="sidebar-window-btn"
+                        onClick={() =>
+                          handleClick(
+                            network.slug,
+                            entry.target,
+                            entry.kind === "channel" ? "channel" : "query",
+                          )
+                        }
+                      >
+                        <span class="sidebar-channel-name parted">{entry.target}</span>
+                      </button>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </details>
           </section>
         )}
       </For>

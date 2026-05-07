@@ -42,6 +42,18 @@ vi.mock("../lib/queryWindows", () => ({
 
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
+  listArchive: vi.fn(),
+}));
+
+vi.mock("../lib/archive", () => ({
+  archivedBySlug: () => ({
+    freenode: [
+      { target: "#sniffo", kind: "channel", last_activity: 200, row_count: 576 },
+      { target: "vjt-peer", kind: "query", last_activity: 100, row_count: 8 },
+    ],
+  }),
+  loadArchive: vi.fn().mockResolvedValue(undefined),
+  clearArchive: vi.fn(),
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -50,8 +62,10 @@ vi.mock("../lib/auth", () => ({
 }));
 
 import * as apiMod from "../lib/api";
+import * as archiveMod from "../lib/archive";
 // Capture mocked module references at import time, before any resetModules
 import * as qwMod from "../lib/queryWindows";
+import * as selMod from "../lib/selection";
 import Sidebar from "../Sidebar";
 
 beforeEach(() => {
@@ -197,5 +211,57 @@ describe("Sidebar", () => {
     const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
     fireEvent.click(closeBtn);
     expect(apiMod.postPart).toHaveBeenCalledWith("tok", "freenode", "#italia");
+  });
+
+  // CP15 B4 — Archive section per network. Collapsed by default
+  // (`<details>` without `open`), lazy-loaded on first expand
+  // (`loadArchive(slug)`), entries clickable → setSelectedChannel.
+  describe("Archive section", () => {
+    it("renders Archive <details> per network, collapsed by default", () => {
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const archive = screen.getByText("Archive");
+      const details = archive.closest("details") as HTMLDetailsElement | null;
+      expect(details).toBeTruthy();
+      expect(details?.open).toBe(false);
+    });
+
+    it("renders one button per archived entry inside the network section", () => {
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      // Both entries are rendered eagerly (the renderer reads from
+      // `archivedBySlug()` which the test mock pre-populates). Lazy
+      // FETCH still happens on expand; the renderer doesn't wait.
+      expect(screen.getByText("#sniffo")).toBeInTheDocument();
+      expect(screen.getByText("vjt-peer")).toBeInTheDocument();
+    });
+
+    it("expanding the Archive <details> calls loadArchive(slug)", () => {
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const archive = screen.getByText("Archive");
+      const details = archive.closest("details") as HTMLDetailsElement;
+      details.open = true;
+      // Solid handlers fire on the toggle event, not on the property set.
+      details.dispatchEvent(new Event("toggle"));
+      expect(archiveMod.loadArchive).toHaveBeenCalledWith("freenode");
+    });
+
+    it("clicking an archived channel entry sets selection with kind=channel", () => {
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      fireEvent.click(screen.getByText("#sniffo"));
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#sniffo",
+        kind: "channel",
+      });
+    });
+
+    it("clicking an archived query entry sets selection with kind=query", () => {
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      fireEvent.click(screen.getByText("vjt-peer"));
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "vjt-peer",
+        kind: "query",
+      });
+    });
   });
 });
