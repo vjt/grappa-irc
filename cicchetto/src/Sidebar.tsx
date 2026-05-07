@@ -59,21 +59,43 @@ const Sidebar: Component<Props> = (props) => {
     return s !== undefined && NOT_JOINED_STATES.has(s);
   };
 
-  // Pending channel rows: keys whose state == "pending" and the
-  // (slug, name) is NOT already rendered by the channelsBySlug
-  // branch. Returns the channel-name segment so the For renders
-  // synthetic rows alongside the real ones.
-  const pendingChannelsForNetwork = (slug: string): string[] => {
+  // Synthetic sidebar rows: keys with windowState != "joined" whose
+  // (slug, name) is NOT yet in channelsBySlug AND not a known query
+  // (DM) target for this network. Returns name + state tuples so the
+  // JSX can render the right classList branch (pending styling vs
+  // greyed) without a second windowState lookup.
+  //
+  // The projection covers ALL four non-joined states — pending,
+  // failed, kicked, parked — under the same rule: cic mirrors a row
+  // whenever the operator is aware of the channel (windowState carries
+  // the key) but channelsBySlug doesn't. Without this, a failed JOIN
+  // (invite-only / banned / +k miss) leaves the operator with no
+  // sidebar entry at all: the pending row vanishes when state flips
+  // to failed and the channelsBySlug branch never receives the
+  // channel since the JOIN was rejected. Intent doc:
+  // "Sidebar entry greyed/dim" on every failed/kicked/parked window.
+  //
+  // Query (DM) targets are filtered out — windowState may carry a
+  // (slug, nick) entry too (the kicked/away projection plays nicely
+  // with DMs), but the dedicated query-windows branch below handles
+  // their rendering. Without this filter, the synthetic loop would
+  // dup-render every greyed query target as a "ghost" channel row.
+  type PseudoRow = { name: string; state: "pending" | "failed" | "kicked" | "parked" };
+  const pseudoChannelsForNetwork = (slug: string, networkId: number): PseudoRow[] => {
     const states = windowStateByChannel();
     const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
+    const queries = new Set(
+      (queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick),
+    );
     const prefix = `${slug} `;
-    const out: string[] = [];
+    const out: PseudoRow[] = [];
     for (const [key, state] of Object.entries(states)) {
-      if (state !== "pending") continue;
+      if (state === "joined") continue;
       if (!key.startsWith(prefix)) continue;
       const name = key.slice(prefix.length);
       if (live.has(name)) continue;
-      out.push(name);
+      if (queries.has(name)) continue;
+      out.push({ name, state: state as PseudoRow["state"] });
     }
     return out;
   };
@@ -200,22 +222,33 @@ const Sidebar: Component<Props> = (props) => {
                 }}
               </For>
 
-              {/* CP15 B5 — pending channel rows: synthetic entries for
-                  channels the operator JOINed that haven't appeared in
-                  channelsBySlug yet. Rendered as a sidebar row with
-                  pending styling so the operator sees immediate feedback
-                  before the upstream JOIN echo lands. The dedup gate in
-                  pendingChannelsForNetwork drops any key already in
-                  channelsBySlug. */}
-              <For each={pendingChannelsForNetwork(network.slug)}>
-                {(name) => (
-                  <li classList={{ selected: isSelected(network.slug, name) }}>
+              {/* CP15 B5/B6 — synthetic channel rows: entries the operator
+                  is aware of (windowState carries the key) but that aren't
+                  in channelsBySlug yet. State drives the styling: pending
+                  shows the optimistic-feedback class while the upstream
+                  echo is in flight; failed/kicked/parked show the greyed
+                  class so a rejected JOIN (invite-only / banned / keyed)
+                  still surfaces as a row instead of vanishing. The dedup
+                  gate in pseudoChannelsForNetwork drops any key already
+                  in channelsBySlug — channelsBySlug branch wins. */}
+              <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
+                {(row) => (
+                  <li classList={{ selected: isSelected(network.slug, row.name) }}>
                     <button
                       type="button"
-                      onClick={() => handleClick(network.slug, name, "channel")}
-                      class="sidebar-window-btn sidebar-window-pending"
+                      onClick={() => handleClick(network.slug, row.name, "channel")}
+                      class={
+                        row.state === "pending"
+                          ? "sidebar-window-btn sidebar-window-pending"
+                          : "sidebar-window-btn sidebar-window-greyed"
+                      }
                     >
-                      <span class="sidebar-channel-name pending">{name}</span>
+                      <span
+                        class="sidebar-channel-name"
+                        classList={{ pending: row.state === "pending" }}
+                      >
+                        {row.name}
+                      </span>
                     </button>
                   </li>
                 )}

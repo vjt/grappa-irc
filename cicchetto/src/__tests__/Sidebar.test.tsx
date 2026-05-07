@@ -354,6 +354,60 @@ describe("Sidebar", () => {
     });
   });
 
+  // CP15 B6 — synthetic sidebar rows for state ∈ {pending, failed,
+  // kicked, parked} when the channel is NOT in channelsBySlug. The
+  // intent doc (docs/plans/2026-05-07-event-driven-windows.md, Window
+  // state machine §) calls for "Sidebar entry greyed/dim" on every
+  // failed/kicked/parked window — same projection as pending. Without
+  // synthetic rendering for the failed family, a /join attempt against
+  // an invite-only / banned / keyed channel would leave the operator
+  // with no sidebar entry at all (channelsBySlug never receives the
+  // channel since the JOIN was rejected; the pending row vanishes when
+  // state flips to failed). Source-of-truth rule: cic projects a
+  // synthetic row whenever windowState carries a key that channelsBySlug
+  // doesn't — one mental model, all four non-joined states.
+  describe("CP15 B6 — synthetic sidebar rows for failed/kicked/parked", () => {
+    it("renders a synthetic row for a channel in state=failed NOT yet in channelsBySlug", () => {
+      mockWindowState = { "freenode #invite-only": "failed" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const row = screen.getByText("#invite-only");
+      expect(row).toBeInTheDocument();
+      // Greyed since state ∈ {failed, kicked, parked}.
+      const li = row.closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("renders a synthetic row for a channel in state=kicked NOT yet in channelsBySlug", () => {
+      mockWindowState = { "freenode #banned": "kicked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const row = screen.getByText("#banned");
+      expect(row).toBeInTheDocument();
+      const li = row.closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("renders a synthetic row for a channel in state=parked NOT yet in channelsBySlug", () => {
+      mockWindowState = { "freenode #disconnected": "parked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const row = screen.getByText("#disconnected");
+      expect(row).toBeInTheDocument();
+      const li = row.closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("does NOT duplicate a synthetic failed row when channelsBySlug already carries the channel", () => {
+      // Mirror of the pending dedup gate — channelsBySlug branch wins
+      // when both projections would render the same name.
+      mockWindowState = { "freenode #italia": "failed" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const matches = screen.getAllByText("#italia");
+      expect(matches.length).toBe(1);
+    });
+  });
+
   // CP15 B5 — archive list filters live (joined channel OR open query)
   // entries. Mirrors server-side `Scrollback.list_archive/3`'s
   // `active_keyset` exclusion at render time. Without the filter,
