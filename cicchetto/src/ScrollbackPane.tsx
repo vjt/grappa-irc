@@ -17,7 +17,7 @@ import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
-import { scrollbackByChannel } from "./lib/scrollback";
+import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import UserContextMenu from "./UserContextMenu";
@@ -92,6 +92,15 @@ export type Props = {
 };
 
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+
+// CP14 B2: trigger `loadMore` when the user scrolls within this many
+// pixels of the top. 200px is a standard infinite-scroll threshold —
+// fires before the user actually hits the top so the new rows can
+// land while there's still scroll runway, avoiding the "land at the
+// very top, brief stutter, then content shifts" UX. The verb itself
+// (lib/scrollback.ts loadMore) gates the burst and end-of-history
+// cases; this constant only controls when to *try*.
+const LOAD_MORE_THRESHOLD_PX = 200;
 
 // Module-level tracking of which channels have already shown the
 // JOIN-self banner this session. Intentionally not persisted to server
@@ -612,6 +621,33 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!listRef) return;
     const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
     setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+
+    // CP14 B2: scroll-up triggers loadMore. The verb is idempotent
+    // under burst (per-key in-flight Set) and forward-latched on
+    // empty pages (exhausted Set), so we don't need our own guard
+    // here — fire-and-forget on every scroll event within threshold.
+    //
+    // Scroll-position preservation: REST returns older rows that get
+    // PREPENDED to the merged list. Without restoration, the user's
+    // viewport would either jump to the new top (scrollTop=0 stays
+    // pinned) — where they were already looking — or stay numerically
+    // pinned to scrollTop=N relative to the OLD scrollHeight, which
+    // is now a different position relative to the new content. We
+    // capture (scrollHeight, scrollTop) BEFORE the await, then after
+    // merge restore as `newScrollHeight - oldScrollHeight + oldScrollTop`
+    // so the rows the user was looking at remain in the same on-
+    // screen position. DOM mutation lives here in the component;
+    // lib/scrollback.ts stays DOM-free.
+    if (listRef.scrollTop <= LOAD_MORE_THRESHOLD_PX) {
+      const oldScrollHeight = listRef.scrollHeight;
+      const oldScrollTop = listRef.scrollTop;
+      void loadMoreScrollback(props.networkSlug, props.channelName).then(() => {
+        if (!listRef) return;
+        const newScrollHeight = listRef.scrollHeight;
+        if (newScrollHeight === oldScrollHeight) return;
+        listRef.scrollTop = newScrollHeight - oldScrollHeight + oldScrollTop;
+      });
+    }
   };
 
   // C7.4: scroll-to-bottom click handler — forces scroll to tail and
