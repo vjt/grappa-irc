@@ -170,6 +170,8 @@ defmodule Grappa.Session.EventRouter do
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
           | {:joined, String.t()}
           | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
+          | {:parted, String.t()}
+          | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -326,7 +328,19 @@ defmodule Grappa.Session.EventRouter do
         %{}
       )
 
-    {:cont, state, [eff]}
+    # CP15 B3: self-PART emits a :parted effect so Session.Server's
+    # apply_effects arm can drop the per-channel window_states entry.
+    # Cic projects "no window_states key + scrollback present" as
+    # `:archived`. Other-user PART is just a scrollback row — the
+    # sidebar membership is unchanged.
+    effects =
+      if sender == state.nick do
+        [eff, {:parted, channel}]
+      else
+        [eff]
+      end
+
+    {:cont, state, effects}
   end
 
   def route(%Message{command: :quit, params: rest} = msg, state) do
@@ -544,7 +558,19 @@ defmodule Grappa.Session.EventRouter do
         %{target: target}
       )
 
-    {:cont, state, [eff]}
+    # CP15 B3: self-target KICK emits a :kicked effect carrying by + reason
+    # so Session.Server's apply_effects arm can flip
+    # window_states[channel] = :kicked AND broadcast on the per-channel
+    # topic. Other-target KICK is a scrollback row only — the operator
+    # is still in the channel, no window-state transition.
+    effects =
+      if target == state.nick do
+        [eff, {:kicked, channel, sender, reason}]
+      else
+        [eff]
+      end
+
+    {:cont, state, effects}
   end
 
   # 353 RPL_NAMREPLY: `:server 353 nick = #channel :@op +voice plain`.
