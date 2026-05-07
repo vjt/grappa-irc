@@ -815,6 +815,116 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "CP15 B1 — :joined window-state event" do
+    test "Session.Server starts with empty window_states map" do
+      {_, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      state = :sys.get_state(pid)
+      assert state.window_states == %{}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-JOIN echo sets window_states[channel] = :joined + broadcasts on per-channel topic" do
+      # CP15 B1 contract: bahamut JOIN echo where sender == own_nick
+      # promotes the per-channel window from :pending to :joined.
+      # Both the in-process state map AND the per-channel topic broadcast
+      # are part of the contract — cic uses the broadcast to flip the
+      # window's render state without polling.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "joined",
+                         network: net_slug,
+                         channel: "#test",
+                         state: "joined"
+                       }
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      # Sync via PING/PONG before sampling state — same trick as
+      # JOIN-self resets members test above.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#test"] == :joined
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "other-user JOIN does NOT broadcast :joined (regression)" do
+      # Only self-JOIN promotes window state. Other-user JOINs land in
+      # scrollback as :persist :join rows and broadcast the row itself
+      # via the existing event surface — no `kind: "joined"` event.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drain the self-JOIN echo + its `joined` broadcast first so the
+      # mailbox starts clean for the assertion below.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+
+      # Now feed an other-user JOIN: must NOT produce a `joined` broadcast.
+      IRCServer.feed(server, ":alice!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 200
+
+      # window_states unchanged — still :joined for #test from the self-JOIN.
+      state = :sys.get_state(pid)
+      assert state.window_states["#test"] == :joined
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "list_members/3 snapshot" do
     test "returns members in mIRC sort: @ ops first, + voiced second, plain last" do
       handler = fn state, line ->
