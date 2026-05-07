@@ -27,7 +27,7 @@ set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
 E2E_DIR="$SRC_ROOT/cicchetto/e2e"
-TESTNET="$(dirname "$0")/testnet.sh"
+TESTNET="$(cd "$(dirname "$0")" && pwd)/testnet.sh"
 
 cleanup() {
     if [ "${KEEP_STACK:-}" != "1" ]; then
