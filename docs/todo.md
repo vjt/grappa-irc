@@ -189,12 +189,6 @@ fixed in C8):**
   pen-test). Move to either `Sec-WebSocket-Protocol` or a post-connect
   `phx_join` payload — needs a phoenix.js + UserSocket protocol
   change, bigger than walking-skeleton scope.
-- Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C5):
-  `loadMore` in `cicchetto/src/lib/networks.ts` has no concurrency
-  guard. A scroll-up that fires `loadMore` twice before the first
-  response lands sends two REST requests with the same `before=`
-  cursor. Dedupe-by-id keeps the result correct, but it's wasteful.
-  A per-key in-flight Set + early-return on hit is a few lines.
 - Phase 5 hardening (NEW from S22 Phase 3 review CONSIDER C6): no
   accessibility pass yet. Buttons are buttons + ARIA `role="alert"`
   on errors is reasonable baseline, but the channel sidebar uses
