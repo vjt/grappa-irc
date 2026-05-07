@@ -1,8 +1,9 @@
-import { type Component, createEffect, createSignal, For, Show } from "solid-js";
+import { type Component, createSignal, For, Show } from "solid-js";
 import { displayNick } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
-import { loadMembers, type MemberEntry, membersByChannel } from "./lib/members";
+import { type MemberEntry, membersByChannel } from "./lib/members";
 import { networks, user } from "./lib/networks";
+import { windowStateByChannel } from "./lib/windowState";
 import UserContextMenu from "./UserContextMenu";
 
 // Right-pane member list. Reads from `membersByChannel`; renders each
@@ -10,8 +11,18 @@ import UserContextMenu from "./UserContextMenu";
 // .member-plain) that the stylesheet uses to colour the nick + emit a
 // prefix (@ / + / space) via ::before.
 //
-// Loads via the once-per-channel gate on first render of a (slug,
-// channel) pair. The store itself filters out re-fetches.
+// CP15 B5: render branches now key on `windowStateByChannel[key]`:
+//   * state ∉ {joined}    → "not joined" muted text. No fetch ever.
+//   * state == joined &&
+//       members empty      → "loading…" (members_seeded inflight from
+//                            after_join; arrives on the channel topic).
+//   * state == joined &&
+//       members non-empty  → render the list.
+//
+// Pre-B5 the pane fetched GET /members on mount via a once-per-channel
+// gate. Server now pushes `members_seeded` on after_join (B3) AND on
+// every 366 RPL_ENDOFNAMES; cic has no remaining reason to fetch — the
+// WS push is the source of truth.
 //
 // C5.1: right-click on a nick opens `UserContextMenu` with ops actions
 // gated on own-nick's @ mode in this channel. Own-nick's modes are
@@ -35,12 +46,7 @@ type MenuFor = { nick: string; x: number; y: number } | null;
 const MembersPane: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
   const list = (): MemberEntry[] => membersByChannel()[key()] ?? [];
-
-  // Load on first render of a (slug, channel) pair. The verb's once-
-  // per-channel gate handles repeated mounts (channel re-selection).
-  createEffect(() => {
-    void loadMembers(props.networkSlug, props.channelName);
-  });
+  const state = (): string | undefined => windowStateByChannel()[key()];
 
   // C5.1: context menu state — which nick was right-clicked + screen coords.
   const [menuFor, setMenuFor] = createSignal<MenuFor>(null);
@@ -71,16 +77,18 @@ const MembersPane: Component<Props> = (props) => {
   return (
     <div class="members-pane">
       <h3>members ({list().length})</h3>
-      <Show when={list().length > 0} fallback={<p class="muted">no members yet</p>}>
-        <ul>
-          <For each={list()}>
-            {(m) => (
-              <li class={tierClass(m.modes)} onContextMenu={(e) => onContextMenu(e, m.nick)}>
-                {m.nick}
-              </li>
-            )}
-          </For>
-        </ul>
+      <Show when={state() === "joined"} fallback={<p class="muted">not joined</p>}>
+        <Show when={list().length > 0} fallback={<p class="muted">loading…</p>}>
+          <ul>
+            <For each={list()}>
+              {(m) => (
+                <li class={tierClass(m.modes)} onContextMenu={(e) => onContextMenu(e, m.nick)}>
+                  {m.nick}
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
       </Show>
       <Show when={menuFor()}>
         {(mf) => {
