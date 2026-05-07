@@ -472,7 +472,9 @@ defmodule Grappa.Session.EventRouterTest do
       refute Map.has_key?(new_state.members, "#grappa")
 
       # Persist effect still emitted so audit trail is preserved.
-      assert [{:persist, :part, attrs}] = effects
+      # Tail :parted effect is asserted separately in the B3 describe
+      # block; here we only pin the persist row's contents.
+      assert [{:persist, :part, attrs} | _] = effects
       assert attrs.channel == "#grappa"
       assert attrs.sender == "vjt"
       assert attrs.body == "byebye"
@@ -867,7 +869,9 @@ defmodule Grappa.Session.EventRouterTest do
       refute Map.has_key?(new_state.members, "#grappa")
 
       # Persist effect still emitted with target+reason on meta+body.
-      assert [{:persist, :kick, attrs}] = effects
+      # Tail :kicked effect is asserted in the B3 describe block; here
+      # we only pin the persist row's contents.
+      assert [{:persist, :kick, attrs} | _] = effects
       assert attrs.channel == "#grappa"
       assert attrs.sender == "alice"
       assert attrs.body == "behave"
@@ -891,6 +895,132 @@ defmodule Grappa.Session.EventRouterTest do
       refute Map.has_key?(new_state.members["#grappa"], "bob")
       assert Map.has_key?(new_state.members["#grappa"], "vjt")
       assert Map.has_key?(new_state.members["#grappa"], "alice")
+    end
+  end
+
+  describe "route/2 — :parted effect emission (CP15 B3)" do
+    # B3: server-side window-state event. Self-PART (sender == state.nick)
+    # MUST emit {:parted, channel} alongside the existing :persist :part
+    # row so Session.Server's apply_effects arm can drop the
+    # window_states entry. Other-user PART must NOT emit it.
+
+    test "self-PART emits {:parted, channel} alongside :persist :part" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => []}}
+        })
+
+      m = msg(:part, ["#grappa", "byebye"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _new_state, [{:persist, :part, _}, {:parted, "#grappa"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "self-PART with no reason still emits {:parted, channel}" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => []}}
+        })
+
+      m = msg(:part, ["#grappa"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, [{:persist, :part, _}, {:parted, "#grappa"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "self-PART for visitor subject also emits {:parted, channel} (Q1: uniform path)" do
+      visitor_id = "00000000-0000-0000-0000-000000000099"
+
+      state =
+        base_state(%{
+          subject: {:visitor, visitor_id},
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => []}}
+        })
+
+      m = msg(:part, ["#grappa"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, [{:persist, :part, _}, {:parted, "#grappa"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "other-user PART does NOT emit {:parted, channel} effect (regression)" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => []}}
+        })
+
+      m = msg(:part, ["#grappa", "bbl"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:parted, _}, &1))
+    end
+  end
+
+  describe "route/2 — :kicked effect emission (CP15 B3)" do
+    # B3: server-side window-state event. Self-target KICK (target ==
+    # state.nick) MUST emit {:kicked, channel, by, reason} alongside the
+    # existing :persist :kick row so Session.Server's apply_effects arm
+    # can flip window_states[channel] = :kicked + broadcast. Other-target
+    # KICK must NOT emit it. `by` is the sender nick; `reason` is the
+    # trailing param or nil when absent.
+
+    test "self-target KICK with reason emits {:kicked, channel, by, reason}" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}
+        })
+
+      m = msg(:kick, ["#grappa", "vjt", "behave"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _new_state, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "behave"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "self-target KICK with no reason emits {:kicked, channel, by, nil}" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}
+        })
+
+      m = msg(:kick, ["#grappa", "vjt"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", nil}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "self-target KICK for visitor subject also emits :kicked (Q1: uniform path)" do
+      visitor_id = "00000000-0000-0000-0000-000000000099"
+
+      state =
+        base_state(%{
+          subject: {:visitor, visitor_id},
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}
+        })
+
+      m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out"}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "other-target KICK does NOT emit {:kicked, ...} effect (regression)" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => ["@"], "alice" => ["@"], "bob" => []}}
+        })
+
+      m = msg(:kick, ["#grappa", "bob", "go away"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:kicked, _, _, _}, &1))
     end
   end
 
