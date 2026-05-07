@@ -155,6 +155,116 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.channel == "$server"
       assert attrs.sender == Message.anonymous_sender()
     end
+
+    # CP13 server-window cluster: NOTICE-to-non-channel-target priority chain.
+    # Replaces the pre-CP13 greedy "anything not a channel → $server" rule
+    # with: ChanServ-bracketed → channel; *Serv$ sender → $server;
+    # hostname sender → $server; user nick sender → query window.
+
+    test "ChanServ-bracketed body persists on captured channel with prefix stripped" do
+      state = base_state()
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "[ #sniffo ]: aoooo ce n'e?!?"],
+          {:nick, "ChanServ", "service", "azzurra.chat"}
+        )
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "#sniffo"
+      assert attrs.body == "aoooo ce n'e?!?"
+      assert attrs.sender == "ChanServ"
+    end
+
+    test "ChanServ matcher is case-insensitive on the sender" do
+      state = base_state()
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "[ #room ]: hello"],
+          {:nick, "chanserv", "s", "h"}
+        )
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "#room", body: "hello"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "ChanServ unparseable body falls through to $server" do
+      state = base_state()
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "no bracketed prefix here, just text"],
+          {:nick, "ChanServ", "s", "h"}
+        )
+
+      # ChanServ doesn't match a hostname (no '.' in nick), and "ChanServ"
+      # matches @services_sender_regex → $server.
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server", sender: "ChanServ"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "NickServ sender routes to $server (services regex)" do
+      state = base_state()
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "This nickname is registered."],
+          {:nick, "NickServ", "service", "azzurra.chat"}
+        )
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "NickServ"
+      assert attrs.body == "This nickname is registered."
+    end
+
+    test "*Serv suffix matcher is case-insensitive (memoserv)" do
+      state = base_state()
+
+      m =
+        msg(:notice, ["vjt", "you have new memos"], {:nick, "memoserv", "s", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "regular user nick → persist on channel = sender_nick (query window)" do
+      state = base_state()
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "yo, you alive?"],
+          {:nick, "alice", "u", "host.example.com"}
+        )
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "alice"
+      assert attrs.sender == "alice"
+      assert attrs.body == "yo, you alive?"
+    end
+
+    test "anonymous sender (no prefix) falls back to $server" do
+      state = base_state()
+
+      # Already pinned above as "server-origin NOTICE with nil prefix"
+      # — re-asserting under the CP13 chain semantics for clarity.
+      m = msg(:notice, ["vjt", "stray notice"], nil)
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server"}}]} =
+               EventRouter.route(m, state)
+    end
   end
 
   describe "route/2 — :join" do
