@@ -799,4 +799,188 @@ defmodule Grappa.ScrollbackTest do
       refute Map.has_key?(errors_on(changeset), :visitor_id)
     end
   end
+
+  # --------------------------------------------------------------------
+  # CP15 B4 — Archive surface
+  # --------------------------------------------------------------------
+  #
+  # `list_archive/3` returns the archive set for a (subject, network):
+  # the union of all targets with at least one scrollback row, MINUS
+  # the active keyset (currently-joined channels + currently-open query
+  # window targets) and MINUS the `$server` pseudo-channel (always
+  # active, never archived per intent doc `Active/Archive boundary`).
+  #
+  # Target = `COALESCE(dm_with, channel)` — picks the DM peer for DM
+  # rows (inbound channel = own_nick, outbound channel = peer; both
+  # carry dm_with = peer per CP14 B3), and the channel name for channel
+  # rows (`dm_with = nil`).
+  #
+  # Kind = `:channel` for sigil-prefixed targets (`#`, `&`, `!`, `+`),
+  # `:query` otherwise. Mirrors `dm_eligible?/1`'s sigil predicate so
+  # the two stay in lockstep.
+  describe "list_archive/3" do
+    test "excludes $server and active_keyset; returns archived DM target with kind/last_activity/row_count",
+         %{user: user, network: net} do
+      # Seed: 3 channel rows for #a (active), 2 DM rows for "vjt-peer"
+      # (archived), 1 $server row (always-active per intent doc).
+      seed_archive_rows(user, net)
+
+      assert [
+               %{
+                 target: "vjt-peer",
+                 kind: :query,
+                 last_activity: 200,
+                 row_count: 2
+               }
+             ] =
+               Scrollback.list_archive({:user, user.id}, net.id, MapSet.new(["#a"]))
+    end
+
+    test "empty active_keyset returns ALL non-$server targets sorted last_activity desc",
+         %{user: user, network: net} do
+      seed_archive_rows(user, net)
+
+      result = Scrollback.list_archive({:user, user.id}, net.id, MapSet.new())
+
+      # #a (max ts 30) and vjt-peer (max ts 200) both archived; $server
+      # excluded; sorted last_activity desc.
+      assert [
+               %{target: "vjt-peer", kind: :query, last_activity: 200, row_count: 2},
+               %{target: "#a", kind: :channel, last_activity: 30, row_count: 3}
+             ] = result
+    end
+
+    test "scopes by user_id — alice's rows are NOT visible when listing as vjt",
+         %{user: vjt, network: net} do
+      seed_archive_rows(vjt, net)
+
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: alice.id,
+          network_id: net.id,
+          channel: "#alice-only",
+          server_time: 999,
+          kind: :privmsg,
+          sender: "alice",
+          body: "private",
+          meta: %{},
+          dm_with: nil
+        })
+
+      vjt_archive = Scrollback.list_archive({:user, vjt.id}, net.id, MapSet.new())
+      refute Enum.any?(vjt_archive, &(&1.target == "#alice-only"))
+    end
+
+    test "scopes by visitor_id — visitor archive is independent of user rows",
+         %{user: user, network: net} do
+      visitor = visitor_fixture()
+
+      # User row that should NOT show up in the visitor's archive.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "#user-only",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "user msg",
+          meta: %{},
+          dm_with: nil
+        })
+
+      # Visitor row — single channel, qualifies for archive.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          visitor_id: visitor.id,
+          network_id: net.id,
+          channel: "#visitor-only",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "anon",
+          body: "visitor msg",
+          meta: %{},
+          dm_with: nil
+        })
+
+      assert [
+               %{target: "#visitor-only", kind: :channel, last_activity: 200, row_count: 1}
+             ] =
+               Scrollback.list_archive({:visitor, visitor.id}, net.id, MapSet.new())
+    end
+
+    test "isolates by network_id — rows on other_net are not in this_net's archive",
+         %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: other_net.id,
+          channel: "#elsewhere",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "wrong net",
+          meta: %{},
+          dm_with: nil
+        })
+
+      assert [] = Scrollback.list_archive({:user, user.id}, net.id, MapSet.new())
+    end
+  end
+
+  # Shared seeder for list_archive/3 tests. Three targets:
+  #   * "#a" — channel kind, 3 rows, max server_time = 30
+  #   * "vjt-peer" — query kind via dm_with, 2 rows, max = 200
+  #   * "$server" — always-active pseudo, 1 row, MUST be excluded
+  defp seed_archive_rows(user, net) do
+    for ts <- [10, 20, 30] do
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "#a",
+          server_time: ts,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "channel #{ts}",
+          meta: %{},
+          dm_with: nil
+        })
+    end
+
+    for ts <- [100, 200] do
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: ts,
+          kind: :privmsg,
+          sender: "vjt-peer",
+          body: "dm #{ts}",
+          meta: %{},
+          dm_with: "vjt-peer"
+        })
+    end
+
+    {:ok, _} =
+      Scrollback.persist_event(%{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "$server",
+        server_time: 50,
+        kind: :notice,
+        sender: "irc.example",
+        body: "MOTD",
+        meta: %{},
+        dm_with: nil
+      })
+
+    :ok
+  end
 end

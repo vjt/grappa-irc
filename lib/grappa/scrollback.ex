@@ -205,6 +205,73 @@ defmodule Grappa.Scrollback do
     |> Repo.all()
   end
 
+  @typedoc """
+  CP15 B4 — archive entry shape returned by `list_archive/3`.
+
+  `kind` is derived at query time from the `target` prefix — sigil-led
+  (`#`, `&`, `!`, `+`) → `:channel`, otherwise `:query`. Single
+  predicate (`channel_shaped?/1`) so the rule stays in lockstep with
+  `dm_eligible?/1`.
+  """
+  @type archive_entry :: %{
+          target: String.t(),
+          kind: :channel | :query,
+          last_activity: integer(),
+          row_count: non_neg_integer()
+        }
+
+  @doc """
+  CP15 B4 — lists targets that have scrollback rows for the
+  `(subject, network_id)` pair AND are NOT in `active_keyset`. Powers
+  the per-network Archive section in cicchetto's sidebar.
+
+  Target derivation: `COALESCE(dm_with, channel)` — DM rows (CP14 B3)
+  carry `dm_with = peer` regardless of which side `channel` points at
+  (inbound = own_nick, outbound = peer); channel rows carry
+  `dm_with = nil` so the COALESCE picks the channel name. The result
+  collapses to one row per logical "window" the user has talked in.
+
+  `active_keyset` is a `MapSet` of currently-active target strings —
+  joined channels (from `Grappa.Session.list_channels/2`) plus open
+  query window targets (from `Grappa.QueryWindows.list_for_user/1`).
+  Members of the set are filtered OUT of the archive so the active +
+  archive sets are disjoint per intent doc. Empty set means everything
+  with rows qualifies.
+
+  The `$server` pseudo-channel is ALWAYS excluded — system surface,
+  never archived per intent doc `Active/Archive boundary`. Mirrors
+  `dm_eligible?/1`'s `$server` short-circuit so the rule is uniform
+  across read paths.
+
+  Result is sorted by `last_activity` DESC for stable client rendering.
+  """
+  @spec list_archive(subject(), integer(), MapSet.t(String.t())) :: [archive_entry()]
+  def list_archive(subject, network_id, %MapSet{} = active_keyset)
+      when is_integer(network_id) do
+    Message
+    |> subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> group_by([m], fragment("COALESCE(?, ?)", m.dm_with, m.channel))
+    |> select([m], %{
+      target: fragment("COALESCE(?, ?)", m.dm_with, m.channel),
+      last_activity: max(m.server_time),
+      row_count: count(m.id)
+    })
+    |> Repo.all()
+    |> Enum.reject(fn %{target: t} -> t == "$server" or MapSet.member?(active_keyset, t) end)
+    |> Enum.map(fn entry -> Map.put(entry, :kind, target_kind(entry.target)) end)
+    |> Enum.sort_by(& &1.last_activity, :desc)
+  end
+
+  # Channel-shaped sigil ⇒ :channel; everything else ⇒ :query. Mirrors
+  # `dm_eligible?/1`'s sigil set so the active/archive split + the
+  # DM-eligibility predicate stay byte-aligned.
+  @spec target_kind(String.t()) :: :channel | :query
+  defp target_kind(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
+    do: :channel
+
+  defp target_kind(_), do: :query
+
   # CP14 B3 — channel-vs-DM dispatch.
   #
   # Channel-shaped names (#chan, &local, !local, +mode) and the
