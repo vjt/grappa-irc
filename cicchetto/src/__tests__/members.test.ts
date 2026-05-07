@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 
 vi.mock("../lib/api", () => ({
-  listMembers: vi.fn(),
   setOn401Handler: vi.fn(),
 }));
 
@@ -12,44 +11,15 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("members.loadMembers (snapshot)", () => {
-  it("fetches /members + populates membersByChannel", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMembers).mockResolvedValue([
-      { nick: "vjt", modes: ["@"] },
-      { nick: "alice", modes: ["+"] },
-      { nick: "bob", modes: [] },
-    ]);
+// CP15 B5: members.ts no longer exposes loadMembers / listMembers.
+// Bootstrap goes through `seedMembers`, fed by the server's
+// `members_seeded` WS broadcast (after_join + every 366
+// RPL_ENDOFNAMES). Live updates flow via `applyPresenceEvent` from
+// per-channel WS messages. The old once-per-channel REST gate
+// (`loadedChannels`) went away with the REST fetch path.
 
-    const members = await import("../lib/members");
-    await members.loadMembers("freenode", "#grappa");
-
-    const key = channelKey("freenode", "#grappa");
-    expect(members.membersByChannel()[key]).toEqual([
-      { nick: "vjt", modes: ["@"] },
-      { nick: "alice", modes: ["+"] },
-      { nick: "bob", modes: [] },
-    ]);
-  });
-
-  it("guards double-loads on the same channel within an identity", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMembers).mockResolvedValue([{ nick: "vjt", modes: [] }]);
-
-    const members = await import("../lib/members");
-    await members.loadMembers("freenode", "#grappa");
-    await members.loadMembers("freenode", "#grappa");
-
-    expect(api.listMembers).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("members.seedMembers (members_seeded race fix)", () => {
-  it("seeds membersByChannel from a payload — no fetch", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
+describe("members.seedMembers", () => {
+  it("seeds membersByChannel from a payload", async () => {
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -62,33 +32,13 @@ describe("members.seedMembers (members_seeded race fix)", () => {
       { nick: "vjt", modes: ["@"] },
       { nick: "alice", modes: [] },
     ]);
-    expect(api.listMembers).not.toHaveBeenCalled();
   });
 
-  it("seedMembers marks the channel as loaded — subsequent loadMembers is a no-op", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMembers).mockResolvedValue([{ nick: "stale", modes: [] }]);
+  it("seedMembers overwrites a prior seed", async () => {
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
-    members.seedMembers(key, [{ nick: "vjt", modes: ["@"] }]);
-    await members.loadMembers("freenode", "#grappa");
-
-    expect(api.listMembers).not.toHaveBeenCalled();
-    expect(members.membersByChannel()[key]).toEqual([{ nick: "vjt", modes: ["@"] }]);
-  });
-
-  it("seedMembers overwrites a prior loadMembers result", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const api = await import("../lib/api");
-    vi.mocked(api.listMembers).mockResolvedValue([]);
-
-    const members = await import("../lib/members");
-    await members.loadMembers("freenode", "#grappa");
-    const key = channelKey("freenode", "#grappa");
-    expect(members.membersByChannel()[key]).toEqual([]);
-
+    members.seedMembers(key, [{ nick: "stale", modes: [] }]);
     members.seedMembers(key, [
       { nick: "vjt", modes: [] },
       { nick: "bob", modes: ["@"] },
@@ -103,7 +53,6 @@ describe("members.seedMembers (members_seeded race fix)", () => {
 
 describe("members.applyPresenceEvent", () => {
   it(":join inserts the sender (modes: []) at the end", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -127,7 +76,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it(":part removes the sender", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -151,7 +99,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it(":quit removes the sender", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -175,7 +122,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it(":nick_change renames the sender, preserving modes", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -196,7 +142,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it(":kick removes the target", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -220,7 +165,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it(":mode applies the mode string via modeApply", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -247,7 +191,6 @@ describe("members.applyPresenceEvent", () => {
   });
 
   it("non-presence kinds (privmsg/notice/action/topic) are ignored", async () => {
-    localStorage.setItem("grappa-token", "tok");
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 

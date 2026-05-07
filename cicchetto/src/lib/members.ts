@@ -1,7 +1,7 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
-import { listMembers, type ScrollbackMessage } from "./api";
+import type { ScrollbackMessage } from "./api";
 import { token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import type { ChannelKey } from "./channelKey";
 import type { ChannelMembers } from "./memberTypes";
 import { applyModeString } from "./modeApply";
 
@@ -9,30 +9,29 @@ import { applyModeString } from "./modeApply";
 // MembersPane (Task 26). Module-singleton signal store mirroring
 // `scrollback.ts` / `selection.ts`.
 //
-// Lifecycle:
-//   1. Initial bootstrap: `loadMembers(slug, name)` fetches GET /members
-//      snapshot, populates the per-channel signal map. Once-per-channel
-//      gate via `loadedChannels` Set (mirror of scrollback's pattern).
-//   2. Live updates: `applyPresenceEvent(key, msg)` — called from
-//      subscribe.ts (Task 20) for every message arriving on the channel
-//      WS push. Filters by `msg.kind`: presence kinds mutate the map,
-//      content kinds are no-ops. Q4 pinned: derived from existing
-//      message stream — no new server-side broadcast.
+// Lifecycle (CP15 B5):
+//   * Bootstrap: server pushes `members_seeded` via WS on after_join
+//     (CP15 B3) AND on every 366 RPL_ENDOFNAMES — `seedMembers` writes
+//     the snapshot directly. No REST fetch ever; the WS push is the
+//     sole source of truth.
+//   * Live updates: `applyPresenceEvent(key, msg)` — called from
+//     subscribe.ts for every message arriving on the channel WS push.
+//     Filters by `msg.kind`: presence kinds mutate the map, content
+//     kinds are no-ops.
 //
-// Identity-scoped state: `loadedChannels` + `membersByChannel` are
-// scoped to the CURRENT bearer. Logout / rotation flushes both. The
-// on(token) cleanup arm mirrors the C7/A1 pattern in scrollback.ts.
+// Pre-B5 history: this module exposed `loadMembers` (REST GET /members
+// with a once-per-channel `loadedChannels` Set as the gate). Both went
+// away in B5 because the server-side `members_seeded` broadcast covers
+// the bootstrap surface AND closes the WS-subscribed-but-no-fetch-yet
+// race window the REST gate could never fully eliminate.
 //
-// Renderer-stable order: `loadMembers` preserves the server's mIRC
-// sort (ops → voiced → plain, alphabetical within tier). Live presence
-// events APPEND new joiners to the tail without re-sorting — so a
-// freshly-JOINed user doesn't jump-cut the renderer; the next page
-// reload (or channel-select re-fetch) re-sorts.
+// Identity-scoped state: `membersByChannel` is scoped to the CURRENT
+// bearer. Logout / rotation flushes it. The on(token) cleanup arm
+// mirrors the C7/A1 pattern in scrollback.ts.
 
 export type { ChannelMembers, MemberEntry } from "./memberTypes";
 
 const exports_ = createRoot(() => {
-  const loadedChannels = new Set<ChannelKey>();
   const [membersByChannel, setMembersByChannel] = createSignal<Record<ChannelKey, ChannelMembers>>(
     {},
   );
@@ -41,41 +40,17 @@ const exports_ = createRoot(() => {
   createEffect(
     on(token, (t, prev) => {
       if (prev != null && t !== prev) {
-        loadedChannels.clear();
         setMembersByChannel({});
       }
     }),
   );
 
-  const loadMembers = async (slug: string, name: string): Promise<void> => {
-    const t = token();
-    if (!t) return;
-    const key = channelKey(slug, name);
-    if (loadedChannels.has(key)) return;
-    loadedChannels.add(key);
-    try {
-      const list = await listMembers(t, slug, name);
-      setMembersByChannel((prev) => ({ ...prev, [key]: list }));
-    } catch {
-      // First-load failure leaves no entry; the pane renders
-      // "no members yet" until the user re-selects (which calls this
-      // again and lets the gate re-try).
-      loadedChannels.delete(key);
-    }
-  };
-
   // Direct seed from a server-provided members snapshot — used by
   // subscribe.ts when the server emits a `members_seeded` event (366
-  // RPL_ENDOFNAMES landed). The payload carries the full sorted snapshot,
-  // so this is a single signal write — NO second HTTP fetch. Eliminates
-  // the race window between WS subscribe and HTTP fetch that the older
-  // re-fetch design was still vulnerable to.
-  //
-  // Marks the channel as loaded so the once-per-channel gate skips a
-  // future MembersPane mount's loadMembers call (the seeded snapshot is
-  // authoritative for the JOIN moment).
+  // RPL_ENDOFNAMES landed AND the after_join cold-WS-resubscribe push).
+  // The payload carries the full sorted snapshot, so this is a single
+  // signal write — no REST fetch path remains.
   const seedMembers = (key: ChannelKey, list: ChannelMembers): void => {
-    loadedChannels.add(key);
     setMembersByChannel((prev) => ({ ...prev, [key]: list }));
   };
 
@@ -134,14 +109,13 @@ const exports_ = createRoot(() => {
   // Test seam: lets unit tests inject a known-state member list without
   // exercising the full WS-bootstrap path. Mirrors the
   // `appendToScrollback` helper that scrollback.ts exposes for the same
-  // reason. Production callers go through `loadMembers` + WS events.
+  // reason. Production callers go through `seedMembers` + WS events.
   const seedFromTest = (key: ChannelKey, list: ChannelMembers): void => {
     setMembersByChannel((prev) => ({ ...prev, [key]: list }));
   };
 
   return {
     membersByChannel,
-    loadMembers,
     seedMembers,
     applyPresenceEvent,
     seedFromTest,
@@ -149,7 +123,6 @@ const exports_ = createRoot(() => {
 });
 
 export const membersByChannel = exports_.membersByChannel;
-export const loadMembers = exports_.loadMembers;
 export const seedMembers = exports_.seedMembers;
 export const applyPresenceEvent = exports_.applyPresenceEvent;
 export const seedFromTest = exports_.seedFromTest;

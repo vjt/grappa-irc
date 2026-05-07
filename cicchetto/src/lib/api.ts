@@ -348,24 +348,6 @@ export async function postPart(
   if (!res.ok) throw await readError(res);
 }
 
-// Mirror of `GrappaWeb.MembersJSON.index/1` — wire shape:
-//   { "members": [{"nick": String, "modes": [String]}] }
-// Already mIRC-sorted by `Session.list_members/3` (ops → voiced → plain,
-// alphabetical within tier). cicchetto preserves that order.
-export async function listMembers(
-  token: string,
-  networkSlug: string,
-  channelName: string,
-): Promise<{ nick: string; modes: string[] }[]> {
-  const res = await fetch(
-    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/members`,
-    { headers: buildHeaders(token) },
-  );
-  if (!res.ok) throw await readError(res);
-  const body = (await res.json()) as { members: { nick: string; modes: string[] }[] };
-  return body.members;
-}
-
 // Mirror of `GrappaWeb.ArchiveJSON.index/1` (CP15 B4) — wire shape:
 //   { "archive": [{"target", "kind", "last_activity", "row_count"}] }
 // Server-side `Scrollback.list_archive/3` already sorts by
