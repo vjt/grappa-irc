@@ -1741,6 +1741,50 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # CP15 B3: own-PART acked by upstream → window archived. Drops the
+  # per-channel window_states entry entirely; cic projects "no key +
+  # scrollback present" as `:archived`. The :persist :part row that
+  # ships alongside in the same effects list is the UI feed-line —
+  # there is intentionally NO `kind: "parted"` broadcast (absence is
+  # the signal). Also clears any lingering window_failure_reasons entry
+  # so a re-join + re-fail cycle gets a fresh reason.
+  defp apply_effects([{:parted, channel} | rest], state) do
+    state = %{
+      state
+      | window_states: Map.delete(state.window_states, channel),
+        window_failure_reasons: Map.delete(state.window_failure_reasons, channel)
+    }
+
+    apply_effects(rest, state)
+  end
+
+  # CP15 B3: own-target KICK → window transitions to :kicked. Two
+  # concerns, one arm:
+  #   1. State — window_states[channel] = :kicked. The window stays in
+  #      the active sidebar (greyed) so the operator can /join to retry;
+  #      archiving on KICK would punish the victim.
+  #   2. Event broadcast — typed `kind: "kicked"` payload on the
+  #      per-channel topic carrying `by` + `reason` so cic can render the
+  #      kick reason banner without parsing the scrollback row. The
+  #      :persist :kick row alongside is the audit trail.
+  defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        %{
+          kind: "kicked",
+          network: state.network_slug,
+          channel: channel,
+          state: "kicked",
+          by: by,
+          reason: reason
+        }
+      )
+
+    state = %{state | window_states: Map.put(state.window_states, channel, :kicked)}
+    apply_effects(rest, state)
+  end
+
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)
 

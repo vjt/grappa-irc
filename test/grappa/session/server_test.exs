@@ -1156,6 +1156,237 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "CP15 B3 — :parted / :kicked window-state events" do
+    test "self-PART removes window_states + window_failure_reasons entries" do
+      # B3 contract: own PART (sender == own_nick) drops the per-channel
+      # window_states entry entirely. Cic projects "no window_states key
+      # + scrollback present" as `:archived`. Same arm also clears any
+      # lingering window_failure_reasons entry so a re-join + re-fail
+      # gets a fresh reason rather than stale text from a prior failure.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drive into :joined state via self-JOIN echo, then seed a stale
+      # failure_reasons entry to prove the :parted arm clears both.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+
+      IRCServer.feed(server, "PING :sync1\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :sync1\r\n"))
+
+      _ =
+        :sys.replace_state(pid, fn state ->
+          %{state | window_failure_reasons: Map.put(state.window_failure_reasons, "#test", "stale")}
+        end)
+
+      # Self-PART now: bahamut echo with sender == own nick.
+      IRCServer.feed(server, ":grappa-test!u@h PART #test :byebye\r\n")
+
+      IRCServer.feed(server, "PING :sync2\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :sync2\r\n"))
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.window_states, "#test")
+      refute Map.has_key?(state.window_failure_reasons, "#test")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-PART does NOT broadcast a kind: \"parted\" event (absence is the projection)" do
+      # B3 contract: parted is the ABSENCE projection — cic infers
+      # `:archived` from "no window_states key + scrollback present".
+      # The :persist :part row already broadcasts the UI feed-line via
+      # the existing event surface; emitting an additional `kind: parted`
+      # would duplicate the signal and force cic to dedupe.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drain the self-JOIN echo + its `joined` broadcast first.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+
+      # Self-PART now.
+      IRCServer.feed(server, ":grappa-test!u@h PART #test :byebye\r\n")
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "parted"}}, 200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-target KICK sets window_states[channel] = :kicked + broadcasts on per-channel topic" do
+      # B3 contract: KICK with target == own_nick flips window state to
+      # :kicked AND broadcasts kind: "kicked" carrying by + reason on
+      # the per-channel topic so cic transitions the visual without
+      # parsing the scrollback.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drive into :joined state via self-JOIN echo.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+
+      # Channel-op alice kicks me with reason "behave".
+      IRCServer.feed(server, ":alice!u@h KICK #test grappa-test :behave\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "kicked",
+                         network: net_slug,
+                         channel: "#test",
+                         state: "kicked",
+                         by: "alice",
+                         reason: "behave"
+                       }
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#test"] == :kicked
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "self-target KICK with no reason broadcasts reason: nil" do
+      # IRC permits KICK with no trailing reason param. The :kicked
+      # broadcast must carry reason: nil rather than an empty string —
+      # cic discriminates "no reason given" from "empty reason given".
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+
+      IRCServer.feed(server, ":alice!u@h KICK #test grappa-test\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: "kicked", reason: nil}
+                     },
+                     1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "other-target KICK does NOT broadcast :kicked or mutate window_states (regression)" do
+      # Only self-target KICK transitions window state. Other-target
+      # KICKs land in scrollback as :persist :kick rows; the operator
+      # is still in the channel.
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      topic = Topic.channel(user.name, network.slug, "#test")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drain the self-JOIN broadcast so the mailbox is clean.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+
+      # Other-target KICK: alice kicks bob.
+      IRCServer.feed(server, ":alice!u@h KICK #test bob :spam\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "kicked"}}, 200
+
+      # window_states stays :joined — operator still in channel.
+      state = :sys.get_state(pid)
+      assert state.window_states["#test"] == :joined
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "list_members/3 snapshot" do
     test "returns members in mIRC sort: @ ops first, + voiced second, plain last" do
       handler = fn state, line ->
