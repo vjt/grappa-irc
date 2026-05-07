@@ -16,12 +16,12 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => null,
   setSelectedChannel: vi.fn(),
   unreadCounts: () => ({ "freenode #bnc": 3 }),
-  messagesUnread: () => ({ "freenode #bnc": 3 }),
-  eventsUnread: () => ({}),
+  messagesUnread: () => ({ "freenode #bnc": 3, "freenode $server": 7 }),
+  eventsUnread: () => ({ "freenode $server": 2 }),
 }));
 
 vi.mock("../lib/mentions", () => ({
-  mentionCounts: () => ({ "freenode #italia": 2 }),
+  mentionCounts: () => ({ "freenode #italia": 2, "freenode $server": 1 }),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -81,14 +81,33 @@ describe("Sidebar", () => {
 
   it("renders unread count for channels with messages while away", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
-    const unread = document.querySelector(".sidebar-msg-unread");
+    // Scope to the #bnc <li> — the Server <li> also has a msg-unread badge
+    // since CP13 (S8). The test asserts the channel-side badge specifically.
+    const bncLi = screen.getByText("#bnc").closest("li");
+    const unread = bncLi?.querySelector(".sidebar-msg-unread");
     expect(unread?.textContent).toBe("3");
   });
 
   it("renders mention badge with @-prefix for channels with mentions", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
-    const mention = document.querySelector(".sidebar-mention");
+    const italiaLi = screen.getByText("#italia").closest("li");
+    const mention = italiaLi?.querySelector(".sidebar-mention");
     expect(mention?.textContent).toBe("@2");
+  });
+
+  // CP13 — server window also surfaces the 3 badge classes (msg-unread,
+  // events-unread, mention) so server-routed numerics + NickServ + MOTD
+  // get the same unread treatment as channels.
+  it("renders all 3 badge classes on the Server window when counts present", () => {
+    render(() => <Sidebar onSelect={vi.fn()} />);
+    const serverLi = screen.getByText("Server").closest("li");
+    expect(serverLi).not.toBeNull();
+    const msg = serverLi?.querySelector(".sidebar-msg-unread");
+    const events = serverLi?.querySelector(".sidebar-events-unread");
+    const mention = serverLi?.querySelector(".sidebar-mention");
+    expect(msg?.textContent).toBe("7");
+    expect(events?.textContent).toBe("2");
+    expect(mention?.textContent).toBe("@1");
   });
 
   it("clicking a channel calls setSelectedChannel + onSelect", async () => {
