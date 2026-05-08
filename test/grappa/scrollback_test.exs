@@ -683,6 +683,68 @@ defmodule Grappa.ScrollbackTest do
       alice_page = Scrollback.fetch({:user, alice.id}, net.id, "common-peer", nil, 10)
       assert Enum.map(alice_page, & &1.body) == ["to alice"]
     end
+
+    # Codebase review 2026-05-08 H1: the original CP14 B3 index
+    # `(network_id, dm_with, server_time)` had no leading subject
+    # column, so the OR arm of channel_or_dm_where/2 walked rows for
+    # every user/visitor on the network sharing that peer name and
+    # post-filtered by `subject_where/2`. The fix replaces it with two
+    # subject-leading composites that mirror the channel-side shape:
+    #
+    #   * (user_id, network_id, dm_with, server_time)
+    #   * (visitor_id, network_id, dm_with, server_time)
+    #
+    # These tests pin the SQLite query planner's choice so the
+    # subject-leading shape can never silently regress to a slow
+    # cross-subject scan. EXPLAIN QUERY PLAN is the only observable
+    # signal that the index leadership matters; functional output is
+    # identical either way.
+    test "EXPLAIN QUERY PLAN: user-side DM fetch picks the subject-leading composite",
+         %{user: user, network: net} do
+      {:ok, %{rows: rows}} =
+        Repo.query("""
+        EXPLAIN QUERY PLAN
+        SELECT * FROM messages
+        WHERE user_id = '#{user.id}'
+          AND network_id = #{net.id}
+          AND (channel = 'peer' OR dm_with = 'peer')
+        ORDER BY server_time DESC, id DESC
+        LIMIT 50
+        """)
+
+      plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+
+      assert plan_text =~ "messages_user_id_network_id_dm_with_server_time_index",
+             "expected dm_with arm to use the subject-leading composite, got plan:\n#{plan_text}"
+
+      refute plan_text =~ "messages_network_id_dm_with_server_time_index",
+             "old subject-less index must NOT be used:\n#{plan_text}"
+    end
+
+    test "EXPLAIN QUERY PLAN: visitor-side DM fetch picks the subject-leading composite",
+         %{network: net} do
+      {:ok, visitor} =
+        Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
+
+      {:ok, %{rows: rows}} =
+        Repo.query("""
+        EXPLAIN QUERY PLAN
+        SELECT * FROM messages
+        WHERE visitor_id = '#{visitor.id}'
+          AND network_id = #{net.id}
+          AND (channel = 'peer' OR dm_with = 'peer')
+        ORDER BY server_time DESC, id DESC
+        LIMIT 50
+        """)
+
+      plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+
+      assert plan_text =~ "messages_visitor_id_network_id_dm_with_server_time_index",
+             "expected dm_with arm to use the subject-leading composite, got plan:\n#{plan_text}"
+
+      refute plan_text =~ "messages_network_id_dm_with_server_time_index",
+             "old subject-less index must NOT be used:\n#{plan_text}"
+    end
   end
 
   describe "Wire.to_json/1 (per-user iso wire-shape contract)" do
