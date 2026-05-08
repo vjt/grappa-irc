@@ -258,6 +258,23 @@ defmodule GrappaWeb.MessagesControllerTest do
 
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
+
+    # Codebase review 2026-05-08 W1: $server is a Grappa-internal
+    # synthetic for the server-messages window. GET accepts it (so
+    # `loadInitialScrollback` works) but POST must NOT, otherwise a
+    # client could smuggle `PRIVMSG $server :body` upstream — server-
+    # mask form per RFC 2812 §3.3.1 — pollute the synthetic Server-
+    # window scrollback with single-source echo, and inadvertently
+    # probe operator privileges. The shared `validate_target_name/1`
+    # earned the `$server` clause for GET; POST should reject it.
+    test "POST to $server target returns 400 — synthetic is read-only", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%24server/messages", %{"body" => "hello"})
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
   end
 
   # Task 30: visitor scrollback partition. `Scrollback.fetch/5` was

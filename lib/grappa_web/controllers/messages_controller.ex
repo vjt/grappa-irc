@@ -41,7 +41,7 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  import GrappaWeb.Validation, only: [validate_target_name: 1]
+  import GrappaWeb.Validation, only: [validate_target_name: 1, validate_post_target_name: 1]
 
   alias Grappa.{Scrollback, Session}
   alias GrappaWeb.Subject
@@ -110,10 +110,12 @@ defmodule GrappaWeb.MessagesController do
     network = conn.assigns.network
 
     # Target shape check is :bad_request; accepts both channel-sigil and
-    # nick targets so DM sends work (C4 fix-up). The body's CRLF/NUL check
-    # happens inside Session.send_privmsg and surfaces as :invalid_line.
-    # Two distinct error tags so client UX can branch.
-    with :ok <- validate_target_name(channel),
+    # nick targets so DM sends work (C4 fix-up). Rejects `$server`
+    # synthetic — that's read-only (codebase review 2026-05-08 W1).
+    # The body's CRLF/NUL check happens inside Session.send_privmsg
+    # and surfaces as :invalid_line. Two distinct error tags so client
+    # UX can branch.
+    with :ok <- validate_post_target_name(channel),
          {:ok, message} <- Session.send_privmsg(subject, network.id, channel, body) do
       # `:network` is preloaded by `Scrollback.persist_event/1` —
       # the Session contract returns a wire-shape-ready row. Don't
