@@ -155,15 +155,14 @@ defmodule Grappa.Networks.WireTest do
 
       # bind_credential defaults to `DateTime.utc_now/0`; assert
       # iso-8601 round-trip.
-      json = Wire.credential_to_json(cred)
-      assert is_binary(json.connection_state_changed_at)
-      assert {:ok, _, 0} = DateTime.from_iso8601(json.connection_state_changed_at)
+      with_default = Wire.credential_to_json(cred)
+      assert is_binary(with_default.connection_state_changed_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(with_default.connection_state_changed_at)
 
       # Force-clear to nil and re-render — `iso8601_or_nil/1` must
       # preserve the nullability through the wire boundary.
-      cred = %{cred | connection_state_changed_at: nil}
-      json = Wire.credential_to_json(cred)
-      assert json.connection_state_changed_at == nil
+      cleared = Wire.credential_to_json(%{cred | connection_state_changed_at: nil})
+      assert cleared.connection_state_changed_at == nil
     end
   end
 

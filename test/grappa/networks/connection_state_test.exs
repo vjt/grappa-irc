@@ -92,10 +92,15 @@ defmodule Grappa.Networks.ConnectionStateTest do
                          from: :parked,
                          to: :connected,
                          reason: nil,
-                         at: %DateTime{}
+                         at: at
                        }
                      },
                      500
+
+      # bnd-A11: timestamps land on the wire as ISO-8601 strings,
+      # not raw `%DateTime{}` structs (cic TS contract = string).
+      assert is_binary(at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(at)
 
       reloaded = reload(cred)
       assert reloaded.connection_state == :connected
