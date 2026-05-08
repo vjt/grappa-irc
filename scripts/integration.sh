@@ -39,6 +39,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# CONTAINER_UID/GID must be exported in THIS shell, not just in the
+# testnet.sh subshell, so the later `docker compose run playwright-runner`
+# below — whose `depends_on` pulls in cicchetto-build-test — sees the
+# same `user:` value testnet.sh used. Otherwise compose detects a
+# config-hash drift on cicchetto-build-test (UID 1000 vs the runner's
+# 1001), RECREATEs the container, and the second start fails on
+# AccessDenied writing to bind-mounted dist/cache directories that the
+# first run already wrote as the host UID. macOS doesn't hit this:
+# Docker Desktop translates ownership transparently and `e2e_export_uid`
+# is a no-op there.
+e2e_export_uid
+
 # Bring up the testnet (idempotent — kills any leftover containers
 # first; rebuilds bahamut + grappa images as needed).
 "$TESTNET" up
