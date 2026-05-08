@@ -25,6 +25,8 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
   alias Grappa.Networks.{Credentials, Servers}
   alias GrappaWeb.Plugs.ResolveNetwork
 
+  require Logger
+
   setup do
     {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
     %{network: network}
@@ -109,6 +111,50 @@ defmodule GrappaWeb.Plugs.ResolveNetworkTest do
 
       assert result.halted
       assert result.status == 404
+    end
+
+    test "user without credential — log preserves :no_credential discriminator (W7)",
+         %{conn: conn, network: network} do
+      user = user_fixture()
+
+      Logger.put_module_level(GrappaWeb.Plugs.ResolveNetwork, :info)
+      on_exit(fn -> Logger.delete_module_level(GrappaWeb.Plugs.ResolveNetwork) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          conn
+          |> Map.put(:path_params, %{"network_id" => network.slug})
+          |> Plug.Conn.assign(:current_subject, {:user, user})
+          |> ResolveNetwork.call(ResolveNetwork.init([]))
+        end)
+
+      # W7: pre-fix the user-branch logged `reason: :not_found` for both
+      # "unknown slug" AND "slug exists but no credential for this user",
+      # collapsing the two failure modes operators need to distinguish
+      # (probing vs credential-drift). Post-fix the credential-miss path
+      # logs `reason: :no_credential`, symmetric with the visitor-branch's
+      # `:wrong_network`.
+      assert log =~ "network resolve rejected"
+      assert log =~ "no_credential"
+    end
+
+    test "user — unknown slug still logs :not_found (W7)",
+         %{conn: conn} do
+      user = user_fixture()
+
+      Logger.put_module_level(GrappaWeb.Plugs.ResolveNetwork, :info)
+      on_exit(fn -> Logger.delete_module_level(GrappaWeb.Plugs.ResolveNetwork) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          conn
+          |> Map.put(:path_params, %{"network_id" => "definitely-no-such-slug"})
+          |> Plug.Conn.assign(:current_subject, {:user, user})
+          |> ResolveNetwork.call(ResolveNetwork.init([]))
+        end)
+
+      assert log =~ "network resolve rejected"
+      assert log =~ "not_found"
     end
   end
 

@@ -15,6 +15,7 @@ defmodule GrappaWeb.MeControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Accounts
+  alias GrappaWeb.MeController
 
   describe "GET /me — user subject" do
     test "with valid Bearer returns 200 + discriminated user profile", %{conn: conn} do
@@ -104,6 +105,17 @@ defmodule GrappaWeb.MeControllerTest do
         |> get("/me")
 
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  describe "GET /me — defensive fall-through" do
+    test "missing :current_subject returns {:error, :unauthorized} (W8)", %{conn: conn} do
+      # W8: simulate a regressed pipeline by invoking the action with no
+      # :current_subject in assigns. Pre-W8 this raised KeyError → 500.
+      # Post-W8 the fall-through clause returns the action_fallback shape
+      # {:error, :unauthorized} which FallbackController maps to a uniform
+      # 401 wire body (verified end-to-end by the no-Bearer test above).
+      assert MeController.show(conn, %{}) == {:error, :unauthorized}
     end
   end
 end

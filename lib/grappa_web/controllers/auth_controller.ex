@@ -89,12 +89,13 @@ defmodule GrappaWeb.AuthController do
              | Grappa.Admission.error()}
   def login(conn, %{"identifier" => id} = params) when is_binary(id) do
     password = Map.get(params, "password")
+    captcha_token = Map.get(params, "captcha_token")
 
-    case validate_captcha_token(Map.get(params, "captcha_token")) do
+    case validate_captcha_token(captcha_token) do
       :ok ->
         case IdentifierClassifier.classify(id) do
           {:email, email} -> mode1_login(conn, email, password)
-          {:nick, nick} -> visitor_login(conn, nick, password)
+          {:nick, nick} -> visitor_login(conn, nick, password, captcha_token)
           {:error, :malformed} -> {:error, :malformed_nick}
         end
 
@@ -182,13 +183,11 @@ defmodule GrappaWeb.AuthController do
   defp maybe_terminate_sessions(_), do: :ok
 
   @spec maybe_disconnect_socket(GrappaWeb.Subject.t() | nil) :: :ok
-  defp maybe_disconnect_socket({:visitor, %Visitor{id: visitor_id}}) do
-    broadcast_disconnect("user_socket:visitor:#{visitor_id}")
-  end
+  defp maybe_disconnect_socket({:visitor, %Visitor{}} = subject),
+    do: broadcast_disconnect(GrappaWeb.UserSocket.id_for_subject(subject))
 
-  defp maybe_disconnect_socket({:user, %Accounts.User{name: name}}) do
-    broadcast_disconnect("user_socket:#{name}")
-  end
+  defp maybe_disconnect_socket({:user, %Accounts.User{}} = subject),
+    do: broadcast_disconnect(GrappaWeb.UserSocket.id_for_subject(subject))
 
   defp maybe_disconnect_socket(_), do: :ok
 
@@ -267,14 +266,21 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  defp visitor_login(conn, nick, password) do
+  # W3: `captcha_token` arrives as a 4th explicit param so the
+  # already-validated value from `login/2` is the SINGLE source.
+  # Pre-fix this function re-read `conn.params["captcha_token"]` (raw,
+  # unvalidated wire) which short-circuited the validation if a future
+  # entry-point bypassed the `login/2` shape — the validate_captcha_token
+  # plug only fires once on the `login/2` call, so the captcha boundary
+  # and the upstream verify call must both consume the same value.
+  defp visitor_login(conn, nick, password, captcha_token) do
     input = %{
       nick: nick,
       password: password,
       ip: format_ip(conn),
       user_agent: user_agent(conn),
       token: extract_bearer(conn),
-      captcha_token: conn.params["captcha_token"],
+      captcha_token: captcha_token,
       client_id: conn.assigns[:current_client_id]
     }
 

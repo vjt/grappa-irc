@@ -103,7 +103,7 @@ defmodule Grappa.Session.Wire do
           kind: String.t(),
           network: String.t(),
           channel: String.t(),
-          members: [%{nick: String.t(), modes: [String.t()]}]
+          members: [Grappa.Session.member()]
         }
 
   @type joined_payload :: %{
@@ -203,7 +203,7 @@ defmodule Grappa.Session.Wire do
   Pre-sorted member list emitted on `366 RPL_ENDOFNAMES`. Caller is
   responsible for the mIRC-tier sort.
   """
-  @spec members_seeded(String.t(), String.t(), [%{nick: String.t(), modes: [String.t()]}]) ::
+  @spec members_seeded(String.t(), String.t(), [Grappa.Session.member()]) ::
           members_seeded_payload()
   def members_seeded(network_slug, channel, members)
       when is_binary(network_slug) and is_binary(channel) and is_list(members) do
