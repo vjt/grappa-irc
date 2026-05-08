@@ -8,7 +8,7 @@ import {
   on,
   Show,
 } from "solid-js";
-import { displayNick, type ScrollbackMessage } from "./lib/api";
+import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
@@ -425,20 +425,17 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
-  // BUG1-fix carry-forward: `user.name` is the operator account name,
-  // which can diverge from the live IRC nick after a NickServ ghost
-  // recovery (e.g. account "vjt", IRC nick "vjt-grappa"). The
-  // per-network credential's `nick` (returned by GET /networks and
-  // updated live via the `own_nick_changed` user-topic event) is the
-  // canonical IRC nick to compare scrollback senders against.
-  // subscribe.ts already does this for BUG4/BUG5; the JOIN-banner +
-  // mention-highlight + ownModes paths here need the same overlay or
-  // they silently drop on every credential where account != nick.
+  // Per-network IRC nick for self-highlight + JOIN-banner + ownModes —
+  // single-source via `ownNickForNetwork(net, me)` so account-name vs
+  // IRC-nick drift cannot misfire highlights or own-action detection.
+  // Pre-fix this fell through to displayNick(me) === me.name and could
+  // miscolor a peer's lines as "self" when account-name matched the
+  // peer's IRC nick on a network where the operator runs under a
+  // different IRC nick. See api.ts moduledoc + cic H3.
   const userNick = (): string | null => {
-    const net = networks()?.find((n) => n.slug === props.networkSlug);
-    if (net?.nick) return net.nick;
-    const me = user();
-    return me ? displayNick(me) : null;
+    const net = networks()?.find((n) => n.slug === props.networkSlug) ?? null;
+    if (net === null) return null;
+    return ownNickForNetwork(net, user());
   };
 
   // C7.6: networkId for UserContextMenu — derive from networks() by slug.

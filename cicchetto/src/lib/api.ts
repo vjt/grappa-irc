@@ -75,8 +75,58 @@ export type MeResponse =
 // callers (ScrollbackPane self-highlight, mention-match) don't
 // repeat the per-kind branch. Mirror of server-side
 // `auth.socketUserName()` selection at the rendering layer.
+//
+// **WARNING** — for "what is my IRC nick on THIS network", use
+// `ownNickForNetwork(net, me)` instead. `displayNick(me)` returns
+// the operator account name for users, which may DIFFER from the
+// per-network IRC nick after NickServ ghost recovery (account "vjt",
+// IRC nick "vjt-grappa") OR when the account name happens to match a
+// peer's IRC nick on a network where the operator's configured nick
+// is something else. Using `displayNick` as a per-network own-nick
+// fallback was the codebase-review-2026-05-08 cic H3 silent root
+// cause of DM-misrouting (server broadcasts on `channel:<peerNick>`
+// which equals `channel:<accountName>`, cic subscribes to the wrong
+// topic and re-keys messages to the wrong window).
 export function displayNick(me: MeResponse): string {
   return me.kind === "user" ? me.name : me.nick;
+}
+
+// Per-network own IRC nick — the canonical answer to "which nick am I
+// running as on this network". Single source for the wire-vs-account
+// disambiguation.
+//
+// Resolution rules:
+//   * visitor + matching network_slug → `me.nick` (the visitor IS the
+//     IRC nick — visitors have one network only).
+//   * visitor + other network         → `null` (visitors have no
+//     credential row on networks they didn't log into).
+//   * user + `net.nick` present       → `net.nick` (the per-credential
+//     configured IRC nick, kept live by the `own_nick_changed`
+//     user-topic event).
+//   * user + `net.nick` absent        → `null` (a server contract
+//     violation — `network_with_nick_to_json` REQUIRES non-empty nick
+//     for user subjects; a missing one means a future server change
+//     drifted from the wire spec). We log to `console.error` so the
+//     drift is loud, and return null so the caller's null-branch
+//     handles it — typically by skipping the join. The pre-fix
+//     behavior was to fall back to `displayNick(me) === me.name`,
+//     which silently DM-misrouted when account-name happened to
+//     match a peer's IRC nick on the affected network.
+//
+// Use everywhere a per-network "own nick" comparison is made: the
+// channels-loop self-JOIN/PART detection, the query-windows-loop
+// own-nick skip, the DM-listener loop subscription topic, the
+// ScrollbackPane self-highlight + mention-match.
+export function ownNickForNetwork(net: Network, me: MeResponse | null | undefined): string | null {
+  if (me == null) return null;
+  if (me.kind === "visitor") {
+    return me.network_slug === net.slug ? me.nick : null;
+  }
+  if (net.nick !== undefined && net.nick !== "") return net.nick;
+  console.error(
+    `ownNickForNetwork: user subject but Network.nick missing for slug=${net.slug} — server contract violation (network_with_nick_to_json should have populated it). Falling through to null; caller will skip topic join. Pre-fix this fell back to user.name and silently DM-misrouted when account-name matched a peer IRC nick. See codebase review 2026-05-08 cic H3.`,
+  );
+  return null;
 }
 
 // Mirror of `Grappa.Networks.Wire.network_json/0`. The integer `id` is
