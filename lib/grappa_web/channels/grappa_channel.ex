@@ -140,6 +140,7 @@ defmodule GrappaWeb.GrappaChannel do
   use GrappaWeb, :channel
 
   alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credentials, Network}
   alias Grappa.PubSub.Topic
   alias Grappa.Session.Wire, as: SessionWire
@@ -165,6 +166,23 @@ defmodule GrappaWeb.GrappaChannel do
           kind: String.t(),
           windows: QueryWindows.Wire.windows_map()
         }
+
+  @typedoc """
+  Wire payload for the `members_seeded` cold-WS-subscribe snapshot
+  push (see `push_members_if_seeded/4`). Byte-identical to the
+  event-time broadcast emitted on `366 RPL_ENDOFNAMES`; the canonical
+  shape is owned by `Grappa.Session.Wire.members_seeded/3`.
+  """
+  @type members_seeded_payload :: SessionWire.members_seeded_payload()
+
+  @typedoc """
+  Wire payload for the `window_state` cold-WS-subscribe snapshot push
+  (see `push_window_state_if_known/4`). Byte-identical to the
+  event-time broadcast for the same `joined | window_pending |
+  join_failed | kicked` transition; the canonical union is owned by
+  `t:Grappa.Session.window_state_snapshot/0`.
+  """
+  @type window_state_snapshot_payload :: Session.window_state_snapshot()
 
   @impl Phoenix.Channel
   def join(topic, _, socket) do
@@ -435,6 +453,11 @@ defmodule GrappaWeb.GrappaChannel do
   # /topic <text>  →  TOPIC #chan :<text>
   # send_topic returns {:ok, message} on success (persists scrollback row).
   # The visitor check and user lookup use the shared helper path directly.
+  #
+  # W5: CRLF/NUL guard fires at the channel boundary BEFORE the cross-process
+  # GenServer hop. The Session facade + IRC.Client both also gate via
+  # `Identifier.safe_line_token?/1` (defense in depth — the channel boundary
+  # is the OUTER untrusted-input surface).
   def handle_in(
         "topic_set",
         %{"network_id" => network_id, "channel" => channel, "text" => text},
@@ -443,11 +466,13 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) and is_binary(text) do
     user_name = socket.assigns.user_name
 
-    with false <- visitor?(user_name),
+    with true <- Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(text),
+         false <- visitor?(user_name),
          {:ok, user} <- safe_get_user(user_name),
          {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
       {:reply, :ok, socket}
     else
+      false -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
       true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}

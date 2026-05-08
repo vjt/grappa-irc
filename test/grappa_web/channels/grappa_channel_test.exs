@@ -784,6 +784,36 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :new topic text\r\n"), 1_000)
     end
 
+    test "topic_set: rejects CRLF/NUL in text at the channel boundary", %{
+      socket: socket,
+      network: network
+    } do
+      for evil <- ["new\r\nQUIT :pwn", "new\nfoo", "new\rfoo", "new\x00foo"] do
+        ref =
+          push(socket, "topic_set", %{
+            "network_id" => network.id,
+            "channel" => "#snap",
+            "text" => evil
+          })
+
+        assert_reply(ref, :error, %{reason: "invalid_line"})
+      end
+    end
+
+    test "topic_set: rejects CRLF/NUL in channel at the channel boundary", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "topic_set", %{
+          "network_id" => network.id,
+          "channel" => "#snap\r\nJOIN #pwn",
+          "text" => "ok"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
     test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
       irc_server: irc_server,
       socket: socket,
