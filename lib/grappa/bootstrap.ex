@@ -136,13 +136,12 @@ defmodule Grappa.Bootstrap do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Admission, Grappa.Networks, Grappa.Session, Grappa.Visitors]
+    deps: [Grappa.Networks, Grappa.Session, Grappa.SpawnOrchestrator, Grappa.Visitors]
 
   use Task, restart: :transient
 
   alias Grappa.{Networks, Session, Visitors}
   alias Grappa.Networks.{Credential, Credentials, Network, Servers, SessionPlan}
-  alias Grappa.Session.Backoff
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
 
@@ -317,13 +316,14 @@ defmodule Grappa.Bootstrap do
     end
   end
 
-  # Shared spawn helper — admission check, Backoff.reset on green
-  # light (M-life-5: operator action overrides stale failure history),
-  # then start_session, with tri-counter outcome bucketing per
-  # M-life-4. `plan` is the resolved start_opts map; `capacity_input`
-  # is the Admission shape; `log_keys` is the keyword list of
-  # subject-specific log metadata used by both success + skip log
-  # lines.
+  # Wrapper over `Grappa.SpawnOrchestrator.spawn/4` that buckets the
+  # unified outcome shape into Bootstrap's tri-counter (`:spawned` /
+  # `:skipped` / `:failed`) per M-life-4 + emits the structured
+  # subject-keyed log line the operator dashboard reads. The
+  # orchestrator owns the dance (admission → Backoff.reset → spawn);
+  # this helper owns ONLY the local concerns (counter accumulator +
+  # Logger metadata shape). M-life-5 reset-on-success rationale lives
+  # in the orchestrator's moduledoc.
   @spec spawn_with_admission(
           Session.subject(),
           integer(),
@@ -333,35 +333,22 @@ defmodule Grappa.Bootstrap do
           Result.t()
         ) :: Result.t()
   defp spawn_with_admission(subject, network_id, plan, capacity_input, log_keys, acc) do
-    case Grappa.Admission.check_capacity(capacity_input) do
-      :ok ->
-        # M-life-5: Bootstrap is operator action (deploy/restart). Any
-        # prior Backoff state for (subject, network) is stale — operator
-        # is overriding any failure history. Mirrors
-        # Visitors.Login.preempt_and_respawn's reset call.
-        :ok = Backoff.reset(subject, network_id)
+    case Grappa.SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+      {:ok, :spawned, _} ->
+        Logger.info("session started", log_keys)
+        %{acc | spawned: acc.spawned + 1}
 
-        case Session.start_session(subject, network_id, plan) do
-          {:ok, _} ->
-            Logger.info("session started", log_keys)
-            %{acc | spawned: acc.spawned + 1}
-
-          {:error, {:already_started, _}} ->
-            # F3 (S29) + M-life-4: Bootstrap is `restart: :transient`. On
-            # the (single) restart every previously-spawned session is
-            # still alive under the same `{:via, Registry, ...}` key, so
-            # `start_session/3` returns `{:error, {:already_started, pid}}`.
-            # Idempotent NO-OP, NOT a fresh start: Bootstrap did nothing
-            # because the session was already up. Routed to `:skipped`
-            # so `:spawned` accurately reflects "Bootstrap brought this
-            # up just now."
-            Logger.debug("session already started", log_keys)
-            %{acc | skipped: acc.skipped + 1}
-
-          {:error, reason} ->
-            Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
-            %{acc | failed: acc.failed + 1}
-        end
+      {:ok, :already_started, _} ->
+        # F3 (S29) + M-life-4: Bootstrap is `restart: :transient`. On
+        # the (single) restart every previously-spawned session is
+        # still alive under the same `{:via, Registry, ...}` key, so
+        # the orchestrator surfaces `{:already_started, _}` as
+        # `{:ok, :already_started, _}`. Idempotent NO-OP, NOT a
+        # fresh start: Bootstrap did nothing because the session was
+        # already up. Routed to `:skipped` so `:spawned` accurately
+        # reflects "Bootstrap brought this up just now."
+        Logger.debug("session already started", log_keys)
+        %{acc | skipped: acc.skipped + 1}
 
       {:error, :network_cap_exceeded} ->
         # T31 Plan 2 Task 4 — per-network total cap tripped. Best-effort
@@ -372,10 +359,19 @@ defmodule Grappa.Bootstrap do
         Logger.warning("session skipped — network cap exceeded", log_keys)
         %{acc | skipped: acc.skipped + 1}
 
+      {:error, {:start_failed, reason}} ->
+        # Session.start_session/3 returned a non-already_started error
+        # (init refused — upstream connect failure, etc.). Surface as
+        # `:failed` so the dashboard distinguishes from policy skips.
+        Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
+        %{acc | failed: acc.failed + 1}
+
       {:error, reason} ->
-        # Other Admission errors (e.g. circuit-open) are operationally
-        # closer to a real fault — surface as failed so the dashboard
-        # cap-vs-fault distinction stays clean.
+        # Other Admission errors (e.g. circuit-open, client_cap_exceeded
+        # — the latter unreachable today since Bootstrap passes
+        # `client_id: nil`, kept symmetrical for completeness) are
+        # operationally closer to a real fault — surface as failed so
+        # the dashboard cap-vs-fault distinction stays clean.
         Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
         %{acc | failed: acc.failed + 1}
     end
