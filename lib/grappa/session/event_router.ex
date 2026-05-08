@@ -22,7 +22,7 @@ defmodule Grappa.Session.EventRouter do
   4 informational numerics (001, 332, 333, 353/366) that derive
   `state.members` / `state.nick` without producing scrollback rows.
 
-  ## State shape (subset of `Session.Server.state()`)
+  ## State shape (subset of `Session.Server.t()`)
 
       @type state :: %{
               required(:subject) => Grappa.Session.subject(),

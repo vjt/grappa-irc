@@ -233,7 +233,7 @@ defmodule Grappa.Session.Server do
           optional(:credential_failer) => credential_failer()
         }
 
-  @type state :: %{
+  @type t :: %{
           subject: Grappa.Session.subject(),
           subject_label: String.t(),
           network_id: integer(),
@@ -1293,7 +1293,7 @@ defmodule Grappa.Session.Server do
   #
   # `{:stop, :normal, state}` causes the `:transient` restart strategy
   # to NOT respawn: `:transient` only restarts on ABNORMAL exits.
-  @spec handle_terminal_failure(String.t(), state()) :: {:stop, :normal, state()}
+  @spec handle_terminal_failure(String.t(), t()) :: {:stop, :normal, t()}
   defp handle_terminal_failure(reason, state) when is_binary(reason) do
     _ =
       if is_function(state.credential_failer, 1) do
@@ -1430,7 +1430,7 @@ defmodule Grappa.Session.Server do
   # (`apply_effects/2 → :visitor_r_observed`) can commit when NickServ
   # confirms. One-shot — `pending_password` is cleared after first 001
   # to prevent a Phase-5 reconnect-001 from re-staging stale credentials.
-  @spec maybe_stage_pending_password(state()) :: state()
+  @spec maybe_stage_pending_password(t()) :: t()
   defp maybe_stage_pending_password(%{pending_password: nil} = state), do: state
 
   defp maybe_stage_pending_password(%{pending_password: pwd} = state)
@@ -1517,7 +1517,7 @@ defmodule Grappa.Session.Server do
   # returns `{label_string, new_state}`. If the cap is not active or
   # origin_window is nil, returns `{nil, state}` (caller sends without label).
   # Last_command_window is always updated when origin_window is non-nil.
-  @spec prepare_label(state(), window_ref() | nil) :: {String.t() | nil, state()}
+  @spec prepare_label(t(), window_ref() | nil) :: {String.t() | nil, t()}
   defp prepare_label(state, nil) do
     {nil, state}
   end
@@ -1579,7 +1579,7 @@ defmodule Grappa.Session.Server do
   # to per-channel WS topics. Direction-agnostic: grow + shrink share the
   # same heartbeat shape; the cause is irrelevant to subscribers, the
   # REST endpoint is the source of truth for the new list.
-  @spec delegate(Message.t(), state()) :: {:noreply, state()}
+  @spec delegate(Message.t(), t()) :: {:noreply, t()}
   defp delegate(msg, state) do
     {:cont, derived_state, effects} = EventRouter.route(msg, state)
     next_state = apply_effects(effects, derived_state)
@@ -1588,7 +1588,7 @@ defmodule Grappa.Session.Server do
     {:noreply, next_state}
   end
 
-  @spec maybe_broadcast_channels_changed(state(), state()) :: :ok
+  @spec maybe_broadcast_channels_changed(t(), t()) :: :ok
   defp maybe_broadcast_channels_changed(prev, next) do
     prev_keys = prev.members |> Map.keys() |> Enum.sort()
     next_keys = next.members |> Map.keys() |> Enum.sort()
@@ -1611,7 +1611,7 @@ defmodule Grappa.Session.Server do
   # own-nick DM topic. Without this broadcast, cicchetto subscribes to the
   # CREDENTIAL nick (e.g. "grappa") while the live nick is "vjt-grappa" —
   # inbound DMs are silently dropped.
-  @spec maybe_broadcast_own_nick_changed(state(), state()) :: :ok
+  @spec maybe_broadcast_own_nick_changed(t(), t()) :: :ok
   defp maybe_broadcast_own_nick_changed(%{nick: prev_nick}, %{nick: next_nick} = next_state)
        when prev_nick != next_nick do
     :ok =
@@ -1623,7 +1623,7 @@ defmodule Grappa.Session.Server do
 
   defp maybe_broadcast_own_nick_changed(_, _), do: :ok
 
-  @spec apply_effects([EventRouter.effect()], state()) :: state()
+  @spec apply_effects([EventRouter.effect()], t()) :: t()
   defp apply_effects([], state), do: state
 
   defp apply_effects([{:topic_changed, channel, entry} | rest], state) do
@@ -1901,7 +1901,7 @@ defmodule Grappa.Session.Server do
   # One-shot send + clear of the synchronous-login readiness signal
   # (Task 8). Pattern-matches both fields populated to avoid
   # half-state misuse — caller MUST set both opts together.
-  @spec maybe_fire_notify(state()) :: state()
+  @spec maybe_fire_notify(t()) :: t()
   defp maybe_fire_notify(%{notify_pid: pid, notify_ref: ref} = state)
        when is_pid(pid) and is_reference(ref) do
     send(pid, {:session_ready, ref})
@@ -1941,7 +1941,7 @@ defmodule Grappa.Session.Server do
   # broadcast doesn't fire, no spurious state change reaches cic.
   @in_flight_join_ttl_ms 30_000
 
-  @spec record_in_flight_join(state(), String.t()) :: state()
+  @spec record_in_flight_join(t(), String.t()) :: t()
   defp record_in_flight_join(state, channel) when is_binary(channel) do
     now_ms = System.monotonic_time(:millisecond)
     cutoff = now_ms - @in_flight_join_ttl_ms
@@ -2036,8 +2036,8 @@ defmodule Grappa.Session.Server do
   # chunk as a separate MODE line through the Client socket.
   # Returns {:reply, :ok, state} — no state mutation occurs (MODE state updates
   # arrive as inbound MODE events processed by EventRouter).
-  @spec send_chunked_mode(state(), String.t(), String.t(), [String.t()]) ::
-          {:reply, :ok, state()}
+  @spec send_chunked_mode(t(), String.t(), String.t(), [String.t()]) ::
+          {:reply, :ok, t()}
   defp send_chunked_mode(state, channel, mode_str, params) do
     chunks = ModeChunker.chunk(mode_str, params, state.modes_per_chunk)
 
@@ -2059,7 +2059,7 @@ defmodule Grappa.Session.Server do
   #   - Cache hit → `*!*@host` (host-ban; preferred for stickiness).
   #   - Cache miss → `nick!*@*` (nick-ban fallback).
   # An explicit mask (contains `!` or `@` or `*`) passes through unchanged.
-  @spec derive_ban_mask(String.t(), state()) :: String.t()
+  @spec derive_ban_mask(String.t(), t()) :: String.t()
   defp derive_ban_mask(mask_or_nick, state) do
     if String.contains?(mask_or_nick, ["!", "@", "*"]) do
       # Looks like an explicit mask — pass through verbatim.
@@ -2106,7 +2106,7 @@ defmodule Grappa.Session.Server do
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise. When non-nil, the AWAY line is prefixed with `@label=<uuid>`
   # so the upstream echoes it back on the 305/306 numeric reply.
-  @spec set_explicit_away_internal(state(), String.t(), String.t() | nil) :: state()
+  @spec set_explicit_away_internal(t(), String.t(), String.t() | nil) :: t()
   defp set_explicit_away_internal(state, reason, nil) when is_binary(reason) do
     :ok = Client.send_away(state.client, reason)
     %{state | away_state: AwayState.set_explicit_away(state.away_state, reason)}
@@ -2121,7 +2121,7 @@ defmodule Grappa.Session.Server do
   # Set auto-away: only when not already `:away_explicit` (caller guards).
   # Issues `AWAY :<auto_away_reason>` upstream. The constant is fixed
   # wire protocol — see `AwayState.auto_away_reason/0`.
-  @spec set_auto_away_internal(state()) :: state()
+  @spec set_auto_away_internal(t()) :: t()
   defp set_auto_away_internal(state) do
     :ok = Client.send_away(state.client, AwayState.auto_away_reason())
     %{state | away_state: AwayState.set_auto_away(state.away_state)}
@@ -2141,7 +2141,7 @@ defmodule Grappa.Session.Server do
   #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise.
-  @spec unset_away_internal(state(), String.t() | nil) :: state()
+  @spec unset_away_internal(t(), String.t() | nil) :: t()
   defp unset_away_internal(state, nil) do
     :ok = Client.send_away_unset(state.client)
     maybe_broadcast_mentions_bundle(state)
@@ -2159,7 +2159,7 @@ defmodule Grappa.Session.Server do
   # Only runs for user sessions (not visitors); silently skips when
   # `started_at` is nil (present state — should not happen in normal flow
   # but guards against double-unset edge cases).
-  @spec maybe_broadcast_mentions_bundle(state()) :: :ok
+  @spec maybe_broadcast_mentions_bundle(t()) :: :ok
   defp maybe_broadcast_mentions_bundle(%{subject: {:user, user_id}} = state)
        when is_binary(user_id) do
     case AwayState.started_at(state.away_state) do
