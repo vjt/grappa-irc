@@ -560,12 +560,42 @@ const ScrollbackPane: Component<Props> = (props) => {
   // effect's first-mount evaluation isn't pre-emptively cleared.
   // C7.3: also reset markerScrolled so the next channel's unread marker
   // gets its own scroll-to-marker behavior.
+  //
+  // Scroll-on-window-switch fix: the underlying `[data-testid="scrollback"]`
+  // <div> is the SAME DOM node across selectedChannel changes (Solid's
+  // <Show> in Shell.tsx is non-keyed), so its `scrollTop` survives the
+  // switch. Without an explicit reset, opening an empty query window
+  // (scrollTop=0) and then re-selecting a populated channel leaves the
+  // channel pinned at scrollTop=0 — the length-effect below only fires
+  // when `messages().length` changes, and a previously-loaded channel's
+  // length is identical to the last time we viewed it.
+  //
+  // Spec on switch:
+  //   * window has unread marker → scroll marker into view, centered
+  //     (mirrors length-effect's marker branch — same UX whether the
+  //     marker appears via initial fetch or via switch-back).
+  //   * no marker → snap to tail; auto-follow takes over after the
+  //     first append.
+  // markerScrolled latch reset so the length-effect remains free to
+  // re-fire for a future window where the marker shows up only after
+  // a delayed REST page lands. atBottom set per branch so the floating
+  // "scroll to bottom" button doesn't flash visible mid-switch.
   createEffect(
     on(
       key,
       () => {
         setBannerState("hidden");
         setMarkerScrolled(false);
+        if (!listRef) return;
+        if (markerRef) {
+          markerRef.scrollIntoView?.({ block: "center" });
+          setMarkerScrolled(true);
+          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+        } else {
+          listRef.scrollTop = listRef.scrollHeight;
+          setAtBottom(true);
+        }
       },
       { defer: true },
     ),
@@ -577,9 +607,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // identity (the whole record changes every WS event by design).
   //
   // C7.3: On the FIRST render of a channel with unread messages, scroll to
-  // the unread-marker instead of the tail. `markerScrolled` latches after
-  // the first scroll so subsequent appends follow the normal auto-scroll
-  // logic (tail-follow when atBottom, preserve position otherwise).
+  // the unread-marker (centered in the viewport so the user sees both
+  // context above and unread messages below at a glance — same UX as
+  // the on-switch effect's marker branch above). `markerScrolled` latches
+  // after the first scroll so subsequent appends follow the normal
+  // auto-scroll logic (tail-follow when atBottom, preserve position
+  // otherwise).
   createEffect(
     on(
       () => messages()?.length ?? 0,
@@ -589,7 +622,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         if (!markerScrolled() && markerRef) {
           // scrollIntoView is not implemented in jsdom (test environment).
           // Optional-chain so tests don't throw; real browsers have it.
-          markerRef.scrollIntoView?.({ block: "start" });
+          markerRef.scrollIntoView?.({ block: "center" });
           setMarkerScrolled(true);
           // atBottom is false after scroll-to-marker (marker is not at tail).
           const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
