@@ -14,6 +14,16 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
+// windowState mock — TopicBar gates the nick-count + members hamburger
+// on `windowIsJoined(key)`. Default the predicate to `true` so existing
+// behavior tests (count + hamburger always visible for the active
+// #italia channel) continue to assert the joined-state UI; the
+// not-joined branch is covered by its own block below.
+const mockWindowIsJoined = vi.fn((_key: string) => true);
+vi.mock("../lib/windowState", () => ({
+  windowIsJoined: (key: string) => mockWindowIsJoined(key),
+}));
+
 // channelTopic mock — controls what topic/modes the TopicBar sees.
 // Updated between test groups to exercise different states.
 const mockTopicByChannel = vi.fn(() => ({}));
@@ -40,6 +50,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockTopicByChannel.mockReturnValue({});
   mockModesByChannel.mockReturnValue({});
+  mockWindowIsJoined.mockReturnValue(true);
 });
 
 describe("TopicBar", () => {
@@ -72,6 +83,20 @@ describe("TopicBar", () => {
     render(() => <TopicBar {...props} />);
     fireEvent.click(screen.getByLabelText(/open settings/i));
     expect(props.onOpenSettings).toHaveBeenCalled();
+  });
+
+  describe("members hamburger + nick count visibility (joined-only)", () => {
+    it("hides the right hamburger when the channel is not joined", () => {
+      mockWindowIsJoined.mockReturnValue(false);
+      render(() => <TopicBar {...baseProps()} />);
+      expect(screen.queryByLabelText(/open members sidebar/i)).not.toBeInTheDocument();
+    });
+
+    it("hides the nick count when the channel is not joined", () => {
+      mockWindowIsJoined.mockReturnValue(false);
+      render(() => <TopicBar {...baseProps()} />);
+      expect(screen.queryByText(/2 nicks/i)).not.toBeInTheDocument();
+    });
   });
 
   describe("topic display (C3.1)", () => {

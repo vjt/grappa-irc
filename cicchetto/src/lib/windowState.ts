@@ -1,6 +1,7 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
-import type { ChannelKey } from "./channelKey";
+import { type ChannelKey, channelKey } from "./channelKey";
+import { selectedChannel } from "./selection";
 
 // CP15 B5: cic mirror of the server-side per-(network, channel) window
 // state machine. The server splits state across three maps so each
@@ -137,3 +138,31 @@ export const setJoined = exports_.setJoined;
 export const setFailed = exports_.setFailed;
 export const setKicked = exports_.setKicked;
 export const setParted = exports_.setParted;
+
+// Render-time predicates for "show member-list-shaped UI?".
+//
+// Member list UI (right pane + the right hamburger toggle in TopicBar)
+// only makes sense when the window is an actively-joined channel.
+// Servers, DMs, mentions/list pseudo-windows, and parked/failed/kicked
+// channels do NOT have a live member list — showing the pane there
+// either reserves grid space for nothing (desktop) or surfaces a stale
+// "not joined" stub through a hamburger that should never have been
+// offered in the first place.
+//
+// `windowIsJoined(key)` is the primitive over the state map; absence
+// (parted / never-joined / non-channel pseudo-window) is treated as
+// "not joined" — no member list. `isActiveChannelJoined()` composes
+// it with the active selection's `kind` to gate the render-time
+// branches in Shell.tsx + TopicBar.tsx — exposed as a derived signal
+// (no arg) so each consumer just reads it without rebuilding the
+// channelKey itself.
+
+export const windowIsJoined = (key: ChannelKey): boolean =>
+  windowStateByChannel()[key] === "joined";
+
+export const isActiveChannelJoined = (): boolean => {
+  const sel = selectedChannel();
+  if (sel === null) return false;
+  if (sel.kind !== "channel") return false;
+  return windowIsJoined(channelKey(sel.networkSlug, sel.channelName));
+};

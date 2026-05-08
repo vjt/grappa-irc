@@ -145,12 +145,34 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
+// windowState — Shell + TopicBar gate the members aside / hamburger /
+// nick count on the joined-channel predicate. Default to "joined for
+// any channel" so existing tests that select a channel see the
+// joined-state UI; suppression branches (DM/server/non-joined) are
+// covered explicitly below. Sidebar also imports
+// `windowStateByChannel` to drive its greyed/synthetic-row treatment;
+// mock it as an empty signal so those branches no-op.
+const mockWindowIsJoined = vi.fn((_key: string) => true);
+vi.mock("../lib/windowState", () => ({
+  windowStateByChannel: () => ({}),
+  windowFailureByChannel: () => ({}),
+  windowKickedMetaByChannel: () => ({}),
+  windowIsJoined: (key: string) => mockWindowIsJoined(key),
+  isActiveChannelJoined: () => {
+    const sel = selectionState.selSig();
+    if (sel === null) return false;
+    if (sel.kind !== "channel") return false;
+    return mockWindowIsJoined(`${sel.networkSlug} ${sel.channelName}`);
+  },
+}));
+
 import Shell from "../Shell";
 
 beforeEach(() => {
   vi.clearAllMocks();
   selectionState.setSelSig(null);
   mobileState.value = false;
+  mockWindowIsJoined.mockReturnValue(true);
 });
 
 describe("Shell — three-pane integration", () => {
@@ -284,6 +306,64 @@ describe("Shell — three-pane integration", () => {
     const settings = container.querySelector(".settings-drawer");
     expect(settings?.classList.contains("open")).toBe(true);
   });
+
+  describe("members aside scope (joined-channel only)", () => {
+    it("renders MembersPane inside .shell-members when a joined channel is selected", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      mockWindowIsJoined.mockReturnValue(true);
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members .members-pane")).toBeTruthy();
+      });
+    });
+
+    it("does NOT render MembersPane when the active channel is not joined (parked/failed/kicked)", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      mockWindowIsJoined.mockReturnValue(false);
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-main")).toBeTruthy();
+      });
+      expect(container.querySelector(".shell-members .members-pane")).toBeNull();
+    });
+
+    it("does NOT render MembersPane when a query (DM) window is selected", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "alice", kind: "query" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-main")).toBeTruthy();
+      });
+      expect(container.querySelector(".shell-members .members-pane")).toBeNull();
+    });
+
+    it("does NOT render MembersPane when the server window is selected", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "$server", kind: "server" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-main")).toBeTruthy();
+      });
+      expect(container.querySelector(".shell-members .members-pane")).toBeNull();
+    });
+
+    it("collapses the members grid column (.shell-no-members) when not joined", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "alice", kind: "query" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell.shell-no-members")).toBeTruthy();
+      });
+    });
+
+    it("does NOT add .shell-no-members when a joined channel is selected", async () => {
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      mockWindowIsJoined.mockReturnValue(true);
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-main")).toBeTruthy();
+      });
+      expect(container.querySelector(".shell.shell-no-members")).toBeNull();
+    });
+  });
+
   it("renders MentionsWindow (not ScrollbackPane) when kind === 'mentions'", async () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
     const { container } = render(() => <Shell />);
