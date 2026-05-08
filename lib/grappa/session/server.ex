@@ -984,22 +984,44 @@ defmodule Grappa.Session.Server do
     {:noreply, next_state}
   end
 
-  # Linked Client crashed. Record a backoff failure (so the next
-  # respawn waits longer) then propagate the stop. The Backoff cast is
-  # asynchronous; the GenServer.cast doesn't block this stop, but the
+  # Linked Client crashed abnormally. Record a backoff failure (so the
+  # next respawn waits longer) then propagate the stop. The Backoff cast
+  # is asynchronous; the GenServer.cast doesn't block this stop, but the
   # `Backoff` GenServer's mailbox processes it before our respawned
   # init/1 re-reads `wait_ms/2` (the supervisor's restart path is not
   # instant — it runs after this terminate completes).
+  #
+  # Reason guard excludes :normal / :shutdown — those are clean teardown
+  # paths (operator-initiated park via T32 disconnect, supervisor-driven
+  # shutdown, future Client.stop/1 for planned teardown). A clean exit
+  # bumping the backoff counter would gate the next /connect for the
+  # full backoff window — false-failure backoff (lifecycle review HIGH
+  # S2). Clean exits fall through to the next clause for plain
+  # propagation without Backoff bookkeeping.
   def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
-      when client_pid != nil do
+      when client_pid != nil and reason != :normal and reason != :shutdown do
     :ok = Backoff.record_failure(state.subject, state.network_id)
     {:stop, {:client_exit, reason}, %{state | client: nil}}
   end
 
-  # Supervisor-issued shutdown — propagate without recording a failure
-  # (operator/Bootstrap-driven, not a crash). GenServer's default would
-  # do the same; explicit clause for clarity + so the Logger.warning
-  # catchall below doesn't fire.
+  # Clean linked-Client exit (operator stop / planned teardown / supervisor
+  # shutdown) — propagate the same {:client_exit, reason} wrap shape used by
+  # the abnormal clause, but skip the Backoff bump. Wrapping :normal /
+  # :shutdown into {:client_exit, _} is intentional so the supervisor's
+  # restart strategy classification stays consistent: :transient sessions
+  # don't restart on these reasons (the wrapped tuple is "abnormal" to the
+  # supervisor, but Bootstrap won't respawn the session unless it's been
+  # asked to via T32 unpark — the operator-driven path).
+  def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
+      when client_pid != nil and (reason == :normal or reason == :shutdown) do
+    {:stop, {:client_exit, reason}, %{state | client: nil}}
+  end
+
+  # Supervisor-issued shutdown of a non-Client linked process — propagate
+  # without recording a failure. Currently unreachable in production
+  # (Client is the only linked spawn per init/1), but kept as a defensive
+  # catchall so a future linked-process addition doesn't accidentally
+  # surface in the Logger.warning catchall below.
   def handle_info({:EXIT, _, reason}, state)
       when reason == :shutdown or reason == :normal do
     {:stop, reason, state}
