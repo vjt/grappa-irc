@@ -76,6 +76,15 @@ defmodule Grappa.Session do
   """
   @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
 
+  @typedoc """
+  Per-channel member entry as returned by `list_members/3`. The
+  per-row shape is the canonical contract that the WS
+  `members_seeded` event AND the REST `/members` snapshot both
+  surface — `GrappaWeb.MembersJSON` and `Grappa.Session.Wire.members_seeded/3`
+  rely on it.
+  """
+  @type member :: %{nick: String.t(), modes: [String.t()]}
+
   defguardp is_subject(s)
             when is_tuple(s) and tuple_size(s) == 2 and
                    (elem(s, 0) == :user or elem(s, 0) == :visitor) and
@@ -548,7 +557,7 @@ defmodule Grappa.Session do
   is registered for `(subject, network_id)`.
   """
   @spec list_members(subject(), integer(), String.t()) ::
-          {:ok, [%{nick: String.t(), modes: [String.t()]}]}
+          {:ok, [member()]}
           | {:error, :no_session}
   def list_members(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
