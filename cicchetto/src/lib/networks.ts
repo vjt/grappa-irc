@@ -41,13 +41,11 @@ import { token } from "./auth";
 // see the updated nick immediately.
 
 const exports = createRoot(() => {
-  const [networks, { mutate: mutateNetworksResource }] = createResource<Network[], string | null>(
-    token,
-    async (t) => {
+  const [networks, { mutate: mutateNetworksResource, refetch: refetchNetworksResource }] =
+    createResource<Network[], string | null>(token, async (t) => {
       if (!t) return [];
       return listNetworks(t);
-    },
-  );
+    });
 
   const [user] = createResource<MeResponse | null, string | null>(token, async (t) => {
     if (!t) return null;
@@ -71,6 +69,20 @@ const exports = createRoot(() => {
     void refetchChannelsResource();
   };
 
+  // Codebase review 2026-05-08 cross-infra H1: pre-fix the
+  // `connection_state_changed` event was emitted via raw
+  // `Phoenix.PubSub.broadcast/3` and never reached cic over WS. cic
+  // worked around by REST refetch on PATCH return — but other tabs /
+  // clients on the same account didn't see the state flip until they
+  // re-rendered. The fix routes the event through `broadcast_event/2`
+  // on the user-level topic; this exposes a refetch hook so
+  // `userTopic.ts` can pull the updated `Credential.connection_state`
+  // / reason / changed_at fields without duplicating wire shape into
+  // the client.
+  const refetchNetworks = (): void => {
+    void refetchNetworksResource();
+  };
+
   // Patch the nick for one network in the in-memory networks list.
   // Called by userTopic.ts when `own_nick_changed` arrives so the
   // DM-listener and query-window loops see the correct own-nick
@@ -82,11 +94,12 @@ const exports = createRoot(() => {
     });
   };
 
-  return { networks, user, channelsBySlug, refetchChannels, mutateNetworkNick };
+  return { networks, user, channelsBySlug, refetchChannels, refetchNetworks, mutateNetworkNick };
 });
 
 export const networks = exports.networks;
 export const user = exports.user;
 export const channelsBySlug = exports.channelsBySlug;
 export const refetchChannels = exports.refetchChannels;
+export const refetchNetworks = exports.refetchNetworks;
 export const mutateNetworkNick = exports.mutateNetworkNick;

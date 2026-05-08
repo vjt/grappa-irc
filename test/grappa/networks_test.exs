@@ -26,6 +26,7 @@ defmodule Grappa.NetworksTest do
   alias Grappa.{Accounts, Networks, Repo}
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
+  alias Grappa.PubSub.Topic
 
   defp user_fixture(name \\ nil) do
     name = name || "vjt-#{System.unique_integer([:positive])}"
@@ -563,6 +564,64 @@ defmodule Grappa.NetworksTest do
       net = network_fixture()
 
       assert_raise Ecto.NoResultsError, fn -> Credentials.get_credential!(user, net) end
+    end
+  end
+
+  # Codebase review 2026-05-08 cross-infra H1 (HIGH).
+  # Pre-fix: `Networks.broadcast_state_change/4` emitted
+  # `{:connection_state_changed, %{...}}` via raw
+  # `Phoenix.PubSub.broadcast/3`. GrappaChannel uses ONLY the framework
+  # fastlane subscription (no manual `subscribe`), and fastlane fans out
+  # `%Phoenix.Socket.Broadcast{}` envelopes — the raw 2-tuple was a
+  # no-op for WS subscribers. Cic JOINED `grappa:network:slug` but never
+  # received `connection_state_changed`; T32 disconnect/connect state
+  # was invisible to the live UI (cic worked around by REST refetch
+  # post-PATCH).
+  #
+  # Fix: route through `Grappa.PubSub.broadcast_event/2` with payload
+  # `%{kind: "connection_state_changed", ...}` — the existing wire-event
+  # contract every other CP15 typed event uses. Fastlane delivers the
+  # payload as `phx_msg{event: "event"}` exactly once per WS, AND plain
+  # `Phoenix.PubSub.subscribe/2` subscribers (test processes) receive a
+  # `%Phoenix.Socket.Broadcast{event: "event", payload: ...}` envelope.
+  describe "broadcast_state_change — wire-event contract (H1)" do
+    test "connect/1 from :parked emits %Phoenix.Socket.Broadcast{} on the network topic" do
+      user = user_fixture()
+      net = network_fixture()
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "secretpw",
+          auth_method: :auto
+        })
+
+      # Park first so connect/1 has work to do.
+      {:ok, parked} = Networks.disconnect(cred, "manual")
+      assert parked.connection_state == :parked
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      {:ok, reconnected} = Networks.connect(parked)
+      assert reconnected.connection_state == :connected
+
+      # Assert the wire-event contract: phoenix Channel envelope, kind:
+      # string literal, payload carries from/to/network_slug. The pre-fix
+      # tuple shape `{:connection_state_changed, %{...}}` would never
+      # arrive in this shape because raw PubSub.broadcast skips the
+      # channel-server fastlane wrapping.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :parked,
+                         to: :connected,
+                         network_slug: slug
+                       }
+                     },
+                     1_000
+
+      assert slug == net.slug
     end
   end
 

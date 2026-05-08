@@ -2,7 +2,7 @@ import { createEffect, createRoot, untrack } from "solid-js";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setMentionsBundle } from "./mentionsWindow";
-import { mutateNetworkNick, refetchChannels } from "./networks";
+import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
@@ -121,6 +121,15 @@ createRoot(() => {
         const networkId = payload.network_id as number;
         const nick = payload.nick as string;
         mutateNetworkNick(networkId, nick);
+      } else if (payload.kind === "connection_state_changed") {
+        // Codebase review 2026-05-08 cross-infra H1: T32
+        // disconnect/connect/mark_failed transitions emit this event
+        // on the user-level topic. Refetch /networks so the UI sees
+        // the updated `connection_state` / `connection_state_reason` /
+        // `connection_state_changed_at` fields immediately on the
+        // initiating tab AND on any sibling tab logged in to the
+        // same account.
+        refetchNetworks();
       }
     });
   });

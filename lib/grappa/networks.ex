@@ -221,12 +221,24 @@ defmodule Grappa.Networks do
   @typedoc """
   PubSub event payload broadcast on every successful (non-idempotent)
   `connection_state` transition. Topic shape is
-  `Grappa.PubSub.Topic.network(user_name, network_slug)`. Subscribers
-  (cicchetto via Phoenix Channels, future Phase 6 listener) consume
-  this to render the user-visible state badge + the
+  `Grappa.PubSub.Topic.user(user_name)` — delivered on the user-level
+  channel alongside `channels_changed`, `query_windows_list`,
+  `own_nick_changed`, etc., because the cicchetto user-level WS
+  channel is the only WS channel cic joins for non-channel events
+  (no per-network channel join exists). Network discrimination is
+  carried in the `network_slug:` payload field.
+
+  Subscribers (cicchetto via `userTopic.ts`, future Phase 6 listener)
+  consume this to render the user-visible state badge + the
   server-messages-window lifecycle line.
+
+  Delivered through `Grappa.PubSub.broadcast_event/2` so cic receives
+  it via the framework fastlane (no manual `Phoenix.PubSub.subscribe`
+  on `GrappaChannel`). The `kind:` discriminator is a string literal
+  matching the cic-side wire-event dispatch contract.
   """
   @type connection_state_changed_event :: %{
+          kind: String.t(),
           user_id: Ecto.UUID.t(),
           network_id: integer(),
           network_slug: String.t(),
@@ -434,6 +446,19 @@ defmodule Grappa.Networks do
   # broadcast is at most a stale UI badge, not a correctness problem.
   # Returning `:ok` unconditionally lets callers stay in `{:ok, _}`-only
   # arms without sprinkling `_ =` at every site.
+  # Codebase review 2026-05-08 cross-infra H1: pre-fix this used raw
+  # `Phoenix.PubSub.broadcast/3` with a 2-tuple `{:connection_state_changed,
+  # ...}`. `GrappaChannel` uses ONLY the framework fastlane subscription
+  # (no manual `subscribe`), so fastlane fans out only `%Broadcast{}`
+  # envelopes — the raw tuple was a no-op for WS clients. Cic JOINED
+  # `grappa:network:slug` but never received the event; T32
+  # connect/disconnect state was invisible to the live UI (papered over
+  # by REST refetch on PATCH return).
+  #
+  # Fix: route through `Grappa.PubSub.broadcast_event/2` with payload
+  # `%{kind: "connection_state_changed", ...}` — the standard wire-event
+  # contract every CP15 typed event uses. Fastlane delivers as
+  # `phx_msg{event: "event"}` exactly once per WS subscriber.
   @spec broadcast_state_change(
           Credential.t(),
           Credential.connection_state(),
@@ -446,19 +471,17 @@ defmodule Grappa.Networks do
          to,
          reason
        ) do
-    event =
-      {:connection_state_changed,
-       %{
-         user_id: cred.user_id,
-         network_id: cred.network_id,
-         network_slug: slug,
-         from: from,
-         to: to,
-         reason: reason,
-         at: cred.connection_state_changed_at
-       }}
+    payload = %{
+      kind: "connection_state_changed",
+      user_id: cred.user_id,
+      network_id: cred.network_id,
+      network_slug: slug,
+      from: from,
+      to: to,
+      reason: reason,
+      at: cred.connection_state_changed_at
+    }
 
-    _ = Phoenix.PubSub.broadcast(Grappa.PubSub, Topic.network(user_name, slug), event)
-    :ok
+    :ok = Grappa.PubSub.broadcast_event(Topic.user(user_name), payload)
   end
 end
