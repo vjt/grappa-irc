@@ -88,14 +88,21 @@ vi.mock("../lib/auth", () => ({
 
 // Mock networks so compose.ts can read the network list for /quit without
 // depending on the real api.ts listNetworks call chain in tests.
+// bnd-A2: also expose `networkIdBySlug` so the channel-ops + DM verbs
+// resolve their networkSlug → id without falling through the
+// "network not found" guard. The mock data parallels the real helper's
+// behavior (slug→Network Map lookup) for the freenode / libera fixtures.
+const mockNetworksData = [
+  { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
+  { id: 2, slug: "libera", inserted_at: "", updated_at: "" },
+];
 vi.mock("../lib/networks", () => ({
-  networks: vi.fn(() => [
-    { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
-    { id: 2, slug: "libera", inserted_at: "", updated_at: "" },
-  ]),
+  networks: vi.fn(() => mockNetworksData),
   user: vi.fn(() => null),
   channelsBySlug: vi.fn(() => ({})),
   refetchChannels: vi.fn(),
+  networkBySlug: vi.fn((slug: string) => mockNetworksData.find((n) => n.slug === slug)),
+  networkIdBySlug: vi.fn((slug: string) => mockNetworksData.find((n) => n.slug === slug)?.id),
 }));
 
 // CP17: setPending is no longer called from compose.ts (server-driven
@@ -738,12 +745,12 @@ describe("compose submit — /query and /q DM verbs", () => {
   it("/msg without active network returns inline error", async () => {
     localStorage.setItem("grappa-token", "tok");
     const networks = await import("../lib/networks");
-    // Override networks to return empty list — no network found.
-    // The `networks` export is a Resource at compile-time but a vi.fn at test-
-    // time (mocked at module level). Access mock API via unknown cast.
+    // bnd-A2: compose.ts consults `networkIdBySlug` (helper extracted
+    // from the 14× repeated `networks()?.find(...)?.id` literal). Stub
+    // it to undefined to reproduce the "no slug match" path.
     (
-      networks.networks as unknown as { mockReturnValueOnce: (v: unknown) => void }
-    ).mockReturnValueOnce([]);
+      networks.networkIdBySlug as unknown as { mockReturnValueOnce: (v: unknown) => void }
+    ).mockReturnValueOnce(undefined);
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/msg alice hello");
