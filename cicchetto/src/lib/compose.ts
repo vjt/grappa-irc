@@ -1,7 +1,8 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createSignal } from "solid-js";
 import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
 import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
+import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { networks } from "./networks";
 import { openQueryWindowState } from "./queryWindows";
@@ -38,8 +39,8 @@ import {
 //     non-empty bodies to history; clears draft on success.
 //   * `tabComplete(key, input, cursor, forward)` — pure helper.
 //
-// Identity-scoped on(token) cleanup mirrors scrollback / selection /
-// members — logout flushes ALL drafts + histories.
+// Identity-scoped via identityScopedStore — logout flushes ALL drafts
+// + histories + the tab-cycle anchor (dup-A3 close).
 //
 // History semantics: most-recent-last; cursor walks BACKWARDS from the
 // tail (recallPrev decrements cursor index). At index 0 (oldest)
@@ -59,7 +60,7 @@ type SubmitResult = { ok: true | string } | { error: string };
 
 const empty = (): ComposeState => ({ draft: "", history: [], historyCursor: null });
 
-const exports_ = createRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [composeByChannel, setComposeByChannel] = createSignal<Record<ChannelKey, ComposeState>>(
     {},
   );
@@ -83,14 +84,10 @@ const exports_ = createRoot(() => {
     lastChosen: string;
   } | null = null;
 
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        setComposeByChannel({});
-        tabCycle = null;
-      }
-    }),
-  );
+  onIdentityChange(() => setComposeByChannel({}));
+  onIdentityChange(() => {
+    tabCycle = null;
+  });
 
   const getState = (key: ChannelKey): ComposeState => composeByChannel()[key] ?? empty();
 
