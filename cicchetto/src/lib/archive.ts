@@ -1,6 +1,7 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createSignal } from "solid-js";
 import { type ArchiveEntry, listArchive } from "./api";
 import { token } from "./auth";
+import { identityScopedStore } from "./identityScopedStore";
 
 // Per-network archive store. Source-of-truth for cic's per-network
 // Archive collapsed-section in the Sidebar (CP15 B4).
@@ -14,30 +15,22 @@ import { token } from "./auth";
 //      gate like `members.loadedChannels`); the user re-expanding signals
 //      "give me the current state."
 //   3. Identity rotation flushes the whole store via `clearArchive` —
-//      the on(token) cleanup arm mirrors the C7/A1 pattern in
-//      `scrollback.ts` / `members.ts`.
+//      registered as the identityScopedStore reset (dup-A3 close).
 //
 // Sort order: server-side `Scrollback.list_archive/3` already returns
 // entries sorted by `last_activity` DESC. The store preserves the wire
 // order; the renderer is pure pass-through.
 
-const exports_ = createRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [archivedBySlug, setArchivedBySlug] = createSignal<Record<string, ArchiveEntry[]>>({});
 
   const clearArchive = (): void => {
     setArchivedBySlug({});
   };
 
-  // Identity-transition cleanup. Same shape as members.ts / scrollback.ts —
-  // a token rotation MUST flush the prior identity's archive cache before
-  // the new identity's first load fires.
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        clearArchive();
-      }
-    }),
-  );
+  // Identity-transition cleanup. A token rotation MUST flush the prior
+  // identity's archive cache before the new identity's first load fires.
+  onIdentityChange(clearArchive);
 
   const loadArchive = async (slug: string): Promise<void> => {
     const t = token();
