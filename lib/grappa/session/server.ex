@@ -628,8 +628,7 @@ defmodule Grappa.Session.Server do
 
   def handle_call({:send_kick, channel, nick, reason}, _, state)
       when is_binary(channel) and is_binary(nick) and is_binary(reason) do
-    :ok = Client.send_line(state.client, "KICK #{channel} #{nick} :#{reason}\r\n")
-    {:reply, :ok, state}
+    {:reply, Client.send_kick(state.client, channel, nick, reason), state}
   end
 
   # :send_ban — derive ban mask from userhost_cache when the arg is a bare nick
@@ -650,20 +649,17 @@ defmodule Grappa.Session.Server do
   # INVITE wire order: RFC 2812 §3.2.7 — `INVITE <nick> <channel>`.
   def handle_call({:send_invite, channel, nick}, _, state)
       when is_binary(channel) and is_binary(nick) do
-    :ok = Client.send_line(state.client, "INVITE #{nick} #{channel}\r\n")
-    {:reply, :ok, state}
+    {:reply, Client.send_invite(state.client, channel, nick), state}
   end
 
   # Banlist query form — no sign, just the mode letter.
   def handle_call({:send_banlist, channel}, _, state) when is_binary(channel) do
-    :ok = Client.send_line(state.client, "MODE #{channel} b\r\n")
-    {:reply, :ok, state}
+    {:reply, Client.send_banlist(state.client, channel), state}
   end
 
   # User-mode change on own nick. Uses state.nick (reconciled at 001).
   def handle_call({:send_umode, modes}, _, state) when is_binary(modes) do
-    :ok = Client.send_line(state.client, "MODE #{state.nick} #{modes}\r\n")
-    {:reply, :ok, state}
+    {:reply, Client.send_umode(state.client, state.nick, modes), state}
   end
 
   # Raw verbatim MODE — no chunking. Target can be channel or nick.
@@ -685,8 +681,7 @@ defmodule Grappa.Session.Server do
   # an empty trailing parameter signals "no topic". The inbound TOPIC event
   # that the server echoes back will update the topic cache via EventRouter.
   def handle_call({:send_topic_clear, channel}, _, state) when is_binary(channel) do
-    :ok = Client.send_line(state.client, "TOPIC #{channel} :\r\n")
-    {:reply, :ok, state}
+    {:reply, Client.send_topic_clear(state.client, channel), state}
   end
 
   # Issues `AWAY :<reason>` upstream and records the timestamp + reason.

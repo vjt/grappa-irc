@@ -274,6 +274,96 @@ defmodule Grappa.IRC.Client do
   @spec send_pong(pid(), String.t()) :: :ok
   def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
 
+  @doc """
+  Sends `KICK <channel> <nick> :<reason>\\r\\n`. Validates the
+  channel + nick syntax and rejects CR/LF/NUL in any field with
+  `{:error, :invalid_line}`.
+
+  Consolidates the raw `send_line` arm previously open-coded in
+  `Grappa.Session.Server`'s `:send_kick` handle_call (resp-A4 close).
+  """
+  @spec send_kick(pid(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_line}
+  def send_kick(client, channel, nick, reason) do
+    if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) and
+         Identifier.safe_line_token?(reason) do
+      send_line(client, "KICK #{channel} #{nick} :#{reason}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `INVITE <nick> <channel>\\r\\n` (RFC 2812 §3.2.7 wire order:
+  nick first, channel second). Validates nick + channel syntax and
+  rejects malformed identifiers with `{:error, :invalid_line}`.
+
+  Consolidates the raw `send_line` arm previously open-coded in
+  `Grappa.Session.Server`'s `:send_invite` handle_call (resp-A4 close).
+  """
+  @spec send_invite(pid(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_line}
+  def send_invite(client, channel, nick) do
+    if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) do
+      send_line(client, "INVITE #{nick} #{channel}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `MODE <channel> b\\r\\n` — the banlist query form (no sign,
+  just the mode letter). Numerics 367 RPL_BANLIST + 368
+  RPL_ENDOFBANLIST reply with the ban list. Validates the channel
+  syntax with `{:error, :invalid_line}` on rejection.
+
+  Consolidates the raw `send_line` arm previously open-coded in
+  `Grappa.Session.Server`'s `:send_banlist` handle_call (resp-A4 close).
+  """
+  @spec send_banlist(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_banlist(client, channel) do
+    if Identifier.valid_channel?(channel),
+      do: send_line(client, "MODE #{channel} b\r\n"),
+      else: {:error, :invalid_line}
+  end
+
+  @doc """
+  Sends `MODE <nick> <modes>\\r\\n` — user-mode change on the
+  caller-supplied nick. The caller (`Grappa.Session.Server`) passes
+  its `state.nick` as the nick arg so this helper stays a pure
+  byte-encoding boundary with no Session-state dependency. Validates
+  nick syntax + rejects CR/LF/NUL in modes with
+  `{:error, :invalid_line}`.
+
+  Consolidates the raw `send_line` arm previously open-coded in
+  `Grappa.Session.Server`'s `:send_umode` handle_call (resp-A4 close).
+  """
+  @spec send_umode(pid(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_line}
+  def send_umode(client, nick, modes) do
+    if Identifier.valid_nick?(nick) and Identifier.safe_line_token?(modes) do
+      send_line(client, "MODE #{nick} #{modes}\r\n")
+    else
+      {:error, :invalid_line}
+    end
+  end
+
+  @doc """
+  Sends `TOPIC <channel> :\\r\\n` — empty trailing parameter clears
+  the channel topic per RFC 2812 §3.2.4 (irssi `/topic -delete`
+  convention). Validates channel syntax with `{:error, :invalid_line}`
+  on rejection.
+
+  Consolidates the raw `send_line` arm previously open-coded in
+  `Grappa.Session.Server`'s `:send_topic_clear` handle_call (resp-A4 close).
+  """
+  @spec send_topic_clear(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_topic_clear(client, channel) do
+    if Identifier.valid_channel?(channel),
+      do: send_line(client, "TOPIC #{channel} :\r\n"),
+      else: {:error, :invalid_line}
+  end
+
   ## GenServer callbacks
 
   # `init/1` is intentionally non-blocking — TCP/TLS connect + handshake

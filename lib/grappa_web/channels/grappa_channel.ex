@@ -816,6 +816,7 @@ defmodule GrappaWeb.GrappaChannel do
       true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
     end
   end
 

@@ -180,6 +180,132 @@ defmodule Grappa.IRC.ClientTest do
       assert {:ok, "NICK vjt-away\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
     end
+
+    # cluster #9 (resp-A4 close): typed helpers for KICK / INVITE /
+    # banlist-query / umode / topic-clear. Each helper validates its
+    # identifier args via `Grappa.IRC.Identifier` predicates and
+    # returns `{:error, :invalid_line}` on rejection — same boundary
+    # discipline as the helpers above. Mirrors the
+    # `Grappa.Session.Server` arms that previously open-coded
+    # `Client.send_line(client, "<RAW>\r\n")`.
+
+    test "send_kick/4 emits KICK #chan nick :reason framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_kick(client, "#sniffo", "alice", "bad behaviour")
+
+      assert {:ok, "KICK #sniffo alice :bad behaviour\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "KICK"))
+    end
+
+    test "send_kick/4 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} =
+               Client.send_kick(client, "no-prefix", "alice", "reason")
+    end
+
+    test "send_kick/4 rejects malformed nick with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} =
+               Client.send_kick(client, "#sniffo", "bad nick with space", "reason")
+    end
+
+    test "send_kick/4 rejects CR/LF/NUL in reason with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} =
+               Client.send_kick(client, "#sniffo", "alice", "reason\r\nQUIT")
+    end
+
+    test "send_invite/3 emits INVITE nick #chan framing (RFC 2812 order)" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_invite(client, "#sniffo", "alice")
+
+      assert {:ok, "INVITE alice #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "INVITE"))
+    end
+
+    test "send_invite/3 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} =
+               Client.send_invite(client, "no-prefix", "alice")
+    end
+
+    test "send_invite/3 rejects malformed nick with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} =
+               Client.send_invite(client, "#sniffo", "bad nick")
+    end
+
+    test "send_banlist/2 emits MODE #chan b framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_banlist(client, "#sniffo")
+
+      assert {:ok, "MODE #sniffo b\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo b\r\n"))
+    end
+
+    test "send_banlist/2 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_banlist(client, "no-prefix")
+    end
+
+    test "send_umode/3 emits MODE nick modes framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_umode(client, "vjt", "+i")
+
+      assert {:ok, "MODE vjt +i\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE vjt +i\r\n"))
+    end
+
+    test "send_umode/3 rejects malformed nick with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_umode(client, "bad nick", "+i")
+    end
+
+    test "send_umode/3 rejects CR/LF/NUL in modes with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_umode(client, "vjt", "+i\r\nQUIT")
+    end
+
+    test "send_topic_clear/2 emits TOPIC #chan : framing (empty trailing param)" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_topic_clear(client, "#italia")
+
+      assert {:ok, "TOPIC #italia :\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "TOPIC #italia :\r\n"))
+    end
+
+    test "send_topic_clear/2 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_topic_clear(client, "no-prefix")
+    end
   end
 
   describe "inbound: server → client → dispatch_to" do
