@@ -18,6 +18,12 @@ defmodule Grappa.PubSub.Topic do
       — per-(user, network, channel) fan-out (the only shape currently
       broadcast on; network and user shapes are reserved for upcoming
       MOTD / NOTICE / connection-state events)
+    * `grappa:ws_presence:{user_name}` — server-internal bridge from
+      the WS edge (`Grappa.WSPresence`) to per-`(user, network)`
+      `Grappa.Session.Server` processes for auto-away timing. Distinct
+      direction (edge → session) and audience (per-session subscribers,
+      not browser clients) — never exposed via `parse/1` or `valid?/1`
+      so an external `Channel.join/3` cannot subscribe to it.
 
   Topic-shape evolution must go through this module: every broadcaster,
   every subscriber-side validator, and every router-side wildcard share
@@ -58,6 +64,27 @@ defmodule Grappa.PubSub.Topic do
     "grappa:user:" <>
       user_name <>
       "/network:" <> network_slug <> "/channel:" <> channel_name
+  end
+
+  @doc """
+  Builds the WSPresence bridge topic.
+
+  Internal grappa-side fan-out from the WS edge (`Grappa.WSPresence`)
+  to per-`(user, network)` `Grappa.Session.Server` processes for the
+  auto-away debounce. Distinct from `user/1`: direction (edge →
+  session), audience (per-session subscribers, NOT browser
+  subscribers), and lifecycle (subscribed at session boot, dropped on
+  session crash) all differ from the per-user broadcast surface.
+  Folding onto `user/1` would couple the two fan-out shapes and let
+  ws_presence noise reach Channel subscribers.
+
+  Excluded from `parse/1` and `valid?/1` on purpose: those validate
+  the public topic grammar enforced at `GrappaWeb.GrappaChannel.join/3`.
+  This bridge topic must never be subscribable by an external WS client.
+  """
+  @spec ws_presence(String.t()) :: t()
+  def ws_presence(user_name) when is_binary(user_name) and user_name != "" do
+    "grappa:ws_presence:" <> user_name
   end
 
   @doc """

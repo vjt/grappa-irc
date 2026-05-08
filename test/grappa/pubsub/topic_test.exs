@@ -63,6 +63,24 @@ defmodule Grappa.PubSub.TopicTest do
     end
   end
 
+  describe "ws_presence/1" do
+    test "builds the WSPresence bridge topic" do
+      assert Topic.ws_presence("vjt") == "grappa:ws_presence:vjt"
+    end
+
+    test "preserves identifiers verbatim" do
+      assert Topic.ws_presence("alice-2") == "grappa:ws_presence:alice-2"
+    end
+
+    test "raises on empty user_name" do
+      assert_raise FunctionClauseError, fn -> Topic.ws_presence("") end
+    end
+
+    test "raises on non-binary user_name" do
+      assert_raise FunctionClauseError, fn -> Topic.ws_presence(nil) end
+    end
+  end
+
   describe "parse/1" do
     test "parses a user topic" do
       assert Topic.parse("grappa:user:vjt") == {:ok, {:user, "vjt"}}

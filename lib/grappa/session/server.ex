@@ -425,7 +425,7 @@ defmodule Grappa.Session.Server do
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          "grappa:ws_presence:#{opts.subject_label}"
+          Topic.ws_presence(opts.subject_label)
         )
     end
 

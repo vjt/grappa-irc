@@ -56,6 +56,8 @@ defmodule Grappa.WSPresence do
 
   use Boundary, top_level?: true, deps: [Grappa.PubSub]
 
+  alias Grappa.PubSub.Topic
+
   require Logger
 
   # Test-only atom guarding `reset_for_test/0` — ONLY compiled in test mix env.
@@ -293,7 +295,7 @@ defmodule Grappa.WSPresence do
     :ok =
       Phoenix.PubSub.broadcast(
         Grappa.PubSub,
-        "grappa:ws_presence:#{user_name}",
+        Topic.ws_presence(user_name),
         event
       )
   end
