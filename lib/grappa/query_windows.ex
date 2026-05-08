@@ -39,7 +39,7 @@ defmodule Grappa.QueryWindows do
 
       %{kind: "query_windows_list", windows: Wire.render_grouped(list_for_user(user_id))}
 
-  The payload windows shape is `Grappa.QueryWindows.Wire.windows_map/0`
+  The payload windows shape is `t:Grappa.QueryWindows.Wire.windows_map/0`
   (snake_case keys, ISO-8601 strings). Pre-CP15 B6 the broadcast carried
   raw `%Window{}` structs which crashed the WS edge during fan-out;
   CP15 B6 added the Wire module + render_grouped/1 sweep, but the
@@ -88,7 +88,7 @@ defmodule Grappa.QueryWindows do
   @typedoc """
   Wire shape of a single `query_windows_list` event payload — the full current
   window list for the user, keyed by `network_id`. Carries the
-  `Grappa.QueryWindows.Wire.windows_map/0` snake_case projection
+  `t:Grappa.QueryWindows.Wire.windows_map/0` snake_case projection
   (NOT raw `%Window{}` structs — those crashed the WS edge fastlane
   pre-CP15 B6).
   """
