@@ -935,13 +935,8 @@ defmodule Grappa.Session.Server do
   # unset auto-away. Explicit away is left untouched — reconnecting a tab
   # should not silently clear a `/away` the user issued deliberately.
   def handle_info({:ws_connected, _}, state) do
-    state1 =
-      if is_reference(state.auto_away_timer) do
-        _ = Process.cancel_timer(state.auto_away_timer)
-        %{state | auto_away_timer: nil}
-      else
-        state
-      end
+    :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
+    state1 = %{state | auto_away_timer: nil}
 
     state2 =
       if state1.away_state == :away_auto do
@@ -961,12 +956,15 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:ws_all_disconnected, _}, state) do
-    # Cancel any existing debounce timer (shouldn't happen in normal flow,
-    # but guards against two rapid disconnect events — only the last wins).
-    _ =
-      if is_reference(state.auto_away_timer) do
-        Process.cancel_timer(state.auto_away_timer)
-      end
+    # Cancel any existing debounce timer + drain a possibly-already-fired
+    # :auto_away_debounce_fire from the mailbox. Two rapid disconnects
+    # ~30s apart used to leave the OLD timer's fire queued ahead of the
+    # second handler, which then ran set_auto_away_internal at T=30s
+    # instead of T=60s — and the second timer would later fire again,
+    # producing a duplicate upstream AWAY + an away_started_at jump that
+    # broke maybe_broadcast_mentions_bundle's window-boundary aggregation
+    # (lifecycle review HIGH S3).
+    :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
 
     timer = Process.send_after(self(), :auto_away_debounce_fire, @auto_away_debounce_ms)
     {:noreply, %{state | auto_away_timer: timer}}
@@ -984,22 +982,44 @@ defmodule Grappa.Session.Server do
     {:noreply, next_state}
   end
 
-  # Linked Client crashed. Record a backoff failure (so the next
-  # respawn waits longer) then propagate the stop. The Backoff cast is
-  # asynchronous; the GenServer.cast doesn't block this stop, but the
+  # Linked Client crashed abnormally. Record a backoff failure (so the
+  # next respawn waits longer) then propagate the stop. The Backoff cast
+  # is asynchronous; the GenServer.cast doesn't block this stop, but the
   # `Backoff` GenServer's mailbox processes it before our respawned
   # init/1 re-reads `wait_ms/2` (the supervisor's restart path is not
   # instant — it runs after this terminate completes).
+  #
+  # Reason guard excludes :normal / :shutdown — those are clean teardown
+  # paths (operator-initiated park via T32 disconnect, supervisor-driven
+  # shutdown, future Client.stop/1 for planned teardown). A clean exit
+  # bumping the backoff counter would gate the next /connect for the
+  # full backoff window — false-failure backoff (lifecycle review HIGH
+  # S2). Clean exits fall through to the next clause for plain
+  # propagation without Backoff bookkeeping.
   def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
-      when client_pid != nil do
+      when client_pid != nil and reason != :normal and reason != :shutdown do
     :ok = Backoff.record_failure(state.subject, state.network_id)
     {:stop, {:client_exit, reason}, %{state | client: nil}}
   end
 
-  # Supervisor-issued shutdown — propagate without recording a failure
-  # (operator/Bootstrap-driven, not a crash). GenServer's default would
-  # do the same; explicit clause for clarity + so the Logger.warning
-  # catchall below doesn't fire.
+  # Clean linked-Client exit (operator stop / planned teardown / supervisor
+  # shutdown) — propagate the same {:client_exit, reason} wrap shape used by
+  # the abnormal clause, but skip the Backoff bump. Wrapping :normal /
+  # :shutdown into {:client_exit, _} is intentional so the supervisor's
+  # restart strategy classification stays consistent: :transient sessions
+  # don't restart on these reasons (the wrapped tuple is "abnormal" to the
+  # supervisor, but Bootstrap won't respawn the session unless it's been
+  # asked to via T32 unpark — the operator-driven path).
+  def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
+      when client_pid != nil and (reason == :normal or reason == :shutdown) do
+    {:stop, {:client_exit, reason}, %{state | client: nil}}
+  end
+
+  # Supervisor-issued shutdown of a non-Client linked process — propagate
+  # without recording a failure. Currently unreachable in production
+  # (Client is the only linked spawn per init/1), but kept as a defensive
+  # catchall so a future linked-process addition doesn't accidentally
+  # surface in the Logger.warning catchall below.
   def handle_info({:EXIT, _, reason}, state)
       when reason == :shutdown or reason == :normal do
     {:stop, reason, state}
@@ -1466,10 +1486,7 @@ defmodule Grappa.Session.Server do
   end
 
   defp stage_pending_auth(state, password) do
-    _ =
-      if is_reference(state.pending_auth_timer) do
-        Process.cancel_timer(state.pending_auth_timer)
-      end
+    :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
     deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
@@ -1486,10 +1503,7 @@ defmodule Grappa.Session.Server do
 
     case next.phase do
       terminal when terminal in [:succeeded, :failed] ->
-        _ =
-          if is_reference(state.ghost_timer) do
-            Process.cancel_timer(state.ghost_timer)
-          end
+        :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
 
         {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
 
@@ -1717,12 +1731,19 @@ defmodule Grappa.Session.Server do
     # Joining wipes any prior :failed / :kicked snapshot mirrors —
     # otherwise a successful re-join would leave stale by/reason/numeric
     # in state and the next snapshot push for this channel would lie.
+    # Also strips the in-flight-JOIN tracker keyed by lowercase channel —
+    # symmetric with the failure-numeric path (event_router.ex:698) which
+    # already strips on the failure side. Without this, the entry sits
+    # for up to 30s and an unsolicited late 471/473 numeric within the
+    # TTL window can correlate against the ghost and corrupt window
+    # state from :joined back to :failed (lifecycle review HIGH S1).
     state = %{
       state
       | window_states: Map.put(state.window_states, channel, :joined),
         window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
         window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
-        window_kicked_meta: Map.delete(state.window_kicked_meta, channel)
+        window_kicked_meta: Map.delete(state.window_kicked_meta, channel),
+        in_flight_joins: Map.delete(state.in_flight_joins, String.downcase(channel))
     }
 
     apply_effects(rest, state)
@@ -1930,10 +1951,7 @@ defmodule Grappa.Session.Server do
         Logger.warning("visitor_r_observed effect on user session — ignored")
     end
 
-    _ =
-      if is_reference(state.pending_auth_timer) do
-        Process.cancel_timer(state.pending_auth_timer)
-      end
+    :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
   end
@@ -2048,6 +2066,36 @@ defmodule Grappa.Session.Server do
       "@" in modes -> 0
       "+" in modes -> 1
       true -> 2
+    end
+  end
+
+  @doc false
+  # Cancel `ref` and consume its message from the mailbox if it had already
+  # fired. `Process.cancel_timer/1` returns `false` when the timer has
+  # already delivered its message — without a follow-up selective receive,
+  # that stale message sits in the mailbox and runs the next time the
+  # GenServer dispatches, racing whatever fresh state was set up after the
+  # cancel call (lifecycle review HIGH S3).
+  #
+  # Public-with-`@doc false` so unit tests can exercise the primitive
+  # directly: every call site (auto-away debounce, pending-auth timeout,
+  # ghost-recovery timeout) shares this exact shape and the only way to
+  # cover the post-fire branch deterministically is to drive a real timer
+  # from the test process.
+  @spec cancel_and_drain(reference() | nil, atom()) :: :ok
+  def cancel_and_drain(nil, _), do: :ok
+
+  def cancel_and_drain(ref, msg) when is_reference(ref) and is_atom(msg) do
+    case Process.cancel_timer(ref) do
+      ms_left when is_integer(ms_left) ->
+        :ok
+
+      false ->
+        receive do
+          ^msg -> :ok
+        after
+          0 -> :ok
+        end
     end
   end
 

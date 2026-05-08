@@ -32,7 +32,7 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.GhostRecovery
+  alias Grappa.Session.{Backoff, GhostRecovery}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -232,6 +232,176 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Session.stop_session(visitor_subject, network.id)
       :ok = GenServer.stop(user_pid, :normal, 1_000)
+    end
+  end
+
+  describe "linked Client EXIT — backoff accounting (lifecycle review HIGH S2)" do
+    # The {:EXIT, client_pid, reason} clause keyed on `state.client = client_pid`
+    # used to record a Backoff failure UNCONDITIONALLY. Operator-initiated
+    # clean teardown (T32 disconnect verb, planned Client.stop/1, supervisor
+    # :shutdown) made the linked Client exit :normal/:shutdown — but the
+    # session still bumped the backoff counter. The next /connect (T32 unpark)
+    # then waited the full backoff before reattempting. False-failure backoff.
+    #
+    # The fix tightens the first clause's reason guard so :normal / :shutdown
+    # exits fall through to the supervisor-shutdown clause (no Backoff bump);
+    # only abnormal exits (:tcp_closed, {:connect_failed, _}, parser crashes,
+    # …) record a failure.
+
+    test ":shutdown exit from linked Client does NOT record a Backoff failure" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      # Reset Backoff to a known-zero baseline (handshake/connect could
+      # have left a stale entry from a previous run in the singleton ETS
+      # table; reset is operator-intent, idempotent).
+      :ok = Backoff.reset({:user, user.id}, network.id)
+
+      # Capture the linked Client pid + monitor the Session, then synthesize
+      # a clean EXIT exactly as a planned Client.stop/1 would.
+      state = :sys.get_state(pid)
+      client_pid = state.client
+      assert is_pid(client_pid)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      # GenServer.stop with :shutdown — mirrors what a planned Client.stop/1
+      # path (T32 disconnect verb) would do. Process.exit(pid, :shutdown)
+      # would also terminate the linked Client, but GenServer.stop is the
+      # idiomatic API for clean GenServer teardown.
+      :ok = GenServer.stop(client_pid, :shutdown, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      # Backoff cast lands on the singleton GenServer mailbox; flush via a
+      # synchronous round-trip (failure_count is a direct ETS read but we
+      # need to make sure any in-flight cast for THIS key has been processed
+      # before sampling). A trivial reset for an unrelated key serializes
+      # behind any prior cast on the same mailbox.
+      :ok = Backoff.reset({:user, Ecto.UUID.generate()}, -1)
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 0,
+             "Clean Client :shutdown must not bump the Backoff counter — " <>
+               "next reconnect would be gated by stale backoff."
+    end
+
+    test ":normal exit from linked Client does NOT record a Backoff failure" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Backoff.reset({:user, user.id}, network.id)
+
+      state = :sys.get_state(pid)
+      client_pid = state.client
+      assert is_pid(client_pid)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      # GenServer.stop with :normal — Erlang semantics: bare Process.exit/2
+      # with :normal from another process is a no-op; GenServer.stop drives
+      # the GenServer through its own terminate path with :normal reason,
+      # producing the EXIT message the Session is expected to handle.
+      :ok = GenServer.stop(client_pid, :normal, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      :ok = Backoff.reset({:user, Ecto.UUID.generate()}, -1)
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 0
+    end
+
+    test "abnormal Client exit DOES record a Backoff failure (regression)" do
+      # The fix must not change behavior for genuine crashes — the per-failure
+      # exponential ladder still gates real network instability. Synthesize an
+      # abnormal exit reason directly (Process.exit/2 with a non-clean reason
+      # mirrors what tcp_closed / parser-crash would produce in production:
+      # the linked Client dies with a non-:normal/:shutdown reason and the
+      # session's EXIT clause must still bump Backoff).
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Backoff.reset({:user, user.id}, network.id)
+
+      state = :sys.get_state(pid)
+      client_pid = state.client
+      assert is_pid(client_pid)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      Process.exit(client_pid, :tcp_closed)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_500
+
+      :ok = Backoff.reset({:user, Ecto.UUID.generate()}, -1)
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 1
+    end
+  end
+
+  describe "cancel_and_drain/2 — stale-fire mailbox drain (lifecycle review HIGH S3)" do
+    # Process.cancel_timer/1 returns false when the timer has already
+    # delivered its message. Without a follow-up selective receive, that
+    # stale message sits in the mailbox and runs the next time the
+    # GenServer dispatches — racing whatever fresh state was set up
+    # immediately after the cancel call.
+    #
+    # Concrete repro from the review: two :ws_all_disconnected events
+    # ~30s apart leave the OLD :auto_away_debounce_fire queued ahead of
+    # the second handler, which then runs set_auto_away_internal at
+    # T=30s instead of T=60s — and the fresh timer later fires AGAIN,
+    # producing duplicate upstream AWAY + away_started_at jump that
+    # breaks maybe_broadcast_mentions_bundle's window-boundary
+    # aggregation.
+    #
+    # The helper is `@doc false def` (not `defp`) so unit tests can
+    # drive a real Process.send_after/3 from the test process and
+    # observe the post-fire branch deterministically.
+
+    alias Grappa.Session.Server
+
+    test "drains the stale message when timer has already fired" do
+      ref = Process.send_after(self(), :probe, 1)
+      Process.sleep(15)
+      # Sanity: the stale message is in the mailbox (refute_received
+      # before would consume it; we let cancel_and_drain do that work).
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      refute_received :probe
+    end
+
+    test "cancels live timer cleanly without leaving the message in mailbox" do
+      ref = Process.send_after(self(), :probe, 60_000)
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      refute_received :probe
+    end
+
+    test "nil ref is a no-op" do
+      assert :ok = Server.cancel_and_drain(nil, :probe)
+    end
+
+    test "drains only the matching message — leaves siblings untouched" do
+      # Selective receive must not steal an unrelated message that
+      # happens to be ahead in the mailbox. The drain pattern matches
+      # the literal `^msg` only.
+      ref = Process.send_after(self(), :probe, 1)
+      Process.sleep(15)
+      send(self(), :other_message)
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      # :probe drained, :other_message preserved.
+      refute_received :probe
+      assert_received :other_message
     end
   end
 
@@ -876,6 +1046,12 @@ defmodule Grappa.Session.ServerTest do
 
       state = :sys.get_state(pid)
       assert state.window_states["#test"] == :joined
+      # S1 (lifecycle review HIGH): self-JOIN echo strips the in-flight
+      # entry — symmetric with the failure-numeric path (event_router.ex:698).
+      # Without the strip, a stale entry can survive 30s and let an
+      # unsolicited 471/473 corrupt the window state machine
+      # (apply_effects[:join_failed] would overwrite :joined → :failed).
+      refute Map.has_key?(state.in_flight_joins, "#test")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
