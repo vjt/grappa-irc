@@ -3354,12 +3354,21 @@ defmodule Grappa.Session.ServerTest do
       # noise keeps it out of the test output. The wire-side assertion
       # is the negative one: the underscore-variant NICK never appears,
       # because Server doesn't run GhostRecovery for nil-password.
+      #
+      # The wait may resolve as `:timeout` (deadline elapsed with no
+      # match) OR `:tcp_closed` (S7: post-cluster #10 the IRCServer
+      # drains pending waiters when the upstream socket closes mid-
+      # wait, and AuthFSM's :nick_rejected stop closes the socket
+      # promptly). Both encode "the NICK was never sent" — that is the
+      # load-bearing assertion.
       capture_log(fn ->
         _ = start_visitor_session_for(visitor, network)
         :ok = await_handshake(server)
 
-        assert {:error, :timeout} =
+        assert {:error, reason} =
                  IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"), 200)
+
+        assert reason in [:timeout, :tcp_closed]
       end)
     end
 

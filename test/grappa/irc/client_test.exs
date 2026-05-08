@@ -1037,4 +1037,39 @@ defmodule Grappa.IRC.ClientTest do
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
     end
   end
+
+  describe "IRCServer wait_for_line drain on tcp_closed (S7)" do
+    # S7 (audit row irc S7): pre-S7 a wait_for_line/3 caller blocked on
+    # a predicate that would NEVER match because the socket had closed
+    # spent its full timeout window before resolving. Post-S7 the
+    # `{:tcp_closed, _}` handler drains every pending waiter with
+    # `{:error, :tcp_closed}` so the caller distinguishes a genuine
+    # upstream close from a deadline miss.
+
+    test "tcp_closed drains pending waiters with {:error, :tcp_closed}" do
+      {:ok, server} = IRCServer.start_link(passthrough_handler())
+      port = IRCServer.port(server)
+      client = start_client(port)
+
+      # Register a long-deadline waiter for a line the client will
+      # never send — without S7 we'd wait ~10s for the timer to fire.
+      task =
+        Task.async(fn ->
+          IRCServer.wait_for_line(server, &(&1 == "NEVER\r\n"), 10_000)
+        end)
+
+      # Yield so the task GenServer.calls and the waiter lands in state.
+      Process.sleep(50)
+
+      # Force a socket close by stopping the client (link severs the
+      # accepted socket; the server's `:tcp_closed` lands in handle_info).
+      Process.flag(:trap_exit, true)
+      Process.exit(client, :kill)
+
+      # The waiter resolves promptly with :tcp_closed, NOT after the
+      # 10s deadline. Cap the assertion at 2s — the drain is a single
+      # GenServer.reply per waiter, microseconds.
+      assert {:error, :tcp_closed} = Task.await(task, 2_000)
+    end
+  end
 end

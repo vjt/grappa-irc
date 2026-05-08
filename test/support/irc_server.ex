@@ -68,12 +68,16 @@ defmodule Grappa.IRCServer do
   def feed(server, line), do: GenServer.cast(server, {:feed, line})
 
   @spec wait_for_line(pid(), (binary() -> boolean()), pos_integer()) ::
-          {:ok, binary()} | {:error, :timeout}
+          {:ok, binary()} | {:error, :timeout | :tcp_closed}
   def wait_for_line(server, predicate, timeout)
       when is_function(predicate, 1) and is_integer(timeout) and timeout > 0 do
     # Outer call timeout is `timeout + 100` so the server-side timer
     # always fires first and the call returns `{:error, :timeout}`
-    # cleanly rather than as a `GenServer.call/3` exit.
+    # cleanly rather than as a `GenServer.call/3` exit. S7 (audit row
+    # irc S7): when the upstream socket closes mid-wait the server
+    # drains all pending waiters with `{:error, :tcp_closed}` instead
+    # of leaving them to time out — the timeout loss-of-signal hid
+    # genuine close races behind the same deadline as no-line cases.
     GenServer.call(server, {:wait_for, predicate, timeout}, timeout + 100)
   end
 
@@ -190,7 +194,21 @@ defmodule Grappa.IRCServer do
     {:noreply, notify_waiters(new_state, line)}
   end
 
-  def handle_info({:tcp_closed, _}, state), do: {:noreply, %{state | sock: nil}}
+  # S7 (audit row irc S7): on socket close, drain every pending
+  # `wait_for_line/3` waiter with `{:error, :tcp_closed}` so the
+  # caller distinguishes a genuine upstream close from a deadline
+  # miss. Pre-S7 the waiters were left in state.waiters until their
+  # `Process.send_after/3` timeout fired — a 1s wait that the
+  # upstream had already lost the socket on still spent the full
+  # window before resolving. The reply atom mirrors the GenServer
+  # stop-reason a real client emits on `:tcp_closed`.
+  def handle_info({:tcp_closed, _}, state) do
+    Enum.each(state.waiters, fn {_, _, from} ->
+      GenServer.reply(from, {:error, :tcp_closed})
+    end)
+
+    {:noreply, %{state | sock: nil, waiters: []}}
+  end
 
   # L-irc-2: with `:trap_exit, true` the spawn_link'd acceptor's
   # normal exit (and any future linked process) lands in the mailbox
