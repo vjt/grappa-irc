@@ -101,6 +101,20 @@ defmodule Grappa.Scrollback.Message do
 
   @body_required_kinds [:privmsg, :notice, :action, :topic]
 
+  # M8 fix 2026-05-08: kinds for which `:dm_with` may legitimately
+  # carry a peer nick. Inbound + outbound DM flows persist as
+  # :privmsg or :action (CTCP ACTION) — every other kind (presence
+  # events, channel mode changes, topic sets) is channel-scoped by
+  # construction and MUST have `dm_with: nil`. Pinning the rule here
+  # closes the convention-not-contract gap noted in audit row
+  # `persistence M8`: pre-fix the @spec declared dm_with as
+  # `String.t() | nil` for every kind, but the caller-side typespec
+  # was informal — a caller bug (forgetting to nil dm_with on a
+  # :join row) silently contaminated the active/archive
+  # view-derivation rule that depends on dm_with being unique to DM
+  # rows.
+  @dm_with_eligible_kinds [:privmsg, :action]
+
   @doc """
   Returns the closed-set list of valid `:kind` values. Exposed so
   tests can drive coverage assertions over the full enum (e.g.
@@ -202,6 +216,7 @@ defmodule Grappa.Scrollback.Message do
     |> validate_identifier(:channel, &valid_target?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
+    |> validate_dm_with_for_kind()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
@@ -233,6 +248,29 @@ defmodule Grappa.Scrollback.Message do
     case get_field(changeset, :kind) do
       kind when kind in @body_required_kinds -> validate_required(changeset, [:body])
       _ -> changeset
+    end
+  end
+
+  # M8 fix 2026-05-08: enforce per-kind discipline on `:dm_with`.
+  # Only :privmsg and :action persist DM peer info; every other kind
+  # is channel-scoped and `dm_with` MUST be nil. Without this guard,
+  # a caller bug (passing a stray dm_with on a :join, :mode, :topic,
+  # :nick_change, etc.) silently corrupts the active/archive
+  # derivation in `Scrollback.list_archive/3` (which uses
+  # `COALESCE(dm_with, channel)` to derive the per-window key).
+  # Reuses `add_error/3` rather than a custom validator macro so the
+  # error-shape stays uniform with the body / identifier validators.
+  @spec validate_dm_with_for_kind(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_dm_with_for_kind(changeset) do
+    case {get_field(changeset, :kind), get_field(changeset, :dm_with)} do
+      {_, nil} ->
+        changeset
+
+      {kind, _} when kind in @dm_with_eligible_kinds ->
+        changeset
+
+      {_, _} ->
+        add_error(changeset, :dm_with, "may only be set on :privmsg or :action rows")
     end
   end
 

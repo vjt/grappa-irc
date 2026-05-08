@@ -309,6 +309,65 @@ defmodule Grappa.ScrollbackTest do
       assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
       assert "can't be blank" in errors_on(cs).body
     end
+
+    # M8 fix 2026-05-08: per-kind dm_with validation. Pre-M8 the @spec
+    # declared `optional(:dm_with) => String.t() | nil` but enforcement
+    # of "dm_with is only meaningful on :privmsg / :action rows" was
+    # informal — the schema cast it for ANY kind. A caller bug
+    # (forgetting to nil it on a :join row, or setting it on a
+    # presence event) silently persisted a non-nil dm_with on a
+    # non-DM row, contaminating the active/archive view-derivation
+    # rule. Per-kind validation pins the contract in the changeset.
+    test "rejects non-nil :dm_with on a non-DM kind (:join)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :join,
+        sender: "alice",
+        body: nil,
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
+      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+    end
+
+    test "rejects non-nil :dm_with on a non-DM kind (:topic)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :topic,
+        sender: "vjt",
+        body: "the new topic",
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
+      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+    end
+
+    test "accepts :dm_with = nil on any non-DM kind (no false positive)",
+         %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :join,
+        sender: "alice",
+        body: nil,
+        meta: %{},
+        dm_with: nil
+      }
+
+      assert {:ok, %Message{kind: :join, dm_with: nil}} = Scrollback.persist_event(attrs)
+    end
   end
 
   describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do

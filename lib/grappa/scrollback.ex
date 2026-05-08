@@ -90,6 +90,15 @@ defmodule Grappa.Scrollback do
   `:privmsg | :notice | :action | :topic` require non-nil body;
   `:join | :part | :quit | :nick_change | :mode | :kick` accept
   `body: nil` (presence kinds + state changes).
+
+  `:dm_with` is per-kind constrained too (M8 fix 2026-05-08): only
+  `:privmsg` and `:action` may carry a non-nil peer nick. Every
+  other kind MUST omit `:dm_with` (or pass `nil`); a stray peer
+  nick on a presence event surfaces as a typed changeset error
+  rather than silently corrupting the active/archive view-derivation
+  in `list_archive/3` (which uses `COALESCE(dm_with, channel)` to
+  pick the per-window key). Caller-side: `Scrollback.dm_peer/4` is
+  the canonical computer of the value — pass its result directly.
   """
   @spec persist_event(%{
           optional(:user_id) => Ecto.UUID.t(),
