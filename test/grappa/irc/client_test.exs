@@ -1038,6 +1038,47 @@ defmodule Grappa.IRC.ClientTest do
     end
   end
 
+  describe "IRCServer.start_link/2 (S11): initial handler state" do
+    # S11 (audit row irc S11): pre-cluster the only arity was
+    # `start_link(handler)` which seeded handler_state to `%{}`. A
+    # handler that needed scripted state from the start (e.g. a
+    # multi-step counter) had to encode it via Process dict tricks.
+    # The two-arity form makes the seed explicit at the test boundary.
+
+    test "passes initial_state through to first handler invocation" do
+      # Counter handler: expects state to start at 41, increments per
+      # inbound line, replies with the current counter value as a
+      # bogus PING token. Without S11 the handler would see %{} and
+      # crash on Map.update!(/:counter, ...).
+      counter_handler = fn state, _ ->
+        next = Map.update!(state, :counter, &(&1 + 1))
+        {:reply, "PING :#{next.counter}\r\n", next}
+      end
+
+      {:ok, server} = IRCServer.start_link(counter_handler, %{counter: 41})
+
+      port = IRCServer.port(server)
+      _ = start_client(port)
+
+      # First inbound line is the handshake's CAP LS or NICK; the handler
+      # bumps the counter to 42 and writes back PING :42. We don't care
+      # about the exact line — only that the seeded state was visible.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+    end
+
+    test "start_link/1 still works (no-state delegate to start_link/2)" do
+      # The /1 arity is the existing legacy contract — every existing
+      # caller in the test suite uses it. S11 must not break it.
+      {:ok, server} = IRCServer.start_link(passthrough_handler())
+      port = IRCServer.port(server)
+      _ = start_client(port)
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+    end
+  end
+
   describe "IRCServer wait_for_line drain on tcp_closed (S7)" do
     # S7 (audit row irc S7): pre-S7 a wait_for_line/3 caller blocked on
     # a predicate that would NEVER match because the socket had closed

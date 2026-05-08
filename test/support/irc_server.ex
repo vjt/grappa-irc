@@ -53,9 +53,30 @@ defmodule Grappa.IRCServer do
 
   ## API
 
+  @doc """
+  Spawns the fake IRC server with `handler` driving inbound-line
+  reactions. Initial handler state is `%{}` — equivalent to
+  `start_link/2` with `initial_state` of `%{}`. Use `start_link/2`
+  when the handler needs scripted state from the start (e.g. a
+  per-test reply counter, multi-stage SASL choreography).
+  """
   @spec start_link(handler()) :: GenServer.on_start()
   def start_link(handler) when is_function(handler, 2) do
-    GenServer.start_link(__MODULE__, handler)
+    start_link(handler, %{})
+  end
+
+  @doc """
+  Spawns the fake IRC server with `handler` and an explicit
+  `initial_state` for the handler — the value passed as the first
+  arg to the very first `handler.(state, line)` invocation. S11
+  (audit row irc S11): pre-cluster only the no-state arity existed,
+  so handlers that needed seeded counters / scripted-step indices
+  had to encode startup state via Process dict tricks. The two-arity
+  form makes the seed explicit at the test boundary.
+  """
+  @spec start_link(handler(), handler_state()) :: GenServer.on_start()
+  def start_link(handler, initial_state) when is_function(handler, 2) do
+    GenServer.start_link(__MODULE__, {handler, initial_state})
   end
 
   @spec port(pid()) :: :inet.port_number()
@@ -84,7 +105,7 @@ defmodule Grappa.IRCServer do
   ## GenServer
 
   @impl GenServer
-  def init(handler) do
+  def init({handler, initial_state}) do
     # L-irc-2: trap exits so `terminate/2` runs on link-driven shutdown
     # too (not just normal `:stop`). Without this the listen socket and
     # accepted client socket leak when the test process exits — Eaccept
@@ -129,7 +150,7 @@ defmodule Grappa.IRCServer do
        port: port,
        sock: nil,
        handler: handler,
-       handler_state: %{},
+       handler_state: initial_state,
        sent: [],
        # M-irc-2: waiters is a list of `{ref, predicate, from}`. The
        # ref ties a waiter to its `Process.send_after/3` timeout token
