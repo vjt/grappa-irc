@@ -92,11 +92,14 @@ test("CP15 B6 — peer KICKs vjt; window flips to kicked, stays in active sideba
   await expect(composeBox).toHaveClass(/compose-box-greyed/, { timeout: 5_000 });
   await expect(page.locator("p.compose-box-not-joined")).toBeVisible();
 
-  // MembersPane: "not joined" muted text branch — kicked → state ∉
-  // {joined}, members no longer rendered.
-  await expect(membersPane.locator("p.muted", { hasText: /not joined/i })).toBeVisible({
-    timeout: 5_000,
-  });
+  // MembersPane is suppressed entirely after KICK (post
+  // cic-members-panel-scope-fix 2026-05-08). Pre-fix the pane stayed
+  // mounted with a "not joined" muted stub; the right-hand 14rem grid
+  // column stayed reserved for nothing. Post-fix Shell.tsx omits the
+  // `<MembersPane>` mount via the `isActiveChannelJoined()` predicate
+  // and adds `.shell-no-members` to collapse the column.
+  await expect(membersPane).toHaveCount(0, { timeout: 5_000 });
+  await expect(page.locator(".shell.shell-no-members, .shell-mobile")).toHaveCount(1);
 
   // KICK message visible in scrollback with the reason. data-kind is
   // "kick" per ScrollbackPane.tsx's typed-line case for kick events.

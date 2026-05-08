@@ -98,14 +98,15 @@ test("CP15 B6 — /join transitions pending → failed for invite-only channel; 
   await expect(composeBox).toHaveClass(/compose-box-greyed/, { timeout: 5_000 });
   await expect(page.locator("p.compose-box-not-joined")).toBeVisible();
 
-  // MembersPane: "not joined" muted text branch (state ∉ {joined}).
-  // No "loading…" text; no member <li>s.
-  const membersPane = page.locator(".members-pane");
-  await expect(membersPane).toBeVisible();
-  await expect(membersPane.locator("p.muted", { hasText: /not joined/i })).toBeVisible({
-    timeout: 5_000,
-  });
-  await expect(membersPane.locator("p.muted", { hasText: /loading/i })).toHaveCount(0);
+  // MembersPane is suppressed entirely for non-joined states (post
+  // cic-members-panel-scope-fix 2026-05-08): failed / kicked / parked
+  // channels carry no member-list-shaped UI, so the right-hand pane
+  // doesn't mount. The desktop grid collapses via .shell-no-members
+  // (CSS column reclamation). Pre-fix this test asserted the
+  // "not joined" muted stub, which Shell rendered unconditionally —
+  // that was the buggy behavior surfaced during cluster #4 smoke.
+  await expect(page.locator(".shell-members .members-pane")).toHaveCount(0, { timeout: 5_000 });
+  await expect(page.locator(".shell.shell-no-members, .shell-mobile")).toHaveCount(1);
 
   // Failure reason as a notice scrollback line. Bahamut sends
   // "Cannot join channel (+i)" — the cic-side row carries the reason

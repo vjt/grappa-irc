@@ -10,6 +10,7 @@ import { channelsBySlug, networks, user } from "./lib/networks";
 import { setReadCursor } from "./lib/readCursor";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
+import { isActiveChannelJoined } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import ScrollbackPane from "./ScrollbackPane";
@@ -186,12 +187,28 @@ const Shell: Component = () => {
     ),
   );
 
+  // Auto-close the members drawer when the active selection no longer
+  // has a member-list-shaped UI (DM, server, mentions, parked/failed/
+  // kicked channel). Otherwise the open-state lingers and the next
+  // joined-channel selection re-opens the drawer immediately, fighting
+  // user intent. defer: true skips the initial run (no drawer to close
+  // before any user interaction).
+  createEffect(
+    on(
+      isActiveChannelJoined,
+      (joined) => {
+        if (!joined) setMembersOpen(false);
+      },
+      { defer: true },
+    ),
+  );
+
   return (
     <Show
       when={isMobile()}
       fallback={
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
-        <div class="shell">
+        <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
           <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
             <Sidebar onSelect={() => setSidebarOpen(false)} />
           </aside>
@@ -287,7 +304,7 @@ const Shell: Component = () => {
           </section>
 
           <aside class="shell-members" classList={{ open: membersOpen() }}>
-            <Show when={selectedChannel()}>
+            <Show when={isActiveChannelJoined() && selectedChannel()}>
               {(sel) => (
                 <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
               )}
@@ -392,7 +409,7 @@ const Shell: Component = () => {
         <BottomBar />
 
         <aside class="shell-members" classList={{ open: membersOpen() }}>
-          <Show when={selectedChannel()}>
+          <Show when={isActiveChannelJoined() && selectedChannel()}>
             {(sel) => (
               <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
             )}

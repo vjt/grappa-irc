@@ -15,6 +15,9 @@ import { channelKey } from "../lib/channelKey";
 
 vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
+  // Pulled in transitively by selection.ts → scrollback.ts.
+  listMessages: vi.fn().mockResolvedValue([]),
+  displayNick: (u: { nick: string }) => u.nick,
 }));
 
 beforeEach(() => {
@@ -164,6 +167,157 @@ describe("windowState.setPending (operator clicked JOIN — optimistic visual fe
     ws.setPending(key);
 
     expect(ws.windowStateByChannel()[key]).toBe("pending");
+  });
+});
+
+describe("windowState.windowIsJoined (primitive predicate)", () => {
+  it("returns true for a key in joined state", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#grappa");
+
+    ws.setJoined(key);
+
+    expect(ws.windowIsJoined(key)).toBe(true);
+  });
+
+  it("returns false for a key in pending state", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#cic-test-pending");
+
+    ws.setPending(key);
+
+    expect(ws.windowIsJoined(key)).toBe(false);
+  });
+
+  it("returns false for a key in failed state", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#cic-test-failed");
+
+    ws.setFailed(key, "Cannot join channel (+i)", 473);
+
+    expect(ws.windowIsJoined(key)).toBe(false);
+  });
+
+  it("returns false for a key in kicked state", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#cic-test-kicked");
+
+    ws.setKicked(key, "op", "behave");
+
+    expect(ws.windowIsJoined(key)).toBe(false);
+  });
+
+  it("returns false for a key absent from windowStateByChannel (parted/never-joined/server/DM)", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#never-joined");
+
+    expect(ws.windowIsJoined(key)).toBe(false);
+  });
+});
+
+describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)", () => {
+  it("returns true when active selection is a joined channel", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    const key = channelKey("freenode", "#grappa");
+
+    ws.setJoined(key);
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(true);
+  });
+
+  it("returns false when active selection is a channel in pending state", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    const key = channelKey("freenode", "#cic-test-pending");
+
+    ws.setPending(key);
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cic-test-pending",
+      kind: "channel",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when active selection is a channel in failed state", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    const key = channelKey("freenode", "#cic-test-failed");
+
+    ws.setFailed(key, "Cannot join channel (+i)", 473);
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cic-test-failed",
+      kind: "channel",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when active selection is a channel in kicked state", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    const key = channelKey("freenode", "#cic-test-kicked");
+
+    ws.setKicked(key, "op", "behave");
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cic-test-kicked",
+      kind: "channel",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when active selection is a query (DM) — no member list possible", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "alice",
+      kind: "query",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when active selection is the server window", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: ":server",
+      kind: "server",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when active selection is the mentions window", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    selection.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: ":mentions",
+      kind: "mentions",
+    });
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
+  });
+
+  it("returns false when no channel is selected", async () => {
+    const ws = await import("../lib/windowState");
+    const selection = await import("../lib/selection");
+    selection.setSelectedChannel(null);
+
+    expect(ws.isActiveChannelJoined()).toBe(false);
   });
 });
 

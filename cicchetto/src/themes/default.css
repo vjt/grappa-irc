@@ -164,6 +164,16 @@ body {
   min-height: 0;
 }
 
+/* Suppress the right (members) column when the active window has no
+   member-list-shaped UI (DM, server, mentions, parked/failed/kicked
+   channel). Members aside is rendered empty in the same condition by
+   Shell.tsx; collapsing the column reclaims the grid space so the main
+   pane fills the screen instead of showing a 14rem void. Mobile-only
+   .shell-mobile is single-column so the modifier is a no-op there. */
+.shell.shell-no-members {
+  grid-template-columns: 16rem 1fr;
+}
+
 .shell-sidebar {
   border-right: 1px solid var(--border);
   background: var(--bg-alt);

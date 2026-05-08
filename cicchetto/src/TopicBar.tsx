@@ -3,6 +3,7 @@ import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
 import { isMobile } from "./lib/theme";
+import { windowIsJoined } from "./lib/windowState";
 
 // Top bar of the middle pane. Hosts:
 //  * left ☰ hamburger — opens the channel sidebar drawer (DESKTOP ONLY;
@@ -99,15 +100,21 @@ const TopicBar: Component<Props> = (props) => {
           {modeStr()}
         </span>
       </Show>
-      <span class="topic-bar-count">{memberCount()} nicks</span>
-      <button
-        type="button"
-        class="topic-bar-hamburger"
-        aria-label="open members sidebar"
-        onClick={props.onToggleMembers}
-      >
-        ☰
-      </button>
+      {/* Nick count + members hamburger only when actively joined.
+          Parked / failed / kicked channels have stale or absent member
+          lists; the right pane is suppressed in Shell.tsx for the same
+          reason — this hides the toggle that would otherwise dangle. */}
+      <Show when={windowIsJoined(key())}>
+        <span class="topic-bar-count">{memberCount()} nicks</span>
+        <button
+          type="button"
+          class="topic-bar-hamburger"
+          aria-label="open members sidebar"
+          onClick={props.onToggleMembers}
+        >
+          ☰
+        </button>
+      </Show>
       <button
         type="button"
         class="topic-bar-settings"
