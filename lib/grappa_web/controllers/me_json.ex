@@ -9,16 +9,15 @@ defmodule GrappaWeb.MeJSON do
       `:password_hash` / virtual `:password` allowlist lives in one
       place.
     * visitor → `{kind: "visitor", id, nick, network_slug, expires_at}` —
-      mirrors the visitor branch of `AuthJSON.subject_wire` extended
-      with `expires_at` (the column the SPA needs to render the
-      visitor's session-end countdown). `:password_encrypted` is
-      `redact: true` at the schema layer; the explicit field
-      allowlist here belt-and-braces against accidental wire leak
-      via Jason struct walks (see `Grappa.Accounts.Wire` moduledoc
-      for the full rationale).
+      delegates to `Grappa.Visitors.Wire.visitor_to_json/1` so the
+      `:password_encrypted` allowlist lives in one place. See
+      `Grappa.Visitors.Wire` moduledoc for the full leak-defense
+      rationale (Cloak `:load` decrypts to plaintext-in-memory at
+      Repo.get).
   """
   alias Grappa.Accounts.{User, Wire}
   alias Grappa.Visitors.Visitor
+  alias Grappa.Visitors.Wire, as: VisitorsWire
 
   @type me_json ::
           %{
@@ -44,12 +43,8 @@ defmodule GrappaWeb.MeJSON do
   end
 
   def show(%{visitor: %Visitor{} = visitor}) do
-    %{
-      kind: "visitor",
-      id: visitor.id,
-      nick: visitor.nick,
-      network_slug: visitor.network_slug,
-      expires_at: visitor.expires_at
-    }
+    visitor
+    |> VisitorsWire.visitor_to_json()
+    |> Map.put(:kind, "visitor")
   end
 end
