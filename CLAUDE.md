@@ -17,14 +17,28 @@ Top-level supervision tree:
 
 ```
 Grappa.Application
-├── Grappa.Repo                  (Ecto + sqlite)
-├── Phoenix.PubSub               (name: Grappa.PubSub)
-├── Registry                     (name: Grappa.SessionRegistry)
-├── DynamicSupervisor            (name: Grappa.SessionSupervisor)
-│   └── Grappa.Session.Server    (one per (user, network), :transient)
-├── GrappaWeb.Endpoint           (Phoenix HTTP + WS)
-└── Grappa.Bootstrap             (reads DB credentials, spawns sessions)
+├── Grappa.Vault                       (Cloak — encrypts at-rest creds; before Repo)
+├── Grappa.Repo                        (Ecto + sqlite)
+├── Phoenix.PubSub                     (name: Grappa.PubSub)
+├── Registry                           (name: Grappa.SessionRegistry)
+├── Grappa.Session.Backoff             (ETS — per-(subject, network) failure counter)
+├── Grappa.WSPresence                  (per-user WS pid tracking → auto-away signal)
+├── Grappa.Admission.NetworkCircuit    (T31 ETS-backed per-network circuit breaker)
+├── DynamicSupervisor                  (name: Grappa.SessionSupervisor)
+│   └── Grappa.Session.Server          (one per (user, network), :transient)
+├── GrappaWeb.Endpoint                 (Phoenix HTTP + WS)
+├── Grappa.Visitors.Reaper             (60s sweep of expired visitors; after Endpoint)
+└── Grappa.Bootstrap                   (reads DB credentials, spawns sessions; LAST)
 ```
+
+Child order is load-bearing — see `lib/grappa/application.ex` for the
+why-comment per child. Vault before Repo (Cloak schema callbacks);
+Backoff/WSPresence/NetworkCircuit before SessionSupervisor (ETS
+tables read directly from `Session.Server`'s start path); Bootstrap
+LAST (depends on Registry + SessionSupervisor existing). `Grappa.SpawnOrchestrator`
+is a top-level boundary module (admission → Backoff.reset → spawn
+verb), NOT a supervised child — both Bootstrap and
+`NetworksController.connect/2` call into it.
 
 Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
 - **One IRC parser, on the server.** `Grappa.IRC.Parser` is the single
