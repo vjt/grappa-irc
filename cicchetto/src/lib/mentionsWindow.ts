@@ -1,4 +1,4 @@
-import { createRoot, createSignal, on } from "solid-js";
+import { createEffect, createRoot, createSignal, on } from "solid-js";
 import type { MentionsBundle } from "../MentionsWindow";
 import { token } from "./auth";
 
@@ -13,6 +13,12 @@ import { token } from "./auth";
 // signal until replaced by the next away cycle or until logout.
 //
 // Identity-scoped: on logout / token rotation, all bundles are cleared.
+//
+// Codebase review 2026-05-08 cic H1: cleanup arm MUST be wrapped in
+// `createEffect(on(token, …))`. Pre-fix the bare `on(...)` combinator
+// was never registered with the reactive system; rotation cleanup never
+// fired and the prior tenant's mentions bundle leaked into the new
+// session's view. Mirrors the scrollback.ts / members.ts pattern.
 
 const exports_ = createRoot(() => {
   const [mentionsBundleBySlug, setMentionsBundleBySlug] = createSignal<
@@ -20,9 +26,11 @@ const exports_ = createRoot(() => {
   >({});
 
   // Clear on identity change (logout or token rotation).
-  on(token, (t, prev) => {
-    if (prev != null && t !== prev) setMentionsBundleBySlug({});
-  });
+  createEffect(
+    on(token, (t, prev) => {
+      if (prev != null && t !== prev) setMentionsBundleBySlug({});
+    }),
+  );
 
   const setMentionsBundle = (networkSlug: string, bundle: MentionsBundle): void => {
     setMentionsBundleBySlug((prev) => ({ ...prev, [networkSlug]: bundle }));
