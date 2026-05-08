@@ -129,4 +129,124 @@ describe("networks resources", () => {
     networks.mutateNetworkNick(999, "should-not-appear");
     expect(networks.networks()?.[0]?.nick).toBe("grappa");
   });
+
+  // bnd-A2: slug→id / slug→Network helpers backed by createMemo Map.
+  // Replaces 14× `networks()?.find((n) => n.slug === slug)?.id` literal
+  // duplicates across compose.ts. Memo recomputes when networks() updates,
+  // so post-/connect new entries are findable without manual invalidation.
+  describe("networkBySlug / networkIdBySlug", () => {
+    it("networkIdBySlug returns the id for a known slug", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+        { id: 2, slug: "libera", inserted_at: "x", updated_at: "y" },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        inserted_at: "x",
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(2));
+      expect(networks.networkIdBySlug("freenode")).toBe(1);
+      expect(networks.networkIdBySlug("libera")).toBe(2);
+    });
+
+    it("networkIdBySlug returns undefined for an unknown slug", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        inserted_at: "x",
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
+      expect(networks.networkIdBySlug("nonexistent")).toBeUndefined();
+    });
+
+    it("networkIdBySlug returns undefined before the resource has resolved", async () => {
+      // No token set — resource yields []. Lookup must be undefined,
+      // matching the pre-helper `networks()?.find(...)?.id` behavior.
+      const networks = await import("../lib/networks");
+      expect(networks.networkIdBySlug("anything")).toBeUndefined();
+    });
+
+    it("networkBySlug returns the full Network record for a known slug", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        inserted_at: "x",
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
+      const n = networks.networkBySlug("libera");
+      expect(n).toBeDefined();
+      expect(n?.id).toBe(7);
+      expect(n?.nick).toBe("grappa");
+    });
+
+    it("networkBySlug returns undefined for an unknown slug", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        inserted_at: "x",
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
+      expect(networks.networkBySlug("nope")).toBeUndefined();
+    });
+
+    it("lookups reflect mutations to the networks resource", async () => {
+      // Reactivity: the memo backs the lookup, so a mutateNetworkNick
+      // call (in-place patch of the networks list) leaves slug→id stable
+      // but the returned record's nick reflects the update.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+      ]);
+      vi.mocked(api.listChannels).mockResolvedValue([]);
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        inserted_at: "x",
+      });
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const networks = await import("../lib/networks");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
+      expect(networks.networkBySlug("libera")?.nick).toBe("grappa");
+      networks.mutateNetworkNick(7, "vjt-grappa");
+      expect(networks.networkBySlug("libera")?.nick).toBe("vjt-grappa");
+      // Slug→id stays intact across the mutation.
+      expect(networks.networkIdBySlug("libera")).toBe(7);
+    });
+  });
 });

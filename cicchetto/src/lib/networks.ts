@@ -1,4 +1,4 @@
-import { createResource, createRoot } from "solid-js";
+import { createMemo, createResource, createRoot } from "solid-js";
 import {
   type ChannelEntry,
   listChannels,
@@ -94,7 +94,31 @@ const exports = createRoot(() => {
     });
   };
 
-  return { networks, user, channelsBySlug, refetchChannels, refetchNetworks, mutateNetworkNick };
+  // bnd-A2: canonical slug→Network lookup. Pre-fix compose.ts repeated
+  // `networks()?.find((n) => n.slug === slug)?.id` 14× across slash-
+  // command handlers. The memo invalidates whenever `networks()`
+  // updates (post-/connect, post-/disconnect, bearer rotation), so
+  // callers see new entries without manual cache management.
+  const networksBySlug = createMemo(() => {
+    const list = networks();
+    if (!list) return new Map<string, Network>();
+    return new Map(list.map((n) => [n.slug, n]));
+  });
+
+  const networkBySlug = (slug: string): Network | undefined => networksBySlug().get(slug);
+
+  const networkIdBySlug = (slug: string): number | undefined => networkBySlug(slug)?.id;
+
+  return {
+    networks,
+    user,
+    channelsBySlug,
+    refetchChannels,
+    refetchNetworks,
+    mutateNetworkNick,
+    networkBySlug,
+    networkIdBySlug,
+  };
 });
 
 export const networks = exports.networks;
@@ -103,3 +127,5 @@ export const channelsBySlug = exports.channelsBySlug;
 export const refetchChannels = exports.refetchChannels;
 export const refetchNetworks = exports.refetchNetworks;
 export const mutateNetworkNick = exports.mutateNetworkNick;
+export const networkBySlug = exports.networkBySlug;
+export const networkIdBySlug = exports.networkIdBySlug;
