@@ -33,11 +33,14 @@ defmodule GrappaWeb.NetworksController do
   see plan S1.4 lenient triggers). A request to set `:failed` returns
   400.
 
-  On `:connected` transition: the controller orchestrates admission
-  check + `Backoff.reset` + `Session.start_session/3`. The
-  `Networks.connect/1` context fn only does the DB write + PubSub
-  broadcast (no spawn) — spawn lives here per the S1.2 boundary note:
-  `Networks` must not dep `Admission` to avoid a cycle.
+  On `:connected` transition: the controller delegates to
+  `Grappa.SpawnOrchestrator.spawn/4` for the admission check +
+  `Backoff.reset` + `Session.start_session/3` dance (cluster #8 —
+  shared with `Grappa.Bootstrap`). The `Networks.connect/1` context
+  fn only does the DB write + PubSub broadcast (no spawn) — spawn
+  lives in the orchestrator per the S1.2 boundary note: `Networks`
+  must not dep `Admission` to avoid a cycle, and the orchestrator's
+  own top-level boundary deps both freely.
 
   Wire shape lives in `Grappa.Networks.Wire.network_to_json/1` (GET)
   and `Grappa.Networks.Wire.credential_to_json/1` (PATCH). The view
@@ -46,10 +49,9 @@ defmodule GrappaWeb.NetworksController do
   use GrappaWeb, :controller
 
   alias Grappa.Accounts.User
-  alias Grappa.{Admission, Networks, Session}
   alias Grappa.IRC.Identifier
+  alias Grappa.{Networks, Session}
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
-  alias Grappa.Session.Backoff
 
   @doc "`GET /networks` — list of network metadata for the bearer's subject."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -173,11 +175,13 @@ defmodule GrappaWeb.NetworksController do
     end
   end
 
-  # Mirrors `Bootstrap.spawn_with_admission/6` but for the REST surface.
-  # Per the S1.2 boundary note: `Networks.connect/1` does DB + broadcast
-  # only; the admission + backoff-reset + start_session orchestration
-  # lives HERE so `Networks` doesn't dep `Admission` (which already deps
-  # `Networks` for cap reads — adding the reverse edge closes a cycle).
+  # Wrapper over `Grappa.SpawnOrchestrator.spawn/4` for the REST
+  # surface. Per the S1.2 boundary note: `Networks.connect/1` does
+  # DB + broadcast only; the admission + backoff-reset + start_session
+  # orchestration lives via the orchestrator (which deps both
+  # `Admission` and `Session` from its own top-level boundary, so
+  # `Networks` doesn't need to dep `Admission` — that would close
+  # the cycle Networks → Admission → Networks).
   #
   # If admission rejects, the DB row is already `:connected` (user intent
   # persisted). Bootstrap or the next operator `/connect` will retry.
@@ -194,10 +198,9 @@ defmodule GrappaWeb.NetworksController do
       flow: :patch_network_connect
     }
 
-    with :ok <- Admission.check_capacity(capacity_input),
-         :ok <- Backoff.reset({:user, user_id}, network_id),
-         {:ok, plan} <- plan_or_warn(credential, user),
-         {:ok, _} <- start_or_warn(user, network_id, plan) do
+    with {:ok, plan} <- plan_or_warn(credential, user),
+         {:ok, _} <-
+           orchestrate_or_warn({:user, user_id}, network_id, plan, capacity_input, user) do
       :ok
     else
       {:error, _} -> :ok
@@ -223,25 +226,27 @@ defmodule GrappaWeb.NetworksController do
     end
   end
 
-  @spec start_or_warn(User.t(), integer(), Session.start_opts()) ::
-          {:ok, pid()} | {:error, :start_failed}
-  defp start_or_warn(user, network_id, plan) do
-    case Session.start_session({:user, user.id}, network_id, plan) do
-      {:ok, pid} ->
-        {:ok, pid}
-
-      {:error, {:already_started, pid}} ->
+  @spec orchestrate_or_warn(
+          Session.subject(),
+          integer(),
+          Session.start_opts(),
+          Grappa.Admission.capacity_input(),
+          User.t()
+        ) :: {:ok, pid()} | {:error, :spawn_rejected}
+  defp orchestrate_or_warn(subject, network_id, plan, capacity_input, user) do
+    case Grappa.SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+      {:ok, _, pid} ->
         {:ok, pid}
 
       {:error, reason} ->
         require Logger
 
-        Logger.warning("PATCH /connect: session start failed",
+        Logger.warning("PATCH /connect: session spawn rejected",
           user: user.id,
           error: inspect(reason)
         )
 
-        {:error, :start_failed}
+        {:error, :spawn_rejected}
     end
   end
 end
