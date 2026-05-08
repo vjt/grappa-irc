@@ -1,6 +1,6 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
-import { token } from "./auth";
+import { createEffect, createSignal, on } from "solid-js";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { identityScopedStore } from "./identityScopedStore";
 import { selectedChannel } from "./selection";
 
 // Per-channel mention-count store. Mirror of `selection.unreadCounts`'s
@@ -13,16 +13,14 @@ import { selectedChannel } from "./selection";
 // matches the operator's nick. Selecting that channel clears the count
 // (mirrors the unread-clear behavior).
 //
-// Identity-scoped on(token) cleanup: logout/rotation flushes counts.
+// Identity-scoped via identityScopedStore reset (dup-A3 close).
+// The selection-clear createEffect on(selectedChannel) is orthogonal
+// business logic and stays inline.
 
-const exports_ = createRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [mentionCounts, setMentionCounts] = createSignal<Record<ChannelKey, number>>({});
 
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) setMentionCounts({});
-    }),
-  );
+  onIdentityChange(() => setMentionCounts({}));
 
   // Selection clears mention count for the just-selected channel.
   createEffect(
