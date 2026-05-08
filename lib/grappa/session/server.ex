@@ -84,7 +84,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter}
+  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter, WindowState}
   alias Grappa.Session.Wire, as: SessionWire
 
   require Logger
@@ -170,6 +170,10 @@ defmodule Grappa.Session.Server do
   Server is the single source of truth; cic projects from broadcast
   events on the per-channel topic.
 
+  Storage owned by `Grappa.Session.WindowState` (cluster #6 extraction).
+  This typedef is the on-process atom shape; see that module for the
+  full state-machine documentation.
+
   - `:joined` — own-nick JOIN echo received (B1).
   - `:failed` — server replied with a join failure numeric (B2).
   - `:kicked` — own-nick was the target of a KICK (B3).
@@ -183,12 +187,8 @@ defmodule Grappa.Session.Server do
     to `:joined` / `:failed` / `:kicked` or removed on PART. Broadcast
     on `Topic.user/1` (NOT per-channel — chicken-and-egg: cic only
     subscribes to per-channel after seeing `:pending`).
-
-  Map key is the channel string, case-preserved like `state.members`;
-  read sites normalize via `String.downcase/1` when correlating against
-  IRC's case-insensitive RFC 2812 §2.2 comparisons.
   """
-  @type window_state :: :pending | :joined | :failed | :kicked | :parked
+  @type window_state :: WindowState.window_state()
 
   @typedoc """
   In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
@@ -245,37 +245,18 @@ defmodule Grappa.Session.Server do
           topics: %{String.t() => EventRouter.topic_entry()},
           channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
           userhost_cache: EventRouter.userhost_cache(),
-          # CP15 B1: per-channel window state. Sibling to `members` —
-          # identical lifetime + supervision (in-process map, derived on
-          # boot from autojoin's natural transition flow per Q5; no
-          # persistence). CP17 made `:pending` explicit (written by
-          # `record_in_flight_join/2`); self-JOIN echo writes :joined;
-          # B2 adds :failed, B3 adds :kicked / :parted / :parked.
-          # Absence after PART = :archived (derived externally by cic
-          # from the archive surface, B4).
-          window_states: %{String.t() => window_state()},
-          # CP15 B2: per-channel failure reason for windows in :failed state
-          # (471/473/474/475/403/405). Sibling to `window_states`, separate
-          # map because the reason is text and only present for failures —
-          # mixing it into the atom-valued window_states map would force a
-          # tagged tuple. Cleared when the channel transitions out of
-          # :failed (next successful JOIN, /part, etc.).
-          window_failure_reasons: %{String.t() => String.t()},
-          # CP15 B3: per-channel failure numeric (471/473/474/475/403/405)
-          # mirrored alongside window_failure_reasons so the cold-WS-subscribe
-          # snapshot push (push_window_state_if_known) can carry the same
-          # `numeric` field the event-time broadcast carries. Numerics are
-          # stable cross-language identifiers — they're the right key for a
-          # future client-side i18n layer that maps numeric → localized
-          # template (server-side reasons are upstream-language-locked).
-          window_failure_numerics: %{String.t() => pos_integer()},
-          # CP15 B3: per-channel `by + reason` from the most recent self-target
-          # KICK. Same motivation as window_failure_numerics — keeps the
-          # snapshot push payload byte-identical to the event-time broadcast
-          # so cic doesn't need a separate REST hop to render the kick banner
-          # on a deploy-reconnect. Cleared on next successful self-JOIN
-          # (window transitions out of :kicked).
-          window_kicked_meta: %{String.t() => %{by: String.t(), reason: String.t() | nil}},
+          # CP15 B1 + cluster #6 extraction: per-channel window state
+          # bundle (states + failure_reasons + failure_numerics +
+          # kicked_meta in one struct). Sibling to `members` —
+          # identical lifetime + supervision (in-process struct,
+          # derived on boot from autojoin's natural transition flow
+          # per Q5; no persistence). CP17 made `:pending` explicit
+          # (written by `record_in_flight_join/2`); self-JOIN echo
+          # writes :joined; B2 adds :failed, B3 adds :kicked /
+          # :parted / :parked. Absence after PART = :archived (derived
+          # externally by cic from the archive surface, B4). See
+          # `Grappa.Session.WindowState` for the full state machine.
+          window_state: WindowState.t(),
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
           # Keyed by lowercase channel so the failure-numeric correlation
@@ -391,10 +372,7 @@ defmodule Grappa.Session.Server do
       topics: %{},
       channel_modes: %{},
       userhost_cache: %{},
-      window_states: %{},
-      window_failure_reasons: %{},
-      window_failure_numerics: %{},
-      window_kicked_meta: %{},
+      window_state: WindowState.new(),
       in_flight_joins: %{},
       autojoin: opts.autojoin_channels,
       client: nil,
@@ -848,46 +826,18 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # CP15 B3: returns the snapshot-ready window-state payload for `channel`.
-  # Server-side assembles the full event-shape map (kind/state/reason/
-  # numeric/by) so the channel-side push_window_state_if_known/4 stays a
-  # one-liner — single source of truth for the snapshot projection. Byte-
-  # identical to the event-time broadcast emitted by the corresponding
-  # apply_effects arm. Returns {:error, :not_tracked} when the channel
-  # has no recorded state (operator never joined, or transient :pending).
+  # CP15 B3 + cluster #6: returns the snapshot-ready window-state
+  # payload for `channel`. Single source of truth for the snapshot
+  # projection lives on `WindowState.to_wire/3` — same Wire verbs the
+  # apply_effects arms use at event-time, so snapshot + event are
+  # LITERALLY the same expression.
+  #
+  # Returns `{:error, :not_tracked}` for absent / `:pending` / `:parked`
+  # channels (cic learned `:pending` via the user-topic dispatch; cic
+  # doesn't yet render `:parked`). Returns `{:ok, payload}` for the
+  # three terminal states cic mirrors on the per-channel topic.
   def handle_call({:get_window_state, channel}, _, state) when is_binary(channel) do
-    case Map.get(state.window_states, channel) do
-      nil ->
-        {:reply, {:error, :not_tracked}, state}
-
-      :joined ->
-        {:reply, {:ok, window_state_payload(state, channel, :joined)}, state}
-
-      :failed ->
-        {:reply, {:ok, window_state_payload(state, channel, :failed)}, state}
-
-      :kicked ->
-        {:reply, {:ok, window_state_payload(state, channel, :kicked)}, state}
-
-      :pending ->
-        # CP17 — `:pending` is broadcast on `Topic.user/1` (NOT per-channel)
-        # because cic only joins the per-channel topic AFTER seeing
-        # `:pending`. The per-channel after_join snapshot path therefore
-        # has no work to do for a pending window: cic already learned
-        # `:pending` via the user-topic dispatch, and the per-channel
-        # snapshot would carry a different `kind:` than the user-topic
-        # broadcast. Treat as not_tracked here; the next inbound JOIN
-        # echo / failure numeric / KICK will push the typed terminal
-        # state via the per-channel topic.
-        {:reply, {:error, :not_tracked}, state}
-
-      :parked ->
-        # T32 lays the slot but no producer yet — treat as not_tracked
-        # until the disconnect verbs land. Keeps the snapshot push
-        # forward-compatible without forcing cic to handle a payload it
-        # doesn't yet render.
-        {:reply, {:error, :not_tracked}, state}
-    end
+    {:reply, WindowState.to_wire(state.window_state, state.network_slug, channel), state}
   end
 
   # Returns the userhost cache entry for `nick`. Nick lookup is case-insensitive
@@ -1716,11 +1666,11 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
-  # CP15 B1: own-nick JOIN echo received → window transitions to :joined.
-  # Updates the in-process window_states map AND broadcasts on the
-  # per-channel topic so cic flips render state without polling. Cic
-  # subscribes via the same per-channel topic that already carries
-  # `members_seeded` + persisted-row events; no new transport.
+  # CP15 B1 + cluster #6: own-nick JOIN echo received → window
+  # transitions to :joined. Delegates state mutation to
+  # `WindowState.set_joined/2` (which clears any prior :failed /
+  # :kicked metadata — see that fn's doc) and broadcasts on the
+  # per-channel topic so cic flips render state without polling.
   defp apply_effects([{:joined, channel} | rest], state) do
     :ok =
       Grappa.PubSub.broadcast_event(
@@ -1728,33 +1678,29 @@ defmodule Grappa.Session.Server do
         SessionWire.joined(state.network_slug, channel)
       )
 
-    # Joining wipes any prior :failed / :kicked snapshot mirrors —
-    # otherwise a successful re-join would leave stale by/reason/numeric
-    # in state and the next snapshot push for this channel would lie.
-    # Also strips the in-flight-JOIN tracker keyed by lowercase channel —
-    # symmetric with the failure-numeric path (event_router.ex:698) which
-    # already strips on the failure side. Without this, the entry sits
-    # for up to 30s and an unsolicited late 471/473 numeric within the
-    # TTL window can correlate against the ghost and corrupt window
-    # state from :joined back to :failed (lifecycle review HIGH S1).
+    # In-flight-JOIN tracker stays here — it's not part of WindowState
+    # (different lifetime: TTL-swept, not state-driven). Stripped on
+    # successful echo to keep the failure-numeric correlation map
+    # bounded; symmetric with event_router.ex:698 stripping on the
+    # failure side. Without this strip an unsolicited late 471/473
+    # within the 30s TTL window can correlate against the ghost and
+    # corrupt window state from :joined back to :failed (lifecycle
+    # review HIGH S1).
     state = %{
       state
-      | window_states: Map.put(state.window_states, channel, :joined),
-        window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
-        window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
-        window_kicked_meta: Map.delete(state.window_kicked_meta, channel),
+      | window_state: WindowState.set_joined(state.window_state, channel),
         in_flight_joins: Map.delete(state.in_flight_joins, String.downcase(channel))
     }
 
     apply_effects(rest, state)
   end
 
-  # CP15 B2: JOIN failure numeric (471/473/474/475/403/405) correlated
-  # against an in-flight JOIN. Three concerns, one arm:
-  #   1. State — window_states[channel] = :failed, window_failure_reasons
-  #      records the human-readable reason. Cic projects from these via
-  #      the typed broadcast below; the maps are also the source of truth
-  #      for any future REST snapshot fetch.
+  # CP15 B2 + cluster #6: JOIN failure numeric (471/473/474/475/403/405)
+  # correlated against an in-flight JOIN. Three concerns, one arm:
+  #   1. State — `WindowState.set_failed/4` records :failed +
+  #      reason + numeric in one struct field. Cic projects from
+  #      these via the typed broadcast below; the WindowState struct
+  #      is the source of truth for any future REST snapshot fetch.
   #   2. Persistence — write a :notice row on the channel scrollback so
   #      the failure shows in window history (and survives reconnect).
   #      `sender = state.nick` matches Identifier.valid_sender? same as
@@ -1810,38 +1756,30 @@ defmodule Grappa.Session.Server do
 
     state = %{
       state
-      | window_states: Map.put(state.window_states, channel, :failed),
-        window_failure_reasons: Map.put(state.window_failure_reasons, channel, reason),
-        window_failure_numerics: Map.put(state.window_failure_numerics, channel, numeric)
+      | window_state: WindowState.set_failed(state.window_state, channel, reason, numeric)
     }
 
     apply_effects(rest, state)
   end
 
-  # CP15 B3: own-PART acked by upstream → window archived. Drops the
-  # per-channel window_states entry entirely; cic projects "no key +
-  # scrollback present" as `:archived`. The :persist :part row that
-  # ships alongside in the same effects list is the UI feed-line —
-  # there is intentionally NO `kind: "parted"` broadcast (absence is
-  # the signal). Also clears any lingering window_failure_reasons entry
-  # so a re-join + re-fail cycle gets a fresh reason.
+  # CP15 B3 + cluster #6: own-PART acked by upstream → window archived.
+  # Delegates to `WindowState.set_parted/2` which drops the channel
+  # from every sibling map; cic projects "no key + scrollback present"
+  # as `:archived`. The :persist :part row that ships alongside is the
+  # UI feed-line — there is intentionally NO `kind: "parted"` broadcast
+  # (absence is the signal).
   defp apply_effects([{:parted, channel} | rest], state) do
-    state = %{
-      state
-      | window_states: Map.delete(state.window_states, channel),
-        window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
-        window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
-        window_kicked_meta: Map.delete(state.window_kicked_meta, channel)
-    }
+    state = %{state | window_state: WindowState.set_parted(state.window_state, channel)}
 
     apply_effects(rest, state)
   end
 
-  # CP15 B3: own-target KICK → window transitions to :kicked. Two
-  # concerns, one arm:
-  #   1. State — window_states[channel] = :kicked. The window stays in
-  #      the active sidebar (greyed) so the operator can /join to retry;
-  #      archiving on KICK would punish the victim.
+  # CP15 B3 + cluster #6: own-target KICK → window transitions to
+  # :kicked. Two concerns, one arm:
+  #   1. State — `WindowState.set_kicked/4` records :kicked + by +
+  #      reason. The window stays in the active sidebar (greyed) so
+  #      the operator can /join to retry; archiving on KICK would
+  #      punish the victim.
   #   2. Event broadcast — typed `kind: "kicked"` payload on the
   #      per-channel topic carrying `by` + `reason` so cic can render the
   #      kick reason banner without parsing the scrollback row. The
@@ -1855,8 +1793,7 @@ defmodule Grappa.Session.Server do
 
     state = %{
       state
-      | window_states: Map.put(state.window_states, channel, :kicked),
-        window_kicked_meta: Map.put(state.window_kicked_meta, channel, %{by: by, reason: reason})
+      | window_state: WindowState.set_kicked(state.window_state, channel, by, reason)
     }
 
     apply_effects(rest, state)
@@ -1956,32 +1893,6 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
   end
 
-  # CP15 B3: assembles the snapshot-ready window-state event payload for
-  # the cold-WS-subscribe push (handle_call({:get_window_state, _}, ...)).
-  # Single source of truth for the projection — collapses to a one-line
-  # call into Grappa.Session.Wire so snapshot + event-time payloads are
-  # LITERALLY the same expression (CP16 B1 — no more code-review-enforced
-  # byte-identicality, the Wire module is the function-level contract).
-  @spec window_state_payload(state(), String.t(), :joined | :failed | :kicked) ::
-          Grappa.Session.window_state_snapshot()
-  defp window_state_payload(state, channel, :joined) do
-    SessionWire.joined(state.network_slug, channel)
-  end
-
-  defp window_state_payload(state, channel, :failed) do
-    SessionWire.join_failed(
-      state.network_slug,
-      channel,
-      Map.get(state.window_failure_reasons, channel),
-      Map.get(state.window_failure_numerics, channel)
-    )
-  end
-
-  defp window_state_payload(state, channel, :kicked) do
-    meta = Map.get(state.window_kicked_meta, channel, %{by: nil, reason: nil})
-    SessionWire.kicked(state.network_slug, channel, meta.by, meta.reason)
-  end
-
   # One-shot send + clear of the synchronous-login readiness signal
   # (Task 8). Pattern-matches both fields populated to avoid
   # half-state misuse — caller MUST set both opts together.
@@ -2039,7 +1950,7 @@ defmodule Grappa.Session.Server do
     entry = {channel, now_ms, nil}
     in_flight_joins = Map.put(swept, key, entry)
 
-    case Map.get(state.window_states, channel) do
+    case WindowState.state_of(state.window_state, channel) do
       :joined ->
         # Idempotent re-JOIN: don't downgrade state + don't broadcast.
         %{state | in_flight_joins: in_flight_joins}
@@ -2054,7 +1965,7 @@ defmodule Grappa.Session.Server do
         %{
           state
           | in_flight_joins: in_flight_joins,
-            window_states: Map.put(state.window_states, channel, :pending)
+            window_state: WindowState.set_pending(state.window_state, channel)
         }
     end
   end
