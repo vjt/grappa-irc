@@ -285,7 +285,9 @@ defmodule Grappa.WSPresence do
     end
   end
 
-  @spec notify_sessions(String.t(), term()) :: :ok
+  @typep ws_event :: {:ws_connected, String.t()} | {:ws_all_disconnected, String.t()}
+
+  @spec notify_sessions(String.t(), ws_event()) :: :ok
   defp notify_sessions(user_name, event) do
     # Match all {:session, {:user, _}, network_id} entries for this user_name.
     # We don't have direct access to user_id here — we'd need to look it up.

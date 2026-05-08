@@ -79,8 +79,9 @@ defmodule Grappa.PubSub.Topic do
   ws_presence noise reach Channel subscribers.
 
   Excluded from `parse/1` and `valid?/1` on purpose: those validate
-  the public topic grammar enforced at `GrappaWeb.GrappaChannel.join/3`.
-  This bridge topic must never be subscribable by an external WS client.
+  the public topic grammar enforced at `GrappaWeb.GrappaChannel`'s
+  `join/3` callback. This bridge topic must never be subscribable by
+  an external WS client.
   """
   @spec ws_presence(String.t()) :: t()
   def ws_presence(user_name) when is_binary(user_name) and user_name != "" do
