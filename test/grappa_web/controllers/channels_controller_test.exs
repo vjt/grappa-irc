@@ -52,7 +52,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
@@ -71,7 +71,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 202) == %{"ok" => true}
 
       assert {:ok, "JOIN #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -203,7 +203,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 202) == %{"ok" => true}
 
       assert {:ok, "PART #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "PART #sniffo\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "PART #sniffo\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -427,7 +427,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       assert json_response(conn, 202) == %{"ok" => true}
 
-      {:ok, line} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+      {:ok, line} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "), 1_000)
       assert line == "TOPIC #italia :new topic\r\n"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -525,7 +525,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 202) == %{"ok" => true}
 
       assert {:ok, "JOIN #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -546,7 +546,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       assert json_response(conn, 202) == %{"ok" => true}
 
       assert {:ok, "PART #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "PART #sniffo\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "PART #sniffo\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

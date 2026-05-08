@@ -49,7 +49,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
@@ -113,7 +113,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       refute_received {:event, _}
 
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"), 1_000)
 
       [row] = Scrollback.fetch({:user, vjt.id}, network.id, "#sniffo", nil, 10)
       assert row.body == "ciao raga"
@@ -341,7 +341,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert body["kind"] == "privmsg"
 
       assert {:ok, "PRIVMSG someuser :hey there\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG someuser"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG someuser"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

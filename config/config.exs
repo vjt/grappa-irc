@@ -174,7 +174,11 @@ config :logger, :console,
     :cap_value,
     :cap_observed,
     :circuit_state,
-    :retry_after_seconds
+    :retry_after_seconds,
+    # IRC outbound verb (cluster #10 S10): identifies which
+    # `Grappa.IRC.Client.send_*` helper rejected an invalid_line at
+    # the byte boundary so silent rejections are greppable.
+    :verb
   ]
 
 import_config "#{config_env()}.exs"

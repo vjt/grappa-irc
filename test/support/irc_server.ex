@@ -53,9 +53,30 @@ defmodule Grappa.IRCServer do
 
   ## API
 
+  @doc """
+  Spawns the fake IRC server with `handler` driving inbound-line
+  reactions. Initial handler state is `%{}` — equivalent to
+  `start_link/2` with `initial_state` of `%{}`. Use `start_link/2`
+  when the handler needs scripted state from the start (e.g. a
+  per-test reply counter, multi-stage SASL choreography).
+  """
   @spec start_link(handler()) :: GenServer.on_start()
   def start_link(handler) when is_function(handler, 2) do
-    GenServer.start_link(__MODULE__, handler)
+    start_link(handler, %{})
+  end
+
+  @doc """
+  Spawns the fake IRC server with `handler` and an explicit
+  `initial_state` for the handler — the value passed as the first
+  arg to the very first `handler.(state, line)` invocation. S11
+  (audit row irc S11): pre-cluster only the no-state arity existed,
+  so handlers that needed seeded counters / scripted-step indices
+  had to encode startup state via Process dict tricks. The two-arity
+  form makes the seed explicit at the test boundary.
+  """
+  @spec start_link(handler(), handler_state()) :: GenServer.on_start()
+  def start_link(handler, initial_state) when is_function(handler, 2) do
+    GenServer.start_link(__MODULE__, {handler, initial_state})
   end
 
   @spec port(pid()) :: :inet.port_number()
@@ -68,19 +89,23 @@ defmodule Grappa.IRCServer do
   def feed(server, line), do: GenServer.cast(server, {:feed, line})
 
   @spec wait_for_line(pid(), (binary() -> boolean()), pos_integer()) ::
-          {:ok, binary()} | {:error, :timeout}
-  def wait_for_line(server, predicate, timeout \\ 1_000)
+          {:ok, binary()} | {:error, :timeout | :tcp_closed}
+  def wait_for_line(server, predicate, timeout)
       when is_function(predicate, 1) and is_integer(timeout) and timeout > 0 do
     # Outer call timeout is `timeout + 100` so the server-side timer
     # always fires first and the call returns `{:error, :timeout}`
-    # cleanly rather than as a `GenServer.call/3` exit.
+    # cleanly rather than as a `GenServer.call/3` exit. S7 (audit row
+    # irc S7): when the upstream socket closes mid-wait the server
+    # drains all pending waiters with `{:error, :tcp_closed}` instead
+    # of leaving them to time out — the timeout loss-of-signal hid
+    # genuine close races behind the same deadline as no-line cases.
     GenServer.call(server, {:wait_for, predicate, timeout}, timeout + 100)
   end
 
   ## GenServer
 
   @impl GenServer
-  def init(handler) do
+  def init({handler, initial_state}) do
     # L-irc-2: trap exits so `terminate/2` runs on link-driven shutdown
     # too (not just normal `:stop`). Without this the listen socket and
     # accepted client socket leak when the test process exits — Eaccept
@@ -125,7 +150,7 @@ defmodule Grappa.IRCServer do
        port: port,
        sock: nil,
        handler: handler,
-       handler_state: %{},
+       handler_state: initial_state,
        sent: [],
        # M-irc-2: waiters is a list of `{ref, predicate, from}`. The
        # ref ties a waiter to its `Process.send_after/3` timeout token
@@ -190,7 +215,21 @@ defmodule Grappa.IRCServer do
     {:noreply, notify_waiters(new_state, line)}
   end
 
-  def handle_info({:tcp_closed, _}, state), do: {:noreply, %{state | sock: nil}}
+  # S7 (audit row irc S7): on socket close, drain every pending
+  # `wait_for_line/3` waiter with `{:error, :tcp_closed}` so the
+  # caller distinguishes a genuine upstream close from a deadline
+  # miss. Pre-S7 the waiters were left in state.waiters until their
+  # `Process.send_after/3` timeout fired — a 1s wait that the
+  # upstream had already lost the socket on still spent the full
+  # window before resolving. The reply atom mirrors the GenServer
+  # stop-reason a real client emits on `:tcp_closed`.
+  def handle_info({:tcp_closed, _}, state) do
+    Enum.each(state.waiters, fn {_, _, from} ->
+      GenServer.reply(from, {:error, :tcp_closed})
+    end)
+
+    {:noreply, %{state | sock: nil, waiters: []}}
+  end
 
   # L-irc-2: with `:trap_exit, true` the spawn_link'd acceptor's
   # normal exit (and any future linked process) lands in the mailbox

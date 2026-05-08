@@ -55,7 +55,7 @@ defmodule GrappaWeb.AuthControllerTest do
     do: IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 

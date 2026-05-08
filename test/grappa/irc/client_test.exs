@@ -68,7 +68,7 @@ defmodule Grappa.IRC.ClientTest do
   # the always-sent prefix). Eliminates the `Process.sleep(20)` pattern
   # that races on the IRCServer's accept-loop sock assignment.
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
     :ok
   end
 
@@ -137,7 +137,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_line(client, "PING :foo\r\n")
 
       assert {:ok, "PING :foo\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "PING :foo\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "PING :foo\r\n"), 1_000)
     end
 
     test "send_privmsg/3 emits the canonical PRIVMSG framing" do
@@ -147,7 +147,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_privmsg(client, "#sniffo", "ciao raga")
 
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"), 1_000)
     end
 
     test "send_join/2 emits JOIN with channel param" do
@@ -157,7 +157,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_join(client, "#sniffo")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
     end
 
     test "send_topic/3 emits TOPIC #chan :body framing" do
@@ -167,7 +167,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_topic(client, "#italia", "ciao mondo")
 
       assert {:ok, "TOPIC #italia :ciao mondo\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "TOPIC "), 1_000)
     end
 
     test "send_nick/2 emits NICK new\\r\\n" do
@@ -178,7 +178,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_nick(client, "vjt-away")
 
       assert {:ok, "NICK vjt-away\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"), 1_000)
     end
 
     # cluster #9 (resp-A4 close): typed helpers for KICK / INVITE /
@@ -196,7 +196,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_kick(client, "#sniffo", "alice", "bad behaviour")
 
       assert {:ok, "KICK #sniffo alice :bad behaviour\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "KICK"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "KICK"), 1_000)
     end
 
     test "send_kick/4 rejects malformed channel with {:error, :invalid_line}" do
@@ -230,7 +230,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_invite(client, "#sniffo", "alice")
 
       assert {:ok, "INVITE alice #sniffo\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "INVITE"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "INVITE"), 1_000)
     end
 
     test "send_invite/3 rejects malformed channel with {:error, :invalid_line}" do
@@ -256,7 +256,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_banlist(client, "#sniffo")
 
       assert {:ok, "MODE #sniffo b\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo b\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo b\r\n"), 1_000)
     end
 
     test "send_banlist/2 rejects malformed channel with {:error, :invalid_line}" do
@@ -273,7 +273,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_umode(client, "vjt", "+i")
 
       assert {:ok, "MODE vjt +i\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "MODE vjt +i\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "MODE vjt +i\r\n"), 1_000)
     end
 
     test "send_umode/3 rejects malformed nick with {:error, :invalid_line}" do
@@ -297,7 +297,7 @@ defmodule Grappa.IRC.ClientTest do
       :ok = Client.send_topic_clear(client, "#italia")
 
       assert {:ok, "TOPIC #italia :\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "TOPIC #italia :\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "TOPIC #italia :\r\n"), 1_000)
     end
 
     test "send_topic_clear/2 rejects malformed channel with {:error, :invalid_line}" do
@@ -412,7 +412,7 @@ defmodule Grappa.IRC.ClientTest do
       _ = start_client(port, %{auth_method: :none})
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
 
       lines = IRCServer.sent_lines(server)
       refute Enum.any?(lines, &String.starts_with?(&1, "PASS"))
@@ -432,7 +432,7 @@ defmodule Grappa.IRC.ClientTest do
         })
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
 
       lines = IRCServer.sent_lines(server)
       pass_idx = Enum.find_index(lines, &String.starts_with?(&1, "PASS"))
@@ -460,7 +460,8 @@ defmodule Grappa.IRC.ClientTest do
       assert {:ok, _} =
                IRCServer.wait_for_line(
                  server,
-                 &(&1 == "PRIVMSG NickServ :IDENTIFY swordfish\r\n")
+                 &(&1 == "PRIVMSG NickServ :IDENTIFY swordfish\r\n"),
+                 1_000
                )
 
       lines = IRCServer.sent_lines(server)
@@ -482,7 +483,7 @@ defmodule Grappa.IRC.ClientTest do
         })
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"), 1_000)
 
       lines = IRCServer.sent_lines(server)
 
@@ -559,7 +560,7 @@ defmodule Grappa.IRC.ClientTest do
         })
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"), 1_000)
 
       lines = IRCServer.sent_lines(server)
       assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
@@ -704,7 +705,7 @@ defmodule Grappa.IRC.ClientTest do
         })
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+               IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"), 1_000)
 
       lines = IRCServer.sent_lines(server)
       assert Enum.any?(lines, &(&1 == "AUTHENTICATE PLAIN\r\n"))
@@ -748,7 +749,7 @@ defmodule Grappa.IRC.ClientTest do
           sasl_user: "vjt"
         })
 
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "CAP END\r\n"), 1_000)
       # Wait for 001 to be processed by tailing into the registered phase.
       Process.sleep(50)
       assert %{fsm: %{phase: :registered, caps_buffer: []}} = :sys.get_state(client)
@@ -805,7 +806,7 @@ defmodule Grappa.IRC.ClientTest do
 
       # Wait for the server to have written the 001; then poll for the
       # phase transition (no CAP END is sent — handshake is one-sided).
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
       Process.sleep(50)
 
       assert %{fsm: %{phase: :registered, caps_buffer: []}} = :sys.get_state(client)
@@ -896,13 +897,23 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_nick(client, "vjt\r\nQUIT")
     end
 
-    # send_pong/2 has NO CR/LF guard (C6 / S5). PING token is
-    # parser-supplied; `Grappa.IRC.Parser` strips all `\r`/`\n` from
-    # inbound bytes, so the token cannot carry control chars by the
-    # time it reaches send_pong. The other helpers above accept
-    # operator/user input and therefore retain their guards. The
-    # parser invariant is pinned in `Grappa.IRC.ParserTest` under
-    # "CR/LF stripping invariant (C6 / S5)".
+    # send_pong/2 PING token is parser-supplied; `Grappa.IRC.Parser`
+    # strips all `\r`/`\n`/`\x00` from inbound bytes, so the token
+    # cannot carry control chars by the time it reaches send_pong.
+    # The parser invariant is pinned in `Grappa.IRC.ParserTest` under
+    # "CR/LF stripping invariant (C6 / S5)". S9 (audit row irc S9) adds
+    # an empty-token + safe_line_token?/1 guard at the helper boundary
+    # so a malformed `PONG :\r\n` (no token) cannot leave the bouncer
+    # if a future caller bypasses the parser path.
+
+    test "send_pong/2 rejects empty token (S9)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_pong(client, "")
+    end
+
+    test "send_pong/2 rejects unsafe-byte token (S9 defensive)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_pong(client, "tok\r\nQUIT")
+      assert {:error, :invalid_line} = Client.send_pong(client, "tok\x00")
+    end
 
     test "rejected lines never reach the server socket", %{server: server, client: client} do
       :ok = await_handshake(server)
@@ -916,6 +927,33 @@ defmodule Grappa.IRC.ClientTest do
       Process.sleep(50)
       lines_after = IRCServer.sent_lines(server)
       assert lines_after == lines_before
+    end
+
+    # S10 (audit row irc S10): every send_* helper that returns
+    # {:error, :invalid_line} must emit a Logger.warning carrying the
+    # verb tag + reason so silent rejections are operator-greppable.
+    # The exact message string is structured ("rejected outbound IRC
+    # verb at byte boundary") — we assert the substring + verb tag in
+    # the captured log line.
+    test "send_privmsg rejection emits Logger.warning with verb tag (S10)", %{client: client} do
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\r\nQUIT")
+        end)
+
+      assert log =~ "rejected outbound IRC verb"
+      assert log =~ "verb=privmsg"
+      assert log =~ "reason=invalid_line"
+    end
+
+    test "send_pong empty-token rejection emits Logger.warning (S9+S10)", %{client: client} do
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_line} = Client.send_pong(client, "")
+        end)
+
+      assert log =~ "rejected outbound IRC verb"
+      assert log =~ "verb=pong"
     end
   end
 
@@ -1033,7 +1071,83 @@ defmodule Grappa.IRC.ClientTest do
         })
 
       assert {:ok, _} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+    end
+  end
+
+  describe "IRCServer.start_link/2 (S11): initial handler state" do
+    # S11 (audit row irc S11): pre-cluster the only arity was
+    # `start_link(handler)` which seeded handler_state to `%{}`. A
+    # handler that needed scripted state from the start (e.g. a
+    # multi-step counter) had to encode it via Process dict tricks.
+    # The two-arity form makes the seed explicit at the test boundary.
+
+    test "passes initial_state through to first handler invocation" do
+      # Counter handler: expects state to start at 41, increments per
+      # inbound line, replies with the current counter value as a
+      # bogus PING token. Without S11 the handler would see %{} and
+      # crash on Map.update!(/:counter, ...).
+      counter_handler = fn state, _ ->
+        next = Map.update!(state, :counter, &(&1 + 1))
+        {:reply, "PING :#{next.counter}\r\n", next}
+      end
+
+      {:ok, server} = IRCServer.start_link(counter_handler, %{counter: 41})
+
+      port = IRCServer.port(server)
+      _ = start_client(port)
+
+      # First inbound line is the handshake's CAP LS or NICK; the handler
+      # bumps the counter to 42 and writes back PING :42. We don't care
+      # about the exact line — only that the seeded state was visible.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+    end
+
+    test "start_link/1 still works (no-state delegate to start_link/2)" do
+      # The /1 arity is the existing legacy contract — every existing
+      # caller in the test suite uses it. S11 must not break it.
+      {:ok, server} = IRCServer.start_link(passthrough_handler())
+      port = IRCServer.port(server)
+      _ = start_client(port)
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+    end
+  end
+
+  describe "IRCServer wait_for_line drain on tcp_closed (S7)" do
+    # S7 (audit row irc S7): pre-S7 a wait_for_line/3 caller blocked on
+    # a predicate that would NEVER match because the socket had closed
+    # spent its full timeout window before resolving. Post-S7 the
+    # `{:tcp_closed, _}` handler drains every pending waiter with
+    # `{:error, :tcp_closed}` so the caller distinguishes a genuine
+    # upstream close from a deadline miss.
+
+    test "tcp_closed drains pending waiters with {:error, :tcp_closed}" do
+      {:ok, server} = IRCServer.start_link(passthrough_handler())
+      port = IRCServer.port(server)
+      client = start_client(port)
+
+      # Register a long-deadline waiter for a line the client will
+      # never send — without S7 we'd wait ~10s for the timer to fire.
+      task =
+        Task.async(fn ->
+          IRCServer.wait_for_line(server, &(&1 == "NEVER\r\n"), 10_000)
+        end)
+
+      # Yield so the task GenServer.calls and the waiter lands in state.
+      Process.sleep(50)
+
+      # Force a socket close by stopping the client (link severs the
+      # accepted socket; the server's `:tcp_closed` lands in handle_info).
+      Process.flag(:trap_exit, true)
+      Process.exit(client, :kill)
+
+      # The waiter resolves promptly with :tcp_closed, NOT after the
+      # 10s deadline. Cap the assertion at 2s — the drain is a single
+      # GenServer.reply per waiter, microseconds.
+      assert {:error, :tcp_closed} = Task.await(task, 2_000)
     end
   end
 end

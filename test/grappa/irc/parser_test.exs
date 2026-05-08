@@ -319,6 +319,32 @@ defmodule Grappa.IRC.ParserTest do
     end
   end
 
+  describe "unescape/1 — UTF-8 invariant guard (S6)" do
+    # S6 (audit row irc S6): pre-S6 a bare `\` followed by an invalid
+    # UTF-8 start byte raised `FunctionClauseError` because the
+    # internal recursion used `c::utf8` codepoint matching after the
+    # backslash escape arms. The production path (`parse/1` → `to_utf8/1`)
+    # always feeds UTF-8-valid input, but the public arity is documented
+    # for external consumers (Phase 6 listener replay) who may not have
+    # run the conversion. The guard returns the input unchanged on
+    # invalid UTF-8 — the alternative (drop or truncate) silently loses
+    # data; preserving the input lets the caller decide.
+
+    test "non-UTF-8 input returns unchanged (no crash)" do
+      assert Parser.unescape(<<"\\", 0xFF>>) == <<92, 255>>
+    end
+
+    test "non-UTF-8 input with no backslash also returns unchanged" do
+      assert Parser.unescape(<<0xFF, 0xFE>>) == <<255, 254>>
+    end
+
+    test "UTF-8-valid input still processes escapes correctly" do
+      # Sanity: the guard does NOT short-circuit valid input.
+      assert Parser.unescape("a\\sb") == "a b"
+      assert Parser.unescape("ciao mondo é €") == "ciao mondo é €"
+    end
+  end
+
   describe "parse/1 — error cases" do
     test "empty string rejected" do
       assert {:error, :empty} = Parser.parse("")

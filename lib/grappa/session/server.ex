@@ -965,7 +965,23 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
-    :ok = Client.send_pong(state.client, token)
+    # send_pong/2 returns {:error, :invalid_line} on empty/unsafe token
+    # (S9). The parser strips CRLF/NUL at the byte boundary so a normal
+    # PING produces a safe token here; a malformed `PING :` (empty
+    # trailing) is the only realistic miss and we drop it on the floor
+    # rather than emit `PONG :\r\n` — pinging clients re-issue PINGs on
+    # liveness loss, so a single dropped reply is not load-bearing.
+    case Client.send_pong(state.client, token) do
+      :ok ->
+        :ok
+
+      {:error, :invalid_line} ->
+        Logger.warning("upstream PING token rejected by send_pong guard",
+          reason: :invalid_line,
+          raw: inspect(token)
+        )
+    end
+
     {:noreply, state}
   end
 

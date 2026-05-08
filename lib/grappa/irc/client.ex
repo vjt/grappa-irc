@@ -170,7 +170,7 @@ defmodule Grappa.IRC.Client do
     if Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
       send_line(client, "PRIVMSG #{target} :#{body}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:privmsg)
     end
   end
 
@@ -179,7 +179,7 @@ defmodule Grappa.IRC.Client do
   def send_join(client, channel) do
     if Identifier.safe_line_token?(channel),
       do: send_line(client, "JOIN #{channel}\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:join)
   end
 
   @doc "Sends `PART <channel>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
@@ -187,7 +187,7 @@ defmodule Grappa.IRC.Client do
   def send_part(client, channel) do
     if Identifier.safe_line_token?(channel),
       do: send_line(client, "PART #{channel}\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:part)
   end
 
   @doc """
@@ -205,7 +205,7 @@ defmodule Grappa.IRC.Client do
          Identifier.valid_channel?(channel) do
       send_line(client, "TOPIC #{channel} :#{body}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:topic)
     end
   end
 
@@ -221,7 +221,7 @@ defmodule Grappa.IRC.Client do
     if Identifier.safe_line_token?(nick) and Identifier.valid_nick?(nick) do
       send_line(client, "NICK #{nick}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:nick)
     end
   end
 
@@ -230,7 +230,7 @@ defmodule Grappa.IRC.Client do
   def send_quit(client, reason) do
     if Identifier.safe_line_token?(reason),
       do: send_line(client, "QUIT :#{reason}\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:quit)
   end
 
   @doc """
@@ -250,7 +250,7 @@ defmodule Grappa.IRC.Client do
   def send_away(client, reason) when is_binary(reason) do
     if Identifier.safe_line_token?(reason),
       do: send_line(client, "AWAY :#{reason}\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:away)
   end
 
   @doc "Sends bare `AWAY\\r\\n` to unset away status. No validation needed."
@@ -260,19 +260,27 @@ defmodule Grappa.IRC.Client do
   @doc """
   Sends `PONG :<token>\\r\\n` in response to an upstream PING.
 
-  Unlike the other outbound helpers, this one has no
-  `safe_line_token?/1` guard: the token is parser-clean.
-  `Grappa.IRC.Parser.strip_unsafe_bytes/1` strips the three bytes
-  (`\\x00`, `\\r`, `\\n`) that `Identifier.safe_line_token?/1` rejects
-  before grammar parsing, so the parser invariant matches the token
-  contract — by the time `Session.Server` echoes the token here it
-  cannot carry any of those bytes. H12 (decision G) closed the
-  pre-cluster gap where `Parser.strip_crlf/1` covered only CR/LF
-  while `safe_line_token?/1` also rejected NUL. Contract is `:ok`;
-  callers do `:ok = send_pong(...)`.
+  The token is rejected with `{:error, :invalid_line}` when empty
+  (would emit malformed `PONG :\\r\\n` with no token — RFC 2812 §3.7.3
+  requires a server token in the trailing param) or when it carries
+  any of the three CRLF/NUL framing bytes that
+  `Grappa.IRC.Identifier.safe_line_token?/1` rejects.
+
+  In normal operation `Grappa.IRC.Parser.strip_unsafe_bytes/1` strips
+  the three bytes (`\\x00`, `\\r`, `\\n`) at the inbound boundary, so
+  by the time `Session.Server` echoes the parsed token here it cannot
+  carry any of those bytes — the safe-byte guard is defensive belt-
+  and-braces against a future caller bypassing the parser path.
+  H12 (decision G) closed the pre-cluster gap where
+  `Parser.strip_crlf/1` covered only CR/LF while `safe_line_token?/1`
+  also rejected NUL. S9 (cluster #10) closes the empty-token gap.
   """
-  @spec send_pong(pid(), String.t()) :: :ok
-  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
+  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_pong(client, token) do
+    if token != "" and Identifier.safe_line_token?(token),
+      do: send_line(client, "PONG :#{token}\r\n"),
+      else: reject_invalid_line(:pong)
+  end
 
   @doc """
   Sends `KICK <channel> <nick> :<reason>\\r\\n`. Validates the
@@ -289,7 +297,7 @@ defmodule Grappa.IRC.Client do
          Identifier.safe_line_token?(reason) do
       send_line(client, "KICK #{channel} #{nick} :#{reason}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:kick)
     end
   end
 
@@ -307,7 +315,7 @@ defmodule Grappa.IRC.Client do
     if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) do
       send_line(client, "INVITE #{nick} #{channel}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:invite)
     end
   end
 
@@ -324,7 +332,7 @@ defmodule Grappa.IRC.Client do
   def send_banlist(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "MODE #{channel} b\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:banlist)
   end
 
   @doc """
@@ -344,7 +352,7 @@ defmodule Grappa.IRC.Client do
     if Identifier.valid_nick?(nick) and Identifier.safe_line_token?(modes) do
       send_line(client, "MODE #{nick} #{modes}\r\n")
     else
-      {:error, :invalid_line}
+      reject_invalid_line(:umode)
     end
   end
 
@@ -361,7 +369,40 @@ defmodule Grappa.IRC.Client do
   def send_topic_clear(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "TOPIC #{channel} :\r\n"),
-      else: {:error, :invalid_line}
+      else: reject_invalid_line(:topic_clear)
+  end
+
+  # S10 (cluster #10): byte-boundary observability for invalid_line
+  # rejections. Every public send_* helper funnels its `else` arm
+  # through here so a silently-rejected outbound verb is greppable
+  # in the operator log via `verb=:foo` + `reason=:invalid_line`.
+  # Logger metadata (network, user) on the calling Session.Server
+  # propagates automatically — Session.Server sets `Logger.metadata`
+  # at init/1 and Client runs in the same logger context for the
+  # outbound call.
+  @typep verb ::
+           :privmsg
+           | :join
+           | :part
+           | :topic
+           | :nick
+           | :quit
+           | :away
+           | :pong
+           | :kick
+           | :invite
+           | :banlist
+           | :umode
+           | :topic_clear
+
+  @spec reject_invalid_line(verb()) :: {:error, :invalid_line}
+  defp reject_invalid_line(verb) do
+    Logger.warning("rejected outbound IRC verb at byte boundary",
+      verb: verb,
+      reason: :invalid_line
+    )
+
+    {:error, :invalid_line}
   end
 
   ## GenServer callbacks
