@@ -83,6 +83,19 @@ beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
+  // Reset H2 per-topic registry so cross-test handler counts don't
+  // leak (each test that opts in via usePerTopicChannels gets a fresh
+  // pool; tests that don't opt in fall back to the singleton mockChannel).
+  perTopicChannels.length = 0;
+  // Restore default joinChannel mock — vi.clearAllMocks wipes
+  // mock.calls but NOT the mockImplementation set by
+  // `usePerTopicChannels`. Without this restoration the per-topic
+  // factory leaks into subsequent tests, breaking every test that
+  // probes the singleton `mockChannel.on`.
+  const socket = await import("../lib/socket");
+  vi.mocked(socket.joinChannel).mockImplementation(
+    () => mockChannel as unknown as ReturnType<typeof socket.joinChannel>,
+  );
   // Default visibility back to true between tests so leftover state from a
   // hidden-tab test doesn't bleed into the next.
   setVisibleForTest(true);
@@ -138,6 +151,83 @@ const fireMessageEvent = (
       body: msg.body ?? "hi",
       meta: {},
     },
+  });
+};
+
+// Codebase review 2026-05-08 cic H2 helper. Fires an event payload by
+// invoking EVERY currently-registered "event" handler (not just the
+// first one as `fireMessageEvent` does). Used to detect the duplicate-
+// handler-installation regression: if rotation didn't tear down the
+// prior topic's Channel, both the old + new `phx.on("event", ...)`
+// closures fire when the socket dispatches an event, doubling
+// per-event side effects (presence delta, unread bump, mention bump).
+//
+// Walks the per-Channel mocks created by `makeChannelMock` (when used)
+// or falls back to the legacy singleton `mockChannel.on.mock.calls`.
+// Only counts handlers on Channels that haven't been `.leave()`d.
+const fireMessageToAllHandlers = (
+  channel: string,
+  msg: Partial<{ id: number; sender: string; body: string; server_time: number; kind: string }>,
+) => {
+  const payload = {
+    kind: "message" as const,
+    message: {
+      id: msg.id ?? 1,
+      network: "freenode",
+      channel,
+      server_time: msg.server_time ?? 0,
+      kind: msg.kind ?? "privmsg",
+      sender: msg.sender ?? "bob",
+      body: msg.body ?? "hi",
+      meta: {},
+    },
+  };
+  if (perTopicChannels.length > 0) {
+    for (const c of perTopicChannels) {
+      if (c.left) continue;
+      for (const call of c.on.mock.calls) {
+        if (call[0] !== "event") continue;
+        (call[1] as (p: unknown) => void)(payload);
+      }
+    }
+    return;
+  }
+  for (const call of mockChannel.on.mock.calls) {
+    if (call[0] !== "event") continue;
+    (call[1] as (p: unknown) => void)(payload);
+  }
+};
+
+// Per-topic Channel mock factory for H2 test. Each call to
+// `joinChannel(...)` produces a fresh mock that tracks its OWN handler
+// list and a `.leave()` flag — modelling phoenix.js's actual behaviour
+// (`socket.channel(topic)` always returns a new Channel; `.leave()`
+// removes it from `socket.channels[]`). Pushed into `perTopicChannels`
+// so `fireMessageToAllHandlers` can walk the LIVE set only.
+type PerTopicMock = ReturnType<typeof makeChannelMock>;
+const perTopicChannels: PerTopicMock[] = [];
+
+function makeChannelMock() {
+  const join = vi.fn(() => mockJoinPush);
+  const on = vi.fn();
+  const obj = {
+    join,
+    on,
+    leave: vi.fn(),
+    left: false,
+  };
+  obj.leave.mockImplementation(() => {
+    obj.left = true;
+  });
+  return obj;
+}
+
+const usePerTopicChannels = async () => {
+  const socket = await import("../lib/socket");
+  vi.mocked(socket.joinChannel).mockImplementation(() => {
+    const m = makeChannelMock();
+    perTopicChannels.push(m);
+    return m as unknown as ReturnType<typeof socket.joinChannel>;
   });
 };
 
@@ -635,6 +725,93 @@ describe("subscribe — WS join effect", () => {
       });
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
       expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto");
+    });
+
+    // Codebase review 2026-05-08 cic H2 (HIGH).
+    // Pre-fix: subscribe.ts kept channel handles in a `Set<ChannelKey>`.
+    // On token rotation `joined.clear()` ran but the previously joined
+    // Phoenix Channel objects survived in `socket.channels[]` (phoenix.js
+    // pushes every `socket.channel(topic)` call onto the array; nothing
+    // removes them). Re-running the join effect under the new identity
+    // installed a fresh `phx.on("event", handler)` on a NEW Channel for
+    // the same topic — the OLD Channel + its handler were never
+    // `.leave()`d. Both Channels received the next event from the socket
+    // dispatcher; presence/unread/mention counters doubled. N rotations =
+    // N+1 handlers per channel.
+    //
+    // Fix: track Channel objects in `Map<ChannelKey, Channel>` and call
+    // `phx.leave()` on each before clearing on rotation. Phoenix.js's
+    // Channel.leave triggers `phx_close`, removing the Channel from
+    // `socket.channels[]` and disabling its handlers.
+    it("H2: token rotation tears down prior Channels (no duplicate event handlers)", async () => {
+      localStorage.setItem("grappa-token", "tokA");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const auth = await import("../lib/auth");
+      const socket = await import("../lib/socket");
+      // Use per-topic Channel mocks so .leave() actually retires a
+      // handler from the active set. The default singleton mockChannel
+      // is not enough — it's a single object whose `.on` accumulates
+      // across all `joinChannel(...)` calls.
+      await usePerTopicChannels();
+      const store = await loadStores();
+
+      // Seed initial joins under tokA.
+      await vi.waitFor(() => {
+        expect(socket.joinChannel).toHaveBeenCalledTimes(4);
+      });
+
+      const api = await import("../lib/api");
+      vi.mocked(api.me).mockResolvedValue({
+        kind: "user",
+        id: "u2",
+        name: "bob",
+        inserted_at: "x",
+      });
+      vi.mocked(socket.joinChannel).mockClear();
+      // Re-install per-topic factory after mockClear (mockClear wipes
+      // mockImplementation too).
+      await usePerTopicChannels();
+
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u2", name: "bob" }),
+      );
+      auth.setToken("tokB");
+
+      // Wait for the new identity to fan out joins.
+      await vi.waitFor(() => {
+        expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa");
+      });
+
+      // Critical assertion: when the socket dispatches a single event
+      // payload to the #grappa topic, exactly ONE handler fires —
+      // not the post-rotation "alice handler + bob handler" duplicate.
+      // Pre-fix: 2 (one per identity, both still subscribed). Fix:
+      // alice handler is `.leave()`d on rotation; only bob handler
+      // remains.
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+
+      const beforeUnread = selection.unreadCounts()[key] ?? 0;
+      // Select something else so an inbound event will bump unread.
+      store.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
+
+      fireMessageToAllHandlers("#grappa", { id: 100, body: "first-after-rotation" });
+
+      // Single message dispatched to ALL registered "event" handlers
+      // for the channel. With the fix, exactly one handler runs —
+      // unread bump is +1. Pre-fix: 2 handlers run, unread bump is +2
+      // (the alice-era handler + the bob-era handler).
+      const afterUnread = selection.unreadCounts()[key] ?? 0;
+      expect(afterUnread - beforeUnread).toBe(1);
     });
 
     it("PRIVMSG mentioning operator nick on non-selected channel bumps mention badge (P4-1 Task 29)", async () => {

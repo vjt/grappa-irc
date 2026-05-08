@@ -122,11 +122,20 @@ type WireEvent =
     };
 
 createRoot(() => {
-  const joined = new Set<ChannelKey>();
+  // Codebase review 2026-05-08 cic H2 (HIGH): track Channel objects, not
+  // just keys. On rotation we MUST `phx.leave()` each prior Channel
+  // before clearing — phoenix.js's `socket.channel(topic)` always
+  // creates a NEW Channel and pushes it onto `socket.channels[]`; the
+  // OLD Channel and its `phx.on("event", ...)` handler stay alive
+  // forever otherwise. Both Channels then receive every dispatched
+  // event, doubling presence/unread/mention bumps. N rotations = N+1
+  // handlers per channel.
+  const joined = new Map<ChannelKey, Channel>();
 
   createEffect(
     on(token, (t, prev) => {
       if (prev != null && t !== prev) {
+        for (const ch of joined.values()) ch.leave();
         joined.clear();
       }
     }),
@@ -391,7 +400,7 @@ createRoot(() => {
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name);
         installChannelHandler(phx, slug, ch.name, key, ownNick);
-        joined.add(key);
+        joined.set(key, phx);
       }
     }
   });
@@ -433,7 +442,7 @@ createRoot(() => {
       const ownNick = net?.nick ?? (u ? displayNick(u) : null) ?? null;
       const phx = joinChannel(name, slug, channelName);
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
-      joined.add(typedKey);
+      joined.set(typedKey, phx);
     }
   });
 
@@ -482,7 +491,7 @@ createRoot(() => {
         // (self-JOIN auto-focus / self-PART dismiss) are not expected on query
         // topics but handled correctly as no-ops if they ever arrive.
         installChannelHandler(phx, net.slug, qw.targetNick, key, perNetOwnNick);
-        joined.add(key);
+        joined.set(key, phx);
       }
     }
   });
@@ -517,7 +526,7 @@ createRoot(() => {
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, ownNick);
       installDmListenerHandler(phx, net.slug, net.id, ownNick);
-      joined.add(key);
+      joined.set(key, phx);
     }
   });
 
@@ -543,7 +552,7 @@ createRoot(() => {
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, "$server");
       installChannelHandler(phx, net.slug, "$server", key, null);
-      joined.add(key);
+      joined.set(key, phx);
     }
   });
 });
