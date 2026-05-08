@@ -42,6 +42,23 @@ vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: vi.fn(),
 }));
 
+vi.mock("../lib/windowState", () => ({
+  setPending: vi.fn(),
+}));
+
+vi.mock("../lib/awayStatus", () => ({
+  setAwayState: vi.fn(),
+}));
+
+vi.mock("../lib/mentionsWindow", () => ({
+  setMentionsBundle: vi.fn(),
+}));
+
+vi.mock("../lib/selection", () => ({
+  selectedChannel: vi.fn(() => null),
+  setSelectedChannel: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -144,6 +161,34 @@ describe("userTopic", () => {
       expect(networks.mutateNetworkNick).toHaveBeenCalledTimes(2);
       expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(1, 1, "grappa-1");
       expect(networks.mutateNetworkNick).toHaveBeenNthCalledWith(2, 1, "grappa-2");
+    });
+  });
+
+  // CP17: server-driven `:pending` window-state origination. Server's
+  // `record_in_flight_join/2` emits `kind: "window_pending"` on
+  // `Topic.user/1` (NOT per-channel — chicken-and-egg: cic only joins
+  // per-channel after seeing :pending in windowStateByChannel). The
+  // user-topic dispatcher mirrors into `setPending(channelKey(...))`,
+  // which is what the pre-CP17 compose.ts:210 workaround used to do
+  // optimistically. Closes the CLAUDE.md "cic NEVER originates state"
+  // hard-invariant violation.
+  describe("window_pending event (CP17)", () => {
+    it("calls setPending with channelKey(network, channel) on window_pending", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "window_pending",
+        network: "freenode",
+        channel: "#italia",
+        state: "pending",
+      });
+      expect(ws.setPending).toHaveBeenCalledWith(channelKey("freenode", "#italia"));
+    });
+
+    it("does NOT call setPending for unrelated events", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({ kind: "channels_changed" });
+      expect(ws.setPending).not.toHaveBeenCalled();
     });
   });
 });
