@@ -2,11 +2,13 @@ import { createEffect, createRoot, untrack } from "solid-js";
 import { assertNever, type QueryWindowEntry, type WireUserEvent } from "./api";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
+import { channelKey } from "./channelKey";
 import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
+import { setPending } from "./windowState";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -139,6 +141,22 @@ createRoot(() => {
           // initiating tab AND on any sibling tab logged in to the
           // same account.
           refetchNetworks();
+          return;
+
+        case "window_pending":
+          // CP17 — server-driven `:pending` window-state origination.
+          // Server's `record_in_flight_join/2` writes
+          // `window_states[ch] = :pending` and broadcasts on
+          // `Topic.user/1` (NOT per-channel — chicken-and-egg: cic
+          // only joins the per-channel topic AFTER seeing :pending
+          // here). subscribe.ts:425's pre-subscribe loop re-runs on
+          // the windowStateByChannel signal change and joins the
+          // per-channel WS topic so the subsequent typed `joined` /
+          // `join_failed` / `kicked` events land. Pre-CP17 cic mutated
+          // the same store optimistically from compose.ts:210, which
+          // was a parallel client-side state machine — closed by this
+          // arm.
+          setPending(channelKey(payload.network, payload.channel));
           return;
 
         default:

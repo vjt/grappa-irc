@@ -202,6 +202,20 @@ export type WireUserEvent =
   | { kind: "away_confirmed"; network: string; state: "present" | "away" }
   | { kind: "own_nick_changed"; network_id: number; nick: string }
   | {
+      // CP17 — server-driven `:pending` window-state origination.
+      // Server's `record_in_flight_join/2` emits this on `Topic.user/1`
+      // (NOT per-channel — chicken-and-egg: cic only joins the
+      // per-channel topic AFTER seeing :pending in
+      // windowStateByChannel). userTopic.ts dispatches into
+      // `setPending(channelKey(network, channel))`. Pre-CP17 cic
+      // mutated the same store optimistically from compose.ts:210
+      // — origination violation, now closed.
+      kind: "window_pending";
+      network: string;
+      channel: string;
+      state: "pending";
+    }
+  | {
       kind: "connection_state_changed";
       user_id: string;
       network_id: number;

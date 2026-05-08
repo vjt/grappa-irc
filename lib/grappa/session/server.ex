@@ -178,8 +178,11 @@ defmodule Grappa.Session.Server do
     surface).
   - `:parked` — T32 disconnect/connect: connection is intentionally idle
     (B3 wires the broadcast).
-  - `:pending` — currently implicit (no entry while a JOIN is in flight);
-    B2 may promote to an explicit value when the in-flight map lands.
+  - `:pending` — outbound JOIN recorded as in-flight (CP17). Written
+    by `record_in_flight_join/2`; cleared when the channel transitions
+    to `:joined` / `:failed` / `:kicked` or removed on PART. Broadcast
+    on `Topic.user/1` (NOT per-channel — chicken-and-egg: cic only
+    subscribes to per-channel after seeing `:pending`).
 
   Map key is the channel string, case-preserved like `state.members`;
   read sites normalize via `String.downcase/1` when correlating against
@@ -245,10 +248,11 @@ defmodule Grappa.Session.Server do
           # CP15 B1: per-channel window state. Sibling to `members` —
           # identical lifetime + supervision (in-process map, derived on
           # boot from autojoin's natural transition flow per Q5; no
-          # persistence). Self-JOIN echo writes :joined; B2 adds :failed,
-          # B3 adds :kicked / :parted / :parked. Absence = :pending while
-          # an autojoin is in flight; absence after PART = :archived
-          # (derived externally by cic from the archive surface, B4).
+          # persistence). CP17 made `:pending` explicit (written by
+          # `record_in_flight_join/2`); self-JOIN echo writes :joined;
+          # B2 adds :failed, B3 adds :kicked / :parted / :parked.
+          # Absence after PART = :archived (derived externally by cic
+          # from the archive surface, B4).
           window_states: %{String.t() => window_state()},
           # CP15 B2: per-channel failure reason for windows in :failed state
           # (471/473/474/475/403/405). Sibling to `window_states`, separate
@@ -864,6 +868,18 @@ defmodule Grappa.Session.Server do
 
       :kicked ->
         {:reply, {:ok, window_state_payload(state, channel, :kicked)}, state}
+
+      :pending ->
+        # CP17 — `:pending` is broadcast on `Topic.user/1` (NOT per-channel)
+        # because cic only joins the per-channel topic AFTER seeing
+        # `:pending`. The per-channel after_join snapshot path therefore
+        # has no work to do for a pending window: cic already learned
+        # `:pending` via the user-topic dispatch, and the per-channel
+        # snapshot would carry a different `kind:` than the user-topic
+        # broadcast. Treat as not_tracked here; the next inbound JOIN
+        # echo / failure numeric / KICK will push the typed terminal
+        # state via the per-channel topic.
+        {:reply, {:error, :not_tracked}, state}
 
       :parked ->
         # T32 lays the slot but no producer yet — treat as not_tracked
@@ -1970,6 +1986,25 @@ defmodule Grappa.Session.Server do
   # Lazy O(1)-amortized TTL: every insert sweeps entries older than
   # @in_flight_join_ttl_ms first. Bounds the map under upstream silence
   # without a separate Process.send_after timer.
+  #
+  # CP17 — also flips the per-channel window state to `:pending` and
+  # broadcasts `SessionWire.window_pending/2` on the user-level topic.
+  # Single producer for both `{:send_join, _}` cast and 001 RPL_WELCOME
+  # autojoin paths. Broadcast goes on `Topic.user/1` (NOT per-channel)
+  # because cic only subscribes to per-channel after seeing `:pending`
+  # — chicken-and-egg if we used the channel topic. cic's userTopic.ts
+  # createRoot effect joins `Topic.user/1` from boot, so delivery is
+  # guaranteed to every connected tab.
+  #
+  # Idempotency rule: a JOIN issued for a channel ALREADY in `:joined`
+  # is a no-op state transition. Skip the `:pending` mutation + the
+  # broadcast in that case so connected cic tabs don't briefly flip
+  # from `:joined` back to `:pending` (the visual flicker would
+  # mid-render the MembersPane "not joined" fallback). The in-flight
+  # entry is still recorded — a downstream failure numeric (e.g. 443
+  # ERR_USERONCHANNEL) still needs correlation against the in-flight
+  # window. The cic-side subscriber is `setPending`-driven; if the
+  # broadcast doesn't fire, no spurious state change reaches cic.
   @in_flight_join_ttl_ms 30_000
 
   @spec record_in_flight_join(state(), String.t()) :: state()
@@ -1984,7 +2019,26 @@ defmodule Grappa.Session.Server do
 
     key = String.downcase(channel)
     entry = {channel, now_ms, nil}
-    %{state | in_flight_joins: Map.put(swept, key, entry)}
+    in_flight_joins = Map.put(swept, key, entry)
+
+    case Map.get(state.window_states, channel) do
+      :joined ->
+        # Idempotent re-JOIN: don't downgrade state + don't broadcast.
+        %{state | in_flight_joins: in_flight_joins}
+
+      _ ->
+        :ok =
+          Grappa.PubSub.broadcast_event(
+            Topic.user(state.subject_label),
+            SessionWire.window_pending(state.network_slug, channel)
+          )
+
+        %{
+          state
+          | in_flight_joins: in_flight_joins,
+            window_states: Map.put(state.window_states, channel, :pending)
+        }
+    end
   end
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,

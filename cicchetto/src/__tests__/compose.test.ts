@@ -98,7 +98,9 @@ vi.mock("../lib/networks", () => ({
   refetchChannels: vi.fn(),
 }));
 
-// CP15 B5: /join sets windowState to "pending" for immediate visual feedback.
+// CP17: setPending is no longer called from compose.ts (server-driven
+// origination via userTopic.ts dispatch). The mock stays so the
+// "/join does NOT call setPending" test can assert on the absence.
 vi.mock("../lib/windowState", () => ({
   setPending: vi.fn(),
   setJoined: vi.fn(),
@@ -269,14 +271,16 @@ describe("compose submit — slash command dispatch", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  // CP15 B5: /join must set windowState[(slug, target)] = "pending"
-  // immediately for visual feedback. The pre-B5 path used to mutate
-  // channelsBySlug optimistically, which the channels_changed
-  // heartbeat then "corrected" if upstream rejected the JOIN — a
-  // race-prone double source of truth. Now: setPending is the
-  // optimistic visual; the joined state arrives via the typed
-  // `kind: "joined"` event broadcast from the server's apply_effects.
-  it("/join sets windowState pending for the target (B5 — drop optimistic STATE assumption)", async () => {
+  // CP17: /join is no longer responsible for setting windowState
+  // pending — the server-side `record_in_flight_join/2` writes
+  // `window_states[ch] = :pending` and broadcasts
+  // `kind: "window_pending"` on the user-topic. cic's userTopic.ts
+  // dispatcher mirrors that into `windowStateByChannel` via
+  // `setPending(...)`. Closes the CLAUDE.md "cic NEVER originates
+  // state" hard-invariant violation that compose's optimistic
+  // setPending used to embody. The pre-CP17 setPending here was the
+  // last cic-originated state mutation in the codebase.
+  it("/join does NOT call setPending (CP17 — origination moved to server)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.postJoin).mockResolvedValue();
@@ -287,7 +291,7 @@ describe("compose submit — slash command dispatch", () => {
     compose.setDraft(k, "/join #italia");
     await compose.submit(k, "freenode", "#a");
 
-    expect(ws.setPending).toHaveBeenCalledWith(channelKey("freenode", "#italia"));
+    expect(ws.setPending).not.toHaveBeenCalled();
   });
 
   it("/part with no arg parts the current channel", async () => {

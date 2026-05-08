@@ -2272,13 +2272,23 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
 
 // CP15 B5 fix - pending-channel pre-subscribe race avoidance.
 //
-// When the operator types /join, compose.ts fires setPending(key) which
-// adds a "pending" entry to windowStateByChannel. The subscribe.ts
-// pending-loop must immediately joinChannel + installChannelHandler so
-// the per-channel topic is subscribed BEFORE the upstream JOIN echo
-// broadcasts. Otherwise Phoenix PubSub drops the broadcast (no replay
-// to late subscribers) and the JOIN events never surface in the UI -
-// the symptom vjt reported in production after B5 ship.
+// The server's `record_in_flight_join/2` writes
+// `window_states[ch] = :pending` and broadcasts `kind: "window_pending"`
+// on the user-topic. cic's userTopic.ts dispatcher routes that into
+// `setPending(channelKey(...))`, which adds a "pending" entry to
+// `windowStateByChannel`. The subscribe.ts pending-loop must
+// immediately joinChannel + installChannelHandler so the per-channel
+// topic is subscribed BEFORE the upstream JOIN echo broadcasts.
+// Otherwise Phoenix PubSub drops the broadcast (no replay to late
+// subscribers) and the JOIN events never surface in the UI - the
+// symptom vjt reported in production after B5 ship.
+//
+// CP17: origination moved from cic (compose.ts:210) to the server.
+// The pre-subscribe loop is unchanged: it tracks the
+// windowStateByChannel signal and re-runs on any mutation regardless
+// of whether the mutation came from compose.ts (pre-CP17) or
+// userTopic.ts (post-CP17). This test asserts that contract — the
+// subscribe behavior is decoupled from the mutation origin.
 //
 // Coverage: assert that adding a pending entry to windowStateByChannel
 // triggers a joinChannel call for the (slug, channel) pair.
@@ -2299,11 +2309,11 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
 
-    // Operator types /join #new-room - compose.ts fires setPending.
-    // The mock for windowState was a vi.fn() returning {} above so we
-    // need to swap its implementation to return a fresh map with the
-    // pending entry, then trigger reactivity by calling its mocked
-    // signal again (vitest mocks don't auto-flush Solid effects).
+    // CP17: server's userTopic.ts dispatcher fires setPending in
+    // response to a `kind: "window_pending"` event from
+    // `record_in_flight_join/2`. The mock for windowState was a
+    // vi.fn() returning {} above so we need to swap its implementation
+    // to return a fresh map with the pending entry.
     vi.mocked(ws.windowStateByChannel).mockImplementation(() => ({
       [channelKey("freenode", "#new-room")]: "pending",
     }));

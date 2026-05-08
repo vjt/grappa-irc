@@ -93,6 +93,24 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "window_pending/2" do
+    test "carries kind=window_pending + state=pending on the user-topic shape" do
+      # CP17 — `:pending` origination moved to the server. Broadcast on
+      # `Topic.user(...)` (NOT per-channel — chicken-and-egg: cic only
+      # subscribes to per-channel after seeing :pending). Naming
+      # convention `window_pending` (not `pending`) mirrors the existing
+      # `connection_state_changed` user-topic verb: state-change events
+      # on the user-topic carry a window-namespace prefix to avoid
+      # collision with channel-namespace verbs (`joined` etc.).
+      assert Wire.window_pending("azzurra", "#grappa") == %{
+               kind: "window_pending",
+               network: "azzurra",
+               channel: "#grappa",
+               state: "pending"
+             }
+    end
+  end
+
   describe "join_failed/4" do
     test "carries the failure reason + numeric" do
       assert Wire.join_failed("azzurra", "#grappa", "Cannot join (+i)", 473) == %{
@@ -216,6 +234,7 @@ defmodule Grappa.Session.WireTest do
         Wire.channel_modes_changed("net", "#c", %{}),
         Wire.members_seeded("net", "#c", []),
         Wire.joined("net", "#c"),
+        Wire.window_pending("net", "#c"),
         Wire.join_failed("net", "#c", "r", 473),
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", "present"),

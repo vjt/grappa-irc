@@ -15,9 +15,19 @@
 //      window is in joined state; greying only applies to
 //      failed/kicked/parked.
 //
+// CP17 update: `:pending` origination moved from cic
+// (compose.ts:210 setPending workaround) to the server. The sidebar
+// pending row now derives from the user-topic `kind: "window_pending"`
+// broadcast that `record_in_flight_join/2` emits — same observable
+// behavior, single source of truth on the server.
+//
 // The pending → joined transition is sub-second on the testnet (no
 // network latency between bouncer and IRC server inside docker
-// compose), so the test asserts the END state directly. The B5 unit
+// compose), so the test asserts the END state directly. The
+// userTopic.test.ts vitest unit (CP17) already proves the dispatcher
+// arm wires window_pending events into setPending; this spec is the
+// integration proof that the WS event path actually fires from the
+// Server through Phoenix into cic's render. The B5 unit
 // tests already prove the intermediate pending visual; this spec is
 // the integration proof that the WS event path actually fires.
 //

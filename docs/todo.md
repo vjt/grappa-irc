@@ -10,6 +10,18 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**CP17 server-side-pending CLOSED 2026-05-08.** Theme 2 of the
+2026-05-08 architecture review shipped: `:pending` window-state
+origination moved from cic (`compose.ts:210 setPending(...)` workaround)
+to the server. `Grappa.Session.Wire.window_pending/2` broadcasts on
+`Topic.user/1`; `record_in_flight_join/2` writes
+`window_states[ch] = :pending` + broadcasts. Idempotency rule: re-JOIN
+of an already-`:joined` channel is a no-op state transition (in-flight
+entry still recorded for failure-numeric correlation). cic's
+`userTopic.ts` dispatcher mirrors via `setPending(channelKey(...))`.
+Closes the CLAUDE.md hard-invariant violation "cic NEVER originates
+state — no parallel client-side state machine."
+
 **Phase 2 + Phase 3 walking skeleton LIVE; CP10 review-fix campaign
 correctness clusters CLOSED.** Bouncer + cicchetto PWA live at
 `http://grappa.bad.ass` (192.168.53.11 → nginx → grappa:4000). iPhone
