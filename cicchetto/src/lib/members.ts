@@ -1,7 +1,7 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createSignal } from "solid-js";
 import type { ScrollbackMessage } from "./api";
-import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
+import { identityScopedStore } from "./identityScopedStore";
 import type { ChannelMembers } from "./memberTypes";
 import { applyModeString } from "./modeApply";
 
@@ -26,24 +26,17 @@ import { applyModeString } from "./modeApply";
 // race window the REST gate could never fully eliminate.
 //
 // Identity-scoped state: `membersByChannel` is scoped to the CURRENT
-// bearer. Logout / rotation flushes it. The on(token) cleanup arm
-// mirrors the C7/A1 pattern in scrollback.ts.
+// bearer. Logout / rotation flushes it via the identityScopedStore
+// reset (dup-A3 close).
 
 export type { ChannelMembers, MemberEntry } from "./memberTypes";
 
-const exports_ = createRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [membersByChannel, setMembersByChannel] = createSignal<Record<ChannelKey, ChannelMembers>>(
     {},
   );
 
-  // Identity-transition cleanup. Same shape as scrollback.ts.
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        setMembersByChannel({});
-      }
-    }),
-  );
+  onIdentityChange(() => setMembersByChannel({}));
 
   // Direct seed from a server-provided members snapshot — used by
   // subscribe.ts when the server emits a `members_seeded` event (366
