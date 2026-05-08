@@ -126,23 +126,35 @@ fixed in C8):**
   treatment cover `:failed` / `:kicked` end-to-end. Parked / T32
   follow-up below.)
 
-- **CP15 B6 follow-up** — `cp15-b6-pending-to-failed-invite-only.
-  spec.ts` passes on retry #1 every time, flakes once on first
-  attempt. Sub-second timing race between cic's synchronous
-  `setPending` fire and the typed `join_failed` broadcast arrival
-  back over WS. Same render code path is reliably green via
-  `cp15-b6-kicked.spec.ts` AND verified by prod browser smoke on
-  `#services` / `#operhelp`. Not blocking — kicked spec exercises
-  the same render path. Worth a tighter `wait_for` sentinel keyed
-  on the typed event vs. relying on render-tick timing.
+- (CP15 B6 follow-up — `cp15-b6-pending-to-failed-invite-only.spec.ts`
+  flake CLOSED 2026-05-08 cluster `codebase-review-fixes`. Tightened
+  `wait_for` sentinel from `row.toHaveCount(1)` first-then-greyed to
+  `row.locator(".sidebar-window-greyed").toBeVisible()` as a single
+  combined wait — the greyed class is the strict "typed
+  `join_failed` event landed" signal.)
 
 - **Parked (T32) e2e flow** — `cp15-b6-parked.spec.ts` doesn't
-  exist yet. Blocked on T32 PATCH `/networks/:slug` REST surface
-  + cic `/disconnect` / `/connect` ComposeBox arms (tracked in
-  `project_t32_disconnect_verb` memory). Lands with the
-  `channel-client-polish` cluster's T32 line item; the synthetic-
-  row + greyed-class treatment is already in place for `:parked`
-  thanks to CP15 B6, so the spec is mechanical once T32 ships.
+  exist yet. Investigated 2026-05-08 cluster `codebase-review-fixes`:
+  T32 server-side IS shipped (CP12 S31), but the `:parked`
+  window-state slot is documented as "T32 lays the slot but no
+  producer yet — treat as not_tracked" (`server.ex:867`). T32
+  `Networks.disconnect/2` terminates the entire `Session.Server`
+  → no per-window `window_states[ch] = :parked` is ever produced
+  → no typed `kind: "parked"` event ever fires. The CP15 B7 brief's
+  "spec is mechanically authorable now" was wrong on the producer
+  side. Authoring this spec needs a server-side design pass first
+  — decide:
+  (a) do windows survive park? (i.e. produce per-window `:parked`
+      events from a Session.Server `terminate/2` callback?)
+  (b) is there a per-network "parked" overlay state in the cic
+      sidebar (network-row greying, vs per-channel greying)?
+  (c) when does Session.Server wake on `Networks.connect/1`? Bootstrap
+      restart latency vs eager spawn?
+  Defer to next channel-client-polish-adjacent cluster. The
+  per-network connection_state IS now reachable in cic over WS
+  (codebase-review-fixes H1 fix), so the network-overlay path is
+  trivially wired via `userTopic.ts` connection_state_changed
+  dispatch — only per-window state is the open design question.
 
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
