@@ -18,12 +18,20 @@ defmodule GrappaWeb.MeController do
   """
   use GrappaWeb, :controller
 
-  @doc "`GET /me` — discriminated profile for the bearer's subject."
-  @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  @doc """
+  `GET /me` — discriminated profile for the bearer's subject.
+
+  W8: defensive fall-through clause guards against a regressed pipeline
+  (`/me` mounted outside `:authn`, or a future subject kind added without
+  updating this controller). With the fall-through the failure mode is a
+  uniform 401 via `FallbackController`, not a `KeyError` 500.
+  """
+  @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :unauthorized}
   def show(conn, _) do
-    case conn.assigns.current_subject do
+    case conn.assigns[:current_subject] do
       {:user, user} -> render(conn, :show, user: user)
       {:visitor, visitor} -> render(conn, :show, visitor: visitor)
+      _ -> {:error, :unauthorized}
     end
   end
 end
