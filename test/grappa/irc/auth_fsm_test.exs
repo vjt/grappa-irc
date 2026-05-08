@@ -361,6 +361,78 @@ defmodule Grappa.IRC.AuthFSMTest do
     end
   end
 
+  # Codebase review 2026-05-08 IRC S1-S4 (4× HIGH).
+  # The FSM clauses for 432/433, AUTHENTICATE +, 904/905 had no phase
+  # guard — they fired regardless of `phase`. Once `:registered` was
+  # reached:
+  #   * 432/433 from a `/nick badname` user-issued NICK crashed the
+  #     entire Session via `:nick_rejected` stop (S1).
+  #   * Stray AUTHENTICATE + from a buggy/malicious upstream elicited
+  #     a verbatim SASL credential reply over the still-cleartext
+  #     wire (Phase-1 `verify: :verify_none`) — credential leak (S2).
+  #   * Stray 904/905 from observability noise crashed the Session
+  #     via `:sasl_failed` stop (S3).
+  # Fix: phase guard at the top of `step/2` — once `:registered`, the
+  # only auth-relevant message that can still arrive is itself
+  # absorbed (cap continuations covered by F1; numerics + AUTHENTICATE
+  # by these guards). The host (Session.Server) handles
+  # post-registration semantics for these messages independently
+  # (numeric_router routes 432/433 to active windows; AUTHENTICATE has
+  # no post-registration verb).
+  describe "step/2 — stray auth events post-registration (S1-S4 phase guards)" do
+    test "S1: stray 432 in :registered phase is absorbed (no :nick_rejected stop)" do
+      state = new!(%{auth_method: :auto, password: "swordfish"})
+      registered = %{state | phase: :registered}
+
+      msg = %Message{command: {:numeric, 432}, params: ["vjt", "9bad", "Erroneous nickname"]}
+      assert {:cont, ^registered, []} = AuthFSM.step(registered, msg)
+    end
+
+    test "S1: stray 433 in :registered phase is absorbed (no :nick_rejected stop)" do
+      state = new!(%{auth_method: :auto, password: "swordfish"})
+      registered = %{state | phase: :registered}
+
+      msg = %Message{command: {:numeric, 433}, params: ["vjt", "alice", "Nickname is already in use"]}
+      assert {:cont, ^registered, []} = AuthFSM.step(registered, msg)
+    end
+
+    test "S2: stray AUTHENTICATE + in :registered phase NEVER replies with credentials" do
+      state = new!(%{auth_method: :sasl, sasl_user: "vjt", password: "secret-do-not-leak"})
+      registered = %{state | phase: :registered}
+
+      msg = %Message{command: :authenticate, params: ["+"]}
+      assert {:cont, ^registered, sends} = AuthFSM.step(registered, msg)
+      # Critical: post-registration AUTHENTICATE + must produce ZERO
+      # bytes upstream. Any payload here would carry the SASL PLAIN
+      # blob — a credential leak under verify_none.
+      assert sends == []
+    end
+
+    test "S3: stray 904 in :registered phase is absorbed (no :sasl_failed stop)" do
+      state = new!(%{auth_method: :sasl, sasl_user: "vjt", password: "secret"})
+      registered = %{state | phase: :registered}
+
+      msg = %Message{command: {:numeric, 904}, params: ["vjt", "SASL authentication failed"]}
+      assert {:cont, ^registered, []} = AuthFSM.step(registered, msg)
+    end
+
+    test "S3: stray 905 in :registered phase is absorbed (no :sasl_failed stop)" do
+      state = new!(%{auth_method: :sasl, sasl_user: "vjt", password: "secret"})
+      registered = %{state | phase: :registered}
+
+      msg = %Message{command: {:numeric, 905}, params: ["vjt", "SASL message too long"]}
+      assert {:cont, ^registered, []} = AuthFSM.step(registered, msg)
+    end
+
+    test "control: 001 is still the LS->REGISTERED transition (phase guard MUST NOT short-circuit it)" do
+      state = new!(%{auth_method: :auto, password: "swordfish"})
+      pre = %{state | phase: :awaiting_cap_ls}
+
+      msg = %Message{command: {:numeric, 1}, params: ["vjt", "Welcome"]}
+      assert {:cont, %AuthFSM{phase: :registered, caps_buffer: []}, []} = AuthFSM.step(pre, msg)
+    end
+  end
+
   describe "step/2 — non-auth Messages are pass-through (no-op)" do
     test "PRIVMSG inbound is a no-op for the FSM (Client forwards to dispatch_to)" do
       {state, _} = AuthFSM.initial_handshake(new!(%{}))

@@ -206,6 +206,26 @@ defmodule Grappa.IRC.AuthFSM do
   """
   @spec step(t(), Message.t()) ::
           {:cont, t(), [iodata()]} | {:stop, stop_reason(), t(), [iodata()]}
+  # Codebase review 2026-05-08 IRC S1-S4 (4× HIGH): phase guard.
+  # Once `:registered`, the FSM is done. Every subsequent IRC message
+  # belongs to the host (Session.Server) which already receives it via
+  # the `{:irc, msg}` dispatch in `IRC.Client.process_line/2`. Without
+  # this guard, the post-handshake clauses below would still fire on
+  # post-registration traffic:
+  #   * 432/433 from a user-issued `/nick badname` would crash the
+  #     Session via `:nick_rejected` stop (S1) — numeric_router already
+  #     routes 432/433 to the active window post-registration.
+  #   * Stray AUTHENTICATE + from a buggy/malicious upstream would
+  #     elicit a verbatim SASL credential reply (S2) — credential leak
+  #     under verify_none.
+  #   * Stray 904/905 from observability noise would crash the Session
+  #     via `:sasl_failed` stop (S3).
+  # Cap-message guards already exist (F1 cluster); this generalizes
+  # the principle to the four other auth-relevant message classes.
+  # Catch-all for `:registered` MUST come BEFORE the per-command
+  # clauses so the absorption is unconditional.
+  def step(%__MODULE__{phase: :registered} = state, _msg), do: {:cont, state, []}
+
   def step(state, %Message{command: :cap, params: params}),
     do: handle_cap(params, state)
 

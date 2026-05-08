@@ -29,6 +29,26 @@ defmodule Grappa.IRC.MessageTest do
       assert Message.sender_nick({:server, "x.example"}) == "x.example"
       assert Message.sender_nick(nil) == "*"
     end
+
+    # Codebase review 2026-05-08 IRC S4 (HIGH).
+    # M-irc-1's `nilify/1` parser fix made `nick: nil` representable in
+    # `{:nick, nick, _, _}` prefixes for pathological inputs like
+    # `:@host PRIVMSG ...` (RFC 2812 disallows but Bahamut tolerates).
+    # `sender_nick/1`'s clause returned `nick` directly, surfacing
+    # `nil` despite `@spec ... :: String.t()`. Downstream, EventRouter
+    # builds Scrollback rows via `validate_required(:sender)` —
+    # passing `nil` crashes the row write.
+    # Fix: collapse `{:nick, nil, _, _}` to the same `@anonymous_sender`
+    # sentinel as the prefix-less case (`nil` arg). Same closed-set
+    # contract; no new wire shape.
+    test "S4: returns \"*\" when nick is nil (pathological :@host shape)" do
+      msg = %Message{command: :privmsg, prefix: {:nick, nil, "~user", "host"}}
+      assert Message.sender_nick(msg) == "*"
+    end
+
+    test "S4: returns \"*\" for bare {:nick, nil, _, _} tuple" do
+      assert Message.sender_nick({:nick, nil, nil, nil}) == "*"
+    end
   end
 
   describe "tag/2 + tag/3 (M-irc-3)" do

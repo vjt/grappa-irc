@@ -123,6 +123,15 @@ defmodule Grappa.IRC.Message do
   """
   @spec sender_nick(t() | prefix()) :: String.t()
   def sender_nick(%__MODULE__{prefix: prefix}), do: sender_nick(prefix)
+  # Codebase review 2026-05-08 IRC S4: M-irc-1's `nilify/1` parser fix
+  # made `nick: nil` representable in `{:nick, nil, _, _}` for
+  # pathological inputs like `:@host PRIVMSG ...` (RFC 2812 disallows
+  # but Bahamut tolerates). Without this clause, `sender_nick/1`
+  # returned `nil` despite `@spec :: String.t()`; downstream
+  # `EventRouter` uses the value to build Scrollback rows whose
+  # `validate_required(:sender)` then crashes the row write. Collapse
+  # to `@anonymous_sender` — same contract as the prefix-less arm.
+  def sender_nick({:nick, nil, _, _}), do: @anonymous_sender
   def sender_nick({:nick, nick, _, _}), do: nick
   def sender_nick({:server, server}), do: server
   def sender_nick(nil), do: @anonymous_sender
