@@ -144,17 +144,6 @@ fixed in C8):**
   row + greyed-class treatment is already in place for `:parked`
   thanks to CP15 B6, so the spec is mechanical once T32 ships.
 
-- **`cicchetto/e2e/infra` submodule pointer drift on main** —
-  main's `.gitmodules` pins `afd3ae8` (testnet
-  NO_CHANOPS_WHEN_SPLIT fix from CP15 B6), but the working copy is
-  at `e023db1` (leaf autoconnect connfreq 180s → 2s, lands ON TOP
-  of `afd3ae8`). The leaf-autoconnect fix landed in the working
-  copy during CP15 B6 but was never committed to main's submodule
-  pointer — `afd3ae8` no longer exists in upstream (rewritten /
-  squashed). Bump main's submodule pointer to `e023db1` (or its
-  current upstream tip) in a docs-adjacent infra commit; verify
-  `scripts/integration.sh` still green afterwards.
-
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
   IRC.Client via link, which silently dies; OK for prod but emits
