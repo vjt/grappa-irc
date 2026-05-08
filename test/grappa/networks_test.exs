@@ -588,6 +588,7 @@ defmodule Grappa.NetworksTest do
     test "connect/1 from :parked emits %Phoenix.Socket.Broadcast{} on the network topic" do
       user = user_fixture()
       net = network_fixture()
+
       {:ok, cred} =
         Credentials.bind_credential(user, net, %{
           nick: "vjt",

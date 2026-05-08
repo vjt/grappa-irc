@@ -20,7 +20,7 @@ defmodule Grappa.Accounts.Session do
 
   ## Lifecycle
 
-    * `created_at` is set once at `Accounts.create_session/3` and
+    * `created_at` is set once at `Accounts.create_session/4` and
       never moves. `inserted_at`/`updated_at` are intentionally absent
       — the `last_seen_at` field is the only thing the sliding idle
       policy looks at, so a separate `updated_at` would just be a
@@ -85,12 +85,12 @@ defmodule Grappa.Accounts.Session do
   `{:user, "does not exist"}` / `{:visitor, "does not exist"}`.
   `ecto_sqlite3` returns the constraint name as `nil` (sqlite quirk),
   so the built-in handler can't match — the actual stale-FK guard for
-  Grappa lives at `Accounts.create_session/3`'s
+  Grappa lives at `Accounts.create_session/4`'s
   `validate_subject_exists/1` pre-flight (S29 H4 + review-fix #5).
   Both constraints are kept here so a future PostgreSQL swap doesn't
   silently lose FK validation on either subject side.
 
-  S29 H4: prior to this changeset, `Accounts.create_session/3` used
+  S29 H4: prior to this changeset, `Accounts.create_session/4` used
   `Ecto.Changeset.change/2` (no validation) and let the DB layer
   catch FK violations as raw exceptions, contradicting the function's
   `@spec :: ... | {:error, Ecto.Changeset.t()}`.

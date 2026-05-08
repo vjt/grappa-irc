@@ -75,7 +75,7 @@ defmodule Grappa.UserSettings do
   This is a pre-flight existence check (`Repo.exists?`) rather than relying
   on the DB FK constraint name — `ecto_sqlite3` returns FK constraint names
   as `nil`, so Ecto can't map them to changeset errors (same limitation as
-  `Grappa.Accounts.create_session/3`; see S29 H4 + Session schema moduledoc
+  `Grappa.Accounts.create_session/4`; see S29 H4 + Session schema moduledoc
   for the prior art). The pre-flight check is benign-racy: a concurrently
   deleted user would still trip the DB FK as a backstop (raising
   `Ecto.ConstraintError`, which is acceptable for that edge case).
@@ -179,7 +179,7 @@ defmodule Grappa.UserSettings do
 
   # Pre-flight existence check for user_id. ecto_sqlite3 returns FK constraint
   # names as nil so Ecto can't map DB FK violations to changeset errors (same
-  # issue as Accounts.create_session/3; see S29 H4). We check with Repo.exists?
+  # issue as Accounts.create_session/4; see S29 H4). We check with Repo.exists?
   # before insert so the {:error, changeset} return contract is honoured.
   @spec validate_user_exists(Ecto.UUID.t()) :: :ok | {:error, Ecto.Changeset.t()}
   defp validate_user_exists(user_id) do

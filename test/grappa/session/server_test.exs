@@ -2133,7 +2133,11 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
       # Subscribe before starting the session so we don't miss the broadcast
-      topic = Grappa.PubSub.Topic.network(user.name, network.slug)
+      # Codebase review 2026-05-08 H1: connection_state_changed now rides
+      # `Topic.user` (not `Topic.network`) and arrives as a
+      # `%Phoenix.Socket.Broadcast{}` envelope from
+      # `Grappa.PubSub.broadcast_event/2`.
+      topic = Grappa.PubSub.Topic.user(user.name)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
@@ -2160,7 +2164,14 @@ defmodule Grappa.Session.ServerTest do
 
       # Wait for the async Task's DB transition + broadcast to complete.
       # The PubSub event is the authoritative completion signal.
-      assert_receive {:connection_state_changed, %{to: :failed, reason: "k-line: You are banned from this server."}},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         to: :failed,
+                         reason: "k-line: You are banned from this server."
+                       }
+                     },
                      3_000
 
       reloaded =
@@ -2177,7 +2188,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
-      topic = Grappa.PubSub.Topic.network(user.name, network.slug)
+      topic = Grappa.PubSub.Topic.user(user.name)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
@@ -2197,7 +2208,14 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 2_000
 
-      assert_receive {:connection_state_changed, %{to: :failed, reason: "sasl: SASL authentication failed"}},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         to: :failed,
+                         reason: "sasl: SASL authentication failed"
+                       }
+                     },
                      3_000
 
       reloaded =

@@ -14,7 +14,7 @@ defmodule GrappaWeb.AuthController do
       token via the `:authn` pipeline. Idempotent.
 
   Login records the requesting `ip` + `user-agent` on the session row
-  for audit (`Accounts.create_session/3`). The IP is read directly from
+  for audit (`Accounts.create_session/4`). The IP is read directly from
   `conn.remote_ip` — Phase 5 will add a configurable trusted-proxy
   list before honoring `x-forwarded-for`.
 

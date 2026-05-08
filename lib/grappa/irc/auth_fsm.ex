@@ -224,7 +224,7 @@ defmodule Grappa.IRC.AuthFSM do
   # the principle to the four other auth-relevant message classes.
   # Catch-all for `:registered` MUST come BEFORE the per-command
   # clauses so the absorption is unconditional.
-  def step(%__MODULE__{phase: :registered} = state, _msg), do: {:cont, state, []}
+  def step(%__MODULE__{phase: :registered} = state, _), do: {:cont, state, []}
 
   def step(state, %Message{command: :cap, params: params}),
     do: handle_cap(params, state)

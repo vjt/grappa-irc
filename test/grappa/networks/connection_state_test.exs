@@ -71,7 +71,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       {user, network, fresh} = setup_credential(port)
       cred = set_state(fresh, :parked, "manual")
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:ok, updated} = Networks.connect(cred)
       assert updated.connection_state == :connected
@@ -82,16 +82,19 @@ defmodule Grappa.Networks.ConnectionStateTest do
       uid = user.id
       nid = network.id
 
-      assert_receive {:connection_state_changed,
-                      %{
-                        user_id: ^uid,
-                        network_id: ^nid,
-                        network_slug: ^slug,
-                        from: :parked,
-                        to: :connected,
-                        reason: nil,
-                        at: %DateTime{}
-                      }},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         user_id: ^uid,
+                         network_id: ^nid,
+                         network_slug: ^slug,
+                         from: :parked,
+                         to: :connected,
+                         reason: nil,
+                         at: %DateTime{}
+                       }
+                     },
                      500
 
       reloaded = reload(cred)
@@ -101,25 +104,33 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "transitions :failed → :connected, clears reason, broadcasts" do
       {_, port} = start_server()
-      {user, network, fresh} = setup_credential(port)
+      {user, _, fresh} = setup_credential(port)
       cred = set_state(fresh, :failed, "k-line: trial")
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:ok, updated} = Networks.connect(cred)
       assert updated.connection_state == :connected
       assert updated.connection_state_reason == nil
 
-      assert_receive {:connection_state_changed, %{from: :failed, to: :connected}}, 500
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :failed,
+                         to: :connected
+                       }
+                     },
+                     500
     end
 
     test "idempotent on :connected — returns row unchanged, no broadcast" do
       {_, port} = start_server()
-      {user, network, cred} = setup_credential(port)
+      {user, _, cred} = setup_credential(port)
       assert cred.connection_state == :connected
       original_changed_at = cred.connection_state_changed_at
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:ok, returned} = Networks.connect(cred)
       assert returned.connection_state == :connected
@@ -136,7 +147,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       {user, network, cred} = setup_credential(port)
       assert cred.connection_state == :connected
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
@@ -154,29 +165,45 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert updated.connection_state_reason == "user-disconnect"
       assert %DateTime{} = updated.connection_state_changed_at
 
-      assert_receive {:connection_state_changed, %{from: :connected, to: :parked, reason: "user-disconnect"}},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :connected,
+                         to: :parked,
+                         reason: "user-disconnect"
+                       }
+                     },
                      500
     end
 
     test "from :connected with no live session: transitions :parked, broadcasts (best-effort QUIT skipped silently)" do
       {_, port} = start_server()
-      {user, network, cred} = setup_credential(port)
+      {user, _, cred} = setup_credential(port)
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:ok, updated} = Networks.disconnect(cred, "manual")
       assert updated.connection_state == :parked
       assert updated.connection_state_reason == "manual"
 
-      assert_receive {:connection_state_changed, %{from: :connected, to: :parked}}, 500
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :connected,
+                         to: :parked
+                       }
+                     },
+                     500
     end
 
     test "from :parked: returns {:error, :not_connected} unchanged" do
       {_, port} = start_server()
-      {user, network, fresh} = setup_credential(port)
+      {user, _, fresh} = setup_credential(port)
       cred = set_state(fresh, :parked, "first")
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:error, :not_connected} = Networks.disconnect(cred, "second")
       refute_receive {:connection_state_changed, _}, 100
@@ -203,7 +230,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       {server, port} = start_server()
       {user, network, cred} = setup_credential(port)
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
@@ -217,16 +244,24 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert updated.connection_state == :failed
       assert updated.connection_state_reason == "k-line: G:Lined"
 
-      assert_receive {:connection_state_changed, %{from: :connected, to: :failed, reason: "k-line: G:Lined"}},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :connected,
+                         to: :failed,
+                         reason: "k-line: G:Lined"
+                       }
+                     },
                      500
     end
 
     test "idempotent on :failed: returns row unchanged, no broadcast" do
       {_, port} = start_server()
-      {user, network, fresh} = setup_credential(port)
+      {user, _, fresh} = setup_credential(port)
       cred = set_state(fresh, :failed, "old reason")
 
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.network(user.name, network.slug))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert {:ok, returned} = Networks.mark_failed(cred, "new reason")
       assert returned.connection_state == :failed
