@@ -85,6 +85,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
   alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter}
+  alias Grappa.Session.Wire, as: SessionWire
 
   require Logger
 
@@ -1611,7 +1612,7 @@ defmodule Grappa.Session.Server do
       :ok =
         Grappa.PubSub.broadcast_event(
           Topic.user(prev.subject_label),
-          %{kind: "channels_changed"}
+          SessionWire.channels_changed()
         )
     end
 
@@ -1631,11 +1632,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.user(next_state.subject_label),
-        %{
-          kind: "own_nick_changed",
-          network_id: next_state.network_id,
-          nick: next_nick
-        }
+        SessionWire.own_nick_changed(next_state.network_id, next_nick)
       )
   end
 
@@ -1648,12 +1645,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "topic_changed",
-          network: state.network_slug,
-          channel: channel,
-          topic: entry
-        }
+        SessionWire.topic_changed(state.network_slug, channel, entry)
       )
 
     apply_effects(rest, state)
@@ -1663,12 +1655,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "channel_modes_changed",
-          network: state.network_slug,
-          channel: channel,
-          modes: entry
-        }
+        SessionWire.channel_modes_changed(state.network_slug, channel, entry)
       )
 
     apply_effects(rest, state)
@@ -1693,12 +1680,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "members_seeded",
-          network: state.network_slug,
-          channel: channel,
-          members: members
-        }
+        SessionWire.members_seeded(state.network_slug, channel, members)
       )
 
     apply_effects(rest, state)
@@ -1713,12 +1695,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "joined",
-          network: state.network_slug,
-          channel: channel,
-          state: "joined"
-        }
+        SessionWire.joined(state.network_slug, channel)
       )
 
     # Joining wipes any prior :failed / :kicked snapshot mirrors —
@@ -1791,14 +1768,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "join_failed",
-          network: state.network_slug,
-          channel: channel,
-          state: "failed",
-          reason: reason,
-          numeric: numeric
-        }
+        SessionWire.join_failed(state.network_slug, channel, reason, numeric)
       )
 
     state = %{
@@ -1843,14 +1813,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
-        %{
-          kind: "kicked",
-          network: state.network_slug,
-          channel: channel,
-          state: "kicked",
-          by: by,
-          reason: reason
-        }
+        SessionWire.kicked(state.network_slug, channel, by, reason)
       )
 
     state = %{
@@ -1908,11 +1871,7 @@ defmodule Grappa.Session.Server do
     :ok =
       Grappa.PubSub.broadcast_event(
         Topic.user(state.subject_label),
-        %{
-          kind: "away_confirmed",
-          network: state.network_slug,
-          state: away_str
-        }
+        SessionWire.away_confirmed(state.network_slug, away_str)
       )
 
     apply_effects(rest, state)
@@ -1965,44 +1924,28 @@ defmodule Grappa.Session.Server do
 
   # CP15 B3: assembles the snapshot-ready window-state event payload for
   # the cold-WS-subscribe push (handle_call({:get_window_state, _}, ...)).
-  # Single source of truth for the projection — must stay byte-identical
-  # to the event-time payloads emitted in the apply_effects arms above.
-  # Three variants share network + channel + state; :failed adds reason +
-  # numeric (the latter is the stable cross-language key for a future
-  # cic-side i18n layer); :kicked adds by + reason from window_kicked_meta.
+  # Single source of truth for the projection — collapses to a one-line
+  # call into Grappa.Session.Wire so snapshot + event-time payloads are
+  # LITERALLY the same expression (CP16 B1 — no more code-review-enforced
+  # byte-identicality, the Wire module is the function-level contract).
   @spec window_state_payload(state(), String.t(), :joined | :failed | :kicked) ::
           Grappa.Session.window_state_snapshot()
   defp window_state_payload(state, channel, :joined) do
-    %{
-      kind: "joined",
-      network: state.network_slug,
-      channel: channel,
-      state: "joined"
-    }
+    SessionWire.joined(state.network_slug, channel)
   end
 
   defp window_state_payload(state, channel, :failed) do
-    %{
-      kind: "join_failed",
-      network: state.network_slug,
-      channel: channel,
-      state: "failed",
-      reason: Map.get(state.window_failure_reasons, channel),
-      numeric: Map.get(state.window_failure_numerics, channel)
-    }
+    SessionWire.join_failed(
+      state.network_slug,
+      channel,
+      Map.get(state.window_failure_reasons, channel),
+      Map.get(state.window_failure_numerics, channel)
+    )
   end
 
   defp window_state_payload(state, channel, :kicked) do
     meta = Map.get(state.window_kicked_meta, channel, %{by: nil, reason: nil})
-
-    %{
-      kind: "kicked",
-      network: state.network_slug,
-      channel: channel,
-      state: "kicked",
-      by: meta.by,
-      reason: meta.reason
-    }
+    SessionWire.kicked(state.network_slug, channel, meta.by, meta.reason)
   end
 
   # One-shot send + clear of the synchronous-login readiness signal
@@ -2236,31 +2179,19 @@ defmodule Grappa.Session.Server do
     messages = Mentions.aggregate_mentions(user_id, state.network_id, away_start_ms, away_end_ms, watchlist, state.nick)
 
     if messages != [] do
-      message_payloads =
-        Enum.map(messages, fn m ->
-          %{
-            server_time: m.server_time,
-            channel: m.channel,
-            sender_nick: m.sender,
-            body: m.body,
-            kind: Atom.to_string(m.kind)
-          }
-        end)
-
       away_started_iso = DateTime.to_iso8601(state.away_started_at)
       away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
 
       :ok =
         Grappa.PubSub.broadcast_event(
           Topic.user(state.subject_label),
-          %{
-            kind: "mentions_bundle",
-            network: state.network_slug,
-            away_started_at: away_started_iso,
-            away_ended_at: away_ended_iso,
-            away_reason: state.away_reason,
-            messages: message_payloads
-          }
+          SessionWire.mentions_bundle(
+            state.network_slug,
+            away_started_iso,
+            away_ended_iso,
+            state.away_reason,
+            messages
+          )
         )
     end
 
