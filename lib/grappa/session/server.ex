@@ -84,7 +84,18 @@ defmodule Grappa.Session.Server do
   alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
-  alias Grappa.Session.{Backoff, EventRouter, GhostRecovery, ModeChunker, NSInterceptor, NumericRouter, WindowState}
+
+  alias Grappa.Session.{
+    AwayState,
+    Backoff,
+    EventRouter,
+    GhostRecovery,
+    ModeChunker,
+    NSInterceptor,
+    NumericRouter,
+    WindowState
+  }
+
   alias Grappa.Session.Wire, as: SessionWire
 
   require Logger
@@ -100,23 +111,10 @@ defmodule Grappa.Session.Server do
   """
   @type window_ref :: %{kind: NumericRouter.window_kind(), target: String.t() | nil}
 
-  @typedoc """
-  Away state — closed set tracking whether the user is present, manually away
-  (via `/away :reason` slash command), or automatically away (web client
-  disconnected + 30s debounce elapsed).
-
-  Precedence rule (S3.2): `set_auto_away` is a no-op if state is `:away_explicit`.
-  `set_explicit_away` always wins and overwrites any prior auto-away. Both
-  `unset_*` verbs are no-ops unless called on the matching state.
-  """
-  @type away_state :: :present | :away_explicit | :away_auto
-
-  # The auto-away reason string is fixed and documented. Changing it would
-  # invalidate any client-side text matching; treat it as a protocol constant.
-  @auto_away_reason "auto-away (web client disconnected)"
-
   # 30-second debounce before issuing AWAY after all WS connections drop.
-  # Gives the user time to open a new tab without going away.
+  # Gives the user time to open a new tab without going away. The auto-away
+  # reason string itself lives on `AwayState.auto_away_reason/0` (moved
+  # there in cluster #7 — single injection site is `set_auto_away/1`).
   @auto_away_debounce_ms 30_000
 
   # 10s is generous for an upstream NickServ → +r MODE round-trip; even
@@ -275,9 +273,7 @@ defmodule Grappa.Session.Server do
           credential_failer: credential_failer() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
           ghost_timer: reference() | nil,
-          away_state: away_state(),
-          away_started_at: DateTime.t() | nil,
-          away_reason: String.t() | nil,
+          away_state: AwayState.t(),
           auto_away_timer: reference() | nil,
           # S4.2: IRCv3 caps confirmed active by upstream CAP ACK. Keys are
           # lowercase cap names (e.g. "labeled-response"). Empty until the
@@ -385,9 +381,7 @@ defmodule Grappa.Session.Server do
       credential_failer: Map.get(opts, :credential_failer),
       ghost_recovery: nil,
       ghost_timer: nil,
-      away_state: :present,
-      away_started_at: nil,
-      away_reason: nil,
+      away_state: AwayState.new(),
       auto_away_timer: nil,
       caps_active: MapSet.new(),
       labels_pending: %{},
@@ -722,7 +716,7 @@ defmodule Grappa.Session.Server do
   # away explicitly" feedback to the user.
   #
   # S4.3: the origin_window variant updates last_command_window.
-  def handle_call({:unset_explicit_away, origin_window}, _, %{away_state: :away_explicit} = state) do
+  def handle_call({:unset_explicit_away, origin_window}, _, %{away_state: %AwayState{state: :away_explicit}} = state) do
     {label, next_state} = prepare_label(state, origin_window)
     final_state = unset_away_internal(next_state, label)
     {:reply, :ok, final_state}
@@ -734,7 +728,7 @@ defmodule Grappa.Session.Server do
     {:reply, {:error, :not_explicit}, next_state}
   end
 
-  def handle_call({:unset_explicit_away}, _, %{away_state: :away_explicit} = state) do
+  def handle_call({:unset_explicit_away}, _, %{away_state: %AwayState{state: :away_explicit}} = state) do
     next_state = unset_away_internal(state, nil)
     {:reply, :ok, next_state}
   end
@@ -745,8 +739,8 @@ defmodule Grappa.Session.Server do
 
   # S3.2: auto-away set — driven by the WSPresence debounce. No-op when
   # `:away_explicit` (explicit takes precedence). Otherwise issues `AWAY
-  # :@auto_away_reason` upstream and transitions to `:away_auto`.
-  def handle_call({:set_auto_away}, _, %{away_state: :away_explicit} = state) do
+  # :<AwayState.auto_away_reason()>` upstream and transitions to `:away_auto`.
+  def handle_call({:set_auto_away}, _, %{away_state: %AwayState{state: :away_explicit}} = state) do
     # Explicit takes precedence — ignore the auto signal entirely.
     {:reply, :ok, state}
   end
@@ -759,7 +753,7 @@ defmodule Grappa.Session.Server do
   # S3.2: auto-away unset — driven by the WSPresence reconnect event. No-op
   # when `:away_explicit` (don't clear an explicit away on reconnect) or
   # `:present` (nothing to do). Only acts on `:away_auto`.
-  def handle_call({:unset_auto_away}, _, %{away_state: :away_auto} = state) do
+  def handle_call({:unset_auto_away}, _, %{away_state: %AwayState{state: :away_auto}} = state) do
     next_state = unset_away_internal(state, nil)
     {:reply, :ok, next_state}
   end
@@ -889,7 +883,7 @@ defmodule Grappa.Session.Server do
     state1 = %{state | auto_away_timer: nil}
 
     state2 =
-      if state1.away_state == :away_auto do
+      if AwayState.state_of(state1.away_state) == :away_auto do
         unset_away_internal(state1, nil)
       else
         state1
@@ -901,7 +895,7 @@ defmodule Grappa.Session.Server do
   # S3.2 — WS disconnect: the last browser tab for this user closed.
   # Schedule the 30s debounce before issuing auto-away. If already
   # `:away_explicit`, skip entirely — the user intentionally went away.
-  def handle_info({:ws_all_disconnected, _}, %{away_state: :away_explicit} = state) do
+  def handle_info({:ws_all_disconnected, _}, %{away_state: %AwayState{state: :away_explicit}} = state) do
     {:noreply, state}
   end
 
@@ -923,12 +917,12 @@ defmodule Grappa.Session.Server do
   # S3.2 — Auto-away debounce fired. If still `:away_explicit`, skip (user
   # may have issued `/away` in the window between disconnect and fire).
   # Otherwise issue the upstream AWAY and transition to `:away_auto`.
-  def handle_info(:auto_away_debounce_fire, %{away_state: :away_explicit} = state) do
+  def handle_info(:auto_away_debounce_fire, %{away_state: %AwayState{state: :away_explicit}} = state) do
     {:noreply, %{state | auto_away_timer: nil}}
   end
 
   def handle_info(:auto_away_debounce_fire, state) do
-    next_state = state |> Map.put(:auto_away_timer, nil) |> set_auto_away_internal()
+    next_state = set_auto_away_internal(%{state | auto_away_timer: nil})
     {:noreply, next_state}
   end
 
@@ -2095,8 +2089,8 @@ defmodule Grappa.Session.Server do
   # ---------------------------------------------------------------------------
 
   # Set explicit away: unconditional, always wins. Issues `AWAY :<reason>`
-  # upstream. Records `away_started_at` + `away_reason` so Mentions
-  # aggregation (S3.5) has the precise window.
+  # upstream. The `AwayState` mutator records started_at + reason so
+  # Mentions aggregation (S3.5) has the precise window.
   #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise. When non-nil, the AWAY line is prefixed with `@label=<uuid>`
@@ -2104,51 +2098,35 @@ defmodule Grappa.Session.Server do
   @spec set_explicit_away_internal(state(), String.t(), String.t() | nil) :: state()
   defp set_explicit_away_internal(state, reason, nil) when is_binary(reason) do
     :ok = Client.send_away(state.client, reason)
-
-    %{
-      state
-      | away_state: :away_explicit,
-        away_started_at: DateTime.utc_now(),
-        away_reason: reason
-    }
+    %{state | away_state: AwayState.set_explicit_away(state.away_state, reason)}
   end
 
   defp set_explicit_away_internal(state, reason, label)
        when is_binary(reason) and is_binary(label) do
     :ok = Client.send_line(state.client, "@label=#{label} AWAY :#{reason}\r\n")
-
-    %{
-      state
-      | away_state: :away_explicit,
-        away_started_at: DateTime.utc_now(),
-        away_reason: reason
-    }
+    %{state | away_state: AwayState.set_explicit_away(state.away_state, reason)}
   end
 
   # Set auto-away: only when not already `:away_explicit` (caller guards).
-  # Issues `AWAY :@auto_away_reason` upstream. The constant is fixed
-  # wire protocol — see `@auto_away_reason` docstring.
+  # Issues `AWAY :<auto_away_reason>` upstream. The constant is fixed
+  # wire protocol — see `AwayState.auto_away_reason/0`.
   @spec set_auto_away_internal(state()) :: state()
   defp set_auto_away_internal(state) do
-    :ok = Client.send_away(state.client, @auto_away_reason)
-
-    %{
-      state
-      | away_state: :away_auto,
-        away_started_at: DateTime.utc_now(),
-        away_reason: @auto_away_reason
-    }
+    :ok = Client.send_away(state.client, AwayState.auto_away_reason())
+    %{state | away_state: AwayState.set_auto_away(state.away_state)}
   end
 
   # Clear any active away state (explicit or auto). Issues bare `AWAY` upstream
-  # to clear the status. Resets all away fields to idle defaults.
+  # to clear the status. Resets all away fields to idle defaults via the
+  # `AwayState.unset_away/1` mutator.
   #
   # C8: before clearing the away window, aggregate mentions for user sessions
   # (not visitors — they have no persisted scrollback) and broadcast a
   # `mentions_bundle` event on the user-level PubSub topic when matches exist.
   # The broadcast fires on BOTH explicit-away and auto-away cancel paths since
   # both ultimately call this helper. Zero-match result suppresses the broadcast
-  # (no empty-window noise per spec #19).
+  # (no empty-window noise per spec #19). The broadcast must read away metadata
+  # BEFORE the unset mutator clears it.
   #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise.
@@ -2156,59 +2134,61 @@ defmodule Grappa.Session.Server do
   defp unset_away_internal(state, nil) do
     :ok = Client.send_away_unset(state.client)
     maybe_broadcast_mentions_bundle(state)
-
-    %{
-      state
-      | away_state: :present,
-        away_started_at: nil,
-        away_reason: nil
-    }
+    %{state | away_state: AwayState.unset_away(state.away_state)}
   end
 
   defp unset_away_internal(state, label) when is_binary(label) do
     :ok = Client.send_line(state.client, "@label=#{label} AWAY\r\n")
     maybe_broadcast_mentions_bundle(state)
-
-    %{
-      state
-      | away_state: :present,
-        away_started_at: nil,
-        away_reason: nil
-    }
+    %{state | away_state: AwayState.unset_away(state.away_state)}
   end
 
   # C8: aggregate mentions during the away interval and broadcast
   # `mentions_bundle` on the user-level PubSub topic when matches exist.
   # Only runs for user sessions (not visitors); silently skips when
-  # `away_started_at` is nil (present state — should not happen in normal flow
+  # `started_at` is nil (present state — should not happen in normal flow
   # but guards against double-unset edge cases).
   @spec maybe_broadcast_mentions_bundle(state()) :: :ok
   defp maybe_broadcast_mentions_bundle(%{subject: {:user, user_id}} = state)
-       when is_binary(user_id) and not is_nil(state.away_started_at) do
-    away_start_ms = DateTime.to_unix(state.away_started_at, :millisecond)
-    away_end_ms = System.system_time(:millisecond)
-    watchlist = UserSettings.get_highlight_patterns(user_id)
+       when is_binary(user_id) do
+    case AwayState.started_at(state.away_state) do
+      nil ->
+        :ok
 
-    messages = Mentions.aggregate_mentions(user_id, state.network_id, away_start_ms, away_end_ms, watchlist, state.nick)
+      started_at ->
+        away_start_ms = DateTime.to_unix(started_at, :millisecond)
+        away_end_ms = System.system_time(:millisecond)
+        watchlist = UserSettings.get_highlight_patterns(user_id)
 
-    if messages != [] do
-      away_started_iso = DateTime.to_iso8601(state.away_started_at)
-      away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
-
-      :ok =
-        Grappa.PubSub.broadcast_event(
-          Topic.user(state.subject_label),
-          SessionWire.mentions_bundle(
-            state.network_slug,
-            away_started_iso,
-            away_ended_iso,
-            state.away_reason,
-            messages
+        messages =
+          Mentions.aggregate_mentions(
+            user_id,
+            state.network_id,
+            away_start_ms,
+            away_end_ms,
+            watchlist,
+            state.nick
           )
-        )
-    end
 
-    :ok
+        if messages != [] do
+          away_started_iso = DateTime.to_iso8601(started_at)
+          away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
+
+          :ok =
+            Grappa.PubSub.broadcast_event(
+              Topic.user(state.subject_label),
+              SessionWire.mentions_bundle(
+                state.network_slug,
+                away_started_iso,
+                away_ended_iso,
+                AwayState.reason(state.away_state),
+                messages
+              )
+            )
+        end
+
+        :ok
+    end
   end
 
   defp maybe_broadcast_mentions_bundle(_), do: :ok
