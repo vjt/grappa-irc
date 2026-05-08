@@ -30,6 +30,13 @@ services:
       args:
         CONTAINER_UID: ${CONTAINER_UID:-1000}
         CONTAINER_GID: ${CONTAINER_GID:-1000}
+        # Build-time secret: signing_salt is baked into the release via
+        # config/config.exs's compile-time System.get_env (Phoenix's
+        # @session_options is a compile-time attribute; runtime override
+        # crashes Application.compile_env!/2's validation). Rotate via
+        # bump-then-rebuild; never load-bearing in dev (dev.exs sets a
+        # fixed value).
+        SECRET_SIGNING_SALT: ${SECRET_SIGNING_SALT:?missing SECRET_SIGNING_SALT — generate with scripts/mix.sh phx.gen.secret 32}
     image: grappa:prod
     pull_policy: never
     container_name: grappa
@@ -44,7 +51,6 @@ services:
       MIX_ENV: prod
       DATABASE_PATH: /app/runtime/grappa_prod.db
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?missing SECRET_KEY_BASE — generate with scripts/mix.sh phx.gen.secret}
-      SECRET_SIGNING_SALT: ${SECRET_SIGNING_SALT:?missing SECRET_SIGNING_SALT — generate with scripts/mix.sh phx.gen.secret 32}
       PORT: "4000"
       RELEASE_COOKIE: ${RELEASE_COOKIE:?missing RELEASE_COOKIE — random hex string for distributed Erlang}
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:?missing GRAPPA_ENCRYPTION_KEY — generate with scripts/mix.sh grappa.gen_encryption_key}

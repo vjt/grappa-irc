@@ -74,6 +74,16 @@ WORKDIR /app
 
 ENV MIX_ENV=prod
 
+# codebase audit web W10 + cross-infra L7. Forwarded from compose.prod.yaml's
+# `build.args.SECRET_SIGNING_SALT`; baked into the release at compile time
+# via config/config.exs's `System.get_env("SECRET_SIGNING_SALT")`. Phoenix's
+# Plug.Session @session_options is a compile-time module attribute —
+# `Application.compile_env!/2` validates compile == runtime, so the value
+# must be present in the build environment, not just runtime. Rotation =
+# bump SECRET_SIGNING_SALT in .env + scripts/deploy.sh full rebuild.
+ARG SECRET_SIGNING_SALT
+ENV SECRET_SIGNING_SALT=${SECRET_SIGNING_SALT}
+
 RUN mix deps.get --only prod && \
     mix deps.compile && \
     mix release --overwrite

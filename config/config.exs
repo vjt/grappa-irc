@@ -81,15 +81,17 @@ config :grappa, GrappaWeb.Endpoint,
     layout: false
   ],
   pubsub_server: Grappa.PubSub,
-  # codebase audit web W10 + cross-infra L7 — must be defined at every
-  # compile env (read by `Application.compile_env!/2` at lib/grappa_web/
-  # endpoint.ex's @session_options module-attribute eval). dev.exs +
-  # test.exs override with env-specific values; prod build picks up
-  # this safe placeholder, then runtime.exs overrides at boot from
-  # SECRET_SIGNING_SALT (raise on missing). Never load-bearing in
-  # prod — runtime.exs always wins; this is purely a compile-time
-  # default so the release builder doesn't need the prod secret.
-  session_signing_salt: "build-time-placeholder-overridden-by-runtime-exs"
+  # codebase audit web W10 + cross-infra L7. Read at COMPILE time (this
+  # file IS the compile config). Why compile-and-not-runtime: Phoenix's
+  # `@session_options` module attribute is evaluated when endpoint.ex is
+  # compiled — `Application.compile_env!/2` validates compile == runtime
+  # at boot, so runtime.exs CAN'T be the sole authority (mismatch crashes
+  # boot). The salt is baked into the prod release at build time.
+  # Operator workflow: set SECRET_SIGNING_SALT in .env BEFORE running
+  # scripts/deploy.sh; the build picks it up here. Rotation = bump value
+  # + scripts/deploy.sh (full rebuild). dev.exs + test.exs override with
+  # their own per-env values for the dev container + test runs.
+  session_signing_salt: System.get_env("SECRET_SIGNING_SALT") || "build-time-placeholder-not-prod-safe"
 
 config :phoenix, :json_library, Jason
 
