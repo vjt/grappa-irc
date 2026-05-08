@@ -32,6 +32,16 @@ vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
+  // Mirror of production `ownNickForNetwork` — see subscribe.test.ts
+  // moduledoc + cic H3.
+  ownNickForNetwork: (
+    net: { slug: string; nick?: string },
+    me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+  ) => {
+    if (me == null) return null;
+    if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
+    return net.nick && net.nick !== "" ? net.nick : null;
+  },
 }));
 
 vi.mock("../lib/socket", () => ({
@@ -66,7 +76,7 @@ beforeEach(() => {
 const seedStubs = async () => {
   const api = await import("../lib/api");
   vi.mocked(api.listNetworks).mockResolvedValue([
-    { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
   ]);
   vi.mocked(api.listChannels).mockResolvedValue([
     { name: "#grappa", joined: true, source: "autojoin" },
@@ -209,7 +219,7 @@ describe("focus-rule — incoming traffic never changes selectedChannel", () => 
     );
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
     ]);
     // "alice" is own nick — server routes incoming DMs to this channel slot.
     vi.mocked(api.listChannels).mockResolvedValue([

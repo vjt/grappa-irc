@@ -1,6 +1,6 @@
 import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import { type ChannelEvent, displayNick } from "./api";
+import { type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
@@ -389,12 +389,13 @@ createRoot(() => {
     const u = user();
     if (!name || !cbs) return;
     for (const [slug, list] of Object.entries(cbs)) {
-      // Resolve ownNick for this slug so BUG4/BUG5 handlers can detect
-      // self-JOIN / self-PART events. net.nick (live IRC nick from
-      // Session.Server via GET /networks) is preferred over displayNick(u)
-      // (user.name) — they differ after NickServ ghost recovery.
+      // Resolve own IRC nick for this slug so BUG4/BUG5 handlers can
+      // detect self-JOIN/PART events. Single-source via
+      // `ownNickForNetwork(net, me)` — see api.ts moduledoc for why
+      // displayNick(u) is the WRONG fallback (cic H3 root cause).
       const net = nets?.find((n) => n.slug === slug) ?? null;
-      const ownNick = net?.nick ?? (u ? displayNick(u) : null) ?? null;
+      if (net === null) continue;
+      const ownNick = ownNickForNetwork(net, u);
       for (const ch of list) {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
@@ -439,7 +440,8 @@ createRoot(() => {
       const typedKey = channelKey(slug, channelName);
       if (joined.has(typedKey)) continue;
       const net = nets.find((n) => n.slug === slug) ?? null;
-      const ownNick = net?.nick ?? (u ? displayNick(u) : null) ?? null;
+      if (net === null) continue;
+      const ownNick = ownNickForNetwork(net, u);
       const phx = joinChannel(name, slug, channelName);
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
       joined.set(typedKey, phx);
@@ -472,13 +474,13 @@ createRoot(() => {
       const networkId = Number(networkIdStr);
       const net = nets.find((n) => n.id === networkId);
       if (!net) continue;
-      // Own-nick comparison uses the per-network IRC nick (net.nick, from the
-      // credential via GET /networks) rather than displayNick(user()) which
-      // returns user.name. When user.name coincides with a query window's
-      // targetNick (e.g. operator name "vjt", query target "vjt") but the IRC
-      // nick is different ("grappa"), displayNick-based comparison incorrectly
-      // skips the join. net.nick is the canonical per-network IRC nick to compare.
-      const perNetOwnNick = net.nick ?? (u ? displayNick(u) : null);
+      // Own-nick comparison uses the canonical per-network IRC nick
+      // (`ownNickForNetwork(net, me)`). When user.name coincides with a
+      // query window's targetNick (e.g. operator name "vjt", query target
+      // "vjt") but the IRC nick is different ("grappa"), the prior
+      // displayNick-based fallback incorrectly skipped the join — see
+      // api.ts moduledoc + cic H3.
+      const perNetOwnNick = ownNickForNetwork(net, u);
       for (const qw of windowsList) {
         // Skip own-nick — the dm-listener loop is the sole subscriber
         // for that topic and installs the correct re-keying handler.
@@ -506,12 +508,10 @@ createRoot(() => {
   // subscription is deduped against any future code path that joins
   // the same topic.
   //
-  // Own-nick per network: prefer net.nick (the credential's configured
-  // IRC nick, returned by GET /networks) over displayNick(u) (user.name).
-  // user.name is the operator account name, which can differ from the IRC
-  // nick. When they differ, using displayNick would subscribe to the WRONG
-  // topic — the channel named after the operator account instead of the
-  // IRC nick the server broadcasts inbound DMs on.
+  // Own-nick per network: single-source via `ownNickForNetwork(net, me)`.
+  // The pre-fix fallback to `displayNick(u)` (= user.name) silently
+  // subscribed to the WRONG topic when account-name differed from the
+  // IRC nick — see api.ts moduledoc + cic H3.
   createEffect(() => {
     const t = token();
     const u = user();
@@ -520,7 +520,7 @@ createRoot(() => {
     const userName = socketUserName();
     if (!userName || !u || !nets) return;
     for (const net of nets) {
-      const ownNick = net.nick ?? displayNick(u);
+      const ownNick = ownNickForNetwork(net, u);
       if (!ownNick) continue;
       const key = channelKey(net.slug, ownNick);
       if (joined.has(key)) continue;

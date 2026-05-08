@@ -37,7 +37,13 @@ vi.mock("../lib/networks", () => ({
     const n = userNick();
     return n === null ? null : { kind: "user", id: "u1", name: n, inserted_at: "x" };
   },
-  networks: () => [{ id: 42, slug: "freenode", inserted_at: "", updated_at: "" }],
+  // Per-network IRC nick must mirror userNick() so ownNickForNetwork
+  // resolves to the test's expected value (avoiding the cic H3
+  // server-contract-violation branch that would null + log).
+  networks: () => {
+    const n = userNick();
+    return [{ id: 42, slug: "freenode", nick: n ?? "alice", inserted_at: "", updated_at: "" }];
+  },
 }));
 
 // C7.6: queryWindows + socket mocked so UserContextMenu import doesn't crash.

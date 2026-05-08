@@ -31,6 +31,19 @@ vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
+  // Mirror of production `ownNickForNetwork` — single source for
+  // per-network IRC nick (cic H3 fix). Tests stub `Network` fixtures
+  // with `nick: <stub>` so the user branch returns it; without
+  // explicit `nick`, returns null (matching prod's contract-violation
+  // branch). Visitor branch returns me.nick when network_slug matches.
+  ownNickForNetwork: (
+    net: { slug: string; nick?: string },
+    me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+  ) => {
+    if (me == null) return null;
+    if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
+    return net.nick && net.nick !== "" ? net.nick : null;
+  },
 }));
 
 vi.mock("../lib/socket", () => ({
@@ -112,7 +125,7 @@ beforeEach(async () => {
 const seedStubs = async () => {
   const api = await import("../lib/api");
   vi.mocked(api.listNetworks).mockResolvedValue([
-    { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
   ]);
   vi.mocked(api.listChannels).mockResolvedValue([
     { name: "#grappa", joined: true, source: "autojoin" },
@@ -703,6 +716,14 @@ describe("subscribe — WS join effect", () => {
         name: "bob",
         inserted_at: "x",
       });
+      // Bob's credential row carries its own per-network IRC nick. The
+      // pre-cic-H3 code path silently accepted the leftover stub from
+      // alice's seed via the displayNick(u) fallback; post-fix the
+      // credential nick must reflect bob's identity for the DM-listener
+      // join to use bob's nick on bob's network.
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 1, slug: "freenode", nick: "bob", inserted_at: "x", updated_at: "y" },
+      ]);
       vi.mocked(socket.joinChannel).mockClear();
 
       localStorage.setItem(
@@ -771,6 +792,11 @@ describe("subscribe — WS join effect", () => {
         name: "bob",
         inserted_at: "x",
       });
+      // Bob's per-network IRC nick (cic H3 follow-on for the rotation
+      // path — see the prior rotation test for the rationale).
+      vi.mocked(api.listNetworks).mockResolvedValue([
+        { id: 1, slug: "freenode", nick: "bob", inserted_at: "x", updated_at: "y" },
+      ]);
       vi.mocked(socket.joinChannel).mockClear();
       // Re-install per-topic factory after mockClear (mockClear wipes
       // mockImplementation too).
@@ -977,7 +1003,7 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
   const seedDmStubs = async () => {
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
     ]);
     // Production: own-nick is NEVER in the channels list. The
     // DM-listener loop subscribes to the own-nick topic per network
@@ -1119,7 +1145,7 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
   const seedQueryStubs = async () => {
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([
       { name: "#grappa", joined: true, source: "autojoin" },
@@ -1299,7 +1325,7 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
   const seedDmListenerStubs = async () => {
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([
       { name: "#grappa", joined: true, source: "autojoin" },
@@ -1524,7 +1550,7 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
   const seedOwnNickQueryStubs = async () => {
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([
       { name: "#grappa", joined: true, source: "autojoin" },
@@ -2336,7 +2362,9 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
     vi.doMock("../lib/api", () => ({
       listNetworks: vi
         .fn()
-        .mockResolvedValue([{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
+        .mockResolvedValue([
+          { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
+        ]),
       listChannels: vi.fn().mockResolvedValue([]),
       listMessages: vi.fn().mockResolvedValue([]),
       sendMessage: vi.fn(),
@@ -2345,6 +2373,14 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       logout: vi.fn(),
       setOn401Handler: vi.fn(),
       displayNick: (me: { kind: string; name?: string }) => me.name ?? "",
+      ownNickForNetwork: (
+        net: { slug: string; nick?: string },
+        me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+      ) => {
+        if (me == null) return null;
+        if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
+        return net.nick && net.nick !== "" ? net.nick : null;
+      },
     }));
     vi.doMock("../lib/socket", () => ({
       joinChannel: vi.fn(() => mockChannel),

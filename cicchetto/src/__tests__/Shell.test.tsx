@@ -28,7 +28,7 @@ vi.mock("@solidjs/router", () => ({
 }));
 
 vi.mock("../lib/networks", () => ({
-  networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
+  networks: () => [{ id: 1, slug: "freenode", nick: "vjt", inserted_at: "", updated_at: "" }],
   channelsBySlug: () => ({
     freenode: [
       { name: "#a", joined: true, source: "autojoin" },
@@ -130,6 +130,15 @@ vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
+  // Per-network IRC nick — see subscribe.test.ts moduledoc + cic H3.
+  ownNickForNetwork: (
+    net: { slug: string; nick?: string },
+    me: { kind: "user" | "visitor"; nick?: string; network_slug?: string } | null | undefined,
+  ) => {
+    if (me == null) return null;
+    if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
+    return net.nick && net.nick !== "" ? net.nick : null;
+  },
 }));
 
 vi.mock("../lib/channelKey", () => ({
