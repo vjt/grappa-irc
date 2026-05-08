@@ -53,7 +53,7 @@ defmodule Grappa.Networks do
 
   alias Grappa.{Accounts, Repo, Session}
   alias Grappa.Accounts.User
-  alias Grappa.Networks.{Credential, Network}
+  alias Grappa.Networks.{Credential, Network, Wire}
   alias Grappa.PubSub.Topic
 
   require Logger
@@ -456,8 +456,9 @@ defmodule Grappa.Networks do
   # by REST refetch on PATCH return).
   #
   # Fix: route through `Grappa.PubSub.broadcast_event/2` with payload
-  # `%{kind: "connection_state_changed", ...}` — the standard wire-event
-  # contract every CP15 typed event uses. Fastlane delivers as
+  # built by `Networks.Wire.connection_state_changed_event/4` (CP16 B3
+  # moved the payload behind the Wire fn — the standard wire-event
+  # contract every CP15 typed event uses). Fastlane delivers as
   # `phx_msg{event: "event"}` exactly once per WS subscriber.
   @spec broadcast_state_change(
           Credential.t(),
@@ -466,22 +467,12 @@ defmodule Grappa.Networks do
           String.t() | nil
         ) :: :ok
   defp broadcast_state_change(
-         %Credential{user: %User{name: user_name}, network: %Network{slug: slug}} = cred,
+         %Credential{user: %User{name: user_name}} = cred,
          from,
          to,
          reason
        ) do
-    payload = %{
-      kind: "connection_state_changed",
-      user_id: cred.user_id,
-      network_id: cred.network_id,
-      network_slug: slug,
-      from: from,
-      to: to,
-      reason: reason,
-      at: cred.connection_state_changed_at
-    }
-
+    payload = Wire.connection_state_changed_event(cred, from, to, reason)
     :ok = Grappa.PubSub.broadcast_event(Topic.user(user_name), payload)
   end
 end

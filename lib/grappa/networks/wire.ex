@@ -85,6 +85,27 @@ defmodule Grappa.Networks.Wire do
           source: :autojoin | :joined
         }
 
+  @typedoc """
+  Wire payload for `kind: "connection_state_changed"` broadcast on
+  `Topic.user(user_name)`. Cic's `userTopic.ts` consumes this to refresh
+  the per-network connection-state badge (T32 connect/disconnect).
+
+  Pre-CP16 B3: `Networks.broadcast_state_change/4` built this payload
+  inline at the broadcast site. CP16 B3 moves it here per the
+  CLAUDE.md hard invariant — every PubSub broadcast payload routes
+  through a context-owned Wire fn.
+  """
+  @type connection_state_event :: %{
+          kind: String.t(),
+          user_id: Ecto.UUID.t(),
+          network_id: integer(),
+          network_slug: String.t(),
+          from: Credential.connection_state(),
+          to: Credential.connection_state(),
+          reason: String.t() | nil,
+          at: DateTime.t() | nil
+        }
+
   @doc """
   Renders a `Networks.Credential` row to its public JSON shape. The
   `:network` association MUST be preloaded — pattern match fails
@@ -166,5 +187,39 @@ defmodule Grappa.Networks.Wire do
   def channel_to_json(name, joined, source)
       when is_binary(name) and is_boolean(joined) and source in [:autojoin, :joined] do
     %{name: name, joined: joined, source: source}
+  end
+
+  @doc """
+  Renders the broadcast event emitted by
+  `Networks.broadcast_state_change/4` after a credential's
+  `connection_state` transitions (T32 connect/disconnect verbs +
+  upstream socket-close hits). Fanned out on `Topic.user(user_name)`
+  via `Grappa.PubSub.broadcast_event/2`.
+
+  Codebase-review-fixes 2026-05-08 H1 fix landed the
+  `broadcast_event/2` route; CP16 B3 moves the payload itself behind
+  this Wire fn so the same {kind, user_id, network_id, network_slug,
+  from, to, reason, at} contract is one edit instead of fourteen.
+  Cic's `userTopic.ts` consumes the payload directly; the fields
+  match what cic's discriminated `WireUserEvent` arm declares
+  (CP16 B5).
+  """
+  @spec connection_state_changed_event(
+          Credential.t(),
+          Credential.connection_state(),
+          Credential.connection_state(),
+          String.t() | nil
+        ) :: connection_state_event()
+  def connection_state_changed_event(%Credential{network: %Network{slug: slug}} = c, from, to, reason) do
+    %{
+      kind: "connection_state_changed",
+      user_id: c.user_id,
+      network_id: c.network_id,
+      network_slug: slug,
+      from: from,
+      to: to,
+      reason: reason,
+      at: c.connection_state_changed_at
+    }
   end
 end

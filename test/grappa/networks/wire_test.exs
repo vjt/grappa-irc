@@ -208,4 +208,61 @@ defmodule Grappa.Networks.WireTest do
                Wire.channel_to_json("#bnc", true, :joined)
     end
   end
+
+  describe "connection_state_changed_event/4 (CP16 B3)" do
+    test "renders the wire payload from a credential + transition tuple",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          realname: "Marcello",
+          sasl_user: "vjt",
+          auth_method: :sasl,
+          password: "shibboleth",
+          autojoin_channels: ["#grappa"]
+        })
+
+      %Credential{} =
+        cred = user |> Credentials.get_credential!(network) |> Repo.preload([:user, :network])
+
+      now = DateTime.utc_now()
+
+      cred = %Credential{cred | connection_state_changed_at: now}
+
+      payload = Wire.connection_state_changed_event(cred, :connected, :parked, "operator paused")
+
+      assert payload == %{
+               kind: "connection_state_changed",
+               user_id: cred.user_id,
+               network_id: cred.network_id,
+               network_slug: network.slug,
+               from: :connected,
+               to: :parked,
+               reason: "operator paused",
+               at: now
+             }
+    end
+
+    test "tolerates nil reason (state-change without operator note)",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          realname: "Marcello",
+          sasl_user: "vjt",
+          auth_method: :sasl,
+          password: "shibboleth",
+          autojoin_channels: ["#grappa"]
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload([:user, :network])
+
+      payload = Wire.connection_state_changed_event(cred, :parked, :connected, nil)
+
+      assert payload.reason == nil
+      assert payload.from == :parked
+      assert payload.to == :connected
+      assert payload.kind == "connection_state_changed"
+    end
+  end
 end
