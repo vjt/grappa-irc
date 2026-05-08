@@ -3,7 +3,7 @@ import { postPart } from "./lib/api";
 import { archivedBySlug, loadArchive } from "./lib/archive";
 import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
-import { channelKey } from "./lib/channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
@@ -85,12 +85,17 @@ const Sidebar: Component<Props> = (props) => {
     const states = windowStateByChannel();
     const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
     const queries = new Set((queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick));
-    const prefix = `${slug} `;
     const out: PseudoRow[] = [];
     for (const [key, state] of Object.entries(states)) {
       if (state === "joined") continue;
-      if (!key.startsWith(prefix)) continue;
-      const name = key.slice(prefix.length);
+      // Codebase audit cic M4 — paired decoder over open-coded
+      // `key.startsWith(prefix) + key.slice(prefix.length)`. The
+      // composite-key shape is owned by `lib/channelKey.ts`; one site
+      // here + one in `subscribe.ts` would otherwise drift if the
+      // shape ever changed.
+      const decoded = decodeChannelKey(key as ChannelKey);
+      if (decoded === null || decoded.slug !== slug) continue;
+      const name = decoded.name;
       if (live.has(name)) continue;
       if (queries.has(name)) continue;
       out.push({ name, state: state as PseudoRow["state"] });

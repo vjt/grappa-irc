@@ -94,6 +94,12 @@ describe("Login", () => {
     const call = vi.mocked(mountCaptchaWidget).mock.calls[0];
     if (call === undefined) throw new Error("mountCaptchaWidget not called");
     expect(call[0]).toBe("turnstile");
+    // Codebase audit cic M6 — `call[1]` MUST be an HTMLElement (the
+    // ref-bound captcha container), NOT undefined. Pre-fix the
+    // createEffect could fire before `<Show>` rendered the captcha
+    // div, leaving `widgetContainer === undefined`. The sub-component
+    // pattern (CaptchaMount) ties the ref binding to the same lifecycle
+    // as `onMount` so the container is always bound when mount runs.
     expect(call[1]).toBeInstanceOf(HTMLElement);
     expect(call[2]).toBe("k");
     expect(typeof call[3]).toBe("function");

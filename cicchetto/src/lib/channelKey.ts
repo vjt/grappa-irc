@@ -23,3 +23,24 @@ export type ChannelKey = string & { readonly [channelKeyBrand]: true };
 
 export const channelKey = (slug: string, name: string): ChannelKey =>
   `${slug} ${name}` as ChannelKey;
+
+// Codebase audit cic M4 — paired decoder for the composite key. Pre-
+// fix, `Sidebar.pseudoChannelsForNetwork` and the `subscribe.ts`
+// pending-channel pre-subscribe loop both open-coded the parsing
+// (`key.startsWith(prefix) + key.slice(prefix.length)` /
+// `key.indexOf(" ") + slice` respectively). Two open-coded sites = if
+// the key shape ever changes (NUL separator, JSON tuple, branded
+// struct), three places update independently. The encoder is the
+// single source of truth for shape; the decoder MUST be paired with
+// it. Future shape change → both sites update via this decoder only.
+//
+// Returns `null` if the input doesn't look like a valid composite key
+// (no separator). Callers (Sidebar / subscribe.ts loop) treat null as
+// "skip this entry" — windowStateByChannel keys SHOULD always be
+// well-formed because they originated via `channelKey(...)`, but the
+// guard keeps the decoder pure and lets the type system shrug.
+export function decodeChannelKey(key: ChannelKey): { slug: string; name: string } | null {
+  const sepIdx = key.indexOf(" ");
+  if (sepIdx < 0) return null;
+  return { slug: key.slice(0, sepIdx), name: key.slice(sepIdx + 1) };
+}

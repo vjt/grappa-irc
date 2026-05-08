@@ -191,4 +191,43 @@ describe("userTopic", () => {
       expect(ws.setPending).not.toHaveBeenCalled();
     });
   });
+
+  // Codebase audit cic M1 — runtime narrowing of WireUserEvent. The
+  // pre-fix `as WireUserEvent` cast trusted the server unconditionally:
+  // a malformed payload (kind valid but required field missing or
+  // wrong-typed) would let the dispatch arm read `undefined` from the
+  // payload and either crash or silently corrupt state. Post-fix the
+  // dispatcher gates on a runtime predicate that re-validates the
+  // shape per arm before narrowing — malformed payloads are dropped.
+  describe("WireUserEvent runtime narrowing (cic M1)", () => {
+    it("drops away_confirmed payload missing `network` (no setAwayState call)", async () => {
+      const away = await import("../lib/awayStatus");
+      // Server bug or proxy mangling: `kind` valid but `network` missing.
+      // Pre-fix: setAwayState(undefined, ...) — boom. Post-fix: dropped.
+      channelMock.fireEvent({
+        kind: "away_confirmed",
+        state: "away",
+      });
+      expect(away.setAwayState).not.toHaveBeenCalled();
+    });
+
+    it("drops own_nick_changed payload missing `network_id` (no mutateNetworkNick call)", async () => {
+      const networks = await import("../lib/networks");
+      channelMock.fireEvent({
+        kind: "own_nick_changed",
+        nick: "vjt-grappa",
+      });
+      expect(networks.mutateNetworkNick).not.toHaveBeenCalled();
+    });
+
+    it("drops window_pending payload missing `channel` (no setPending call)", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({
+        kind: "window_pending",
+        network: "freenode",
+        state: "pending",
+      });
+      expect(ws.setPending).not.toHaveBeenCalled();
+    });
+  });
 });

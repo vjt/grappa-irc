@@ -283,10 +283,11 @@ export type WireUserEvent =
 // `never` and `tsc` rejects — the build fails before the unhandled
 // kind silently drops at runtime.
 //
-// Same pattern as `ScrollbackPane`'s exhaustive `MessageKind` switch
-// (CP10 C3).
+// Used by `userTopic.ts` for `WireUserEvent` and by `subscribe.ts`
+// (cic M2) for `WireEvent`. Same pattern as `ScrollbackPane`'s
+// exhaustive `MessageKind` switch (CP10 C3).
 export function assertNever(x: never): never {
-  throw new Error(`unreachable WireUserEvent variant: ${JSON.stringify(x)}`);
+  throw new Error(`unreachable discriminated-union variant: ${JSON.stringify(x)}`);
 }
 
 export class ApiError extends Error {

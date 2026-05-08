@@ -26,6 +26,11 @@ vi.mock("../lib/mentions", () => ({
 
 vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
+  decodeChannelKey: (key: string) => {
+    const sepIdx = key.indexOf(" ");
+    if (sepIdx < 0) return null;
+    return { slug: key.slice(0, sepIdx), name: key.slice(sepIdx + 1) };
+  },
 }));
 
 vi.mock("../lib/queryWindows", () => ({

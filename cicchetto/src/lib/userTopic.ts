@@ -48,6 +48,87 @@ function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number
   return result;
 }
 
+// Codebase audit cic M1 — runtime narrowing for WireUserEvent. The
+// `WireUserEvent` discriminated union is a TypeScript-side contract;
+// it cannot enforce shape at runtime. A malformed server push (kind
+// valid but a required field missing or wrong-typed) would let the
+// dispatch arm read `undefined` from the payload and either crash
+// (`setAwayState(undefined, ...)`) or silently corrupt state. This
+// per-arm validator gates the cast: if the shape doesn't match,
+// return null and the dispatcher early-returns + logs. Same boundary
+// hardening as `Login.tsx`'s `isCaptchaInfo`.
+function narrowUserEvent(raw: unknown): WireUserEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== "string") return null;
+  switch (r.kind) {
+    case "channels_changed":
+      return { kind: "channels_changed" };
+    case "query_windows_list":
+      if (typeof r.windows !== "object" || r.windows === null) return null;
+      return {
+        kind: "query_windows_list",
+        windows: r.windows as Record<string, QueryWindowEntry[]>,
+      };
+    case "mentions_bundle":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.away_started_at !== "string" ||
+        typeof r.away_ended_at !== "string" ||
+        (r.away_reason !== null && typeof r.away_reason !== "string") ||
+        !Array.isArray(r.messages)
+      )
+        return null;
+      return {
+        kind: "mentions_bundle",
+        network: r.network,
+        away_started_at: r.away_started_at,
+        away_ended_at: r.away_ended_at,
+        away_reason: r.away_reason as string | null,
+        messages: r.messages,
+      };
+    case "away_confirmed":
+      if (typeof r.network !== "string" || (r.state !== "present" && r.state !== "away"))
+        return null;
+      return { kind: "away_confirmed", network: r.network, state: r.state };
+    case "own_nick_changed":
+      if (typeof r.network_id !== "number" || typeof r.nick !== "string") return null;
+      return { kind: "own_nick_changed", network_id: r.network_id, nick: r.nick };
+    case "window_pending":
+      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "pending")
+        return null;
+      return {
+        kind: "window_pending",
+        network: r.network,
+        channel: r.channel,
+        state: "pending",
+      };
+    case "connection_state_changed":
+      if (
+        typeof r.user_id !== "string" ||
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        typeof r.from !== "string" ||
+        typeof r.to !== "string" ||
+        (r.reason !== null && typeof r.reason !== "string") ||
+        (r.at !== null && typeof r.at !== "string")
+      )
+        return null;
+      return {
+        kind: "connection_state_changed",
+        user_id: r.user_id,
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        from: r.from,
+        to: r.to,
+        reason: r.reason as string | null,
+        at: r.at as string | null,
+      };
+    default:
+      return null;
+  }
+}
+
 createRoot(() => {
   let joined = false;
   let joinedFor: string | null = null;
@@ -72,7 +153,17 @@ createRoot(() => {
 
     const channel = joinUser(name);
     channel.on("event", (raw: unknown) => {
-      const payload = raw as WireUserEvent;
+      const payload = narrowUserEvent(raw);
+      if (payload === null) {
+        // Malformed payload: kind missing/unknown OR a required field
+        // missing/wrong-typed. Server bug or proxy mangling — drop and
+        // log so the operator can investigate without crashing the WS
+        // handler. Pre-fix `as WireUserEvent` cast would have let this
+        // reach the dispatch arm and either crash a setter or corrupt
+        // store state silently.
+        console.warn("[userTopic] dropped malformed payload", raw);
+        return;
+      }
       switch (payload.kind) {
         case "channels_changed":
           refetchChannels();

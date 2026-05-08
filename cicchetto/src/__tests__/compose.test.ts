@@ -506,6 +506,43 @@ describe("compose submit — T32 verbs", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  // Codebase audit cic M5 — partial PATCH failures during /quit MUST
+  // be surfaced via console.warn (one entry per rejected PATCH) so the
+  // operator can investigate why a network may auto-respawn on next
+  // boot. Pre-fix the `Promise.allSettled` rejected results were
+  // dropped on the floor — the user logged out cleanly but a network
+  // ghost-state lurked in the log silence. The warning is best-effort:
+  // we still proceed to logout (the user wants OUT regardless), but
+  // the diagnostic trail no longer vanishes.
+  it("/quit logs console.warn for each rejected PATCH but still logs out", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const auth = await import("../lib/auth");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(api.patchNetwork)
+      .mockRejectedValueOnce(new Error("network unreachable: freenode"))
+      .mockRejectedValueOnce(new Error("network unreachable: libera"));
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/quit");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // Warning logged for EACH failed PATCH (two failures = two warnings).
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    // Each warning carries the failing slug + the rejection reason so
+    // the operator can grep for "[/quit]" in container logs.
+    const allCalls = warnSpy.mock.calls.map((c) => c.join(" "));
+    expect(allCalls.some((s) => s.includes("[/quit]") && s.includes("freenode"))).toBe(true);
+    expect(allCalls.some((s) => s.includes("[/quit]") && s.includes("libera"))).toBe(true);
+    // Logout still proceeds — `/quit` is nuclear: the user wants out
+    // regardless of partial PATCH success.
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: true });
+
+    warnSpy.mockRestore();
+  });
+
   it("/disconnect bare uses active-window's network slug", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");

@@ -1,8 +1,8 @@
 import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import { type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
+import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent, seedMembers } from "./members";
@@ -256,67 +256,80 @@ createRoot(() => {
     ownNick: string | null,
   ) => {
     phx.on("event", (payload: WireEvent) => {
-      if (payload.kind === "topic_changed") {
-        seedTopic(key, payload.topic);
-        return;
-      }
-      if (payload.kind === "channel_modes_changed") {
-        seedModes(key, payload.modes);
-        return;
-      }
-      if (payload.kind === "members_seeded") {
-        // Server's 366 RPL_ENDOFNAMES landed and the broadcast carries the
-        // full sorted members snapshot. Seed directly — no second fetch
-        // needed. Eliminates the WS-subscribed-but-no-fetch-yet race
-        // window that an HTTP re-fetch would still be vulnerable to.
-        seedMembers(key, payload.members);
-        return;
-      }
-      // CP15 B5: typed window-state events. Same install site as
-      // members_seeded so cic flips the rendered window state without
-      // polling. setJoined clears any prior failure/kicked metadata
-      // for the key so a successful re-join doesn't carry stale
-      // by/reason/numeric in the maps.
-      if (payload.kind === "joined") {
-        setJoined(key);
-        return;
-      }
-      if (payload.kind === "join_failed") {
-        setFailed(key, payload.reason, payload.numeric);
-        return;
-      }
-      if (payload.kind === "kicked") {
-        setKicked(key, payload.by, payload.reason);
-        return;
-      }
-      if (payload.kind !== "message") return;
+      // Codebase audit cic M2 — exhaustive switch + `assertNever`
+      // mirrors userTopic.ts CP16 B5 pattern. Pre-fix: the handler used
+      // an if-else chain ending in `if (payload.kind !== "message")
+      // return;` — any new arm added to `WireEvent` (e.g. a future
+      // `topic_unset` or `members_delta`) silently dropped at runtime
+      // because the catch-all guard didn't surface the new kind. The
+      // switch + `assertNever` makes that a `tsc` compile error: the
+      // default arm narrows to `never`, so an unhandled kind widens
+      // the parameter type and the build fails before the silent drop
+      // ships. Note: `mentions_bundle` / `away_confirmed` cited in the
+      // audit row are NOT channel-topic events — they fan out on
+      // `Topic.user/1` (server.ex:1852, 2190) and are handled by
+      // userTopic.ts. Adding them here would be wrong.
+      switch (payload.kind) {
+        case "topic_changed":
+          seedTopic(key, payload.topic);
+          return;
+        case "channel_modes_changed":
+          seedModes(key, payload.modes);
+          return;
+        case "members_seeded":
+          // Server's 366 RPL_ENDOFNAMES landed and the broadcast carries
+          // the full sorted members snapshot. Seed directly — no second
+          // fetch needed. Eliminates the WS-subscribed-but-no-fetch-yet
+          // race window that an HTTP re-fetch would still be vulnerable
+          // to.
+          seedMembers(key, payload.members);
+          return;
+        // CP15 B5: typed window-state events. Same install site as
+        // members_seeded so cic flips the rendered window state without
+        // polling. setJoined clears any prior failure/kicked metadata
+        // for the key so a successful re-join doesn't carry stale
+        // by/reason/numeric in the maps.
+        case "joined":
+          setJoined(key);
+          return;
+        case "join_failed":
+          setFailed(key, payload.reason, payload.numeric);
+          return;
+        case "kicked":
+          setKicked(key, payload.by, payload.reason);
+          return;
+        case "message": {
+          const { message } = payload;
 
-      const { message } = payload;
+          // BUG4: own JOIN → auto-focus the channel.
+          if (
+            message.kind === "join" &&
+            ownNick !== null &&
+            message.sender.toLowerCase() === ownNick.toLowerCase()
+          ) {
+            setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
+          }
 
-      // BUG4: own JOIN → auto-focus the channel.
-      if (
-        message.kind === "join" &&
-        ownNick !== null &&
-        message.sender.toLowerCase() === ownNick.toLowerCase()
-      ) {
-        setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
+          // BUG5a: own PART → dismiss the focused window.
+          if (
+            message.kind === "part" &&
+            ownNick !== null &&
+            message.sender.toLowerCase() === ownNick.toLowerCase()
+          ) {
+            setSelectedChannel(null);
+            // CP15 B5: own-PART projects to absence in the windowState
+            // map. Server intentionally does NOT broadcast `kind:
+            // "parted"` — cic derives the projection here, mirroring
+            // the same own-nick gate used for the focus dismiss above.
+            setParted(key);
+          }
+
+          routeMessage(slug, key, name, message, ownNick);
+          return;
+        }
+        default:
+          assertNever(payload);
       }
-
-      // BUG5a: own PART → dismiss the focused window.
-      if (
-        message.kind === "part" &&
-        ownNick !== null &&
-        message.sender.toLowerCase() === ownNick.toLowerCase()
-      ) {
-        setSelectedChannel(null);
-        // CP15 B5: own-PART projects to absence in the windowState map.
-        // Server intentionally does NOT broadcast `kind: "parted"` —
-        // cic derives the projection here, mirroring the same
-        // own-nick gate used for the focus dismiss above.
-        setParted(key);
-      }
-
-      routeMessage(slug, key, name, message, ownNick);
     });
   };
 
@@ -344,27 +357,46 @@ createRoot(() => {
     ownNick: string,
   ) => {
     phx.on("event", (payload: WireEvent) => {
-      if (payload.kind === "topic_changed" || payload.kind === "channel_modes_changed") {
-        // Topic / modes on the own-nick "channel" make no sense — the
-        // server never emits these for a nick target. Defensive drop.
-        return;
+      // Codebase audit cic M2 — exhaustive switch + `assertNever`.
+      // The DM-listener intentionally DROPS every non-message kind
+      // (topic_changed/channel_modes_changed make no sense on a nick
+      // target, and members_seeded / joined / join_failed / kicked
+      // belong to feature #4's deferred server-messages window).
+      // Switch over EVERY kind makes that intent explicit and forces
+      // future arm additions through this site at `tsc` time.
+      switch (payload.kind) {
+        case "topic_changed":
+        case "channel_modes_changed":
+        case "members_seeded":
+        case "joined":
+        case "join_failed":
+        case "kicked":
+          // Defensive drop — server never emits these on a nick target;
+          // even if it did, the DM window's surface is not the right
+          // place for them.
+          return;
+        case "message": {
+          const message = payload.message;
+          if (message.kind === "privmsg" || message.kind === "action") {
+            // DM (inbound or self-msg) — auto-open sender's query window
+            // and route to sender's scrollback key. For self-msg
+            // (sender = ownNick), this lands in the own-nick window;
+            // for inbound (sender = other), it lands in sender's window.
+            openQueryWindowState(networkId, message.sender, new Date().toISOString());
+            const senderKey = channelKey(slug, message.sender);
+            routeMessage(slug, senderKey, message.sender, message, ownNick);
+            return;
+          }
+          // NOTICE, mode, join, part, quit, kick, nick_change, topic,
+          // etc. on the own-nick topic → deferred to feature #4 (server-
+          // messages window). Drop silently for now; server-side
+          // scrollback row persists at channel=ownNick and will surface
+          // when #4 lands.
+          return;
+        }
+        default:
+          assertNever(payload);
       }
-      if (payload.kind !== "message") return;
-      const message = payload.message;
-      if (message.kind === "privmsg" || message.kind === "action") {
-        // DM (inbound or self-msg) — auto-open sender's query window
-        // and route to sender's scrollback key. For self-msg
-        // (sender = ownNick), this lands in the own-nick window;
-        // for inbound (sender = other), it lands in sender's window.
-        openQueryWindowState(networkId, message.sender, new Date().toISOString());
-        const senderKey = channelKey(slug, message.sender);
-        routeMessage(slug, senderKey, message.sender, message, ownNick);
-        return;
-      }
-      // NOTICE, mode, join, part, quit, kick, nick_change, topic, etc.
-      // on the own-nick topic → deferred to feature #4 (server-messages
-      // window). Drop silently for now; server-side scrollback row
-      // persists at channel=ownNick and will surface when #4 lands.
     });
   };
 
@@ -433,10 +465,15 @@ createRoot(() => {
     if (!name || !nets) return;
     for (const [key, state] of Object.entries(states)) {
       if (state !== "pending") continue;
-      const sepIdx = key.indexOf(" ");
-      if (sepIdx < 0) continue;
-      const slug = key.slice(0, sepIdx);
-      const channelName = key.slice(sepIdx + 1);
+      // Codebase audit cic M4 — paired decoder over open-coded
+      // `key.indexOf(" ") + key.slice` parsing. The composite-key
+      // shape lives in `channelKey.ts`; the decoder is the inverse
+      // of `channelKey(slug, name)`. Sidebar.pseudoChannelsForNetwork
+      // is the other consumer.
+      const decoded = decodeChannelKey(key as ChannelKey);
+      if (decoded === null) continue;
+      const slug = decoded.slug;
+      const channelName = decoded.name;
       const typedKey = channelKey(slug, channelName);
       if (joined.has(typedKey)) continue;
       const net = nets.find((n) => n.slug === slug) ?? null;
