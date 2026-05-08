@@ -61,7 +61,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
@@ -156,7 +156,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert {:ok, updated} = Networks.disconnect(cred, "user-disconnect")
 
       assert {:ok, "QUIT :user-disconnect\r\n"} =
-               IRCServer.wait_for_line(server, &String.starts_with?(&1, "QUIT"))
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "QUIT"), 1_000)
 
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2_000
       assert Session.whereis({:user, user.id}, network.id) == nil

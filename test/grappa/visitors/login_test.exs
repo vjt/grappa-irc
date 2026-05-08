@@ -55,7 +55,7 @@ defmodule Grappa.Visitors.LoginTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
@@ -165,7 +165,8 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, identify_line} =
         IRCServer.wait_for_line(
           server,
-          &String.contains?(&1, "PRIVMSG NickServ :IDENTIFY s3cret")
+          &String.contains?(&1, "PRIVMSG NickServ :IDENTIFY s3cret"),
+          1_000
         )
 
       assert String.starts_with?(identify_line, "PRIVMSG NickServ :IDENTIFY ")

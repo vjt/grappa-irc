@@ -101,14 +101,14 @@ defmodule GrappaWeb.GrappaChannelTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
   defp welcome_session_on_channel(server, channel) do
     :ok = await_handshake(server)
     IRCServer.feed(server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"), 1_000)
     IRCServer.feed(server, ":grappa-snap!u@h JOIN :#{channel}\r\n")
     flush_server(server)
   end
@@ -116,7 +116,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   defp flush_server(server) do
     token = "flush-#{System.unique_integer([:positive])}"
     IRCServer.feed(server, "PING :#{token}\r\n")
-    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :#{token}\r\n"))
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :#{token}\r\n"), 1_000)
   end
 
   describe "join grappa:user:{user}/network:{net}/channel:{chan}" do
@@ -343,7 +343,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       :ok = await_handshake(irc_server)
       IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "JOIN #snap"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "JOIN #snap"), 1_000)
 
       # Now feed a 473 ERR_INVITEONLYCHAN — autojoin recorded
       # in_flight_joins["#snap"] so the failure correlates and
@@ -574,7 +574,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +ooo"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +ooo"), 1_000)
     end
 
     test "deop: sends MODE #chan -ooo upstream", %{
@@ -590,7 +590,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -ooo"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -ooo"), 1_000)
     end
 
     test "voice: sends MODE #chan +v upstream", %{
@@ -606,7 +606,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +v"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap +v"), 1_000)
     end
 
     test "devoice: sends MODE #chan -v upstream", %{
@@ -622,7 +622,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -v"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "MODE #snap -v"), 1_000)
     end
 
     test "kick: sends KICK #chan nick :reason upstream", %{
@@ -639,7 +639,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "KICK #snap alice :bye\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "KICK #snap alice :bye\r\n"), 1_000)
     end
 
     test "ban: sends MODE #chan +b with explicit mask", %{
@@ -655,7 +655,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +b *!*@evil.com\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +b *!*@evil.com\r\n"), 1_000)
     end
 
     test "unban: sends MODE #chan -b <mask> upstream", %{
@@ -671,7 +671,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap -b *!*@evil.com\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap -b *!*@evil.com\r\n"), 1_000)
     end
 
     test "invite: sends INVITE nick #chan upstream (nick first)", %{
@@ -687,7 +687,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INVITE alice #snap\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "INVITE alice #snap\r\n"), 1_000)
     end
 
     test "banlist: sends MODE #chan b (query form, no sign)", %{
@@ -702,7 +702,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap b\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap b\r\n"), 1_000)
     end
 
     test "umode: sends MODE own_nick <modes> upstream", %{
@@ -718,7 +718,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       assert_reply(ref, :ok)
       # grappa-snap is the nick used in setup
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE grappa-snap +i\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE grappa-snap +i\r\n"), 1_000)
     end
 
     test "mode: sends raw verbatim MODE line, no chunking", %{
@@ -735,7 +735,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +o-v alice bob\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap +o-v alice bob\r\n"), 1_000)
     end
 
     test "op: unknown network_id returns {:error, network_not_found}", %{socket: socket} do
@@ -781,7 +781,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :new topic text\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :new topic text\r\n"), 1_000)
     end
 
     test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
@@ -796,7 +796,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         })
 
       assert_reply(ref, :ok)
-      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "TOPIC #snap :\r\n"), 1_000)
     end
   end
 

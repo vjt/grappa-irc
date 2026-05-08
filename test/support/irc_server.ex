@@ -69,7 +69,7 @@ defmodule Grappa.IRCServer do
 
   @spec wait_for_line(pid(), (binary() -> boolean()), pos_integer()) ::
           {:ok, binary()} | {:error, :timeout}
-  def wait_for_line(server, predicate, timeout \\ 1_000)
+  def wait_for_line(server, predicate, timeout)
       when is_function(predicate, 1) and is_integer(timeout) and timeout > 0 do
     # Outer call timeout is `timeout + 100` so the server-side timer
     # always fires first and the call returns `{:error, :timeout}`

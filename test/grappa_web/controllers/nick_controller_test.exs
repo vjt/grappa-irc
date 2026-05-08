@@ -27,7 +27,7 @@ defmodule GrappaWeb.NickControllerTest do
   end
 
   defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
   end
 
@@ -52,7 +52,7 @@ defmodule GrappaWeb.NickControllerTest do
 
       assert json_response(conn, 202) == %{"ok" => true}
 
-      {:ok, line} = IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"))
+      {:ok, line} = IRCServer.wait_for_line(server, &(&1 == "NICK vjt-away\r\n"), 1_000)
       assert line == "NICK vjt-away\r\n"
 
       :ok = GenServer.stop(pid, :normal, 1_000)

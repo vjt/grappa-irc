@@ -53,8 +53,8 @@ defmodule GrappaWeb.MembersControllerTest do
       slug = "az-#{System.unique_integer([:positive])}"
       {_, pid} = setup_session_with_members(vjt, port, slug)
 
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
       IRCServer.feed(server, ":irc 353 grappa-test = #test :@grappa-test +alice bob\r\n")
@@ -62,7 +62,7 @@ defmodule GrappaWeb.MembersControllerTest do
 
       # PING/PONG flush — same trick as session tests.
       IRCServer.feed(server, "PING :flush\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
       conn = get(conn, "/networks/#{slug}/channels/%23test/members")
 
@@ -117,13 +117,13 @@ defmodule GrappaWeb.MembersControllerTest do
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
 
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
 
       IRCServer.feed(server, ":#{visitor.nick}!u@h JOIN :#test\r\n")
       IRCServer.feed(server, ":irc 353 #{visitor.nick} = #test :@#{visitor.nick} +alice\r\n")
       IRCServer.feed(server, ":irc 366 #{visitor.nick} #test :End\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()
