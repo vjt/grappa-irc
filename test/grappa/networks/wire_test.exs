@@ -54,8 +54,10 @@ defmodule Grappa.Networks.WireTest do
       assert json.sasl_user == "vjt"
       assert json.auth_method == :sasl
       assert json.autojoin_channels == ["#grappa"]
-      assert %DateTime{} = json.inserted_at
-      assert %DateTime{} = json.updated_at
+      # Timestamps land as ISO-8601 strings on the wire (bnd-A11);
+      # the dedicated test below pins the round-trip shape.
+      assert is_binary(json.inserted_at)
+      assert is_binary(json.updated_at)
     end
 
     # CRITICAL — the whole point of this module. If this assertion ever
@@ -114,6 +116,54 @@ defmodule Grappa.Networks.WireTest do
 
       assert is_binary(Jason.encode!(Wire.credential_to_json(cred)))
     end
+
+    # Architecture audit bnd-A11: timestamps on the wire must be
+    # ISO-8601 strings, not raw `%DateTime{}` structs. The cic-side TS
+    # contract (`api.ts` `CredentialJson`) declares `inserted_at:
+    # string` etc. — the typespec was lying about the wire shape.
+    test "renders timestamps as ISO-8601 strings (cic contract)",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      json = Wire.credential_to_json(cred)
+
+      # Convert-at-the-Wire-boundary: the field is a binary on output,
+      # not a `%DateTime{}` (which would still encode correctly through
+      # Jason but lie about the typespec).
+      assert is_binary(json.inserted_at)
+      assert is_binary(json.updated_at)
+      # ISO-8601 sanity round-trip.
+      assert {:ok, _, 0} = DateTime.from_iso8601(json.inserted_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(json.updated_at)
+    end
+
+    test "connection_state_changed_at: nil → nil; %DateTime{} → ISO-8601 string",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      # bind_credential defaults to `DateTime.utc_now/0`; assert
+      # iso-8601 round-trip.
+      with_default = Wire.credential_to_json(cred)
+      assert is_binary(with_default.connection_state_changed_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(with_default.connection_state_changed_at)
+
+      # Force-clear to nil and re-render — `iso8601_or_nil/1` must
+      # preserve the nullability through the wire boundary.
+      cleared = Wire.credential_to_json(%{cred | connection_state_changed_at: nil})
+      assert cleared.connection_state_changed_at == nil
+    end
   end
 
   describe "network_to_json/1" do
@@ -122,8 +172,11 @@ defmodule Grappa.Networks.WireTest do
 
       assert json.id == network.id
       assert json.slug == network.slug
-      assert %DateTime{} = json.inserted_at
-      assert %DateTime{} = json.updated_at
+      # Timestamps land as ISO-8601 strings on the wire (bnd-A11).
+      assert is_binary(json.inserted_at)
+      assert is_binary(json.updated_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(json.inserted_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(json.updated_at)
     end
 
     test "is Jason-encodable", %{network: network} do
@@ -239,7 +292,7 @@ defmodule Grappa.Networks.WireTest do
                from: :connected,
                to: :parked,
                reason: "operator paused",
-               at: now
+               at: DateTime.to_iso8601(now)
              }
     end
 

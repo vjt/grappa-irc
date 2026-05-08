@@ -94,10 +94,16 @@ function tokens(rest: string): string[] {
 }
 
 // Parse nicks-requiring ops verbs (/op /deop /voice /devoice).
-function parseNicksVerb(verb: string, rest: string): SlashCommand {
+// `kind` is passed in as the discriminated-union literal so we never
+// re-cast the loosely-typed `string` verb back to the narrow set —
+// codebase audit type-A8 (was `verb as "op" | "deop" | "voice" |
+// "devoice"`).
+type NicksVerbKind = "op" | "deop" | "voice" | "devoice";
+
+function parseNicksVerb(kind: NicksVerbKind, rest: string): SlashCommand {
   const nicks = tokens(rest);
-  if (nicks.length === 0) return err(verb, `/${verb} requires at least one nick`);
-  return { kind: verb as "op" | "deop" | "voice" | "devoice", nicks };
+  if (nicks.length === 0) return err(kind, `/${kind} requires at least one nick`);
+  return { kind, nicks };
 }
 
 // Parse /watch and /highlight (alias) — same output shape.
@@ -200,10 +206,10 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "away", action: "set", reason };
   },
 
-  op: (verb, rest) => parseNicksVerb(verb, rest),
-  deop: (verb, rest) => parseNicksVerb(verb, rest),
-  voice: (verb, rest) => parseNicksVerb(verb, rest),
-  devoice: (verb, rest) => parseNicksVerb(verb, rest),
+  op: (_verb, rest) => parseNicksVerb("op", rest),
+  deop: (_verb, rest) => parseNicksVerb("deop", rest),
+  voice: (_verb, rest) => parseNicksVerb("voice", rest),
+  devoice: (_verb, rest) => parseNicksVerb("devoice", rest),
 
   kick: (verb, rest) => {
     const sp = rest.search(/\s/);
@@ -228,11 +234,13 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   banlist: (_verb, _rest) => ({ kind: "banlist" }),
 
   invite: (verb, rest) => {
-    const toks = tokens(rest);
-    if (toks.length === 0) return err(verb, "/invite requires a nick");
-    const nick = toks[0] as string;
-    const channel = toks[1] ?? null;
-    return { kind: "invite", nick, channel };
+    // Codebase audit type-A9 — destructure + guard so the index access
+    // is narrowed by tsc's flow analysis (was `toks[0] as string` after
+    // a `toks.length === 0` length-check that doesn't propagate to
+    // individual indices under `noUncheckedIndexedAccess`).
+    const [nick, channel] = tokens(rest);
+    if (!nick) return err(verb, "/invite requires a nick");
+    return { kind: "invite", nick, channel: channel ?? null };
   },
 
   umode: (verb, rest) => {
@@ -241,12 +249,11 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   mode: (verb, rest) => {
-    const toks = tokens(rest);
-    if (toks.length === 0) return err(verb, "/mode requires a target");
-    if (toks.length < 2) return err(verb, "/mode requires target and mode string");
-    const target = toks[0] as string;
-    const modes = toks[1] as string;
-    const params = toks.slice(2);
+    // Codebase audit type-A9 — destructure both required slots; tsc
+    // narrows from the explicit `if (!target || !modes)` guard.
+    const [target, modes, ...params] = tokens(rest);
+    if (!target) return err(verb, "/mode requires a target");
+    if (!modes) return err(verb, "/mode requires target and mode string");
     return { kind: "mode", target, modes, params };
   },
 

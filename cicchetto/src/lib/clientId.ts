@@ -97,9 +97,17 @@ function generateUUIDv4(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  // Codebase audit cic L1: was `bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40` —
+  // the zero-fallback was a defensive lie since `Uint8Array(16)` is fixed-length
+  // and indices 0..15 are guaranteed numbers. Inline the version (4) + variant
+  // (RFC 4122) nibble fixups inside the hex-building map so we never re-read
+  // an indexed element after writing it; index `i` is the closure parameter,
+  // narrowed to `number`, no `noUncheckedIndexedAccess` widening to dodge.
+  const hex = Array.from(bytes, (b, i) => {
+    if (i === 6) return ((b & 0x0f) | 0x40).toString(16).padStart(2, "0");
+    if (i === 8) return ((b & 0x3f) | 0x80).toString(16).padStart(2, "0");
+    return b.toString(16).padStart(2, "0");
+  }).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 

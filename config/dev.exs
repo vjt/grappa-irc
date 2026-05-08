@@ -11,7 +11,11 @@ config :grappa, GrappaWeb.Endpoint,
   debug_errors: true,
   code_reloader: true,
   watchers: [],
-  secret_key_base: "dev-secret-key-base-replace-me-in-prod-12345678901234567890123456789012"
+  secret_key_base: "dev-secret-key-base-replace-me-in-prod-12345678901234567890123456789012",
+  # codebase audit web W10 + cross-infra L7 — was hardcoded "rotate-me"
+  # in lib/grappa_web/endpoint.ex; now config-driven so prod env can
+  # set it without a recompile (see runtime.exs).
+  session_signing_salt: "dev-signing-salt-not-secret-known-to-the-repo"
 
 config :grappa, dev_routes: true
 

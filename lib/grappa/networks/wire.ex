@@ -37,16 +37,16 @@ defmodule Grappa.Networks.Wire do
           autojoin_channels: [String.t()],
           connection_state: Credential.connection_state(),
           connection_state_reason: String.t() | nil,
-          connection_state_changed_at: DateTime.t() | nil,
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t()
+          connection_state_changed_at: String.t() | nil,
+          inserted_at: String.t(),
+          updated_at: String.t()
         }
 
   @type network_json :: %{
           id: integer(),
           slug: String.t(),
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t()
+          inserted_at: String.t(),
+          updated_at: String.t()
         }
 
   @typedoc """
@@ -64,8 +64,8 @@ defmodule Grappa.Networks.Wire do
           id: integer(),
           slug: String.t(),
           nick: String.t(),
-          inserted_at: DateTime.t(),
-          updated_at: DateTime.t()
+          inserted_at: String.t(),
+          updated_at: String.t()
         }
 
   @typedoc """
@@ -103,7 +103,7 @@ defmodule Grappa.Networks.Wire do
           from: Credential.connection_state(),
           to: Credential.connection_state(),
           reason: String.t() | nil,
-          at: DateTime.t() | nil
+          at: String.t() | nil
         }
 
   @doc """
@@ -133,9 +133,9 @@ defmodule Grappa.Networks.Wire do
       autojoin_channels: c.autojoin_channels,
       connection_state: c.connection_state,
       connection_state_reason: c.connection_state_reason,
-      connection_state_changed_at: c.connection_state_changed_at,
-      inserted_at: c.inserted_at,
-      updated_at: c.updated_at
+      connection_state_changed_at: iso8601_or_nil(c.connection_state_changed_at),
+      inserted_at: DateTime.to_iso8601(c.inserted_at),
+      updated_at: DateTime.to_iso8601(c.updated_at)
     }
   end
 
@@ -151,8 +151,8 @@ defmodule Grappa.Networks.Wire do
     %{
       id: n.id,
       slug: n.slug,
-      inserted_at: n.inserted_at,
-      updated_at: n.updated_at
+      inserted_at: DateTime.to_iso8601(n.inserted_at),
+      updated_at: DateTime.to_iso8601(n.updated_at)
     }
   end
 
@@ -172,8 +172,8 @@ defmodule Grappa.Networks.Wire do
       id: n.id,
       slug: n.slug,
       nick: nick,
-      inserted_at: n.inserted_at,
-      updated_at: n.updated_at
+      inserted_at: DateTime.to_iso8601(n.inserted_at),
+      updated_at: DateTime.to_iso8601(n.updated_at)
     }
   end
 
@@ -219,7 +219,18 @@ defmodule Grappa.Networks.Wire do
       from: from,
       to: to,
       reason: reason,
-      at: c.connection_state_changed_at
+      at: iso8601_or_nil(c.connection_state_changed_at)
     }
   end
+
+  # Architecture audit bnd-A11: timestamps land on the wire as ISO-8601
+  # strings, not raw `%DateTime{}` structs. Jason encodes both shapes
+  # to the same byte string, but the wire-shape typespec must match
+  # the post-Jason value so cic's TS contract (`api.ts` declares
+  # `inserted_at: string`) is honored at the Elixir boundary too.
+  # `nil` is preserved (only `connection_state_changed_at` and the
+  # `at:` field on the connection_state_changed event are nullable).
+  @spec iso8601_or_nil(DateTime.t() | nil) :: String.t() | nil
+  defp iso8601_or_nil(nil), do: nil
+  defp iso8601_or_nil(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 end

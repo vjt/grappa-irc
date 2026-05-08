@@ -60,7 +60,11 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 30s
       timeout: 5s
-      start_period: 60s
+      # Codebase audit cross-infra L1 — was 60s, masked real boot
+      # failures behind the "still starting" grace window. Dev boot is
+      # sub-5s; 15s is generous enough for a slow cold-start (deps
+      # compile, sqlite WAL recovery) without hiding a stuck Phoenix.
+      start_period: 15s
       retries: 5
     logging:
       driver: json-file

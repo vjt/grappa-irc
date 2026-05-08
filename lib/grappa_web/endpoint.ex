@@ -9,11 +9,16 @@ defmodule GrappaWeb.Endpoint do
   `Plug.Head` lets HEAD share GET routes; `Session` runs before the
   router so handlers can call `get_session/2`.
 
-  `signing_salt: "rotate-me"` is a Phase 1 placeholder. Cookies are
-  not signed by any code path today (no auth flow, healthz is
-  unauthenticated), but Phase 5 hardening must lift the salt to
-  runtime config alongside `secret_key_base` so it is rotatable
-  without a recompile.
+  `signing_salt` is read from `:grappa, GrappaWeb.Endpoint,
+  :session_signing_salt` via `Application.compile_env/3`. Phase 1
+  shipped with the literal `"rotate-me"` placeholder hardcoded here;
+  codebase audit web W10 + cross-infra L7 (same finding) flagged it.
+  Today no app code calls `put_session/3` (no auth-cookie writes,
+  healthz is unauthenticated), so the salt isn't load-bearing yet —
+  but the placeholder was a smell + a footgun for the Phase 5
+  hardening pass. Per-env default lives in `config/{dev,test}.exs`;
+  prod operator MUST set `SECRET_SIGNING_SALT` (or the build fails to
+  boot via `runtime.exs` raise).
 
   WebSocket transport at `/socket/websocket` is the only streaming
   surface. No longpoll fallback — Phase 1 clients are evergreen
@@ -25,7 +30,7 @@ defmodule GrappaWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_grappa_key",
-    signing_salt: "rotate-me",
+    signing_salt: Application.compile_env!(:grappa, [__MODULE__, :session_signing_salt]),
     same_site: "Lax"
   ]
 

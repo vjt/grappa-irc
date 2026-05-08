@@ -28,6 +28,8 @@ config :grappa, Grappa.Repo,
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "test-secret-key-base-replace-me-in-prod-12345678901234567890123456789012",
+  # Mirror of dev.exs — codebase audit web W10 + cross-infra L7.
+  session_signing_salt: "test-signing-salt-not-secret-fixed-for-deterministic-runs",
   server: false
 
 config :logger, level: :warning

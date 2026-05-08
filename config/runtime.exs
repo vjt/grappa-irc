@@ -33,6 +33,18 @@ if config_env() == :prod do
       Generate one with: scripts/mix.sh phx.gen.secret
       """
 
+  # codebase audit web W10 + cross-infra L7 — was hardcoded
+  # `signing_salt: "rotate-me"` placeholder in lib/grappa_web/endpoint.ex.
+  # Now config-driven via Application.compile_env at the @session_options
+  # attribute. Prod operator MUST set SECRET_SIGNING_SALT (32+ random
+  # bytes; `phx.gen.secret 32` is one good source).
+  session_signing_salt =
+    System.get_env("SECRET_SIGNING_SALT") ||
+      raise """
+      environment variable SECRET_SIGNING_SALT is missing.
+      Generate one with: scripts/mix.sh phx.gen.secret 32
+      """
+
   port = String.to_integer(System.get_env("PORT") || "4000")
 
   # Public hostname the bouncer is reached at via nginx (e.g. grappa.bad.ass).
@@ -52,6 +64,7 @@ if config_env() == :prod do
     url: [host: phx_host, port: 80],
     check_origin: ["//#{phx_host}"],
     secret_key_base: secret_key_base,
+    session_signing_salt: session_signing_salt,
     server: true
 
   # Cloak vault key — base64-encoded 32 bytes. Generate once with
