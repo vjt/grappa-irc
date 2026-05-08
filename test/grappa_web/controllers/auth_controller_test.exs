@@ -197,6 +197,31 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
+    # W3: regression — visitor path used to re-read `conn.params["captcha_token"]`
+    # raw (after the validate_captcha_token plug had already run on `login/2`).
+    # The two reads opened the door to a future divergence where the plug
+    # validates but the visitor branch consumes a different value. Pin the
+    # boundary contract: every shape rejected by validate_captcha_token MUST
+    # 400 BEFORE any Login.login/2 work, regardless of which branch
+    # IdentifierClassifier dispatches to (visitor included).
+    test "visitor branch — non-binary captcha_token also 400 bad_request (W3)",
+         %{conn: conn} do
+      # `vjt` (no `@`) routes through IdentifierClassifier → :nick →
+      # visitor_login/4. Pre-W3 this path may have skipped the plug if a
+      # future maintainer added a sibling entry-point; post-W3 the
+      # captcha_token is passed as an explicit param so the validated
+      # value is the only source.
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt", "captcha_token" => [1, 2, 3]})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "visitor branch — oversize captcha_token also 400 bad_request (W3)",
+         %{conn: conn} do
+      huge = String.duplicate("a", 4097)
+      conn = post(conn, "/auth/login", %{"identifier" => "vjt", "captcha_token" => huge})
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
     test "captcha_required → 400 captcha_required + site_key (FallbackController wire shape)",
          %{conn: conn} do
       # T31 Plan 2 Task 6: assert that an admission flow which surfaces

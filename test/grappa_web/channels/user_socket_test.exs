@@ -120,4 +120,29 @@ defmodule GrappaWeb.UserSocketTest do
       assert UserSocket.id(socket) == "user_socket:visitor:" <> visitor.id
     end
   end
+
+  describe "id_for_subject/1 (W6 — topology helper)" do
+    # W6: AuthController.maybe_disconnect_socket/1 used to inline the
+    # `"user_socket:"` prefix at the broadcast site. A typo in either
+    # place (or a future shape change to id/1) silently broke disconnect
+    # — broadcast on the wrong topic = no subscribers = no-op = stale
+    # WS keeps receiving pushes after logout. The helper is the single
+    # source: id/1 routes through it and the disconnect broadcast does
+    # too, so the two stay byte-equal by construction.
+    test "user subject — equals UserSocket.id/1 of the matching connect" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      {user, session} = user_and_session(name: user_name)
+      {:ok, socket} = connect_with(%{"token" => session.id})
+
+      assert UserSocket.id_for_subject({:user, user}) == UserSocket.id(socket)
+    end
+
+    test "visitor subject — equals UserSocket.id/1 of the matching connect" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
+      {:ok, socket} = connect_with(%{"token" => session.id})
+
+      assert UserSocket.id_for_subject({:visitor, visitor}) == UserSocket.id(socket)
+    end
+  end
 end

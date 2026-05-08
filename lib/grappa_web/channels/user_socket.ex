@@ -76,7 +76,36 @@ defmodule GrappaWeb.UserSocket do
   def connect(_, _, _), do: :error
 
   @impl Phoenix.Socket
-  def id(socket), do: "user_socket:#{socket.assigns.user_name}"
+  def id(socket), do: id_for_user_name(socket.assigns.user_name)
+
+  @doc """
+  W6: socket-id helper. Single source of truth for the topic shape
+  Phoenix uses to drive `Endpoint.broadcast(socket_id, "disconnect", _)`
+  — the broadcast site (`AuthController.maybe_disconnect_socket/1`)
+  goes through this helper so a future change to the id shape
+  automatically propagates to disconnect.
+
+  Subject inference:
+
+    * `{:user, %Accounts.User{name: name}}` → `"user_socket:" <> name`
+    * `{:visitor, %Visitor{id: id}}` →
+      `"user_socket:visitor:" <> id`
+
+  Both shapes match the `user_name` assignment that `assign_subject/2`
+  installs on the socket at connect time. Symmetric with the
+  `id/1` callback above so the runtime topic Phoenix subscribes the
+  transport process to is the topic the disconnect publishes on.
+  """
+  @spec id_for_subject(GrappaWeb.Subject.t()) :: String.t()
+  def id_for_subject({:user, %Accounts.User{name: name}}) when is_binary(name),
+    do: id_for_user_name(name)
+
+  def id_for_subject({:visitor, %Visitor{id: id}}) when is_binary(id),
+    do: id_for_user_name("visitor:" <> id)
+
+  @spec id_for_user_name(String.t()) :: String.t()
+  defp id_for_user_name(user_name) when is_binary(user_name),
+    do: "user_socket:" <> user_name
 
   defp assign_subject(socket, %Session{user_id: user_id, visitor_id: nil})
        when is_binary(user_id) do
