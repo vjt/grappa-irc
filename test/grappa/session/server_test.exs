@@ -32,7 +32,7 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, Scrollback, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.{Backoff, GhostRecovery}
+  alias Grappa.Session.{Backoff, GhostRecovery, WindowState}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -986,13 +986,13 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "CP15 B1 — :joined window-state event" do
-    test "Session.Server starts with empty window_states map" do
+    test "Session.Server starts with empty window_state struct" do
       {_, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
       state = :sys.get_state(pid)
-      assert state.window_states == %{}
+      assert state.window_state == WindowState.new()
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1045,7 +1045,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
       state = :sys.get_state(pid)
-      assert state.window_states["#test"] == :joined
+      assert WindowState.state_of(state.window_state, "#test") == :joined
       # S1 (lifecycle review HIGH): self-JOIN echo strips the in-flight
       # entry — symmetric with the failure-numeric path (event_router.ex:698).
       # Without the strip, a stale entry can survive 30s and let an
@@ -1093,9 +1093,9 @@ defmodule Grappa.Session.ServerTest do
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 200
 
-      # window_states unchanged — still :joined for #test from the self-JOIN.
+      # window_state unchanged — still :joined for #test from the self-JOIN.
       state = :sys.get_state(pid)
-      assert state.window_states["#test"] == :joined
+      assert WindowState.state_of(state.window_state, "#test") == :joined
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1172,7 +1172,7 @@ defmodule Grappa.Session.ServerTest do
       assert net_slug == network.slug
 
       state = :sys.get_state(pid)
-      assert state.window_states["#Sniffo"] == :pending
+      assert WindowState.state_of(state.window_state, "#Sniffo") == :pending
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1211,8 +1211,8 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
       state = :sys.get_state(pid)
-      assert state.window_states["#Sniffo"] == :pending
-      assert state.window_states["#OTHER"] == :pending
+      assert WindowState.state_of(state.window_state, "#Sniffo") == :pending
+      assert WindowState.state_of(state.window_state, "#OTHER") == :pending
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1279,7 +1279,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush1\r\n"))
 
       state = :sys.get_state(pid)
-      assert state.window_states["#sniffo"] == :joined
+      assert WindowState.state_of(state.window_state, "#sniffo") == :joined
 
       # Second send_join — channel already :joined; must NOT broadcast
       # window_pending (cic would flicker) and must NOT downgrade state.
@@ -1295,7 +1295,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"))
 
       state2 = :sys.get_state(pid)
-      assert state2.window_states["#sniffo"] == :joined
+      assert WindowState.state_of(state2.window_state, "#sniffo") == :joined
 
       # In-flight entry was still recorded (failure-numeric correlation).
       assert {"#sniffo", _, nil} = Map.fetch!(state2.in_flight_joins, "#sniffo")
@@ -1339,7 +1339,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "473 ERR_INVITEONLYCHAN broadcasts kind: join_failed + sets state.window_states/failure_reasons" do
+    test "473 ERR_INVITEONLYCHAN broadcasts kind: join_failed + records :failed window state with reason" do
       # End-to-end CP15 B2: cic-initiated JOIN → in_flight_joins insert →
       # upstream 473 → EventRouter emits {:join_failed, ...} → Server
       # apply_effects arm persists :notice + flips window state + broadcasts
@@ -1384,8 +1384,11 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
       state = :sys.get_state(pid)
-      assert state.window_states["#sniffo"] == :failed
-      assert state.window_failure_reasons["#sniffo"] == "Cannot join channel (+i)"
+      assert WindowState.state_of(state.window_state, "#sniffo") == :failed
+
+      assert WindowState.failure_meta(state.window_state, "#sniffo") ==
+               %{reason: "Cannot join channel (+i)", numeric: 473}
+
       # In-flight entry stripped — a re-issued JOIN gets a fresh slot.
       refute Map.has_key?(state.in_flight_joins, "#sniffo")
 
@@ -1433,8 +1436,8 @@ defmodule Grappa.Session.ServerTest do
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "join_failed"}}, 200
 
       state = :sys.get_state(pid)
-      refute Map.has_key?(state.window_states, "#sniffo")
-      refute Map.has_key?(state.window_failure_reasons, "#sniffo")
+      assert WindowState.state_of(state.window_state, "#sniffo") == nil
+      assert WindowState.failure_meta(state.window_state, "#sniffo") == nil
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1502,12 +1505,13 @@ defmodule Grappa.Session.ServerTest do
   end
 
   describe "CP15 B3 — :parted / :kicked window-state events" do
-    test "self-PART removes window_states + window_failure_reasons entries" do
+    test "self-PART removes the channel from WindowState (state + failure metadata)" do
       # B3 contract: own PART (sender == own_nick) drops the per-channel
-      # window_states entry entirely. Cic projects "no window_states key
-      # + scrollback present" as `:archived`. Same arm also clears any
-      # lingering window_failure_reasons entry so a re-join + re-fail
-      # gets a fresh reason rather than stale text from a prior failure.
+      # entry from `WindowState` entirely. Cic projects "no key in
+      # windowStateByChannel + scrollback present" as `:archived`. Same
+      # arm also clears any lingering failure metadata so a re-join +
+      # re-fail gets a fresh reason rather than stale text from a prior
+      # failure.
       handler = fn state, line ->
         if String.starts_with?(line, "USER ") do
           {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
@@ -1535,7 +1539,16 @@ defmodule Grappa.Session.ServerTest do
 
       _ =
         :sys.replace_state(pid, fn state ->
-          %{state | window_failure_reasons: Map.put(state.window_failure_reasons, "#test", "stale")}
+          # Bypass `set_failed/4` (which would also flip state to :failed
+          # and clobber :joined) — directly inject a stale reason via the
+          # struct so the :parted arm has both fields to clear.
+          %{
+            state
+            | window_state: %{
+                state.window_state
+                | failure_reasons: Map.put(state.window_state.failure_reasons, "#test", "stale")
+              }
+          }
         end)
 
       # Self-PART now: bahamut echo with sender == own nick.
@@ -1545,8 +1558,8 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :sync2\r\n"))
 
       state = :sys.get_state(pid)
-      refute Map.has_key?(state.window_states, "#test")
-      refute Map.has_key?(state.window_failure_reasons, "#test")
+      assert WindowState.state_of(state.window_state, "#test") == nil
+      assert WindowState.failure_meta(state.window_state, "#test") == nil
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1645,7 +1658,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
 
       state = :sys.get_state(pid)
-      assert state.window_states["#test"] == :kicked
+      assert WindowState.state_of(state.window_state, "#test") == :kicked
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1724,9 +1737,9 @@ defmodule Grappa.Session.ServerTest do
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "kicked"}}, 200
 
-      # window_states stays :joined — operator still in channel.
+      # window_state stays :joined — operator still in channel.
       state = :sys.get_state(pid)
-      assert state.window_states["#test"] == :joined
+      assert WindowState.state_of(state.window_state, "#test") == :joined
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
