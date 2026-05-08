@@ -16,7 +16,7 @@
 #
 # Differences vs dev (compose.yaml):
 #   - target: runtime (mix release, no mix tools, no source bind-mount)
-#   - SECRET_KEY_BASE required (no dev fallback)
+#   - SECRET_KEY_BASE + SECRET_SIGNING_SALT required (no dev fallback)
 #   - DATABASE_PATH points at /app/runtime/grappa_prod.db
 #   - grappa is NOT exposed on the host — it's only reachable through nginx
 #   - cicchetto-build (oneshot) populates ./runtime/cicchetto-dist on host
@@ -44,6 +44,7 @@ services:
       MIX_ENV: prod
       DATABASE_PATH: /app/runtime/grappa_prod.db
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?missing SECRET_KEY_BASE — generate with scripts/mix.sh phx.gen.secret}
+      SECRET_SIGNING_SALT: ${SECRET_SIGNING_SALT:?missing SECRET_SIGNING_SALT — generate with scripts/mix.sh phx.gen.secret 32}
       PORT: "4000"
       RELEASE_COOKIE: ${RELEASE_COOKIE:?missing RELEASE_COOKIE — random hex string for distributed Erlang}
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:?missing GRAPPA_ENCRYPTION_KEY — generate with scripts/mix.sh grappa.gen_encryption_key}
