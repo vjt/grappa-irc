@@ -45,11 +45,25 @@ defmodule Grappa.Scrollback.Meta do
   with a new meta field requires extending this list — explicit
   central registry, not implicit drift.
 
-  Keys outside the allowlist round-trip as strings (defensive: a
-  forgotten producer field becomes a visible string in the map
-  instead of crashing the load with `ArgumentError`). Producers
-  SHOULD use only allowlisted keys; tests catch drift via shape
-  assertions on fetched rows.
+  ## Strict in / lenient out (cross-infra M1)
+
+  `cast/1` and `dump/1` REJECT non-allowlisted keys (`{:error,
+  message:, invalid_keys:}` for `cast`, plain `:error` for `dump` per
+  Ecto.Type's narrower contract). Producers must use only allowlisted
+  keys; the changeset surfaces `[message, invalid_keys]` so the
+  offending key shows up in the test failure rather than getting
+  silently coerced and stored. Half-typed maps were the original bug
+  class — closed-set discipline lost at the boundary.
+
+  `load/1` stays LENIENT: unknown string keys round-trip as strings
+  rather than crashing the fetch. The DB→Elixir path is a read of
+  data that may have been written before this fix landed (historical
+  drift, schema rollback, restored backup). Strict rejection here
+  would crash every scrollback fetch touching such a row, taking down
+  reads for an offense that no longer reaches the DB. Defense in
+  depth: the `Message.changeset` filters first, `Type.dump/1` is the
+  last gate; no fresh non-allowlisted key can reach the DB after
+  this fix.
 
   ## Per-kind expected shapes
 
@@ -97,7 +111,13 @@ defmodule Grappa.Scrollback.Meta do
   def type, do: :map
 
   @impl Ecto.Type
-  def cast(map) when is_map(map), do: {:ok, atomize_known(map)}
+  def cast(map) when is_map(map) do
+    case unknown_keys(map) do
+      [] -> {:ok, atomize_known(map)}
+      bad -> {:error, message: "key(s) not in @known_keys", invalid_keys: bad}
+    end
+  end
+
   def cast(_), do: :error
 
   @impl Ecto.Type
@@ -105,11 +125,36 @@ defmodule Grappa.Scrollback.Meta do
   def load(_), do: :error
 
   @impl Ecto.Type
-  def dump(map) when is_map(map), do: {:ok, stringify(map)}
+  def dump(map) when is_map(map) do
+    case unknown_keys(map) do
+      [] -> {:ok, stringify(map)}
+      _ -> :error
+    end
+  end
+
   def dump(_), do: :error
 
-  # Convert any atom or string key to an atom IF it's allowlisted;
-  # otherwise leave it as a string. Values pass through unchanged.
+  # Returns the keys (in their original atom-or-string form) that are
+  # NOT in @known_keys. An empty list means the map is fully allowlisted.
+  @spec unknown_keys(map()) :: [atom() | String.t()]
+  defp unknown_keys(map) do
+    Enum.reduce(map, [], fn {k, _}, acc ->
+      if known_key?(k), do: acc, else: [k | acc]
+    end)
+  end
+
+  @spec known_key?(atom() | String.t()) :: boolean()
+  defp known_key?(k) when is_atom(k), do: k in @known_keys
+
+  defp known_key?(k) when is_binary(k) do
+    Enum.any?(@known_keys, &(Atom.to_string(&1) == k))
+  end
+
+  defp known_key?(_), do: false
+
+  # Used by `load/1` only (lenient): unknown keys survive as strings to
+  # avoid crashing fetches on historical drift. `cast/1` and `dump/1`
+  # call `unknown_keys/1` first and short-circuit on rejection.
   @spec atomize_known(map()) :: map()
   defp atomize_known(map) do
     Map.new(map, fn {k, v} -> {normalize_key(k), v} end)
