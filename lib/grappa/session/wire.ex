@@ -1,0 +1,301 @@
+defmodule Grappa.Session.Wire do
+  @moduledoc """
+  Single source of truth for the public JSON wire shape of the
+  events broadcast by `Grappa.Session.Server` over Phoenix.PubSub
+  and pushed by `GrappaWeb.GrappaChannel` after-join helpers.
+
+  ## Why this module exists (CRITICAL — read before adding events)
+
+  CP15 B7 elevated to a CLAUDE.md hard invariant:
+
+    > PubSub broadcast + Channel push payloads MUST be JSON-encodable
+    > — convert structs to wire shape via a context-owned `*.Wire`
+    > module. Wire conversion is per-context responsibility.
+
+  Sibling Wire modules: `Grappa.Scrollback.Wire`, `Grappa.Networks.Wire`,
+  `Grappa.Accounts.Wire`, `Grappa.QueryWindows.Wire`. This module
+  closes the same gap for `Grappa.Session.Server` — the busiest event
+  producer in the codebase, and the one CP15 explicitly hardened.
+
+  Pre-extraction, `Session.Server` constructed 9 distinct event
+  payloads inline (`apply_effects` arms + `maybe_broadcast_*`) and
+  `window_state_payload/3` re-built three of them for the
+  cold-WS-subscribe snapshot path. Byte-identicality between
+  event-time and snapshot was enforced by code-review prose in the
+  moduledoc — not by a function. A diff that added a field to one
+  arm without updating the snapshot path would compile, pass tests
+  for the live broadcast, and silently regress the deploy-reconnect
+  race CP15 B3 specifically fixed.
+
+  After extraction: every broadcast site calls one of these verbs.
+  `window_state_payload/3` becomes a one-liner that calls the same
+  verb (`joined/2` / `join_failed/4` / `kicked/4`) so snapshot +
+  event are LITERALLY the same expression. Adding a field to an
+  event = one edit here.
+
+  ## Wire-shape rules
+
+    * `kind:` is ALWAYS a string literal (the JSON-wire convention
+      established by CLAUDE.md "kind: STRING JSON-wire convention").
+      `Message.kind()` (Ecto.Enum atom) is converted at the Wire
+      boundary inside `mentions_bundle/5`.
+    * Network discriminator on the wire is `:network` carrying the
+      slug (string), NOT the integer `network_id` — same convention
+      as `Scrollback.Wire`. Exception: `own_nick_changed/2` carries
+      `:network_id` (integer) because cic's networks store keys on
+      id and the user-level topic is not network-scoped.
+
+  ## Mentions bundle decision (arch review A8)
+
+  The `mentions_bundle/5` per-message map is a deliberately-stripped
+  projection of `Scrollback.Message` — `%{server_time, channel,
+  sender_nick, body, kind}`. The bundle is rendered as a
+  cross-channel summary view that doesn't need id/network/meta;
+  keeping the divergence small but EXPLICIT in one place. Note the
+  `sender_nick:` field name (vs `sender:` in `Scrollback.Wire.t/0`)
+  is the historical bundle shape; a deeper unification is a separate
+  decision deferred to the next channel-client-polish cluster.
+  """
+
+  alias Grappa.Scrollback.Message
+
+  @typedoc """
+  The closed set of event kinds emitted by Session. Useful when
+  Dialyzer-typing handler dispatch tables; the on-wire form is the
+  string projection of each atom (per the wire-shape rules above).
+  """
+  @type wire_event_kind ::
+          :channels_changed
+          | :own_nick_changed
+          | :topic_changed
+          | :channel_modes_changed
+          | :members_seeded
+          | :joined
+          | :join_failed
+          | :kicked
+          | :away_confirmed
+          | :mentions_bundle
+
+  @type channels_changed_payload :: %{kind: String.t()}
+
+  @type own_nick_changed_payload :: %{
+          kind: String.t(),
+          network_id: integer(),
+          nick: String.t()
+        }
+
+  @type topic_changed_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          topic: map()
+        }
+
+  @type channel_modes_changed_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          modes: map()
+        }
+
+  @type members_seeded_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          members: [%{nick: String.t(), modes: [String.t()]}]
+        }
+
+  @type joined_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          state: String.t()
+        }
+
+  @type join_failed_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          state: String.t(),
+          reason: String.t() | nil,
+          numeric: pos_integer() | nil
+        }
+
+  @type kicked_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          state: String.t(),
+          by: String.t() | nil,
+          reason: String.t() | nil
+        }
+
+  @type away_confirmed_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          state: String.t()
+        }
+
+  @type mentions_bundle_message :: %{
+          server_time: integer(),
+          channel: String.t(),
+          sender_nick: String.t(),
+          body: String.t() | nil,
+          kind: String.t()
+        }
+
+  @type mentions_bundle_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          away_started_at: String.t(),
+          away_ended_at: String.t(),
+          away_reason: String.t() | nil,
+          messages: [mentions_bundle_message()]
+        }
+
+  @doc """
+  Discriminator-only ping that tells cic the channel set has changed
+  and to refetch via REST. Arch A6 flags this shape as a workaround
+  worth replacing with `channel_added` / `channel_removed` typed
+  deltas; deferred to a future cluster.
+  """
+  @spec channels_changed() :: channels_changed_payload()
+  def channels_changed, do: %{kind: "channels_changed"}
+
+  @doc """
+  Live IRC nick change for the operator's session. Carries
+  `:network_id` (NOT `:network` slug) because cic's networks store
+  keys on id and the user-level topic is not network-scoped.
+  """
+  @spec own_nick_changed(integer(), String.t()) :: own_nick_changed_payload()
+  def own_nick_changed(network_id, nick) when is_integer(network_id) and is_binary(nick) do
+    %{kind: "own_nick_changed", network_id: network_id, nick: nick}
+  end
+
+  @doc """
+  TOPIC change — entry shape decided by `EventRouter`'s topic cache.
+  """
+  @spec topic_changed(String.t(), String.t(), map()) :: topic_changed_payload()
+  def topic_changed(network_slug, channel, entry)
+      when is_binary(network_slug) and is_binary(channel) and is_map(entry) do
+    %{kind: "topic_changed", network: network_slug, channel: channel, topic: entry}
+  end
+
+  @doc """
+  Channel MODE change — entry shape decided by `EventRouter`'s modes
+  cache.
+  """
+  @spec channel_modes_changed(String.t(), String.t(), map()) :: channel_modes_changed_payload()
+  def channel_modes_changed(network_slug, channel, entry)
+      when is_binary(network_slug) and is_binary(channel) and is_map(entry) do
+    %{kind: "channel_modes_changed", network: network_slug, channel: channel, modes: entry}
+  end
+
+  @doc """
+  Pre-sorted member list emitted on `366 RPL_ENDOFNAMES`. Caller is
+  responsible for the mIRC-tier sort.
+  """
+  @spec members_seeded(String.t(), String.t(), [%{nick: String.t(), modes: [String.t()]}]) ::
+          members_seeded_payload()
+  def members_seeded(network_slug, channel, members)
+      when is_binary(network_slug) and is_binary(channel) and is_list(members) do
+    %{kind: "members_seeded", network: network_slug, channel: channel, members: members}
+  end
+
+  @doc """
+  CP15 B1 — own-nick JOIN echo received → window transitions to
+  `:joined`. Same shape used at event-time AND at the
+  cold-WS-subscribe snapshot push (`window_state_payload/3` calls
+  this verb, NOT a re-built map).
+  """
+  @spec joined(String.t(), String.t()) :: joined_payload()
+  def joined(network_slug, channel)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{kind: "joined", network: network_slug, channel: channel, state: "joined"}
+  end
+
+  @doc """
+  CP15 B2 — JOIN failure numeric (471/473/474/475/403/405)
+  correlated against an in-flight JOIN. Same shape used at event-
+  time AND at snapshot push.
+  """
+  @spec join_failed(String.t(), String.t(), String.t() | nil, pos_integer() | nil) ::
+          join_failed_payload()
+  def join_failed(network_slug, channel, reason, numeric)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{
+      kind: "join_failed",
+      network: network_slug,
+      channel: channel,
+      state: "failed",
+      reason: reason,
+      numeric: numeric
+    }
+  end
+
+  @doc """
+  CP15 B3 — own-target KICK observed. Window stays in the active
+  sidebar (greyed) so the operator can /join to retry. Same shape
+  used at event-time AND at snapshot push. `by` and `reason` are
+  nullable — the snapshot path may not have recorded kick meta if
+  the kick predated the WS subscribe.
+  """
+  @spec kicked(String.t(), String.t(), String.t() | nil, String.t() | nil) ::
+          kicked_payload()
+  def kicked(network_slug, channel, by, reason)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{
+      kind: "kicked",
+      network: network_slug,
+      channel: channel,
+      state: "kicked",
+      by: by,
+      reason: reason
+    }
+  end
+
+  @doc """
+  S3.4 — `305 RPL_UNAWAY` / `306 RPL_NOWAWAY` confirmed by upstream.
+  Caller passes the lowercase string literal `"present"` or
+  `"away"` (the `Atom.to_string/1` conversion happens in the
+  Session.Server arm so this fn stays a pure data shaper).
+  """
+  @spec away_confirmed(String.t(), String.t()) :: away_confirmed_payload()
+  def away_confirmed(network_slug, state)
+      when is_binary(network_slug) and state in ["present", "away"] do
+    %{kind: "away_confirmed", network: network_slug, state: state}
+  end
+
+  @doc """
+  Cross-channel mentions summary fired on auto-away → present
+  transition. Per-message map is a deliberately-stripped projection
+  of `Scrollback.Wire.t/0`. `Message.kind()` (atom) is converted to
+  string at the Wire boundary inside this fn — callers pass
+  `Message.t()` instances unchanged.
+  """
+  @spec mentions_bundle(String.t(), String.t(), String.t(), String.t() | nil, [Message.t()]) ::
+          mentions_bundle_payload()
+  def mentions_bundle(network_slug, away_started_at, away_ended_at, away_reason, messages)
+      when is_binary(network_slug) and is_binary(away_started_at) and
+             is_binary(away_ended_at) and is_list(messages) do
+    %{
+      kind: "mentions_bundle",
+      network: network_slug,
+      away_started_at: away_started_at,
+      away_ended_at: away_ended_at,
+      away_reason: away_reason,
+      messages: Enum.map(messages, &project_bundle_message/1)
+    }
+  end
+
+  @spec project_bundle_message(Message.t()) :: mentions_bundle_message()
+  defp project_bundle_message(%Message{} = m) do
+    %{
+      server_time: m.server_time,
+      channel: m.channel,
+      sender_nick: m.sender,
+      body: m.body,
+      kind: Atom.to_string(m.kind)
+    }
+  end
+end

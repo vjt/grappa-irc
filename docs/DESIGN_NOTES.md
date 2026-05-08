@@ -2077,6 +2077,87 @@ the typed event vs. relying on render-tick timing.
 
 ---
 
+## 2026-05-08 — CP16 wire-discipline-sweep cluster
+
+CP15 B7 elevated to a CLAUDE.md hard invariant: "PubSub broadcast +
+Channel push payloads MUST be JSON-encodable — convert structs to
+wire shape via a context-owned `*.Wire` module." Sibling Wire
+modules (Scrollback, Networks, Accounts, QueryWindows) all upheld
+the rule; the 2026-05-08 architecture review found three contexts
+that didn't and three stale typespecs that lied about the wire
+shape post-CP15 B6.
+
+Six buckets, each TDD + per-bucket `scripts/format/credo/dialyzer`:
+
+  * **B1** — `Grappa.Session.Wire` extracted. Nine event payloads
+    (`channels_changed`, `own_nick_changed`, `topic_changed`,
+    `channel_modes_changed`, `members_seeded`, `joined`,
+    `join_failed`, `kicked`, `away_confirmed`, `mentions_bundle`)
+    moved from inline maps in `Session.Server` apply_effects arms
+    + `maybe_broadcast_*` helpers + `grappa_channel.ex`
+    push-after-join helpers into one Wire fn per `kind:`.
+    `Session.Server.window_state_payload/3` (snapshot path)
+    collapses to one-line Wire delegations so snapshot +
+    event-time payloads are LITERALLY the same expression.
+    `mentions_bundle/5` absorbs the per-message projection
+    (server_time, channel, sender_nick, body, kind) including the
+    Atom.to_string conversion on `Message.kind()`.
+  * **B2** — `Grappa.Visitors.Wire` extracted. `visitor_to_json/1`
+    (full {id, nick, network_slug, expires_at}) +
+    `visitor_to_credential_json/1` (credential-exchange shape).
+    Both EXCLUDE `:password_encrypted` (the post-Cloak-load
+    plaintext upstream NickServ password — same risk class
+    `Networks.Wire` was created to prevent). MeJSON + AuthJSON
+    delegate; the LoginResponse/MeResponse drift on `:expires_at`
+    becomes EXPLICIT through two Wire fns (mirror of
+    `Accounts.Wire`'s {full, credential} pattern).
+  * **B3** — `Networks.broadcast_state_change/4` inline payload
+    moved to `Networks.Wire.connection_state_changed_event/4`.
+    The codebase-review-fixes 2026-05-08 H1 fix was the bug fix
+    (raw `broadcast/3` → `broadcast_event/2`); this is the
+    consistency follow-through.
+  * **B4** — three stale typespecs caught up (lib/grappa/query_windows.ex:84
+    + :40 moduledoc + lib/grappa_web/channels/grappa_channel.ex:163,
+    all declared `[Window.t()]` instead of `Wire.windows_map()` post-CP15
+    B6). Atom-vs-string `kind:` consistency: `Scrollback.Wire.message_payload/1`
+    switched from `kind: :message` to `kind: "message"`; the wire-byte
+    shape is unchanged (Jason atom→string), but server-side discriminator
+    type is now consistent across every Wire fn.
+  * **B5** — cic-side `WireUserEvent` discriminated union added in
+    `cicchetto/src/lib/api.ts` covering all 6 user-topic events
+    (channels_changed, query_windows_list, mentions_bundle,
+    away_confirmed, own_nick_changed, connection_state_changed).
+    `QueryWindowEntry` + `MentionsBundleMessage` typed exports added.
+    `userTopic.ts` rewrites the if-else cascade as a switch
+    statement with `assertNever(payload)` exhaustiveness — same
+    pattern as `ScrollbackPane`'s `MessageKind` switch (CP10 C3).
+    Every `as string` / `as number` / `as ... | null` cast removed.
+  * **B6** — full `scripts/check.sh` + standalone dialyzer + cic
+    biome+tsc + vitest + integration suite (Playwright e2e).
+
+The cluster touched no behavior; consistency-only. Six HIGH
+findings closed across the 2026-05-08 architecture review +
+codebase review (A1 abstraction-boundaries, A2 responsibility,
+A3 visitor wire shape, A4 stale typespecs, A7 server↔client
+typing, A8 mentions_bundle, plus the H1 connection_state Wire
+follow-through + Type-system A1 atom-vs-string).
+
+### Recurring lesson — directions over code
+
+Five separate arch-review concerns surfaced the same wire-discipline
+gap from different angles. The CP15 B7 invariant landed in CLAUDE.md
+faster than in code; consumers kept building inline payloads
+because the surrounding code did. "Total consistency or nothing"
+(CLAUDE.md) is the principle that closes this drift; CP16 promotes
+the invariant from prose to function-level enforcement.
+
+The next two architecture-review themes (Theme 2
+`server-side-pending`, Theme 3 `Session.Server.WindowState`
+extraction) are deliberately scoped to subsequent clusters — they
+need design discussion, not a typespec sweep.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

@@ -148,6 +148,83 @@ export type ChannelEvent = {
   message: ScrollbackMessage;
 };
 
+// Mirror of `Grappa.QueryWindows.Wire.windows_entry/0` (CP15 B6).
+// Each query-window has a `target_nick` + ISO-8601 `opened_at`. The
+// server-side `windows_map` keys on integer `network_id`; on the wire
+// JSON keys are strings (Object), see `parseWindowsMap` in
+// `userTopic.ts` for the typed coercion.
+export type QueryWindowEntry = {
+  target_nick: string;
+  opened_at: string;
+};
+
+// Per-message item in the `mentions_bundle` payload (Session.Wire
+// `mentions_bundle_message/0`). Deliberately stripped vs
+// `ScrollbackMessage`: no id/network/meta — the bundle is a
+// cross-channel summary view that doesn't need persistence keys.
+// `kind` is the same string projection of `Message.kind()`.
+export type MentionsBundleMessage = {
+  server_time: number;
+  channel: string;
+  sender_nick: string;
+  body: string | null;
+  kind: string;
+};
+
+// Mirror of the events fanned out on the user-level PubSub topic
+// (`Topic.user(user_name)`), pinned by:
+//   * `Grappa.Session.Wire.{channels_changed/0, own_nick_changed/2,
+//      away_confirmed/2, mentions_bundle/5}` (CP16 B1)
+//   * `Grappa.Networks.Wire.connection_state_changed_event/4`
+//      (CP16 B3)
+//   * `lib/grappa_web/channels/grappa_channel.ex` `query_windows_list`
+//      pushed by the after-join + the Session's
+//      `Grappa.QueryWindows.broadcast_after_change/1`.
+//
+// Pre-CP16 B5 `userTopic.ts` consumed payloads as `{kind?: string;
+// [k: string]: unknown}` and narrowed via `as string` casts —
+// adding a new server-side event kind produced no compile error;
+// removing a field silently dropped at runtime. This discriminated
+// union promotes the contract to compile-time enforcement: a new
+// kind = a new arm here + a corresponding handler arm in
+// `userTopic.ts`'s switch (caught by the trailing `assertNever`).
+export type WireUserEvent =
+  | { kind: "channels_changed" }
+  | { kind: "query_windows_list"; windows: Record<string, QueryWindowEntry[]> }
+  | {
+      kind: "mentions_bundle";
+      network: string;
+      away_started_at: string;
+      away_ended_at: string;
+      away_reason: string | null;
+      messages: MentionsBundleMessage[];
+    }
+  | { kind: "away_confirmed"; network: string; state: "present" | "away" }
+  | { kind: "own_nick_changed"; network_id: number; nick: string }
+  | {
+      kind: "connection_state_changed";
+      user_id: string;
+      network_id: number;
+      network_slug: string;
+      from: string;
+      to: string;
+      reason: string | null;
+      at: string | null;
+    };
+
+// Exhaustiveness assertion for discriminated-union switches. If the
+// switch handles every arm, the parameter type narrows to `never` at
+// the default branch and `tsc` accepts the call. If a new arm is
+// added without a handler, the parameter type widens away from
+// `never` and `tsc` rejects — the build fails before the unhandled
+// kind silently drops at runtime.
+//
+// Same pattern as `ScrollbackPane`'s exhaustive `MessageKind` switch
+// (CP10 C3).
+export function assertNever(x: never): never {
+  throw new Error(`unreachable WireUserEvent variant: ${JSON.stringify(x)}`);
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;

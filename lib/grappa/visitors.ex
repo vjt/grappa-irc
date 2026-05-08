@@ -56,7 +56,7 @@ defmodule Grappa.Visitors do
       Grappa.Repo,
       Grappa.Session
     ],
-    exports: [Login, SessionPlan, Visitor, VisitorChannel]
+    exports: [Login, SessionPlan, Visitor, VisitorChannel, Wire]
 
   import Ecto.Query
 

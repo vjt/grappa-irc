@@ -142,6 +142,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
   alias Grappa.Networks.{Credentials, Network}
   alias Grappa.PubSub.Topic
+  alias Grappa.Session.Wire, as: SessionWire
 
   @typedoc "Wire payload for `topic_changed` events pushed by this channel."
   @type topic_changed_payload :: %{
@@ -162,7 +163,7 @@ defmodule GrappaWeb.GrappaChannel do
   @typedoc "Wire payload for `query_windows_list` events pushed by this channel."
   @type query_windows_list_payload :: %{
           kind: String.t(),
-          windows: %{integer() => [QueryWindows.Window.t()]}
+          windows: QueryWindows.Wire.windows_map()
         }
 
   @impl Phoenix.Channel
@@ -705,12 +706,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_topic_if_cached(subject, %Network{} = network, channel, socket) do
     case Session.get_topic(subject, network.id, channel) do
       {:ok, entry} ->
-        push(socket, "event", %{
-          kind: "topic_changed",
-          network: network.slug,
-          channel: channel,
-          topic: entry
-        })
+        push(socket, "event", SessionWire.topic_changed(network.slug, channel, entry))
 
       {:error, _} ->
         :ok
@@ -721,12 +717,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_modes_if_cached(subject, %Network{} = network, channel, socket) do
     case Session.get_channel_modes(subject, network.id, channel) do
       {:ok, entry} ->
-        push(socket, "event", %{
-          kind: "channel_modes_changed",
-          network: network.slug,
-          channel: channel,
-          modes: entry
-        })
+        push(socket, "event", SessionWire.channel_modes_changed(network.slug, channel, entry))
 
       {:error, _} ->
         :ok
@@ -744,12 +735,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_members_if_seeded(subject, %Network{} = network, channel, socket) do
     case Session.list_members(subject, network.id, channel) do
       {:ok, [_ | _] = members} ->
-        push(socket, "event", %{
-          kind: "members_seeded",
-          network: network.slug,
-          channel: channel,
-          members: members
-        })
+        push(socket, "event", SessionWire.members_seeded(network.slug, channel, members))
 
       {:ok, []} ->
         :ok
