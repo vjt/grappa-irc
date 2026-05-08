@@ -897,13 +897,23 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_nick(client, "vjt\r\nQUIT")
     end
 
-    # send_pong/2 has NO CR/LF guard (C6 / S5). PING token is
-    # parser-supplied; `Grappa.IRC.Parser` strips all `\r`/`\n` from
-    # inbound bytes, so the token cannot carry control chars by the
-    # time it reaches send_pong. The other helpers above accept
-    # operator/user input and therefore retain their guards. The
-    # parser invariant is pinned in `Grappa.IRC.ParserTest` under
-    # "CR/LF stripping invariant (C6 / S5)".
+    # send_pong/2 PING token is parser-supplied; `Grappa.IRC.Parser`
+    # strips all `\r`/`\n`/`\x00` from inbound bytes, so the token
+    # cannot carry control chars by the time it reaches send_pong.
+    # The parser invariant is pinned in `Grappa.IRC.ParserTest` under
+    # "CR/LF stripping invariant (C6 / S5)". S9 (audit row irc S9) adds
+    # an empty-token + safe_line_token?/1 guard at the helper boundary
+    # so a malformed `PONG :\r\n` (no token) cannot leave the bouncer
+    # if a future caller bypasses the parser path.
+
+    test "send_pong/2 rejects empty token (S9)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_pong(client, "")
+    end
+
+    test "send_pong/2 rejects unsafe-byte token (S9 defensive)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_pong(client, "tok\r\nQUIT")
+      assert {:error, :invalid_line} = Client.send_pong(client, "tok\x00")
+    end
 
     test "rejected lines never reach the server socket", %{server: server, client: client} do
       :ok = await_handshake(server)

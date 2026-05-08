@@ -260,19 +260,27 @@ defmodule Grappa.IRC.Client do
   @doc """
   Sends `PONG :<token>\\r\\n` in response to an upstream PING.
 
-  Unlike the other outbound helpers, this one has no
-  `safe_line_token?/1` guard: the token is parser-clean.
-  `Grappa.IRC.Parser.strip_unsafe_bytes/1` strips the three bytes
-  (`\\x00`, `\\r`, `\\n`) that `Identifier.safe_line_token?/1` rejects
-  before grammar parsing, so the parser invariant matches the token
-  contract — by the time `Session.Server` echoes the token here it
-  cannot carry any of those bytes. H12 (decision G) closed the
-  pre-cluster gap where `Parser.strip_crlf/1` covered only CR/LF
-  while `safe_line_token?/1` also rejected NUL. Contract is `:ok`;
-  callers do `:ok = send_pong(...)`.
+  The token is rejected with `{:error, :invalid_line}` when empty
+  (would emit malformed `PONG :\\r\\n` with no token — RFC 2812 §3.7.3
+  requires a server token in the trailing param) or when it carries
+  any of the three CRLF/NUL framing bytes that
+  `Grappa.IRC.Identifier.safe_line_token?/1` rejects.
+
+  In normal operation `Grappa.IRC.Parser.strip_unsafe_bytes/1` strips
+  the three bytes (`\\x00`, `\\r`, `\\n`) at the inbound boundary, so
+  by the time `Session.Server` echoes the parsed token here it cannot
+  carry any of those bytes — the safe-byte guard is defensive belt-
+  and-braces against a future caller bypassing the parser path.
+  H12 (decision G) closed the pre-cluster gap where
+  `Parser.strip_crlf/1` covered only CR/LF while `safe_line_token?/1`
+  also rejected NUL. S9 (cluster #10) closes the empty-token gap.
   """
-  @spec send_pong(pid(), String.t()) :: :ok
-  def send_pong(client, token), do: send_line(client, "PONG :#{token}\r\n")
+  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_pong(client, token) do
+    if token != "" and Identifier.safe_line_token?(token),
+      do: send_line(client, "PONG :#{token}\r\n"),
+      else: {:error, :invalid_line}
+  end
 
   @doc """
   Sends `KICK <channel> <nick> :<reason>\\r\\n`. Validates the
