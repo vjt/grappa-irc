@@ -701,10 +701,12 @@ defmodule Grappa.Session do
 
   @doc """
   Sends `KICK <channel> <nick> :<reason>` upstream.
-  Returns `:ok` or `{:error, :no_session}`.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel/nick syntax or reason bytes are rejected by
+  `Grappa.IRC.Client.send_kick/4`.
   """
   @spec send_kick(subject(), integer(), String.t(), String.t(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | :invalid_line}
   def send_kick(subject, network_id, channel, nick, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) and is_binary(reason) do
@@ -740,10 +742,11 @@ defmodule Grappa.Session do
 
   @doc """
   Sends `INVITE <nick> <channel>` upstream (RFC 2812 order: nick first, then channel).
-  Returns `:ok` or `{:error, :no_session}`.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel/nick syntax is rejected by `Grappa.IRC.Client.send_invite/3`.
   """
   @spec send_invite(subject(), integer(), String.t(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | :invalid_line}
   def send_invite(subject, network_id, channel, nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) do
@@ -753,10 +756,11 @@ defmodule Grappa.Session do
   @doc """
   Sends `MODE <channel> b` upstream — the banlist query form (no sign).
   Numerics 367 RPL_BANLIST + 368 RPL_ENDOFBANLIST reply with the ban list.
-  Returns `:ok` or `{:error, :no_session}`.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel syntax is rejected by `Grappa.IRC.Client.send_banlist/2`.
   """
   @spec send_banlist(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | :invalid_line}
   def send_banlist(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     call_session(subject, network_id, {:send_banlist, channel})
@@ -765,10 +769,11 @@ defmodule Grappa.Session do
   @doc """
   Sends `MODE <own_nick> <modes>` upstream — user-mode change on own nick.
   The own nick is read from Session.Server state (populated at 001).
-  Returns `:ok` or `{:error, :no_session}`.
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the modes bytes are rejected by `Grappa.IRC.Client.send_umode/3`.
   """
   @spec send_umode(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | :invalid_line}
   def send_umode(subject, network_id, modes)
       when is_subject(subject) and is_integer(network_id) and is_binary(modes) do
     call_session(subject, network_id, {:send_umode, modes})
@@ -792,9 +797,11 @@ defmodule Grappa.Session do
   Sends `TOPIC <channel> :` upstream — empty trailing parameter clears the channel
   topic per RFC 2812 §3.2.4. This is the irssi `/topic -delete` convention.
   The inbound TOPIC event echoed back by the server will update the topic cache
-  via EventRouter. Returns `:ok` or `{:error, :no_session}`.
+  via EventRouter. Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel syntax is rejected by `Grappa.IRC.Client.send_topic_clear/2`.
   """
-  @spec send_topic_clear(subject(), integer(), String.t()) :: :ok | {:error, :no_session}
+  @spec send_topic_clear(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
   def send_topic_clear(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     call_session(subject, network_id, {:send_topic_clear, channel})
