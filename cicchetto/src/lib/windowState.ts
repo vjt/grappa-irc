@@ -1,6 +1,6 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
-import { token } from "./auth";
+import { createSignal } from "solid-js";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { identityScopedStore } from "./identityScopedStore";
 import { selectedChannel } from "./selection";
 
 // CP15 B5: cic mirror of the server-side per-(network, channel) window
@@ -23,9 +23,10 @@ import { selectedChannel } from "./selection";
 // `setParted` clears all three maps for the key so a re-join + re-fail
 // cycle starts from a fresh slate.
 //
-// Identity-rotation cleanup mirrors `members.ts` / `scrollback.ts`:
-// on token rotation/logout, all three maps are emptied so a new
-// bearer doesn't see the prior tenant's window states.
+// Identity-rotation cleanup via identityScopedStore (dup-A3 close):
+// three resets registered, one per signal map; on token rotation/logout
+// all three maps are emptied so a new bearer doesn't see the prior
+// tenant's window states.
 
 export type WindowState = "pending" | "joined" | "failed" | "kicked" | "parked";
 
@@ -39,7 +40,7 @@ export type WindowKickedMeta = {
   reason: string | null;
 };
 
-const exports_ = createRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [windowStateByChannel, setWindowStateByChannel] = createSignal<
     Record<ChannelKey, WindowState>
   >({});
@@ -50,20 +51,9 @@ const exports_ = createRoot(() => {
     Record<ChannelKey, WindowKickedMeta>
   >({});
 
-  // Identity-transition cleanup. Same shape as scrollback.ts /
-  // members.ts: prev != null filters BOTH the initial run
-  // (prev === undefined) and the cold-start login (prev === null);
-  // only logout (prev = "tokA", t = null) and rotation (prev = "tokA",
-  // t = "tokB") clear the maps.
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        setWindowStateByChannel({});
-        setWindowFailureByChannel({});
-        setWindowKickedMetaByChannel({});
-      }
-    }),
-  );
+  onIdentityChange(() => setWindowStateByChannel({}));
+  onIdentityChange(() => setWindowFailureByChannel({}));
+  onIdentityChange(() => setWindowKickedMetaByChannel({}));
 
   const setPending = (key: ChannelKey): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "pending" }));
