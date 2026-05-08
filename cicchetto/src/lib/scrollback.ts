@@ -105,13 +105,24 @@ const exports = createRoot(() => {
   // returns DESC; we reverse to ASC then dedupe + sort. Used by both
   // initial-load (replaces the empty seed) and load-more (prepends
   // older history to the head).
+  //
+  // Codebase audit cic M3 — secondary sort by `id` ASC. Server-side
+  // `Scrollback.fetch/5` orders by `[desc: m.server_time, desc: m.id]`,
+  // so client mirrors with `[asc: server_time, asc: id]`. Without the
+  // tie-breaker, same-millisecond message bursts from the REST DESC page
+  // could land in arbitrary order vs the WS append stream — visible
+  // reorder of bursty traffic on reload. `id` is monotonic per
+  // sqlite's auto-increment column.
   const mergeIntoScrollback = (key: ChannelKey, page: ScrollbackMessage[]) => {
     setScrollbackByChannel((prev) => {
       const existing = prev[key] ?? [];
       const ids = new Set(existing.map((m) => m.id));
       const fresh = page.filter((m) => !ids.has(m.id));
       if (fresh.length === 0) return prev;
-      const merged = [...existing, ...fresh].sort((a, b) => a.server_time - b.server_time);
+      const merged = [...existing, ...fresh].sort((a, b) => {
+        if (a.server_time !== b.server_time) return a.server_time - b.server_time;
+        return a.id - b.id;
+      });
       return { ...prev, [key]: merged };
     });
   };

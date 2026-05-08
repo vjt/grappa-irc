@@ -187,6 +187,56 @@ describe("scrollback verbs", () => {
     });
     expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.body)).toEqual(["first", "second"]);
   });
+
+  // Codebase audit cic M3 — same-millisecond messages must use `id` as
+  // secondary sort key. Mirrors server-side `Scrollback.fetch/5`'s
+  // `order_by: [desc: m.server_time, desc: m.id]` (DESC there, ASC here).
+  // Without it, REST DESC pages with same-server_time bursts and WS
+  // append ordering can disagree across reload — the user sees a
+  // visible reorder of bursty messages on refresh.
+  it("mergeIntoScrollback uses id as secondary sort for same-server_time burst", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    // Server returns DESC [id=3, id=1, id=2] all with server_time=500
+    // (a buggy upstream burst sort or out-of-order REST page). Cic must
+    // re-sort by (server_time ASC, id ASC) → [1, 2, 3].
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 3,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 500,
+        kind: "privmsg",
+        sender: "c",
+        body: "third",
+        meta: {},
+      },
+      {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 500,
+        kind: "privmsg",
+        sender: "a",
+        body: "first",
+        meta: {},
+      },
+      {
+        id: 2,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 500,
+        kind: "privmsg",
+        sender: "b",
+        body: "second",
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("freenode", "#grappa");
+    const key = channelKey("freenode", "#grappa");
+    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([1, 2, 3]);
+  });
 });
 
 // ---------------------------------------------------------------------------
