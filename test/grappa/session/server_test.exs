@@ -876,6 +876,12 @@ defmodule Grappa.Session.ServerTest do
 
       state = :sys.get_state(pid)
       assert state.window_states["#test"] == :joined
+      # S1 (lifecycle review HIGH): self-JOIN echo strips the in-flight
+      # entry — symmetric with the failure-numeric path (event_router.ex:698).
+      # Without the strip, a stale entry can survive 30s and let an
+      # unsolicited 471/473 corrupt the window state machine
+      # (apply_effects[:join_failed] would overwrite :joined → :failed).
+      refute Map.has_key?(state.in_flight_joins, "#test")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

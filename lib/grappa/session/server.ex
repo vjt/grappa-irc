@@ -1717,12 +1717,19 @@ defmodule Grappa.Session.Server do
     # Joining wipes any prior :failed / :kicked snapshot mirrors —
     # otherwise a successful re-join would leave stale by/reason/numeric
     # in state and the next snapshot push for this channel would lie.
+    # Also strips the in-flight-JOIN tracker keyed by lowercase channel —
+    # symmetric with the failure-numeric path (event_router.ex:698) which
+    # already strips on the failure side. Without this, the entry sits
+    # for up to 30s and an unsolicited late 471/473 numeric within the
+    # TTL window can correlate against the ghost and corrupt window
+    # state from :joined back to :failed (lifecycle review HIGH S1).
     state = %{
       state
       | window_states: Map.put(state.window_states, channel, :joined),
         window_failure_reasons: Map.delete(state.window_failure_reasons, channel),
         window_failure_numerics: Map.delete(state.window_failure_numerics, channel),
-        window_kicked_meta: Map.delete(state.window_kicked_meta, channel)
+        window_kicked_meta: Map.delete(state.window_kicked_meta, channel),
+        in_flight_joins: Map.delete(state.in_flight_joins, String.downcase(channel))
     }
 
     apply_effects(rest, state)
