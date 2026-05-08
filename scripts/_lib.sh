@@ -116,6 +116,25 @@ die() {
     exit 1
 }
 
+# Export CONTAINER_UID/GID for the e2e compose stack on Linux. macOS lets
+# Docker Desktop translate ownership transparently, so leaving the
+# defaults (1000) is fine; on Linux the bind-mounts to runtime/bun-cache
+# and runtime/e2e/cicchetto-dist must be writable by the in-container
+# UID, so we drop to the host UID. MUST be called from BOTH integration.sh
+# and testnet.sh in the same shell that invokes `docker compose ...` —
+# `testnet.sh up` runs in a subshell when invoked by integration.sh, so
+# the export there does NOT propagate back. CI symptom of getting this
+# wrong: the cicchetto-build-test config-hash drifts between the two
+# `compose up` phases (testnet.sh's, then integration.sh's during the
+# playwright-runner depends_on chain), compose RECREATEs the container,
+# and the second start exits 1 on AccessDenied writing to dist/cache.
+e2e_export_uid() {
+    if [ "$(uname -s)" = "Linux" ]; then
+        export CONTAINER_UID="${CONTAINER_UID:-$(id -u)}"
+        export CONTAINER_GID="${CONTAINER_GID:-$(id -g)}"
+    fi
+}
+
 in_container() {
     if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
         die "in_container called from a worktree — the live container has main's source mounted, not the worktree's. Use in_oneshot or in_container_or_oneshot."

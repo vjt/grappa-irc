@@ -6,9 +6,13 @@ name: integration
 # and webkit-iphone-15 projects.
 #
 # Path-filtered: only runs on changes that could break end-to-end
-# behavior. Doc-only / CI-only / scripts/* changes don't trigger this
-# (the Elixir-only ci.yml workflow handles unit-level gates on every
-# push).
+# behavior. Doc-only / CI-only changes don't trigger this (the
+# Elixir-only ci.yml workflow handles unit-level gates on every push).
+# The three orchestration scripts (integration.sh, testnet.sh, _lib.sh)
+# ARE in scope — they boot the stack, set CONTAINER_UID, and wire the
+# compose project together; a regression in them breaks CI but not
+# local mac dev (different bind-mount semantics). Operator scripts
+# (deploy.sh, observer.sh, etc.) stay out of scope deliberately.
 #
 # Stack timing: cold ~6-8 min for the testnet+grappa+nginx images +
 # Playwright base pull; warm with cache it's faster but we don't cache
@@ -32,6 +36,9 @@ on:
       - "cicchetto/e2e/**"
       - "config/**"
       - "priv/**"
+      - "scripts/integration.sh"
+      - "scripts/testnet.sh"
+      - "scripts/_lib.sh"
       - "mix.exs"
       - "mix.lock"
       - ".github/workflows/integration.yml"
@@ -43,6 +50,9 @@ on:
       - "cicchetto/e2e/**"
       - "config/**"
       - "priv/**"
+      - "scripts/integration.sh"
+      - "scripts/testnet.sh"
+      - "scripts/_lib.sh"
       - "mix.exs"
       - "mix.lock"
       - ".github/workflows/integration.yml"

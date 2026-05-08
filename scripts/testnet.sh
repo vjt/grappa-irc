@@ -42,10 +42,7 @@ case "$cmd" in
         # Same UID/GID handling + bind-mount mkdir as integration.sh —
         # without these the bahamut + grappa-test sqlite + cicchetto-dist
         # writes hit AccessDenied under the dropped UID.
-        if [ "$(uname -s)" = "Linux" ]; then
-            export CONTAINER_UID="${CONTAINER_UID:-$(id -u)}"
-            export CONTAINER_GID="${CONTAINER_GID:-$(id -g)}"
-        fi
+        e2e_export_uid
         mkdir -p \
             "$REPO_ROOT/runtime/bun-cache" \
             "$SRC_ROOT/runtime/e2e/cicchetto-dist" \
