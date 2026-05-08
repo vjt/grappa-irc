@@ -10,6 +10,14 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**CP17 server-side-pending IN PROGRESS** (cluster
+`cluster/server-side-pending`, opened 2026-05-08). Theme 2 of the
+2026-05-08 architecture review: move `:pending` window-state
+origination from cic (`compose.ts:210 setPending(...)` workaround) to
+the server. Closes the CLAUDE.md hard-invariant violation "cic NEVER
+originates state — no parallel client-side state machine." Plan:
+[`docs/plans/2026-05-08-server-side-pending.md`](plans/2026-05-08-server-side-pending.md).
+
 **Phase 2 + Phase 3 walking skeleton LIVE; CP10 review-fix campaign
 correctness clusters CLOSED.** Bouncer + cicchetto PWA live at
 `http://grappa.bad.ass` (192.168.53.11 → nginx → grappa:4000). iPhone
