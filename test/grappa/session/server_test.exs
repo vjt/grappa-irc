@@ -345,6 +345,66 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "cancel_and_drain/2 — stale-fire mailbox drain (lifecycle review HIGH S3)" do
+    # Process.cancel_timer/1 returns false when the timer has already
+    # delivered its message. Without a follow-up selective receive, that
+    # stale message sits in the mailbox and runs the next time the
+    # GenServer dispatches — racing whatever fresh state was set up
+    # immediately after the cancel call.
+    #
+    # Concrete repro from the review: two :ws_all_disconnected events
+    # ~30s apart leave the OLD :auto_away_debounce_fire queued ahead of
+    # the second handler, which then runs set_auto_away_internal at
+    # T=30s instead of T=60s — and the fresh timer later fires AGAIN,
+    # producing duplicate upstream AWAY + away_started_at jump that
+    # breaks maybe_broadcast_mentions_bundle's window-boundary
+    # aggregation.
+    #
+    # The helper is `@doc false def` (not `defp`) so unit tests can
+    # drive a real Process.send_after/3 from the test process and
+    # observe the post-fire branch deterministically.
+
+    alias Grappa.Session.Server
+
+    test "drains the stale message when timer has already fired" do
+      ref = Process.send_after(self(), :probe, 1)
+      Process.sleep(15)
+      # Sanity: the stale message is in the mailbox (refute_received
+      # before would consume it; we let cancel_and_drain do that work).
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      refute_received :probe
+    end
+
+    test "cancels live timer cleanly without leaving the message in mailbox" do
+      ref = Process.send_after(self(), :probe, 60_000)
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      refute_received :probe
+    end
+
+    test "nil ref is a no-op" do
+      assert :ok = Server.cancel_and_drain(nil, :probe)
+    end
+
+    test "drains only the matching message — leaves siblings untouched" do
+      # Selective receive must not steal an unrelated message that
+      # happens to be ahead in the mailbox. The drain pattern matches
+      # the literal `^msg` only.
+      ref = Process.send_after(self(), :probe, 1)
+      Process.sleep(15)
+      send(self(), :other_message)
+
+      assert :ok = Server.cancel_and_drain(ref, :probe)
+
+      # :probe drained, :other_message preserved.
+      refute_received :probe
+      assert_received :other_message
+    end
+  end
+
   describe "stop_session/2 + unbind_credential teardown (S29 H5)" do
     test "stop_session/2 is idempotent for unknown keys" do
       assert :ok = Session.stop_session({:user, Ecto.UUID.generate()}, 999_999_999)

@@ -935,13 +935,8 @@ defmodule Grappa.Session.Server do
   # unset auto-away. Explicit away is left untouched — reconnecting a tab
   # should not silently clear a `/away` the user issued deliberately.
   def handle_info({:ws_connected, _}, state) do
-    state1 =
-      if is_reference(state.auto_away_timer) do
-        _ = Process.cancel_timer(state.auto_away_timer)
-        %{state | auto_away_timer: nil}
-      else
-        state
-      end
+    :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
+    state1 = %{state | auto_away_timer: nil}
 
     state2 =
       if state1.away_state == :away_auto do
@@ -961,12 +956,15 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info({:ws_all_disconnected, _}, state) do
-    # Cancel any existing debounce timer (shouldn't happen in normal flow,
-    # but guards against two rapid disconnect events — only the last wins).
-    _ =
-      if is_reference(state.auto_away_timer) do
-        Process.cancel_timer(state.auto_away_timer)
-      end
+    # Cancel any existing debounce timer + drain a possibly-already-fired
+    # :auto_away_debounce_fire from the mailbox. Two rapid disconnects
+    # ~30s apart used to leave the OLD timer's fire queued ahead of the
+    # second handler, which then ran set_auto_away_internal at T=30s
+    # instead of T=60s — and the second timer would later fire again,
+    # producing a duplicate upstream AWAY + an away_started_at jump that
+    # broke maybe_broadcast_mentions_bundle's window-boundary aggregation
+    # (lifecycle review HIGH S3).
+    :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
 
     timer = Process.send_after(self(), :auto_away_debounce_fire, @auto_away_debounce_ms)
     {:noreply, %{state | auto_away_timer: timer}}
@@ -1488,10 +1486,7 @@ defmodule Grappa.Session.Server do
   end
 
   defp stage_pending_auth(state, password) do
-    _ =
-      if is_reference(state.pending_auth_timer) do
-        Process.cancel_timer(state.pending_auth_timer)
-      end
+    :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
     deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
@@ -1508,10 +1503,7 @@ defmodule Grappa.Session.Server do
 
     case next.phase do
       terminal when terminal in [:succeeded, :failed] ->
-        _ =
-          if is_reference(state.ghost_timer) do
-            Process.cancel_timer(state.ghost_timer)
-          end
+        :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
 
         {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
 
@@ -1959,10 +1951,7 @@ defmodule Grappa.Session.Server do
         Logger.warning("visitor_r_observed effect on user session — ignored")
     end
 
-    _ =
-      if is_reference(state.pending_auth_timer) do
-        Process.cancel_timer(state.pending_auth_timer)
-      end
+    :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
   end
@@ -2077,6 +2066,36 @@ defmodule Grappa.Session.Server do
       "@" in modes -> 0
       "+" in modes -> 1
       true -> 2
+    end
+  end
+
+  @doc false
+  # Cancel `ref` and consume its message from the mailbox if it had already
+  # fired. `Process.cancel_timer/1` returns `false` when the timer has
+  # already delivered its message — without a follow-up selective receive,
+  # that stale message sits in the mailbox and runs the next time the
+  # GenServer dispatches, racing whatever fresh state was set up after the
+  # cancel call (lifecycle review HIGH S3).
+  #
+  # Public-with-`@doc false` so unit tests can exercise the primitive
+  # directly: every call site (auto-away debounce, pending-auth timeout,
+  # ghost-recovery timeout) shares this exact shape and the only way to
+  # cover the post-fire branch deterministically is to drive a real timer
+  # from the test process.
+  @spec cancel_and_drain(reference() | nil, atom()) :: :ok
+  def cancel_and_drain(nil, _), do: :ok
+
+  def cancel_and_drain(ref, msg) when is_reference(ref) and is_atom(msg) do
+    case Process.cancel_timer(ref) do
+      ms_left when is_integer(ms_left) ->
+        :ok
+
+      false ->
+        receive do
+          ^msg -> :ok
+        after
+          0 -> :ok
+        end
     end
   end
 
