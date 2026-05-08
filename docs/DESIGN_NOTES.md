@@ -2077,6 +2077,108 @@ the typed event vs. relying on render-tick timing.
 
 ---
 
+## 2026-05-08 — CP17 server-side-pending cluster
+
+Theme 2 of the 2026-05-08 architecture review. Closes the CLAUDE.md
+hard-invariant violation "cic NEVER originates state — no parallel
+client-side state machine."
+
+Pre-CP17 the only cic-originated state mutation in the codebase was
+`cicchetto/src/lib/compose.ts:210`'s synchronous
+`setPending(channelKey(networkSlug, cmd.channel))` call, fired
+immediately after `postJoin(...)` so subscribe.ts:425's
+pre-subscribe loop could join the per-channel WS topic BEFORE the
+upstream JOIN echo arrived. Without the optimistic write, Phoenix
+PubSub doesn't replay to late subscribers and the typed `joined`
+/ `join_failed` events would drop on the floor.
+
+The chicken-and-egg behind the workaround: cic only learns to
+subscribe to the per-channel topic AFTER seeing `:pending` in
+`windowStateByChannel`. Broadcasting `:pending` on the per-channel
+topic itself is impossible — cic isn't subscribed yet.
+
+Resolution: broadcast on `Topic.user/1`, which cic joins from boot
+via `userTopic.ts`'s `createRoot` effect. New verb
+`Grappa.Session.Wire.window_pending(slug, channel)` returns
+`%{kind: "window_pending", network: ..., channel: ...,
+state: "pending"}`. Naming convention `window_pending` (not bare
+`pending`) mirrors the existing user-topic
+`connection_state_changed` verb: state-change events on the
+user-topic carry a window-namespace prefix to avoid collision with
+channel-namespace verbs that share state names (`joined` etc.).
+
+Single producer for both code paths: `record_in_flight_join/2`
+(already called from `{:send_join, ch}` cast AND the 001
+RPL_WELCOME autojoin loop) wraps the state mutation
+(`window_states[ch] = :pending`) AND the user-topic broadcast.
+Same call sites, identical behavior.
+
+### Snapshot path: `:pending` is intentionally `:not_tracked`
+
+`get_window_state` / `push_window_state_if_known` returns
+`{:error, :not_tracked}` for `:pending`. The per-channel
+after_join can't deliver new info — cic already learned `:pending`
+via the user-topic broadcast — and would carry a different `kind:`
+than the user-topic origin (the per-channel topic broadcasts use
+`joined / join_failed / kicked` for terminal states). Documented
+design choice.
+
+### Idempotency rule: re-JOIN of an already-`:joined` channel
+
+A JOIN issued for a channel ALREADY in `:joined` is a no-op state
+transition. `record_in_flight_join/2` skips the `:pending` mutation
++ the broadcast in that case so connected cic tabs don't briefly
+flip from `:joined` back to `:pending`. The in-flight entry is
+still recorded — a downstream failure numeric (e.g. 443
+ERR_USERONCHANNEL) needs correlation against the in-flight window.
+
+Surfaced by integration suite m11-peer-nick failure on initial
+ship: cp15-b6-part-archive-rejoin's afterEach hook re-joins #bofh
+defensively, server.window_states[#bofh] was downgraded to
+`:pending` over the existing `:joined`, bahamut may not echo a
+JOIN at all for a re-JOIN, leaving state stuck. cic next-test
+boot then renders MembersPane "not joined" fallback even though
+peer JOIN events fan in to `members()`.
+
+### cic-side mirror
+
+* `lib/api.ts` — `WireUserEvent` discriminated union extended
+  with `window_pending` arm. tsc enforces exhaustiveness via the
+  `assertNever` default in `userTopic.ts`'s switch.
+* `lib/userTopic.ts` — `case "window_pending"` arm dispatches to
+  `setPending(channelKey(network, channel))`. Same setPending
+  signal as pre-CP17; the pre-subscribe loop in `subscribe.ts:425`
+  re-runs on the windowStateByChannel signal mutation regardless
+  of who calls setPending — origin-decoupled by design.
+* `lib/compose.ts:210` — the optimistic `setPending(...)` call
+  REMOVED. compose no longer originates window state.
+
+### Gate evidence on cluster close
+
+```
+scripts/check.sh — EXIT 0
+  7 doctests, 26 properties, 1285 tests, 0 failures
+  Total errors: 0
+  No vulnerabilities found
+  No retired packages found
+  Sobelow SCAN COMPLETE
+  ExDoc clean (no new doc warnings)
+scripts/dialyzer.sh standalone — Total errors: 0
+scripts/bun.sh run check — biome + tsc clean (82 files, 0 errors)
+scripts/bun.sh run test — 634 passed (634), 38 test files
+scripts/integration.sh — EXIT 0, 28 passed (2 pre-existing flakes)
+```
+
+Architecture-review themes status:
+* Theme 1 (wire-discipline-sweep) — closed CP16 (2026-05-08).
+* Theme 2 (server-side-pending) — closed CP17 (2026-05-08, this
+  cluster).
+* Theme 3 (`Session.Server.WindowState` extraction) — next-up
+  candidate. Mechanical now that Wire modules + `:pending` are
+  pervasive on the server.
+
+---
+
 ## 2026-05-08 — CP16 wire-discipline-sweep cluster
 
 CP15 B7 elevated to a CLAUDE.md hard invariant: "PubSub broadcast +
