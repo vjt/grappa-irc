@@ -165,7 +165,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(joined, %{})
 
-      Grappa.PubSub.broadcast_event(other, %{kind: :message})
+      Grappa.PubSub.broadcast_event(other, %{kind: "message"})
 
       refute_push("event", _, 50)
     end
@@ -427,7 +427,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      payload = %{kind: :message, message: %{body: "ciao"}}
+      payload = %{kind: "message", message: %{body: "ciao"}}
       Grappa.PubSub.broadcast_event(topic, payload)
 
       assert_push("event", ^payload, 200)

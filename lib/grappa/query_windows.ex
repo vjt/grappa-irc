@@ -37,7 +37,15 @@ defmodule Grappa.QueryWindows do
   After every successful call to `open/4` or `close/4`, the current full
   window list is broadcast on `Topic.user(user_name)` as:
 
-      {:event, %{kind: "query_windows_list", windows: list_for_user(user_id)}}
+      %{kind: "query_windows_list", windows: Wire.render_grouped(list_for_user(user_id))}
+
+  The payload windows shape is `Grappa.QueryWindows.Wire.windows_map/0`
+  (snake_case keys, ISO-8601 strings). Pre-CP15 B6 the broadcast carried
+  raw `%Window{}` structs which crashed the WS edge during fan-out;
+  CP15 B6 added the Wire module + render_grouped/1 sweep, but the
+  typespecs declaring the shape weren't updated until CP16 B4. Cic
+  consumes the snake_case shape directly via the typed `WireUserEvent`
+  query_windows_list arm (`api.ts` `QueryWindowEntry`).
 
   This lets cicchetto maintain consistent state via a simple `setState`
   rather than tracking individual deltas.
@@ -79,9 +87,12 @@ defmodule Grappa.QueryWindows do
 
   @typedoc """
   Wire shape of a single `query_windows_list` event payload — the full current
-  window list for the user, keyed by `network_id`.
+  window list for the user, keyed by `network_id`. Carries the
+  `Grappa.QueryWindows.Wire.windows_map/0` snake_case projection
+  (NOT raw `%Window{}` structs — those crashed the WS edge fastlane
+  pre-CP15 B6).
   """
-  @type windows_list_payload :: %{kind: String.t(), windows: %{integer() => [Window.t()]}}
+  @type windows_list_payload :: %{kind: String.t(), windows: Wire.windows_map()}
 
   @doc """
   Idempotently opens a DM window for `target_nick` on `(user_id, network_id)`.

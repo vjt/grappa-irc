@@ -163,7 +163,7 @@ defmodule GrappaWeb.GrappaChannel do
   @typedoc "Wire payload for `query_windows_list` events pushed by this channel."
   @type query_windows_list_payload :: %{
           kind: String.t(),
-          windows: %{integer() => [QueryWindows.Window.t()]}
+          windows: QueryWindows.Wire.windows_map()
         }
 
   @impl Phoenix.Channel

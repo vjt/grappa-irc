@@ -45,7 +45,7 @@ defmodule Grappa.Scrollback.Wire do
           meta: Meta.t()
         }
 
-  @type event :: %{kind: :message, message: t()}
+  @type event :: %{kind: String.t(), message: t()}
 
   @doc """
   Renders a `Grappa.Scrollback.Message` row to its public JSON wire
@@ -85,6 +85,6 @@ defmodule Grappa.Scrollback.Wire do
   """
   @spec message_payload(Message.t()) :: event()
   def message_payload(%Message{} = m) do
-    %{kind: :message, message: to_json(m)}
+    %{kind: "message", message: to_json(m)}
   end
 end
