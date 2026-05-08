@@ -854,6 +854,44 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # M7 fix 2026-05-08: public target_kind/1 helper. Pre-M7 the rule
+  # ("sigil-led target ⇒ :channel; everything else ⇒ :query") was
+  # encoded inside three separate private functions
+  # (`nick_shaped?/1`, `target_kind/1`, `dm_eligible?/1`), kept in
+  # lockstep by convention. Promoting it to a public helper closes
+  # the convention-not-contract gap and gives external callers
+  # (cic-wire, future Phase 6 listener) a canonical predicate.
+  describe "target_kind/1 (M7)" do
+    test "returns :channel for #-prefixed targets" do
+      assert Scrollback.target_kind("#sniffo") == :channel
+    end
+
+    test "returns :channel for &-prefixed targets" do
+      assert Scrollback.target_kind("&local") == :channel
+    end
+
+    test "returns :channel for !-prefixed targets" do
+      assert Scrollback.target_kind("!safe") == :channel
+    end
+
+    test "returns :channel for +-prefixed targets" do
+      assert Scrollback.target_kind("+modeless") == :channel
+    end
+
+    test "returns :query for nick-shaped targets" do
+      assert Scrollback.target_kind("vjt") == :query
+    end
+
+    test "returns :query for $server (synthetic) — server-window is NOT a channel-typed sigil" do
+      # The `$server` window is server-internal scrollback; it has no
+      # channel sigil, so the predicate classifies it as :query by
+      # construction. Callers that need to special-case $server (e.g.
+      # `list_archive/3`'s exclusion, `fetch/5`'s dm_eligible? branch)
+      # do so AFTER this classification, not via target_kind itself.
+      assert Scrollback.target_kind("$server") == :query
+    end
+  end
+
   describe "persist_event/1 with visitor_id" do
     test "persists with visitor_id, no user_id" do
       visitor = visitor_fixture()
