@@ -71,6 +71,7 @@ defmodule Grappa.Session.Wire do
           | :channel_modes_changed
           | :members_seeded
           | :joined
+          | :window_pending
           | :join_failed
           | :kicked
           | :away_confirmed
@@ -106,6 +107,13 @@ defmodule Grappa.Session.Wire do
         }
 
   @type joined_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          state: String.t()
+        }
+
+  @type window_pending_payload :: %{
           kind: String.t(),
           network: String.t(),
           channel: String.t(),
@@ -212,6 +220,27 @@ defmodule Grappa.Session.Wire do
   def joined(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
     %{kind: "joined", network: network_slug, channel: channel, state: "joined"}
+  end
+
+  @doc """
+  CP17 — outbound JOIN recorded as in-flight: the per-channel window
+  enters `:pending` state. Broadcast on `Topic.user(...)` (NOT the
+  per-channel topic), because cic only subscribes to the per-channel
+  topic AFTER seeing `:pending` in `windowStateByChannel` — broadcasting
+  on the per-channel topic would be chicken-and-egg. Userid-level topic
+  is joined from boot via `userTopic.ts` createRoot effect, so the
+  delivery is guaranteed.
+
+  Naming convention `window_pending` (not bare `pending`) mirrors the
+  existing `connection_state_changed` user-topic verb: state-change
+  events on the user-topic carry a window-namespace prefix to avoid
+  collision with channel-namespace verbs that share state names
+  (`joined` etc.).
+  """
+  @spec window_pending(String.t(), String.t()) :: window_pending_payload()
+  def window_pending(network_slug, channel)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{kind: "window_pending", network: network_slug, channel: channel, state: "pending"}
   end
 
   @doc """

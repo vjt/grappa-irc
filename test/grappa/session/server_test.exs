@@ -961,6 +961,107 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test ":send_join cast flips window_states[ch] to :pending + broadcasts window_pending on user-topic" do
+      # CP17 — `:pending` origination moved from cic
+      # (compose.ts:210 setPending workaround) to the server. Every
+      # outbound JOIN sets window_states[ch] = :pending AND broadcasts
+      # SessionWire.window_pending/2 on Topic.user/1 so cic's
+      # userTopic.ts dispatcher mirrors the state into
+      # windowStateByChannel without a parallel client-side state
+      # machine. User-topic (NOT per-channel) — chicken-and-egg: cic
+      # only joins per-channel after seeing :pending.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "window_pending",
+                         network: net_slug,
+                         channel: "#Sniffo",
+                         state: "pending"
+                       }
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#Sniffo"] == :pending
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "001 autojoin loop broadcasts window_pending per channel + sets :pending state" do
+      # CP17 — symmetric to the :send_join cast: the 001 RPL_WELCOME
+      # autojoin path also flows through record_in_flight_join/2, so
+      # every autojoined channel gets the same :pending state +
+      # user-topic broadcast. Single producer for both code paths.
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#Sniffo", "#OTHER"]})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "window_pending", channel: "#Sniffo", state: "pending"}
+                     },
+                     1_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "window_pending", channel: "#OTHER", state: "pending"}
+                     },
+                     1_000
+
+      # Sync via PING/PONG before sampling state.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#Sniffo"] == :pending
+      assert state.window_states["#OTHER"] == :pending
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "get_window_state for :pending returns {:error, :not_tracked}" do
+      # CP17 — the per-channel after_join snapshot path SKIPS pending
+      # (cic only joins per-channel after seeing :pending via the
+      # user-topic broadcast, so the snapshot can't deliver new info;
+      # broadcasting it would also carry a different `kind:` than the
+      # user-topic origin). Documented design choice — verified here.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      assert {:error, :not_tracked} =
+               Session.get_window_state({:user, user.id}, network.id, "#sniffo")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "001 autojoin loop inserts one in_flight_joins entry per channel" do
       # The 001 RPL_WELCOME handler calls Client.send_join/2 for each
       # autojoin channel; B2 threads state mutation through the loop so
