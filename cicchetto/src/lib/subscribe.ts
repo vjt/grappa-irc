@@ -2,7 +2,7 @@ import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
 import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent, seedMembers } from "./members";
@@ -465,10 +465,15 @@ createRoot(() => {
     if (!name || !nets) return;
     for (const [key, state] of Object.entries(states)) {
       if (state !== "pending") continue;
-      const sepIdx = key.indexOf(" ");
-      if (sepIdx < 0) continue;
-      const slug = key.slice(0, sepIdx);
-      const channelName = key.slice(sepIdx + 1);
+      // Codebase audit cic M4 — paired decoder over open-coded
+      // `key.indexOf(" ") + key.slice` parsing. The composite-key
+      // shape lives in `channelKey.ts`; the decoder is the inverse
+      // of `channelKey(slug, name)`. Sidebar.pseudoChannelsForNetwork
+      // is the other consumer.
+      const decoded = decodeChannelKey(key as ChannelKey);
+      if (decoded === null) continue;
+      const slug = decoded.slug;
+      const channelName = decoded.name;
       const typedKey = channelKey(slug, channelName);
       if (joined.has(typedKey)) continue;
       const net = nets.find((n) => n.slug === slug) ?? null;
