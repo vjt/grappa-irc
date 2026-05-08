@@ -4,7 +4,7 @@ import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
-import { networks } from "./networks";
+import { networkIdBySlug, networks } from "./networks";
 import { openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
@@ -242,7 +242,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // /topic -delete — clear topic via channel event.
           const sel = selectedChannel();
           if (!sel) return { error: "/topic -delete requires an active channel window" };
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/topic -delete: network not found" };
           pushChannelTopicClear(networkId, sel.channelName);
           result = { ok: true };
@@ -255,7 +255,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "msg": {
           // /msg <target> <text> — open query window, switch focus (user
           // action per spec #1), then send the PRIVMSG immediately.
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/msg: network not found" };
           openQueryWindowState(networkId, cmd.target, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
@@ -266,7 +266,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "query": {
           // /query <nick> / /q <nick> — open query window and switch focus.
           // No message sent (spec #1: /query opens window without sending).
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/query: network not found" };
           openQueryWindowState(networkId, cmd.target, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
@@ -354,7 +354,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "op": {
           const chanOrErr = requireChannel("op");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/op: network not found" };
           pushChannelOp(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
@@ -363,7 +363,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "deop": {
           const chanOrErr = requireChannel("deop");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/deop: network not found" };
           pushChannelDeop(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
@@ -372,7 +372,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "voice": {
           const chanOrErr = requireChannel("voice");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/voice: network not found" };
           pushChannelVoice(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
@@ -381,7 +381,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "devoice": {
           const chanOrErr = requireChannel("devoice");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/devoice: network not found" };
           pushChannelDevoice(networkId, chanOrErr, cmd.nicks);
           result = { ok: true };
@@ -390,7 +390,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "kick": {
           const chanOrErr = requireChannel("kick");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/kick: network not found" };
           pushChannelKick(networkId, chanOrErr, cmd.nick, cmd.reason);
           result = { ok: true };
@@ -399,7 +399,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "ban": {
           const chanOrErr = requireChannel("ban");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/ban: network not found" };
           pushChannelBan(networkId, chanOrErr, cmd.mask);
           result = { ok: true };
@@ -408,7 +408,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "unban": {
           const chanOrErr = requireChannel("unban");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/unban: network not found" };
           pushChannelUnban(networkId, chanOrErr, cmd.mask);
           result = { ok: true };
@@ -417,7 +417,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "banlist": {
           const chanOrErr = requireChannel("banlist");
           if (typeof chanOrErr !== "string") return chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/banlist: network not found" };
           pushChannelBanlist(networkId, chanOrErr);
           result = { ok: true };
@@ -428,7 +428,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const chanOrErr = requireChannel("invite");
           if (typeof chanOrErr !== "string") return chanOrErr;
           const chan = cmd.channel ?? chanOrErr;
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/invite: network not found" };
           pushChannelInvite(networkId, chan, cmd.nick);
           result = { ok: true };
@@ -436,7 +436,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "umode": {
           // /umode — user-mode on own nick, no channel context required.
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/umode: network not found" };
           pushChannelUmode(networkId, cmd.modes);
           result = { ok: true };
@@ -444,7 +444,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "mode": {
           // /mode — raw verbatim, target explicit in args. No channel required.
-          const networkId = networks()?.find((n) => n.slug === networkSlug)?.id;
+          const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/mode: network not found" };
           pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
           result = { ok: true };
