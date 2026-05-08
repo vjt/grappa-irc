@@ -119,6 +119,14 @@ defmodule Grappa.Session.EventRouterPropertyTest do
           assert is_list(entry.modes)
           assert is_map(entry.params)
 
+        {:away_confirmed, status} ->
+          # Numerics 305 / 306 (RPL_UNAWAY / RPL_NOWAWAY) emit
+          # `{:away_confirmed, :present | :away}`. Pre-existing
+          # property-test gap: the seed-dependent generator only
+          # surfaced a 306 numeric occasionally, so the missing
+          # clause flunked intermittently rather than every run.
+          assert status in [:present, :away]
+
         other ->
           flunk("malformed effect: #{inspect(other)}")
       end)

@@ -28,12 +28,20 @@ defmodule Grappa.Scrollback.MetaTest do
                Meta.cast(%{"numeric" => 401, "severity" => "error"})
     end
 
-    test "atom-keyed map: unknown atoms downgraded to strings (defensive)" do
-      assert {:ok, %{"bogus" => "x"}} = Meta.cast(%{bogus: "x"})
+    test "atom-keyed map: unknown atoms rejected with invalid_keys" do
+      assert {:error, [message: msg, invalid_keys: [:bogus]]} = Meta.cast(%{bogus: "x"})
+      assert msg =~ "not in @known_keys"
     end
 
-    test "string-keyed map: unknown strings stay as strings (NO String.to_atom)" do
-      assert {:ok, %{"bogus" => "x"}} = Meta.cast(%{"bogus" => "x"})
+    test "string-keyed map: unknown strings rejected with invalid_keys" do
+      assert {:error, [message: _, invalid_keys: ["bogus"]]} = Meta.cast(%{"bogus" => "x"})
+    end
+
+    test "mixed allowlisted + unknown: error names every offender" do
+      assert {:error, [message: _, invalid_keys: keys]} =
+               Meta.cast(%{:target => "alice", :bogus => "x", "extra" => "y"})
+
+      assert Enum.sort(keys) == Enum.sort([:bogus, "extra"])
     end
 
     test "empty map round-trips as empty map" do
@@ -52,6 +60,12 @@ defmodule Grappa.Scrollback.MetaTest do
       assert {:ok, %{"target" => "alice"}} = Meta.dump(%{target: "alice"})
       assert {:ok, %{"target" => "alice"}} = Meta.dump(%{"target" => "alice"})
       assert {:ok, %{"new_nick" => "vjt2"}} = Meta.dump(%{new_nick: "vjt2"})
+    end
+
+    test "rejects non-allowlisted keys (last-line defense pre-DB)" do
+      assert :error = Meta.dump(%{bogus: "x"})
+      assert :error = Meta.dump(%{"unregistered" => "x"})
+      assert :error = Meta.dump(%{:target => "alice", :bogus => "x"})
     end
 
     test "empty map dumps to empty map" do
@@ -76,11 +90,15 @@ defmodule Grappa.Scrollback.MetaTest do
                Meta.load(%{"numeric" => 401, "severity" => "error"})
     end
 
-    test "leaves unknown string keys as strings (security boundary)" do
-      # If a row was written with a key that isn't in @known_keys
-      # (e.g. via a future kind we forgot to register), we get a
-      # string key back rather than crashing the load — the row is
-      # still readable.
+    test "leaves unknown string keys as strings (lenient by design)" do
+      # `load/1` is the DB→Elixir path. It stays lenient — strict
+      # rejection here would crash every fetch that touches a row with
+      # historical drift (forgotten producer field, schema rollback,
+      # restored backup), bringing down ALL scrollback reads. The
+      # `cast/1` + `dump/1` strict rejection is sufficient: nothing
+      # with non-allowlisted keys can REACH the DB after this fix
+      # lands (defense in depth — the schema-side `Message.changeset`
+      # filters first, the Type-level `dump/1` is the last gate).
       assert {:ok, %{"unregistered" => "value"}} = Meta.load(%{"unregistered" => "value"})
     end
 

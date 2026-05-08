@@ -102,7 +102,7 @@ defmodule Grappa.Visitors.Login do
   network. `input` carries the request fields (`nick`, `password`,
   `ip`, `user_agent`, `token`, `captcha_token`, `client_id`). `opts`
   accepts `:login_timeout_ms` for tests that need to shrink the probe
-  budget.
+  budget — production callers pass `[]`.
 
   Returns `{:ok, %{visitor, token}}` on success or
   `{:error, login_error()}` with the failure reason.
@@ -111,8 +111,9 @@ defmodule Grappa.Visitors.Login do
   def login(
         %{nick: _, password: _, ip: _, user_agent: _, token: _, captcha_token: _, client_id: _} =
           input,
-        opts \\ []
-      ) do
+        opts
+      )
+      when is_list(opts) do
     timeout = Keyword.get(opts, :login_timeout_ms, @login_timeout_ms)
 
     with :ok <- validate_nick(input.nick),

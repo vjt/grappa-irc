@@ -72,12 +72,12 @@ defmodule Grappa.Visitors.LoginTest do
 
   describe "validation gates (independent of network state)" do
     test "malformed nick → {:error, :malformed_nick}" do
-      assert {:error, :malformed_nick} = Login.login(login_input(%{nick: "9bad"}))
+      assert {:error, :malformed_nick} = Login.login(login_input(%{nick: "9bad"}), [])
     end
 
     test "no Network row for the configured slug → {:error, :network_unconfigured}" do
       # No network_with_server call — slug "azzurra" isn't in the DB.
-      assert {:error, :network_unconfigured} = Login.login(login_input())
+      assert {:error, :network_unconfigured} = Login.login(login_input(), [])
     end
   end
 
@@ -86,7 +86,7 @@ defmodule Grappa.Visitors.LoginTest do
       {server, port} = start_server()
       {network, _} = setup_visitor_network(port)
 
-      task = Task.async(fn -> Login.login(login_input()) end)
+      task = Task.async(fn -> Login.login(login_input(), []) end)
 
       :ok = await_handshake(server)
       feed_001(server, "vjt")
@@ -107,7 +107,7 @@ defmodule Grappa.Visitors.LoginTest do
       port = pick_unused_port()
       {_, _} = setup_visitor_network(port)
 
-      assert {:error, :upstream_unreachable} = Login.login(login_input())
+      assert {:error, :upstream_unreachable} = Login.login(login_input(), [])
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
 
@@ -124,7 +124,7 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, network} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
       _ = network
 
-      assert {:error, :no_server} = Login.login(login_input())
+      assert {:error, :no_server} = Login.login(login_input(), [])
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
   end
@@ -143,12 +143,12 @@ defmodule Grappa.Visitors.LoginTest do
     end
 
     test "missing password → {:error, :password_required}" do
-      assert {:error, :password_required} = Login.login(login_input())
+      assert {:error, :password_required} = Login.login(login_input(), [])
     end
 
     test "wrong password → {:error, :password_mismatch}" do
       assert {:error, :password_mismatch} =
-               Login.login(login_input(%{password: "wrong"}))
+               Login.login(login_input(%{password: "wrong"}), [])
     end
 
     test "matching password → preempt prior sessions, fresh token, IDENTIFY sent post-001",
@@ -156,7 +156,7 @@ defmodule Grappa.Visitors.LoginTest do
       # Plant a prior session so we can verify it's revoked post-preempt.
       {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
-      task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"})) end)
+      task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
 
       :ok = await_handshake(server)
       feed_001(server, "vjt")
@@ -199,7 +199,7 @@ defmodule Grappa.Visitors.LoginTest do
       token: token
     } do
       assert {:ok, %{visitor: returned, token: new_token}} =
-               Login.login(login_input(%{token: token}))
+               Login.login(login_input(%{token: token}), [])
 
       assert returned.id == visitor.id
       refute new_token == token
@@ -209,7 +209,7 @@ defmodule Grappa.Visitors.LoginTest do
     end
 
     test "no token → {:error, :anon_collision}" do
-      assert {:error, :anon_collision} = Login.login(login_input())
+      assert {:error, :anon_collision} = Login.login(login_input(), [])
     end
 
     test "token resolves to a different visitor → {:error, :anon_collision}" do
@@ -217,12 +217,12 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, alice_session} = Accounts.create_session({:visitor, alice.id}, "5.6.7.8", "ua", [])
 
       assert {:error, :anon_collision} =
-               Login.login(login_input(%{nick: "vjt", token: alice_session.id}))
+               Login.login(login_input(%{nick: "vjt", token: alice_session.id}), [])
     end
 
     test "malformed token → {:error, :anon_collision}" do
       assert {:error, :anon_collision} =
-               Login.login(login_input(%{token: "not-a-uuid"}))
+               Login.login(login_input(%{token: "not-a-uuid"}), [])
     end
   end
 
@@ -266,15 +266,18 @@ defmodule Grappa.Visitors.LoginTest do
       # Second login attempt from same client_id on same network should
       # fail at the admission gate, before any spawn attempt.
       result =
-        Login.login(%{
-          nick: "second_user",
-          password: nil,
-          ip: "1.2.3.4",
-          user_agent: nil,
-          token: nil,
-          captcha_token: nil,
-          client_id: client_id
-        })
+        Login.login(
+          %{
+            nick: "second_user",
+            password: nil,
+            ip: "1.2.3.4",
+            user_agent: nil,
+            token: nil,
+            captcha_token: nil,
+            client_id: client_id
+          },
+          []
+        )
 
       assert result == {:error, :client_cap_exceeded}
     end
@@ -300,15 +303,18 @@ defmodule Grappa.Visitors.LoginTest do
         )
 
       result =
-        Login.login(%{
-          nick: "any_nick",
-          password: nil,
-          ip: "1.2.3.4",
-          user_agent: nil,
-          token: nil,
-          captcha_token: nil,
-          client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
-        })
+        Login.login(
+          %{
+            nick: "any_nick",
+            password: nil,
+            ip: "1.2.3.4",
+            user_agent: nil,
+            token: nil,
+            captcha_token: nil,
+            client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+          },
+          []
+        )
 
       assert result == {:error, :network_cap_exceeded}
     end
@@ -325,15 +331,18 @@ defmodule Grappa.Visitors.LoginTest do
       # Task 5: Login surfaces the tuple shape so FallbackController can
       # emit Retry-After. Bare atom would lose the cooldown payload.
       assert {:error, {:network_circuit_open, retry_after}} =
-               Login.login(%{
-                 nick: "fresh",
-                 password: nil,
-                 ip: "1.2.3.4",
-                 user_agent: nil,
-                 token: nil,
-                 captcha_token: nil,
-                 client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
-               })
+               Login.login(
+                 %{
+                   nick: "fresh",
+                   password: nil,
+                   ip: "1.2.3.4",
+                   user_agent: nil,
+                   token: nil,
+                   captcha_token: nil,
+                   client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386"
+                 },
+                 []
+               )
 
       assert is_integer(retry_after) and retry_after >= 0
     end

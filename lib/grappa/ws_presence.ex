@@ -56,6 +56,8 @@ defmodule Grappa.WSPresence do
 
   use Boundary, top_level?: true, deps: [Grappa.PubSub]
 
+  alias Grappa.PubSub.Topic
+
   require Logger
 
   # Test-only atom guarding `reset_for_test/0` — ONLY compiled in test mix env.
@@ -283,7 +285,9 @@ defmodule Grappa.WSPresence do
     end
   end
 
-  @spec notify_sessions(String.t(), term()) :: :ok
+  @typep ws_event :: {:ws_connected, String.t()} | {:ws_all_disconnected, String.t()}
+
+  @spec notify_sessions(String.t(), ws_event()) :: :ok
   defp notify_sessions(user_name, event) do
     # Match all {:session, {:user, _}, network_id} entries for this user_name.
     # We don't have direct access to user_id here — we'd need to look it up.
@@ -293,7 +297,7 @@ defmodule Grappa.WSPresence do
     :ok =
       Phoenix.PubSub.broadcast(
         Grappa.PubSub,
-        "grappa:ws_presence:#{user_name}",
+        Topic.ws_presence(user_name),
         event
       )
   end

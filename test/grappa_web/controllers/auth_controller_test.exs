@@ -396,15 +396,18 @@ defmodule GrappaWeb.AuthControllerTest do
 
       task =
         Task.async(fn ->
-          Visitors.Login.login(%{
-            nick: "vjt",
-            password: nil,
-            ip: "1.2.3.4",
-            user_agent: "ua",
-            token: nil,
-            captcha_token: nil,
-            client_id: nil
-          })
+          Visitors.Login.login(
+            %{
+              nick: "vjt",
+              password: nil,
+              ip: "1.2.3.4",
+              user_agent: "ua",
+              token: nil,
+              captcha_token: nil,
+              client_id: nil
+            },
+            []
+          )
         end)
 
       :ok = await_handshake(server)
@@ -432,15 +435,18 @@ defmodule GrappaWeb.AuthControllerTest do
 
       task =
         Task.async(fn ->
-          Visitors.Login.login(%{
-            nick: "vjt",
-            password: nil,
-            ip: "1.2.3.4",
-            user_agent: "ua",
-            token: nil,
-            captcha_token: nil,
-            client_id: nil
-          })
+          Visitors.Login.login(
+            %{
+              nick: "vjt",
+              password: nil,
+              ip: "1.2.3.4",
+              user_agent: "ua",
+              token: nil,
+              captcha_token: nil,
+              client_id: nil
+            },
+            []
+          )
         end)
 
       :ok = await_handshake(server)
@@ -601,15 +607,18 @@ defmodule GrappaWeb.AuthControllerTest do
 
       task =
         Task.async(fn ->
-          Visitors.Login.login(%{
-            nick: "vjt",
-            password: nil,
-            ip: "1.2.3.4",
-            user_agent: "ua",
-            token: nil,
-            captcha_token: nil,
-            client_id: nil
-          })
+          Visitors.Login.login(
+            %{
+              nick: "vjt",
+              password: nil,
+              ip: "1.2.3.4",
+              user_agent: "ua",
+              token: nil,
+              captcha_token: nil,
+              client_id: nil
+            },
+            []
+          )
         end)
 
       :ok = await_handshake(server)
