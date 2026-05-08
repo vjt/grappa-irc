@@ -1,5 +1,5 @@
 import { useNavigate } from "@solidjs/router";
-import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { ApiError } from "./lib/api";
 import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
@@ -12,6 +12,71 @@ import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
 // inside a `<Router>` route component, not from a free module.
 
 type CaptchaChallenge = { provider: CaptchaProvider; siteKey: string };
+
+// Codebase audit cic M6 — sub-component captures the challenge prop
+// and runs mount inside `onMount` (after the ref-bound div is in the
+// DOM, guaranteed by Solid's mount lifecycle). Eliminates the
+// createEffect / `<Show>` / module-let `widgetContainer` race where
+// the effect could fire before the `<Show>` rendered the captcha
+// container, leaving `widgetContainer === undefined` and the captcha
+// never mounted. The sub-component's lifetime is bound to its `<Show>`
+// branch — when `captcha()` flips back to null the parent unmounts
+// the component, triggering its `onCleanup` which tears down the
+// widget. No module-let state, no per-effect-run cleanup-token race.
+const CaptchaMount: Component<{
+  challenge: CaptchaChallenge;
+  onSolve: (token: string) => Promise<void>;
+  onMountFailure: (err: unknown) => void;
+}> = (props) => {
+  let widgetContainer: HTMLDivElement | undefined;
+
+  // `local` flags whether onCleanup already fired; if the mount
+  // promise resolves AFTER teardown (rapid mount/unmount via captcha
+  // signal flip-back) the resolved cleanup is invoked immediately.
+  // Same pattern as the pre-fix createEffect-scoped state but now
+  // tied to the sub-component's lifetime, which is shorter and more
+  // predictable than an effect re-run scope.
+  let local = false;
+  let cleanup: (() => void) | undefined;
+
+  onMount(() => {
+    if (widgetContainer === undefined) {
+      // Mount lifecycle guarantees ref is bound before onMount runs;
+      // this branch is unreachable in production. Keep the guard so
+      // a future refactor that breaks the invariant fails loud.
+      props.onMountFailure(new Error("captcha container ref not bound"));
+      return;
+    }
+    mountCaptchaWidget(
+      props.challenge.provider,
+      widgetContainer,
+      props.challenge.siteKey,
+      async (token) => {
+        await props.onSolve(token);
+      },
+    )
+      .then((c2) => {
+        if (local) c2();
+        else cleanup = c2;
+      })
+      .catch(props.onMountFailure);
+  });
+
+  onCleanup(() => {
+    local = true;
+    cleanup?.();
+    cleanup = undefined;
+  });
+
+  return (
+    <div
+      ref={(el) => {
+        widgetContainer = el;
+      }}
+      class="captcha-container"
+    />
+  );
+};
 
 function friendlyMessage(err: ApiError): string {
   switch (err.code) {
@@ -65,8 +130,6 @@ const Login: Component = () => {
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
   const navigate = useNavigate();
 
-  let widgetContainer: HTMLDivElement | undefined;
-
   const handleError = (err: unknown): void => {
     if (err instanceof ApiError) {
       if (err.code === "captcha_required" && isCaptchaInfo(err.info)) {
@@ -86,52 +149,29 @@ const Login: Component = () => {
     }
   };
 
-  createEffect(() => {
-    const c = captcha();
-    if (c === null || widgetContainer === undefined) return;
+  const handleCaptchaSolve = async (token: string): Promise<void> => {
+    setSubmitting(true);
+    try {
+      const pwd = password();
+      await auth.login(identifier(), pwd === "" ? null : pwd, token);
+      navigate("/", { replace: true });
+    } catch (err) {
+      setCaptcha(null);
+      handleError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-    // Per-effect-run cleanup capture. `local` flags whether onCleanup
-    // already fired; if the mount promise resolves AFTER teardown
-    // (rapid mount/unmount or component disposal mid-flight) the
-    // resolved cleanup is invoked immediately. Both pieces of state
-    // are scoped to THIS createEffect invocation so a re-run can't
-    // overwrite the previous one's cleanup before it runs (M-cic-5).
-    let local = false;
-    let cleanup: (() => void) | undefined;
-
-    mountCaptchaWidget(c.provider, widgetContainer, c.siteKey, async (token) => {
-      setSubmitting(true);
-      try {
-        const pwd = password();
-        await auth.login(identifier(), pwd === "" ? null : pwd, token);
-        navigate("/", { replace: true });
-      } catch (err) {
-        setCaptcha(null);
-        handleError(err);
-      } finally {
-        setSubmitting(false);
-      }
-    })
-      .then((c2) => {
-        if (local) c2();
-        else cleanup = c2;
-      })
-      .catch((err: unknown) => {
-        // CDN blocked, network error, or provider script failed to
-        // load — surface a user-actionable toast and re-enable submit
-        // so the user can retry once they unblock the CDN.
-        console.warn("[captcha] mount failed:", err);
-        setCaptcha(null);
-        setError("Captcha unavailable. Disable ad-blocker or try again.");
-        setSubmitting(false);
-      });
-
-    onCleanup(() => {
-      local = true;
-      cleanup?.();
-      cleanup = undefined;
-    });
-  });
+  const handleCaptchaMountFailure = (err: unknown): void => {
+    // CDN blocked, network error, or provider script failed to load —
+    // surface a user-actionable toast and re-enable submit so the user
+    // can retry once they unblock the CDN.
+    console.warn("[captcha] mount failed:", err);
+    setCaptcha(null);
+    setError("Captcha unavailable. Disable ad-blocker or try again.");
+    setSubmitting(false);
+  };
 
   const onSubmit = async (e: Event) => {
     e.preventDefault();
@@ -172,13 +212,14 @@ const Login: Component = () => {
         <button type="submit" disabled={submitting()}>
           Log in
         </button>
-        <Show when={captcha()}>
-          <div
-            ref={(el) => {
-              widgetContainer = el;
-            }}
-            class="captcha-container"
-          />
+        <Show when={captcha()} keyed>
+          {(c) => (
+            <CaptchaMount
+              challenge={c}
+              onSolve={handleCaptchaSolve}
+              onMountFailure={handleCaptchaMountFailure}
+            />
+          )}
         </Show>
         <Show when={error()}>
           {(msg) => (
