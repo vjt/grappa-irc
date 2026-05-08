@@ -164,3 +164,36 @@ export async function joinChannel(
     throw new Error(`joinChannel: unexpected status ${res.status}`);
   }
 }
+
+// PATCH /networks/:slug — T32 connection_state transition. Mirrors
+// `cicchetto/src/lib/api.ts`'s `patchNetwork`. Used by the parked-
+// flow e2e: setting `connection_state: "parked"` triggers
+// `Grappa.Networks.disconnect/2` server-side which terminates the
+// Session.Server, broadcasts `connection_state_changed` over WS,
+// and flips the credential row. Setting `connection_state:
+// "connected"` triggers `Grappa.Networks.connect/1` (lazy spawn at
+// next admission run, but the broadcast happens immediately).
+//
+// Body matches `NetworksController.update/2` action: required
+// `connection_state` ("parked" | "connected"), optional `reason`
+// string. 200 on success.
+export async function patchNetworkConnectionState(
+  token: string,
+  networkSlug: string,
+  body: { connection_state: "parked" | "connected"; reason?: string },
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `patchNetworkConnectionState: ${networkSlug} → ${res.status} ${await res.text()}`,
+    );
+  }
+}

@@ -70,9 +70,27 @@ test("CP15 B6 — /join transitions pending → failed for invite-only channel; 
   // OR channels_changed heartbeat — either path renders the entry).
   // After the 473 lands, the row stays put (failed windows aren't
   // archived) but gets `.sidebar-window-greyed`.
+  //
+  // Codebase review 2026-05-08 CP15-B6 follow-up: pre-fix this asserted
+  // `row count == 1` first, THEN `.sidebar-window-greyed` second. Both
+  // appearance paths (synthetic pending row from `setPending` AND the
+  // typed `join_failed` flip to greyed) raced under a sub-second WS
+  // window — the count assertion would race with the synchronous
+  // `setPending` while the `join_failed` typed event was still in
+  // flight, occasionally landing the row's first render BEFORE the
+  // greyed class was applied. Sibling `cp15-b6-kicked.spec.ts`
+  // exercises the same render path reliably because the kick happens
+  // post-:joined (no sub-second pending overlap).
+  //
+  // Fix: gate on the greyed-row sentinel (presence + class atomic) as
+  // a single combined wait_for. The greyed class is only applied AFTER
+  // the typed `join_failed` event lands, so seeing it is the
+  // "state machine has flipped" signal — strictly stronger than the
+  // standalone count==1 assertion AND naturally implies it.
   const row = sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL);
-  await expect(row).toHaveCount(1, { timeout: 5_000 });
-  await expect(row.locator(".sidebar-window-greyed")).toBeVisible({ timeout: 5_000 });
+  const greyedRow = row.locator(".sidebar-window-greyed");
+  await expect(greyedRow).toBeVisible({ timeout: 10_000 });
+  await expect(row).toHaveCount(1);
 
   // ComposeBox: greyed + "(not joined)" inline label. Greying applies
   // when state ∈ {failed, kicked, parked}.
