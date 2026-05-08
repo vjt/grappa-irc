@@ -8,10 +8,14 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
   tuple carries the loaded subject struct directly (M-web-1):
 
     * **User** — credential lookup against the loaded `%User{}`.
-      Failure modes (unknown slug, no credential for `(user, network)`,
-      missing user row) collapse to the same `{:error, :not_found}` so
-      a probing user cannot distinguish "wrong slug" from "someone
-      else's network." This is the CP10 review S14 oracle close.
+      Failure modes (unknown slug → `:not_found`; slug exists but no
+      credential for `(user, network)` → `:no_credential`; missing user
+      row → `:not_found`) all collapse to a uniform `404` on the wire so
+      a probing user cannot distinguish "wrong slug" from "someone else's
+      network." This is the CP10 review S14 oracle close. The
+      `:no_credential` discriminator is preserved in the operator log
+      (W7) so credential-drift incidents stay greppable, symmetric with
+      the visitor-branch's `:wrong_network`.
     * **Visitor** — slug-equality check against the loaded
       `%Visitor{}`'s `network_slug` (visitors are bound to one network
       at row-creation; W11). A mismatched slug collapses to the same
@@ -53,6 +57,12 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
         # doesn't leak network-existence to a probing attacker.
         # Mirrors `Plugs.Authn`'s `authn_failure` posture for the
         # network-iso boundary.
+        #
+        # W7: the user-branch internal discriminator (`:no_credential`
+        # for "network exists but not bound to this user") is logged so
+        # operators can distinguish credential drift from probing,
+        # symmetric with the visitor-branch's `:wrong_network`. Wire
+        # stays uniform 404 — no oracle leak (CP10 S14 design intent).
         Logger.info("network resolve rejected", reason: reason)
 
         conn
@@ -61,12 +71,21 @@ defmodule GrappaWeb.Plugs.ResolveNetwork do
     end
   end
 
+  @typep resolve_error ::
+           :not_found | :no_credential | :wrong_network
+
+  @spec resolve(GrappaWeb.Subject.t(), String.t()) ::
+          {:ok, Grappa.Networks.Network.t()} | {:error, resolve_error()}
   defp resolve({:user, %User{} = user}, slug) do
-    with {:ok, network} <- Networks.get_network_by_slug(slug),
-         {:ok, _} <- Credentials.get_credential(user, network) do
-      {:ok, network}
-    else
-      {:error, :not_found} -> {:error, :not_found}
+    case Networks.get_network_by_slug(slug) do
+      {:ok, network} ->
+        case Credentials.get_credential(user, network) do
+          {:ok, _} -> {:ok, network}
+          {:error, :not_found} -> {:error, :no_credential}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
     end
   end
 
