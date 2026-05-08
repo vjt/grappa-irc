@@ -928,6 +928,33 @@ defmodule Grappa.IRC.ClientTest do
       lines_after = IRCServer.sent_lines(server)
       assert lines_after == lines_before
     end
+
+    # S10 (audit row irc S10): every send_* helper that returns
+    # {:error, :invalid_line} must emit a Logger.warning carrying the
+    # verb tag + reason so silent rejections are operator-greppable.
+    # The exact message string is structured ("rejected outbound IRC
+    # verb at byte boundary") — we assert the substring + verb tag in
+    # the captured log line.
+    test "send_privmsg rejection emits Logger.warning with verb tag (S10)", %{client: client} do
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\r\nQUIT")
+        end)
+
+      assert log =~ "rejected outbound IRC verb"
+      assert log =~ "verb=privmsg"
+      assert log =~ "reason=invalid_line"
+    end
+
+    test "send_pong empty-token rejection emits Logger.warning (S9+S10)", %{client: client} do
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_line} = Client.send_pong(client, "")
+        end)
+
+      assert log =~ "rejected outbound IRC verb"
+      assert log =~ "verb=pong"
+    end
   end
 
   describe "init/1 non-blocking (C2)" do
