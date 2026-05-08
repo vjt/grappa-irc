@@ -171,6 +171,34 @@ defmodule Grappa.QueryWindowsTest do
     end
   end
 
+  describe "open/4 — FK-violation surface (M6)" do
+    # Pre-M6 the Window changeset omitted `assoc_constraint(:user)` and
+    # `assoc_constraint(:network)`, so a bad FK surfaced as a raw
+    # `Ecto.ConstraintError` exception (Erlang-level reason, no
+    # changeset). Now both constraints are registered so the caller
+    # gets a typed `{:error, %Ecto.Changeset{}}` with a friendly error
+    # on the offending field.
+    test "non-existent user_id returns {:error, changeset} with :user error" do
+      net = network_fixture()
+      bogus_user_id = Ecto.UUID.generate()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               QueryWindows.open(bogus_user_id, net.id, "alice", "ghost-user")
+
+      assert {"does not exist", _} = cs.errors[:user]
+    end
+
+    test "non-existent network_id returns {:error, changeset} with :network error" do
+      user = user_fixture()
+      bogus_network_id = -1
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               QueryWindows.open(user.id, bogus_network_id, "alice", user.name)
+
+      assert {"does not exist", _} = cs.errors[:network]
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # close/4
   # ---------------------------------------------------------------------------

@@ -44,6 +44,16 @@ defmodule Grappa.QueryWindows.Window do
   Builds an insert changeset. All fields are required; no optional
   defaults. The `opened_at` is supplied by the caller (context sets it
   to `DateTime.utc_now()` at insert time) so the changeset stays pure.
+
+  `assoc_constraint(:user)` + `assoc_constraint(:network)` (M6 fix
+  2026-05-08): without these the FK violation surfaces as a raw
+  `Ecto.ConstraintError` exception — Erlang-level reason, no
+  changeset, callers cannot pattern-match. With them the caller
+  gets `{:error, %Ecto.Changeset{}}` with a friendly error on the
+  offending field, mirroring the pattern in
+  `Grappa.Scrollback.Message.changeset/2` and
+  `Grappa.Accounts.Session.changeset/2`. Same shape across every
+  schema with `belongs_to` associations.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(window, attrs) do
@@ -51,5 +61,7 @@ defmodule Grappa.QueryWindows.Window do
     |> cast(attrs, [:user_id, :network_id, :target_nick, :opened_at])
     |> validate_required([:user_id, :network_id, :target_nick, :opened_at])
     |> validate_length(:target_nick, min: 1)
+    |> assoc_constraint(:user)
+    |> assoc_constraint(:network)
   end
 end

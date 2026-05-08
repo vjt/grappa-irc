@@ -90,6 +90,15 @@ defmodule Grappa.Scrollback do
   `:privmsg | :notice | :action | :topic` require non-nil body;
   `:join | :part | :quit | :nick_change | :mode | :kick` accept
   `body: nil` (presence kinds + state changes).
+
+  `:dm_with` is per-kind constrained too (M8 fix 2026-05-08): only
+  `:privmsg` and `:action` may carry a non-nil peer nick. Every
+  other kind MUST omit `:dm_with` (or pass `nil`); a stray peer
+  nick on a presence event surfaces as a typed changeset error
+  rather than silently corrupting the active/archive view-derivation
+  in `list_archive/3` (which uses `COALESCE(dm_with, channel)` to
+  pick the per-window key). Caller-side: `Scrollback.dm_peer/4` is
+  the canonical computer of the value — pass its result directly.
   """
   @spec persist_event(%{
           optional(:user_id) => Ecto.UUID.t(),
@@ -154,12 +163,14 @@ defmodule Grappa.Scrollback do
 
   def dm_peer(_, _, _, _), do: nil
 
+  # `nick_shaped?/1` — true iff `target` is a peer-shaped name (not a
+  # channel sigil, not the synthetic "$server" pseudo-channel).
+  # Derived from `target_kind/1` so the sigil rule is single-sourced
+  # (M7 2026-05-08): the rule changes ONCE in `target_kind/1` and
+  # every consumer (this fn + `dm_eligible?/1` + `list_archive/3`)
+  # tracks it.
   defp nick_shaped?("$server"), do: false
-
-  defp nick_shaped?(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
-    do: false
-
-  defp nick_shaped?(_), do: true
+  defp nick_shaped?(name) when is_binary(name), do: target_kind(name) == :query
 
   @doc """
   Fetches up to `limit` messages for `(subject, network_id, channel)`,
@@ -208,10 +219,12 @@ defmodule Grappa.Scrollback do
   @typedoc """
   CP15 B4 — archive entry shape returned by `list_archive/3`.
 
-  `kind` is derived at query time from the `target` prefix — sigil-led
-  (`#`, `&`, `!`, `+`) → `:channel`, otherwise `:query`. Single
-  predicate (`channel_shaped?/1`) so the rule stays in lockstep with
-  `dm_eligible?/1`.
+  `kind` is derived at query time from the `target` prefix via
+  `target_kind/1` — the canonical sigil-rule classifier (M7
+  2026-05-08). Sigil-led (`#`, `&`, `!`, `+`) → `:channel`,
+  otherwise `:query`. Single source of truth for the predicate;
+  every consumer (this fn + `dm_eligible?/1` + `nick_shaped?/1`)
+  derives from it.
   """
   @type archive_entry :: %{
           target: String.t(),
@@ -263,14 +276,27 @@ defmodule Grappa.Scrollback do
     |> Enum.sort_by(& &1.last_activity, :desc)
   end
 
-  # Channel-shaped sigil ⇒ :channel; everything else ⇒ :query. Mirrors
-  # `dm_eligible?/1`'s sigil set so the active/archive split + the
-  # DM-eligibility predicate stay byte-aligned.
+  @doc """
+  M7 2026-05-08 — canonical sigil-rule classifier for IRC targets.
+
+  Returns `:channel` for sigil-led names (`#`, `&`, `!`, `+`) and
+  `:query` for everything else (peer nicks, the synthetic
+  `$server` pseudo-channel — callers that need to special-case
+  `$server` do so AFTER this classification, never inside it).
+
+  Single source of truth for the sigil predicate. Pre-M7 the rule
+  lived in three separate private functions inside this module
+  (`nick_shaped?/1`, `target_kind/1`, `dm_eligible?/1`), kept in
+  lockstep by convention. Promoting it to a public helper closes
+  the convention-not-contract gap and gives external callers
+  (cic-wire, future Phase 6 IRCv3 listener) a canonical predicate
+  rather than re-encoding the same sigil set independently.
+  """
   @spec target_kind(String.t()) :: :channel | :query
-  defp target_kind(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
+  def target_kind(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
     do: :channel
 
-  defp target_kind(_), do: :query
+  def target_kind(name) when is_binary(name), do: :query
 
   # CP14 B3 — channel-vs-DM dispatch.
   #
@@ -300,12 +326,13 @@ defmodule Grappa.Scrollback do
     end
   end
 
+  # `dm_eligible?/1` — true iff the target may carry DM rows.
+  # Derived from `target_kind/1` so the sigil rule is single-sourced
+  # (M7 2026-05-08): byte-equivalent to pre-M7 behaviour. The
+  # `$server` carve-out stays explicit (target_kind classifies it
+  # :query, but it can never carry DM history by intent doc).
   defp dm_eligible?("$server"), do: false
-
-  defp dm_eligible?(<<sigil::utf8, _::binary>>) when sigil in [?#, ?&, ?!, ?+],
-    do: false
-
-  defp dm_eligible?(_), do: true
+  defp dm_eligible?(name) when is_binary(name), do: target_kind(name) == :query
 
   defp subject_where(query, {:user, user_id}) when is_binary(user_id),
     do: where(query, [m], m.user_id == ^user_id)

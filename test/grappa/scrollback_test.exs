@@ -309,6 +309,65 @@ defmodule Grappa.ScrollbackTest do
       assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
       assert "can't be blank" in errors_on(cs).body
     end
+
+    # M8 fix 2026-05-08: per-kind dm_with validation. Pre-M8 the @spec
+    # declared `optional(:dm_with) => String.t() | nil` but enforcement
+    # of "dm_with is only meaningful on :privmsg / :action rows" was
+    # informal — the schema cast it for ANY kind. A caller bug
+    # (forgetting to nil it on a :join row, or setting it on a
+    # presence event) silently persisted a non-nil dm_with on a
+    # non-DM row, contaminating the active/archive view-derivation
+    # rule. Per-kind validation pins the contract in the changeset.
+    test "rejects non-nil :dm_with on a non-DM kind (:join)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :join,
+        sender: "alice",
+        body: nil,
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
+      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+    end
+
+    test "rejects non-nil :dm_with on a non-DM kind (:topic)", %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :topic,
+        sender: "vjt",
+        body: "the new topic",
+        meta: %{},
+        dm_with: "vjt-peer"
+      }
+
+      assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
+      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+    end
+
+    test "accepts :dm_with = nil on any non-DM kind (no false positive)",
+         %{user: user, network: net} do
+      attrs = %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#sniffo",
+        server_time: 0,
+        kind: :join,
+        sender: "alice",
+        body: nil,
+        meta: %{},
+        dm_with: nil
+      }
+
+      assert {:ok, %Message{kind: :join, dm_with: nil}} = Scrollback.persist_event(attrs)
+    end
   end
 
   describe "extended kinds + nullable body + meta (Task 8 schema future-proofing)" do
@@ -792,6 +851,44 @@ defmodule Grappa.ScrollbackTest do
       preloaded = Repo.preload(message, :network)
       assert %Network{slug: slug} = preloaded.network
       assert slug == net.slug
+    end
+  end
+
+  # M7 fix 2026-05-08: public target_kind/1 helper. Pre-M7 the rule
+  # ("sigil-led target ⇒ :channel; everything else ⇒ :query") was
+  # encoded inside three separate private functions
+  # (`nick_shaped?/1`, `target_kind/1`, `dm_eligible?/1`), kept in
+  # lockstep by convention. Promoting it to a public helper closes
+  # the convention-not-contract gap and gives external callers
+  # (cic-wire, future Phase 6 listener) a canonical predicate.
+  describe "target_kind/1 (M7)" do
+    test "returns :channel for #-prefixed targets" do
+      assert Scrollback.target_kind("#sniffo") == :channel
+    end
+
+    test "returns :channel for &-prefixed targets" do
+      assert Scrollback.target_kind("&local") == :channel
+    end
+
+    test "returns :channel for !-prefixed targets" do
+      assert Scrollback.target_kind("!safe") == :channel
+    end
+
+    test "returns :channel for +-prefixed targets" do
+      assert Scrollback.target_kind("+modeless") == :channel
+    end
+
+    test "returns :query for nick-shaped targets" do
+      assert Scrollback.target_kind("vjt") == :query
+    end
+
+    test "returns :query for $server (synthetic) — server-window is NOT a channel-typed sigil" do
+      # The `$server` window is server-internal scrollback; it has no
+      # channel sigil, so the predicate classifies it as :query by
+      # construction. Callers that need to special-case $server (e.g.
+      # `list_archive/3`'s exclusion, `fetch/5`'s dm_eligible? branch)
+      # do so AFTER this classification, not via target_kind itself.
+      assert Scrollback.target_kind("$server") == :query
     end
   end
 
