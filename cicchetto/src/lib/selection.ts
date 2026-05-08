@@ -1,7 +1,7 @@
-import { createEffect, createRoot, createSignal, on, untrack } from "solid-js";
-import { token } from "./auth";
+import { createEffect, createSignal, on, untrack } from "solid-js";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
+import { identityScopedStore } from "./identityScopedStore";
 import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import type { WindowKind } from "./windowKinds";
@@ -22,10 +22,10 @@ import type { WindowKind } from "./windowKinds";
 //     channel AND fires `scrollback.loadInitialScrollback` to backfill
 //     history (the load-once gate lives in scrollback.ts).
 //
-// Identity-scoped cleanup mirrors `scrollback.ts`'s on(token) arm:
-// logout/rotation clears `selectedChannel` + `unreadCounts`. The
-// `prev != null && t !== prev` guard filters the initial run AND
-// cold-start login as no-ops.
+// Identity-scoped via identityScopedStore (dup-A3 close): four resets
+// registered, one per signal. The two business createEffects (selection
+// transition cursor-advance + isDocumentVisible visibility transitions)
+// stay inline — orthogonal to identity rotation.
 //
 // C4.0: `SelectedChannel` gains a `kind: WindowKind` discriminator,
 // replacing the band-aid `channelName !== ":server"` literal used in
@@ -51,22 +51,16 @@ export type SelectedChannel = {
   kind: WindowKind;
 } | null;
 
-const exports = createRoot(() => {
+const exports = identityScopedStore((onIdentityChange) => {
   const [unreadCounts, setUnreadCounts] = createSignal<Record<ChannelKey, number>>({});
   const [messagesUnread, setMessagesUnread] = createSignal<Record<ChannelKey, number>>({});
   const [eventsUnread, setEventsUnread] = createSignal<Record<ChannelKey, number>>({});
   const [selectedChannel, setSelectedChannel] = createSignal<SelectedChannel>(null);
 
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        setUnreadCounts({});
-        setMessagesUnread({});
-        setEventsUnread({});
-        setSelectedChannel(null);
-      }
-    }),
-  );
+  onIdentityChange(() => setUnreadCounts({}));
+  onIdentityChange(() => setMessagesUnread({}));
+  onIdentityChange(() => setEventsUnread({}));
+  onIdentityChange(() => setSelectedChannel(null));
 
   const bumpUnread = (key: ChannelKey) => {
     setUnreadCounts((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
