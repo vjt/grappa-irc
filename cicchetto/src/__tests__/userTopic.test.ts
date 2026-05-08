@@ -68,7 +68,15 @@ describe("userTopic", () => {
 
   it("does NOT call refetchChannels on unrelated event payloads", async () => {
     const networks = await import("../lib/networks");
-    channelMock.fireEvent({ kind: "message", body: "hi" });
+    // CP16 B5: payloads are narrowed via WireUserEvent discriminated
+    // union; assertNever fires loudly on an unknown kind. Pick another
+    // valid arm (away_confirmed) to verify the dispatch is exclusive —
+    // it must not collateral-trigger refetchChannels.
+    channelMock.fireEvent({
+      kind: "away_confirmed",
+      network: "azzurra",
+      state: "away",
+    });
     expect(networks.refetchChannels).not.toHaveBeenCalled();
   });
 

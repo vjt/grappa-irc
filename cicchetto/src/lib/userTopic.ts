@@ -1,4 +1,5 @@
 import { createEffect, createRoot, untrack } from "solid-js";
+import { assertNever, type QueryWindowEntry, type WireUserEvent } from "./api";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setMentionsBundle } from "./mentionsWindow";
@@ -25,17 +26,16 @@ import { joinUser } from "./socket";
 // the regular per-channel topic (handled by subscribe.ts), so they
 // flow through the same pipeline as PRIVMSG/NOTICE.
 //
+// CP16 B5: payload typed as `WireUserEvent` discriminated union; the
+// dispatch switch ends with `assertNever(payload)` so adding a new
+// server-side event kind without a handler arm fails at `tsc` time.
+//
 // Identity-scoped: re-evaluates when `user()` resolves under a fresh
 // bearer.
 
-// Wire shape from the server — integer keys come over as string keys in JSON.
-type WireWindow = { target_nick: string; opened_at: string };
-type WireWindowsMap = Record<string, WireWindow[]>;
-
-function parseWindowsMap(raw: unknown): Record<number, QueryWindow[]> {
-  if (typeof raw !== "object" || raw === null) return {};
+function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number, QueryWindow[]> {
   const result: Record<number, QueryWindow[]> = {};
-  for (const [key, val] of Object.entries(raw as WireWindowsMap)) {
+  for (const [key, val] of Object.entries(raw)) {
     const networkId = Number(key);
     if (!Number.isFinite(networkId) || !Array.isArray(val)) continue;
     result[networkId] = val.map((w) => ({
@@ -69,67 +69,80 @@ createRoot(() => {
     joinedFor = name;
 
     const channel = joinUser(name);
-    channel.on("event", (payload: { kind?: string; [k: string]: unknown }) => {
-      if (payload.kind === "channels_changed") {
-        refetchChannels();
-      } else if (payload.kind === "query_windows_list") {
-        setQueryWindowsByNetwork(parseWindowsMap(payload.windows));
-      } else if (payload.kind === "mentions_bundle") {
-        // C8.1 — back-from-away mentions window. Wire the bundle into the
-        // mentionsWindow store and auto-focus the mentions pseudo-window so
-        // the user sees the aggregation immediately on return.
-        // Focus-rule: this IS a user-action-driven event (returning from away)
-        // so auto-focus is appropriate here (unlike DM auto-open).
-        const networkSlug = payload.network as string;
-        const bundle = {
-          network_slug: networkSlug,
-          away_started_at: payload.away_started_at as string,
-          away_ended_at: payload.away_ended_at as string,
-          away_reason: (payload.away_reason as string | null) ?? null,
-          messages: payload.messages as {
-            server_time: number;
-            channel: string;
-            sender_nick: string;
-            body: string | null;
-            kind: string;
-          }[],
-        };
-        setMentionsBundle(networkSlug, bundle);
-        // Auto-focus the mentions pseudo-window (channelName="" for pseudo-windows).
-        const currentSel = untrack(selectedChannel);
-        if (
-          !currentSel ||
-          currentSel.networkSlug !== networkSlug ||
-          currentSel.kind !== "mentions"
-        ) {
-          setSelectedChannel({ networkSlug, channelName: "", kind: "mentions" });
+    channel.on("event", (raw: unknown) => {
+      const payload = raw as WireUserEvent;
+      switch (payload.kind) {
+        case "channels_changed":
+          refetchChannels();
+          return;
+
+        case "query_windows_list":
+          setQueryWindowsByNetwork(parseWindowsMap(payload.windows));
+          return;
+
+        case "mentions_bundle": {
+          // C8.1 — back-from-away mentions window. Wire the bundle
+          // into the mentionsWindow store and auto-focus the mentions
+          // pseudo-window so the user sees the aggregation immediately
+          // on return. Focus-rule: this IS a user-action-driven event
+          // (returning from away) so auto-focus is appropriate here
+          // (unlike DM auto-open).
+          const bundle = {
+            network_slug: payload.network,
+            away_started_at: payload.away_started_at,
+            away_ended_at: payload.away_ended_at,
+            away_reason: payload.away_reason,
+            messages: payload.messages,
+          };
+          setMentionsBundle(payload.network, bundle);
+          const currentSel = untrack(selectedChannel);
+          if (
+            !currentSel ||
+            currentSel.networkSlug !== payload.network ||
+            currentSel.kind !== "mentions"
+          ) {
+            setSelectedChannel({
+              networkSlug: payload.network,
+              channelName: "",
+              kind: "mentions",
+            });
+          }
+          return;
         }
-      } else if (payload.kind === "away_confirmed") {
-        // C8.3 — away visual indicator. Server broadcasts away_confirmed
-        // with state: "away" | "present" on both set and cancel paths.
-        // Update the awayByNetwork signal so the Sidebar can show [away].
-        const networkSlug = payload.network as string;
-        setAwayState(networkSlug, (payload.state as string) === "away");
-      } else if (payload.kind === "own_nick_changed") {
-        // BUG1-FIX: the live IRC nick may differ from the credential's
-        // configured nick after NickServ ghost recovery or an explicit /nick.
-        // Patch the in-memory networks list so the DM-listener loop and the
-        // query-window own-nick skip see the correct nick immediately — no
-        // REST round-trip needed. The `joined` set deduplication in
-        // subscribe.ts means the DM-listener createEffect will re-run and
-        // subscribe to the new own-nick topic on the next tick.
-        const networkId = payload.network_id as number;
-        const nick = payload.nick as string;
-        mutateNetworkNick(networkId, nick);
-      } else if (payload.kind === "connection_state_changed") {
-        // Codebase review 2026-05-08 cross-infra H1: T32
-        // disconnect/connect/mark_failed transitions emit this event
-        // on the user-level topic. Refetch /networks so the UI sees
-        // the updated `connection_state` / `connection_state_reason` /
-        // `connection_state_changed_at` fields immediately on the
-        // initiating tab AND on any sibling tab logged in to the
-        // same account.
-        refetchNetworks();
+
+        case "away_confirmed":
+          // C8.3 — away visual indicator. Server broadcasts
+          // away_confirmed with state: "away" | "present" on both set
+          // and cancel paths. Update the awayByNetwork signal so the
+          // Sidebar can show [away].
+          setAwayState(payload.network, payload.state === "away");
+          return;
+
+        case "own_nick_changed":
+          // BUG1-FIX: the live IRC nick may differ from the credential's
+          // configured nick after NickServ ghost recovery or an explicit
+          // /nick. Patch the in-memory networks list so the DM-listener
+          // loop and the query-window own-nick skip see the correct
+          // nick immediately — no REST round-trip needed. The `joined`
+          // set deduplication in subscribe.ts means the DM-listener
+          // createEffect will re-run and subscribe to the new own-nick
+          // topic on the next tick.
+          mutateNetworkNick(payload.network_id, payload.nick);
+          return;
+
+        case "connection_state_changed":
+          // Codebase review 2026-05-08 cross-infra H1: T32
+          // disconnect/connect/mark_failed transitions emit this event
+          // on the user-level topic. Refetch /networks so the UI sees
+          // the updated `connection_state` / `connection_state_reason` /
+          // `connection_state_changed_at` fields immediately on the
+          // initiating tab AND on any sibling tab logged in to the
+          // same account.
+          refetchNetworks();
+          return;
+
+        default:
+          assertNever(payload);
       }
     });
   });
