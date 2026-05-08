@@ -1995,6 +1995,16 @@ defmodule Grappa.Session.Server do
   # — chicken-and-egg if we used the channel topic. cic's userTopic.ts
   # createRoot effect joins `Topic.user/1` from boot, so delivery is
   # guaranteed to every connected tab.
+  #
+  # Idempotency rule: a JOIN issued for a channel ALREADY in `:joined`
+  # is a no-op state transition. Skip the `:pending` mutation + the
+  # broadcast in that case so connected cic tabs don't briefly flip
+  # from `:joined` back to `:pending` (the visual flicker would
+  # mid-render the MembersPane "not joined" fallback). The in-flight
+  # entry is still recorded — a downstream failure numeric (e.g. 443
+  # ERR_USERONCHANNEL) still needs correlation against the in-flight
+  # window. The cic-side subscriber is `setPending`-driven; if the
+  # broadcast doesn't fire, no spurious state change reaches cic.
   @in_flight_join_ttl_ms 30_000
 
   @spec record_in_flight_join(state(), String.t()) :: state()
@@ -2009,18 +2019,26 @@ defmodule Grappa.Session.Server do
 
     key = String.downcase(channel)
     entry = {channel, now_ms, nil}
+    in_flight_joins = Map.put(swept, key, entry)
 
-    :ok =
-      Grappa.PubSub.broadcast_event(
-        Topic.user(state.subject_label),
-        SessionWire.window_pending(state.network_slug, channel)
-      )
+    case Map.get(state.window_states, channel) do
+      :joined ->
+        # Idempotent re-JOIN: don't downgrade state + don't broadcast.
+        %{state | in_flight_joins: in_flight_joins}
 
-    %{
-      state
-      | in_flight_joins: Map.put(swept, key, entry),
-        window_states: Map.put(state.window_states, channel, :pending)
-    }
+      _ ->
+        :ok =
+          Grappa.PubSub.broadcast_event(
+            Topic.user(state.subject_label),
+            SessionWire.window_pending(state.network_slug, channel)
+          )
+
+        %{
+          state
+          | in_flight_joins: in_flight_joins,
+            window_states: Map.put(state.window_states, channel, :pending)
+        }
+    end
   end
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,

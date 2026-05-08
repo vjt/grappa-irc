@@ -1062,6 +1062,74 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "idempotent re-JOIN of an already-:joined channel does NOT downgrade state or broadcast" do
+      # CP17 — a JOIN issued for a channel already in `:joined` is a
+      # no-op state transition. Without the idempotency guard, the
+      # second send_join would write `:pending` to window_states (over
+      # the existing :joined) and broadcast window_pending — connected
+      # cic tabs would briefly flip from :joined back to :pending
+      # before the next self-JOIN echo (which bahamut may not even
+      # send for a re-JOIN to a current channel) restores :joined.
+      # The MembersPane "not joined" fallback would render mid-flicker.
+      #
+      # The in-flight entry IS still recorded — a downstream failure
+      # numeric (e.g. 443 ERR_USERONCHANNEL) needs correlation against
+      # the in-flight window. Skipping just the state mutation +
+      # broadcast keeps cic stable while preserving server-side
+      # tracking.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"))
+
+      # Drain the first window_pending broadcast (the legitimate one).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: "window_pending", channel: "#sniffo"}
+                     },
+                     1_000
+
+      # Feed the self-JOIN echo so window_states[#sniffo] = :joined.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#sniffo\r\n")
+
+      # Sync via PING/PONG before the second send_join.
+      IRCServer.feed(server, "PING :flush1\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush1\r\n"))
+
+      state = :sys.get_state(pid)
+      assert state.window_states["#sniffo"] == :joined
+
+      # Second send_join — channel already :joined; must NOT broadcast
+      # window_pending (cic would flicker) and must NOT downgrade state.
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, fn line ->
+          # Two JOINs on the wire: drain the second one.
+          line == "JOIN #sniffo\r\n"
+        end)
+
+      IRCServer.feed(server, "PING :flush2\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"))
+
+      state2 = :sys.get_state(pid)
+      assert state2.window_states["#sniffo"] == :joined
+
+      # In-flight entry was still recorded (failure-numeric correlation).
+      assert {"#sniffo", _, nil} = Map.fetch!(state2.in_flight_joins, "#sniffo")
+
+      # Crucially: NO second window_pending broadcast.
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "window_pending"}}, 200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "001 autojoin loop inserts one in_flight_joins entry per channel" do
       # The 001 RPL_WELCOME handler calls Client.send_join/2 for each
       # autojoin channel; B2 threads state mutation through the loop so
