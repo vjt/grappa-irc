@@ -208,6 +208,22 @@ defmodule Grappa.IRC.Parser do
   through the parser; this entry point exists for tests + future
   external consumers (e.g. a Phase 6 listener replaying tag values).
 
+  ## Input contract — UTF-8 only (S6, audit row irc S6)
+
+  Callers MUST pass a UTF-8-valid binary. The internal recursion uses
+  `c::utf8` codepoint matching after the backslash escape arms (so a
+  raw `\\` followed by an invalid UTF-8 start byte would otherwise
+  raise `FunctionClauseError`). The production parser path
+  (`parse/1`) converts inbound bytes via `to_utf8/1` before reaching
+  `unescape`, so the invariant always holds upstream — the guard is
+  defensive belt-and-braces for external callers (tests, the planned
+  Phase 6 listener facade) who may not have run the conversion yet.
+
+  Input that fails `String.valid?/1` is returned UNCHANGED rather
+  than raising or truncating — the dropped-byte alternative would
+  silently lose data; preserving the input lets the caller decide
+  (re-encode + retry, or surface the malformed bytes upstream).
+
   ## Documented escape sequences (IRCv3 §3.3)
 
       iex> Grappa.IRC.Parser.unescape("a\\\\:b")
@@ -240,9 +256,22 @@ defmodule Grappa.IRC.Parser do
 
       iex> Grappa.IRC.Parser.unescape("foo\\\\")
       "foo"
+
+  ## S6 — UTF-8 invariant guard
+
+  Non-UTF-8 input is returned unchanged (no escape pass run) — the
+  alternative would be a `FunctionClauseError` raise on a bare `\\`
+  followed by an invalid UTF-8 start byte (e.g. `0xFF`).
+
+      iex> Grappa.IRC.Parser.unescape(<<"\\\\", 0xFF>>)
+      <<92, 255>>
   """
   @spec unescape(binary()) :: binary()
-  def unescape(value) when is_binary(value), do: do_unescape(value, <<>>)
+  def unescape(value) when is_binary(value) do
+    if String.valid?(value),
+      do: do_unescape(value, <<>>),
+      else: value
+  end
 
   defp do_unescape(<<>>, acc), do: acc
   defp do_unescape(<<"\\:", rest::binary>>, acc), do: do_unescape(rest, <<acc::binary, ?;>>)
