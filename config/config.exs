@@ -80,7 +80,16 @@ config :grappa, GrappaWeb.Endpoint,
     formats: [json: GrappaWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: Grappa.PubSub
+  pubsub_server: Grappa.PubSub,
+  # codebase audit web W10 + cross-infra L7 — must be defined at every
+  # compile env (read by `Application.compile_env!/2` at lib/grappa_web/
+  # endpoint.ex's @session_options module-attribute eval). dev.exs +
+  # test.exs override with env-specific values; prod build picks up
+  # this safe placeholder, then runtime.exs overrides at boot from
+  # SECRET_SIGNING_SALT (raise on missing). Never load-bearing in
+  # prod — runtime.exs always wins; this is purely a compile-time
+  # default so the release builder doesn't need the prod secret.
+  session_signing_salt: "build-time-placeholder-overridden-by-runtime-exs"
 
 config :phoenix, :json_library, Jason
 
