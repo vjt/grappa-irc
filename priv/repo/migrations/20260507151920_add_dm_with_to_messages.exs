@@ -41,6 +41,38 @@ defmodule Grappa.Repo.Migrations.AddDmWithToMessages do
   is best-effort recovery for historical rows.
 
   Down-migration drops index then column.
+
+  ## M5 — fragility flag (2026-05-08)
+
+  This migration adds `dm_with` as a plain `add :dm_with, :text` so it
+  composes cleanly with the existing table — no recreate needed. The
+  fragility lives downstream: if a FUTURE migration needs to add a
+  CHECK constraint or change a column type on `messages`, sqlite
+  forces a full table-recreate (see
+  `20260504020002_check_constraints_caps_auth_method_messages_kind.exs`'s
+  `recreate_messages_with_check/0` for the established pattern). That
+  recreate snippet was frozen at the 2026-05-04 schema state and does
+  NOT include `dm_with` — copying it verbatim would silently drop the
+  column.
+
+  Any future `messages` recreate MUST include:
+
+    * `"dm_with" TEXT NULL` in the CREATE TABLE block
+    * `dm_with` in both the INSERT and SELECT column lists
+    * `create index(:messages, [:network_id, :dm_with, :server_time])`
+      after the recreate (the index is dropped with the old table)
+
+  The `Grappa.Scrollback.Message` schema's `field :dm_with, :string`
+  declaration would crash the loader if a future recreate dropped
+  the physical column, but only at first-message-fetch time — long
+  after the migration ran. Pin the constraint here so the next
+  author finds it BEFORE they regret it.
+
+  When adding a brand-new column to `messages` in the future, repeat
+  this fragility-flag pattern: append a "future-recreate must
+  include X" note to the new migration's @moduledoc. The pattern
+  scales linearly with the number of post-recreate columns, but
+  doesn't require any new helper module that would itself drift.
   """
   use Ecto.Migration
   import Ecto.Query

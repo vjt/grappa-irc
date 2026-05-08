@@ -311,6 +311,19 @@ defmodule Grappa.Repo.Migrations.CheckConstraintsCapsAuthMethodMessagesKind do
 
   # ---------------------------------------------------------------------------
   # messages
+  #
+  # M5 forward-pointer (added 2026-05-08): the CREATE TABLE block
+  # below is FROZEN at the 2026-05-04 schema state. Subsequent
+  # migrations have added columns to `messages`:
+  #
+  #   * `dm_with TEXT NULL` (20260507151920_add_dm_with_to_messages)
+  #
+  # If you copy this recreate pattern into a new migration, you MUST
+  # bring forward every column added since 2026-05-04 — the recreate
+  # snippet does not auto-track schema additions. See
+  # `20260507151920_add_dm_with_to_messages.exs`'s @moduledoc fragility
+  # flag for the explicit checklist (column declaration + INSERT/SELECT
+  # column lists + index recreation).
   # ---------------------------------------------------------------------------
 
   defp recreate_messages_with_check do
