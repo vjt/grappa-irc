@@ -77,6 +77,8 @@ defmodule Grappa.QueryWindows do
 
   import Ecto.Query
 
+  alias Grappa.Accounts.User
+  alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.QueryWindows.{Window, Wire}
   alias Grappa.Repo
@@ -125,23 +127,16 @@ defmodule Grappa.QueryWindows do
       opened_at: now
     }
 
-    cs = Window.changeset(%Window{}, attrs)
+    cs =
+      %Window{}
+      |> Window.changeset(attrs)
+      |> validate_subject_exists()
 
     result =
-      case Repo.insert(cs,
-             on_conflict: :nothing,
-             conflict_target: {:unsafe_fragment, "(user_id, network_id, lower(target_nick))"}
-           ) do
-        {:ok, %Window{id: nil}} ->
-          # on_conflict: :nothing returns a struct with id=nil on conflict.
-          # Re-select the existing row case-insensitively.
-          fetch_existing(user_id, network_id, target_nick)
-
-        {:ok, window} ->
-          {:ok, window}
-
-        {:error, %Ecto.Changeset{} = failed_cs} ->
-          {:error, failed_cs}
+      if cs.valid? do
+        do_insert(cs, user_id, network_id, target_nick)
+      else
+        {:error, cs}
       end
 
     case result do
@@ -209,6 +204,62 @@ defmodule Grappa.QueryWindows do
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
+
+  @spec do_insert(Ecto.Changeset.t(), Ecto.UUID.t(), integer(), String.t()) ::
+          {:ok, Window.t()} | {:error, Ecto.Changeset.t()}
+  defp do_insert(cs, user_id, network_id, target_nick) do
+    case Repo.insert(cs,
+           on_conflict: :nothing,
+           conflict_target: {:unsafe_fragment, "(user_id, network_id, lower(target_nick))"}
+         ) do
+      {:ok, %Window{id: nil}} ->
+        # on_conflict: :nothing returns a struct with id=nil on conflict.
+        # Re-select the existing row case-insensitively.
+        fetch_existing(user_id, network_id, target_nick)
+
+      {:ok, window} ->
+        {:ok, window}
+
+      {:error, %Ecto.Changeset{} = failed_cs} ->
+        {:error, failed_cs}
+    end
+  end
+
+  # M6 fix 2026-05-08: pre-flight FK existence check converts a missing
+  # user / network into a clean changeset error before the Repo.insert
+  # raises `Ecto.ConstraintError`. Mirrors `Accounts.create_session/4`'s
+  # `validate_subject_exists/1` (S29 H4): `Window.changeset/2`'s
+  # `assoc_constraint(:user)` + `assoc_constraint(:network)` are
+  # forward-compat hooks for engines that surface FK violations by name
+  # (PostgreSQL, MySQL), but `ecto_sqlite3` returns the constraint name
+  # as `nil` so the built-in handler can't match. The pre-flight makes
+  # the changeset error path actually fire under sqlite. There is a
+  # tiny TOCTOU window between the existence check and the insert; a
+  # concurrently-deleted user / network would still trip the DB FK as
+  # a backstop (raw exception path retained as last-resort guard).
+  @spec validate_subject_exists(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_subject_exists(changeset) do
+    changeset
+    |> check_exists(:user_id, User, :user)
+    |> check_exists(:network_id, Network, :network)
+  end
+
+  @spec check_exists(Ecto.Changeset.t(), atom(), module(), atom()) :: Ecto.Changeset.t()
+  defp check_exists(changeset, source_field, schema, error_field) do
+    case Ecto.Changeset.get_change(changeset, source_field) do
+      nil ->
+        changeset
+
+      id ->
+        query = from(row in schema, where: row.id == ^id)
+
+        if Repo.exists?(query) do
+          changeset
+        else
+          Ecto.Changeset.add_error(changeset, error_field, "does not exist")
+        end
+    end
+  end
 
   @spec broadcast_windows_list(Ecto.UUID.t(), String.t()) :: :ok
   defp broadcast_windows_list(user_id, user_name) do
