@@ -544,32 +544,11 @@ defmodule Grappa.Session.Server do
   # Sends `NICK <new>` upstream. No scrollback row written here — the
   # upstream replays the NICK back; EventRouter's NICK handler then
   # reconciles `state.nick` (state.nick == old_nick path) and emits the
-  # per-channel `:nick_change` persist effects.
-  #
-  # S4.3: the origin_window variant updates last_command_window so
-  # 432/433/437 NICK-error numerics route back to the right window.
-  # S4.2: if labeled-response is active, prepend @label= tag to the
-  # NICK line so the numeric response echoes the label back.
-  def handle_call({:send_nick, new_nick, origin_window}, _, state) when is_binary(new_nick) do
-    {label, next_state} = prepare_label(state, origin_window)
-
-    result =
-      if is_nil(label) do
-        Client.send_nick(next_state.client, new_nick)
-      else
-        # labeled-response active: inject tag prefix. Nick validation is skipped
-        # here because the label prefix must wrap the full line; Client.send_line
-        # is the raw path. The Session facade pre-validates the nick before this
-        # handler fires (Identifier.valid_nick? check in Session.send_nick/4).
-        Client.send_line(next_state.client, [label_tag(label), "NICK #{new_nick}\r\n"])
-      end
-
-    case result do
-      :ok -> {:reply, :ok, next_state}
-      {:error, _} = err -> {:reply, err, next_state}
-    end
-  end
-
+  # per-channel `:nick_change` persist effects. Nick validation lives at
+  # the facade boundary (`Session.send_nick/3` calls
+  # `Identifier.safe_line_token?/1` before this handler fires); the
+  # `Client.send_nick/2` byte-boundary gate is the second line of
+  # defense for malformed values that bypass the facade.
   def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
     case Client.send_nick(state.client, new_nick) do
       :ok -> {:reply, :ok, state}
