@@ -153,8 +153,6 @@ defmodule Grappa.Accounts do
   """
   @spec create_session(subject(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, Session.t()} | {:error, Ecto.Changeset.t()}
-  def create_session(subject, ip, user_agent, opts \\ [])
-
   def create_session({:user, user_id}, ip, user_agent, opts) when is_binary(user_id) do
     do_create_session(%{user_id: user_id, ip: ip, user_agent: user_agent}, opts)
   end

@@ -151,7 +151,7 @@ defmodule Grappa.VisitorsTest do
   describe "delete/1" do
     test "removes visitor row + CASCADE wipes accounts_sessions" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua", [])
 
       assert :ok = Visitors.delete(v.id)
       assert is_nil(Repo.get(Visitor, v.id))
@@ -180,7 +180,7 @@ defmodule Grappa.VisitorsTest do
   describe "purge_if_anon/1 (W11 co-terminus delete)" do
     test "anon visitor → row deleted + CASCADE wipes accounts_sessions" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua", [])
 
       assert is_nil(v.password_encrypted)
       assert :ok = Visitors.purge_if_anon(v.id)
@@ -192,7 +192,7 @@ defmodule Grappa.VisitorsTest do
     test "registered visitor → no-op (row preserved)" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
       {:ok, registered} = Visitors.commit_password(v.id, "s3cret")
-      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua")
+      {:ok, session} = Accounts.create_session({:visitor, v.id}, "1.2.3.4", "ua", [])
 
       refute is_nil(registered.password_encrypted)
       assert :ok = Visitors.purge_if_anon(v.id)

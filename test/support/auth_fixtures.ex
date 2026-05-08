@@ -62,7 +62,7 @@ defmodule Grappa.AuthFixtures do
   """
   @spec session_fixture(User.t()) :: Session.t()
   def session_fixture(%User{} = user) do
-    {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
+    {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil, [])
     session
   end
 
@@ -90,7 +90,7 @@ defmodule Grappa.AuthFixtures do
   """
   @spec visitor_session_fixture(Visitor.t()) :: Session.t()
   def visitor_session_fixture(%Visitor{} = visitor) do
-    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil)
+    {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil, [])
     session
   end
 

@@ -22,7 +22,7 @@ defmodule Grappa.Accounts.SessionsTest do
       before = DateTime.utc_now()
 
       assert {:ok, %Session{} = s} =
-               Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
+               Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua", [])
 
       assert s.user_id == user.id
       assert s.ip == "127.0.0.1"
@@ -40,7 +40,7 @@ defmodule Grappa.Accounts.SessionsTest do
     test "accepts nil ip / user_agent (mix-task-driven session has no conn)",
          %{user: user} do
       assert {:ok, %Session{ip: nil, user_agent: nil}} =
-               Accounts.create_session({:user, user.id}, nil, nil)
+               Accounts.create_session({:user, user.id}, nil, nil, [])
     end
 
     # S29 H4: Session was the only schema in the project without a
@@ -55,7 +55,7 @@ defmodule Grappa.Accounts.SessionsTest do
       stale_uuid = Ecto.UUID.generate()
 
       assert {:error, %Ecto.Changeset{} = cs} =
-               Accounts.create_session({:user, stale_uuid}, "127.0.0.1", "test-ua")
+               Accounts.create_session({:user, stale_uuid}, "127.0.0.1", "test-ua", [])
 
       refute cs.valid?
       assert {"does not exist", _} = cs.errors[:user]
@@ -67,7 +67,7 @@ defmodule Grappa.Accounts.SessionsTest do
       visitor = visitor_fixture()
 
       assert {:ok, %Session{} = s} =
-               Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+               Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
       assert s.visitor_id == visitor.id
       assert is_nil(s.user_id)
@@ -79,7 +79,7 @@ defmodule Grappa.Accounts.SessionsTest do
       stale_uuid = Ecto.UUID.generate()
 
       assert {:error, %Ecto.Changeset{} = cs} =
-               Accounts.create_session({:visitor, stale_uuid}, nil, nil)
+               Accounts.create_session({:visitor, stale_uuid}, nil, nil, [])
 
       refute cs.valid?
       assert {"does not exist", _} = cs.errors[:visitor]
@@ -175,7 +175,7 @@ defmodule Grappa.Accounts.SessionsTest do
 
   describe "Session.touch_changeset/2 monotonic last_seen_at (B5.4 L-pers-3)" do
     setup %{user: user} do
-      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
+      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil, [])
       %{session: session}
     end
 
@@ -207,7 +207,7 @@ defmodule Grappa.Accounts.SessionsTest do
 
   describe "authenticate/1" do
     setup %{user: user} do
-      {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
+      {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua", [])
       %{session: session}
     end
 
@@ -271,7 +271,7 @@ defmodule Grappa.Accounts.SessionsTest do
   describe "authenticate/1 visitor-bound sessions" do
     test "returns visitor-bound session with visitor_id, no user_id" do
       visitor = visitor_fixture()
-      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil)
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, nil, nil, [])
 
       assert {:ok, %Session{visitor_id: vid, user_id: nil}} =
                Accounts.authenticate(session.id)
@@ -283,7 +283,7 @@ defmodule Grappa.Accounts.SessionsTest do
   describe "revoke_session/1" do
     test "is idempotent — revoking twice is :ok and the row stays revoked",
          %{user: user} do
-      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil)
+      {:ok, session} = Accounts.create_session({:user, user.id}, nil, nil, [])
 
       assert :ok = Accounts.revoke_session(session.id)
       assert :ok = Accounts.revoke_session(session.id)

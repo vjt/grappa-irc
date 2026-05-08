@@ -254,7 +254,12 @@ defmodule GrappaWeb.AuthController do
 
     with {:ok, user} <- Accounts.get_user_by_credentials(name, password) do
       {:ok, session} =
-        Accounts.create_session({:user, user.id}, format_ip(conn), user_agent(conn))
+        Accounts.create_session(
+          {:user, user.id},
+          format_ip(conn),
+          user_agent(conn),
+          client_id: conn.assigns[:current_client_id]
+        )
 
       conn
       |> put_status(:ok)

@@ -154,7 +154,7 @@ defmodule Grappa.Visitors.LoginTest do
     test "matching password → preempt prior sessions, fresh token, IDENTIFY sent post-001",
          %{server: server, visitor: visitor} do
       # Plant a prior session so we can verify it's revoked post-preempt.
-      {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+      {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
       task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"})) end)
 
@@ -187,7 +187,7 @@ defmodule Grappa.Visitors.LoginTest do
       {network, _} = setup_visitor_network(port)
 
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
-      {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+      {:ok, prior} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
       on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
 
@@ -214,7 +214,7 @@ defmodule Grappa.Visitors.LoginTest do
 
     test "token resolves to a different visitor → {:error, :anon_collision}" do
       {:ok, alice} = Visitors.find_or_provision_anon("alice", "azzurra", "5.6.7.8")
-      {:ok, alice_session} = Accounts.create_session({:visitor, alice.id}, "5.6.7.8", "ua")
+      {:ok, alice_session} = Accounts.create_session({:visitor, alice.id}, "5.6.7.8", "ua", [])
 
       assert {:error, :anon_collision} =
                Login.login(login_input(%{nick: "vjt", token: alice_session.id}))

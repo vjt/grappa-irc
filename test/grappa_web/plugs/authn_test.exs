@@ -23,7 +23,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
         password_hash: "x"
       })
 
-    {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua")
+    {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "test-ua", [])
     %{user: user, session: session}
   end
 
@@ -130,7 +130,7 @@ defmodule GrappaWeb.Plugs.AuthnTest do
   describe "visitor session branch" do
     setup %{conn: conn} do
       visitor = visitor_fixture(nick: "vjt", network_slug: "azzurra")
-      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua")
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
       {:ok, conn: conn, visitor: visitor, session: session}
     end

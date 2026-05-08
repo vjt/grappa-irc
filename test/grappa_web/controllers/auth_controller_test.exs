@@ -124,6 +124,33 @@ defmodule GrappaWeb.AuthControllerTest do
       conn = post(conn, "/auth/login", %{"password" => "x"})
       assert json_response(conn, 400)["error"] == "bad_request"
     end
+
+    # Codebase review 2026-05-08 H3 (Cross-infra): mode1_login was
+    # calling `Accounts.create_session/3` (no opts) so admin user
+    # logins skipped per-(client, network) cap tracking entirely.
+    # The `\\ []` default arg on `Accounts.create_session/4` (M2)
+    # silently accepted the under-arity call. T31 admission control
+    # specifically counts sessions by `(client_id, network_id)`;
+    # admins bypassing the counter is a bypass of the campaign.
+    # The visitor branch threads `current_client_id` correctly
+    # (auth_controller.ex:273); the admin branch must do the same.
+    test "writes X-Grappa-Client-Id to session row for admission counter", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      client_id = "44c2ab8a-cb38-4960-b92a-a7aefb190387"
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-grappa-client-id", client_id)
+        |> post("/auth/login", %{
+          "identifier" => "#{user.name}@example.com",
+          "password" => password
+        })
+
+      body = json_response(conn, 200)
+      session = Repo.get(Session, body["token"])
+      assert session.client_id == client_id
+    end
   end
 
   describe "POST /auth/login (visitor via nick)" do
@@ -298,7 +325,7 @@ defmodule GrappaWeb.AuthControllerTest do
       {network, _} = setup_visitor_network(port)
 
       {:ok, v} = Visitors.find_or_provision_anon("vjt", "azzurra", "5.6.7.8")
-      {:ok, prior} = Accounts.create_session({:visitor, v.id}, "5.6.7.8", "ua")
+      {:ok, prior} = Accounts.create_session({:visitor, v.id}, "5.6.7.8", "ua", [])
 
       conn =
         conn
@@ -448,7 +475,7 @@ defmodule GrappaWeb.AuthControllerTest do
       :ok = await_handshake(server)
       ref = Process.monitor(pid)
 
-      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
+      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil, [])
 
       conn =
         conn
@@ -482,7 +509,7 @@ defmodule GrappaWeb.AuthControllerTest do
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
-      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil)
+      {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil, [])
 
       conn
       |> put_bearer(session.id)
