@@ -1518,11 +1518,6 @@ defmodule Grappa.Session.Server do
   @spec generate_label() :: String.t()
   defp generate_label, do: Ecto.UUID.generate()
 
-  # Formats the IRCv3 message-tag prefix for a label. Returns "" when label is nil.
-  @spec label_tag(String.t() | nil) :: String.t()
-  defp label_tag(nil), do: ""
-  defp label_tag(label) when is_binary(label), do: "@label=#{label} "
-
   # ---------------------------------------------------------------------------
   # NumericRouter state builder
   # ---------------------------------------------------------------------------
