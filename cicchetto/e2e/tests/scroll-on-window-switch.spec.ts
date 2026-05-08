@@ -1,0 +1,277 @@
+// Scroll-on-window-switch — bug fix verification.
+//
+// Reported: opening an empty query window leaves scrollTop=0; switching
+// back to a populated channel keeps the scroll pinned to the top because
+// the underlying `[data-testid="scrollback"]` <div> is reused across
+// `selectedChannel` changes (Solid's `<Show>` without `keyed` preserves
+// the DOM). The pre-fix length-effect in ScrollbackPane.tsx only fires
+// when `messages().length` changes, so re-selecting a previously-loaded
+// channel never re-snaps to the tail.
+//
+// Fix: on every `key()` change in the channel-switch effect, branch on
+// the presence of an unread-marker:
+//   * marker exists → scrollIntoView({ block: "center" }) — same UX as
+//     the length-effect's marker branch (which also moved from "start"
+//     to "center" so a window opened with unreads always centers the
+//     boundary regardless of mount path: fresh selection vs switch-back).
+//   * no marker → snap scrollTop to scrollHeight (tail). Auto-follow
+//     takes over after the first append.
+//
+// ## Two scenarios
+//
+//   Scenario 1 — channel → empty query → channel-back (no marker):
+//     Tall channel, focus → lands at bottom. Open empty query via
+//     `/query <peer-without-history>`, scrollTop=0 (fallback "no
+//     messages yet"). Switch back via sidebar → expect: lands at
+//     bottom again. Pre-fix: pinned at scrollTop=0.
+//
+//   Scenario 2 — channel → another channel-with-unreads (marker centered):
+//     Pre-seed a read cursor for #bofh placing the marker mid-page (25
+//     unreads), open #cicchetto first to flush the focus path, then
+//     switch to #bofh. Marker should land in viewport AND mid-pane,
+//     NOT at the top edge of the viewport (which would be the old
+//     `block: "start"` behavior). Geometry assertion: distance from
+//     marker top to viewport top is between 25% and 75% of viewport
+//     height, the canonical "center" band.
+//
+// ## Why DB-seeded scrollback (matches cp14-b1)
+//
+// 200 rows on (vjt, bahamut-test, #bofh) seeded by `mix
+// grappa.seed_scrollback` so the channel reliably overflows the
+// viewport. See cp14-b1 spec for full rationale (fakelag throttles
+// IRC-driven seeds, DB seed is deterministic + instant).
+//
+// ## Tiny viewport
+//
+// Same 800×300 viewport cp14-b1 uses so the 50-row REST page reliably
+// overflows the scrollback area; without overflow, "lands at bottom"
+// is vacuously true and "marker centered" is unmeasurable.
+
+import { expect, type Page, test } from "@playwright/test";
+import {
+  composeSend,
+  loginAs,
+  scrollbackLines,
+  selectChannel,
+  sidebarWindow,
+} from "../fixtures/cicchettoPage";
+import {
+  AUTOJOIN_CHANNELS,
+  getSeededVjt,
+  NETWORK_NICK,
+  NETWORK_SLUG,
+} from "../fixtures/seedData";
+
+const CHANNEL = AUTOJOIN_CHANNELS[0];
+
+// Mirror of ScrollbackPane.SCROLL_BOTTOM_THRESHOLD_PX = 50. Re-declared
+// here for the same reason as cp14-b1: the const isn't exported; if it
+// changes both sides need to update — test stays in lockstep.
+const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+
+const REST_PAGE_SIZE = 50;
+
+// A peer nick that has NO DM history with vjt — `/query` opens an empty
+// window. Doesn't matter who the peer is; just must not collide with
+// any seeded sender. Using a deliberately-synthetic nick keeps the
+// fixture decoupled from any future seed expansion.
+const EMPTY_QUERY_PEER = "no-dm-peer-bnda3";
+
+async function scrollbackGeometry(
+  page: Page,
+): Promise<{ scrollTop: number; scrollHeight: number; clientHeight: number }> {
+  return await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+    if (!el) throw new Error("scrollback container not found");
+    return {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    };
+  });
+}
+
+// Pre-seed localStorage with a read cursor for `(NETWORK_SLUG, channel)`
+// at the given server_time. Mirror of cp14-b1's helper — same shape:
+// key `rc:<slug>:<channel>`, value = String(server_time). addInitScript
+// places the value BEFORE the SPA's first `getReadCursor` read on
+// module init.
+async function seedCursor(page: Page, channel: string, serverTime: number): Promise<void> {
+  await page.addInitScript(
+    ([slug, ch, t]) => {
+      localStorage.setItem(`rc:${slug}:${ch}`, String(t));
+    },
+    [NETWORK_SLUG, channel, serverTime] as const,
+  );
+}
+
+// Fetch the latest scrollback page via REST. Used in scenario 2 to
+// compute the cursor server_time placing the marker mid-pane. Same
+// shape cp14-b1 uses.
+async function fetchScrollbackPage(
+  token: string,
+  channel: string,
+): Promise<Array<{ id: number; server_time: number; sender: string }>> {
+  const url = `http://grappa-test:4000/networks/${encodeURIComponent(
+    NETWORK_SLUG,
+  )}/channels/${encodeURIComponent(channel)}/messages`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new Error(`fetchScrollbackPage: ${response.status} ${await response.text()}`);
+  }
+  return (await response.json()) as Array<{
+    id: number;
+    server_time: number;
+    sender: string;
+  }>;
+}
+
+test.describe("scroll-on-window-switch — re-selecting a window snaps correctly", () => {
+  test.use({ viewport: { width: 800, height: 300 } });
+
+  test("channel → empty query → channel-back: scroll lands at bottom on return", async ({
+    page,
+  }) => {
+    const vjt = getSeededVjt();
+    await loginAs(page, vjt);
+
+    // Step 1 — focus the seeded channel and confirm we landed at the
+    // bottom (the existing length-effect handles fresh focus correctly;
+    // this is the baseline for the bug). cp14-b1 documents this branch.
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    const g1 = await scrollbackGeometry(page);
+    expect(g1.scrollHeight).toBeGreaterThan(g1.clientHeight);
+    await expect
+      .poll(async () => {
+        const cur = await scrollbackGeometry(page);
+        return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+      })
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
+
+    // Step 2 — open an empty query via /query. compose.ts dispatches:
+    //   openQueryWindowState(nid, peer, _) + setSelectedChannel(...)
+    // so the pane re-renders with kind:"query", channelName=peer.
+    // Empty scrollback → "no messages yet" fallback → scrollTop=0.
+    await composeSend(page, `/query ${EMPTY_QUERY_PEER}`);
+
+    // The query window now appears in the sidebar; wait for the focus
+    // to actually flip (the visible scrollback shows the empty fallback).
+    await expect(page.locator(".scrollback-empty")).toBeVisible({ timeout: 5_000 });
+
+    const g2 = await scrollbackGeometry(page);
+    // Empty scrollback contains only the "no messages yet" placeholder
+    // — scrollHeight ≈ clientHeight, scrollTop=0.
+    expect(g2.scrollTop).toBe(0);
+
+    // Step 3 — switch back to the channel via the sidebar. THIS is the
+    // bug-under-fix: pre-fix the length-effect doesn't fire (length
+    // unchanged from last time we visited this channel), and the bare
+    // <div> ref keeps scrollTop=0 from the query window's render. The
+    // user sees the channel pinned to the top of its history.
+    await sidebarWindow(page, NETWORK_SLUG, CHANNEL).locator(".sidebar-window-btn").click();
+
+    // Wait for the channel scrollback to mount (rows reappear).
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    // Contract: scroll position is at (or within threshold of) the
+    // bottom on re-selection. Pre-fix this fails — scrollTop stays at
+    // 0 (or whatever value the query left behind).
+    await expect
+      .poll(
+        async () => {
+          const cur = await scrollbackGeometry(page);
+          return cur.scrollHeight - cur.scrollTop - cur.clientHeight;
+        },
+        { timeout: 5_000 },
+      )
+      .toBeLessThanOrEqual(SCROLL_BOTTOM_THRESHOLD_PX);
+  });
+
+  test("fresh focus into channel-with-unreads: marker centered, NOT pinned to top", async ({
+    page,
+  }) => {
+    const vjt = getSeededVjt();
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+
+    // Pre-seed a cursor 25 rows from the tail of #bofh so the marker
+    // injection points mid-page. Same shape cp14-b1 scenario 2 uses.
+    // cp14-b1's own assertion is `toBeInViewport()` — agnostic to start
+    // vs center placement. THIS spec pins the stronger contract: the
+    // marker is CENTERED, not pinned to the top edge. Pre-fix the
+    // length-effect called `scrollIntoView({ block: "start" })` which
+    // landed the marker at the very top of the viewport — usable but
+    // showed no context above it. Post-fix uses `block: "center"` so
+    // the user sees both context-above and unread-below at a glance.
+    const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
+    expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+    const cursorRow = page0[25];
+    if (!cursorRow) throw new Error("seeded page too short for cursor placement");
+    await seedCursor(page, CHANNEL, cursorRow.server_time);
+
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    const marker = page.locator('[data-testid="unread-marker"]');
+    await expect(marker).toHaveCount(1);
+
+    // Sanity: scrollback overflows.
+    const g = await scrollbackGeometry(page);
+    expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
+
+    // Contract assertion 1: marker is in the viewport (cp14-b1 pin).
+    await expect(marker).toBeInViewport();
+
+    // Contract assertion 2: marker is CENTERED, not pinned to the top
+    // edge. Bounding-box probe — distance from marker top to scrollback
+    // container top, normalized by container height. Center band
+    // (0.20..0.80) is wide enough to absorb sub-pixel rounding +
+    // browser-specific anchor offsets but excludes both top-pinned
+    // (block: "start") and bottom-pinned (block: "end") behaviors.
+    // Polled because scrollIntoView's effect lands asynchronously
+    // relative to the layout commit (browser quirk; cp14-b1 polls
+    // similarly for its threshold geometry).
+    await expect
+      .poll(
+        async () => {
+          const probe = await page.evaluate(() => {
+            const list = document.querySelector(
+              '[data-testid="scrollback"]',
+            ) as HTMLDivElement | null;
+            const m = document.querySelector(
+              '[data-testid="unread-marker"]',
+            ) as HTMLElement | null;
+            if (!list || !m) return -1;
+            const lr = list.getBoundingClientRect();
+            const mr = m.getBoundingClientRect();
+            return (mr.top - lr.top) / lr.height;
+          });
+          return probe;
+        },
+        { timeout: 5_000 },
+      )
+      .toBeGreaterThan(0.2);
+
+    const finalRatio = await page.evaluate(() => {
+      const list = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      const m = document.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
+      if (!list || !m) throw new Error("missing list or marker for geometry probe");
+      const lr = list.getBoundingClientRect();
+      const mr = m.getBoundingClientRect();
+      return (mr.top - lr.top) / lr.height;
+    });
+    expect(finalRatio).toBeLessThan(0.8);
+  });
+});
+
