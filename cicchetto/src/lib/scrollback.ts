@@ -1,7 +1,8 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createSignal } from "solid-js";
 import { sendMessage as apiSendMessage, listMessages, type ScrollbackMessage } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { identityScopedStore } from "./identityScopedStore";
 
 // Per-channel scrollback store: the source of truth for messages
 // rendered in `ScrollbackPane`. Module-singleton signal store mirroring
@@ -24,12 +25,11 @@ import { type ChannelKey, channelKey } from "./channelKey";
 // overlap in a small race window — the same row would otherwise
 // appear twice. `id` is monotonic per the schema's auto-increment column.
 //
-// Identity-scoped state: `loadedChannels` and the contents of
-// `scrollbackByChannel` are scoped to the *current* bearer. Logout or
-// rotation MUST clear them so a new identity gets a fresh re-load and
-// no cross-tenant leak (key shape `${slug} ${name}` is user-agnostic).
-// The on(token) cleanup arm registered first, before any verb fires,
-// mirrors the A1 pattern propagated across all post-A4 stores.
+// Identity-scoped state via identityScopedStore (dup-A3 close): four
+// resets registered (3 Set.clear() + the signal flush). The factory
+// preserves the A1 invariant — registration runs before any verb fires,
+// so a logout/rotation between `loadInitialScrollback` start and finish
+// always wins the race.
 //
 // ---------------------------------------------------------------------------
 // CP14 B3 — DM history is now bidirectional server-side.
@@ -51,7 +51,7 @@ import { type ChannelKey, channelKey } from "./channelKey";
 // window) per existing routing, so the noise that motivated the
 // filter is already absent from the DM fetch surface.
 
-const exports = createRoot(() => {
+const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();
   // CP14 B2: per-key in-flight Set guards against scroll-burst fan-out
   // (the user flicks the scrollbar; the browser fires `scroll` 5+ times
@@ -70,22 +70,13 @@ const exports = createRoot(() => {
     Record<ChannelKey, ScrollbackMessage[]>
   >({});
 
-  // Identity-transition cleanup. `prev != null` filters BOTH the
-  // initial run (prev === undefined) and the cold-start login
-  // (prev === null) via the loose-equality `!= null` idiom — both
-  // are no-ops for cleanup. The two transitions that DO need cleanup:
-  //   - logout: prev = "tokA", t = null
-  //   - rotation: prev = "tokA", t = "tokB"
-  createEffect(
-    on(token, (t, prev) => {
-      if (prev != null && t !== prev) {
-        loadedChannels.clear();
-        loadMoreInFlight.clear();
-        loadMoreExhausted.clear();
-        setScrollbackByChannel({});
-      }
-    }),
-  );
+  // Identity-transition cleanup. Four registered resets fired by the
+  // factory's createEffect(on(token, ...)) — three Set.clear() + the
+  // signal flush. Order matches the pre-A3 inline shape.
+  onIdentityChange(() => loadedChannels.clear());
+  onIdentityChange(() => loadMoreInFlight.clear());
+  onIdentityChange(() => loadMoreExhausted.clear());
+  onIdentityChange(() => setScrollbackByChannel({}));
 
   // Insert an incoming message into the per-channel ascending list,
   // deduping by id. REST + WS can overlap: the row inserted by POST
