@@ -15,9 +15,20 @@ vi.mock("../lib/channelKey", () => ({
 }));
 
 let mockWindowState: Record<string, string> = {};
+let mockNetworkConnectionState: Record<string, string | undefined> = {};
 
 vi.mock("../lib/windowState", () => ({
   windowStateByChannel: () => mockWindowState,
+}));
+
+vi.mock("../lib/networks", () => ({
+  networkBySlug: (slug: string) => ({
+    id: 1,
+    slug,
+    inserted_at: "",
+    updated_at: "",
+    connection_state: mockNetworkConnectionState[slug],
+  }),
 }));
 
 import ComposeBox from "../ComposeBox";
@@ -25,6 +36,7 @@ import ComposeBox from "../ComposeBox";
 beforeEach(() => {
   vi.clearAllMocks();
   mockWindowState = {};
+  mockNetworkConnectionState = {};
 });
 
 describe("ComposeBox", () => {
@@ -182,5 +194,53 @@ describe("ComposeBox", () => {
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
     expect(ta.hasAttribute("disabled")).toBe(false);
+  });
+
+  // CP19 T32 parked-window — per-network derivation overlay. Mirrors
+  // the Sidebar derivation: when the network's credential
+  // `connection_state ∈ {parked, failed}`, the compose box is greyed
+  // regardless of the per-window state. Stops a parked network's
+  // selected channel from looking ready-to-send.
+  describe("CP19 T32 — per-network parked/failed derivation overlay", () => {
+    it("renders .compose-box-greyed when network is parked, even if window state is joined", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockWindowState = { "freenode #a": "joined" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+      expect(screen.queryByText(/\(not joined\)/i)).not.toBeNull();
+    });
+
+    it("renders .compose-box-greyed when network is failed, even with no window state entry", () => {
+      mockNetworkConnectionState = { freenode: "failed" };
+      mockWindowState = {};
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+    });
+
+    it("does NOT render .compose-box-greyed when network is connected and window is joined", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockWindowState = { "freenode #a": "joined" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(false);
+    });
+
+    it("greyed when network is connected but per-window state is failed (existing rule preserved)", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockWindowState = { "freenode #a": "failed" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+    });
+
+    it("greyed query window when network is parked (DMs cascade too)", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockWindowState = {};
+      render(() => <ComposeBox networkSlug="freenode" channelName="vjt" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+    });
   });
 });

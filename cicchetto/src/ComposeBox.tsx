@@ -1,6 +1,7 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { networkBySlug } from "./lib/networks";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
@@ -19,6 +20,13 @@ import { windowStateByChannel } from "./lib/windowState";
 // can still type `/join` / `/part`. Query windows (no state entry) and
 // state == "joined" / "pending" render the normal form; pending is the
 // post-click optimistic visual feedback while the JOIN echo is in flight.
+//
+// CP19 T32 parked-window — per-network derivation overlay: when the
+// network's credential `connection_state ∈ {parked, failed}` the
+// compose box is greyed regardless of the per-window state. Mirrors the
+// Sidebar derivation rule so a parked network's selected channel can't
+// silently look ready-to-send. Operator can still type `/connect` to
+// unpark.
 
 export type Props = {
   networkSlug: string;
@@ -26,12 +34,15 @@ export type Props = {
 };
 
 const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
+const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   const greyed = (): boolean => {
+    const networkState = networkBySlug(props.networkSlug)?.connection_state;
+    if (networkState !== undefined && NETWORK_GREYED_STATES.has(networkState)) return true;
     const s = windowStateByChannel()[key()];
     return s !== undefined && NOT_JOINED_STATES.has(s);
   };

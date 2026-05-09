@@ -5,7 +5,7 @@ import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
-import { channelsBySlug, networks } from "./lib/networks";
+import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
@@ -41,8 +41,20 @@ import { windowStateByChannel } from "./lib/windowState";
 //     branch (state transitions pending → joined; greyed class falls
 //     off). The dedup gate skips the synthetic row when the channel
 //     is already in channelsBySlug.
+//
+// CP19 T32 parked-window — per-network derivation overlay:
+//   When the network's credential `connection_state ∈ {parked, failed}`
+//   the network header gets `.sidebar-network-greyed` AND every channel/
+//   query row under it derives as greyed regardless of its individual
+//   `windowStateByChannel` entry. Source of truth is
+//   `networkBySlug[slug].connection_state` (refreshed via the user-topic
+//   `connection_state_changed` event → `refetchNetworks()` arm). Per
+//   CLAUDE.md "Don't duplicate state — derive it" — we don't emit
+//   per-window `:parked` events from `Session.Server.terminate/2`; cic
+//   derives the cascade from the network-level state.
 
 const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
+const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 export type Props = {
   onSelect?: () => void;
@@ -54,9 +66,23 @@ const Sidebar: Component<Props> = (props) => {
     return s !== null && s.networkSlug === slug && s.channelName === name;
   };
 
+  // CP19 T32: network-level greyed when the credential is parked or
+  // failed. Drives both the network header `.sidebar-network-greyed`
+  // class AND the cascading per-channel/per-query overlay in
+  // `isGreyed/2` below.
+  const isNetworkGreyed = (slug: string): boolean => {
+    const state = networkBySlug(slug)?.connection_state;
+    return state !== undefined && NETWORK_GREYED_STATES.has(state);
+  };
+
   const isGreyed = (slug: string, name: string): boolean => {
+    if (isNetworkGreyed(slug)) return true;
     const s = windowStateByChannel()[channelKey(slug, name)];
     return s !== undefined && NOT_JOINED_STATES.has(s);
+  };
+
+  const networkReason = (slug: string): string | undefined => {
+    return networkBySlug(slug)?.connection_state_reason ?? undefined;
   };
 
   // Synthetic sidebar rows: keys with windowState != "joined" whose
@@ -147,8 +173,10 @@ const Sidebar: Component<Props> = (props) => {
     >
       <For each={networks()}>
         {(network) => (
-          <section class="sidebar-network">
-            <h3>
+          <section
+            class={`sidebar-network${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
+          >
+            <h3 title={isNetworkGreyed(network.slug) ? networkReason(network.slug) : undefined}>
               {network.slug}
               {/* C8.3 — away visual indicator. Shows [away] badge when the
                   user is in away state on this network. Driven by the

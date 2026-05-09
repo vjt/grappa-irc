@@ -129,9 +129,16 @@ export function ownNickForNetwork(net: Network, me: MeResponse | null | undefine
   return null;
 }
 
-// Mirror of `Grappa.Networks.Wire.network_json/0`. The integer `id` is
-// the Ecto FK; the `slug` is the topic-vocabulary identifier — every
+// Mirror of `Grappa.Networks.Wire.network_json/0` (visitor subject) +
+// `network_with_nick_json/0` (user subject). The integer `id` is the
+// Ecto FK; the `slug` is the topic-vocabulary identifier — every
 // REST URL takes `:network_id` as the slug, not the integer id.
+//
+// T32 fields (`connection_state`, `connection_state_reason`,
+// `connection_state_changed_at`) surface for user subjects only —
+// visitors have no credential row to transition. Cic derives the
+// per-network + cascading per-channel greyed cascade from
+// `connection_state ∈ {parked, failed}`.
 export type Network = {
   id: number;
   slug: string;
@@ -139,6 +146,13 @@ export type Network = {
   // Populated for user subjects (GET /networks includes it); absent for
   // visitor subjects (visitors have no per-network credential row).
   nick?: string;
+  // T32 connection-state fields. Present for user subjects (sourced
+  // from the per-(user, network) credential row); absent for visitor
+  // subjects (no credential row → no connection_state to surface).
+  // Default for a freshly-bound credential is "connected".
+  connection_state?: CredentialConnectionState | "failed";
+  connection_state_reason?: string | null;
+  connection_state_changed_at?: string | null;
   inserted_at: string;
   updated_at: string;
 };

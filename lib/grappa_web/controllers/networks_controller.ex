@@ -67,12 +67,18 @@ defmodule GrappaWeb.NetworksController do
         # own-nick DM topic — a stale nick silently drops all inbound DMs.
         # Fall back to credential nick when the session is parked/failed.
         # `resolve_network_nick/2` is extracted to keep nesting ≤ 2 (Credo).
-        network_nicks =
+        #
+        # T32 (CP19 parked-window): the credential is also threaded through
+        # so the wire shape can carry the T32 connection-state fields cic
+        # needs to derive the per-network + cascading per-channel greyed
+        # treatment. nick stays the live-vs-configured Session.Server
+        # value; T32 fields come straight off the credential row of record.
+        network_triples =
           Enum.map(credentials, fn cred ->
-            {cred.network, resolve_network_nick(user.id, cred)}
+            {cred.network, resolve_network_nick(user.id, cred), cred}
           end)
 
-        render(conn, :index, networks: {:user, network_nicks})
+        render(conn, :index, networks: {:user, network_triples})
 
       {:visitor, visitor} ->
         networks =
