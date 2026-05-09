@@ -1,5 +1,14 @@
 # Event-Driven Windows — cluster intent
 
+> **Status: SHIPPED 2026-05-07 (CP15 B1–B7 LANDED).** Follow-on
+> consolidation in CP16 (wire-discipline-sweep) + CP17
+> (server-side-pending — the last cic-originated state moved to the
+> server, closing the CLAUDE.md hard-invariant). This document is the
+> historical brainstorm + intent record. Do NOT treat the bucket
+> sequencing below as future work — it's done. See
+> `docs/checkpoints/2026-05-07-cp15.md` for shipped reality and
+> `docs/DESIGN_NOTES.md` 2026-05-07 entry for the architectural pin.
+
 **Status**: brainstorm closed 2026-05-07. Cluster opens after CP14 closes
 (post-B3, post-/clear, post-/start). This file is the survives-/clear
 intent doc; the implementation plan will be a sibling

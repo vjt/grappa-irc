@@ -1,5 +1,10 @@
 # Event-driven windows — implementation plan
 
+> **Status: SHIPPED 2026-05-07 (CP15 B1–B7 LANDED).** Bucket sequence
+> below executed as-planned. Follow-on consolidation in CP16/CP17. This
+> document is the historical TDD-step record. See CP15 for the
+> per-bucket close evidence + commit hashes.
+
 Companion to [`2026-05-07-event-driven-windows.md`](2026-05-07-event-driven-windows.md)
 (intent doc, brainstorm-pinned 2026-05-07). The intent doc is the
 **why** + the **what**; this plan is the **how** — file paths,
