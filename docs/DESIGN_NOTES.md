@@ -2368,6 +2368,97 @@ stronger than cp14-b1's `toBeInViewport()`). Both passed first try
 
 ---
 
+## 2026-05-09 — CP19 T32 parked-window: derive cic cascade from network connection_state
+
+CP15 B6's brief promised a `cp15-b6-parked.spec.ts` was "mechanically
+authorable now" — wrong on the producer side. CP18 flagged the gap;
+CP19 picks it up.
+
+**The verified gap (2026-05-09):** `Networks.disconnect/2` terminates
+`Session.Server` via `DynamicSupervisor.terminate_child/2`. The
+GenServer dies; `state.window_states` evaporates. **No per-channel
+`:parked` event ever fires.** cic receives the user-topic
+`connection_state_changed → :parked` event and updates
+`networkBySlug[slug].connection_state = :parked`, but the per-window
+sidebar rows for channels under that network stay visually normal —
+`windowStateByChannel` still has them as `:joined` (last value before
+the GenServer died). Net: today /disconnect leaves the cic UI looking
+fully connected across every channel under the parked network.
+
+**Two design options weighed in
+[`docs/plans/2026-05-09-t32-parked-window.md`](plans/2026-05-09-t32-parked-window.md):**
+
+- **Q1.A — emit per-window `:parked` from Session.Server `terminate/2`.**
+  Pro: cic's existing `windowStateByChannel` model handles it; symmetric
+  with `:joined`/`:failed`/`:kicked`. Con: `terminate/2` running broadcast
+  logic during shutdown is fragile; per-channel topic goes silent on
+  park (no replay for offline cic).
+- **Q1.B — derive parked from `connection_state == :parked`.** cic reads
+  `networkBySlug[slug].connection_state` first; when ∈ {:parked, :failed},
+  treat every window for that network as visually parked. Zero
+  server-side change; one conditional in the rendering helper, two
+  visual scopes (network header + per-channel rows).
+
+**Decision: Q1.B (derive).** Aligns with the foundation rule "Don't
+duplicate state that already exists — derive it." `connection_state`
+is the single source of truth. cic's per-window rendering becomes a
+function of (window state, network connection state).
+
+The derivation rule, codified:
+```
+window-effective-state(window) =
+  if window.network.connection_state ∈ {:parked, :failed} then greyed
+  else windowStateByChannel[window.key] ?? :joined-implied
+```
+
+`Sidebar.tsx::isGreyed/2` consults `networkBySlug[slug].connection_state`
+FIRST. New `isNetworkGreyed(slug)` drives `.sidebar-network-greyed` on
+the network `<section>`. CSS cascades to `.sidebar-window-btn` via
+co-qualified `.sidebar-network.sidebar-network-greyed li
+.sidebar-window-btn` (specificity (0,2,1) matches the existing base
+rule's; without the co-qualifier biome flags `noDescendingSpecificity`
+AND the override silently loses to the base rule). `ComposeBox.tsx`
+mirrors the same network-derivation overlay.
+
+**Q2 — per-network overlay vs per-channel?** BOTH apply naturally
+under derivation. Network-row gets `.sidebar-network-greyed`; per-
+channel rows under it cascade via the qualified CSS. ONE conditional
+in the rendering helper, not a parallel state map. Per CLAUDE.md
+"lightweight over heavyweight."
+
+**Q3 — wake on `Networks.connect/1` — Bootstrap restart latency vs
+eager spawn?** Resolved by code inspection: `NetworksController.connect/2`
+already does eager spawn via `SpawnOrchestrator` on the same HTTP
+round-trip (no Bootstrap restart needed). The post-`/connect` flow:
+network ungreys immediately on user-topic event; channels ungrey
+once autojoin completes (typically <1s) via existing typed window-state
+events flowing through `subscribe.ts`.
+
+**Wire shape extension.** Cic's `userTopic.ts` already calls
+`refetchNetworks()` on `connection_state_changed` — but the
+`network_with_nick_json` shape didn't carry T32 fields, so the refetch
+returned the same shape and cic had nothing to derive from. CP19
+extends `Wire.network_with_nick_to_json/3` to take the credential as a
+third arg and surfaces `connection_state` + `connection_state_reason`
++ `connection_state_changed_at` on `GET /networks` for user subjects.
+Live-vs-configured nick stays separate (BUG1-FIX
+`resolve_network_nick/2`); T32 fields come straight off the credential
+row of record (DB-persisted user intent, no divergence from runtime).
+
+**Reason rendering.** Network-header `title=` attr (zero-bundle-cost).
+Richer tooltip deferred to a follow-up if vjt wants it.
+
+**E2E coverage.** `cicchetto/e2e/tests/cp15-b6-parked.spec.ts` covers
+JOIN→/disconnect→assert greyed network+rows+ComposeBox + tooltip;
+/connect→assert ungrey network immediately, channels post-autojoin.
+The afterEach reconnect-then-poll cleanup pattern is new: the testnet
+doesn't reset between specs, and a parked credential cascades 18
+downstream failures across m1-m9 + cp15-b6-* without it. The poll
+budget is 30s × 500ms intervals; test timeout bumped to 90s to absorb
+the cleanup wait.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
