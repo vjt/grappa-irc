@@ -313,6 +313,50 @@ body {
   font-weight: bold;
 }
 
+/* CP15 B5 — greyed window-row treatment for failed/kicked/parked
+   channels and DM targets. Italic + dim mirror `.sidebar-channel-name.parted`
+   (the per-channel "you've parted" visual) but apply at the row button
+   level so the whole row dims. CP19 T32 — `.sidebar-network-greyed` on
+   the network header + cascading via the qualified
+   `.sidebar-network.sidebar-network-greyed li .sidebar-window-btn` rule
+   so every channel/query under a parked-or-failed network derives the
+   same dim treatment without duplicating state.
+
+   Specificity note: the cascading rule co-qualifies `.sidebar-network`
+   to match the existing `.sidebar-network li .sidebar-window-btn` base
+   rule's specificity (0,2,1) and stack the greyed class on top —
+   without the co-qualifier biome flags `noDescendingSpecificity` AND
+   the override silently loses to the base rule. */
+.sidebar-window-greyed,
+.sidebar-network.sidebar-network-greyed li .sidebar-window-btn {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.sidebar-network-greyed > h3 {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* CP15 B5 — pending JOIN visual: distinct from greyed (italic + dim is
+   "this isn't live"; pending is "we asked, awaiting upstream echo"). */
+.sidebar-window-pending {
+  opacity: 0.7;
+}
+
+.sidebar-channel-name.pending {
+  font-style: italic;
+}
+
+/* CP15 B5 — compose box greyed when the selected window is in a
+   not-joined state (failed/kicked/parked) or when the network is
+   parked/failed (CP19 T32 cascading derivation). The form stays
+   functional — operator can still type `/join` / `/connect`. */
+.compose-box-greyed textarea {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 0.5rem 1rem;

@@ -51,7 +51,11 @@ defmodule Grappa.Networks.Wire do
 
   @typedoc """
   Wire shape for `GET /networks` when the caller has a `Credential` row —
-  extends `network_json` with `:nick` (the per-network configured IRC nick).
+  extends `network_json` with `:nick` (the per-network configured IRC nick)
+  AND the T32 connection-state fields (`:connection_state`,
+  `:connection_state_reason`, `:connection_state_changed_at`) so cic can
+  derive the per-network + cascading per-channel greyed treatment from a
+  single `GET /networks` payload.
 
   Cicchetto uses `:nick` to identify the own-nick topic (`channel:<nick>`)
   for DM subscription and for the own-nick skip in the query-windows loop.
@@ -59,11 +63,21 @@ defmodule Grappa.Networks.Wire do
   which coincides with query-window targetNick when the operator's account
   name matches a conversation partner's IRC nick — causing the DM handler
   to subscribe to the wrong topic and re-key messages incorrectly.
+
+  T32 fields drive the cic parked-window derivation
+  (`networkBySlug[slug].connection_state ∈ {parked, failed}` ⇒ network
+  header + every channel/query under it render greyed). The user-topic
+  `connection_state_changed` event triggers a `GET /networks` refetch in
+  cic; without these fields surfacing here the refetch returns the same
+  shape and cic can't derive anything.
   """
   @type network_with_nick_json :: %{
           id: integer(),
           slug: String.t(),
           nick: String.t(),
+          connection_state: Credential.connection_state(),
+          connection_state_reason: String.t() | nil,
+          connection_state_changed_at: String.t() | nil,
           inserted_at: String.t(),
           updated_at: String.t()
         }
@@ -157,21 +171,30 @@ defmodule Grappa.Networks.Wire do
   end
 
   @doc """
-  Renders a `Networks.Network` + its credential nick to the extended
-  `network_with_nick_json` shape used by `GET /networks` for user subjects.
+  Renders a `Networks.Network` + the credential's nick + T32
+  connection-state fields to the extended `network_with_nick_json` shape
+  used by `GET /networks` for user subjects.
 
   The caller — `GrappaWeb.NetworksController.index` — already has the
   `Credential` row (from `Credentials.list_credentials_for_user/1`) and
-  passes the network + nick pair. Accepting `nick` explicitly (rather than
-  a `Credential.t()`) keeps this function ignorant of credential shape and
-  avoids another pre-load requirement.
+  passes the network + nick + credential triple. `nick` is accepted
+  separately because it may be the LIVE IRC nick from the running
+  Session.Server (BUG1-FIX: `resolve_network_nick/2`), which can differ
+  from `cred.nick` after NickServ ghost/regain — but the T32 state
+  fields are always credential-row-of-record (DB-persisted user intent),
+  so they come straight off the credential without divergence.
   """
-  @spec network_with_nick_to_json(Network.t(), String.t()) :: network_with_nick_json()
-  def network_with_nick_to_json(%Network{} = n, nick) when is_binary(nick) and nick != "" do
+  @spec network_with_nick_to_json(Network.t(), String.t(), Credential.t()) ::
+          network_with_nick_json()
+  def network_with_nick_to_json(%Network{} = n, nick, %Credential{} = cred)
+      when is_binary(nick) and nick != "" do
     %{
       id: n.id,
       slug: n.slug,
       nick: nick,
+      connection_state: cred.connection_state,
+      connection_state_reason: cred.connection_state_reason,
+      connection_state_changed_at: iso8601_or_nil(cred.connection_state_changed_at),
       inserted_at: DateTime.to_iso8601(n.inserted_at),
       updated_at: DateTime.to_iso8601(n.updated_at)
     }

@@ -17,14 +17,19 @@ defmodule GrappaWeb.NetworksJSON do
   @doc """
   Renders the `:index` action — flat JSON array of network maps.
 
-  Accepts a tagged tuple from the controller: `{:user, [{Network.t(), String.t()}]}`
-  for user subjects (includes per-credential nick) or `{:visitor, [Network.t()]}` for
-  visitor subjects (nick omitted — no credential row).
+  Accepts a tagged tuple from the controller:
+  `{:user, [{Network.t(), String.t(), Credential.t()}]}` for user
+  subjects (includes per-credential nick + T32 connection-state fields)
+  or `{:visitor, [Network.t()]}` for visitor subjects (nick + T32 fields
+  omitted — no credential row).
   """
-  @spec index(%{networks: {:user, [{Network.t(), String.t()}]} | {:visitor, [Network.t()]}}) ::
-          [Wire.network_with_nick_json()] | [Wire.network_json()]
-  def index(%{networks: {:user, network_nicks}}) do
-    Enum.map(network_nicks, fn {network, nick} -> Wire.network_with_nick_to_json(network, nick) end)
+  @spec index(%{
+          networks: {:user, [{Network.t(), String.t(), Credential.t()}]} | {:visitor, [Network.t()]}
+        }) :: [Wire.network_with_nick_json()] | [Wire.network_json()]
+  def index(%{networks: {:user, network_triples}}) do
+    Enum.map(network_triples, fn {network, nick, cred} ->
+      Wire.network_with_nick_to_json(network, nick, cred)
+    end)
   end
 
   def index(%{networks: {:visitor, networks}}) do

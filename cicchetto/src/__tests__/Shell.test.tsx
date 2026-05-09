@@ -36,6 +36,7 @@ vi.mock("../lib/networks", () => ({
     ],
   }),
   user: () => ({ id: "u1", name: "vjt", inserted_at: "x" }),
+  networkBySlug: () => undefined,
 }));
 
 vi.mock("../lib/selection", () => ({

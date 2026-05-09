@@ -1,8 +1,24 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+let mockNetworkConnectionState: Record<string, string | undefined> = {};
+let mockNetworkConnectionReason: Record<string, string | null | undefined> = {};
+
 vi.mock("../lib/networks", () => ({
-  networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
+  networks: () => [
+    {
+      id: 1,
+      slug: "freenode",
+      inserted_at: "",
+      updated_at: "",
+      get connection_state() {
+        return mockNetworkConnectionState.freenode;
+      },
+      get connection_state_reason() {
+        return mockNetworkConnectionReason.freenode;
+      },
+    },
+  ],
   channelsBySlug: () => ({
     freenode: [
       { name: "#italia", joined: true, source: "autojoin" },
@@ -10,6 +26,17 @@ vi.mock("../lib/networks", () => ({
       { name: "#bnc", joined: true, source: "joined" },
     ],
   }),
+  networkBySlug: (slug: string) => {
+    if (slug !== "freenode") return undefined;
+    return {
+      id: 1,
+      slug: "freenode",
+      inserted_at: "",
+      updated_at: "",
+      connection_state: mockNetworkConnectionState.freenode,
+      connection_state_reason: mockNetworkConnectionReason.freenode,
+    };
+  },
 }));
 
 vi.mock("../lib/selection", () => ({
@@ -82,6 +109,8 @@ import Sidebar from "../Sidebar";
 beforeEach(() => {
   vi.clearAllMocks();
   mockWindowState = {};
+  mockNetworkConnectionState = {};
+  mockNetworkConnectionReason = {};
 });
 
 describe("Sidebar", () => {
@@ -359,6 +388,102 @@ describe("Sidebar", () => {
     });
   });
 
+  // CP19 T32 parked-window — per-network derivation overlay. When the
+  // network's credential `connection_state ∈ {parked, failed}`, the
+  // network header gets `.sidebar-network-greyed` AND every channel/
+  // query row under it derives as greyed regardless of its individual
+  // `windowStateByChannel` entry. Source: `networkBySlug[slug]` (refreshed
+  // via the user-topic `connection_state_changed` event arm in
+  // `userTopic.ts`). Per CLAUDE.md "Don't duplicate state — derive it"
+  // — the cascade is one conditional in `isGreyed`, not a parallel state
+  // map. Symmetric on `:failed` (server-side terminal failure).
+  describe("CP19 T32 — per-network parked/failed derivation overlay", () => {
+    it("network header gets .sidebar-network-greyed when connection_state=parked", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = screen.getByText("freenode").closest("section");
+      expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
+    });
+
+    it("network header gets .sidebar-network-greyed when connection_state=failed", () => {
+      mockNetworkConnectionState = { freenode: "failed" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = screen.getByText("freenode").closest("section");
+      expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
+    });
+
+    it("network header does NOT get .sidebar-network-greyed when connection_state=connected", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = screen.getByText("freenode").closest("section");
+      expect(header?.classList.contains("sidebar-network-greyed")).toBe(false);
+    });
+
+    it("channel rows cascade greyed when network is parked, even if window state is joined", () => {
+      // Critical derivation rule: stale `windowStateByChannel` entries
+      // (which retain the pre-park values until the GenServer is dead +
+      // a reconnect re-emits) MUST NOT win over the network-level park.
+      // If they did, /disconnect would leave channels visually live.
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockWindowState = { "freenode #italia": "joined" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("channel rows cascade greyed when network is failed, even with no window state entry", () => {
+      mockNetworkConnectionState = { freenode: "failed" };
+      mockWindowState = {};
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("#italia").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("query rows cascade greyed when network is parked", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const li = screen.getByText("alice").closest("li");
+      const btn = li?.querySelector(".sidebar-window-btn");
+      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    it("does NOT cascade greyed when network is connected (existing per-channel rule still applies)", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockWindowState = { "freenode #italia": "failed" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      // #italia (per-channel failed) stays greyed via the existing rule.
+      const liFailed = screen.getByText("#italia").closest("li");
+      expect(
+        liFailed?.querySelector(".sidebar-window-btn")?.classList.contains("sidebar-window-greyed"),
+      ).toBe(true);
+      // #azzurra (joined per channelsBySlug, no windowState entry) stays
+      // ungreyed — proves the network derivation isn't fired when state
+      // is connected.
+      const liJoined = screen.getByText("#azzurra").closest("li");
+      expect(
+        liJoined?.querySelector(".sidebar-window-btn")?.classList.contains("sidebar-window-greyed"),
+      ).toBe(false);
+    });
+
+    it("network header tooltip carries the connection_state_reason when parked", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockNetworkConnectionReason = { freenode: "testing parked state" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const h3 = screen.getByText("freenode");
+      expect(h3.getAttribute("title")).toBe("testing parked state");
+    });
+
+    it("network header tooltip is absent when connected (no reason to show)", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockNetworkConnectionReason = { freenode: "should not appear" };
+      render(() => <Sidebar onSelect={vi.fn()} />);
+      const h3 = screen.getByText("freenode");
+      expect(h3.getAttribute("title")).toBeNull();
+    });
+  });
+
   // CP15 B6 — synthetic sidebar rows for state ∈ {pending, failed,
   // kicked, parked} when the channel is NOT in channelsBySlug. The
   // intent doc (docs/plans/2026-05-07-event-driven-windows.md, Window
@@ -428,6 +553,7 @@ describe("Sidebar", () => {
         channelsBySlug: () => ({
           freenode: [{ name: "#sniffo", joined: true, source: "joined" }],
         }),
+        networkBySlug: () => undefined,
       }));
       vi.doMock("../lib/selection", () => ({
         selectedChannel: () => null,
@@ -468,6 +594,7 @@ describe("Sidebar", () => {
       vi.doMock("../lib/networks", () => ({
         networks: () => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }],
         channelsBySlug: () => ({ freenode: [] }),
+        networkBySlug: () => undefined,
       }));
       vi.doMock("../lib/selection", () => ({
         selectedChannel: () => null,

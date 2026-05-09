@@ -84,6 +84,55 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert found["nick"] == "irc-grappa"
     end
 
+    # T32 parked-window cluster (CP19): cic derives the per-network +
+    # per-channel greyed cascade from `connection_state`. The user-topic
+    # `connection_state_changed` event triggers a `GET /networks` refetch
+    # in cic (`userTopic.ts` arm); without the T32 fields surfacing here,
+    # cic refetches the same shape and can't derive anything. Default
+    # row state is `:connected` (the bind_credential default), so a
+    # freshly-bound network MUST report `connection_state: "connected"`.
+    test "T32 fields surface in user network listing", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-t32-fields")
+      session = session_fixture(vjt)
+      {net, _} = network_with_server(port: 6672, slug: "azzurra-t32-#{u()}")
+      _ = credential_fixture(vjt, net)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/networks")
+
+      body = json_response(conn, 200)
+      found = Enum.find(body, &(&1["slug"] == net.slug))
+
+      assert found["connection_state"] == "connected"
+      assert Map.has_key?(found, "connection_state_reason")
+      assert Map.has_key?(found, "connection_state_changed_at")
+      assert is_nil(found["connection_state_reason"])
+    end
+
+    test "T32 fields reflect a parked credential post-/disconnect", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-t32-parked")
+      session = session_fixture(vjt)
+      {net, _} = network_with_server(port: 6673, slug: "azzurra-parked-#{u()}")
+      cred = credential_fixture(vjt, net)
+
+      reason = "testing parked state"
+      {:ok, _} = Networks.disconnect(cred, reason)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/networks")
+
+      body = json_response(conn, 200)
+      found = Enum.find(body, &(&1["slug"] == net.slug))
+
+      assert found["connection_state"] == "parked"
+      assert found["connection_state_reason"] == reason
+      assert is_binary(found["connection_state_changed_at"])
+    end
+
     test "returns empty list when user has no bindings", %{conn: conn} do
       vjt = user_fixture(name: "vjt-empty")
       session = session_fixture(vjt)
