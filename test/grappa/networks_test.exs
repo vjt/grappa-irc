@@ -624,6 +624,45 @@ defmodule Grappa.NetworksTest do
 
       assert slug == net.slug
     end
+
+    test "disconnect/2 from :connected emits %Phoenix.Socket.Broadcast{} on the user topic" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "secretpw",
+          auth_method: :auto
+        })
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      reason = "testing parked state"
+      {:ok, parked} = Networks.disconnect(cred, reason)
+      assert parked.connection_state == :parked
+
+      # Symmetric to the connect/1 case: cic's parked-window derivation
+      # (`networkBySlug[slug].connection_state == :parked` ⇒ greyed
+      # cascade) is driven entirely by this user-topic event. If this
+      # broadcast regresses to a raw 2-tuple or stops firing, the
+      # cic-side derivation has nothing to read and /disconnect leaves
+      # the UI looking fully connected (the original CP15 B6 gap).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "connection_state_changed",
+                         from: :connected,
+                         to: :parked,
+                         network_slug: slug,
+                         reason: ^reason
+                       }
+                     },
+                     1_000
+
+      assert slug == net.slug
+    end
   end
 
   describe "unbind_credential/2" do
