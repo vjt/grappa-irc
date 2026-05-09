@@ -2260,6 +2260,114 @@ need design discussion, not a typespec sweep.
 
 ---
 
+## 2026-05-08 — CP18 bnd-A2 close + scroll-on-window-switch
+
+Two clusters this session, neither part of an arc — bnd-A2 was a
+single-target audit-row close (the LAST HIGH OPEN architecture row);
+scroll-on-window-switch was a user-reported bug surfaced at end of
+session.
+
+### bnd-A2 — slug→Network canonical helper
+
+Pre-fix `cicchetto/src/lib/compose.ts` re-derived `network_id` from
+the slash-command's `networkSlug` arg via the literal pattern
+`networks()?.find((n) => n.slug === networkSlug)?.id` — repeated **14
+times** across channel-ops + DM verb handlers. Each call site
+re-implemented the lookup, opening the door to silent divergence
+(different default for missing slug, different fallback behavior).
+
+Resolution: extract canonical helpers in `cicchetto/src/lib/networks.ts`
+backed by a `createMemo` Map keyed on `n.slug`:
+
+- `networkBySlug(slug: string): Network | undefined` — full record
+  lookup (futureproofing — e.g. nick lookup by slug is now free).
+- `networkIdBySlug(slug: string): number | undefined` — id-only
+  convenience over `networkBySlug`.
+
+The memo invalidates whenever the underlying `networks` resource
+updates (post-/connect, post-/disconnect, bearer rotation), so callers
+see new entries without manual cache management. O(1) lookup vs the
+14× O(n) repeated linear scan; n is small (1-7 in practice) so the
+performance delta is irrelevant — the win is single-source-of-truth
+for slug→Network projection.
+
+Three options weighed before committing: (A) pure helper, (B)
+Map-keyed memo + helper [chosen], (C) push `network_id` resolution UP
+into `slashCommands.ts` dispatch [larger scope, deferred]. Option B
+mirrors the cluster #13 M4 (`networkKey` / `decodeChannelKey`) + M7
+(`target_kind/1`) public-helper-promotion pattern. The /quit handler's
+`networks() ?? []` enumeration kept (full-list iter, not slug-keyed —
+out of scope).
+
+Helper signatures take `slug: string` (NOT `string | null`) because
+all 14 call sites hand a guaranteed-string from the
+`submit(_, networkSlug: string, _)` arg. Per CLAUDE.md "Don't add
+error handling for scenarios that can't happen," no nullable widening.
+
+**Apply rule:** when you find a literal pattern repeated 3+ times
+across one file's verb handlers, the right intervention is a canonical
+helper at the data-source module — not a per-call utility, not a
+dispatch-time refactor. Memo-backed Map is the standard shape when the
+projection is over a reactive resource. Mirror cluster #13 M4/M7's
+verb-promotion convention.
+
+**Audit closure:** bnd-A2 LANDED → architecture HIGH OPEN count = 0
+(codebase HIGH count went to 0 in cluster #15). After this commit, all
+remaining 72 OPEN rows are MEDIUM/LOW.
+
+### scroll-on-window-switch — DOM-reuse race in ScrollbackPane
+
+User reported: opening an empty query window left scrollTop=0;
+switching back to a populated channel kept the channel pinned at the
+top.
+
+Root cause: the `[data-testid="scrollback"]` `<div>` is the SAME DOM
+node across `selectedChannel` changes. Solid's `<Show>` in `Shell.tsx`
+is non-keyed, so the element is reused, not rebuilt. Pre-fix the
+length-effect at `ScrollbackPane.tsx:583` only fired when
+`messages().length` changed — re-selecting a previously-loaded channel
+never re-snapped because length was stable. The query window left
+`scrollTop = 0`; the shared `<div>` carried that value into the
+channel render.
+
+Fix: extend the existing on-key effect (which already resets banner +
+markerScrolled) to ALSO snap scroll position. Branch on unread-marker
+presence:
+
+- **marker exists** → `scrollIntoView({ block: "center" })` —
+  user spec is "putting the unread messages more or less in the
+  middle of the screen, and if no unreads then scroll to bottom."
+- **no marker** → snap `scrollTop` to `scrollHeight` (tail).
+  Auto-follow takes over after the first append.
+
+Companion change: the length-effect's marker branch (the OTHER mount
+path, where the REST page lands AFTER focus) ALSO moves
+`block: "start"` → `block: "center"`. Without this, switch-back
+centers the marker but initial-focus pinned it to the top — asymmetric
+UX is worse than no fix at all.
+
+`atBottom` is set to `true` on the no-marker branch (or recomputed via
+the threshold check on the marker branch) so the floating "scroll to
+bottom" button doesn't flash visible mid-switch.
+
+**Apply rule:** when a Solid `<Show>` boundary doesn't use `keyed`,
+the DOM element under the conditional is REUSED across condition
+changes. Per-render-cycle effects keyed on signal IDENTITY (length,
+ref) won't fire on logical-state transitions that don't change those
+signals. Add an explicit effect on the LOGICAL key (channel `key()`)
+so DOM state under the boundary gets reset to the new context's
+expectations. The component's internal signals reset on key change;
+the DOM doesn't unless you tell it to.
+
+Two e2e specs in `cicchetto/e2e/tests/scroll-on-window-switch.spec.ts`
+pin both branches: bug repro (channel → empty query → channel-back,
+asserts distFromBottom ≤ SCROLL_BOTTOM_THRESHOLD_PX) + marker-centered
+geometry (asserts marker top sits in 0.20..0.80 of container height —
+stronger than cp14-b1's `toBeInViewport()`). Both passed first try
+(305ms + 269ms).
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

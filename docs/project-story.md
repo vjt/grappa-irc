@@ -1325,3 +1325,120 @@ integration was hiding" moment. When you build the matrix that
 exercises every state transition end-to-end, the bugs you find
 are not new — they're the ones that the half-coverage matrix had
 been letting through.
+
+
+## S41 — 2026-05-08 — The last HIGH OPEN, and a bug the user found in five seconds
+
+The post-codebase-review remediation arc closed at cluster #15
+(low-omnibus) the previous session — eight fix commits, three
+doc-only stale closes, five audit corrections marking HIGH-stale rows
+as LANDED-STALE. But one row was held back: bnd-A2, the literal
+14-times-repeated `networks()?.find((n) => n.slug === networkSlug)?.id`
+across compose.ts. The cluster-#15 commit message itself called it
+out: "needs own cluster (compose.ts state refactor, not a single-
+session bite)." This session opened with that single-target
+commission. Cluster #16: `cic-network-id-store`. One audit row.
+
+The work was the easy part. Read compose.ts. Confirm 14 callsites at
+the documented line numbers (they had drifted by ±1-2; close enough).
+Inspect the `networks` signal source. Three options weighed at design
+time — pure helper, Map-keyed `createMemo` + helper, push id
+resolution UP into the dispatch layer. Option B chosen because it
+mirrored cluster #13 M4 (`networkKey` / `decodeChannelKey`
+extraction) and M7 (`target_kind/1` public-helper promotion) — same
+verb-promotion convention, same memo-backed reactive shape. The
+helper signatures took `slug: string`, not `string | null`, because
+all 14 callsites passed a guaranteed string and per CLAUDE.md you
+don't add error handling for scenarios that can't happen. The 14
+literal call sites collapsed to one helper invocation each, identical
+diff per handler, biome and tsc clean, 684 vitest passed, integration
+suite passed (33 + 1 retry-passed flaky — the cp13 S5 caveat that's
+been pre-existing for two clusters now), browser smoke confirmed the
+slash command parser still resolves networkId at the dispatch
+boundary.
+
+The merge commit said it: "the **HIGH OPEN count goes to 0 across
+both audits**." The codebase-review HIGH count had gone to zero at
+cluster #15; the architecture-review HIGH count went to zero at this
+merge. After fifteen weeks of cluster work — six closures of
+HIGH-architecture rows in clusters #6, #7, #8 (already corrected via
+the cluster #15 sweep), then bnd-A2 closing the last one — the
+audit's headline number stopped having a HIGH OPEN entry to point at.
+72 OPEN rows remain, all MEDIUM or LOW, candidates for future
+omnibus clusters with no urgency. This is not a complete codebase by
+any meaningful sense of the word. It just means the curated list of
+"the things we couldn't ship without fixing" is empty.
+
+That should have been the session. CLEAR signal sent (regular, not
+CLEAR-FINAL — that one was consumed at cluster #15). And then the
+user typed: "we still have a scrolling bug. from what i see scrolltop
+is preserved on window switch."
+
+The bug repro is one sentence. Open a populated channel — scrolls to
+the bottom, fine. Open an empty query window with `/query <nick>` —
+scrollTop=0, "no messages yet" placeholder, fine. Switch back to the
+channel — pinned at scrollTop=0, the user reading whatever message
+was at the top of the buffer instead of the latest message they
+actually came back to read. Five seconds of operator interaction. The
+bug had been in production through every browser smoke I'd run on
+this code; nobody had ever switched windows in *that order* during a
+smoke test, because the operations look so different — opening a
+query is a slash-command surface, switching a channel is a sidebar
+surface, the obvious smoke walks each surface once. The bug lives at
+the intersection.
+
+Reading the production code made the cause obvious. ScrollbackPane
+has its own moduledoc comment saying "Solid's `<Show>` reuses the
+ScrollbackPane component instance across selectedChannel changes" —
+the author knew. The component had a length-effect at line 583 that
+ran on `messages().length` change, perfect for the streaming append
+path. It had an on-key effect at line 563 that reset the JOIN-banner
+visibility latch and the `markerScrolled` boolean — perfect for the
+component-internal state. What it didn't have was anything that
+touched the scroll position of the underlying `<div>` on key change.
+And the underlying `<div>` was the SAME DOM element across switches —
+non-keyed `<Show>` reuses, doesn't rebuild. The query render set
+scrollTop=0 (placeholder fits trivially). The channel render didn't
+touch scrollTop (length unchanged). The user got scrollTop=0 in a
+1400-px-tall scrollback.
+
+The fix went into the existing on-key effect — extending it, not
+adding a parallel one. Branch on the marker presence: if there's a
+marker, scrollIntoView({ block: "center" }); otherwise snap to tail.
+The user's spec was literal: "more or less in the middle of the
+screen, and if no unreads then scroll to bottom." The companion
+change — flipping the length-effect's `block: "start"` to
+`block: "center"` — was the OTHER mount path: a window opened with
+unreads where the REST page lands AFTER focus. Without it, switch-
+back would center the marker but initial-focus would pin it to the
+top edge. Asymmetric UX is worse than no fix at all; the rule has to
+hold across both mount paths or it's not a rule.
+
+Two e2e specs went into `scroll-on-window-switch.spec.ts`. The bug
+repro test pinned the contract: channel → empty `/query` →
+channel-back → distFromBottom ≤ SCROLL_BOTTOM_THRESHOLD_PX. The
+marker-centered geometry test pinned the stronger contract that
+cp14-b1 had only weakly asserted via `toBeInViewport()`: marker top
+sits in the 0.20..0.80 ratio of container height. Both passed first
+try — 305ms and 269ms. The integration suite went from 33 to 35
+passed, same one retry-passed flaky that's been there for two
+clusters.
+
+**Law:** when a Solid `<Show>` boundary is non-keyed, the DOM element
+under the conditional is REUSED across condition changes. Effects
+keyed on signal IDENTITY (length, ref) won't fire on logical-state
+transitions that don't change those signals. The component's internal
+signals reset on key change; the DOM doesn't unless you tell it to.
+Add an explicit effect on the LOGICAL key (channel `key()`) that
+resets DOM state to the new context's expectations. The pattern is
+"per-window state that survives the boundary needs explicit reset" —
+not just bannerState and markerScrolled, but scrollTop too.
+
+The session arc was its own small lesson: the audit work was
+defensible, careful, mechanically verified. The bug fix was sparked
+by a user typing a sentence and required a visible-state-reset rule
+the audit had never been positioned to catch. The audit found 163
+items across two reviews; none of them was scroll-position-on-window-
+switch, because no review ever sits down and clicks through window
+switches in five different orders. The audit catches what the audit
+can see. The user catches what the user does.
