@@ -4161,6 +4161,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
       assert {:error, :no_session} = Session.send_whois({:user, uid}, 9_999, "alice")
       assert {:error, :no_session} = Session.send_who({:user, uid}, 9_999, "#bofh")
+      assert {:error, :no_session} = Session.send_names({:user, uid}, 9_999, "#bofh")
     end
   end
 
@@ -4406,6 +4407,141 @@ defmodule Grappa.Session.ServerTest do
                        payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 315}}}
                      },
                      1_500
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # CP22 B-names — /names <#chan> sends NAMES upstream + on 366
+  # RPL_ENDOFNAMES drains the per-target accumulator into N+1 :notice rows
+  # in $server WHEN the operator is NOT joined to the target. When joined,
+  # the existing JOIN-time members_seeded flow refreshes MembersPane and
+  # NO scrollback rows are emitted.
+  # ---------------------------------------------------------------------------
+
+  describe "CP22 B-names — /names bundle aggregation + scrollback persist" do
+    setup do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {:ok, server} = IRCServer.start_link(handler)
+      port = IRCServer.port(server)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
+      pid = start_session_for(user, network)
+      Process.sleep(50)
+      %{server: server, user: user, network: network, pid: pid}
+    end
+
+    test "/names #channel sends NAMES upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+
+      assert {:ok, "NAMES #bofh\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "353+366 burst persists nick-list rows + 1 EOF row to $server when not joined", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      topic = Topic.channel(user.name, network.slug, "$server")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :@alice +bob carol\r\n")
+      IRCServer.feed(server, ":irc.test.org 366 grappa-test #bofh :End of /NAMES list\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta_row} = row}
+                     },
+                     1_500
+
+      assert meta_row.numeric == 353
+      assert meta_row.names_target == "#bofh"
+      assert is_list(meta_row.names)
+      assert "@alice" in meta_row.names
+      assert "+bob" in meta_row.names
+      assert "carol" in meta_row.names
+      assert row.body =~ "alice"
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "message",
+                         message: %{kind: :notice, channel: "$server", meta: meta_eof, body: eof_body}
+                       }
+                     },
+                     1_500
+
+      assert meta_eof.numeric == 366
+      assert meta_eof.names_target == "#bofh"
+      assert eof_body =~ "End of /NAMES"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "353+366 burst on JOINED channel refreshes members_seeded WITHOUT persisting scrollback rows", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      topic = Topic.channel(user.name, network.slug, "#bofh")
+      server_topic = Topic.channel(user.name, network.slug, "$server")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, server_topic)
+
+      # Join #bofh first so it's in state.members.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN #bofh\r\n")
+      IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :grappa-test\r\n")
+      IRCServer.feed(server, ":irc.test.org 366 grappa-test #bofh :End of /NAMES list\r\n")
+      Process.sleep(50)
+
+      # Drain JOIN-time members_seeded broadcast.
+      receive do
+        %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "members_seeded"}} -> :ok
+      after
+        500 -> flunk("expected initial members_seeded after JOIN")
+      end
+
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :grappa-test @alice +bob\r\n")
+      IRCServer.feed(server, ":irc.test.org 366 grappa-test #bofh :End of /NAMES list\r\n")
+
+      # The 366 → members_seeded path MUST still fire so MembersPane refreshes.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "members_seeded", channel: "#bofh"}
+                     },
+                     1_500
+
+      # NO :notice scrollback row in #bofh (joined target — refresh, not list).
+      refute_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 353}}}
+                     },
+                     200
+
+      # NO :notice scrollback row in $server either.
+      refute_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: %{numeric: 353}}}
+                     },
+                     200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

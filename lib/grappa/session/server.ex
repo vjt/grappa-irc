@@ -338,7 +338,18 @@ defmodule Grappa.Session.Server do
           # (one per reply + one EOF terminator), routed to the target
           # channel if joined or `$server` otherwise. Bounded by in-flight
           # /who commands (typically 0-1 at a time).
-          who_pending: %{String.t() => map()}
+          who_pending: %{String.t() => map()},
+          # CP22 cluster B (channel-client-polish #14) — pending NAMES
+          # accumulators keyed by lowercased target channel. Set up on
+          # `:send_names`; 353 RPL_NAMREPLY rows merge their nick lists
+          # into the entry; 366 RPL_ENDOFNAMES emits 2 `{:persist, :notice,
+          # attrs}` effects (one carrying the full nick list + one EOF
+          # terminator) ONLY if the operator is NOT joined to the target —
+          # joined targets defer to the existing JOIN-time members_seeded
+          # flow (the 366 route below still fires that effect; the
+          # /names-driven scrollback rows are gated on non-joined). NOT
+          # persisted across crashes.
+          names_pending: %{String.t() => map()}
         }
 
   ## API
@@ -437,7 +448,15 @@ defmodule Grappa.Session.Server do
       # attrs}` effects (one per reply + one EOF) and drops the entry.
       # Bounded by in-flight /who commands (typically 0-1 at a
       # time). NOT persisted across crashes.
-      who_pending: %{}
+      who_pending: %{},
+      # CP22 cluster B — pending NAMES accumulators keyed by lowercased
+      # target channel. Set up on `:send_names`; 353 RPL_NAMREPLY rows
+      # merge nick lists into the entry; 366 RPL_ENDOFNAMES drains via
+      # 2 `{:persist, :notice, attrs}` effects (one row carrying the
+      # full nick list + one EOF) when NOT joined to target — joined
+      # targets defer to the existing members_seeded refresh path. NOT
+      # persisted across crashes.
+      names_pending: %{}
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -718,6 +737,23 @@ defmodule Grappa.Session.Server do
     next_pending = Map.put(state.who_pending, chan_key, %{target_display: target, replies: []})
     next_state = %{state | who_pending: next_pending}
     {:reply, Client.send_who(state.client, target), next_state}
+  end
+
+  # CP22 cluster B (channel-client-polish #14) — /names <#channel>. Two
+  # effects: (1) prime the accumulator entry in state.names_pending so
+  # EventRouter folds 353 RPL_NAMREPLY rows into it; (2) emit
+  # `NAMES #channel\r\n`. The entry's `target_display` preserves
+  # operator-typed case; EventRouter normalises to lowercase for the
+  # lookup key. Replaces any prior accumulator for the same target
+  # (running /names twice without a 366 in between drops the first).
+  # On send_line failure the accumulator stays primed — a transient
+  # send error doesn't strand the NAMES flow because no numerics will
+  # arrive to drain it; harmless until the next /names replaces the entry.
+  def handle_call({:send_names, target}, _, state) when is_binary(target) do
+    chan_key = String.downcase(target)
+    next_pending = Map.put(state.names_pending, chan_key, %{target_display: target, names: []})
+    next_state = %{state | names_pending: next_pending}
+    {:reply, Client.send_names(state.client, target), next_state}
   end
 
   # User-mode change on own nick. Uses state.nick (reconciled at 001).

@@ -819,6 +819,32 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `NAMES <channel>` upstream and primes the per-target accumulator
+  in `state.names_pending` so EventRouter folds 353 RPL_NAMREPLY rows
+  into a bundle. On 366 RPL_ENDOFNAMES the bundle is drained:
+  - if the operator IS joined to the target channel, NO scrollback rows
+    are emitted — the existing JOIN-time `members_seeded` flow refreshes
+    the MembersPane.
+  - if NOT joined, N+1 `:notice` scrollback rows persist into the
+    synthetic `$server` window (one row carrying the nick list +
+    one EOF terminator).
+
+  Per CP22 cluster B (channel-client-polish #14): nicks arrive in the
+  353 trailing param as a space-separated `[prefix]nick` list, where
+  `prefix ∈ {@, +}` denotes channel ops/voice. The accumulator
+  preserves prefixes verbatim — cic renders them irssi-style.
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel syntax is rejected by `Grappa.IRC.Client.send_names/2`.
+  """
+  @spec send_names(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_names(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:send_names, channel})
+  end
+
+  @doc """
   Sends `MODE <own_nick> <modes>` upstream — user-mode change on own nick.
   The own nick is read from Session.Server state (populated at 001).
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
