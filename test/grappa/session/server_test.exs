@@ -4191,8 +4191,13 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "311+312+313+317+319+318 burst broadcasts whois_bundle on Topic.user/1", %{server: server, user: user, network: network, pid: pid} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.user(user.name))
+    test "311+312+313+317+319+318 burst broadcasts whois_bundle on Topic.user/1", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert :ok = Session.send_whois({:user, user.id}, network.id, "alice")
       _ = IRCServer.wait_for_line(server, &(&1 == "WHOIS alice\r\n"), 1_000)
@@ -4220,8 +4225,13 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "318 with no preceding numerics still broadcasts an empty bundle", %{server: server, user: user, network: network, pid: pid} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.user(user.name))
+    test "318 with no preceding numerics still broadcasts an empty bundle", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert :ok = Session.send_whois({:user, user.id}, network.id, "ghost")
       _ = IRCServer.wait_for_line(server, &(&1 == "WHOIS ghost\r\n"), 1_000)
@@ -4237,8 +4247,13 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "318 case-insensitive against typed target (server may echo different case)", %{server: server, user: user, network: network, pid: pid} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.user(user.name))
+    test "318 case-insensitive against typed target (server may echo different case)", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       assert :ok = Session.send_whois({:user, user.id}, network.id, "alice")
       _ = IRCServer.wait_for_line(server, &(&1 == "WHOIS alice\r\n"), 1_000)

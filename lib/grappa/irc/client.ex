@@ -407,6 +407,7 @@ defmodule Grappa.IRC.Client do
            | :banlist
            | :umode
            | :topic_clear
+           | :whois
 
   @spec reject_invalid_line(verb()) :: {:error, :invalid_line}
   defp reject_invalid_line(verb) do

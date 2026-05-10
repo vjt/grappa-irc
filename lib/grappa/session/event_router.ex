@@ -675,7 +675,7 @@ defmodule Grappa.Session.EventRouter do
   # 313 RPL_WHOISOPERATOR: `:server 313 own_nick target :is an IRC operator`.
   # Folds `is_operator: true`.
   def route(
-        %Message{command: {:numeric, 313}, params: [_, target | _rest]},
+        %Message{command: {:numeric, 313}, params: [_, target | _]},
         state
       )
       when is_binary(target) do
@@ -690,18 +690,18 @@ defmodule Grappa.Session.EventRouter do
         state
       )
       when is_binary(target) and is_binary(idle_str) do
-    fold = %{idle_seconds: parse_int_or_nil(idle_str)}
+    base_fold = %{idle_seconds: parse_int_or_nil(idle_str)}
 
     fold =
       case rest do
         [signon_str | _] when is_binary(signon_str) ->
           case parse_int_or_nil(signon_str) do
-            nil -> fold
-            n -> Map.put(fold, :signon, n)
+            nil -> base_fold
+            n -> Map.put(base_fold, :signon, n)
           end
 
         _ ->
-          fold
+          base_fold
       end
 
     {:cont, whois_fold(state, target, fold), []}

@@ -1592,7 +1592,7 @@ defmodule Grappa.Session.EventRouterTest do
       # Server may echo a different case for the target than what the user typed.
       m = msg({:numeric, 318}, ["vjt", "ALICE", "End of /WHOIS list"], {:server, "irc.test.org"})
 
-      {:cont, new_state, [{:whois_bundle, _target, accum}]} = EventRouter.route(m, state)
+      {:cont, new_state, [{:whois_bundle, _, accum}]} = EventRouter.route(m, state)
       assert accum[:user] == "u"
       assert new_state.whois_pending == %{}
     end
