@@ -2459,6 +2459,68 @@ the cleanup wait.
 
 ---
 
+## 2026-05-10 — operator-action-echo unread suppression
+
+**Bug.** `/msg <nonexistent-nick> hi` triggered a phantom "1 unread
+message" marker and a sidebar badge bump on the operator's own query
+window. Visible live in the browser before the fix.
+
+**Trace.** Server-side: `Session.Server.handle_numeric_with_routing/2`
+(CP13) routes 401 ERR_NOSUCHNICK via `NumericRouter` →
+`{:query, ghost}`, persists a `kind: :notice` row at `channel=ghost`
+with `meta = %{numeric: 401, severity: :error}`, broadcasts via
+`Wire.message_payload/1`. Client-side: `subscribe.ts` `routeMessage`
+treated `:notice` as an unread-bumping content kind (line 216) and
+`ScrollbackPane.rows()` independently counted any
+`server_time > readCursor` row toward the in-pane unread-marker — both
+saw the 401 row and surfaced it as "unread."
+
+**Domain class.** Same as the BUG5b own-presence-event suppression: a
+server-originated row that exists *because of the operator's own
+action*. The operator already saw the action that produced the
+feedback; alerting them is a false positive. Adding more rules on the
+client would scale poorly — the wire already carries the
+discriminator.
+
+**Discriminator: `meta.numeric` presence.** Set iff the row was
+produced by `handle_numeric_with_routing/2` (no other writer touches
+that key today; the closed-set guarantee comes from the single
+production site). A peer-originated NOTICE (NickServ greeting,
+another user's `/notice`) lands with empty `meta` — STILL bumps unread,
+correctly.
+
+**Severity-agnostic gate.** Error numerics (4xx/5xx) and info numerics
+(305/306 RPL_(UN)AWAY etc.) are all operator-action feedback. The
+predicate gates on field presence, not severity.
+
+**Single predicate, two call sites.** `cicchetto/src/lib/
+operatorActionEcho.ts` exports `isOperatorActionEcho(message)`.
+Subscribed by `subscribe.ts` (sidebar badge gate, mirrors BUG5b
+own-presence early return) AND by `ScrollbackPane.tsx` `rows()` memo
+(in-pane unread-marker count `.filter(...)`). Both signals stay
+aligned by construction — adding a future "operator-action echo"
+class (e.g. labeled-response routed message kind) extends one
+predicate, not two.
+
+**Why not a server-side filter.** The server CORRECTLY persists the
+401 row + broadcasts it — the operator must SEE the failure inline
+in the query window. The bug is the unread-treatment, which is a
+client concern. CLAUDE.md "client-side only read position" invariant
+keeps the gate where it belongs.
+
+**E2E coverage.** Extended the existing CP13 S5 caveat spec
+(`cp13-server-window.spec.ts:142`) — same `/msg <ghost>` flow
+that was already verified for the 401 row appearing — with new
+`unread-marker count = 0` and sidebar message badge `count = 0`
+assertions on the routed query window. vitest unit coverage:
+`subscribe.test.ts` (numeric notice no-bump + plain notice DOES bump
+symmetry), `ScrollbackPane.test.tsx` (marker excluded from numeric
+count + included for peer notice), `operatorActionEcho.test.ts`
+(predicate edge cases incl. defensive non-numeric meta.numeric
+branch).
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:
