@@ -175,5 +175,15 @@ test.describe("CP13 server-window cluster", () => {
     await expect(
       page.locator(".scrollback-pane .scrollback-notice-error"),
     ).toHaveCount(1, { timeout: 15_000 });
+
+    // The 401 NOTICE is server feedback to the operator's own /msg —
+    // it must NOT inflate the in-pane unread-marker NOR the sidebar
+    // unread badge for the query window. Pre-fix, the marker rendered
+    // between the operator's outbound PRIVMSG and the 401 reply with
+    // "1 unread message" pinned above the 401 line; the badge fix in
+    // subscribe.ts and the marker fix in ScrollbackPane.tsx share one
+    // predicate (lib/operatorActionEcho.ts).
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0);
+    await expect(sidebarMessageBadge(page, NETWORK_SLUG, ghostNick)).toHaveCount(0);
   });
 });

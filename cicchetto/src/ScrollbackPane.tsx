@@ -15,6 +15,7 @@ import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
+import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
@@ -483,7 +484,13 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!msgs || msgs.length === 0) return [];
     const cursor = getReadCursor(props.networkSlug, props.channelName);
     // How many messages have server_time strictly after the cursor?
-    const unreadCount = cursor !== null ? msgs.filter((m) => m.server_time > cursor).length : 0;
+    // Operator-action echoes (e.g. /msg → 401 notice) are excluded — the
+    // operator owns the action that produced them, mirroring the
+    // subscribe.ts sidebar-badge gate so badge and in-pane marker agree.
+    const unreadCount =
+      cursor !== null
+        ? msgs.filter((m) => m.server_time > cursor && !isOperatorActionEcho(m)).length
+        : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
     // at the very top (before index 0). When none are unread, skip the marker.
