@@ -249,6 +249,8 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/msg <nick> <text>` | Send a private message (opens query window) |
 | `/query <nick>` / `/q <nick>` | Open a query window without sending |
 | `/whois <nick>` | Issue WHOIS; reply renders inline in active window |
+| `/who <#chan>` | Issue WHO on a channel; replies render as scrollback rows in the target channel (joined) or `$server` (otherwise). Each 352 RPL_WHOREPLY → one `:notice` row; the 315 RPL_ENDOFWHO terminator row marks end. |
+| `/names <#chan>` | Issue NAMES on a channel. Joined target → MembersPane refresh via the `members_seeded` push (no scrollback rows). Non-joined target → 2 `:notice` rows in `$server` (full nick list + EOF terminator). |
 | `/op <nick>...` / `/deop <nick>...` | `MODE +o` / `MODE -o` on the active channel; multi-target chunked per ISUPPORT `MODES=` |
 | `/voice <nick>...` / `/devoice <nick>...` | `MODE +v` / `MODE -v` on the active channel |
 | `/kick <nick> [reason]` | KICK on the active channel |
