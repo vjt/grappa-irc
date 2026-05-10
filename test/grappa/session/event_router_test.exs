@@ -27,7 +27,8 @@ defmodule Grappa.Session.EventRouterTest do
         members: %{},
         topics: %{},
         channel_modes: %{},
-        userhost_cache: %{}
+        userhost_cache: %{},
+        who_pending: %{}
       },
       overrides
     )
@@ -1595,6 +1596,105 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, new_state, [{:whois_bundle, _, accum}]} = EventRouter.route(m, state)
       assert accum[:user] == "u"
       assert new_state.whois_pending == %{}
+    end
+  end
+
+  # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
+  # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
+  # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}
+  # effect. Mirror-shape of the WHOIS pipeline (CP21).
+  describe "CP22 B-who — WHO fold + 315 RPL_ENDOFWHO bundle emit" do
+    test "352 RPL_WHOREPLY appends a structured row to who_pending[channel].replies" do
+      state =
+        base_state(%{
+          who_pending: %{"#bofh" => %{target_display: "#bofh", replies: []}}
+        })
+
+      # 352 params: own_nick, channel, user, host, server, nick, flags, :hops realname
+      m =
+        msg(
+          {:numeric, 352},
+          ["vjt", "#bofh", "alice_u", "alice.host", "irc.test.org", "alice", "H+", "0 Alice Liddell"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      [reply] = new_state.who_pending["#bofh"][:replies]
+      assert reply.nick == "alice"
+      assert reply.user == "alice_u"
+      assert reply.host == "alice.host"
+      assert reply.server == "irc.test.org"
+      assert reply.modes == "H+"
+      assert reply.hops == 0
+      assert reply.realname == "Alice Liddell"
+    end
+
+    test "352 with no pending who entry still updates userhost_cache (S2.4 path)" do
+      state = base_state(%{who_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 352},
+          ["vjt", "#bofh", "u", "h", "s", "alice", "H", "0 r"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      # No accumulator update; userhost_cache must still receive the upsert.
+      assert new_state.userhost_cache["alice"] == %{user: "u", host: "h"}
+      assert new_state.who_pending == %{}
+    end
+
+    test "315 RPL_ENDOFWHO emits :who_bundle with replies + drops entry" do
+      state =
+        base_state(%{
+          who_pending: %{
+            "#bofh" => %{
+              target_display: "#bofh",
+              replies: [
+                %{
+                  nick: "alice",
+                  user: "u",
+                  host: "h",
+                  server: "s",
+                  modes: "H",
+                  hops: 0,
+                  realname: "Alice"
+                }
+              ]
+            }
+          }
+        })
+
+      m = msg({:numeric, 315}, ["vjt", "#bofh", "End of /WHO list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:who_bundle, target, accum}]} = EventRouter.route(m, state)
+      assert target == "#bofh"
+      assert length(accum.replies) == 1
+      assert hd(accum.replies).nick == "alice"
+      assert new_state.who_pending == %{}
+    end
+
+    test "315 with no pending entry is silently ignored (unsolicited)" do
+      state = base_state(%{who_pending: %{}})
+
+      m = msg({:numeric, 315}, ["vjt", "#ghost", "End of /WHO list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.who_pending == %{}
+    end
+
+    test "315 lookup is case-insensitive on target channel (RFC 2812 §2.2)" do
+      state =
+        base_state(%{
+          who_pending: %{"#bofh" => %{target_display: "#BOFH", replies: []}}
+        })
+
+      m = msg({:numeric, 315}, ["vjt", "#BOFH", "End of /WHO list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:who_bundle, target, _}]} = EventRouter.route(m, state)
+      assert target == "#BOFH"
+      assert new_state.who_pending == %{}
     end
   end
 end

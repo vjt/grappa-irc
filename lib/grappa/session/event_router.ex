@@ -748,18 +748,75 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
+  # CP22 cluster B (channel-client-polish #14) — 315 RPL_ENDOFWHO:
+  # `:server 315 own_nick target :End of /WHO list`. Emit the bundle effect
+  # with the accumulated rows + drop the entry. If no accumulator exists
+  # (target never set up via /who, or unsolicited reply), drop silently —
+  # mirror of the 318 RPL_ENDOFWHOIS handling.
+  def route(
+        %Message{command: {:numeric, 315}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    pending = Map.get(state, :who_pending, %{})
+    chan_key = String.downcase(target)
+
+    case Map.fetch(pending, chan_key) do
+      {:ok, accum} ->
+        next_state = %{state | who_pending: Map.delete(pending, chan_key)}
+        # Replies were prepended in arrival order (LIFO) for O(1) fold —
+        # reverse here to restore the server's wire order before emitting
+        # the bundle (consumers need ops first / voices / plain users).
+        replies = Enum.reverse(Map.get(accum, :replies, []))
+        ordered_accum = Map.put(accum, :replies, replies)
+
+        {:cont, next_state,
+         [{:who_bundle, Map.get(accum, :target_display, target), ordered_accum}]}
+
+      :error ->
+        {:cont, state, []}
+    end
+  end
+
   # 352 RPL_WHOREPLY: `:server 352 own_nick #chan user host server target H/G :hop realname`.
   # S2.4: upsert userhost_cache with target nick's user+host (params are
   # positional: index 0=own_nick, 1=#chan, 2=user, 3=host, 4=server, 5=target).
   # Keyed by lowercased nick.
+  #
+  # CP22 cluster B (channel-client-polish #14): if a /who command primed
+  # state.who_pending[channel_lower], also fold this row into the
+  # accumulator's :replies list. The trailing param holds `<hops> <realname>`
+  # — split on the first whitespace to extract both. The `flags` param at
+  # index 6 (H=here/G=gone, plus optional ops/voice glyphs) is preserved as
+  # `:modes`. Both effects coexist: userhost_cache is for nick-targeted
+  # WHOIS-cache reuse, who_pending is the operator-facing /who bundle.
   def route(
-        %Message{command: {:numeric, 352}, params: [_, _, user, host, _, target | _]},
+        %Message{
+          command: {:numeric, 352},
+          params: [_, channel, user, host, server, target, flags | rest]
+        },
         state
       )
-      when is_binary(target) and is_binary(user) and is_binary(host) do
+      when is_binary(target) and is_binary(user) and is_binary(host) and
+             is_binary(channel) and is_binary(server) and is_binary(flags) do
     nick_key = normalize_nick(target)
     cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
-    {:cont, %{state | userhost_cache: cache}, []}
+
+    state_with_cache = %{state | userhost_cache: cache}
+
+    {hops, realname} = parse_who_trailing(rest)
+
+    reply = %{
+      nick: target,
+      user: user,
+      host: host,
+      server: server,
+      modes: flags,
+      hops: hops,
+      realname: realname
+    }
+
+    {:cont, who_fold(state_with_cache, channel, reply), []}
   end
 
   # 001 RPL_WELCOME: first param is the welcomed nick (what upstream
@@ -1315,6 +1372,51 @@ defmodule Grappa.Session.EventRouter do
     case Integer.parse(s) do
       {n, ""} -> n
       _ -> nil
+    end
+  end
+
+  # CP22 cluster B — fold one 352 RPL_WHOREPLY row into the per-target WHO
+  # accumulator at `state.who_pending[channel_lower].replies`. Skips folding
+  # when no entry exists (the operator never issued a /who for this channel
+  # — an unsolicited 352 is not actionable for the bundle, though the
+  # userhost_cache update in the 352 route still fires upstream of this).
+  # Prepends to :replies for O(1) fold — the 315 RPL_ENDOFWHO route reverses
+  # before emitting so consumers see server wire order (ops first, voices,
+  # then plain users).
+  @spec who_fold(state(), String.t(), map()) :: state()
+  defp who_fold(state, channel, reply) when is_binary(channel) and is_map(reply) do
+    pending = Map.get(state, :who_pending, %{})
+    chan_key = String.downcase(channel)
+
+    case Map.fetch(pending, chan_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        replies = Map.get(accum, :replies, [])
+        merged = Map.put(accum, :replies, [reply | replies])
+        %{state | who_pending: Map.put(pending, chan_key, merged)}
+    end
+  end
+
+  # CP22 cluster B — RPL_WHOREPLY trailing field is `<hops> <realname>`
+  # joined by a single space (RFC 2812 §5.1). Returns `{hops, realname}`
+  # with hops as integer (nil if unparseable) and realname as the rest of
+  # the trailing string. If the trailing param is absent (RFC-violating
+  # server), both fields are nil.
+  @spec parse_who_trailing([term()]) :: {integer() | nil, String.t() | nil}
+  defp parse_who_trailing([]), do: {nil, nil}
+
+  defp parse_who_trailing(rest) when is_list(rest) do
+    case List.last(rest) do
+      s when is_binary(s) ->
+        case String.split(s, " ", parts: 2) do
+          [hops_str, realname] -> {parse_int_or_nil(hops_str), realname}
+          [hops_str] -> {parse_int_or_nil(hops_str), nil}
+        end
+
+      _ ->
+        {nil, nil}
     end
   end
 
