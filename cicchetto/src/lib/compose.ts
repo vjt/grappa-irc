@@ -27,6 +27,7 @@ import {
   pushWatchlistAdd,
   pushWatchlistDel,
   pushWatchlistList,
+  pushWho,
   pushWhois,
 } from "./socket";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -456,8 +457,28 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         // Info verbs — server-side handlers not yet implemented.
         // Emit inline errors as TODO stubs (future bucket wiring).
         // ---------------------------------------------------------------
-        case "who":
-          return { error: "/who: server-side handler not yet implemented (future bucket)" };
+        // ---------------------------------------------------------------
+        // CP22 cluster B (channel-client-polish #14) — /who <#chan>.
+        // Push on the user-level channel; the server primes who_pending
+        // and emits WHO upstream. The 352/315 burst lands as N+1 :notice
+        // scrollback rows routed to the target channel (if joined) or
+        // $server (otherwise) — no client-side accumulator. Body is an
+        // irssi-shape readable string; meta.numeric (352|315) and
+        // meta.who structured payload are available for future tabular
+        // render polish (current notice render is sufficient for v1).
+        //
+        // /who without target → reject inline (server requires a
+        // channel target — RFC 2812 §3.6.1 allows mask form, out of
+        // MVP scope).
+        // ---------------------------------------------------------------
+        case "who": {
+          if (cmd.target === null) return { error: "/who requires a #channel target" };
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/who: network not found" };
+          pushWho(networkId, cmd.target);
+          result = { ok: true };
+          break;
+        }
         case "names":
           return { error: "/names: server-side handler not yet implemented (future bucket)" };
         case "list":

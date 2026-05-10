@@ -51,6 +51,10 @@ vi.mock("../lib/socket", () => ({
   pushWatchlistAdd: vi.fn().mockResolvedValue({ patterns: ["myname"] }),
   pushWatchlistDel: vi.fn().mockResolvedValue({ patterns: [] }),
   pushWatchlistList: vi.fn().mockResolvedValue({ patterns: ["myname"] }),
+  // C2 — /whois bridge.
+  pushWhois: vi.fn(),
+  // CP22 cluster B (channel-client-polish #14) — /who bridge.
+  pushWho: vi.fn(),
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
@@ -967,14 +971,28 @@ describe("compose submit — /topic branches", () => {
 });
 
 describe("compose submit — info verbs (TODO stubs)", () => {
-  it("/who returns inline error (server-side not yet implemented)", async () => {
+  // CP22 cluster B (channel-client-polish #14) — /who is no longer a stub.
+  // Push goes through to the server; success returns {ok: true}. The 352
+  // /315 burst → N+1 :persist :notice rows is verified end-to-end by the
+  // Playwright e2e + Session.Server tests.
+  it("/who #channel pushes to server", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/who alice");
+    compose.setDraft(k, "/who #grappa");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("/who without target returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/who");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
   });
 
   it("/names returns inline error (server-side not yet implemented)", async () => {
