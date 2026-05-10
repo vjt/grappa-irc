@@ -2582,6 +2582,107 @@ fixtures (test-data, not logic).
 
 ---
 
+## 2026-05-10 (c) — channel-client-polish: spec #5 + spec #2 (WHOIS) shipped
+
+Audit of the channel-client-polish backlog (memory
+`project_channel_client_polish.md`'s 21 specs) reclassified the
+remaining work using the actual code on `main`:
+
+- 16 SHIPPED (incl. #1 DM auto-open — which a stale orchestrate-next
+  pointer claimed was MISSING; verified shipped at `subscribe.ts:396`
+  + 3 vitest + `m4-irssi-to-priv-no-window.spec.ts`).
+- 2 PARTIAL: #5 (left-click NOT wired; right-click submenu shipped),
+  #2 (push helper landed; server handler + numeric routing + render
+  surface all missing).
+- 3 NOT-STARTED: #14 /who+/names, #15 /list, #16 /links — parser
+  stubs only.
+
+Bundled #5 + #2 in one cluster (`cluster/whois-and-nickclick`) since
+both touch the same UserContextMenu / ScrollbackPane surface and
+neither needs a migration.
+
+### #5 — left-click on member-list nick → DM
+
+Lifted the existing UserContextMenu "Query" submenu verb body
+(`openQueryWindowState` + `setSelectedChannel`) onto an `onClick`
+handler in MembersPane's nick `<li>`. Both entry points (left-click
+and right-click submenu) now compose the same store mutations —
+single code path, two doors per CLAUDE.md.
+
+Side-effect: biome's `useKeyWithClickEvents` a11y rule rejects bare
+`<li onClick>` (lists are non-interactive per WAI-ARIA). Refactored to
+`<li><button class="member-name">…</button></li>`, lifted the click
+handlers to the `<button>`, styled the `<button>` to look like the
+former `<li>` (transparent bg, no border, font:inherit). Tests now
+query `.member-name` instead of bare `.member-op` / `.member-voiced`.
+
+### #2 — /whois end-to-end
+
+Mirror of the `mentions_bundle` pattern (CP15 B7 / CP16 B5 contract):
+per-target accumulator on `state.whois_pending`, drained on 318
+RPL_ENDOFWHOIS into a `Wire.whois_bundle/3` payload broadcast on
+`Topic.user/1`. Render is a per-network ephemeral `WhoisCard.tsx`
+inline at the top of the active window's scrollback.
+
+**Why ephemeral, not scrollback-persisted** (decision rationale):
+- WHOIS data goes stale fast (idle counter, mode flag, channel list
+  all snapshot-at-instant). Persisting would surface stale state to
+  the user every time they re-focus the window.
+- Storing 8 fields × every WHOIS the user runs would bloat scrollback
+  with low-signal rows. The user typed /whois because they want the
+  answer NOW, not later.
+- Replaying a stored bundle makes no sense — the user wants the
+  current snapshot, not "what alice's idle was 6h ago".
+
+The render decision (inline card above scrollback, NOT a modal, NOT
+in $server window) follows spec #2 explicit instruction. cic's
+`whoisCard.ts` keeps one bundle per network (replaces in place on
+each /whois) — a per-network single-card surface matches how the user
+issues these (one query → one answer → done).
+
+**Why `dispatch_ops_verb`** (the user-only short-circuit) for the
+`handle_in("whois", …)` clause: WHOIS is read-only and visitors
+*could* issue it semantically, but the current channel-handler shape
+keys off `{:user, user.id}` and visitor sessions don't reach the
+session by that subject discriminator. Visitors get a quiet
+"unauthorized" reply on `/whois`; if a future cluster wants visitor
+WHOIS, the handler would need a `{:visitor, id}` arm and the bundle
+would need to broadcast on the visitor's `subject_label` topic.
+Out of MVP scope.
+
+### Foundational pattern for future info-verbs
+
+The same shape (delegated-numeric → per-target accumulator → 318-class
+end-marker → ephemeral Topic.user broadcast → cic narrowUserEvent +
+per-network store + render component) is now the template for #14
+(/who 352/315), #15 (/list 321/322/323), #16 (/links 364/365).
+
+`Grappa.Session.NumericRouter`'s `@delegated_numerics` set was already
+pre-seeded with all of 311-319, 352, 315, 353, 366, 321-323, 364-365,
+375-376 — those numerics short-circuit the `:server` route so they
+don't double-persist. The delegated handler responsibility is now to
+emit the bundle effect rather than just stub the path.
+
+### Lessons
+
+1. **Audit-summary staleness** — orchestrate-next prompts that
+   transcribe an audit summary go stale faster than the codebase. At
+   /start, re-grep for the artifacts the prompt names: if
+   `subscribe.ts:396` already calls `openQueryWindowState`, the "this
+   is missing" claim is wrong. Memory `feedback_survives_clear_pointer
+   _staleness` extended with this corollary.
+2. **`<li>` is non-interactive per WAI-ARIA** — wrap with `<button>`
+   for click handlers. Don't add `tabIndex={0}` to non-interactive
+   elements; biome rejects it as `noNoninteractiveTabindex`.
+3. **`@typep verb` in IRC.Client is closed-set** — every new
+   `Client.send_X/N` MUST extend the verb union or `reject_invalid_line(:X)`
+   becomes a dialyzer contract violation. Same for the corresponding
+   `Session.send_X/N` facade's `@spec` on the `{:error, :invalid_line}`
+   arm — dialyzer prunes it as extra_range if the validator always
+   succeeds. The pre-validator path needs the failure leg present.
+
+---
+
 ## Design-hygiene rules in force
 
 Roll-up of the decisions above as a pre-merge checklist:

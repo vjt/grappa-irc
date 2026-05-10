@@ -103,7 +103,7 @@ When a tick prints an event line, branch on it:
 | `BOOT state=busy` | Sibling is mid-work; schedule next tick, no intervention |
 | `IDLE ctx=NN%` | Run the IDLE decision tree below |
 | `BUSY ctx=NN%` | Sibling started new work; schedule next tick |
-| `CTX-BUMP NN%` at ≥70% | Proactively suggest clear-cycle (don't wait for IDLE) |
+| `CTX-BUMP NN%` at ≥30% | Proactively suggest clear-cycle (don't wait for IDLE). At ≥30% the next chunk of work likely won't fit before auto-compact; clear NOW so the sibling re-enters with a clean slate for the next bucket rather than mid-work. |
 | `HEARTBEAT state=busy` | Long-running task. Capture pane to confirm legit progress; schedule next tick |
 | `HEARTBEAT state=idle` | Sibling stuck waiting for input? Capture and decide |
 | `SAME state=*` | No-op, just reschedule |
