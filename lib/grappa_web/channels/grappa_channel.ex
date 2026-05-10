@@ -469,6 +469,24 @@ defmodule GrappaWeb.GrappaChannel do
     end)
   end
 
+  # CP22 cluster B (channel-client-polish #14) — /names <#channel>.
+  # cic pushes after the operator types `/names #chan`; the channel
+  # relays to Session.send_names/3 which primes names_pending + emits
+  # NAMES upstream. The 353/366 burst then either refreshes
+  # MembersPane (joined target — existing members_seeded path) or
+  # persists 2 :notice rows in $server (non-joined target — nick list
+  # + EOF terminator) — all downstream of this bridge.
+  def handle_in(
+        "names",
+        %{"network_id" => network_id, "channel" => channel},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_names({:user, user.id}, network_id, channel)
+    end)
+  end
+
   # /umode +i  →  MODE own_nick +i
   def handle_in(
         "umode",

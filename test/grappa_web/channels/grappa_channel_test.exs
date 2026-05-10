@@ -848,6 +848,26 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :ok)
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHO #snap\r\n"), 1_000)
     end
+
+    # CP22 cluster B (channel-client-polish #14) — /names bridge: cic
+    # pushes `"names"` with %{network_id, channel}; channel relays to
+    # Session.send_names/3, which primes names_pending + emits NAMES
+    # upstream. Smoke-tests the dispatch plumbing (the fold + drain +
+    # persist paths are covered by Session.Server end-to-end tests).
+    test "names: sends NAMES #chan upstream", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "names", %{
+          "network_id" => network.id,
+          "channel" => "#snap"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "NAMES #snap\r\n"), 1_000)
+    end
   end
 
   describe "join rejects malformed topics" do
