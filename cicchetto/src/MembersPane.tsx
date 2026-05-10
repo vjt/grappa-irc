@@ -3,6 +3,8 @@ import { displayNick } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { type MemberEntry, membersByChannel } from "./lib/members";
 import { networks, user } from "./lib/networks";
+import { openQueryWindowState } from "./lib/queryWindows";
+import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
 import UserContextMenu from "./UserContextMenu";
 
@@ -70,6 +72,24 @@ const MembersPane: Component<Props> = (props) => {
     setMenuFor({ nick, x: e.clientX, y: e.clientY });
   };
 
+  // Spec #5 — left-click on a member opens a query window for that nick
+  // AND switches focus. Mirrors UserContextMenu's "Query" item verb so
+  // both entry points (left-click, right-click submenu) compose the same
+  // pair of stores. Race-safe: skip when networks() hasn't resolved
+  // (members can render slightly ahead of the networks list during the
+  // first paint after /join — left-click before that resolves should be
+  // a no-op, not a crash).
+  const onClick = (nick: string): void => {
+    const nid = networkId();
+    if (nid === undefined) return;
+    openQueryWindowState(nid, nick, new Date().toISOString());
+    setSelectedChannel({
+      networkSlug: props.networkSlug,
+      channelName: nick,
+      kind: "query",
+    });
+  };
+
   const closeMenu = (): void => {
     setMenuFor(() => null);
   };
@@ -82,7 +102,11 @@ const MembersPane: Component<Props> = (props) => {
           <ul>
             <For each={list()}>
               {(m) => (
-                <li class={tierClass(m.modes)} onContextMenu={(e) => onContextMenu(e, m.nick)}>
+                <li
+                  class={tierClass(m.modes)}
+                  onClick={() => onClick(m.nick)}
+                  onContextMenu={(e) => onContextMenu(e, m.nick)}
+                >
                   {m.nick}
                 </li>
               )}
