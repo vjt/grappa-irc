@@ -1442,3 +1442,90 @@ items across two reviews; none of them was scroll-position-on-window-
 switch, because no review ever sits down and clicks through window
 switches in five different orders. The audit catches what the audit
 can see. The user catches what the user does.
+
+## S42 — 2026-05-10 — One sentence, two paths, one predicate
+
+The session opened on a finished story — CP19's T32 parked-window
+cluster had landed yesterday, the smartlog was clean, no work pulled
+me forward. Then the user typed: "bug: when messaging a non-existing
+user the incoming server message no such nick/channel alow triggers a
+unread messages porco dio marker. see it live now".
+
+The "see it live now" was the load-bearing phrase. The bug was on
+production. The user's browser tab was open. CDP gave me the
+screenshot in two commands: there it was, in the `vjt-on-grappa-irc`
+DM window, between the operator's outbound `<grappa> test` and the
+inbound `-raccooncity.azzurra.chat- No such nick/channel` reply, a
+`── 1 unread message ──` marker rendered against the operator's own
+mistake. Madonna porca.
+
+The trace was fast. CP13 had already done the architectural work:
+NumericRouter resolves 401 ERR_NOSUCHNICK to `{:query, ghost}`,
+EventRouter persists a `:notice` row at `channel=ghost` with
+`meta = %{numeric: 401, severity: :error}`, broadcasts on the
+per-channel topic. The wire shape carries the discriminator already.
+The cic side just had to read it. Same semantic class as BUG5b
+own-presence-event suppression — a row that exists *because of the
+operator's own action*. The operator already saw the action; the
+unread alert is a false positive. Wire-shape carries enough context;
+the bug was at the consumer.
+
+Halfway through writing the subscribe.ts fix I noticed the second
+path. The "1 unread message" wasn't just a sidebar badge — it was the
+in-pane marker, rendered by `ScrollbackPane.rows()` from a separate
+filter over `getReadCursor()`. Two independent code paths counting
+the same wire row as "unread." Suppressing the badge bump in
+subscribe.ts would have shipped a fix that the user-visible regression
+still showed: the marker would still render. Two paths, same
+semantic — "is this row unread?" — extracted to one predicate
+(`isOperatorActionEcho`), consumed by both. The shared verb keeps
+them aligned by construction; the next "operator-action echo"
+class (labeled-response routing, perhaps) extends one file.
+
+I asked vjt one design question: error numerics only, or all
+numerics? The answer was "yes all" — error 4xx/5xx (401, 482, 404)
+and info numerics (305/306 RPL_(UN)AWAY) are both operator-action
+feedback. The gate is on `typeof meta.numeric === "number"`, not on
+severity. The principle scales without re-deciding case-by-case.
+
+The TDD red-then-green ran clean. Subscribe.ts test for the gate.
+ScrollbackPane.tsx test for the marker exclusion. Symmetric peer-
+NOTICE-still-counts tests in both files — the predicate must NOT
+drift into "suppress all notices" because NickServ greetings and
+peer `/notice` messages are real unsolicited content. Predicate unit
+test covering defensive branches. Extension to the existing CP13 S5
+caveat e2e — the same `/msg <ghost>` flow that already verified the
+401 reply appearing got two new assertions: marker absent, badge
+absent. One e2e covers both surfaces because the predicate aligns
+both surfaces.
+
+Then the integration run failed seventeen specs after spec 22.
+Uniform 30.6s timeouts, all in code paths my fix doesn't touch (m1
+peer PRIVMSG to focused, m2 peer PRIVMSG to defocused, m3 own-msg to
+focused, m4-m9 etc.). The pattern was clear before the totals
+finished printing: cp15-b6-parked.spec.ts at position 22 takes 30.8s
+and exercises /disconnect+/connect — the testnet doesn't fully reset
+between runs, the parked-spec's afterEach reconnect-poll hits its
+budget and a parked credential cascades downstream failures. Already
+documented in DESIGN_NOTES from the CP19 ship. M1, M2, M3 in
+isolation passed in 7s each. Not my regression. Knowing the
+testnet-meltdown signature from a previous session's documentation
+is what kept the panic to thirty seconds.
+
+Deploy. Reload the user's browser tab. The `── 1 unread message ──`
+marker that was sitting between the operator's `test` and the 401
+reply — the marker that was visible in the screenshot the user sent
+— was gone. Sent a fresh `/msg ghost-1778408327 hello-from-fix-test`
+to verify the live trip: new query window opened, 401 reply rendered
+inline, no marker, no sidebar badge. End-to-end.
+
+**Law:** when the wire already carries the discriminator, the bug is
+at the consumer, not the wire. Don't propose new event types,
+parallel server state, or "let's send X over the channel too" when
+the broadcast payload already says everything you need. CP13 shipped
+the discriminator (`meta.numeric`) for one reason — server-window
+routing — and that single field, untouched, was the entire
+information needed for an unrelated UX gate fifteen sessions later.
+Wire shapes that carry production context are reusable; wire shapes
+that carry rendering decisions are not.
+
