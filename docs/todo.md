@@ -145,28 +145,14 @@ fixed in C8):**
   combined wait — the greyed class is the strict "typed
   `join_failed` event landed" signal.)
 
-- **Parked (T32) e2e flow** — `cp15-b6-parked.spec.ts` doesn't
-  exist yet. Investigated 2026-05-08 cluster `codebase-review-fixes`:
-  T32 server-side IS shipped (CP12 S31), but the `:parked`
-  window-state slot is documented as "T32 lays the slot but no
-  producer yet — treat as not_tracked" (`server.ex:867`). T32
-  `Networks.disconnect/2` terminates the entire `Session.Server`
-  → no per-window `window_states[ch] = :parked` is ever produced
-  → no typed `kind: "parked"` event ever fires. The CP15 B7 brief's
-  "spec is mechanically authorable now" was wrong on the producer
-  side. Authoring this spec needs a server-side design pass first
-  — decide:
-  (a) do windows survive park? (i.e. produce per-window `:parked`
-      events from a Session.Server `terminate/2` callback?)
-  (b) is there a per-network "parked" overlay state in the cic
-      sidebar (network-row greying, vs per-channel greying)?
-  (c) when does Session.Server wake on `Networks.connect/1`? Bootstrap
-      restart latency vs eager spawn?
-  Defer to next channel-client-polish-adjacent cluster. The
-  per-network connection_state IS now reachable in cic over WS
-  (codebase-review-fixes H1 fix), so the network-overlay path is
-  trivially wired via `userTopic.ts` connection_state_changed
-  dispatch — only per-window state is the open design question.
+- (Parked (T32) e2e flow CLOSED 2026-05-10 CP19 cluster
+  `cluster/t32-parked-design`. Design pinned: cic derives parked
+  cascade from `network.connection_state` rather than per-window
+  `:parked` event — answers (a) no per-window event needed, (b) yes
+  per-network overlay drives sidebar greying via
+  `.sidebar-network-greyed`, (c) Bootstrap restart on `connect/1`.
+  Spec `cp15-b6-parked.spec.ts` shipped covering JOIN → /disconnect
+  → assert greyed → /connect → assert ungrey post-autojoin.)
 
 - Phase 5 hardening: Session.Server should `terminate/2` cleanly —
   send QUIT to upstream + close socket. Currently :normal exit kills
