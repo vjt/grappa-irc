@@ -57,4 +57,37 @@ describe("isOperatorActionEcho", () => {
       }),
     ).toBe(false);
   });
+
+  // CP20 regression — the $server window EXISTS to surface routed server
+  // numerics (MOTD, RPL_NOWAWAY 306, untargeted NOTICEs, lifecycle events).
+  // Suppressing those rows would silence the badge that's the whole point
+  // of the window. The "operator-action echo" semantic is:
+  //   "row produced by my action that landed where I already am" — true
+  //   for /msg-to-ghost → 401 in the ghost query window (CP20 bug).
+  // For /away → 306 routed to $server, the operator is on #bofh; the row
+  // landing in $server IS the user-visible feedback they should see.
+  // The boundary is the routing target, not the row's `meta.numeric`.
+  it("returns false for $server-routed numeric notices (CP20 regression)", () => {
+    expect(
+      isOperatorActionEcho({
+        ...baseMsg,
+        channel: "$server",
+        kind: "notice",
+        meta: { numeric: 306, severity: "ok" },
+      }),
+    ).toBe(false);
+  });
+
+  // Symmetry: same numeric routed to a non-$server window IS still echo
+  // (CP20 original 401 ghost-DM scenario survives the predicate refinement).
+  it("still returns true for non-$server numeric notices (CP20 original case)", () => {
+    expect(
+      isOperatorActionEcho({
+        ...baseMsg,
+        channel: "ghost",
+        kind: "notice",
+        meta: { numeric: 401, severity: "error" },
+      }),
+    ).toBe(true);
+  });
 });

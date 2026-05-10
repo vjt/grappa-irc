@@ -2519,6 +2519,67 @@ count + included for peer notice), `operatorActionEcho.test.ts`
 (predicate edge cases incl. defensive non-numeric meta.numeric
 branch).
 
+## 2026-05-10 (b) — operator-action-echo carve-out for $server window
+
+**Regression.** CP20's blanket `meta.numeric` predicate also
+suppressed legitimate unread bumps for numerics routed to the
+**`$server` window**. The CP13 S8 e2e
+(`cp13-server-window.spec.ts:80` "$server window surfaces unread
+message badge after live numeric arrives") went RED on the post-CP20
+push: `/away` → server replies 306 RPL_NOWAWAY → routed to `$server`
+as `:notice` with `meta.numeric=306, severity=:ok` → predicate fired
+→ no badge. CI integration job FAILED on `0db7eef` (the CP20 close
+commit itself); CP20 close-out misclassified the failure as testnet
+flake without per-spec verification.
+
+**Root cause = boundary error.** The CP20 design conflated two
+shapes of "row produced by my action":
+1. Routed to a window the operator already inhabits (or just
+   created: ghost DM window after `/msg ghost`) — this IS echo;
+   alerting them is a false positive.
+2. Routed to `$server` (the per-network server-messages window) —
+   this is NOT echo: the window EXISTS to surface routed server
+   output. Suppressing it silences the very signal the window is
+   built to render.
+
+The discriminator is the **routing target**, not the row's
+`meta.numeric` shape alone. CP20's "yes all" answer to "all
+numerics or only error?" was right WITHIN scope (the original
+401-ghost case) but wrong outside it.
+
+**Predicate refinement.** One extra clause: `if (message.channel
+=== SERVER_WINDOW_NAME) return false;`. The 401-ghost case still
+fires (lands in the new ghost-nick query window, NOT $server). The
+306-to-$server case stops firing. CP20's two-call-site shape (badge
++ marker) survives unchanged.
+
+**Refactor: extract `SERVER_WINDOW_NAME` constant.** The literal
+`"$server"` was duplicated 6+ times across `compose.ts`,
+`subscribe.ts`, `Sidebar.tsx`, `BottomBar.tsx`. Adding a 7th call
+site (the predicate carve-out) on a magic string violated CLAUDE.md
+"Implement once, reuse everywhere." Promoted to
+`cicchetto/src/lib/windowKinds.ts` (the natural neighbor — same
+module owns the `WindowKind` discriminated union the cic-side
+window-shape cluster lives on). Drift between the cic literal and
+the server-side `{:server, nil}` fanout was only theoretical so
+far, but the constant pins it. Tests still use the literal in
+fixtures (test-data, not logic).
+
+**Lessons.**
+- **Don't claim LANDED on partial-CI evidence.** CP20 close-out
+  attributed the integration FAILURE to "testnet meltdown" without
+  inspecting the named failed spec — and S8 was a real semantic
+  regression, not a flake. Memory `feedback_landed_claim_evidence`
+  exists for exactly this.
+- **`meta.shape` ≠ "produced by my action."** Wire-shape carries
+  *production-site* info; *destination* requires a separate read.
+  The CP20 predicate took a shortcut that elided the destination
+  axis. The fix restores it.
+- **Magic strings are infrastructure liabilities.** A 7th call
+  site forced the refactor — the right time to extract a constant
+  is when adding a new use, not "later." The 6 call sites were
+  already a smell; this fix paid the debt.
+
 ---
 
 ## Design-hygiene rules in force

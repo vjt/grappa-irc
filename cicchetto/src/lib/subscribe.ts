@@ -22,6 +22,7 @@ import {
   setSelectedChannel,
 } from "./selection";
 import { joinChannel } from "./socket";
+import { SERVER_WINDOW_NAME } from "./windowKinds";
 import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from "./windowState";
 
 // WS subscription installer. Reactive side-effect module: imports for
@@ -577,17 +578,18 @@ createRoot(() => {
     }
   });
 
-  // BUG2: server-messages loop — one join per network targeting the "$server"
-  // synthetic channel. The server persists MOTD lines (375/372/376) and
-  // server-origin NOTICEs (those addressed to the user's nick, not a channel)
-  // to scrollback with channel = "$server". Without this subscription,
-  // Cicchetto would never receive those events and the :server window stays
-  // empty forever.
+  // BUG2: server-messages loop — one join per network targeting the
+  // server-window synthetic channel (SERVER_WINDOW_NAME). The server
+  // persists MOTD lines (375/372/376) and server-origin NOTICEs (those
+  // addressed to the user's nick, not a channel) to scrollback with
+  // channel = SERVER_WINDOW_NAME. Without this subscription, Cicchetto
+  // would never receive those events and the :server window stays empty
+  // forever.
   //
   // Uses `installChannelHandler` with ownNick=null — no self-JOIN/PART can
-  // arrive on the "$server" topic, so BUG4/5 detection is intentionally
-  // disabled. The key uses the literal "$server" string, matching how the
-  // server persists and broadcasts these rows.
+  // arrive on this topic, so BUG4/5 detection is intentionally
+  // disabled. The cic-side literal lives in windowKinds.ts as a single
+  // source matching how the server persists and broadcasts these rows.
   createEffect(() => {
     const t = token();
     const nets = networks();
@@ -595,10 +597,10 @@ createRoot(() => {
     const userName = socketUserName();
     if (!userName || !nets) return;
     for (const net of nets) {
-      const key = channelKey(net.slug, "$server");
+      const key = channelKey(net.slug, SERVER_WINDOW_NAME);
       if (joined.has(key)) continue;
-      const phx = joinChannel(userName, net.slug, "$server");
-      installChannelHandler(phx, net.slug, "$server", key, null);
+      const phx = joinChannel(userName, net.slug, SERVER_WINDOW_NAME);
+      installChannelHandler(phx, net.slug, SERVER_WINDOW_NAME, key, null);
       joined.set(key, phx);
     }
   });

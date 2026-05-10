@@ -21,6 +21,18 @@
 
 export type WindowKind = "channel" | "query" | "server" | "list" | "mentions";
 
+// The synthetic channel name used for the per-network server-messages
+// window (kind = "server"). Server-side `Grappa.Session.NumericRouter`
+// routes uncategorized server output (MOTD, untargeted NOTICEs, lifecycle
+// events, numerics with no useful param) to scrollback rows keyed on this
+// literal channel; cic subscribes to the per-channel WS topic for it,
+// renders the window in Sidebar/BottomBar, and the ComposeBox special-
+// cases it as a slash-only window. Single source: previously this literal
+// was duplicated in compose.ts, subscribe.ts (5×), Sidebar.tsx, and
+// BottomBar.tsx — drift between the cic-side string and the server-side
+// `{:server, nil}` fanout would silently break the window.
+export const SERVER_WINDOW_NAME = "$server";
+
 export type Window = {
   /** Stable string id for keying in UI lists. */
   id: string;

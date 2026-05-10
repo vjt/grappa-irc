@@ -18,11 +18,24 @@
 // ScrollbackPane.tsx (in-pane unread-marker count) call this so the two
 // signals stay aligned. Adding a new "operator-action echo" class (e.g.
 // labeled-response routed message kind) extends this one predicate.
+//
+// CP20-fix carve-out for $server window: numeric-derived NOTICEs routed
+// to the per-network server-messages window are NOT echoes — that window
+// EXISTS to surface routed server output (MOTD, RPL_NOWAWAY, untargeted
+// NOTICEs, lifecycle events). Suppressing them silences the very signal
+// the window is built to render. The original CP20 case (401 ghost-DM
+// suppression) survives: 401 lands in the new ghost-nick query window,
+// not in $server, so the predicate still fires there.
+//
+// The boundary is the routing TARGET (where the row landed), not the
+// row's `meta.numeric` shape alone.
 
 import type { ScrollbackMessage } from "./api";
+import { SERVER_WINDOW_NAME } from "./windowKinds";
 
 export const isOperatorActionEcho = (message: ScrollbackMessage): boolean => {
   if (message.kind !== "notice") return false;
+  if (message.channel === SERVER_WINDOW_NAME) return false;
   const meta = message.meta as { numeric?: unknown } | null | undefined;
   return typeof meta?.numeric === "number";
 };
