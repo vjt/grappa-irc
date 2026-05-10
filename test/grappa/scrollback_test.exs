@@ -701,6 +701,132 @@ defmodule Grappa.ScrollbackTest do
       assert Enum.map(page, & &1.body) == ["MOTD line"]
     end
 
+    test "own-nick query window: fetch/6 with own_nick narrows to self-msgs only",
+         %{user: user, network: net} do
+      # Self-msg (`/msg vjt-grappa hello`) — channel + dm_with both = own_nick.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "self note",
+          meta: %{},
+          dm_with: "vjt-grappa"
+        })
+
+      # Inbound DM from peer (channel = own_nick, dm_with = peer).
+      # Pre-fix this leaked into the own-nick window's fetch because
+      # `channel == "vjt-grappa"` matched the OR clause regardless of
+      # dm_with. (CP14-B3 commit 47866bc, observed prod-side 2026-05-10.)
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "CristoBOT",
+          body: "DIO LURIDISSIMO",
+          meta: %{},
+          dm_with: "CristoBOT"
+        })
+
+      # Outbound DM to peer (channel = peer) — also must NOT show in
+      # own-nick window. The 2nd inbound is the worst case (channel ==
+      # own_nick), this 3rd outbound is a sanity check on the symmetric
+      # path.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "CristoBOT",
+          server_time: 300,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "to bot",
+          meta: %{},
+          dm_with: "CristoBOT"
+        })
+
+      # Fetch own-nick window with own_nick provided — only the self-msg.
+      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10, "vjt-grappa")
+      assert Enum.map(page, & &1.body) == ["self note"]
+
+      # And fetch on the peer's window still returns the bidirectional
+      # conversation (sanity check that we didn't break the peer path).
+      peer_page = Scrollback.fetch({:user, user.id}, net.id, "CristoBOT", nil, 10, "vjt-grappa")
+
+      assert Enum.map(peer_page, &{&1.server_time, &1.body}) == [
+               {300, "to bot"},
+               {200, "DIO LURIDISSIMO"}
+             ]
+    end
+
+    test "own-nick narrowing is case-insensitive",
+         %{user: user, network: net} do
+      # Inbound DM from peer at the canonical own-nick channel.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "Vjt-Grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "peer",
+          body: "should NOT appear in own-nick window",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      # Self-msg at canonical own-nick.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "Vjt-Grappa",
+          server_time: 200,
+          kind: :privmsg,
+          sender: "Vjt-Grappa",
+          body: "self note",
+          meta: %{},
+          dm_with: "Vjt-Grappa"
+        })
+
+      # Caller passes a differently-cased own_nick — narrowing must still
+      # fire. IRC nicks are case-insensitive at the protocol level; the
+      # filter mirrors that.
+      page = Scrollback.fetch({:user, user.id}, net.id, "Vjt-Grappa", nil, 10, "VJT-GRAPPA")
+      assert Enum.map(page, & &1.body) == ["self note"]
+    end
+
+    test "fetch/5 wrapper preserves pre-fix peer-DM OR shape (own_nick = nil)",
+         %{user: user, network: net} do
+      # When the caller doesn't pass own_nick (e.g. tests, or the rare
+      # path where Session.current_nick returns :no_session), the OR
+      # filter still applies for nick-shaped targets. This test pins
+      # the back-compat behaviour of fetch/5.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "peer",
+          body: "inbound",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      # Without own_nick, the legacy OR shape includes the inbound row
+      # because channel == "vjt-grappa" matches.
+      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10)
+      assert Enum.map(page, & &1.body) == ["inbound"]
+    end
+
     test "DM fetch is per-subject — alice's DMs are not visible when fetching as vjt",
          %{user: vjt, network: net} do
       {:ok, alice} =

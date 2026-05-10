@@ -77,12 +77,29 @@ defmodule GrappaWeb.MessagesController do
     with :ok <- validate_target_name(channel),
          {:ok, cursor} <- parse_cursor(params["before"]),
          {:ok, limit} <- parse_limit(params["limit"]) do
-      # `:network` is preloaded by `Scrollback.fetch/5` itself —
+      # `:network` is preloaded by `Scrollback.fetch/6` itself —
       # the boundary contract returns wire-shape-ready rows. No
       # post-fetch preload helper here; A26 collapsed the
       # controller's `preload_networks/2` into the Scrollback
       # boundary so the contract is single-sourced.
-      messages = Scrollback.fetch(subject, network.id, channel, cursor, limit)
+      #
+      # `own_nick` resolves the live IRC nick for this `(subject,
+      # network)` so `Scrollback.fetch/6` can narrow the OWN-NICK
+      # query window's filter to self-msgs only — preventing every
+      # inbound DM (which the server stores at `channel = own_nick,
+      # dm_with = peer`) from leaking into the own-nick scrollback.
+      # `nil` falls back to the standard channel/peer-DM filter shape.
+      # Falls back to nil on `:no_session` (parked / unbootstrapped /
+      # transient supervisor restart) — the OR-shape for peer DMs is
+      # still safe; only own-nick narrowing is gated on session
+      # presence.
+      own_nick =
+        case Session.current_nick(subject, network.id) do
+          {:ok, nick} -> nick
+          {:error, :no_session} -> nil
+        end
+
+      messages = Scrollback.fetch(subject, network.id, channel, cursor, limit, own_nick)
 
       render(conn, :index, messages: messages)
     end

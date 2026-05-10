@@ -201,14 +201,47 @@ defmodule Grappa.Scrollback do
 
   @spec fetch(subject(), integer(), String.t(), integer() | nil, pos_integer()) ::
           [Message.t()]
-  def fetch(subject, network_id, channel, before, limit)
-      when is_integer(network_id) and is_integer(limit) and limit > 0 do
+  def fetch(subject, network_id, channel, before, limit),
+    do: fetch(subject, network_id, channel, before, limit, nil)
+
+  @doc """
+  Fetch with explicit `own_nick` for own-nick query window narrowing.
+
+  When `own_nick` matches the requested `channel` (case-insensitive), the
+  fetch restricts to self-msgs only — rows where both `channel` and
+  `dm_with` equal `own_nick`. Without this, the OR-shape filter from
+  `channel_or_dm_where/3` would pull every inbound DM the user ever
+  received (server stores inbound DMs at `channel = own_nick,
+  dm_with = peer`), polluting the own-nick query window with conversations
+  from every peer.
+
+  Pass `nil` for `own_nick` when the caller doesn't have it (channel-
+  shaped target fetches don't need it; tests with synthetic data don't
+  either). The 5-arity `fetch/5` is a thin wrapper that passes `nil`.
+
+  Origin: 2026-05-10 — vjt observed CristoBOT replies (and every other
+  peer's DMs) showing up in the `grappa` (own-nick) query window. Bug
+  shipped in CP14-B3 (commit 47866bc, 2026-05-07): the `:dm_with` field
+  + bidirectional fetch landed without the own-nick narrowing, so the
+  own-nick query window's REST fetch returned every inbound DM ever.
+  """
+  @spec fetch(
+          subject(),
+          integer(),
+          String.t(),
+          integer() | nil,
+          pos_integer(),
+          String.t() | nil
+        ) :: [Message.t()]
+  def fetch(subject, network_id, channel, before, limit, own_nick)
+      when is_integer(network_id) and is_integer(limit) and limit > 0 and
+             (is_binary(own_nick) or is_nil(own_nick)) do
     capped = min(limit, @max_limit)
 
     Message
     |> subject_where(subject)
     |> where([m], m.network_id == ^network_id)
-    |> channel_or_dm_where(channel)
+    |> channel_or_dm_where(channel, own_nick)
     |> maybe_before(before)
     |> order_by([m], desc: m.server_time, desc: m.id)
     |> limit(^capped)
@@ -318,11 +351,28 @@ defmodule Grappa.Scrollback do
   # window). Backfill in the migration covers as many historical
   # rows as the current credential's nick can identify; the
   # write-time path covers everything from CP14 B3 forward.
-  defp channel_or_dm_where(query, channel) when is_binary(channel) do
-    if dm_eligible?(channel) do
-      where(query, [m], m.channel == ^channel or m.dm_with == ^channel)
-    else
-      where(query, [m], m.channel == ^channel)
+  defp channel_or_dm_where(query, channel, own_nick) when is_binary(channel) do
+    cond do
+      # Own-nick query window: restrict to self-msgs only
+      # (`/msg <ownnick> body` rows where both channel + dm_with = ownnick).
+      # The peer-DM OR-shape would pull every inbound DM the user ever
+      # received because the server stores inbound at `channel = ownnick,
+      # dm_with = peer`. CP14-B3 (47866bc) shipped without this narrowing;
+      # vjt observed the bug 2026-05-10 (every CristoBOT reply leaked into
+      # the `grappa` window's scrollback).
+      is_binary(own_nick) and String.downcase(channel) == String.downcase(own_nick) ->
+        where(query, [m], m.channel == ^channel and m.dm_with == ^channel)
+
+      # Peer DM target (nick-shaped, NOT own-nick): outbound `/msg peer`
+      # lands at `channel = peer`; inbound `<peer> PRIVMSG ownnick` lands
+      # at `channel = ownnick AND dm_with = peer`. The OR matches both,
+      # giving the conversation view the user expects.
+      dm_eligible?(channel) ->
+        where(query, [m], m.channel == ^channel or m.dm_with == ^channel)
+
+      # Channel-shaped target (#chan, &local, etc.) — no DM aggregation.
+      true ->
+        where(query, [m], m.channel == ^channel)
     end
   end
 
