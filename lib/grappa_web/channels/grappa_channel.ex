@@ -452,6 +452,23 @@ defmodule GrappaWeb.GrappaChannel do
     end)
   end
 
+  # CP22 cluster B (channel-client-polish #14) — /who <#channel>. cic
+  # pushes after the operator types `/who #chan`; the channel relays to
+  # Session.send_who/3 which primes who_pending + emits WHO upstream.
+  # The 352/315 burst then folds into N+1 :persist :notice rows routed
+  # to the target channel (if joined) or $server (otherwise) — all
+  # downstream of this bridge, no extra wiring needed here.
+  def handle_in(
+        "who",
+        %{"network_id" => network_id, "channel" => channel},
+        socket
+      )
+      when is_integer(network_id) and is_binary(channel) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_who({:user, user.id}, network_id, channel)
+    end)
+  end
+
   # /umode +i  →  MODE own_nick +i
   def handle_in(
         "umode",
