@@ -147,7 +147,14 @@ const seedStubs = async () => {
 
 const fireMessageEvent = (
   channel: string,
-  msg: Partial<{ id: number; sender: string; body: string; server_time: number; kind: string }>,
+  msg: Partial<{
+    id: number;
+    sender: string;
+    body: string;
+    server_time: number;
+    kind: string;
+    meta: Record<string, unknown>;
+  }>,
 ) => {
   const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
     p: unknown,
@@ -162,7 +169,7 @@ const fireMessageEvent = (
       kind: msg.kind ?? "privmsg",
       sender: msg.sender ?? "bob",
       body: msg.body ?? "hi",
-      meta: {},
+      meta: msg.meta ?? {},
     },
   });
 };
@@ -331,6 +338,62 @@ describe("subscribe — WS join effect", () => {
     fireMessageEvent("#grappa", { id: 20, kind: "join", sender: "carol" });
     expect(store.eventsUnread()[key]).toBe(1);
     expect(store.messagesUnread()[key]).toBeUndefined();
+  });
+
+  // Server-numeric-derived NOTICE: routes to a window that the operator's
+  // own action targeted (e.g. /msg nonexistent_nick → server replies 401
+  // ERR_NOSUCHNICK, persisted as kind:"notice" with meta.numeric=401 in
+  // the target's query window). The operator owns the action — same
+  // semantic class as own-presence events (BUG5b). Must NOT bump unread.
+  // Wire shape: `meta.numeric` is the server-side discriminator
+  // (Session.Server.handle_numeric_with_routing → Wire.message_payload).
+  it("server-numeric notice does NOT bump unread on the routed window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    const key = channelKey("freenode", "#grappa");
+    fireMessageEvent("#grappa", {
+      id: 30,
+      kind: "notice",
+      sender: "raccooncity.azzurra.chat",
+      body: "No such nick/channel",
+      meta: { numeric: 401, severity: "error" },
+    });
+    expect(store.unreadCounts()[key]).toBeUndefined();
+    expect(store.messagesUnread()[key]).toBeUndefined();
+    expect(store.eventsUnread()[key]).toBeUndefined();
+  });
+
+  // Plain NOTICE without meta.numeric (peer-originated, e.g. NickServ
+  // greeting on identify, or another user's /notice) STILL bumps unread —
+  // it's a real unsolicited message, not feedback from operator action.
+  it("plain notice (no meta.numeric) bumps messagesUnread", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    const key = channelKey("freenode", "#grappa");
+    fireMessageEvent("#grappa", {
+      id: 31,
+      kind: "notice",
+      sender: "NickServ",
+      body: "You are now identified",
+      meta: {},
+    });
+    expect(store.messagesUnread()[key]).toBe(1);
   });
 
   it("does not increment unread when the event arrives on the selected channel", async () => {

@@ -10,6 +10,7 @@ import type { MemberEntry } from "./memberTypes";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
+import { isOperatorActionEcho } from "./operatorActionEcho";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { setReadCursor } from "./readCursor";
 import { appendToScrollback } from "./scrollback";
@@ -187,6 +188,15 @@ createRoot(() => {
       message.kind === "mode" ||
       message.kind === "kick";
     if (isOwnNick && isPresenceKind) return;
+
+    // Server-numeric-derived NOTICE: routed to the window the operator's
+    // own action targeted (e.g. /msg <nick> → ERR_NOSUCHNICK 401, persisted
+    // as kind:"notice" with meta.numeric=401). Same "operator owns it"
+    // semantics as own-presence above — the operator already saw the
+    // action that produced this server reply; surfacing it as unread is
+    // a false alert. Predicate shared with ScrollbackPane.tsx so the
+    // sidebar badge gate and the in-pane unread-marker stay aligned.
+    if (isOperatorActionEcho(message)) return;
 
     const sel = untrack(selectedChannel);
     const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;

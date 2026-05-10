@@ -1135,6 +1135,78 @@ describe("ScrollbackPane", () => {
       expect(marker).toHaveTextContent("3 unread");
     });
 
+    // Operator-action echoes (numeric-derived NOTICE rows like a 401
+    // ERR_NOSUCHNICK reply to /msg) must NOT be counted in the unread
+    // marker — they're feedback to the operator's own action, mirroring
+    // the subscribe.ts sidebar-badge gate. Without this exclusion, every
+    // /msg-to-ghost roundtrip pins a phantom "1 unread message" marker
+    // above the 401 reply in the operator's own query window.
+    it("does NOT count numeric-derived notice rows toward the unread marker", () => {
+      const ghostFixture: ScrollbackMessage[] = [
+        {
+          id: 10,
+          network: "freenode",
+          channel: "ghost",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "hi",
+          meta: {},
+        },
+        {
+          // 401 ERR_NOSUCHNICK reply — server-routed numeric, persisted
+          // via Session.Server.handle_numeric_with_routing.
+          id: 11,
+          network: "freenode",
+          channel: "ghost",
+          server_time: 1_700_000_001_000,
+          kind: "notice",
+          sender: "raccooncity.azzurra.chat",
+          body: "No such nick/channel",
+          meta: { numeric: 401, severity: "error" },
+        },
+      ];
+      // cursor sits after the operator's own PRIVMSG → only the 401
+      // notice has server_time > cursor. Without the predicate the
+      // marker would render "1 unread"; with it, no marker at all.
+      seedReadCursor("freenode", "ghost", 1_700_000_000_000);
+      setScrollback({ "freenode ghost": ghostFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="ghost" kind="query" />);
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
+    // Symmetry check: a peer-originated NOTICE (no meta.numeric) IS a
+    // real unsolicited message and MUST still produce the marker.
+    it("DOES count peer notice rows (no meta.numeric) toward the unread marker", () => {
+      const peerNoticeFixture: ScrollbackMessage[] = [
+        {
+          id: 20,
+          network: "freenode",
+          channel: "NickServ",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "identify pw",
+          meta: {},
+        },
+        {
+          id: 21,
+          network: "freenode",
+          channel: "NickServ",
+          server_time: 1_700_000_001_000,
+          kind: "notice",
+          sender: "NickServ",
+          body: "You are now identified",
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "NickServ", 1_700_000_000_000);
+      setScrollback({ "freenode NickServ": peerNoticeFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="NickServ" kind="query" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toHaveTextContent("1 unread");
+    });
+
     // Bug A repro (vjt step 5–8): the marker must DISAPPEAR when the cursor
     // advances past every visible msg's server_time — even when the
     // advance happens after the scrollback append, mid-mount.
