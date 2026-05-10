@@ -535,25 +535,41 @@ defmodule Grappa.Session.EventRouter do
 
   # 353 RPL_NAMREPLY: `:server 353 nick = #channel :@op +voice plain`.
   # Trailing param is space-separated `[prefix]nick` tokens. Additive
-  # merge into state.members[channel] — multiple 353 lines arrive for
-  # big channels. 366 RPL_ENDOFNAMES marks end; we don't need an
-  # explicit close because each 353 commits its delta immediately.
+  # merge into state.members[channel] ONLY when the channel is already
+  # tracked (i.e. self-JOIN created the entry) — multiple 353 lines
+  # arrive for big channels. 366 RPL_ENDOFNAMES marks end; we don't
+  # need an explicit close because each 353 commits its delta
+  # immediately.
+  #
+  # CP22 cluster B (channel-client-polish #14) — /names against a
+  # channel the operator is NOT joined to also triggers 353/366 from
+  # upstream. The merge into state.members MUST be gated on the entry
+  # already existing — otherwise a /names #other-chan would create a
+  # phantom membership entry and confuse every downstream consumer
+  # (sidebar, MembersPane, member-set leaks). When state.members has
+  # no entry for the channel, skip the merge entirely; the
+  # names_fold/3 call below still feeds the per-target accumulator,
+  # and the 366 drain emits the scrollback rows for non-joined targets.
   def route(
         %Message{command: {:numeric, 353}, params: [_, _, channel, names_blob]},
         state
       )
       when is_binary(channel) and is_binary(names_blob) do
-    new_entries =
-      names_blob
-      |> String.split(" ", trim: true)
-      |> Map.new(&split_mode_prefix/1)
+    tokens = String.split(names_blob, " ", trim: true)
 
     members =
-      Map.update(state.members, channel, new_entries, fn existing ->
-        Map.merge(existing, new_entries)
-      end)
+      case Map.fetch(state.members, channel) do
+        {:ok, existing} ->
+          new_entries = Map.new(tokens, &split_mode_prefix/1)
+          Map.put(state.members, channel, Map.merge(existing, new_entries))
 
-    {:cont, %{state | members: members}, []}
+        :error ->
+          state.members
+      end
+
+    state_with_members = %{state | members: members}
+
+    {:cont, names_fold(state_with_members, channel, tokens), []}
   end
 
   # 332 RPL_TOPIC: JOIN-time backfill — stores topic text in the topics cache.
@@ -626,13 +642,25 @@ defmodule Grappa.Session.EventRouter do
   # the channel topic; subscribe.ts invalidates its loadedChannels Set
   # and re-fetches GET /members, which now sees the fully-populated
   # state.members[channel].
+  #
+  # CP22 cluster B (channel-client-polish #14) — additionally drain the
+  # /names accumulator if `state.names_pending[channel_lower]` exists.
+  # The drain emits 2 :persist :notice effects (nick list row + EOF
+  # terminator) routed to `$server` ONLY when the operator is NOT in
+  # state.members[target] — joined targets defer to the members_seeded
+  # refresh path above (no scrollback rows). The accumulator is dropped
+  # in both cases.
   def route(
         %Message{command: {:numeric, 366}, params: [_, channel, _ | _]},
         state
       )
       when is_binary(channel) do
     members = Map.get(state.members, channel, %{})
-    {:cont, state, [{:members_seeded, channel, members}]}
+    members_seeded = {:members_seeded, channel, members}
+
+    {state_after_names, names_effects} = drain_names_pending(state, channel)
+
+    {:cont, state_after_names, [members_seeded | names_effects]}
   end
 
   # 311 RPL_WHOISUSER: `:server 311 own_nick target user host * :realname`.
@@ -1470,6 +1498,99 @@ defmodule Grappa.Session.EventRouter do
   @spec format_who_reply(String.t(), map()) :: String.t()
   defp format_who_reply(channel, reply) do
     "*** [#{channel}] #{reply.nick} #{reply.modes} #{reply.user}@#{reply.host} (#{reply.server}) :#{reply.realname || ""}"
+  end
+
+  # CP22 cluster B (channel-client-polish #14) — append the raw
+  # `[prefix]nick` tokens from a 353 RPL_NAMREPLY into the per-target
+  # /names accumulator at `state.names_pending[channel_lower].names`.
+  # Skips when no entry exists (the operator never issued a /names for
+  # this channel — the JOIN-time 353 still merges into state.members
+  # via the route's primary effect, this fold is purely additive).
+  # Multiple 353 lines arrive for big channels; tokens are appended in
+  # arrival order (single Enum.concat per call — small N, no LIFO needed
+  # since the 366 drain consumes the list as a single atom).
+  @spec names_fold(state(), String.t(), [String.t()]) :: state()
+  defp names_fold(state, channel, tokens)
+       when is_binary(channel) and is_list(tokens) do
+    pending = Map.get(state, :names_pending, %{})
+    chan_key = String.downcase(channel)
+
+    case Map.fetch(pending, chan_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        existing = Map.get(accum, :names, [])
+        merged = Map.put(accum, :names, existing ++ tokens)
+        %{state | names_pending: Map.put(pending, chan_key, merged)}
+    end
+  end
+
+  # CP22 cluster B — drain the /names accumulator on 366 RPL_ENDOFNAMES.
+  # Returns `{state_with_entry_removed, effects}`. Effects shape:
+  #   - no entry: `[]` (route's members_seeded effect still fires).
+  #   - entry exists, target IS in state.members: `[]` (joined target —
+  #     defer to members_seeded refresh; no scrollback rows). Entry is
+  #     still dropped to keep names_pending bounded.
+  #   - entry exists, target NOT in state.members: `[nick_list_row, eof_row]`
+  #     persisted to `$server`. The nick list row carries the full
+  #     `[prefix]nick` tokens in `meta.names`; the EOF row carries
+  #     `meta.names_target` for cic to scope rendering.
+  @spec drain_names_pending(state(), String.t()) ::
+          {state(), [effect()]}
+  defp drain_names_pending(state, channel) when is_binary(channel) do
+    pending = Map.get(state, :names_pending, %{})
+    chan_key = String.downcase(channel)
+
+    case Map.fetch(pending, chan_key) do
+      :error ->
+        {state, []}
+
+      {:ok, accum} ->
+        next_state = %{state | names_pending: Map.delete(pending, chan_key)}
+        target_display = Map.get(accum, :target_display, channel)
+        names = Map.get(accum, :names, [])
+
+        if Map.has_key?(state.members, target_display) do
+          {next_state, []}
+        else
+          sender = state.network_slug
+
+          {state_after_row, row_effect} =
+            build_persist(
+              next_state,
+              :notice,
+              "$server",
+              sender,
+              format_names_row(target_display, names),
+              %{numeric: 353, names_target: target_display, names: names}
+            )
+
+          {final_state, eof_effect} =
+            build_persist(
+              state_after_row,
+              :notice,
+              "$server",
+              sender,
+              "*** End of /NAMES list for #{target_display}",
+              %{numeric: 366, names_target: target_display}
+            )
+
+          {final_state, [row_effect, eof_effect]}
+        end
+    end
+  end
+
+  # CP22 cluster B — irssi-shape compact body for the /names nick-list
+  # row. Defensive readable payload: cic prefers `meta.names` structured
+  # render, but if scrollback replays without structured handling the
+  # body is still meaningful. Stable single-line format:
+  # `*** [#chan] nick1 nick2 nick3 ...`. Empty list (server returned
+  # nothing — RFC-violating or empty channel) renders as the bare prefix.
+  @spec format_names_row(String.t(), [String.t()]) :: String.t()
+  defp format_names_row(channel, []), do: "*** [#{channel}] (no names)"
+  defp format_names_row(channel, names) when is_list(names) do
+    "*** [#{channel}] #{Enum.join(names, " ")}"
   end
 
   # Evict userhost_cache entries for nicks that appear in no channel of

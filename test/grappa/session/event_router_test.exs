@@ -1059,8 +1059,15 @@ defmodule Grappa.Session.EventRouterTest do
   end
 
   describe "route/2 — numeric 353 RPL_NAMREPLY (members bootstrap)" do
-    test "353 populates state.members[channel] with prefix-stripped nicks + modes" do
-      state = base_state()
+    test "353 populates state.members[channel] with prefix-stripped nicks + modes when channel is already tracked" do
+      # CP22 cluster B (channel-client-polish #14): the 353 → state.members
+      # merge is gated on the channel ALREADY existing in state.members
+      # (i.e. self-JOIN created the entry). Without the gate, /names against
+      # a channel the operator is NOT joined to would create a phantom
+      # membership entry — which would corrupt every downstream consumer
+      # (sidebar, MembersPane, member-set leaks). Real-world flow: self-JOIN
+      # creates the entry with our own nick, then 353/366 merge the rest.
+      state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
 
       # `:server 353 vjt = #italia :@op_user +voiced_user plain_user`
       m =
@@ -1073,10 +1080,29 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, new_state, []} = EventRouter.route(m, state)
 
       assert new_state.members["#italia"] == %{
+               "vjt" => [],
                "op_user" => ["@"],
                "voiced_user" => ["+"],
                "plain_user" => []
              }
+    end
+
+    test "353 against an UNTRACKED channel does NOT create a phantom members entry (CP22 B-names gate)" do
+      # /names #not-joined-chan triggers a 353 from upstream. With the gate,
+      # state.members stays untouched — only state.names_pending feeds (when
+      # the operator primed the accumulator via send_names; bare 353 against
+      # untracked channel without a prior /names is dropped silently).
+      state = base_state(%{members: %{}})
+
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#unjoined", "@op_user +voiced_user plain_user"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.members == %{}
     end
 
     test "353 is additive — second line for the same channel merges" do
@@ -1742,6 +1768,142 @@ defmodule Grappa.Session.EventRouterTest do
       assert row_attrs.channel == "#bofh"
       assert {:persist, :notice, eof_attrs} = eof
       assert eof_attrs.channel == "#bofh"
+    end
+  end
+
+  # CP22 cluster B (channel-client-polish #14) — /names bundle aggregation.
+  # 353 RPL_NAMREPLY tokens append to state.names_pending[channel_lower].names;
+  # 366 RPL_ENDOFNAMES drains the entry into 2 :persist :notice effects
+  # (nick list row + EOF) WHEN the operator is NOT joined to the target.
+  # Joined targets defer to the existing JOIN-time members_seeded refresh.
+  describe "CP22 B-names — NAMES fold + 366 RPL_ENDOFNAMES drain" do
+    test "353 appends raw [prefix]nick tokens to names_pending[channel].names" do
+      state =
+        base_state(%{
+          names_pending: %{"#bofh" => %{target_display: "#bofh", names: []}}
+        })
+
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#bofh", "@alice +bob carol"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.names_pending["#bofh"][:names] == ["@alice", "+bob", "carol"]
+    end
+
+    test "353 across multiple lines appends in arrival order" do
+      state =
+        base_state(%{
+          names_pending: %{"#big" => %{target_display: "#big", names: ["@first"]}}
+        })
+
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#big", "+second third"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.names_pending["#big"][:names] == ["@first", "+second", "third"]
+    end
+
+    test "353 with no pending names entry leaves names_pending untouched" do
+      state = base_state(%{names_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#unsolicited", "@alice +bob"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.names_pending == %{}
+    end
+
+    test "366 with pending entry and NOT joined emits 2 :persist :notice rows to $server" do
+      state =
+        base_state(%{
+          members: %{},
+          names_pending: %{
+            "#bofh" => %{
+              target_display: "#bofh",
+              names: ["@alice", "+bob", "carol"]
+            }
+          }
+        })
+
+      m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.names_pending == %{}
+
+      # 3 effects: members_seeded (always fired) + row + eof (NOT joined).
+      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
+
+      assert {:persist, :notice, row_attrs} = row
+      assert row_attrs.channel == "$server"
+      assert row_attrs.meta.numeric == 353
+      assert row_attrs.meta.names_target == "#bofh"
+      assert row_attrs.meta.names == ["@alice", "+bob", "carol"]
+      assert row_attrs.body =~ "alice"
+
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.channel == "$server"
+      assert eof_attrs.meta.numeric == 366
+      assert eof_attrs.meta.names_target == "#bofh"
+      assert eof_attrs.body =~ "End of /NAMES"
+    end
+
+    test "366 with pending entry AND joined target drops accumulator without persisting rows" do
+      state =
+        base_state(%{
+          members: %{"#bofh" => %{"vjt" => []}},
+          names_pending: %{
+            "#bofh" => %{
+              target_display: "#bofh",
+              names: ["@alice", "+bob"]
+            }
+          }
+        })
+
+      m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.names_pending == %{}
+
+      # Only members_seeded — NO :persist effects (joined target = refresh
+      # MembersPane, not list rows).
+      assert [{:members_seeded, "#bofh", _}] = effects
+    end
+
+    test "366 with no pending entry only emits members_seeded (no /names was issued)" do
+      state = base_state(%{names_pending: %{}})
+
+      m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
+
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:members_seeded, "#bofh", _}] = effects
+    end
+
+    test "366 lookup is case-insensitive on target channel (RFC 2812 §2.2)" do
+      state =
+        base_state(%{
+          members: %{},
+          names_pending: %{"#bofh" => %{target_display: "#BOFH", names: ["alice"]}}
+        })
+
+      m = msg({:numeric, 366}, ["vjt", "#BOFH", "End of /NAMES list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.names_pending == %{}
+      assert [{:members_seeded, "#BOFH", _}, _row, eof] = effects
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.meta.names_target == "#BOFH"
     end
   end
 end
