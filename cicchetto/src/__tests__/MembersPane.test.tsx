@@ -1,4 +1,4 @@
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // CP15 B5: MembersPane no longer fetches /members. Server pushes
@@ -35,6 +35,16 @@ vi.mock("../lib/networks", () => ({
 // these render tests don't need to pull in its full dependency tree.
 vi.mock("../UserContextMenu", () => ({
   default: () => <div data-testid="context-menu-stub" />,
+}));
+
+// Spec #5 — left-click on a member opens a query window AND switches
+// focus. Stub queryWindows + selection so we can assert the verb calls
+// without dragging the real stores into render tests.
+vi.mock("../lib/queryWindows", () => ({
+  openQueryWindowState: vi.fn(),
+}));
+vi.mock("../lib/selection", () => ({
+  setSelectedChannel: vi.fn(),
 }));
 
 import MembersPane from "../MembersPane";
@@ -119,5 +129,50 @@ describe("MembersPane", () => {
     mockWindowState = {};
     render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
     expect(screen.getByText(/not joined/i)).toBeInTheDocument();
+  });
+
+  // Spec #5 — left-click on a member opens a query window for that nick
+  // AND switches focus. Right-click still opens the context menu (covered
+  // separately); the two click verbs do NOT compete (left vs right are
+  // independent MouseEvent buttons). The clickable target is a <button>
+  // nested inside the <li> (a11y: lists themselves are non-interactive
+  // per WAI-ARIA).
+  it("left-click on a member opens a query window AND switches focus to it", async () => {
+    const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [
+        { nick: "vjt", modes: ["@"] },
+        { nick: "alice", modes: ["+"] },
+      ],
+    };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const aliceBtn = document.querySelector(".member-voiced .member-name") as HTMLElement;
+    fireEvent.click(aliceBtn);
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "alice", expect.any(String));
+    expect(sel.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "alice",
+      kind: "query",
+    });
+  });
+
+  it("left-click is a no-op when network is unresolved (race: list arrives before networks)", async () => {
+    const { networks } = await import("../lib/networks");
+    // Cast: the mock factory above types `networks` as a `vi.fn(() => [...])`
+    // with the seed array's literal type; an empty replacement on a single
+    // call needs the matching shape. `as []` widens the empty literal
+    // appropriately for the once-call.
+    vi.mocked(networks).mockReturnValueOnce([] as never);
+    const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = { "freenode #italia": [{ nick: "alice", modes: [] }] };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const btn = document.querySelector(".member-plain .member-name") as HTMLElement;
+    fireEvent.click(btn);
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+    expect(sel.setSelectedChannel).not.toHaveBeenCalled();
   });
 });

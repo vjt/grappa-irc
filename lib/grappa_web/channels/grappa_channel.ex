@@ -85,6 +85,12 @@ defmodule GrappaWeb.GrappaChannel do
   - `"banlist"` — query the channel ban list. Payload: `%{"network_id" => id,
     "channel" => chan}`. Issues `MODE #chan b` (no sign); server replies with 367/368.
 
+  - `"whois"` — issue WHOIS on a nick. Payload: `%{"network_id" => id, "nick" => nick}`.
+    Server primes the per-target accumulator and emits `WHOIS nick`; EventRouter
+    folds 311/312/313/317/319 into a bundle and broadcasts it on `Topic.user/1`
+    when 318 RPL_ENDOFWHOIS arrives. Per spec #2: bundle is ephemeral — NOT
+    persisted in scrollback. cic renders inline via the `whois_bundle` event.
+
   - `"umode"` — user-mode change on own nick. Payload: `%{"network_id" => id,
     "modes" => modes}`.
 
@@ -423,6 +429,26 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) do
     dispatch_ops_verb(socket, fn user ->
       Session.send_banlist({:user, user.id}, network_id, channel)
+    end)
+  end
+
+  # C2 — /whois <nick>. Server primes the per-target accumulator and
+  # emits `WHOIS nick`; EventRouter folds 311/312/313/317/319 and 318
+  # broadcasts the bundle on `Topic.user/1`. Per spec #2: visitors not
+  # rejected here (WHOIS is a read-only query and the visitor session
+  # is allowed to issue it; the bundle's broadcast topic uses the
+  # visitor's `subject_label` so the visitor's own cic surface is the
+  # only consumer). `dispatch_ops_verb` IS used to short-circuit the
+  # visitor path — but that's wrong for WHOIS; use the user-only
+  # form-and-call helper instead.
+  def handle_in(
+        "whois",
+        %{"network_id" => network_id, "nick" => nick},
+        socket
+      )
+      when is_integer(network_id) and is_binary(nick) do
+    dispatch_ops_verb(socket, fn user ->
+      Session.send_whois({:user, user.id}, network_id, nick)
     end)
   end
 

@@ -22,6 +22,7 @@ import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrol
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import UserContextMenu from "./UserContextMenu";
+import WhoisCard from "./WhoisCard";
 
 // Right-pane component: pure projection of the per-channel scrollback list.
 // Mounted by `Shell.tsx` only when `selectedChannel()` is non-null; the
@@ -746,6 +747,12 @@ const ScrollbackPane: Component<Props> = (props) => {
       <Show when={bannerState() === "visible"}>
         <JoinBanner />
       </Show>
+      {/* C2 — WHOIS card renders inline above the scrollback when a
+          bundle exists for the selected window's network. The card
+          itself short-circuits to null when no bundle is present, but
+          we gate the mount on networkSlug being a string to avoid
+          subscribing the signal from non-channel renders. */}
+      <WhoisCard networkSlug={props.networkSlug} />
       <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
         <Show
           when={(messages()?.length ?? 0) > 0}

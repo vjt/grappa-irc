@@ -1425,4 +1425,176 @@ defmodule Grappa.Session.EventRouterTest do
       end
     end
   end
+
+  # C2 — WHOIS bundle aggregation. EventRouter folds 311/312/313/317/319
+  # into state.whois_pending[target_lower] when the operator has set up
+  # an entry (via Server's :send_whois handler). 318 emits the bundle
+  # effect and drops the entry. Unsolicited WHOIS numerics (no entry)
+  # are silently ignored — the user never asked.
+  describe "route/2 — C2 WHOIS bundle aggregation" do
+    defp whois_pending_state(target_display) do
+      base_state(%{
+        whois_pending: %{
+          String.downcase(target_display) => %{target_display: target_display}
+        }
+      })
+    end
+
+    test "311 RPL_WHOISUSER folds user/host/realname into whois_pending entry" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 311},
+          ["vjt", "alice", "alice_u", "alice.host", "*", "Alice Realname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.whois_pending["alice"][:user] == "alice_u"
+      assert new_state.whois_pending["alice"][:host] == "alice.host"
+      assert new_state.whois_pending["alice"][:realname] == "Alice Realname"
+      # userhost_cache also still updates (existing S2.4 behaviour).
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+    end
+
+    test "311 with no whois_pending entry only updates userhost_cache (no fold)" do
+      state = base_state(%{userhost_cache: %{}, whois_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 311},
+          ["vjt", "alice", "alice_u", "alice.host", "*", "Alice Realname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
+      assert new_state.whois_pending == %{}
+    end
+
+    test "312 RPL_WHOISSERVER folds server + server_info" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 312},
+          ["vjt", "alice", "irc.azzurra.org", "Azzurra Hub"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:server] == "irc.azzurra.org"
+      assert new_state.whois_pending["alice"][:server_info] == "Azzurra Hub"
+    end
+
+    test "313 RPL_WHOISOPERATOR folds is_operator: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 313},
+          ["vjt", "alice", "is an IRC operator"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_operator] == true
+    end
+
+    test "317 RPL_WHOISIDLE folds idle_seconds + signon (3-arg shape)" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 317},
+          ["vjt", "alice", "42", "1700000000", "seconds idle, signon time"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:idle_seconds] == 42
+      assert new_state.whois_pending["alice"][:signon] == 1_700_000_000
+    end
+
+    test "317 with only idle_seconds (no signon) folds idle_seconds; signon absent" do
+      state = whois_pending_state("alice")
+
+      m = msg({:numeric, 317}, ["vjt", "alice", "42", "seconds idle"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:idle_seconds] == 42
+      refute Map.has_key?(new_state.whois_pending["alice"], :signon)
+    end
+
+    test "319 RPL_WHOISCHANNELS folds the channels list (split on whitespace, prefixes preserved)" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 319},
+          ["vjt", "alice", "@#italia +#grappa #lobby"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:channels] == ["@#italia", "+#grappa", "#lobby"]
+    end
+
+    test "319 chunks across multiple lines append (not overwrite)" do
+      state = whois_pending_state("alice")
+
+      m1 = msg({:numeric, 319}, ["vjt", "alice", "@#a +#b"], {:server, "irc.test.org"})
+      m2 = msg({:numeric, 319}, ["vjt", "alice", "#c #d"], {:server, "irc.test.org"})
+
+      {:cont, s1, []} = EventRouter.route(m1, state)
+      {:cont, s2, []} = EventRouter.route(m2, s1)
+      assert s2.whois_pending["alice"][:channels] == ["@#a", "+#b", "#c", "#d"]
+    end
+
+    test "318 RPL_ENDOFWHOIS emits :whois_bundle effect with accum + drops entry" do
+      state =
+        base_state(%{
+          whois_pending: %{
+            "alice" => %{
+              target_display: "Alice",
+              user: "alice_u",
+              host: "alice.host",
+              realname: "Alice Liddell"
+            }
+          }
+        })
+
+      m = msg({:numeric, 318}, ["vjt", "Alice", "End of /WHOIS list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:whois_bundle, target, accum}]} = EventRouter.route(m, state)
+      assert target == "Alice"
+      assert accum[:user] == "alice_u"
+      assert accum[:realname] == "Alice Liddell"
+      assert new_state.whois_pending == %{}
+    end
+
+    test "318 with no pending entry is silently ignored (unsolicited)" do
+      state = base_state(%{whois_pending: %{}})
+
+      m = msg({:numeric, 318}, ["vjt", "ghost", "End of /WHOIS list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending == %{}
+    end
+
+    test "318 lookup is case-insensitive on target nick (RFC 2812 §2.2)" do
+      state =
+        base_state(%{whois_pending: %{"alice" => %{target_display: "alice", user: "u"}}})
+
+      # Server may echo a different case for the target than what the user typed.
+      m = msg({:numeric, 318}, ["vjt", "ALICE", "End of /WHOIS list"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:whois_bundle, _, accum}]} = EventRouter.route(m, state)
+      assert accum[:user] == "u"
+      assert new_state.whois_pending == %{}
+    end
+  end
 end

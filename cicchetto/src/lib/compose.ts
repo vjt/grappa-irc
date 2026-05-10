@@ -27,6 +27,7 @@ import {
   pushWatchlistAdd,
   pushWatchlistDel,
   pushWatchlistList,
+  pushWhois,
 } from "./socket";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
 
@@ -463,6 +464,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           return { error: "/list: server-side handler not yet implemented (future bucket)" };
         case "links":
           return { error: "/links: server-side handler not yet implemented (future bucket)" };
+        // ---------------------------------------------------------------
+        // C2 — /whois <nick>. Push on the user-level channel; the server
+        // primes its accumulator and emits WHOIS upstream. The bundle
+        // arrives later as `whois_bundle` on the user topic
+        // (handled by userTopic.ts → setWhoisBundle). Active-window-
+        // independent: WHOIS works from any window kind because the
+        // bundle render targets the active window at arrival time.
+        // ---------------------------------------------------------------
+        case "whois": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/whois: network not found" };
+          pushWhois(networkId, cmd.nick);
+          result = { ok: true };
+          break;
+        }
         // ---------------------------------------------------------------
         // Watchlist verbs — C8.3 real plumbing.
         // Push on the user-level channel; server replies {patterns: string[]}.

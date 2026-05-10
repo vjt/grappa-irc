@@ -225,6 +225,58 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "whois_bundle/3" do
+    test "projects the accum map into the wire shape with kind: injected" do
+      accum = %{
+        user: "alice_u",
+        host: "alice.host",
+        realname: "Alice Liddell",
+        server: "irc.azzurra.org",
+        server_info: "Azzurra Hub",
+        is_operator: true,
+        idle_seconds: 42,
+        signon: 1_700_000_000,
+        channels: ["@#italia", "+#grappa"]
+      }
+
+      payload = Wire.whois_bundle("azzurra", "alice", accum)
+
+      assert payload == %{
+               kind: "whois_bundle",
+               network: "azzurra",
+               target: "alice",
+               user: "alice_u",
+               host: "alice.host",
+               realname: "Alice Liddell",
+               server: "irc.azzurra.org",
+               server_info: "Azzurra Hub",
+               is_operator: true,
+               idle_seconds: 42,
+               signon: 1_700_000_000,
+               channels: ["@#italia", "+#grappa"]
+             }
+    end
+
+    test "tolerates an empty accum (no numerics fired before 318) — every field nil; is_operator false" do
+      payload = Wire.whois_bundle("azzurra", "ghost", %{})
+
+      assert payload == %{
+               kind: "whois_bundle",
+               network: "azzurra",
+               target: "ghost",
+               user: nil,
+               host: nil,
+               realname: nil,
+               server: nil,
+               server_info: nil,
+               is_operator: false,
+               idle_seconds: nil,
+               signon: nil,
+               channels: nil
+             }
+    end
+  end
+
   describe "kind: discriminator string contract" do
     test "every Wire fn output carries kind: as a String.t()" do
       payloads = [
@@ -238,7 +290,8 @@ defmodule Grappa.Session.WireTest do
         Wire.join_failed("net", "#c", "r", 473),
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", "present"),
-        Wire.mentions_bundle("net", "from", "to", nil, [])
+        Wire.mentions_bundle("net", "from", "to", nil, []),
+        Wire.whois_bundle("net", "alice", %{})
       ]
 
       for p <- payloads do
