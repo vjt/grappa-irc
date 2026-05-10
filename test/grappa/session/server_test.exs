@@ -4160,6 +4160,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} = Session.send_umode({:user, uid}, 9_999, "+i")
       assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
       assert {:error, :no_session} = Session.send_whois({:user, uid}, 9_999, "alice")
+      assert {:error, :no_session} = Session.send_who({:user, uid}, 9_999, "#bofh")
     end
   end
 
@@ -4263,6 +4264,42 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "whois_bundle"} = bundle}, 1_500
       assert bundle.user == "alice_u"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # CP22 B-who — /who <#chan> sends WHO upstream + bundles 352 RPL_WHOREPLY
+  # rows + 315 RPL_ENDOFWHO terminator into N+1 :notice rows persisted in
+  # the joined channel (or $server fallback when not joined). Wire payload
+  # carries structured meta.who = {nick, modes, user, host, server, hops,
+  # realname} so cic can render irssi-shape tabular without re-parsing.
+  # ---------------------------------------------------------------------------
+
+  describe "CP22 B-who — /who bundle aggregation + scrollback persist" do
+    setup do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {:ok, server} = IRCServer.start_link(handler)
+      port = IRCServer.port(server)
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
+      pid = start_session_for(user, network)
+      Process.sleep(50)
+      %{server: server, user: user, network: network, pid: pid}
+    end
+
+    test "/who #channel sends WHO upstream", %{server: server, user: user, network: network, pid: pid} do
+      assert :ok = Session.send_who({:user, user.id}, network.id, "#bofh")
+
+      assert {:ok, "WHO #bofh\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "WHO #bofh\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

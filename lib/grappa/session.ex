@@ -795,6 +795,30 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `WHO <channel>` upstream and primes the per-target accumulator
+  in `state.who_pending` so EventRouter folds 352 RPL_WHOREPLY rows
+  into a bundle. The bundle is persisted as N+1 `:notice` scrollback
+  rows when 315 RPL_ENDOFWHO arrives — one row per WHO reply plus one
+  terminator row, routed to the WHO target channel if joined,
+  otherwise the synthetic `$server` window.
+
+  Per CP22 cluster B (channel-client-polish #14): rows are persisted
+  in scrollback (NOT ephemeral) and replay on next page load. Wire
+  payload carries structured `meta.who = {nick, modes, user, host,
+  server, hops, realname}` so cic renders irssi-shape tabular without
+  re-parsing IRC.
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the channel syntax is rejected by `Grappa.IRC.Client.send_who/2`.
+  """
+  @spec send_who(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_who(subject, network_id, channel)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
+    call_session(subject, network_id, {:send_who, channel})
+  end
+
+  @doc """
   Sends `MODE <own_nick> <modes>` upstream — user-mode change on own nick.
   The own nick is read from Session.Server state (populated at 001).
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`

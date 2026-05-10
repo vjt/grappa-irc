@@ -309,7 +309,15 @@ defmodule Grappa.Session.Server do
           # EventRouter on 311/312/313/317/319 and drained by 318
           # RPL_ENDOFWHOIS into a `{:whois_bundle, target, accum}` effect.
           # Bounded by in-flight /whois commands (typically 0-1 at a time).
-          whois_pending: %{String.t() => map()}
+          whois_pending: %{String.t() => map()},
+          # CP22 cluster B — per-target WHO accumulator. Keyed by
+          # lowercased target channel. Entry shape:
+          # `%{target_display: String.t(), replies: [map()]}` where each
+          # reply is `%{nick, modes, user, host, server, hops, realname}`.
+          # Populated by EventRouter on 352 RPL_WHOREPLY and drained by
+          # 315 RPL_ENDOFWHO into a `{:who_bundle, target, accum}` effect.
+          # Bounded by in-flight /who commands (typically 0-1 at a time).
+          who_pending: %{String.t() => map()}
         }
 
   ## API
@@ -400,7 +408,13 @@ defmodule Grappa.Session.Server do
       # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
       # drops it. Bounded by in-flight WHOIS commands (typically 0-1 at a
       # time). NOT persisted across crashes.
-      whois_pending: %{}
+      whois_pending: %{},
+      # CP22 cluster B — pending WHO accumulators keyed by lowercased
+      # target channel. Set up on `:send_who`; 352 RPL_WHOREPLY rows fold
+      # into the entry; 315 RPL_ENDOFWHO emits `{:who_bundle, ...}` and
+      # drops it. Bounded by in-flight /who commands (typically 0-1 at a
+      # time). NOT persisted across crashes.
+      who_pending: %{}
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -664,6 +678,23 @@ defmodule Grappa.Session.Server do
     next_pending = Map.put(state.whois_pending, nick_key, %{target_display: target})
     next_state = %{state | whois_pending: next_pending}
     {:reply, Client.send_whois(state.client, target), next_state}
+  end
+
+  # CP22 cluster B (channel-client-polish #14) — /who <#channel>. Two
+  # effects: (1) prime the accumulator entry in state.who_pending so
+  # EventRouter folds 352 RPL_WHOREPLY rows into it; (2) emit
+  # `WHO #channel\r\n`. The entry's `target_display` is the user-typed
+  # channel (case preserved); EventRouter normalises to lowercase for
+  # the lookup key. Replaces any prior accumulator for the same target
+  # (running /who twice without an 315 in between drops the first).
+  # On send_line failure the accumulator stays primed — a transient
+  # send error doesn't strand the WHO flow because no numerics will
+  # arrive to drain it; harmless until the next /who replaces the entry.
+  def handle_call({:send_who, target}, _, state) when is_binary(target) do
+    chan_key = String.downcase(target)
+    next_pending = Map.put(state.who_pending, chan_key, %{target_display: target, replies: []})
+    next_state = %{state | who_pending: next_pending}
+    {:reply, Client.send_who(state.client, target), next_state}
   end
 
   # User-mode change on own nick. Uses state.nick (reconciled at 001).

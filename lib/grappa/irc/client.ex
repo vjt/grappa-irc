@@ -349,6 +349,23 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `WHO <channel>\\r\\n`. Validates channel syntax with
+  `{:error, :invalid_line}` on rejection. The single-target form is
+  the ergonomic call shape — RFC 2812 §3.6.1 allows a server-side
+  mask + an `o` flag, both out of MVP scope.
+
+  Numerics 352 RPL_WHOREPLY (one per matching user) + 315 RPL_ENDOFWHO
+  (terminator) reply with the WHO list. EventRouter folds 352 into
+  `state.who_pending` and emits `{:who_bundle, target, accum}` on 315.
+  """
+  @spec send_who(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_who(client, channel) do
+    if Identifier.valid_channel?(channel),
+      do: send_line(client, "WHO #{channel}\r\n"),
+      else: reject_invalid_line(:who)
+  end
+
+  @doc """
   Sends `MODE <nick> <modes>\\r\\n` — user-mode change on the
   caller-supplied nick. The caller (`Grappa.Session.Server`) passes
   its `state.nick` as the nick arg so this helper stays a pure
@@ -408,6 +425,8 @@ defmodule Grappa.IRC.Client do
            | :umode
            | :topic_clear
            | :whois
+           | :who
+           | :names
 
   @spec reject_invalid_line(verb()) :: {:error, :invalid_line}
   defp reject_invalid_line(verb) do
