@@ -1,6 +1,7 @@
 import { type Component, createSignal, For, Show } from "solid-js";
 import { displayNick } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
+import { memberSigil } from "./lib/memberSigil";
 import { type MemberEntry, membersByChannel } from "./lib/members";
 import { networks, user } from "./lib/networks";
 import { openQueryWindowState } from "./lib/queryWindows";
@@ -10,8 +11,15 @@ import UserContextMenu from "./UserContextMenu";
 
 // Right-pane member list. Reads from `membersByChannel`; renders each
 // entry with a mode-tier class (.member-op / .member-voiced /
-// .member-plain) that the stylesheet uses to colour the nick + emit a
-// prefix (@ / + / space) via ::before.
+// .member-plain) that the stylesheet uses to colour the nick. The
+// prefix sigil (@ / + / space) is rendered as the first character of
+// the click button's text content via `memberSigil/1` — NOT via CSS
+// `::before` content. Why: see memory
+// `feedback_css_block_button_wraps_inline_prefix` — a `width: 100%`
+// block-level button inside an li with a `::before` inline prefix
+// wraps the button to a new line below the prefix and gets clipped by
+// the li's `overflow: hidden`. Putting the prefix in DOM text content
+// keeps the entire row in one inline flow.
 //
 // CP15 B5: render branches now key on `windowStateByChannel[key]`:
 //   * state ∉ {joined}    → "not joined" muted text. No fetch ever.
@@ -109,6 +117,7 @@ const MembersPane: Component<Props> = (props) => {
                     onClick={() => onClick(m.nick)}
                     onContextMenu={(e) => onContextMenu(e, m.nick)}
                   >
+                    {memberSigil(m.modes)}
                     {m.nick}
                   </button>
                 </li>

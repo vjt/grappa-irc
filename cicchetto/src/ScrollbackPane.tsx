@@ -11,6 +11,7 @@ import {
 import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { topicByChannel } from "./lib/channelTopic";
+import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
@@ -394,13 +395,9 @@ const ScrollbackLine: Component<{
   );
 };
 
-// Returns the PREFIX sigil for a member: "@" for op, "+" for voiced, "" for plain.
-// Mirrors the MembersPane rendering convention and the IRC RFC PREFIX ISUPPORT.
-const memberSigil = (modes: string[]): string => {
-  if (modes.includes("@")) return "@";
-  if (modes.includes("+")) return "+";
-  return "";
-};
+// `memberSigil` derives the rendered prefix for a member's modes; it
+// lives in `lib/memberSigil.ts` so MembersPane reuses it (one source of
+// truth for sigil derivation).
 
 type BannerState = "hidden" | "visible";
 

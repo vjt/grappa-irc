@@ -855,25 +855,21 @@ body {
   color: var(--mode-op);
 }
 
-.members-pane li.member-op::before {
-  content: "@";
-}
-
 .members-pane li.member-voiced {
   color: var(--mode-voiced);
-}
-
-.members-pane li.member-voiced::before {
-  content: "+";
 }
 
 .members-pane li.member-plain {
   color: var(--mode-plain);
 }
 
-.members-pane li.member-plain::before {
-  content: " ";
-}
+/* The mode-prefix sigil (@/+/space) is rendered as the first character
+ * of the click button's text content via `memberSigil/1` in
+ * `lib/memberSigil.ts` — NOT via CSS `::before`. The previous `::before
+ * { content: "@" | "+" | " " }` shape clipped the nick text when paired
+ * with the Spec #5 `width: 100%` block-level button (the button wrapped
+ * to a new line below the prefix; `overflow: hidden` clipped it). See
+ * memory `feedback_css_block_button_wraps_inline_prefix`. */
 
 /* Spec #5 — clickable nick button inside member-list <li>. The <button>
  * wrapper exists for a11y (lists are non-interactive per WAI-ARIA);
