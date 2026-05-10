@@ -336,6 +336,19 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `WHOIS <nick>\\r\\n`. Validates nick syntax with
+  `{:error, :invalid_line}` on rejection. The single-target form is the
+  ergonomic call shape — multi-target WHOIS (RFC 2812 §3.6.2 allows a
+  comma-separated list AND a server prefix arg) is out of MVP scope.
+  """
+  @spec send_whois(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_whois(client, nick) do
+    if Identifier.valid_nick?(nick),
+      do: send_line(client, "WHOIS #{nick}\r\n"),
+      else: reject_invalid_line(:whois)
+  end
+
+  @doc """
   Sends `MODE <nick> <modes>\\r\\n` — user-mode change on the
   caller-supplied nick. The caller (`Grappa.Session.Server`) passes
   its `state.nick` as the nick arg so this helper stays a pure

@@ -301,7 +301,15 @@ defmodule Grappa.Session.Server do
           # when 005 RPL_ISUPPORT arrives with a MODES= token. Kept as a
           # bounded integer on state (not a generic ISUPPORT map) to stay
           # minimal — only MODES= is consumed server-side for now.
-          modes_per_chunk: pos_integer()
+          modes_per_chunk: pos_integer(),
+          # C2 — per-target WHOIS accumulator. Keyed by lowercased target
+          # nick. Entry shape (all fields optional except target_display):
+          # `%{target_display, user, host, realname, server, server_info,
+          # is_operator, idle_seconds, signon, channels}`. Populated by
+          # EventRouter on 311/312/313/317/319 and drained by 318
+          # RPL_ENDOFWHOIS into a `{:whois_bundle, target, accum}` effect.
+          # Bounded by in-flight /whois commands (typically 0-1 at a time).
+          whois_pending: %{String.t() => map()}
         }
 
   ## API
@@ -386,7 +394,13 @@ defmodule Grappa.Session.Server do
       caps_active: MapSet.new(),
       labels_pending: %{},
       last_command_window: nil,
-      modes_per_chunk: 3
+      modes_per_chunk: 3,
+      # C2 — pending WHOIS accumulators keyed by lowercased target nick.
+      # Set up on `:send_whois` (the operator issued /whois); 311/312/313/
+      # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
+      # drops it. Bounded by in-flight WHOIS commands (typically 0-1 at a
+      # time). NOT persisted across crashes.
+      whois_pending: %{}
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -634,6 +648,22 @@ defmodule Grappa.Session.Server do
   # Banlist query form — no sign, just the mode letter.
   def handle_call({:send_banlist, channel}, _, state) when is_binary(channel) do
     {:reply, Client.send_banlist(state.client, channel), state}
+  end
+
+  # C2 — /whois <nick>. Two effects: (1) prime the accumulator entry in
+  # state.whois_pending so EventRouter folds 311/312/313/317/319 into it;
+  # (2) emit `WHOIS nick\r\n`. The entry's `target_display` is the user-
+  # typed nick (case preserved); EventRouter normalises to lowercase for
+  # the lookup key. Replaces any prior accumulator for the same target
+  # (running /whois twice without an 318 in between drops the first).
+  # On send_line failure the accumulator stays primed — a transient send
+  # error doesn't strand the whois flow because no numerics will arrive
+  # to drain it; harmless until the next /whois replaces the entry.
+  def handle_call({:send_whois, target}, _, state) when is_binary(target) do
+    nick_key = String.downcase(target)
+    next_pending = Map.put(state.whois_pending, nick_key, %{target_display: target})
+    next_state = %{state | whois_pending: next_pending}
+    {:reply, Client.send_whois(state.client, target), next_state}
   end
 
   # User-mode change on own nick. Uses state.nick (reconciled at 001).
@@ -1774,6 +1804,20 @@ defmodule Grappa.Session.Server do
       state
       | window_state: WindowState.set_kicked(state.window_state, channel, by, reason)
     }
+
+    apply_effects(rest, state)
+  end
+
+  # C2 — WHOIS bundle complete (318 RPL_ENDOFWHOIS). Broadcast the
+  # aggregated payload on the user-level topic. Per spec #2: ephemeral
+  # — NOT persisted in scrollback. cic's `whoisCard.ts` keys by network
+  # and replaces on each new bundle.
+  defp apply_effects([{:whois_bundle, target, accum} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.whois_bundle(state.network_slug, target, accum)
+      )
 
     apply_effects(rest, state)
   end

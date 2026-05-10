@@ -102,12 +102,15 @@ const MembersPane: Component<Props> = (props) => {
           <ul>
             <For each={list()}>
               {(m) => (
-                <li
-                  class={tierClass(m.modes)}
-                  onClick={() => onClick(m.nick)}
-                  onContextMenu={(e) => onContextMenu(e, m.nick)}
-                >
-                  {m.nick}
+                <li class={tierClass(m.modes)}>
+                  <button
+                    type="button"
+                    class="member-name"
+                    onClick={() => onClick(m.nick)}
+                    onContextMenu={(e) => onContextMenu(e, m.nick)}
+                  >
+                    {m.nick}
+                  </button>
                 </li>
               )}
             </For>

@@ -8,6 +8,7 @@ import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks"
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
+import { setWhoisBundle } from "./whoisCard";
 import { setPending } from "./windowState";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -123,6 +124,40 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         to: r.to,
         reason: r.reason as string | null,
         at: r.at as string | null,
+      };
+    case "whois_bundle":
+      // C2 — every numeric-derived field is nullable; only network +
+      // target are required. is_operator + channels also tolerate
+      // missing values (boolean false / null) per Wire.whois_bundle/3
+      // shape. Defensive: any malformed shape returns null and the
+      // dispatcher logs + drops.
+      if (
+        typeof r.network !== "string" ||
+        typeof r.target !== "string" ||
+        (r.user !== null && typeof r.user !== "string") ||
+        (r.host !== null && typeof r.host !== "string") ||
+        (r.realname !== null && typeof r.realname !== "string") ||
+        (r.server !== null && typeof r.server !== "string") ||
+        (r.server_info !== null && typeof r.server_info !== "string") ||
+        typeof r.is_operator !== "boolean" ||
+        (r.idle_seconds !== null && typeof r.idle_seconds !== "number") ||
+        (r.signon !== null && typeof r.signon !== "number") ||
+        (r.channels !== null && !Array.isArray(r.channels))
+      )
+        return null;
+      return {
+        kind: "whois_bundle",
+        network: r.network,
+        target: r.target,
+        user: r.user as string | null,
+        host: r.host as string | null,
+        realname: r.realname as string | null,
+        server: r.server as string | null,
+        server_info: r.server_info as string | null,
+        is_operator: r.is_operator,
+        idle_seconds: r.idle_seconds as number | null,
+        signon: r.signon as number | null,
+        channels: r.channels as string[] | null,
       };
     default:
       return null;
@@ -249,6 +284,19 @@ createRoot(() => {
           // arm.
           setPending(channelKey(payload.network, payload.channel));
           return;
+
+        case "whois_bundle": {
+          // C2 — WHOIS reply complete (server's 318 RPL_ENDOFWHOIS).
+          // Replace any prior bundle for this network and let the
+          // ScrollbackPane render the WhoisCard at the top of the
+          // active window. Focus-rule: per spec #2, the bundle renders
+          // INLINE in the window the user typed /whois from, NOT in
+          // the $server window. We don't switch focus — the user is
+          // already on the issuing window when the reply arrives.
+          const { kind: _omit, ...bundle } = payload;
+          setWhoisBundle(payload.network, bundle);
+          return;
+        }
 
         default:
           assertNever(payload);

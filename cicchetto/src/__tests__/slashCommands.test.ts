@@ -16,8 +16,18 @@ describe("parseSlash — basics", () => {
   });
 
   it("unknown verb surfaces as error with the original verb", () => {
-    const result = parseSlash("/whois alice");
-    expect(result).toMatchObject({ kind: "error", verb: "whois" });
+    const result = parseSlash("/notarealverbatall foo");
+    expect(result).toMatchObject({ kind: "error", verb: "notarealverbatall" });
+  });
+});
+
+describe("parseSlash — /whois (C2)", () => {
+  it("/whois <nick> parses to {kind: 'whois', nick}", () => {
+    expect(parseSlash("/whois alice")).toEqual({ kind: "whois", nick: "alice" });
+  });
+
+  it("/whois bare → error (nick required)", () => {
+    expect(parseSlash("/whois")).toMatchObject({ kind: "error", verb: "whois" });
   });
 });
 

@@ -76,6 +76,7 @@ defmodule Grappa.Session.Wire do
           | :kicked
           | :away_confirmed
           | :mentions_bundle
+          | :whois_bundle
 
   @type channels_changed_payload :: %{kind: String.t()}
 
@@ -159,6 +160,31 @@ defmodule Grappa.Session.Wire do
           away_ended_at: String.t(),
           away_reason: String.t() | nil,
           messages: [mentions_bundle_message()]
+        }
+
+  @typedoc """
+  WHOIS bundle — the aggregated reply to a `/whois <nick>` issued by
+  the operator. Fields are populated as the corresponding numerics
+  arrive (311/312/313/317/319) and the bundle is broadcast on
+  `318 RPL_ENDOFWHOIS`. Every field is nullable: a stripped-down
+  upstream (or a non-existent target) may emit only 318, in which case
+  the bundle has only `target` populated and cic renders a "no such
+  nick" surface. `channels` is the joined list from 319 RPL_WHOISCHANNELS
+  (with mode prefixes preserved).
+  """
+  @type whois_bundle_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          target: String.t(),
+          user: String.t() | nil,
+          host: String.t() | nil,
+          realname: String.t() | nil,
+          server: String.t() | nil,
+          server_info: String.t() | nil,
+          is_operator: boolean(),
+          idle_seconds: integer() | nil,
+          signon: integer() | nil,
+          channels: [String.t()] | nil
         }
 
   @doc """
@@ -325,6 +351,38 @@ defmodule Grappa.Session.Wire do
       sender_nick: m.sender,
       body: m.body,
       kind: Atom.to_string(m.kind)
+    }
+  end
+
+  @doc """
+  WHOIS aggregation — emitted by Session.Server on 318 RPL_ENDOFWHOIS
+  after folding 311/312/313/317/319. The `accum` map carries the
+  raw fields populated by EventRouter; this verb projects them into
+  the wire shape (with `kind:` injected and missing fields normalized
+  to nil / false / nil-list).
+
+  Per spec #2: ephemeral — NOT persisted in scrollback. Broadcast on
+  `Topic.user/1` and rendered inline in cic via the `whois_bundle`
+  arm in `userTopic.ts`. The cic-side `whoisCard.ts` store keys by
+  network and replaces on each new bundle (one card visible at a time
+  per network).
+  """
+  @spec whois_bundle(String.t(), String.t(), map()) :: whois_bundle_payload()
+  def whois_bundle(network_slug, target, accum)
+      when is_binary(network_slug) and is_binary(target) and is_map(accum) do
+    %{
+      kind: "whois_bundle",
+      network: network_slug,
+      target: target,
+      user: Map.get(accum, :user),
+      host: Map.get(accum, :host),
+      realname: Map.get(accum, :realname),
+      server: Map.get(accum, :server),
+      server_info: Map.get(accum, :server_info),
+      is_operator: Map.get(accum, :is_operator, false),
+      idle_seconds: Map.get(accum, :idle_seconds),
+      signon: Map.get(accum, :signon),
+      channels: Map.get(accum, :channels)
     }
   end
 end

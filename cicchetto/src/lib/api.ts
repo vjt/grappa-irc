@@ -235,6 +235,27 @@ export type MentionsBundleMessage = {
   kind: string;
 };
 
+// C2 — WHOIS bundle payload. Mirrors `Grappa.Session.Wire.whois_bundle/3`.
+// Aggregated reply to `/whois <nick>` issued by the operator. Every
+// upstream-derived field is nullable: a stripped-down upstream (or a
+// non-existent target) may emit only 318 RPL_ENDOFWHOIS, in which case
+// the bundle has only `target` populated and cic renders a "no such
+// nick" surface. `channels` is the joined list with mode prefixes
+// preserved (e.g. ["@#italia", "+#grappa"]).
+export type WhoisBundle = {
+  network: string;
+  target: string;
+  user: string | null;
+  host: string | null;
+  realname: string | null;
+  server: string | null;
+  server_info: string | null;
+  is_operator: boolean;
+  idle_seconds: number | null;
+  signon: number | null;
+  channels: string[] | null;
+};
+
 // Mirror of the events fanned out on the user-level PubSub topic
 // (`Topic.user(user_name)`), pinned by:
 //   * `Grappa.Session.Wire.{channels_changed/0, own_nick_changed/2,
@@ -288,7 +309,8 @@ export type WireUserEvent =
       to: string;
       reason: string | null;
       at: string | null;
-    };
+    }
+  | ({ kind: "whois_bundle" } & WhoisBundle);
 
 // Exhaustiveness assertion for discriminated-union switches. If the
 // switch handles every arm, the parameter type narrows to `never` at

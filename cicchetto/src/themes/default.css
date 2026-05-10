@@ -875,6 +875,27 @@ body {
   content: " ";
 }
 
+/* Spec #5 — clickable nick button inside member-list <li>. The <button>
+ * wrapper exists for a11y (lists are non-interactive per WAI-ARIA);
+ * styling stays on the <li> via tier classes (mode prefix + colour).
+ * Reset the button's user-agent styles so the row reads identically to
+ * pre-#5 plain <li>. */
+.members-pane li .member-name {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.members-pane li .member-name:hover {
+  text-decoration: underline;
+}
+
 /* SettingsDrawer (positioned overlay) */
 
 .settings-drawer {
@@ -1169,4 +1190,85 @@ body {
   font-size: 0.7rem;
   line-height: 1.4;
   font-weight: bold;
+}
+
+/* C2 — WHOIS card. Inline ephemeral surface above scrollback when a
+ * /whois bundle exists for the active window's network. Single-card
+ * stack — replaces in place on each new /whois. */
+.whois-card {
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+}
+
+.whois-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-weight: bold;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.whois-card-target {
+  flex: 0 0 auto;
+}
+
+.whois-card-tag {
+  display: inline-block;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.whois-card-tag-oper {
+  background: var(--mode-op);
+  color: var(--bg);
+}
+
+.whois-card-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.3rem;
+}
+
+.whois-card-close:hover {
+  color: var(--fg);
+}
+
+.whois-card-empty {
+  margin: 0;
+}
+
+.whois-card-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+}
+
+.whois-card-fields dt {
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.whois-card-fields dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.whois-card-channel {
+  display: inline-block;
+  margin-right: 0.4rem;
+  color: var(--fg);
 }

@@ -319,9 +319,9 @@ describe("compose submit — slash command dispatch", () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
-    compose.setDraft(k, "/whois alice");
+    compose.setDraft(k, "/notarealverbatall foo");
     const result = await compose.submit(k, "freenode", "#a");
-    expect(result).toEqual({ error: "unknown command: /whois" });
+    expect(result).toEqual({ error: "unknown command: /notarealverbatall" });
   });
 
   it("empty draft returns {error: 'empty'} without dispatching", async () => {

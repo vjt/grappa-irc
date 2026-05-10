@@ -776,6 +776,25 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `WHOIS <nick>` upstream and primes the per-target accumulator
+  in `state.whois_pending` so EventRouter folds the 311/312/313/317/319
+  numerics into a bundle. The bundle is broadcast on `Topic.user/1` as
+  a `whois_bundle` event when 318 RPL_ENDOFWHOIS arrives.
+
+  Per spec #2: ephemeral — NOT persisted in scrollback. Bundle replaces
+  any prior bundle for the same target.
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the nick syntax is rejected by `Grappa.IRC.Client.send_whois/2`.
+  """
+  @spec send_whois(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_whois(subject, network_id, nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
+    call_session(subject, network_id, {:send_whois, nick})
+  end
+
+  @doc """
   Sends `MODE <own_nick> <modes>` upstream — user-mode change on own nick.
   The own nick is read from Session.Server state (populated at 001).
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`

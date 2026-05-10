@@ -172,6 +172,7 @@ defmodule Grappa.Session.EventRouter do
           | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
           | {:parted, String.t()}
           | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil}
+          | {:whois_bundle, target :: String.t(), accum :: map()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -635,17 +636,116 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # 311 RPL_WHOISUSER: `:server 311 own_nick target user host * :realname`.
-  # S2.4: upsert userhost_cache with the target nick's user+host. This is
-  # the authoritative WHOIS data — always overwrites any JOIN-derived entry.
-  # Keyed by lowercased nick (RFC 2812 §2.2 case-insensitive comparison).
+  # Two effects: (1) S2.4 upsert userhost_cache with target's user+host
+  # (authoritative — always overwrites JOIN-derived entry); (2) C2 fold
+  # into whois_pending[target_lower] accumulator if the bundle is in flight.
+  # The userhost_cache update happens unconditionally — even unsolicited 311s
+  # (some IRCds emit them on connection registration) refresh the cache.
+  # The whois_pending fold is gated on a pre-existing entry — only operator-
+  # issued WHOIS commands set up the accumulator (see Server's
+  # `:send_whois` handler).
   def route(
-        %Message{command: {:numeric, 311}, params: [_, target, user, host | _]},
+        %Message{command: {:numeric, 311}, params: [_, target, user, host | rest]},
         state
       )
       when is_binary(target) and is_binary(user) and is_binary(host) do
     nick_key = normalize_nick(target)
     cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
-    {:cont, %{state | userhost_cache: cache}, []}
+    realname = whois_trailing(rest)
+
+    state =
+      state
+      |> Map.put(:userhost_cache, cache)
+      |> whois_fold(target, %{user: user, host: host, realname: realname})
+
+    {:cont, state, []}
+  end
+
+  # 312 RPL_WHOISSERVER: `:server 312 own_nick target serverhost :serverinfo`.
+  # Folds `server` + `server_info` into whois_pending[target_lower].
+  def route(
+        %Message{command: {:numeric, 312}, params: [_, target, server | rest]},
+        state
+      )
+      when is_binary(target) and is_binary(server) do
+    server_info = whois_trailing(rest)
+    {:cont, whois_fold(state, target, %{server: server, server_info: server_info}), []}
+  end
+
+  # 313 RPL_WHOISOPERATOR: `:server 313 own_nick target :is an IRC operator`.
+  # Folds `is_operator: true`.
+  def route(
+        %Message{command: {:numeric, 313}, params: [_, target | _rest]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_operator: true}), []}
+  end
+
+  # 317 RPL_WHOISIDLE: `:server 317 own_nick target idle_seconds [signon] :seconds idle`.
+  # Some servers omit signon (only emit `idle_seconds`). We tolerate both
+  # shapes — the trailing text is human-readable and ignored.
+  def route(
+        %Message{command: {:numeric, 317}, params: [_, target, idle_str | rest]},
+        state
+      )
+      when is_binary(target) and is_binary(idle_str) do
+    fold = %{idle_seconds: parse_int_or_nil(idle_str)}
+
+    fold =
+      case rest do
+        [signon_str | _] when is_binary(signon_str) ->
+          case parse_int_or_nil(signon_str) do
+            nil -> fold
+            n -> Map.put(fold, :signon, n)
+          end
+
+        _ ->
+          fold
+      end
+
+    {:cont, whois_fold(state, target, fold), []}
+  end
+
+  # 319 RPL_WHOISCHANNELS: `:server 319 own_nick target :@#italia +#grappa #lobby`.
+  # The trailing param is a space-separated list of channels with mode prefixes.
+  # Multiple 319s may arrive for one target (large channel lists chunk over
+  # multiple lines) — accumulate into a single list, preserving prefixes.
+  def route(
+        %Message{command: {:numeric, 319}, params: [_, target | rest]},
+        state
+      )
+      when is_binary(target) do
+    chans =
+      case whois_trailing(rest) do
+        nil -> []
+        text -> String.split(text, ~r/\s+/, trim: true)
+      end
+
+    {:cont, whois_fold(state, target, %{channels_chunk: chans}), []}
+  end
+
+  # 318 RPL_ENDOFWHOIS: `:server 318 own_nick target :End of /WHOIS list`.
+  # Emit the bundle effect with the accumulated fields and drop the entry.
+  # If no accumulator exists (target never set up via /whois), drop silently —
+  # an unsolicited 318 (services bouncing back, race with disconnect) is
+  # not actionable.
+  def route(
+        %Message{command: {:numeric, 318}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    pending = Map.get(state, :whois_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      {:ok, accum} ->
+        next_state = %{state | whois_pending: Map.delete(pending, nick_key)}
+        {:cont, next_state, [{:whois_bundle, Map.get(accum, :target_display, target), accum}]}
+
+      :error ->
+        {:cont, state, []}
+    end
   end
 
   # 352 RPL_WHOREPLY: `:server 352 own_nick #chan user host server target H/G :hop realname`.
@@ -1160,6 +1260,63 @@ defmodule Grappa.Session.EventRouter do
   # always case-insensitive regardless of how the upstream sends the nick.
   @spec normalize_nick(String.t()) :: String.t()
   defp normalize_nick(nick) when is_binary(nick), do: String.downcase(nick)
+
+  # C2 — fold one set of WHOIS-numeric fields into the per-target accumulator
+  # at `state.whois_pending[target_lower]`. Skips folding when no entry
+  # exists (the operator never issued a /whois for this target — an
+  # unsolicited WHOIS reply is not actionable). The `:channels_chunk`
+  # special-case appends to the existing `:channels` list rather than
+  # overwriting (319 may chunk over multiple lines).
+  @spec whois_fold(state(), String.t(), map()) :: state()
+  defp whois_fold(state, target, fold) when is_binary(target) and is_map(fold) do
+    pending = Map.get(state, :whois_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        merged = whois_merge(accum, fold)
+        %{state | whois_pending: Map.put(pending, nick_key, merged)}
+    end
+  end
+
+  # Most fields overwrite. `:channels_chunk` (319 partial list) appends
+  # into `:channels` instead of replacing — accumulating across multi-line
+  # responses for users in many channels.
+  @spec whois_merge(map(), map()) :: map()
+  defp whois_merge(accum, fold) do
+    Enum.reduce(fold, accum, fn
+      {:channels_chunk, chans}, acc ->
+        existing = Map.get(acc, :channels, [])
+        Map.put(acc, :channels, existing ++ chans)
+
+      {k, v}, acc ->
+        Map.put(acc, k, v)
+    end)
+  end
+
+  # Returns the trailing param (last element) when present, else nil.
+  # Used to extract realname / server_info / channels-chunk text from
+  # WHOIS numerics where the trailing param is the human-readable payload.
+  @spec whois_trailing([term()]) :: String.t() | nil
+  defp whois_trailing([]), do: nil
+
+  defp whois_trailing(rest) when is_list(rest) do
+    case List.last(rest) do
+      s when is_binary(s) -> s
+      _ -> nil
+    end
+  end
+
+  @spec parse_int_or_nil(String.t()) :: integer() | nil
+  defp parse_int_or_nil(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
 
   # Evict userhost_cache entries for nicks that appear in no channel of
   # `members_map` after the PART. Called for self-PART where every nick
