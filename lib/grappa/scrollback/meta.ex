@@ -103,10 +103,12 @@ defmodule Grappa.Scrollback.Meta do
             | :severity
             | :who
             | :who_target
+            | :names
+            | :names_target
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -123,7 +125,9 @@ defmodule Grappa.Scrollback.Meta do
           | :numeric
           | :severity
           | :who
-          | :who_target,
+          | :who_target
+          | :names
+          | :names_target,
           ...
         ]
   def known_keys, do: @known_keys

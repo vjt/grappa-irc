@@ -173,6 +173,13 @@ config :logger, :console,
     # re-parsing the body. Mirrors Scrollback.Meta.@known_keys (A18 sync).
     :who,
     :who_target,
+    # CP22 cluster B (channel-client-polish #14) — /names pipeline meta keys.
+    # `:names` carries the full `[prefix]nick` token list from a 353
+    # RPL_NAMREPLY drained on 366 RPL_ENDOFNAMES; `:names_target` rides
+    # both the nick-list row and the EOF terminator so log greps can
+    # correlate them. Mirrors Scrollback.Meta.@known_keys (A18 sync).
+    :names,
+    :names_target,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a
