@@ -315,8 +315,10 @@ defmodule Grappa.Session.Server do
           # `%{target_display: String.t(), replies: [map()]}` where each
           # reply is `%{nick, modes, user, host, server, hops, realname}`.
           # Populated by EventRouter on 352 RPL_WHOREPLY and drained by
-          # 315 RPL_ENDOFWHO into a `{:who_bundle, target, accum}` effect.
-          # Bounded by in-flight /who commands (typically 0-1 at a time).
+          # 315 RPL_ENDOFWHO into N+1 `{:persist, :notice, attrs}` effects
+          # (one per reply + one EOF terminator), routed to the target
+          # channel if joined or `$server` otherwise. Bounded by in-flight
+          # /who commands (typically 0-1 at a time).
           who_pending: %{String.t() => map()}
         }
 
@@ -411,8 +413,9 @@ defmodule Grappa.Session.Server do
       whois_pending: %{},
       # CP22 cluster B — pending WHO accumulators keyed by lowercased
       # target channel. Set up on `:send_who`; 352 RPL_WHOREPLY rows fold
-      # into the entry; 315 RPL_ENDOFWHO emits `{:who_bundle, ...}` and
-      # drops it. Bounded by in-flight /who commands (typically 0-1 at a
+      # into the entry; 315 RPL_ENDOFWHO emits N+1 `{:persist, :notice,
+      # attrs}` effects (one per reply + one EOF) and drops the entry.
+      # Bounded by in-flight /who commands (typically 0-1 at a
       # time). NOT persisted across crashes.
       who_pending: %{}
     }

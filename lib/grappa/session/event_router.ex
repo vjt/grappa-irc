@@ -749,10 +749,20 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # CP22 cluster B (channel-client-polish #14) — 315 RPL_ENDOFWHO:
-  # `:server 315 own_nick target :End of /WHO list`. Emit the bundle effect
-  # with the accumulated rows + drop the entry. If no accumulator exists
-  # (target never set up via /who, or unsolicited reply), drop silently —
-  # mirror of the 318 RPL_ENDOFWHOIS handling.
+  # `:server 315 own_nick target :End of /WHO list`. Drains the per-target
+  # accumulator into N+1 :notice :persist effects: one row per 352
+  # RPL_WHOREPLY in arrival order + one terminator row carrying the EOF
+  # text. Routing rule:
+  #   - target channel in state.members → persist in target channel
+  #   - else → persist in $server (the synthetic server-window slug)
+  # If no accumulator exists (target never set up via /who, or unsolicited
+  # reply), drop silently — mirror of the 318 RPL_ENDOFWHOIS handling.
+  #
+  # Each :notice row carries meta=%{numeric: 352|315, who: %{...}|nil} so
+  # cic renders structured tabular without re-parsing IRC. body is an
+  # irssi-shape compact string — defensive payload so scrollback replay
+  # remains readable even if a future cic version drops the structured
+  # render or a raw API consumer reads the rows directly.
   def route(
         %Message{command: {:numeric, 315}, params: [_, target | _]},
         state
@@ -764,14 +774,46 @@ defmodule Grappa.Session.EventRouter do
     case Map.fetch(pending, chan_key) do
       {:ok, accum} ->
         next_state = %{state | who_pending: Map.delete(pending, chan_key)}
-        # Replies were prepended in arrival order (LIFO) for O(1) fold —
-        # reverse here to restore the server's wire order before emitting
-        # the bundle (consumers need ops first / voices / plain users).
-        replies = Enum.reverse(Map.get(accum, :replies, []))
-        ordered_accum = Map.put(accum, :replies, replies)
+        target_display = Map.get(accum, :target_display, target)
 
-        {:cont, next_state,
-         [{:who_bundle, Map.get(accum, :target_display, target), ordered_accum}]}
+        # Replies prepended in arrival order (LIFO for O(1) fold) — reverse
+        # to restore server wire order before persisting.
+        replies = Enum.reverse(Map.get(accum, :replies, []))
+
+        target_channel =
+          if Map.has_key?(state.members, target_display),
+            do: target_display,
+            else: "$server"
+
+        sender = state.network_slug
+
+        # Build N row persists + 1 EOF persist. Each call returns
+        # {state, effect}; we only care about the effects (state is
+        # threaded through but build_persist does not mutate routing
+        # state in this path).
+        {state_after_rows, row_effects} =
+          Enum.reduce(replies, {next_state, []}, fn reply, {acc_state, acc_effects} ->
+            body = format_who_reply(target_channel, reply)
+            meta = %{numeric: 352, who: reply}
+            {acc_state2, eff} = build_persist(acc_state, :notice, target_channel, sender, body, meta)
+            {acc_state2, [eff | acc_effects]}
+          end)
+
+        {final_state, eof_effect} =
+          build_persist(
+            state_after_rows,
+            :notice,
+            target_channel,
+            sender,
+            "*** End of /WHO list for #{target_display}",
+            %{numeric: 315, who_target: target_display}
+          )
+
+        # Order: row_effects accumulated head-prepend (LIFO), reverse to
+        # restore wire order. Append the EOF row last by building head-up
+        # and reversing once at the end (Credo F-perf — single Enum.reverse,
+        # no `++` of single-element list).
+        {:cont, final_state, Enum.reverse([eof_effect | row_effects])}
 
       :error ->
         {:cont, state, []}
@@ -1418,6 +1460,16 @@ defmodule Grappa.Session.EventRouter do
       _ ->
         {nil, nil}
     end
+  end
+
+  # CP22 cluster B — irssi-shape compact body for a single 352 row.
+  # Defensive readable payload: cic prefers meta.who structured render,
+  # but if scrollback replays without structured handling (older cic,
+  # raw API consumer) the body is still meaningful. Stable single-line
+  # format: `*** [#chan] nick modes user@host (server) :realname`.
+  @spec format_who_reply(String.t(), map()) :: String.t()
+  defp format_who_reply(channel, reply) do
+    "*** [#{channel}] #{reply.nick} #{reply.modes} #{reply.user}@#{reply.host} (#{reply.server}) :#{reply.realname || ""}"
   end
 
   # Evict userhost_cache entries for nicks that appear in no channel of

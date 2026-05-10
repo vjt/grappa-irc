@@ -4303,6 +4303,112 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "352+352+315 burst persists N WHO rows + 1 EOF row to $server when not joined", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      topic = Topic.channel(user.name, network.slug, "$server")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      assert :ok = Session.send_who({:user, user.id}, network.id, "#bofh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "WHO #bofh\r\n"), 1_000)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 352 grappa-test #bofh alice_u alice.host irc.test.org alice H+ :0 Alice Liddell\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 352 grappa-test #bofh bob_u bob.host irc.test.org bob G@ :2 Bob Smith\r\n"
+      )
+
+      IRCServer.feed(server, ":irc.test.org 315 grappa-test #bofh :End of /WHO list\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta1} = row1}
+                     },
+                     1_500
+
+      assert meta1.numeric == 352
+      assert meta1.who.nick == "alice"
+      assert meta1.who.user == "alice_u"
+      assert meta1.who.host == "alice.host"
+      assert meta1.who.modes == "H+"
+      assert meta1.who.hops == 0
+      assert meta1.who.realname == "Alice Liddell"
+      assert row1.body =~ "alice"
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta2}}
+                     },
+                     1_500
+
+      assert meta2.who.nick == "bob"
+      assert meta2.who.modes == "G@"
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "message",
+                         message: %{kind: :notice, channel: "$server", meta: meta_eof, body: eof_body}
+                       }
+                     },
+                     1_500
+
+      assert meta_eof.numeric == 315
+      assert eof_body =~ "End of /WHO list"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "352+315 burst persists rows to #channel when joined", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      topic = Topic.channel(user.name, network.slug, "#bofh")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN #bofh\r\n")
+      IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :grappa-test\r\n")
+      IRCServer.feed(server, ":irc.test.org 366 grappa-test #bofh :End of /NAMES list\r\n")
+      Process.sleep(50)
+
+      assert :ok = Session.send_who({:user, user.id}, network.id, "#bofh")
+      _ = IRCServer.wait_for_line(server, &(&1 == "WHO #bofh\r\n"), 1_000)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 352 grappa-test #bofh alice_u alice.host irc.test.org alice H+ :0 Alice\r\n"
+      )
+
+      IRCServer.feed(server, ":irc.test.org 315 grappa-test #bofh :End of /WHO list\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: meta} = row}
+                     },
+                     1_500
+
+      assert meta.numeric == 352
+      assert meta.who.nick == "alice"
+      assert row.body =~ "alice"
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 315}}}
+                     },
+                     1_500
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

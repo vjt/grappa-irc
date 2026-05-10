@@ -28,7 +28,11 @@ defmodule Grappa.Session.EventRouterTest do
         topics: %{},
         channel_modes: %{},
         userhost_cache: %{},
-        who_pending: %{}
+        who_pending: %{},
+        # CP22 cluster B — build_persist (used by 315 RPL_ENDOFWHO route)
+        # references state.network_slug to set sender on emitted :persist
+        # effects. Match the @subject test fixture network slug.
+        network_slug: "test-net"
       },
       overrides
     )
@@ -1645,7 +1649,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.who_pending == %{}
     end
 
-    test "315 RPL_ENDOFWHO emits :who_bundle with replies + drops entry" do
+    test "315 RPL_ENDOFWHO emits N+1 :persist :notice effects + drops entry" do
       state =
         base_state(%{
           who_pending: %{
@@ -1668,11 +1672,22 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 315}, ["vjt", "#bofh", "End of /WHO list"], {:server, "irc.test.org"})
 
-      {:cont, new_state, [{:who_bundle, target, accum}]} = EventRouter.route(m, state)
-      assert target == "#bofh"
-      assert length(accum.replies) == 1
-      assert hd(accum.replies).nick == "alice"
+      {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.who_pending == %{}
+      assert length(effects) == 2
+
+      [row, eof] = effects
+      assert {:persist, :notice, row_attrs} = row
+      # Not joined → routes to $server
+      assert row_attrs.channel == "$server"
+      assert row_attrs.meta.numeric == 352
+      assert row_attrs.meta.who.nick == "alice"
+      assert row_attrs.body =~ "alice"
+
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.channel == "$server"
+      assert eof_attrs.meta.numeric == 315
+      assert eof_attrs.body =~ "End of /WHO list"
     end
 
     test "315 with no pending entry is silently ignored (unsolicited)" do
@@ -1692,9 +1707,41 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 315}, ["vjt", "#BOFH", "End of /WHO list"], {:server, "irc.test.org"})
 
-      {:cont, new_state, [{:who_bundle, target, _}]} = EventRouter.route(m, state)
-      assert target == "#BOFH"
+      {:cont, new_state, [eof]} = EventRouter.route(m, state)
       assert new_state.who_pending == %{}
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.meta.who_target == "#BOFH"
+    end
+
+    test "315 routes to target channel when state.members has it (joined)" do
+      state =
+        base_state(%{
+          members: %{"#bofh" => %{"alice" => []}},
+          who_pending: %{
+            "#bofh" => %{
+              target_display: "#bofh",
+              replies: [
+                %{
+                  nick: "alice",
+                  user: "u",
+                  host: "h",
+                  server: "s",
+                  modes: "H",
+                  hops: 0,
+                  realname: "Alice"
+                }
+              ]
+            }
+          }
+        })
+
+      m = msg({:numeric, 315}, ["vjt", "#bofh", "End of /WHO list"], {:server, "irc.test.org"})
+
+      {:cont, _, [row, eof]} = EventRouter.route(m, state)
+      assert {:persist, :notice, row_attrs} = row
+      assert row_attrs.channel == "#bofh"
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.channel == "#bofh"
     end
   end
 end

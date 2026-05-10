@@ -93,9 +93,20 @@ defmodule Grappa.Scrollback.Meta do
   shapes in the type would require a discriminated union keyed on
   `Message.kind`, which is the schema's job, not this map's.
   """
-  @type t :: %{optional(:target | :new_nick | :modes | :args | :numeric | :severity) => term()}
+  @type t :: %{
+          optional(
+            :target
+            | :new_nick
+            | :modes
+            | :args
+            | :numeric
+            | :severity
+            | :who
+            | :who_target
+          ) => term()
+        }
 
-  @known_keys ~w[target new_nick modes args numeric severity]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -104,7 +115,17 @@ defmodule Grappa.Scrollback.Meta do
   architecture review A18, and a unit test catches drift at test time
   without runtime mutation of Logger config.
   """
-  @spec known_keys() :: [:target | :new_nick | :modes | :args | :numeric | :severity, ...]
+  @spec known_keys() :: [
+          :target
+          | :new_nick
+          | :modes
+          | :args
+          | :numeric
+          | :severity
+          | :who
+          | :who_target,
+          ...
+        ]
   def known_keys, do: @known_keys
 
   @impl Ecto.Type

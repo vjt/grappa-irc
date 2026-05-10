@@ -166,6 +166,13 @@ config :logger, :console,
     # so log lines are color-greppable. Mirrors Scrollback.Meta.@known_keys
     # (A18 sync rule — meta_test.exs catches drift).
     :severity,
+    # CP22 cluster B (channel-client-polish #14) — /who pipeline meta keys.
+    # `:who` carries the structured 352 RPL_WHOREPLY payload {nick, modes,
+    # user, host, server, hops, realname}; `:who_target` rides the 315 EOF
+    # row so log greps can correlate the bundle's start/end without
+    # re-parsing the body. Mirrors Scrollback.Meta.@known_keys (A18 sync).
+    :who,
+    :who_target,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a
