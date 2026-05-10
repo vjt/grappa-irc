@@ -108,6 +108,37 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  CP22 cluster B (channel-client-polish #14, B-restart) — overwrite the
+  per-credential `last_joined_channels` snapshot. Called by
+  `Session.Server` on every self-JOIN / self-PART / self-KICK so a
+  graceful or crash restart can rehydrate the channel list at boot.
+
+  ID-keyed (not struct-keyed) because the caller has `(user_id,
+  network_id)` directly from session state — avoids a Repo round-trip
+  to materialize User/Network structs we'd just discard. Returns `:ok`
+  on success or `{:error, reason}` (no-op log if the credential row was
+  unbound concurrently — restart-rehydrate semantics tolerate the
+  missing row, the next session bind would re-establish it).
+  """
+  @spec update_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
+          :ok | {:error, :not_found | Ecto.Changeset.t()}
+  def update_last_joined_channels(user_id, network_id, channels)
+      when is_binary(user_id) and is_integer(network_id) and is_list(channels) do
+    case Repo.get_by(Credential, user_id: user_id, network_id: network_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Credential{} = cred ->
+        changeset = Credential.changeset(cred, %{last_joined_channels: channels})
+
+        case Repo.update(changeset) do
+          {:ok, _} -> :ok
+          {:error, changeset} -> {:error, changeset}
+        end
+    end
+  end
+
+  @doc """
   Returns the credential for `(user, network)` with `password_encrypted`
   already decrypted by Cloak. Raises `Ecto.NoResultsError` on miss —
   the operator-side mix tasks expect a missing binding to fail loudly.

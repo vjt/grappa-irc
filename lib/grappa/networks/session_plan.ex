@@ -18,7 +18,7 @@ defmodule Grappa.Networks.SessionPlan do
   """
   alias Grappa.{Accounts, Networks, Session}
   alias Grappa.Accounts.User
-  alias Grappa.Networks.{Credential, Network, NoServerError, Server, Servers}
+  alias Grappa.Networks.{Credential, Credentials, Network, NoServerError, Server, Servers}
   alias Grappa.Repo
 
   @doc """
@@ -79,7 +79,16 @@ defmodule Grappa.Networks.SessionPlan do
       sasl_user: Credential.effective_sasl_user(cred),
       auth_method: cred.auth_method,
       password: Credential.upstream_password(cred),
-      autojoin_channels: cred.autojoin_channels,
+      # CP22 cluster B (channel-client-polish #14, B-restart) — boot
+      # channel list is the union of operator config + last-live snapshot.
+      # `autojoin_channels` = "channels you ALWAYS want auto-joined no
+      # matter what" (operator-bound at credential creation, never
+      # changes).  `last_joined_channels` = "channels you were in last
+      # time the session was alive" (Session.Server overwrites on every
+      # self-JOIN/PART/KICK, so a restart rehydrates the live state).
+      # Dedupe at the merge site; order preference: autojoin first
+      # (operator intent stable), then snapshot extras (runtime growth).
+      autojoin_channels: merge_autojoin(cred.autojoin_channels, cred.last_joined_channels),
       host: server.host,
       port: server.port,
       tls: server.tls,
@@ -93,7 +102,42 @@ defmodule Grappa.Networks.SessionPlan do
       # session gone and is a no-op).
       credential_failer: fn reason ->
         Networks.mark_failed_by_ids(user.id, cred.network_id, reason)
+      end,
+      # CP22 cluster B (channel-client-polish #14, B-restart) — opaque
+      # closure that forwards `Map.keys(state.members)` snapshots to
+      # the per-credential `last_joined_channels` column. Wraps the
+      # (user_id, network_id) pair so Session.Server stays
+      # boundary-clean (Networks deps Session, not the reverse).
+      last_joined_persister: fn channels ->
+        Credentials.update_last_joined_channels(user.id, cred.network_id, channels)
       end
     }
   end
+
+  # CP22 cluster B (channel-client-polish #14, B-restart) — merge
+  # operator autojoin (stable) with last-live snapshot (runtime). Order:
+  # operator entries first to preserve operator-intent join order; then
+  # snapshot entries the operator didn't already cover. Dedupe is RFC
+  # 2812 §2.2 case-insensitive (channel names fold), but we preserve the
+  # case of the EARLIER entry (operator wins on case style).
+  @spec merge_autojoin([String.t()], [String.t()]) :: [String.t()]
+  defp merge_autojoin(autojoin, last_joined) when is_list(autojoin) and is_list(last_joined) do
+    seen =
+      autojoin
+      |> Enum.map(&String.downcase/1)
+      |> MapSet.new()
+
+    extras = Enum.reject(last_joined, &MapSet.member?(seen, String.downcase(&1)))
+    autojoin ++ extras
+  end
+
+  @doc false
+  # Test-only hook for the dedupe+order rule. Production callers go
+  # through build_plan/4 which inlines the merge at the credential
+  # boundary. Test surface kept narrow — the function is `@doc false`
+  # so it doesn't appear in public docs and is greppable as a test-only
+  # entry point.
+  @spec __merge_autojoin_for_test__([String.t()], [String.t()]) :: [String.t()]
+  def __merge_autojoin_for_test__(autojoin, last_joined),
+    do: merge_autojoin(autojoin, last_joined)
 end

@@ -94,6 +94,7 @@ defmodule Grappa.Networks.Credential do
           auth_method: auth_method() | nil,
           auth_command_template: String.t() | nil,
           autojoin_channels: [String.t()],
+          last_joined_channels: [String.t()],
           connection_state: connection_state() | nil,
           connection_state_reason: String.t() | nil,
           connection_state_changed_at: DateTime.t() | nil,
@@ -130,6 +131,19 @@ defmodule Grappa.Networks.Credential do
     field :auth_command_template, :string
     field :autojoin_channels, {:array, :string}, default: []
 
+    # CP22 cluster B (channel-client-polish #14, B-restart) — runtime
+    # snapshot of currently joined channels. Persisted by Session.Server
+    # on every self-JOIN / self-PART / self-KICK so a restart can
+    # rehydrate the channel list at boot. Boot semantics: union with
+    # `autojoin_channels` (operator-config never-changes-channels) +
+    # this field (runtime fluctuating channels), deduped.
+    #
+    # Stored as a JSON TEXT column in sqlite (same shape as
+    # autojoin_channels). Bounded by the live join count — typically
+    # 5-50 channels. NOT a long-term audit log; the latest write
+    # overwrites the previous value.
+    field :last_joined_channels, {:array, :string}, default: []
+
     # T32 (channel-client-polish S1.1).
     field :connection_state, Ecto.Enum, values: @connection_states, default: :connected
     field :connection_state_reason, :string
@@ -160,6 +174,7 @@ defmodule Grappa.Networks.Credential do
       :auth_method,
       :auth_command_template,
       :autojoin_channels,
+      :last_joined_channels,
       :connection_state,
       :connection_state_reason,
       :connection_state_changed_at

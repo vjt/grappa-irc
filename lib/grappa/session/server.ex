@@ -164,6 +164,23 @@ defmodule Grappa.Session.Server do
   @type credential_failer :: (String.t() -> :ok)
 
   @typedoc """
+  CP22 cluster B (channel-client-polish #14, B-restart) — opaque
+  callback that persists the current `Map.keys(state.members)` snapshot
+  so a graceful or crash restart can rehydrate the channel list at boot.
+
+  Boundary-clean: Session.Server cannot reference `Grappa.Networks`
+  directly (the cycle is banned — Networks already deps Session for
+  stop_session calls on /disconnect). The callback wraps a closure
+  that knows the (user_id, network_id) pair and forwards to
+  `Grappa.Networks.Credentials.update_last_joined_channels/3`.
+  Returns `:ok` on success or `{:error, reason}`; Session.Server logs
+  failures but does not retry — the next channels-list mutation
+  overwrites, and a missing snapshot only forces the next restart to
+  fall back to operator autojoin.
+  """
+  @type last_joined_persister :: ([String.t()] -> :ok | {:error, term()})
+
+  @typedoc """
   Per-channel window state (CP15 — event-driven windows). The Session
   Server is the single source of truth; cic projects from broadcast
   events on the per-channel topic.
@@ -230,7 +247,8 @@ defmodule Grappa.Session.Server do
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
           optional(:visitor_committer) => visitor_committer(),
-          optional(:credential_failer) => credential_failer()
+          optional(:credential_failer) => credential_failer(),
+          optional(:last_joined_persister) => last_joined_persister()
         }
 
   @type t :: %{
@@ -271,6 +289,7 @@ defmodule Grappa.Session.Server do
           pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil,
           credential_failer: credential_failer() | nil,
+          last_joined_persister: last_joined_persister() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
           ghost_timer: reference() | nil,
           away_state: AwayState.t(),
@@ -397,6 +416,7 @@ defmodule Grappa.Session.Server do
       pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer),
       credential_failer: Map.get(opts, :credential_failer),
+      last_joined_persister: Map.get(opts, :last_joined_persister),
       ghost_recovery: nil,
       ghost_timer: nil,
       away_state: AwayState.new(),
@@ -1637,9 +1657,39 @@ defmodule Grappa.Session.Server do
           Topic.user(prev.subject_label),
           SessionWire.channels_changed()
         )
+
+      # CP22 cluster B (channel-client-polish #14, B-restart) — persist
+      # the snapshot so a graceful or crash restart can rehydrate. Same
+      # change-detection (sorted keyset diff) as the broadcast above —
+      # the keyset is the only field that affects rejoin. Single Repo
+      # write per channels-list mutation (a typical session sees a
+      # handful of these per hour). Failure logged but NOT fatal: the
+      # next mutation overwrites, and a missing snapshot only forces
+      # the next restart to fall back to operator autojoin.
+      :ok = persist_last_joined(prev.subject, prev.network_id, next_keys, prev.last_joined_persister)
     end
 
     :ok
+  end
+
+  @spec persist_last_joined(Grappa.Session.subject(), pos_integer(), [String.t()], last_joined_persister() | nil) :: :ok
+  defp persist_last_joined(_, _, _, nil), do: :ok
+
+  defp persist_last_joined({:visitor, _}, _, _, _), do: :ok
+
+  defp persist_last_joined({:user, _}, _, channels, fun)
+       when is_function(fun, 1) do
+    case fun.(channels) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("last_joined_channels persist failed",
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
   end
 
   # Broadcasts `own_nick_changed` on the user-level PubSub topic when the
