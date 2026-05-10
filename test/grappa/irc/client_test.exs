@@ -290,6 +290,23 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_umode(client, "vjt", "+i\r\nQUIT")
     end
 
+    test "send_names/2 emits NAMES #chan framing" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_names(client, "#sniffo")
+
+      assert {:ok, "NAMES #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "NAMES #sniffo\r\n"), 1_000)
+    end
+
+    test "send_names/2 rejects malformed channel with {:error, :invalid_line}" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_names(client, "no-prefix")
+    end
+
     test "send_topic_clear/2 emits TOPIC #chan : framing (empty trailing param)" do
       {server, port} = start_server()
       client = start_client(port)

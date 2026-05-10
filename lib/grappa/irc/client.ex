@@ -366,6 +366,27 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `NAMES <channel>\\r\\n`. Validates channel syntax with
+  `{:error, :invalid_line}` on rejection. The single-target form is
+  the ergonomic call shape — RFC 2812 §3.2.5 also allows a
+  comma-separated list, out of MVP scope.
+
+  Numerics 353 RPL_NAMREPLY (one or more, space-separated nicks with
+  optional `@`/`+` prefix) + 366 RPL_ENDOFNAMES (terminator) reply
+  with the membership list. EventRouter folds 353 into
+  `state.names_pending` and emits N+1 `:persist` `:notice` rows on
+  366 if the operator is NOT in the target channel; if joined, the
+  existing 366 → `members_seeded` flow refreshes the MembersPane and
+  no scrollback rows are emitted.
+  """
+  @spec send_names(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_names(client, channel) do
+    if Identifier.valid_channel?(channel),
+      do: send_line(client, "NAMES #{channel}\r\n"),
+      else: reject_invalid_line(:names)
+  end
+
+  @doc """
   Sends `MODE <nick> <modes>\\r\\n` — user-mode change on the
   caller-supplied nick. The caller (`Grappa.Session.Server`) passes
   its `state.nick` as the nick arg so this helper stays a pure
