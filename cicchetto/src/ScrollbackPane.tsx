@@ -418,6 +418,17 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
+  // Focus-session boundary timestamp — the server_time captured AT WINDOW
+  // MOUNT. Marker injection only considers messages whose server_time
+  // falls in `(cursor, sessionStart]`. Anything arriving DURING the focus
+  // session (server_time > sessionStart) is "live read" and never spawns
+  // a new marker, even peer replies after an own-msg send. Reset on key
+  // change so each window mount captures its own boundary. Without this,
+  // a focused send → peer reply pair injected a fresh "1 unread" marker
+  // because the cursor only advances on own-msg, leaving peer replies
+  // > cursor (memory: feedback target-window UX rule, vjt 2026-05-10).
+  const [sessionStart, setSessionStart] = createSignal<number>(Date.now());
+
   // C7.6: context menu state — null when closed.
   type ContextMenuState = { targetNick: string; x: number; y: number };
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
@@ -472,22 +483,31 @@ const ScrollbackPane: Component<Props> = (props) => {
   //
   // Unread computation (C7.3 / CLAUDE.md "derive, don't duplicate"):
   //   cursor = getReadCursor(networkSlug, channelName) — localStorage, sync.
-  //   unread count = messages.filter(m => m.server_time > cursor).length
-  //   No signal needed for cursor — it's read once per channel mount.
+  //   sessionStart = ms timestamp captured at window mount (key change).
+  //   unread count = messages.filter(m =>
+  //                    m.server_time > cursor AND
+  //                    m.server_time <= sessionStart  // pre-arrival only
+  //                  ).length
   //   The cursor is a stable value for the lifetime of this channel view;
   //   it only advances when the user navigates AWAY from the window
-  //   (selection.ts on(selectedChannel)'s focus-leave hook).
+  //   (selection.ts on(selectedChannel)'s focus-leave hook). The
+  //   sessionStart bound prevents NEW arrivals during the focus session
+  //   from spawning a fresh marker — they're live-read by definition.
   const rows = createMemo((): Row[] => {
     const msgs = messages();
     if (!msgs || msgs.length === 0) return [];
     const cursor = getReadCursor(props.networkSlug, props.channelName);
-    // How many messages have server_time strictly after the cursor?
+    const session = sessionStart();
+    // How many messages have server_time strictly after the cursor AND
+    // at-or-before the focus-session boundary?
     // Operator-action echoes (e.g. /msg → 401 notice) are excluded — the
     // operator owns the action that produced them, mirroring the
     // subscribe.ts sidebar-badge gate so badge and in-pane marker agree.
     const unreadCount =
       cursor !== null
-        ? msgs.filter((m) => m.server_time > cursor && !isOperatorActionEcho(m)).length
+        ? msgs.filter(
+            (m) => m.server_time > cursor && m.server_time <= session && !isOperatorActionEcho(m),
+          ).length
         : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
@@ -497,8 +517,16 @@ const ScrollbackPane: Component<Props> = (props) => {
     let prevTime: number | null = null;
     let markerInjected = false;
     for (const msg of msgs) {
-      // C7.3: inject unread-marker BEFORE the first message with server_time > cursor.
-      if (injectMarker && !markerInjected && cursor !== null && msg.server_time > cursor) {
+      // C7.3: inject unread-marker BEFORE the first message with server_time > cursor
+      // AND <= sessionStart. Messages after sessionStart never get a
+      // marker — they're live-read arrivals during the focus session.
+      if (
+        injectMarker &&
+        !markerInjected &&
+        cursor !== null &&
+        msg.server_time > cursor &&
+        msg.server_time <= session
+      ) {
         result.push({ type: "unread-marker", count: unreadCount, id: "unread-marker" });
         markerInjected = true;
         // Day-separator logic: if the previous message (last read) and this first
@@ -585,22 +613,41 @@ const ScrollbackPane: Component<Props> = (props) => {
   // re-fire for a future window where the marker shows up only after
   // a delayed REST page lands. atBottom set per branch so the floating
   // "scroll to bottom" button doesn't flash visible mid-switch.
+  // Pre-fix bug: `markerRef` retained the (now-disposed) DOM pointer
+  // from the prior window after a key change because Solid's ref-binding
+  // lifecycle for <For>-rendered elements doesn't auto-null the variable
+  // on unmount. The createEffect would take the marker branch on the
+  // wrong window, call scrollIntoView on a stale node, and never fall
+  // through to scrollTop = scrollHeight — viewport stuck at top.
+  //
+  // Fix shape: (1) null markerRef synchronously at key change; (2) defer
+  // the scroll decision via queueMicrotask so Solid commits the new
+  // window's rows first — at that point markerRef is reassigned by
+  // <div ref={markerRef}> if the new window has a marker, OR remains
+  // undefined and we scroll-to-bottom. (3) reset sessionStart so the
+  // new window captures its own focus-session boundary for marker
+  // injection (target-window UX rule).
   createEffect(
     on(
       key,
       () => {
         setBannerState("hidden");
         setMarkerScrolled(false);
+        markerRef = undefined;
+        setSessionStart(Date.now());
         if (!listRef) return;
-        if (markerRef) {
-          markerRef.scrollIntoView?.({ block: "center" });
-          setMarkerScrolled(true);
-          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
-        } else {
-          listRef.scrollTop = listRef.scrollHeight;
-          setAtBottom(true);
-        }
+        queueMicrotask(() => {
+          if (!listRef) return;
+          if (markerRef) {
+            markerRef.scrollIntoView?.({ block: "center" });
+            setMarkerScrolled(true);
+            const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+            setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+          } else {
+            listRef.scrollTop = listRef.scrollHeight;
+            setAtBottom(true);
+          }
+        });
       },
       { defer: true },
     ),
