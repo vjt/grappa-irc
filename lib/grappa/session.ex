@@ -122,7 +122,8 @@ defmodule Grappa.Session do
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
           optional(:visitor_committer) => Server.visitor_committer(),
-          optional(:credential_failer) => Server.credential_failer()
+          optional(:credential_failer) => Server.credential_failer(),
+          optional(:last_joined_persister) => Server.last_joined_persister()
         }
 
   @doc """

@@ -40,7 +40,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
 
   describe "Credentials.update_last_joined_channels/3" do
     test "writes the channels list and round-trips on read" do
-      {_user, _network, cred} = setup_credential()
+      {_, _, cred} = setup_credential()
       assert cred.last_joined_channels == []
 
       assert :ok =
@@ -55,7 +55,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     end
 
     test "overwrites prior snapshot on each call (latest write wins)" do
-      {_user, _network, cred} = setup_credential()
+      {_, _, cred} = setup_credential()
 
       assert :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#a"])
       assert reload(cred).last_joined_channels == ["#a"]
@@ -67,7 +67,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     end
 
     test "empty list shrinks the snapshot to zero" do
-      {_user, _network, cred} = setup_credential()
+      {_, _, cred} = setup_credential()
 
       assert :ok =
                Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#a", "#b"])
@@ -88,7 +88,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
 
   describe "SessionPlan.build_plan boot-merge — autojoin + last_joined" do
     test "merges autojoin_channels + last_joined_channels at session_plan build" do
-      {_user, _network, cred} =
+      {_, _, cred} =
         setup_credential(%{autojoin_channels: ["#bofh", "#grappa"]})
 
       assert :ok =

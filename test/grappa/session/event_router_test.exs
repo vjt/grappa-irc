@@ -1901,7 +1901,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.names_pending == %{}
-      assert [{:members_seeded, "#BOFH", _}, _row, eof] = effects
+      assert [{:members_seeded, "#BOFH", _}, _, eof] = effects
       assert {:persist, :notice, eof_attrs} = eof
       assert eof_attrs.meta.names_target == "#BOFH"
     end
