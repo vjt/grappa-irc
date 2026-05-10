@@ -5,6 +5,7 @@ import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
 //
@@ -74,15 +75,15 @@ const BottomBar: Component<Props> = (props) => {
               type="button"
               role="tab"
               class="bottom-bar-tab"
-              classList={{ selected: isSelected(network.slug, "$server") }}
-              onClick={() => handleClick(network.slug, "$server", "server")}
+              classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
+              onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
             >
               Server
               {/* CP13 — server-window receives :notice rows for server-routed
                   numerics + NickServ + MOTD + ChanServ-fallback. Same badge
                   treatment as channels so unread counts surface uniformly. */}
               {(() => {
-                const key = channelKey(network.slug, "$server");
+                const key = channelKey(network.slug, SERVER_WINDOW_NAME);
                 return (
                   <>
                     <Show when={(messagesUnread()[key] ?? 0) > 0}>

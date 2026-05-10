@@ -9,6 +9,7 @@ import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
 import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
@@ -187,10 +188,10 @@ const Sidebar: Component<Props> = (props) => {
             </h3>
             <ul>
               {/* Server window — always present, not closeable */}
-              <li classList={{ selected: isSelected(network.slug, "$server") }}>
+              <li classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}>
                 <button
                   type="button"
-                  onClick={() => handleClick(network.slug, "$server", "server")}
+                  onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
                   class="sidebar-window-btn"
                 >
                   <span class="sidebar-channel-name">Server</span>
@@ -198,7 +199,7 @@ const Sidebar: Component<Props> = (props) => {
                       numerics + NickServ + MOTD + ChanServ-fallback. Same badge
                       treatment as channels so unread counts surface uniformly. */}
                   {(() => {
-                    const key = channelKey(network.slug, "$server");
+                    const key = channelKey(network.slug, SERVER_WINDOW_NAME);
                     return (
                       <>
                         <Show when={(messagesUnread()[key] ?? 0) > 0}>
