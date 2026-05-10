@@ -24,6 +24,7 @@ import {
   pushChannelUmode,
   pushChannelUnban,
   pushChannelVoice,
+  pushNames,
   pushWatchlistAdd,
   pushWatchlistDel,
   pushWatchlistList,
@@ -479,8 +480,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = { ok: true };
           break;
         }
-        case "names":
-          return { error: "/names: server-side handler not yet implemented (future bucket)" };
+        case "names": {
+          // CP22 cluster B (channel-client-polish #14) — /names #channel.
+          // Joined target → MembersPane refresh via the existing
+          // members_seeded broadcast (server emits on every 366
+          // RPL_ENDOFNAMES per MembersPane.tsx:26-27); non-joined target
+          // → 2 :notice scrollback rows in $server (nick list + EOF).
+          // Both paths handled server-side; no client routing needed.
+          if (cmd.target === null) return { error: "/names requires a #channel target" };
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/names: network not found" };
+          pushNames(networkId, cmd.target);
+          result = { ok: true };
+          break;
+        }
         case "list":
           return { error: "/list: server-side handler not yet implemented (future bucket)" };
         case "links":

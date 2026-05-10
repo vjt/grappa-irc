@@ -300,6 +300,17 @@ export function pushWho(networkId: number, channel: string): void {
   _userChannel.push("who", { network_id: networkId, channel });
 }
 
+// CP22 cluster B (channel-client-polish #14) — /names <#channel>.
+// Pushes on the user-level channel; server primes names_pending +
+// emits NAMES upstream. The 353/366 burst either refreshes
+// MembersPane (joined target — existing members_seeded path) or
+// lands as 2 :notice scrollback rows in $server (non-joined target —
+// nick list + EOF terminator) — no client-side accumulator needed.
+export function pushNames(networkId: number, channel: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("names", { network_id: networkId, channel });
+}
+
 // C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level
 // channel; server-side GrappaChannel.handle_in("watchlist", ...) handlers
 // are the authority (added in C8 server-side commit). The Promise resolves

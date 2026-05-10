@@ -55,6 +55,8 @@ vi.mock("../lib/socket", () => ({
   pushWhois: vi.fn(),
   // CP22 cluster B (channel-client-polish #14) — /who bridge.
   pushWho: vi.fn(),
+  // CP22 cluster B (channel-client-polish #14) — /names bridge.
+  pushNames: vi.fn(),
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
@@ -995,14 +997,24 @@ describe("compose submit — info verbs (TODO stubs)", () => {
     expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
   });
 
-  it("/names returns inline error (server-side not yet implemented)", async () => {
+  it("/names with target dispatches via pushNames", async () => {
     localStorage.setItem("grappa-token", "tok");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/names #grappa");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("not yet implemented") });
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("/names without target returns inline error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/names");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("requires a #channel") });
   });
 
   it("/list returns inline error (server-side not yet implemented)", async () => {
