@@ -95,7 +95,6 @@ services:
   grappa-e2e-seeder:
     build:
       context: ../..
-      target: build
       args:
         CONTAINER_UID: ${CONTAINER_UID:-1000}
         CONTAINER_GID: ${CONTAINER_GID:-1000}
@@ -105,10 +104,6 @@ services:
     user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
     working_dir: /app
     volumes:
-      - e2e_deps:/app/deps
-      - e2e_build:/app/_build
-      - e2e_mix:/app/.mix
-      - e2e_hex:/app/.hex
       - ../..:/app
       - ../../runtime/e2e/grappa-runtime:/app/runtime
     environment:
@@ -120,6 +115,16 @@ services:
       - "-c"
       - |
         set -e
+        # Bind-mount `../..:/app` shadows the image-baked `.mix/`, `.hex/`,
+        # `deps/`, `_build/`. CP23 S1 lessons (memories
+        # `feedback_named_volume_uid_trap` + `feedback_bind_mount_shadows_image`):
+        # named volumes for these dirs init root-owned and trip the dropped UID;
+        # bind-mount with explicit `mix local.hex` + `mix deps.get` is the
+        # idempotent fix. First run is cold (compile from scratch), subsequent
+        # runs reuse the bind-mounted host `_build/`.
+        mix local.hex --force
+        mix local.rebar --force
+        mix deps.get
         mix ecto.create
         mix ecto.migrate
         mix grappa.create_user --name vjt --password test-password-not-secret
@@ -134,7 +139,6 @@ services:
   grappa-test:
     build:
       context: ../..
-      target: build
       args:
         CONTAINER_UID: ${CONTAINER_UID:-1000}
         CONTAINER_GID: ${CONTAINER_GID:-1000}
@@ -157,16 +161,14 @@ services:
       # grappa-test ...`) so this dep is enforced by the wrapper, not
       # compose semantics.
     volumes:
-      # Share the dev image's named volumes so deps + _build are warm
-      # across runs. Different project name (grappa-e2e) means these
-      # are distinct from the dev stack's grappa_deps / grappa_build —
-      # first run is cold, subsequent runs reuse.
-      - e2e_deps:/app/deps
-      - e2e_build:/app/_build
-      - e2e_mix:/app/.mix
-      - e2e_hex:/app/.hex
       # Bind-mount source from the worktree root (../..). Same shape as
-      # compose.yaml — live source, not a release.
+      # compose.yaml — live source, not a release. Named volumes for
+      # _build / deps / .mix / .hex were dropped post-CP23 S1: the
+      # single-stage `mix phx.server` model never runs as root, and
+      # named volumes initialise root-owned (memory
+      # `feedback_named_volume_uid_trap`), tripping the dropped UID's
+      # writes to deps/_build. Bind-mount inherits operator UID, no
+      # collision.
       - ../..:/app
       # Per-stack runtime (sqlite). Host bind-mount under
       # runtime/e2e/grappa-runtime so the directory ownership matches
@@ -298,10 +300,6 @@ services:
     command: ["npx", "playwright", "test"]
 
 volumes:
-  e2e_deps:
-  e2e_build:
-  e2e_mix:
-  e2e_hex:
   e2e_runner_node_modules:
 
 networks:

@@ -67,7 +67,14 @@ case "$cmd" in
         # rationale — TL;DR: re-running an already-completed seeder via
         # the dep graph trips on the duplicate user row, so we boot it
         # alone first.
-        docker compose up --build --wait grappa-e2e-seeder
+        #
+        # `compose run --rm` (NOT `up --wait`) — `up --wait` treats a
+        # one-shot's normal exit as a healthcheck failure and returns
+        # non-zero, tripping `set -e`. `run --rm` is sync + returns the
+        # container's actual exit code, which is what we want for the
+        # mix-task seed pipeline.
+        docker compose build grappa-e2e-seeder
+        docker compose run --rm grappa-e2e-seeder
         # Phase 2: long-running services (NO runner — that's what makes
         # this script different from integration.sh). `--build` here too
         # so bahamut hub + leaves pick up conf.{hub,leaf4,leaf6}.tmpl
