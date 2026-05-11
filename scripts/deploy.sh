@@ -46,7 +46,14 @@ mkdir -p runtime/cicchetto-dist
 echo "Building cicchetto dist..."
 docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
 
-# 3. Apply pending migrations BEFORE bringing the long-running container up.
+# 3. Sync host deps/ to mix.lock. The bind-mount `./:/app` shadows the
+#    image-baked deps with whatever's on the host; previous deploys
+#    against a different mix.lock leave host deps/ out of sync.
+#    `mix deps.get` is idempotent + cheap when already in sync.
+echo "Syncing deps to mix.lock..."
+docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm --no-deps grappa mix deps.get
+
+# 4. Apply pending migrations BEFORE bringing the long-running container up.
 #    Pre-S3 the order was reversed (up -d first, then exec migrate in a
 #    retry loop). That worked as long as Bootstrap's queries only touched
 #    columns the running schema already had — but the moment a deploy
@@ -54,7 +61,7 @@ docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
 #    landed 2026-05-04), Bootstrap's first DB hit races the migration
 #    eval and crash-loops the supervision tree before the eval lands.
 #    Fix: one-shot `docker compose run` against the same image, same
-#    bind-mounted prod DB, runs to completion + exits BEFORE step 4's
+#    bind-mounted prod DB, runs to completion + exits BEFORE step 5's
 #    `up -d` starts Bootstrap.
 #
 #    Post-CP23: `mix ecto.migrate` replaces `bin/grappa eval` (no
@@ -62,12 +69,12 @@ docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
 echo "Running migrations..."
 docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm --no-deps grappa mix ecto.migrate
 
-# 4. Bring up grappa + nginx. --no-deps avoids re-running cicchetto-build
+# 5. Bring up grappa + nginx. --no-deps avoids re-running cicchetto-build
 #    (we just ran it above; compose's depends_on graph would otherwise try
 #    again because `run --rm` removes the container).
 docker compose "${COMPOSE_ARGS[@]}" --profile prod up -d --force-recreate --no-deps grappa nginx
 
-# 5. Wait for /healthz via nginx, probed from INSIDE the nginx container
+# 6. Wait for /healthz via nginx, probed from INSIDE the nginx container
 #    so the check is independent of host port binding. Cold-boot loop is
 #    long because `mix phx.server` recompiles when bind-mounted source
 #    has no `_build/${MIX_ENV}/` cached on host disk yet — first deploy
