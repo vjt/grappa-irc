@@ -93,25 +93,39 @@ defmodule Grappa.Session.EventRouterTest do
       refute Map.has_key?(attrs, :kind_tag)
     end
 
-    test "PRIVMSG carrying CTCP VERSION query emits NOTICE :reply, no persist" do
+    test "PRIVMSG carrying CTCP VERSION query emits NOTICE :reply (CRLF-terminated) + :persist for visibility" do
       state = base_state()
 
       # CTCP VERSION query: \x01VERSION\x01 (some clients send the trailing
-      # \x01; some don't — both must be handled).
+      # \x01; some don't — both must be handled). Target is the bouncer's
+      # nick (DM-shaped query).
       body = <<0x01, "VERSION", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, line}]} =
+      assert {:cont, ^state, [{:reply, line}, {:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
       # RFC 2812 + CTCP spec: response goes via NOTICE (NOT PRIVMSG) to
       # the SENDER's nick — prevents reply loops between two responsive
       # bots. Body is the canonical \x01VERSION grappa <version>\x01
       # framing where <version> is read from mix.exs at runtime via
-      # Grappa.version/0 (don't hardcode the literal here — bumping
+      # Application.spec/2 (don't hardcode the literal here — bumping
       # mix.exs would silently rot the assertion).
+      #
+      # CRLF is added by Client.send_line at the transport boundary
+      # (see ensure_crlf/1 in irc/client.ex), so the EventRouter emits
+      # the framed line WITHOUT \r\n.
       version = :grappa |> Application.spec(:vsn) |> to_string()
-      assert IO.iodata_to_binary(line) == "NOTICE alice :\x01VERSION grappa #{version}\x01"
+
+      assert IO.iodata_to_binary(line) ==
+               "NOTICE alice :\x01VERSION grappa #{version}\x01"
+
+      # Persist effect: visible row in the DM window for the sender so
+      # the operator sees the CTCP traffic in cic instead of silently
+      # consuming it. Channel = sender's nick (DM target derivation).
+      assert attrs.channel == "alice"
+      assert attrs.sender == "alice"
+      assert attrs.body == "CTCP VERSION query → grappa #{version}"
     end
 
     test "PRIVMSG carrying CTCP VERSION from a channel still replies to sender nick" do
@@ -121,13 +135,17 @@ defmodule Grappa.Session.EventRouterTest do
       # the sender's NICK, never the channel. Spamming a channel with
       # everyone's CTCP responses would be antisocial + a reply-loop
       # vector (every bot in the room responds to itself responding).
+      # The persist effect uses the channel as the channel (not the
+      # sender's nick) so the operator sees the channel-context query.
       body = <<0x01, "VERSION", 0x01>>
       m = msg(:privmsg, ["#italia", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, line}]} =
+      assert {:cont, ^state, [{:reply, line}, {:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
       assert IO.iodata_to_binary(line) =~ "NOTICE alice :"
+      assert attrs.channel == "#italia"
+      assert attrs.sender == "alice"
     end
 
     test "PRIVMSG carrying CTCP VERSION with trailing args still replies" do
@@ -138,7 +156,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "VERSION ", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, _}]} =
+      assert {:cont, ^state, [{:reply, _}, {:persist, :notice, _}]} =
                EventRouter.route(m, state)
     end
 

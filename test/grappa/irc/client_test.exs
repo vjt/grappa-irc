@@ -140,6 +140,34 @@ defmodule Grappa.IRC.ClientTest do
                IRCServer.wait_for_line(server, &(&1 == "PING :foo\r\n"), 1_000)
     end
 
+    test "send_line/2 appends CRLF when caller forgot it" do
+      # CP23 cluster `code-reload` lesson: the CTCP VERSION reply effect
+      # shipped a NOTICE without a trailing \r\n; the second outbound
+      # frame concatenated and corrupted the wire. ensure_crlf at the
+      # transport boundary makes the helper safe-by-default — every line
+      # that hits the socket has CRLF, regardless of caller hygiene.
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_line(client, "PING :no-crlf")
+
+      assert {:ok, "PING :no-crlf\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+    end
+
+    test "send_line/2 normalises bare LF to CRLF" do
+      # Some sources (HTTP-derived headers, hand-typed payloads) end with
+      # bare \n. IRC framing requires \r\n; the transport boundary fixes
+      # the LF→CRLF mismatch instead of writing a malformed frame.
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_line(client, "PING :bare-lf\n")
+
+      assert {:ok, "PING :bare-lf\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING"), 1_000)
+    end
+
     test "send_privmsg/3 emits the canonical PRIVMSG framing" do
       {server, port} = start_server()
       client = start_client(port)

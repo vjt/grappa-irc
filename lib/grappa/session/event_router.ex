@@ -188,15 +188,35 @@ defmodule Grappa.Session.EventRouter do
   # CTCP VERSION query — body is `\x01VERSION\x01` or `\x01VERSION ...\x01`
   # (some clients append trailing args/space). Per RFC 2812 + CTCP spec,
   # responses MUST go via NOTICE (not PRIVMSG) to the SENDER's nick to
-  # prevent reply loops between two responsive bots. Not persisted to
-  # scrollback — CTCP control traffic is invisible to the user.
-  def route(%Message{command: :privmsg, params: [_, body]} = msg, state)
-      when is_binary(body) and binary_part(body, 0, 1) == <<0x01>> do
+  # prevent reply loops between two responsive bots.
+  #
+  # Two effects:
+  #   1. {:reply, line}    — outbound NOTICE response. Client.send_line
+  #      guarantees CRLF at the transport boundary (see ensure_crlf/1
+  #      in irc/client.ex), so callers don't need to remember.
+  #   2. {:persist, :notice, attrs} — visible scrollback row in the DM
+  #      window for the sender, so cic shows "alice queried grappa for
+  #      VERSION" instead of silently consuming the CTCP. CTCP framing
+  #      stripped from body for readability; the notice kind matches the
+  #      outbound reply (also a NOTICE), pairing query + answer visually.
+  def route(%Message{command: :privmsg, params: [target, body]} = msg, state)
+      when is_binary(target) and is_binary(body) and
+             binary_part(body, 0, 1) == <<0x01>> do
     case ctcp_verb(body) do
       "VERSION" ->
         sender = Message.sender_nick(msg)
-        reply = "NOTICE #{sender} :\x01VERSION grappa #{grappa_version()}\x01"
-        {:cont, state, [{:reply, reply}]}
+        version = grappa_version()
+        reply = "NOTICE #{sender} :\x01VERSION grappa #{version}\x01"
+
+        # Persist the inbound query in the DM window with the sender so
+        # cic surfaces it. Channel = sender's nick (DM window key) when
+        # the CTCP was a private query; channel = original target when
+        # the CTCP was sent to a channel.
+        dm_channel = if target == state.nick, do: sender, else: target
+        notice_body = "CTCP VERSION query → grappa #{version}"
+        {state2, persist_eff} = build_persist(state, :notice, dm_channel, sender, notice_body, %{})
+
+        {:cont, state2, [{:reply, reply}, persist_eff]}
 
       _ ->
         # Non-VERSION CTCP (ACTION handled below; PING / TIME / SOURCE

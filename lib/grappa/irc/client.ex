@@ -533,8 +533,32 @@ defmodule Grappa.IRC.Client do
 
   @impl GenServer
   def handle_call({:send, line}, _, state) do
-    :ok = transport_send(state, line)
+    :ok = transport_send(state, ensure_crlf(line))
     {:reply, :ok, state}
+  end
+
+  # IRC framing requires every line to end with CRLF. The high-level
+  # send_* helpers (send_privmsg/3, send_join/2, etc.) already include
+  # \r\n in their format strings — but bypass paths like a raw
+  # send_line/2 from a controller or a CTCP-reply effect can forget,
+  # and a missing terminator silently concatenates with the next
+  # outbound frame, garbling both lines on the wire (CP23 cluster
+  # `code-reload` learned this when the CTCP VERSION reply landed
+  # without \r\n and ate the next PRIVMSG).
+  #
+  # Guarantee CRLF here at the transport boundary so no upstream
+  # caller can produce a malformed frame. Idempotent: if the line
+  # already ends with \r\n it's passed through; if it ends with bare
+  # \n or has no terminator at all, \r\n is appended.
+  @spec ensure_crlf(iodata()) :: binary()
+  defp ensure_crlf(line) do
+    bin = IO.iodata_to_binary(line)
+
+    cond do
+      String.ends_with?(bin, "\r\n") -> bin
+      String.ends_with?(bin, "\n") -> String.trim_trailing(bin, "\n") <> "\r\n"
+      true -> bin <> "\r\n"
+    end
   end
 
   ## Connection
