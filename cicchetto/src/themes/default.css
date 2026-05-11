@@ -195,6 +195,32 @@ body {
   overflow-y: auto;
 }
 
+/* SocketHealthBanner — fixed-position alert at the top of the viewport,
+   above every shell pane. Mounted in both desktop and mobile branches
+   in Shell.tsx; position:fixed avoids fighting the grid template of
+   either layout. z-index sits above SettingsDrawer (z=80 mobile) and
+   member-drawer overlay (z=90) so it's always reachable. */
+.socket-health-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 0.5rem 1rem;
+  background: #c33;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.socket-health-banner code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0 0.25rem;
+  border-radius: 2px;
+}
+
 /* Sidebar */
 
 .sidebar-network {

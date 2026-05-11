@@ -16,6 +16,7 @@ import MentionsWindow from "./MentionsWindow";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
 import Sidebar from "./Sidebar";
+import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
 
 // Three-pane responsive shell. Composition root for Sidebar / TopicBar /
@@ -209,6 +210,7 @@ const Shell: Component = () => {
       fallback={
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
         <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
+          <SocketHealthBanner />
           <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
             <Sidebar onSelect={() => setSidebarOpen(false)} />
           </aside>
@@ -328,6 +330,7 @@ const Shell: Component = () => {
           not a CSS-display toggle, so the sidebar DOM is absent entirely.
       */}
       <div class="shell shell-mobile">
+        <SocketHealthBanner />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"
