@@ -482,6 +482,53 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert "alice" in nicks
     end
 
+    # CP23 S4 B4 — bundle_hash push on user-topic join.
+    #
+    # The `Grappa.Cic.Bundle` reader live-reads `runtime/cicchetto-dist/
+    # index.html` on every call. In the test env that file may or may
+    # not exist (cicchetto-build is a prod-profile oneshot, not a test
+    # prereq). Both shapes are valid contract: hash present → push;
+    # absent → skip silently.
+    test "after-join snapshot: pushes bundle_hash when cic bundle is on disk, otherwise skips" do
+      user_name = "bundlehash-#{System.unique_integer([:positive])}"
+      user_fixture(name: user_name)
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      # Drain query_windows_list snapshot first (always pushed for users).
+      assert_push("event", %{kind: "query_windows_list"})
+
+      case Grappa.Cic.Bundle.current_hash() do
+        nil ->
+          refute_push("event", %{kind: "bundle_hash"}, 100)
+
+        hash when is_binary(hash) ->
+          assert_push("event", %{kind: "bundle_hash", hash: ^hash})
+      end
+    end
+
+    test "after-join snapshot: visitor socket also receives bundle_hash when bundle exists" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, _} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      case Grappa.Cic.Bundle.current_hash() do
+        nil ->
+          refute_push("event", %{kind: "bundle_hash"}, 100)
+
+        hash when is_binary(hash) ->
+          assert_push("event", %{kind: "bundle_hash", hash: ^hash})
+      end
+    end
+
     test "after-join snapshot: query_windows_list payload is JSON-serializable (regression)" do
       # Regression: the prod bug raised Protocol.UndefinedError for
       # Jason.Encoder on %QueryWindows.Window{} structs because the schema

@@ -146,6 +146,7 @@ defmodule GrappaWeb.GrappaChannel do
   use GrappaWeb, :channel
 
   alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
+  alias Grappa.Cic.Bundle, as: CicBundle
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
@@ -715,6 +716,8 @@ defmodule GrappaWeb.GrappaChannel do
   # because `WireUserEvent` doesn't list per-channel kinds. Removed.
   @spec push_user_snapshot(String.t(), Phoenix.Socket.t()) :: :ok
   defp push_user_snapshot(user_name, socket) do
+    push_bundle_hash(socket)
+
     if visitor?(user_name) do
       :ok
     else
@@ -725,6 +728,20 @@ defmodule GrappaWeb.GrappaChannel do
         :error ->
           :ok
       end
+    end
+  end
+
+  # CP23 S4 B4 — push the deployed cic bundle hash on user-topic join so
+  # cic can compare against `bootBundleHash` (the hash baked into the
+  # html the browser loaded) and surface a refresh banner on mismatch.
+  # `nil` (no bundle on disk yet — dev without a cic build, prod before
+  # the first cicchetto-build oneshot) is silently skipped: cic has
+  # nothing to compare against.
+  @spec push_bundle_hash(Phoenix.Socket.t()) :: :ok
+  defp push_bundle_hash(socket) do
+    case CicBundle.current_hash() do
+      nil -> :ok
+      hash -> push(socket, "event", %{kind: "bundle_hash", hash: hash})
     end
   end
 
