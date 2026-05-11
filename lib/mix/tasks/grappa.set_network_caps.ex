@@ -28,17 +28,12 @@ defmodule Mix.Tasks.Grappa.SetNetworkCaps do
 
   ## In production
 
-  This Mix task is a dev-DB convenience. The prod release ships
-  without `mix`; bind caps against `runtime/grappa_prod.db` from a
-  remote shell:
-
-      docker compose -f compose.prod.yaml exec grappa \\
-        bin/grappa rpc 'Grappa.Networks.update_network_caps( \\
-          Grappa.Networks.get_network_by_slug!("azzurra"), \\
-          %{max_concurrent_sessions: 3, max_per_client: 1})'
-
-  Both paths route through the same `Grappa.Networks.update_network_caps/2`
-  context fn so the validation contract is single-sourced.
+  This Mix task works against any DB the container can reach. Run it
+  inside the prod container via `scripts/mix.sh grappa.set_network_caps
+  --network azzurra --max-sessions 3 --max-per-client 1`, or live-mutate
+  via IEx (`scripts/iex.sh`) calling
+  `Grappa.Networks.update_network_caps/2` directly. Both paths route
+  through the same fn so the validation contract is single-sourced.
   """
   use Boundary,
     top_level?: true,

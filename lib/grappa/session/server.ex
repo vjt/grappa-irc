@@ -29,7 +29,7 @@ defmodule Grappa.Session.Server do
   Trade-off: a `:transient` restart replays the SAME cached opts
   the supervisor child spec captured at first start — credential
   changes in the DB don't propagate until the operator forces a
-  re-spawn through the LIVE BEAM (via `bin/grappa rpc` calling
+  re-spawn through the LIVE BEAM (via `scripts/iex.sh` calling
   into `Credentials.unbind_credential/2`, NOT bare
   `mix grappa.unbind_network` which runs in a separate BEAM and
   cannot reach the prod registry) or the next deploy. Full

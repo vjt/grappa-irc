@@ -107,7 +107,7 @@ What the cicchetto/ agent looks for (TypeScript/SolidJS/PWA-specific):
   `index.html` includes the manifest link.
 - Build + tooling drift: `tsconfig.json` strict flags pinned;
   `package.json` ↔ `bun.lock` sync; Vite base/root/outDir match
-  nginx + compose.prod.yaml expectations; `vite-plugin-solid` is
+  nginx + compose.yaml (--profile prod) expectations; `vite-plugin-solid` is
   the plugin layer.
 
 What to IGNORE: style preferences, "could be improved" without
@@ -135,16 +135,16 @@ The cross-module agent additionally searches the ENTIRE `lib/` for:
   schema_migrations consistency)
 - Infra: `scripts/*.sh` consistency, `Dockerfile` stages, compose
   files (project-name conflicts, port collisions, env var coverage),
-  `.env.example` ↔ `runtime.exs` symmetry, `compose.prod.yaml` env
+  `.env.example` ↔ `runtime.exs` symmetry, `compose.yaml (--profile prod)` env
   vars vs `runtime.exs` reads, `infra/nginx.conf` reverse-proxy
   allowlist vs `lib/grappa_web/router.ex` routes (any new server
   route must land in nginx OR be intentionally bouncer-internal)
 - Cicchetto-side cross-cutting: `cicchetto/biome.json` rule
   consistency, `cicchetto/vite.config.ts` build target / outDir
-  matching `compose.prod.yaml` `cicchetto-build` expectations,
+  matching `compose.yaml (--profile prod)` `cicchetto-build` expectations,
   `cicchetto/package.json` version pinning AND lockfile sync
   (`cicchetto/bun.lock`), `scripts/bun.sh` UID/cache layout
-  matching `compose.prod.yaml` `cicchetto-build`
+  matching `compose.yaml (--profile prod)` `cicchetto-build`
 
 ## Argument: `architecture`
 

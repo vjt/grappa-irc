@@ -11,7 +11,7 @@ defmodule Grappa.Admission.Config do
 
   ## Configuration keys
 
-  Operator-facing (set via env vars in `compose.prod.yaml` →
+  Operator-facing (set via env vars in `compose.yaml` →
   `runtime.exs` → `:grappa, :admission` keyword):
 
     * `:captcha_provider` — `Disabled` (default), `Turnstile`, `HCaptcha`

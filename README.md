@@ -34,16 +34,15 @@ not yet feature-complete. The Roadmap section below tracks per-phase progress.
 
 grappa runs as a single container against a sqlite DB. There is no
 config file — every `(user, network)` binding lives in the DB and is
-read by `Grappa.Bootstrap` at boot. The operator surface comes in two
-shapes:
+read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
 
-* **Dev / pre-deploy**: a set of mix tasks invoked through
-  `scripts/mix.sh` against the dev container's DB
-  (`runtime/grappa_dev.db`).
-* **Prod (running release)**: `bin/grappa eval` against the running
-  prod container, calling the same context functions the mix tasks
-  wrap. Verbose-but-correct; a thin operator CLI is queued for Phase 5
-  hardening.
+* **Mix tasks** invoked through `scripts/mix.sh`. The container runs
+  `mix phx.server` in every environment (dev = prod = CI, single
+  image), so mix tasks work against the live DB the same way they
+  work against the dev DB — same fn, same validation contract.
+* **Live IEx** via `scripts/iex.sh` for one-off mutations that need
+  to run inside the running supervision tree (Repo, Vault, Registry
+  all up).
 
 ### First deploy
 
@@ -53,19 +52,19 @@ shapes:
    ```
 
 2. **Generate the three required secrets**. The first `scripts/mix.sh`
-   call builds the dev image (~5–10 min, one-time); subsequent calls
+   call builds the image (~5–10 min, one-time); subsequent calls
    reuse it. Paste each output into `.env`:
    ```sh
    cp .env.example .env
    scripts/mix.sh phx.gen.secret              # → SECRET_KEY_BASE
-   openssl rand -hex 32                       # → RELEASE_COOKIE
+   scripts/mix.sh phx.gen.secret 32           # → SECRET_SIGNING_SALT
    scripts/mix.sh grappa.gen_encryption_key   # → GRAPPA_ENCRYPTION_KEY
    ```
    `GRAPPA_ENCRYPTION_KEY` encrypts upstream credentials at rest via
    Cloak AES-GCM. **Back it up separately — losing it means losing
    every stored upstream password.**
 
-3. **Build the prod release + start the container**:
+3. **Build the image + start the prod stack**:
    ```sh
    scripts/deploy.sh
    ```
@@ -75,52 +74,31 @@ shapes:
 
 ### Add an operator account + bind a network
 
-The prod container runs a mix release; mix tasks aren't directly
-invocable inside it. Use `bin/grappa rpc` against the live release
-node — `rpc` runs in the context of the running supervision tree
-(Repo, Vault, etc. all up), unlike `eval` which loads modules into a
-fresh node where `Repo` would not be started.
-
 ```sh
 # 1. Create the user account (REST + WS bearer-token identity).
-docker compose -f compose.prod.yaml exec grappa bin/grappa rpc '
-  case Grappa.Accounts.create_user(%{name: "vjt", password: "correct horse battery staple"}) do
-    {:ok, u}    -> IO.puts("created user " <> u.name <> " (" <> u.id <> ")")
-    {:error, c} -> IO.puts(:stderr, inspect(c.errors)); System.halt(1)
-  end
-'
+scripts/mix.sh grappa.create_user --name vjt --password "correct horse battery staple"
 
 # 2. Bind a network. auth_method picks the upstream auth method:
-#    :auto | :sasl | :server_pass | :nickserv_identify | :none
-docker compose -f compose.prod.yaml exec grappa bin/grappa rpc '
-  user = Grappa.Accounts.get_user_by_name!("vjt")
-  {:ok, net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra"})
-  {:ok, _}   = Grappa.Networks.add_server(net, %{host: "irc.azzurra.chat", port: 6697, tls: true})
-  {:ok, _}   = Grappa.Networks.bind_credential(user, net, %{
-    nick: "vjt",
-    password: "NICKSERV_PASS",
-    auth_method: :nickserv_identify,
-    autojoin_channels: ["#italia", "#hacking"]
-  })
-  IO.puts("bound vjt -> azzurra")
-'
+#    auto | sasl | server_pass | nickserv_identify | none
+scripts/mix.sh grappa.add_server --network azzurra --host irc.azzurra.chat --port 6697 --tls
+scripts/mix.sh grappa.bind_network --user vjt --network azzurra \
+  --nick vjt --password 'NICKSERV_PASS' --auth nickserv_identify \
+  --autojoin '#italia,#hacking'
 
-# 3. Re-run scripts/deploy.sh so Bootstrap re-enumerates and spawns
-#    the session (the script does --force-recreate, which restarts
-#    the container against the same image). Or — if the session is
-#    already running and you want it to pick up the new binding
-#    without a full restart — use Session.send_join/3 etc. via rpc.
-scripts/deploy.sh
+# 3. Live-spawn the session via IEx so Bootstrap doesn't have to
+#    re-enumerate (no container restart needed). Or just re-run
+#    scripts/deploy.sh — the cold-deploy path force-recreates and
+#    Bootstrap picks up the new binding.
+scripts/iex.sh
+iex> Grappa.SpawnOrchestrator.spawn_session(
+       Grappa.Accounts.get_user_by_name!("vjt"),
+       Grappa.Networks.get_network_by_slug!("azzurra"))
 ```
-
-`bin/grappa rpc` requires `RELEASE_COOKIE` set (it's in `.env.example`)
-since it talks to the running node over distributed Erlang.
 
 The mix tasks under `lib/mix/tasks/grappa.*.ex` (`add_server`,
 `bind_network`, `create_user`, `gen_encryption_key`, `remove_server`,
-`unbind_network`, `update_network_credential`) work against the dev
-container via `scripts/mix.sh grappa.<task> --flag value` for testing
-the operator surface before production deploys. Each prints
+`unbind_network`, `update_network_credential`, `set_network_caps`)
+work against any DB the container can reach — dev or prod. Each prints
 `--help`-style usage when invoked without args.
 
 ## Why this exists

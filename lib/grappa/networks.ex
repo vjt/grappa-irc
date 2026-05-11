@@ -183,9 +183,9 @@ defmodule Grappa.Networks do
   @doc """
   Updates the admission caps (`max_concurrent_sessions`,
   `max_per_client`) on a network row. Operator-side entry point used by
-  `mix grappa.set_network_caps` (dev DB) and `bin/grappa rpc` against
-  the same fn (prod DB) — single source for the validation +
-  Repo.update round-trip.
+  `mix grappa.set_network_caps` (any DB the container can reach) and
+  live IEx mutations (`scripts/iex.sh`) — single source for the
+  validation + Repo.update round-trip.
 
   Three-valued contract per cap (decision F, B5.3):
 
