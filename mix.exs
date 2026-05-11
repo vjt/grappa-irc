@@ -53,14 +53,7 @@ defmodule Grappa.MixProject do
         # See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
         ignore: ["Config.HTTPS"]
       ],
-      boundary: [default: [check: [in: true, out: true]]],
-      releases: [
-        grappa: [
-          include_executables_for: [:unix],
-          applications: [runtime_tools: :permanent],
-          steps: [:assemble, :tar]
-        ]
-      ]
+      boundary: [default: [check: [in: true, out: true]]]
     ]
   end
 

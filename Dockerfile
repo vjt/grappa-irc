@@ -1,121 +1,67 @@
 # grappa — IRC bouncer (Elixir/OTP + Phoenix)
 #
-# Multi-stage build:
-#   build   — full Elixir toolchain, mix tasks, deps, compiled artifacts.
-#             Used directly as the dev image (bind-mounted source).
-#   release — extends build; runs `mix release` to produce the OTP release
-#             tarball at /app/_build/prod/rel/grappa. Only executed when
-#             prod targets cascade through it.
-#   runtime — minimal Debian + the prebuilt OTP release copied from the
-#             release stage. Used for prod deploys.
+# Single-stage image: dev = prod = CI = one path, one runtime, one
+# binary. `mix phx.server` boots in every environment. The release
+# build was dropped in CP23 cluster `cluster/code-reload` to enable
+# Phoenix.CodeReloader hot-deploy of running sessions.
 #
-# Base image: hexpm/elixir keeps Erlang/Elixir/Debian versions in sync,
-# avoiding the version-skew pain of mixing official elixir + erlang images.
+# Base image: `elixir:1.19-otp-28-alpine` (Docker Hub official). The
+# previous multi-stage debian build used `hexpm/elixir:VSN-erlang-VSN-
+# debian-VSN` for tighter alpine-tuple pinning, but `hexpm/elixir`
+# does NOT publish alpine variants for Elixir 1.19 / OTP 28 — the
+# official `elixir:1.19-otp-28-alpine` is the upstream-supported alpine
+# path. Elixir + OTP are still pinned via the tag; alpine version
+# floats with whatever Docker library publishes for that tag.
 
-ARG ELIXIR_VERSION=1.19.5
-ARG OTP_VERSION=28.5
-ARG DEBIAN_VERSION=bookworm-20260421-slim
-ARG CONTAINER_UID=1000
-ARG CONTAINER_GID=1000
+FROM elixir:1.19-otp-28-alpine
 
-# ─── Build stage ──────────────────────────────────────────────────────────────
-FROM hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION} AS build
+# build-base + git for hex deps; sqlite-dev for ecto_sqlite3 NIF link;
+# curl for the in-container /healthz probe + future hot-deploy POST;
+# inotify-tools for Phoenix code-reloader file watch (live in dev,
+# request-driven in prod, both rely on the same Erlang port driver).
+RUN apk add --no-cache \
+        build-base \
+        git \
+        curl \
+        sqlite-dev \
+        ncurses \
+        inotify-tools
 
-ARG CONTAINER_UID
-ARG CONTAINER_GID
-
-# Build deps (need build-essential for ecto_sqlite3 NIFs, git for git deps)
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        build-essential git curl ca-certificates locales sqlite3 inotify-tools && \
-    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV LANG=en_US.UTF-8 \
-    LC_ALL=en_US.UTF-8 \
-    LANGUAGE=en_US:en \
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     MIX_HOME=/app/.mix \
     HEX_HOME=/app/.hex
 
-# Match host UID/GID so bind-mounted sources are owned by the dev user.
-RUN groupadd -g ${CONTAINER_GID} grappa && \
-    useradd -m -u ${CONTAINER_UID} -g grappa -d /app -s /bin/bash grappa
-
 WORKDIR /app
-RUN chown -R grappa:grappa /app
 
-USER grappa
-
+# Build as root (alpine `elixir` ships no non-root user); compose
+# `user:` directive drops to host UID at runtime so bind-mounted source
+# stays writable by the operator.
 RUN mix local.hex --force && mix local.rebar --force
 
-# Pre-fetch deps so dev rebuilds skip network unless mix.lock changes.
-COPY --chown=grappa:grappa mix.exs mix.lock ./
+# Pre-fetch + compile deps so subsequent rebuilds skip network and
+# C-NIF compilation unless mix.lock or config/* change.
+COPY mix.exs mix.lock ./
 RUN mix deps.get
 
-COPY --chown=grappa:grappa config/ config/
+COPY config/ config/
 RUN mix deps.compile
 
-COPY --chown=grappa:grappa . .
+COPY . .
+RUN mix compile
 
-# Default for dev: phx.server (bind-mount overrides /app at runtime).
-# Prod build proceeds to the runtime stage and uses `bin/grappa start`.
-EXPOSE 4000
-CMD ["mix", "phx.server"]
-
-
-# ─── Release stage ────────────────────────────────────────────────────────────
-# Runs `mix release` against the build stage. Lives outside the build stage
-# so dev image rebuilds (`docker build --target build`) skip the prod
-# release work entirely.
-FROM build AS release
-
-USER grappa
-WORKDIR /app
-
-ENV MIX_ENV=prod
-
-# codebase audit web W10 + cross-infra L7. Forwarded from compose.prod.yaml's
-# `build.args.SECRET_SIGNING_SALT`; baked into the release at compile time
-# via config/config.exs's `System.get_env("SECRET_SIGNING_SALT")`. Phoenix's
-# Plug.Session @session_options is a compile-time module attribute —
-# `Application.compile_env!/2` validates compile == runtime, so the value
-# must be present in the build environment, not just runtime. Rotation =
-# bump SECRET_SIGNING_SALT in .env + scripts/deploy.sh full rebuild.
-ARG SECRET_SIGNING_SALT
-ENV SECRET_SIGNING_SALT=${SECRET_SIGNING_SALT}
-
-RUN mix deps.get --only prod && \
-    mix deps.compile && \
-    mix release --overwrite
-
-
-# ─── Runtime stage ────────────────────────────────────────────────────────────
-FROM debian:${DEBIAN_VERSION} AS runtime
-
-ARG CONTAINER_UID
-ARG CONTAINER_GID
-
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        libstdc++6 openssl libncurses6 locales ca-certificates curl sqlite3 && \
-    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 LANGUAGE=en_US:en
-
-RUN groupadd -g ${CONTAINER_GID} grappa && \
-    useradd -m -u ${CONTAINER_UID} -g grappa -d /app -s /bin/bash grappa
-
-WORKDIR /app
-
-USER grappa
-
-# Copy the prebuilt OTP release from the release stage. No mix at runtime.
-COPY --from=release --chown=grappa:grappa /app/_build/prod/rel/grappa/ /app/
+# Hot-deploy gate. CI image-build pipeline flips this to `false` when
+# a tag-to-tag diff touches mix.lock / mix.exs / supervision tree —
+# `scripts/hot-deploy.sh` reads the label and refuses to skip a cold
+# restart when the image isn't safe to live-reload.
+LABEL grappa.hot_deployable=true
 
 EXPOSE 4000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -fsS http://localhost:4000/healthz || exit 1
 
-CMD ["bin/grappa", "start"]
+# bin/start.sh exports BEAM resource caps (formerly rel/env.sh.eex) and
+# execs `mix phx.server`. Same shell idioms work in dev + prod because
+# MIX_ENV is the only env-distinguishing variable.
+CMD ["bin/start.sh"]

@@ -13,11 +13,11 @@
 # Provides:
 #   - SRC_ROOT           absolute path to source tree (worktree dir or main repo)
 #   - REPO_ROOT          absolute path to main repo (resolved via git --git-common-dir)
-#   - COMPOSE_ARGS       `-f base [-f personal-override]` array; pass as
-#                        `docker compose "${COMPOSE_ARGS[@]}" ...`. Base is
-#                        compose.yaml unless GRAPPA_PROD=1 (then compose.prod.yaml);
-#                        the matching personal override (compose.override.yaml or
-#                        compose.prod.override.yaml) is appended only when present.
+#   - COMPOSE_ARGS       `-f compose.yaml [-f compose.override.yaml]` array;
+#                        pass as `docker compose "${COMPOSE_ARGS[@]}" ...`.
+#                        compose.yaml is unified (CP23 collapse — dev grappa-only,
+#                        prod gated by `--profile prod`); the personal override
+#                        is appended when present.
 #   - WORKTREE_VOLUMES   array of `-v SRC_ROOT/x:/app/x:ro` overrides (empty when on main)
 #   - in_container()              runs args inside the running grappa container (errors if not up)
 #   - in_oneshot()                runs args in a fresh one-shot container w/ worktree overrides
@@ -43,26 +43,20 @@ export SRC_ROOT
 REPO_ROOT="$(git -C "$SRC_ROOT" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
 export REPO_ROOT
 
-# Compose files: base (committed) + personal override (gitignored, optional).
-# Personal overrides bind to a deployment-specific LAN IP / set $PHX_HOST.
-# See compose.{,prod.}override.yaml.example.
+# Compose files: unified compose.yaml (committed) + personal override
+# (gitignored, optional). Personal overrides bind to a deployment-specific
+# LAN IP / set $PHX_HOST / pin $GRAPPA_PUBLISH. See
+# compose.override.yaml.example. Prod is selected via `--profile prod`
+# at the call site, NOT via a separate base file (CP23 collapse).
 #
 # All scripts cd to $REPO_ROOT before running docker compose, so relative
 # paths resolve against the main repo. The override is read from REPO_ROOT
 # (not SRC_ROOT) because it represents the host machine's deployment
 # binding, not the worktree's source — every worktree on this host shares
 # the same LAN binding.
-if [ "${GRAPPA_PROD:-}" = "1" ]; then
-    base_compose="compose.prod.yaml"
-    override_compose="compose.prod.override.yaml"
-else
-    base_compose="compose.yaml"
-    override_compose="compose.override.yaml"
-fi
-
-declare -ag COMPOSE_ARGS=(-f "$base_compose")
-if [ -f "$REPO_ROOT/$override_compose" ]; then
-    COMPOSE_ARGS+=(-f "$override_compose")
+declare -ag COMPOSE_ARGS=(-f compose.yaml)
+if [ -f "$REPO_ROOT/compose.override.yaml" ]; then
+    COMPOSE_ARGS+=(-f compose.override.yaml)
 fi
 export COMPOSE_ARGS
 
@@ -165,22 +159,19 @@ in_oneshot() {
         run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
 }
 
-# Prefer exec into the live container when on main and it's up AND it's a
-# dev container (has `mix`); otherwise oneshot. From a worktree, ALWAYS
-# oneshot — the live container has main's source mounted, not the
-# worktree's, so exec there would run the wrong code.
+# Prefer exec into the live container when on main and it's up; otherwise
+# oneshot. From a worktree, ALWAYS oneshot — the live container has main's
+# source mounted, not the worktree's, so exec there would run the wrong
+# code.
 #
-# The `mix`-probe guards against prod-container squat: compose.yaml and
-# compose.prod.yaml both default to project=grappa + service=grappa, so
-# `ps -q grappa` under compose.yaml returns the prod release container
-# when prod is the only stack running. Prod release has no `mix` — exec
-# would die with "executable file not found". Probe falls through to
-# oneshot in that case (and any future wrong-image-running case).
+# Post-CP23 the unified image always has `mix` (single-stage, no release
+# binary), so the legacy mix-probe defensive branch is gone — any
+# running `grappa` container is exec-able for mix tasks.
 in_container_or_oneshot() {
     if [ "$SRC_ROOT" = "$REPO_ROOT" ]; then
         local cid
         cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q grappa 2>/dev/null || true)"
-        if [ -n "$cid" ] && docker exec "$cid" sh -c 'command -v mix >/dev/null 2>&1'; then
+        if [ -n "$cid" ]; then
             docker compose "${COMPOSE_ARGS[@]}" exec -T grappa "$@"
             return
         fi

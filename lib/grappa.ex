@@ -21,9 +21,8 @@ defmodule Grappa do
   - `Grappa.Session` — one supervised GenServer per `(user, network)` pair.
   - `GrappaWeb.Endpoint` — Phoenix HTTP + WebSocket Channels surface.
 
-  Plus two internal-only boundaries — Grappa.Application (OTP
-  callback module + supervision tree wiring) and Grappa.Release
-  (release-shell migration tasks) — both `@moduledoc false`.
+  Plus one internal-only boundary — Grappa.Application (OTP
+  callback module + supervision tree wiring) — `@moduledoc false`.
   """
 
   # `Grappa` is the namespace anchor + a tiny `version/0` helper. Each

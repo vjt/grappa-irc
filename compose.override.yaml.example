@@ -1,20 +1,37 @@
-# grappa — dev compose personal override (gitignored as compose.override.yaml).
-#
-# Copy to `compose.override.yaml` if you want to bind the dev Phoenix
-# server somewhere other than the default wildcard :4000. Common case:
-# bind to a specific LAN/VLAN IP only, so the bouncer is reachable on
-# the home network but not on every interface.
+# grappa — compose personal override (gitignored as compose.override.yaml).
 #
 # Auto-loaded by scripts/_lib.sh when present. Do NOT commit your real
-# override — it's pinned to your machine's interface and will collide
-# with anyone else's setup.
+# override — it's pinned to your machine's interface, hostname, and DNS.
 #
-# `ports: !override` replaces compose.yaml's `"4000:4000"` wildcard publish
-# with the IP-bound publish below. Without !override, compose merges port
-# lists by appending (both bindings would coexist). `!reset` would drop
+# Single committed compose.yaml ships safe defaults: grappa publishes on
+# 127.0.0.1:4000 (loopback only). Use overrides to bind to a LAN/VLAN IP
+# or pin prod-specific environment.
+#
+# Two example shapes — pick one or merge both depending on dev vs prod
+# usage on this host. Most operators want the prod block; dev typically
+# leaves the loopback default in place.
+#
+# `ports: !override` replaces compose.yaml's wildcard publish with the
+# IP-bound publish below. Without !override, compose merges port lists
+# by appending (both bindings would coexist). `!reset` would drop
 # ports entirely without re-adding ours.
 
 services:
-  grappa:
+  # Dev shape — bind grappa to a LAN IP for testing from another device.
+  # Drop this block if you only ever run dev on loopback.
+  # grappa:
+  #   ports: !override
+  #     - "192.168.53.12:4000:4000"
+
+  # Prod shape — bind nginx to your LAN/VLAN IP (default committed shape
+  # is wildcard :3000) and pin Phoenix's `check_origin` allowlist via
+  # PHX_HOST + EXTRA_CHECK_ORIGINS. Set MIX_ENV=prod in .env (or the
+  # invoking shell) so compose.yaml's `${MIX_ENV:-dev}` resolves to prod.
+  nginx:
     ports: !override
-      - "192.168.53.12:4000:4000"
+      - "192.168.53.12:80:80"
+
+  grappa:
+    environment:
+      PHX_HOST: voygrappa.bad.ass
+      EXTRA_CHECK_ORIGINS: "http://192.168.53.12"

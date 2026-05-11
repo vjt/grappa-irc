@@ -2,21 +2,19 @@
 # Curl the grappa /healthz endpoint.
 #
 # Usage:
-#   scripts/healthcheck.sh                     # via container exec (always works)
-#   scripts/healthcheck.sh --inside            # alias of the default
+#   scripts/healthcheck.sh
 #
-# Set GRAPPA_PROD=1 to probe the prod stack (nginx → grappa).
-#
-# Probes from INSIDE the container so the check is independent of host
-# port binding. Dev publishes :4000 on the host (default wildcard, or a
-# personal-override LAN IP); prod publishes :3000 → :80 on the host.
-# Both are exec'd against the in-container loopback.
+# When nginx is running (`--profile prod` brought it up) probes via
+# nginx → grappa, otherwise probes grappa directly. Either way the
+# probe runs from INSIDE the container, so it's independent of host
+# port binding.
 
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
 
-if [ "${GRAPPA_PROD:-}" = "1" ]; then
+nginx_cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q nginx 2>/dev/null || true)"
+if [ -n "$nginx_cid" ]; then
     docker compose "${COMPOSE_ARGS[@]}" exec -T nginx wget -qO- http://127.0.0.1/healthz
     echo
 else

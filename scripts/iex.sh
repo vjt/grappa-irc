@@ -3,14 +3,13 @@
 #
 # Usage:
 #   scripts/iex.sh                # iex -S mix (loads project)
-#   scripts/iex.sh --remsh         # remote-shell into the running release (prod only)
+#
+# Post-CP23 the image is single-stage `mix phx.server` everywhere, so
+# `iex -S mix` is the only attach path — `bin/grappa remote` is gone
+# along with `mix release`.
 
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
 
-if [ "${1:-}" = "--remsh" ]; then
-    docker compose "${COMPOSE_ARGS[@]}" exec grappa bin/grappa remote
-else
-    docker compose "${COMPOSE_ARGS[@]}" exec grappa iex -S mix
-fi
+docker compose "${COMPOSE_ARGS[@]}" exec grappa iex -S mix

@@ -1,29 +1,35 @@
-# grappa — dev compose
+# grappa — unified compose (dev + prod via profiles, single image).
 #
-# Run dev:           docker compose up
-# Run dev detached:  docker compose up -d
-# Run mix tasks:     scripts/mix.sh test
-# Run iex shell:     scripts/iex.sh
-# Tail logs:         scripts/monitor.sh
+# CP23 cluster `cluster/code-reload` collapsed compose.yaml +
+# compose.prod.yaml into this one file. `mix phx.server` boots in
+# every environment; MIX_ENV is the only env-distinguishing variable.
 #
-# Phoenix listens on 4000 inside the container and is published on the host
-# (wildcard) at :4000. Browse at http://localhost:4000.
+# Run dev (default — no profile, grappa-only):
+#   docker compose up
 #
-# Deployment-specific bindings (e.g. binding to a LAN/VLAN IP only) live in
-# `compose.override.yaml` — gitignored, auto-loaded by scripts/_lib.sh when
-# present. See `compose.override.yaml.example`.
+# Run prod (adds nginx + cicchetto-build oneshot):
+#   MIX_ENV=prod docker compose --profile prod up -d
 #
-# For prod: see compose.prod.yaml (separate file, not an override).
+# Run mix tasks: scripts/mix.sh test
+# Run iex shell: scripts/iex.sh
+# Tail logs:     scripts/monitor.sh
+#
+# Personal bindings (LAN/VLAN IP for inbound, $PHX_HOST) live in
+# `compose.override.yaml` — gitignored, auto-loaded by scripts/_lib.sh
+# when present. See `compose.override.yaml.example`.
+#
+# Default publish: GRAPPA_PUBLISH=127.0.0.1:4000 — bouncer reachable
+# only on loopback. Operator overrides via env or override file to bind
+# to a LAN/VLAN IP, all interfaces (`0.0.0.0:4000`), or a different port.
+# In prod this is typically left untouched (loopback-only) and nginx
+# (the only LAN-facing service) reverse-proxies to it via the
+# grappa_internal bridge.
 
 services:
   grappa:
     build:
       context: .
-      target: build
-      args:
-        CONTAINER_UID: ${CONTAINER_UID:-1000}
-        CONTAINER_GID: ${CONTAINER_GID:-1000}
-    image: grappa:dev
+    image: grappa:latest
     pull_policy: never
     container_name: grappa
     hostname: grappa
@@ -31,46 +37,134 @@ services:
     user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
     working_dir: /app
     ports:
-      - "4000:4000"
+      - "${GRAPPA_PUBLISH:-127.0.0.1:4000}:4000"
+    networks:
+      - grappa_internal
     volumes:
-      # Bind-mount the whole project for live-reload dev workflow.
+      # Bind-mount the whole project for live-reload dev + hot-reload
+      # prod workflow. Same source layout in both modes — the cluster's
+      # design pin: `mix phx.server` reads compiled artifacts from the
+      # bind-mounted tree on every boot, so a `git pull` + admin reload
+      # POST swaps modules without restarting the container.
       - ./:/app
       # Hide host /app/deps and /app/_build with named volumes so the
-      # container-arch compiled artifacts don't clash with anything on the host.
+      # container-arch compiled artifacts don't clash with anything on
+      # the host. _build is per-MIX_ENV (sub-directory), so flipping
+      # MIX_ENV between dev and prod doesn't cross-contaminate.
       - grappa_deps:/app/deps
       - grappa_build:/app/_build
       - grappa_mix:/app/.mix
       - grappa_hex:/app/.hex
-      # Per-env state lives in runtime/ (sqlite, logs, plt cache).
+      # Per-env state lives in runtime/ (sqlite, logs).
       - ./runtime:/app/runtime
     environment:
       MIX_ENV: ${MIX_ENV:-dev}
-      DATABASE_PATH: /app/runtime/grappa_dev.db
-      ELIXIR_ERL_OPTIONS: "+fnu"  # filename UTF-8 mode (avoids Erlang locale warnings)
-      # T31 Plan 2 — admission captcha. Mirrors compose.prod.yaml so dev
-      # exercises the same runtime.exs env-var → :grappa, :admission
-      # propagation as prod. Defaults to disabled provider; operator can
-      # export GRAPPA_CAPTCHA_PROVIDER=turnstile + secret/site_key in
-      # the host shell to test live verification end-to-end.
+      DATABASE_PATH: /app/runtime/grappa_${MIX_ENV:-dev}.db
+      # Prod-required (no defaults — runtime.exs raises if missing in
+      # MIX_ENV=prod). Compose evaluates the `:?` only when the variable
+      # is consumed; with MIX_ENV=dev these stay unset and config/dev.exs
+      # fixed values cover them.
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:-}
+      SECRET_SIGNING_SALT: ${SECRET_SIGNING_SALT:-}
+      GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:-}
+      PHX_HOST: ${PHX_HOST:-}
+      EXTRA_CHECK_ORIGINS: ${EXTRA_CHECK_ORIGINS:-}
+      # BEAM resource caps (see bin/start.sh). Unset → defaults applied
+      # (GRAPPA_MAX_USERS=100, GRAPPA_DIRTY_SCHEDULERS=$(nproc)).
+      GRAPPA_MAX_USERS: ${GRAPPA_MAX_USERS:-}
+      GRAPPA_DIRTY_SCHEDULERS: ${GRAPPA_DIRTY_SCHEDULERS:-}
+      # T31 Plan 2 — admission captcha. Defaults to disabled provider;
+      # operator exports GRAPPA_CAPTCHA_PROVIDER=turnstile + secret +
+      # site_key in .env / host shell to enable.
       GRAPPA_CAPTCHA_PROVIDER: ${GRAPPA_CAPTCHA_PROVIDER:-disabled}
       GRAPPA_CAPTCHA_SITE_KEY: ${GRAPPA_CAPTCHA_SITE_KEY:-}
       GRAPPA_CAPTCHA_SECRET: ${GRAPPA_CAPTCHA_SECRET:-}
-    command: ["mix", "phx.server"]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 30s
       timeout: 5s
-      # Codebase audit cross-infra L1 — was 60s, masked real boot
-      # failures behind the "still starting" grace window. Dev boot is
-      # sub-5s; 15s is generous enough for a slow cold-start (deps
-      # compile, sqlite WAL recovery) without hiding a stuck Phoenix.
-      start_period: 15s
+      # `mix phx.server` cold boot is 10-15s on the canonical Pi
+      # deployment (mix loads + deps walk + Phoenix endpoint up + first
+      # Bootstrap pass spawning sessions). Release boot was ~2s; the
+      # cluster trade-off accepted this. 60s is generous enough for the
+      # slow path without hiding a stuck Phoenix.
+      start_period: 60s
       retries: 5
     logging:
       driver: json-file
       options:
-        max-size: "5m"
-        max-file: "3"
+        max-size: "10m"
+        max-file: "5"
+
+  # Oneshot service — builds cicchetto's static SPA into
+  # ./runtime/cicchetto-dist on the host. scripts/deploy.sh runs this
+  # explicitly via `compose run --rm` before bringing up nginx, so dist/
+  # is always fresh on every deploy. The depends_on below is the safety
+  # net for a manual `compose --profile prod up` (compose will run the
+  # dep to completion before starting nginx).
+  #
+  # Why a host bind-mount instead of a named volume: a fresh Docker
+  # named volume is root:root, but the container drops to UID 1000 (so
+  # node_modules + bun.lock writes to the bind-mounted ./cicchetto/
+  # don't land as root on the host filesystem). Container-as-1000 +
+  # named-volume-as-root collides on Vite's prepare-out-dir step
+  # (EACCES on copyfile to /app/dist/). Host bind-mount with deploy.sh's
+  # `mkdir -p` (default ownership inherits from the operator's UID,
+  # which IS 1000 on the canonical deployment) sidesteps the collision
+  # and makes dist/ inspectable from the host.
+  cicchetto-build:
+    profiles: [prod]
+    image: oven/bun:1
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - ./cicchetto:/app
+      - ./runtime/bun-cache:/cache
+      - ./runtime/cicchetto-dist:/app/dist
+    tmpfs:
+      - /tmp:exec,uid=1000,gid=1000
+    environment:
+      HOME: /tmp
+      BUN_INSTALL_CACHE_DIR: /cache
+    command: ["sh", "-c", "bun install --frozen-lockfile && bun run build"]
+
+  nginx:
+    profiles: [prod]
+    image: nginx:alpine
+    container_name: grappa-nginx
+    hostname: grappa-nginx
+    restart: always
+    networks:
+      - grappa_internal
+    ports:
+      - "${NGINX_PUBLISH:-3000:80}"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/snippets:/etc/nginx/snippets:ro
+      - ./runtime/cicchetto-dist:/usr/share/nginx/html:ro
+    depends_on:
+      grappa:
+        condition: service_started
+      cicchetto-build:
+        condition: service_completed_successfully
+    healthcheck:
+      # 127.0.0.1, not localhost: alpine resolves localhost to ::1 first
+      # but nginx.conf only declares `listen 80` (IPv4 wildcard), not
+      # `listen [::]:80`, so the IPv6 connect refuses → healthcheck fails.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  grappa_internal:
+    driver: bridge
 
 volumes:
   grappa_deps:

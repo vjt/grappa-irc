@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# Open a sqlite3 shell against the dev (or prod) database.
+# Open a sqlite3 shell against the active database.
 #
 # Usage:
-#   scripts/db.sh                 # interactive sqlite3 shell on dev DB
+#   scripts/db.sh                 # interactive sqlite3 shell
 #   scripts/db.sh "SELECT * FROM messages LIMIT 5;"   # one-shot query
 #
-# In prod (GRAPPA_PROD=1) opens the prod DB read-only via WAL-safe attach.
+# Reads MIX_ENV from the running container to pick the right db file.
+# Defaults to dev when not set. Prod DBs open read-only via WAL-safe
+# attach.
 
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
 
-if [ "${GRAPPA_PROD:-}" = "1" ]; then
-    DB="/app/runtime/grappa_prod.db"
+env="$(in_container printenv MIX_ENV 2>/dev/null || echo dev)"
+DB="/app/runtime/grappa_${env}.db"
+MODE_ARG=""
+if [ "$env" = "prod" ]; then
     MODE_ARG="-readonly"
-else
-    DB="/app/runtime/grappa_dev.db"
-    MODE_ARG=""
 fi
 
 if [ $# -eq 0 ]; then
