@@ -1486,17 +1486,24 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "vjt", expect.any(String));
   });
 
-  // Bug A fix: NOTICE/mode/join/part/quit/kick/topic/nick_change on the
-  // own-nick topic must NOT append to any scrollback key. These belong
-  // in the server-messages window (feature #4, deferred). The dm-listener
-  // handler drops them silently until that surface lands.
-  it("NOTICE on own-nick topic is dropped — no scrollback append to any key", async () => {
+  // CP23 cluster `code-reload`: peer-to-peer NOTICEs on the own-nick
+  // topic auto-open the sender's query window — same UX as PRIVMSG.
+  // The CTCP-VERSION-query visibility row is the canonical case (server
+  // emits a notice with body "CTCP VERSION query → grappa <vsn>" so the
+  // operator sees CTCP traffic in cic instead of silently consuming it).
+  // Pre-CP23 this test asserted the opposite ("Bug A fix: NOTICE dropped")
+  // — that was overcorrecting for service notices from NickServ etc.,
+  // which our server actually routes to "$server", not the own-nick
+  // topic. So the own-nick-topic NOTICE branch is exclusively
+  // peer-to-peer DMs and should auto-open same as PRIVMSG.
+  it("inbound NOTICE on own-nick topic auto-opens sender's window + appends", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
       JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
     );
     await seedDmListenerStubs();
+    const qw = await import("../lib/queryWindows");
     const store = await loadStores();
     await vi.waitFor(() => {
       // 1 channel + 1 DM-listener + 1 $server = 3.
@@ -1504,7 +1511,8 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     });
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
-    // NOTICE from NickServ arriving on own-nick topic.
+    // Inbound NOTICE from a peer (CTCP-VERSION-query visibility row
+    // shape — sender = peer, NOT the operator's own nick).
     dmHandler({
       kind: "message",
       message: {
@@ -1513,17 +1521,58 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
         channel: "alice",
         server_time: 0,
         kind: "notice",
-        sender: "NickServ",
-        body: "This nick is registered.",
+        sender: "vjt",
+        body: "CTCP VERSION query → grappa 0.1.0",
         meta: {},
       },
     });
-    // Own-nick bucket must be empty — NOTICE dropped, not stored.
+    // Sender's query window auto-opened.
+    expect(qw.openQueryWindowState).toHaveBeenCalledWith(1, "vjt", expect.any(String));
+    // Body landed in sender's bucket (NOT alice's own-nick bucket).
+    const vjtKey = channelKey("freenode", "vjt");
+    expect(store.scrollbackByChannel()[vjtKey]?.map((m) => m.body)).toEqual([
+      "CTCP VERSION query → grappa 0.1.0",
+    ]);
     const ownKey = channelKey("freenode", "alice");
     expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
-    // NickServ "nick" key must also be empty — no re-key either.
-    const nickServKey = channelKey("freenode", "NickServ");
-    expect(store.scrollbackByChannel()[nickServKey]).toBeUndefined();
+  });
+
+  // Self-echo guard: own outbound NOTICEs (server fans out to the
+  // own-nick topic too) MUST NOT auto-open a window with our own nick
+  // as the target — that would be a self-DM phantom window. The
+  // sender !== ownNick guard in installDmListenerHandler enforces this.
+  it("own outbound NOTICE on own-nick topic is dropped — no auto-open", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const qw = await import("../lib/queryWindows");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[1]?.[1] as (p: unknown) => void;
+    // sender = ownNick "alice" — this is our own outbound NOTICE
+    // echoing back via fan-out. Drop silently.
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 501,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "notice",
+        sender: "alice",
+        body: "self-emitted notice echo",
+        meta: {},
+      },
+    });
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+    const ownKey = channelKey("freenode", "alice");
+    expect(store.scrollbackByChannel()[ownKey]).toBeUndefined();
   });
 
   it("non-PRIVMSG/action kinds (mode, join, part, quit, kick, nick_change) on own-nick topic are dropped", async () => {

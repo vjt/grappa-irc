@@ -102,18 +102,25 @@ defmodule Grappa.Scrollback.Message do
   @body_required_kinds [:privmsg, :notice, :action, :topic]
 
   # M8 fix 2026-05-08: kinds for which `:dm_with` may legitimately
-  # carry a peer nick. Inbound + outbound DM flows persist as
-  # :privmsg or :action (CTCP ACTION) — every other kind (presence
-  # events, channel mode changes, topic sets) is channel-scoped by
-  # construction and MUST have `dm_with: nil`. Pinning the rule here
-  # closes the convention-not-contract gap noted in audit row
-  # `persistence M8`: pre-fix the @spec declared dm_with as
-  # `String.t() | nil` for every kind, but the caller-side typespec
-  # was informal — a caller bug (forgetting to nil dm_with on a
-  # :join row) silently contaminated the active/archive
-  # view-derivation rule that depends on dm_with being unique to DM
-  # rows.
-  @dm_with_eligible_kinds [:privmsg, :action]
+  # carry a peer nick. CP23 cluster `code-reload` extended the list to
+  # include :notice — peer-to-peer NOTICEs (CTCP-VERSION-query
+  # visibility row, future server-emitted DM-shaped notices) are
+  # content kinds, semantically equivalent to :privmsg for the
+  # active/archive view-derivation. The presence-event leakage M8
+  # guarded against (:join/:mode/:topic with stray dm_with) still
+  # rejects — those kinds remain channel-scoped by construction.
+  #
+  # Inbound + outbound DM flows persist as :privmsg, :action, or
+  # :notice (CTCP). Every other kind (presence events, channel mode
+  # changes, topic sets) is channel-scoped and MUST have `dm_with:
+  # nil`. Pinning the rule here closes the convention-not-contract
+  # gap noted in audit row `persistence M8`: pre-fix the @spec
+  # declared dm_with as `String.t() | nil` for every kind, but the
+  # caller-side typespec was informal — a caller bug (forgetting to
+  # nil dm_with on a :join row) silently contaminated the
+  # active/archive view-derivation rule that depends on dm_with
+  # being unique to DM rows.
+  @dm_with_eligible_kinds [:privmsg, :action, :notice]
 
   @doc """
   Returns the closed-set list of valid `:kind` values. Exposed so

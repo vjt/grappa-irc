@@ -130,14 +130,19 @@ defmodule Grappa.Scrollback do
   `persist_event/1` attrs map; the field is ignored by the schema for
   non-PRIVMSG kinds (they always get `nil` here regardless).
 
-  Rules (PRIVMSG / ACTION only — services and server NOTICEs use the
-  `$server` window, never a DM):
+  Rules (PRIVMSG / ACTION / NOTICE — peer-to-peer content kinds):
 
     * Inbound:  target == own_nick (case-insensitive) → peer = sender
     * Outbound: sender == own_nick (case-insensitive) AND target is
       nick-shaped (no `#`/`&`/`!`/`+` sigil and not "$server") →
       peer = target
     * Otherwise: nil
+
+  Service / server NOTICEs use the `$server` window — those callers
+  pass channel = "$server" so the nick-shape check rejects them.
+  Channel-targeted NOTICEs (auth banners on `#channel`, etc.) match
+  the otherwise arm and return nil. Only nick-targeted peer NOTICEs
+  (CTCP-style queries from real users) get a non-nil peer.
 
   `own_nick` may be nil briefly during connection setup before
   registration assigns the negotiated nick — guard against it here so
@@ -150,7 +155,7 @@ defmodule Grappa.Scrollback do
   """
   @spec dm_peer(Message.kind(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
   def dm_peer(kind, target, sender, own_nick)
-      when kind in [:privmsg, :action] and is_binary(target) and is_binary(sender) and
+      when kind in [:privmsg, :action, :notice] and is_binary(target) and is_binary(sender) and
              is_binary(own_nick) do
     own = String.downcase(own_nick)
 

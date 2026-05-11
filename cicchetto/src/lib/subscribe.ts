@@ -398,11 +398,32 @@ createRoot(() => {
             routeMessage(slug, senderKey, message.sender, message, ownNick);
             return;
           }
-          // NOTICE, mode, join, part, quit, kick, nick_change, topic,
-          // etc. on the own-nick topic → deferred to feature #4 (server-
-          // messages window). Drop silently for now; server-side
-          // scrollback row persists at channel=ownNick and will surface
-          // when #4 lands.
+          if (message.kind === "notice" && message.sender !== ownNick) {
+            // Peer-to-peer NOTICE on the own-nick topic — i.e. landed at
+            // `channel == ownNick` because the sender targeted our nick
+            // directly. CP23 cluster `code-reload` shipped the canonical
+            // case: the CTCP-VERSION-query visibility row (server-emitted
+            // notice with body "CTCP VERSION query → grappa <vsn>"; the
+            // CTCP reply itself is also a NOTICE so the inbound-side
+            // mirror is genuinely a notice, not a privmsg). Auto-open
+            // the sender's query window same as PRIVMSG/ACTION — the
+            // operator wants the same backgrounded-window-with-unread
+            // for ANY inbound DM-shaped traffic.
+            //
+            // sender !== ownNick guard: don't auto-open on our OWN
+            // outbound NOTICEs (they ride the topic too as fan-out
+            // echo). Service-to-self NOTICEs (NickServ etc.) never
+            // hit this branch — our server routes those to "$server"
+            // not the own-nick channel.
+            openQueryWindowState(networkId, message.sender, new Date().toISOString());
+            const senderKey = channelKey(slug, message.sender);
+            routeMessage(slug, senderKey, message.sender, message, ownNick);
+            return;
+          }
+          // mode, join, part, quit, kick, nick_change, topic, etc. on
+          // the own-nick topic → deferred to feature #4 (server-messages
+          // window). Drop silently for now; server-side scrollback row
+          // persists at channel=ownNick and will surface when #4 lands.
           return;
         }
         default:
