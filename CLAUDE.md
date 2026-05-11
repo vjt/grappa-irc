@@ -121,10 +121,52 @@ scripts/db.sh                # sqlite3 against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
 scripts/observer.sh          # observer_cli runtime introspection
-scripts/deploy.sh            # cold deploy: rebuild image + recreate container (refuses non-main)
+scripts/deploy.sh            # unified deploy: auto-detects hot-vs-cold via git-diff preflight
+scripts/deploy.sh --force-hot   # bypass preflight, hot-deploy unconditionally
+scripts/deploy.sh --force-cold  # skip preflight, cold-deploy (rebuild + recreate)
+scripts/deploy-cic.sh        # cic bundle deploy: vite build + broadcast bundle_hash for refresh banner
 scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only)
 ```
+
+### Hot vs cold deploy — when each path triggers
+
+`scripts/deploy.sh` (post-CP23 S4) replaces the previous "always cold"
+path. After `git pull --ff-only` it diffs `HEAD@{1}..HEAD` and
+classifies the change:
+
+- **HOT** (default — `Phoenix.CodeReloader` swaps modules in the live
+  BEAM, sessions preserved, container ID unchanged): `lib/*.ex` edits,
+  `cicchetto/src/` edits (cic bundle deploy is its own path — see
+  `scripts/deploy-cic.sh`), most config tweaks.
+- **COLD** (image rebuild + `--force-recreate` — sessions die,
+  ~30s downtime) is forced when any of:
+  - `mix.lock` or `mix.exs` changed (deps + version + apps callback)
+  - `lib/grappa/application.ex` changed (supervision tree read at
+    boot only)
+  - `defstruct` line modified in a long-lived GenServer module
+    (Session.Server, IRC.Client, AuthFSM, WSPresence,
+    Admission.NetworkCircuit) — pattern-match crash on next callback
+    would otherwise be silent + deferred
+  - `Dockerfile`, `compose.yaml`, `bin/start.sh` (image substrate)
+
+Conservative bias: in doubt, COLD. `Phoenix.CodeReloader` does NOT
+refuse unsafe diffs at runtime — it accepts the reload, returns
+`ok`, and lets the crash arrive at the next message that exposes the
+shape change (could be hours later). The preflight in `deploy.sh` is
+the only line of defense.
+
+`scripts/deploy-cic.sh` is independent — runs the `cicchetto-build`
+oneshot then POSTs `/admin/cic-bundle-changed`. The server broadcasts
+the new bundle hash on every live user-topic; cic's
+`BundleRefreshBanner` surfaces a refresh CTA on mismatch with the
+hash baked into the page the browser loaded. Cic deploys never
+trigger a server restart; server deploys never trigger a cic refresh.
+
+When the auto-detect gets it wrong (rare), `--force-hot` and
+`--force-cold` override the preflight. Use the override sparingly
+and document why in the commit message — both lessons are easier
+than debugging a deferred shape-mismatch crash.
 
 **The container IS the runtime.** No local Elixir installation, no host
 `mix deps.get`. All commands run inside the `grappa` container. NEVER run
@@ -401,8 +443,11 @@ not the surrounding code.**
 - **Migrations**: standard Ecto.
   - Write migration in `priv/repo/migrations/<timestamp>_<name>.exs`.
   - Run: `scripts/mix.sh ecto.migrate`.
-  - Migration files are baked into the prod release at build time.
-    New migration = rebuild image: `scripts/deploy.sh`.
+  - Migration files travel with the bind-mounted source — `scripts/deploy.sh`
+    runs `mix ecto.migrate` as part of the cold path. New migrations are
+    NOT auto-detected as cold-required (they're idempotent at boot via the
+    existing migration runner) but adding a column that Bootstrap reads
+    races the supervision tree boot — when in doubt, `--force-cold`.
   - Never apply DDL manually via raw SQL. Always Ecto.Migration so
     `schema_migrations` stays in sync.
   - Use `:text` for free-text columns. Don't bake length limits into
@@ -472,7 +517,8 @@ is due. Don't just look at todo.md.
 3. **Merge BEFORE deploy.** `scripts/deploy.sh` reads from
    `/srv/grappa` (main). Worktree code is NOT in the build context.
    Workflow: rebase worktree onto main → merge to main →
-   `scripts/deploy.sh` → verify health → push.
+   `scripts/deploy.sh` (auto-detects hot-vs-cold; `--force-cold` if
+   the heuristic mis-classifies) → verify health → push.
 4. **Docs before deploy.** Update affected living docs (DESIGN_NOTES,
    patterns/*.md if introduced, todo).
 5. Update checkpoint after each feature/fix. Flush before compaction.
