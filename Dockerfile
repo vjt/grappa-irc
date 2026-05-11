@@ -30,7 +30,8 @@ RUN apk add --no-cache \
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     MIX_HOME=/app/.mix \
-    HEX_HOME=/app/.hex
+    HEX_HOME=/app/.hex \
+    XDG_CACHE_HOME=/app/.cache
 
 WORKDIR /app
 
@@ -58,7 +59,7 @@ LABEL grappa.hot_deployable=true
 
 EXPOSE 4000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
     CMD curl -fsS http://localhost:4000/healthz || exit 1
 
 # bin/start.sh exports BEAM resource caps (formerly rel/env.sh.eex) and

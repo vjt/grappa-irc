@@ -68,9 +68,12 @@ docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm --no-deps grappa mix
 docker compose "${COMPOSE_ARGS[@]}" --profile prod up -d --force-recreate --no-deps grappa nginx
 
 # 5. Wait for /healthz via nginx, probed from INSIDE the nginx container
-#    so the check is independent of host port binding.
+#    so the check is independent of host port binding. Cold-boot loop is
+#    long because `mix phx.server` recompiles when bind-mounted source
+#    has no `_build/${MIX_ENV}/` cached on host disk yet — first deploy
+#    can take 2-3 minutes, subsequent deploys finish in 10-15s.
 echo "Waiting for /healthz via nginx..."
-for i in $(seq 1 30); do
+for i in $(seq 1 120); do
     if docker compose "${COMPOSE_ARGS[@]}" exec -T nginx wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1; then
         echo "✓ grappa is up (nginx → grappa:4000 healthy)"
         exit 0
@@ -78,4 +81,4 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-die "grappa did not become healthy within 60s. Check: scripts/monitor.sh"
+die "grappa did not become healthy within 240s. Check: scripts/monitor.sh"

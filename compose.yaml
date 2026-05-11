@@ -83,12 +83,13 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 30s
       timeout: 5s
-      # `mix phx.server` cold boot is 10-15s on the canonical Pi
-      # deployment (mix loads + deps walk + Phoenix endpoint up + first
-      # Bootstrap pass spawning sessions). Release boot was ~2s; the
-      # cluster trade-off accepted this. 60s is generous enough for the
-      # slow path without hiding a stuck Phoenix.
-      start_period: 60s
+      # `mix phx.server` cold boot includes a full deps + lib compile
+      # because the bind-mount `./:/app` shadows the image's pre-baked
+      # `_build/`. First-deploy boot writes `_build/${MIX_ENV}/` to host
+      # disk (~2-3 min on the canonical Pi); subsequent boots reuse the
+      # cached artifacts and finish in 10-15s. 180s start_period covers
+      # the cold path without hiding a stuck Phoenix.
+      start_period: 180s
       retries: 5
     logging:
       driver: json-file
