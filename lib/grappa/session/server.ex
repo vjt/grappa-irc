@@ -535,6 +535,50 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Clean shutdown — bouncer stopping (SIGTERM, `Application.stop`,
+  # `scripts/deploy.sh` recreate). Send `QUIT :grappa shutting down`
+  # upstream so peer IRC servers see a graceful disconnect ("vjt has
+  # quit (grappa shutting down)") instead of a connection-drop
+  # ("vjt has quit (Connection reset by peer)").
+  #
+  # Only fires for `:shutdown` / `{:shutdown, _}` reasons — that's the
+  # supervisor-driven path. `:normal` is the operator-driven
+  # `stop_session/2` path which already emits its own QUIT via the
+  # `:send_quit` handle_call dance (see Networks.disconnect/2). Crash
+  # reasons (any other term) skip the QUIT — the Client is in unknown
+  # state, sending might block on a half-closed socket and stall the
+  # supervisor's shutdown_timeout.
+  #
+  # `state.client` is `nil` in the brief window between init/1 and
+  # handle_continue completing — silently skip in that case (no
+  # connection exists yet to QUIT cleanly).
+  #
+  # try/catch wraps the GenServer.call: the linked Client may be dead
+  # (test races), the socket may be already closed (`{:error, :closed}`
+  # from transport_send raises a MatchError inside the Client's
+  # handle_call), or the call may time out. Any of those is benign at
+  # shutdown — peer just sees a connection drop instead of a graceful
+  # QUIT, no worse than the pre-handler behavior. The shutdown still
+  # completes in bounded time.
+  @impl GenServer
+  def terminate(reason, state)
+      when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+    case state.client do
+      nil ->
+        :ok
+
+      client when is_pid(client) ->
+        try do
+          _ = Client.send_quit(client, "grappa shutting down")
+          :ok
+        catch
+          :exit, _ -> :ok
+        end
+    end
+  end
+
+  def terminate(_, _), do: :ok
+
   # Persist-then-send is intentional Phase 1. Rationale: if the persist
   # fails (validation), we surface the changeset error to the caller
   # without ever touching the wire — clean rollback. If the persist

@@ -345,6 +345,92 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "terminate/2 — clean QUIT on supervisor shutdown" do
+    # When the BEAM stops (SIGTERM, Application.stop, scripts/deploy.sh
+    # recreating the container), the SessionSupervisor takes each
+    # Session.Server through `terminate(:shutdown, state)`. Without an
+    # explicit handler the linked Client dies via the link with no
+    # outbound QUIT — peer IRC servers see the disconnect as
+    # "Connection reset by peer", noisy and indistinguishable from a
+    # crash. With the handler, peers see "vjt has quit (grappa
+    # shutting down)".
+
+    test ":shutdown reason emits a QUIT line upstream before exiting" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      :ok = GenServer.stop(pid, :shutdown, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+      # Server must have observed the QUIT line on the wire before the
+      # session stopped. wait_for_line scans state.received post-mortem
+      # so the polling races are owned by the helper, not this test.
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 fn line -> String.starts_with?(line, "QUIT :grappa shutting down") end,
+                 1_000
+               )
+    end
+
+    test "{:shutdown, reason} variant also emits QUIT" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      :ok = GenServer.stop(pid, {:shutdown, :scripts_deploy}, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 fn line -> String.starts_with?(line, "QUIT :grappa shutting down") end,
+                 1_000
+               )
+    end
+
+    test ":normal reason does NOT emit a QUIT (operator path owns its own QUIT)" do
+      # The operator-driven path (Networks.disconnect/2 → Session
+      # :send_quit handle_call → stop_session) already emits its own
+      # QUIT with the operator's reason BEFORE invoking GenServer.stop
+      # with :normal. The terminate/2 callback must NOT double-QUIT
+      # in that case — server would see two QUIT lines for the same
+      # session (the second on a half-closed socket would silently
+      # drop, but the noise is real).
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1_000
+
+      # No QUIT on the wire from the terminate path — operator-path
+      # callers are responsible for their own QUIT.
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(
+                 server,
+                 fn line -> String.starts_with?(line, "QUIT") end,
+                 200
+               )
+    end
+  end
+
   describe "cancel_and_drain/2 — stale-fire mailbox drain (lifecycle review HIGH S3)" do
     # Process.cancel_timer/1 returns false when the timer has already
     # delivered its message. Without a follow-up selective receive, that
