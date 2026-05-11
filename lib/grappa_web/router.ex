@@ -50,10 +50,25 @@ defmodule GrappaWeb.Router do
     plug GrappaWeb.Plugs.ResolveNetwork
   end
 
+  # Admin pipeline — loopback-only gate. Used by `POST /admin/reload`
+  # (CP23 cluster `code-reload` B3). Reachable from `docker exec grappa
+  # curl ...` inside the container; nginx doesn't proxy `/admin/*` and
+  # the compose service publishes loopback-only by default.
+  pipeline :admin do
+    plug :accepts, ["json", "text"]
+    plug GrappaWeb.Plugs.LoopbackOnly
+  end
+
   scope "/", GrappaWeb do
     pipe_through []
 
     get "/healthz", HealthController, :show
+  end
+
+  scope "/admin", GrappaWeb do
+    pipe_through :admin
+
+    post "/reload", AdminController, :reload
   end
 
   scope "/auth", GrappaWeb do

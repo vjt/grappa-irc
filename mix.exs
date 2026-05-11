@@ -11,6 +11,12 @@ defmodule Grappa.MixProject do
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: [:boundary] ++ Mix.compilers(),
+      # Elixir 1.18+ Mix listener: lets Phoenix.CodeReloader notice
+      # concurrent recompiles (e.g. `mix compile` from another shell
+      # against the same _build/) so the next /admin/reload picks up
+      # the new beams. Phoenix prints a warning at reload time if this
+      # is missing (CP23 cluster `code-reload` B3 wiring).
+      listeners: [Phoenix.CodeReloader],
       # Elixir 1.19 introduced explicit test discovery filters. Without
       # this, ExUnit warns on every non-`_test.exs` file under `test/`
       # (test/support/data_case.ex etc.).

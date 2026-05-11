@@ -72,7 +72,18 @@ if config_env() == :prod do
     url: [host: phx_host, port: 80],
     check_origin: ["//#{phx_host}" | extra_origins],
     secret_key_base: secret_key_base,
-    server: true
+    server: true,
+    # CP23 cluster `code-reload` B2 — enable Phoenix.CodeReloader in
+    # prod so `Phoenix.CodeReloader.reload!/1` (called by the admin
+    # endpoint, B3) can hot-swap modules in the running container.
+    # Default in `config/dev.exs` is `true`; flipping it on in prod
+    # is the only-line-of-config change that unlocks the cluster's
+    # whole hot-deploy story. The reloader does file IO only on the
+    # explicit reload! call, not on every request — attack surface is
+    # the admin endpoint itself (loopback-only via
+    # GrappaWeb.Plugs.LoopbackOnly).
+    code_reloader: true,
+    reloadable_apps: [:grappa]
 
   # Cloak vault key — base64-encoded 32 bytes. Generate once with
   # `scripts/mix.sh grappa.gen_encryption_key` and back up separately.

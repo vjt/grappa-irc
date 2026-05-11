@@ -29,9 +29,11 @@ RUN apk add --no-cache \
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
+    HOME=/app \
     MIX_HOME=/app/.mix \
     HEX_HOME=/app/.hex \
-    XDG_CACHE_HOME=/app/.cache
+    XDG_CACHE_HOME=/app/.cache \
+    XDG_DATA_HOME=/app/.local/share
 
 WORKDIR /app
 
