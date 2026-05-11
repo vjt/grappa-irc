@@ -147,7 +147,7 @@ defmodule GrappaWeb.GrappaChannel do
 
   alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
   alias Grappa.IRC.Identifier
-  alias Grappa.Networks.{Credentials, Network}
+  alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.Session.Wire, as: SessionWire
 
@@ -701,8 +701,18 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # Pushes the full user-level snapshot: query_windows_list + topic/modes
-  # for every joined channel across all networks.
+  # Pushes the user-level snapshot: query_windows_list (per-user state
+  # not covered by any channel-topic snapshot).
+  #
+  # Pre-CP22 also pushed `push_all_topics_and_modes/2` (topic + modes
+  # for every joined channel) on the user socket. That was legacy
+  # backfill from when cic polled REST for those fields. cic now joins
+  # each per-channel topic and `push_channel_snapshot/4` (the
+  # `:after_join` clause for `{:channel, ...}`) covers topic + modes +
+  # members + window_state for that channel — the user-topic backfill
+  # was producing duplicate events that cic dropped as malformed
+  # (`[userTopic] dropped malformed payload {kind: 'topic_changed', …}`)
+  # because `WireUserEvent` doesn't list per-channel kinds. Removed.
   @spec push_user_snapshot(String.t(), Phoenix.Socket.t()) :: :ok
   defp push_user_snapshot(user_name, socket) do
     if visitor?(user_name) do
@@ -711,7 +721,6 @@ defmodule GrappaWeb.GrappaChannel do
       case safe_get_user(user_name) do
         {:ok, user} ->
           push_query_windows_list(user, socket)
-          push_all_topics_and_modes(user, socket)
 
         :error ->
           :ok
@@ -756,36 +765,6 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_query_windows_list(%Accounts.User{} = user, socket) do
     windows = user.id |> QueryWindows.list_for_user() |> QueryWindows.Wire.render_grouped()
     push(socket, "event", %{kind: "query_windows_list", windows: windows})
-  end
-
-  # For every (network, channel) the user has an active session for, pushes
-  # cached topic_changed + channel_modes_changed to the socket.
-  @spec push_all_topics_and_modes(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
-  defp push_all_topics_and_modes(%Accounts.User{} = user, socket) do
-    subject = {:user, user.id}
-    credentials = Credentials.list_credentials_for_user(user)
-
-    for %{network: %Network{} = network} <- credentials do
-      push_network_snapshot(subject, network, socket)
-    end
-
-    :ok
-  end
-
-  @spec push_network_snapshot(Session.subject(), Network.t(), Phoenix.Socket.t()) :: :ok
-  defp push_network_snapshot(subject, %Network{} = network, socket) do
-    case Session.list_channels(subject, network.id) do
-      {:ok, channels} ->
-        for channel <- channels do
-          push_topic_if_cached(subject, network, channel, socket)
-          push_modes_if_cached(subject, network, channel, socket)
-        end
-
-        :ok
-
-      {:error, :no_session} ->
-        :ok
-    end
   end
 
   @spec push_topic_if_cached(Session.subject(), Network.t(), String.t(), Phoenix.Socket.t()) :: :ok
