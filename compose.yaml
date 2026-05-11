@@ -46,15 +46,15 @@ services:
       # design pin: `mix phx.server` reads compiled artifacts from the
       # bind-mounted tree on every boot, so a `git pull` + admin reload
       # POST swaps modules without restarting the container.
+      #
+      # `_build/`, `deps/`, `.mix/`, `.hex/` all live inside the
+      # bind-mounted tree. Previously named volumes shadowed them to
+      # protect against host-arch artifact contamination — but since
+      # the host never runs mix (per CLAUDE.md "the container IS the
+      # runtime"), there's nothing to contaminate. Using bind mounts
+      # avoids the named-volume root-owned-init permission trap (fresh
+      # named volume = root, container drops to UID 1000, can't write).
       - ./:/app
-      # Hide host /app/deps and /app/_build with named volumes so the
-      # container-arch compiled artifacts don't clash with anything on
-      # the host. _build is per-MIX_ENV (sub-directory), so flipping
-      # MIX_ENV between dev and prod doesn't cross-contaminate.
-      - grappa_deps:/app/deps
-      - grappa_build:/app/_build
-      - grappa_mix:/app/.mix
-      - grappa_hex:/app/.hex
       # Per-env state lives in runtime/ (sqlite, logs).
       - ./runtime:/app/runtime
     environment:
@@ -81,14 +81,13 @@ services:
       GRAPPA_CAPTCHA_SECRET: ${GRAPPA_CAPTCHA_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
-      interval: 30s
+      interval: 5s
       timeout: 5s
-      # `mix phx.server` cold boot includes a full deps + lib compile
-      # because the bind-mount `./:/app` shadows the image's pre-baked
-      # `_build/`. First-deploy boot writes `_build/${MIX_ENV}/` to host
-      # disk (~2-3 min on the canonical Pi); subsequent boots reuse the
-      # cached artifacts and finish in 10-15s. 180s start_period covers
-      # the cold path without hiding a stuck Phoenix.
+      # Probe early + often. `mix phx.server` cold boot recompiles when
+      # bind-mounted source has no `_build/${MIX_ENV}/` cached on host
+      # disk yet — first-deploy boot can take 2-3 min. start_period
+      # suppresses failure-counts-toward-unhealthy during that window;
+      # actual healthy-flip happens on the first /healthz 200 regardless.
       start_period: 180s
       retries: 5
     logging:
@@ -166,9 +165,3 @@ services:
 networks:
   grappa_internal:
     driver: bridge
-
-volumes:
-  grappa_deps:
-  grappa_build:
-  grappa_mix:
-  grappa_hex:
