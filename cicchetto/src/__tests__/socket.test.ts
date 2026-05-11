@@ -32,6 +32,9 @@ const h = vi.hoisted(() => {
     disconnect: vi.fn(),
     isConnected: vi.fn().mockReturnValue(false),
     channel: vi.fn().mockReturnValue(mockChannel),
+    onOpen: vi.fn(),
+    onError: vi.fn(),
+    onClose: vi.fn(),
   };
   const socketCtor = vi.fn();
   return { mockChannel, mockJoinPush, mockPush, mockSocketInstance, socketCtor };

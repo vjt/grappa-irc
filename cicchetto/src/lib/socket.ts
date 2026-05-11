@@ -1,6 +1,7 @@
 import { type Channel, Socket } from "phoenix";
 import { createEffect, createRoot, on } from "solid-js";
 import { token } from "./auth";
+import { recordSocketClose, recordSocketError, recordSocketOpen } from "./socketHealth";
 
 // Phoenix Channels singleton. Mirrors `auth.ts`'s module-singleton shape:
 // every component that needs the live event-push surface joins via the
@@ -50,6 +51,14 @@ function getSocket(): Socket {
     _socket = new Socket("/socket", {
       params: () => ({ token: token() ?? "" }),
     });
+    // SocketHealth wiring — single install at construction time so the
+    // banner reflects every transition, including silent retry loops
+    // (e.g. server's check_origin rejecting the browser Origin).
+    // phoenix.js's onError fires per WS open attempt that fails;
+    // onClose fires with a CloseEvent we can read code/reason from.
+    _socket.onOpen(() => recordSocketOpen());
+    _socket.onError(() => recordSocketError());
+    _socket.onClose((closeEvent: CloseEvent | undefined) => recordSocketClose(closeEvent));
   }
   return _socket;
 }
