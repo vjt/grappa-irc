@@ -208,11 +208,18 @@ defmodule Grappa.Session.EventRouter do
         version = Grappa.Version.current()
         reply = "NOTICE #{sender} :\x01VERSION grappa #{version}\x01"
 
-        # Persist the inbound query in the DM window with the sender so
-        # cic surfaces it. Channel = sender's nick (DM window key) when
-        # the CTCP was a private query; channel = original target when
-        # the CTCP was sent to a channel.
-        dm_channel = if target == state.nick, do: sender, else: target
+        # Persist the inbound query so cic surfaces it. Routing rule
+        # mirrors how a real inbound PRIVMSG/NOTICE would land:
+        # private CTCP query (target == own_nick) persists on the
+        # own-nick topic — that's where cic's dm-listener handler
+        # observes inbound DM-shaped traffic, re-keys it onto the
+        # sender's window, and (per CP23 NOTICE auto-open arm) opens
+        # the sender's query window with an unread badge. Persisting
+        # at channel = sender bypasses the dm-listener entirely;
+        # the broadcast lands on a topic cic isn't subscribed to
+        # until that window already exists, defeating auto-open.
+        # Channel-targeted CTCP keeps target as channel (no re-key).
+        dm_channel = if target == state.nick, do: state.nick, else: target
         notice_body = "CTCP VERSION query → grappa #{version}"
         {state2, persist_eff} = build_persist(state, :notice, dm_channel, sender, notice_body, %{})
 

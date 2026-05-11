@@ -109,21 +109,26 @@ defmodule Grappa.Session.EventRouterTest do
       # the SENDER's nick — prevents reply loops between two responsive
       # bots. Body is the canonical \x01VERSION grappa <version>\x01
       # framing where <version> is read from mix.exs at runtime via
-      # Application.spec/2 (don't hardcode the literal here — bumping
-      # mix.exs would silently rot the assertion).
+      # Grappa.Version.current/0 (don't hardcode the literal here —
+      # bumping mix.exs would silently rot the assertion).
       #
       # CRLF is added by Client.send_line at the transport boundary
       # (see ensure_crlf/1 in irc/client.ex), so the EventRouter emits
       # the framed line WITHOUT \r\n.
-      version = :grappa |> Application.spec(:vsn) |> to_string()
+      version = Grappa.Version.current()
 
       assert IO.iodata_to_binary(line) ==
                "NOTICE alice :\x01VERSION grappa #{version}\x01"
 
-      # Persist effect: visible row in the DM window for the sender so
-      # the operator sees the CTCP traffic in cic instead of silently
-      # consuming it. Channel = sender's nick (DM target derivation).
-      assert attrs.channel == "alice"
+      # Persist effect: visible row routed via the own-nick topic so
+      # cic's dm-listener arm (CP23 NOTICE auto-open) re-keys onto
+      # the sender's window. Persisting at channel = sender directly
+      # bypasses the dm-listener and silently drops the broadcast on
+      # the floor unless the peer's window is already open. channel
+      # = own_nick (the target the peer addressed) is the same shape
+      # an inbound PRIVMSG from the peer would land at — same routing,
+      # one less special case.
+      assert attrs.channel == "vjt"
       assert attrs.sender == "alice"
       assert attrs.body == "CTCP VERSION query → grappa #{version}"
     end
