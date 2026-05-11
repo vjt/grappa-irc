@@ -129,6 +129,19 @@ defmodule Grappa.WSPresence do
   end
 
   @doc """
+  Returns the list of `user_name`s with at least one live WS connection.
+
+  CP23 S4 B5 — used by the `cic-bundle-changed` admin endpoint to fan
+  out the new bundle hash on every connected user's user-topic. Empty
+  socket sets (a user previously connected, all sockets dropped) are
+  filtered out so callers don't broadcast to dead audiences.
+  """
+  @spec list_user_names() :: [String.t()]
+  def list_user_names do
+    GenServer.call(__MODULE__, :list_user_names)
+  end
+
+  @doc """
   Immediate-close hint — the socket at `socket_pid` is about to close.
 
   If this is the last socket for `user_name`, fires `:ws_all_disconnected`
@@ -218,6 +231,15 @@ defmodule Grappa.WSPresence do
       |> MapSet.size()
 
     {:reply, count, state}
+  end
+
+  def handle_call(:list_user_names, _, state) do
+    names =
+      state.sockets
+      |> Enum.filter(fn {_name, set} -> MapSet.size(set) > 0 end)
+      |> Enum.map(fn {name, _set} -> name end)
+
+    {:reply, names, state}
   end
 
   def handle_call({:client_closing, user_name, socket_pid}, _, state) do

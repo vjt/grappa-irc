@@ -69,6 +69,7 @@ defmodule GrappaWeb.Router do
     pipe_through :admin
 
     post "/reload", AdminController, :reload
+    post "/cic-bundle-changed", AdminController, :cic_bundle_changed
   end
 
   scope "/auth", GrappaWeb do

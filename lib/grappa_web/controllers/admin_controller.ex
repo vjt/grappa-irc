@@ -23,11 +23,29 @@ defmodule GrappaWeb.AdminController do
   Module-shape changes that can't be hot-swapped (mix.lock bump,
   supervision tree restructure, struct shape change in long-lived
   GenServer state) require the cold path — `scripts/deploy.sh`. The
-  CI image-build pipeline flips the `grappa.hot_deployable=true` label
-  to `false` for unsafe images, and `scripts/hot-deploy.sh` (B6) reads
-  the label to refuse skipping the cold path.
+  unified `scripts/deploy.sh` (B6+B7) auto-detects unsafe diffs via a
+  git-diff preflight and refuses to hot-deploy them.
+
+  ## `POST /admin/cic-bundle-changed`
+
+  Re-reads `runtime/cicchetto-dist/index.html` via `Grappa.Cic.Bundle`
+  and broadcasts the new hash on every live user-topic. cic mirrors
+  this push (B5) by comparing against `bootBundleHash` (the hash baked
+  into the page the browser loaded) and surfacing a refresh banner on
+  mismatch — click → `window.location.reload()`.
+
+  Returns `200 <hash>` with the broadcast hash on success, or `204`
+  when the bundle file is absent (no fan-out happened — nothing to
+  compare against). The `scripts/deploy-cic.sh` wrapper (B8) calls
+  this after `compose --profile prod run --rm cicchetto-build`
+  produces a fresh bundle.
   """
   use GrappaWeb, :controller
+
+  alias Grappa.Cic.Bundle, as: CicBundle
+  alias Grappa.PubSub, as: GrappaPubSub
+  alias Grappa.PubSub.Topic
+  alias Grappa.WSPresence
 
   @doc "POST /admin/reload → reload all modified modules in the running BEAM."
   @spec reload(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -35,6 +53,24 @@ defmodule GrappaWeb.AdminController do
     case Phoenix.CodeReloader.reload(GrappaWeb.Endpoint) do
       :ok -> text(conn, "ok")
       {:error, msg} -> conn |> put_status(:internal_server_error) |> text(msg)
+    end
+  end
+
+  @doc "POST /admin/cic-bundle-changed → re-read bundle hash + broadcast on every user-topic."
+  @spec cic_bundle_changed(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def cic_bundle_changed(conn, _) do
+    case CicBundle.current_hash() do
+      nil ->
+        send_resp(conn, :no_content, "")
+
+      hash when is_binary(hash) ->
+        payload = %{kind: "bundle_hash", hash: hash}
+
+        for user_name <- WSPresence.list_user_names() do
+          GrappaPubSub.broadcast_event(Topic.user(user_name), payload)
+        end
+
+        text(conn, hash)
     end
   end
 end

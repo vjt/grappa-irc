@@ -38,4 +38,52 @@ defmodule GrappaWeb.AdminControllerTest do
       assert response(conn, 403) =~ "loopback_only"
     end
   end
+
+  describe "POST /admin/cic-bundle-changed" do
+    test "denies non-loopback remote_ip with 403", %{conn: conn} do
+      conn =
+        post(%{conn | remote_ip: {192, 168, 1, 100}}, "/admin/cic-bundle-changed")
+
+      assert response(conn, 403) =~ "loopback_only"
+    end
+
+    test "returns the live bundle hash (or 204 if no bundle on disk)", %{conn: conn} do
+      conn = post(conn, "/admin/cic-bundle-changed")
+
+      case Grappa.Cic.Bundle.current_hash() do
+        nil ->
+          assert response(conn, 204) == ""
+
+        hash when is_binary(hash) ->
+          assert response(conn, 200) == hash
+      end
+    end
+
+    test "broadcasts bundle_hash to subscribed user-topics when bundle exists", %{conn: conn} do
+      case Grappa.Cic.Bundle.current_hash() do
+        nil ->
+          # No bundle, no broadcast — covered by the 204 test above.
+          :ok
+
+        expected_hash ->
+          # Register a fake socket pid so list_user_names returns this user,
+          # then subscribe a test process to the user-topic so we can
+          # observe the fan-out broadcast.
+          user_name = "bundlebcast-#{System.unique_integer([:positive])}"
+          fake_socket = self()
+          :ok = Grappa.WSPresence.register(user_name, fake_socket)
+
+          topic = Grappa.PubSub.Topic.user(user_name)
+          :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+          conn = post(conn, "/admin/cic-bundle-changed")
+          assert response(conn, 200) == expected_hash
+
+          assert_receive %Phoenix.Socket.Broadcast{
+            event: "event",
+            payload: %{kind: "bundle_hash", hash: ^expected_hash}
+          }
+      end
+    end
+  end
 end
