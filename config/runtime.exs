@@ -54,10 +54,23 @@ if config_env() == :prod do
   #     Phase 5 TLS upgrade does not silently break Channels.
   phx_host = System.get_env("PHX_HOST") || "grappa.bad.ass"
 
+  # Extra origins accepted by the WebSocket handshake's `check_origin`
+  # gate alongside the canonical PHX_HOST. Comma-separated, full origin
+  # form (no trailing slash). Use case: operators reaching the bouncer
+  # via raw IP or a secondary hostname (LAN testing, dev VLAN bindings)
+  # without rewriting nginx + DNS. Production should pin to PHX_HOST
+  # only — this is escape-hatch, not default. Empty / unset = no extras.
+  extra_origins =
+    case System.get_env("EXTRA_CHECK_ORIGINS") do
+      nil -> []
+      "" -> []
+      raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+    end
+
   config :grappa, GrappaWeb.Endpoint,
     http: [ip: {0, 0, 0, 0}, port: port],
     url: [host: phx_host, port: 80],
-    check_origin: ["//#{phx_host}"],
+    check_origin: ["//#{phx_host}" | extra_origins],
     secret_key_base: secret_key_base,
     server: true
 

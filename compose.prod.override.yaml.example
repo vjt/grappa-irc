@@ -18,6 +18,12 @@
 # `check_origin` allowlist. Must match the DNS A record that points at
 # the IP below. compose.prod.yaml defaults it to grappa.bad.ass — set
 # yours here if different.
+#
+# EXTRA_CHECK_ORIGINS is a comma-separated list of additional origins
+# accepted by the Phoenix Channels handshake's check_origin gate. Use
+# case: also reach the bouncer via raw IP (debugging on the LAN) or a
+# secondary hostname without rewriting nginx + DNS. Leave unset for
+# PHX_HOST-only (production default).
 
 services:
   nginx:
@@ -27,3 +33,4 @@ services:
   grappa:
     environment:
       PHX_HOST: voygrappa.bad.ass
+      EXTRA_CHECK_ORIGINS: "http://192.168.53.12"
