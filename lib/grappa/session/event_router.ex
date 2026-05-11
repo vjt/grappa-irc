@@ -1589,6 +1589,7 @@ defmodule Grappa.Session.EventRouter do
   # nothing — RFC-violating or empty channel) renders as the bare prefix.
   @spec format_names_row(String.t(), [String.t()]) :: String.t()
   defp format_names_row(channel, []), do: "*** [#{channel}] (no names)"
+
   defp format_names_row(channel, names) when is_list(names) do
     "*** [#{channel}] #{Enum.join(names, " ")}"
   end
