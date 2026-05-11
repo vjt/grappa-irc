@@ -57,11 +57,18 @@ test("M4 — inbound DM auto-opens query window with unread, clears on focus", a
 
     // Server-side: row persisted at channel = NETWORK_NICK (the
     // RECIPIENT nick is the channel for inbound DMs) with sender =
-    // PEER_NICK.
+    // PEER_NICK + dm_with = PEER_NICK (CP14-B3 derivation). We probe
+    // via REST against channel = PEER_NICK because the OR-shape DM
+    // aggregation (channel == peer OR dm_with == peer) matches the
+    // inbound row, which is the same lookup cic uses when the user
+    // opens the auto-spawned PEER_NICK query window. Probing channel
+    // = NETWORK_NICK would hit the own-nick narrowing path
+    // (channel == own AND dm_with == own — self-msgs only) and miss
+    // peer-originated DMs.
     await assertMessagePersisted({
       token: vjt.token,
       networkSlug: NETWORK_SLUG,
-      channel: NETWORK_NICK,
+      channel: PEER_NICK,
       sender: PEER_NICK,
       body: MESSAGE_BODY,
     });

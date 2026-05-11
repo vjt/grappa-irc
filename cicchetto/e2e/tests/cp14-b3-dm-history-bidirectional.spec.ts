@@ -59,10 +59,15 @@ test("CP14 B3 — DM query window shows both inbound and outbound history after 
     // own_nick AND dm_with = peer (CP14 B3 derivation in EventRouter).
     peer.privmsg(NETWORK_NICK, PEER_TO_VJT);
 
+    // Probe via REST against channel = PEER_NICK so the peer-DM
+    // aggregation OR-shape (channel == peer OR dm_with == peer) picks
+    // up the inbound row stored at channel = own_nick + dm_with =
+    // peer. Probing channel = NETWORK_NICK would hit the own-nick
+    // narrowing path (self-msgs only) and miss peer-originated DMs.
     await assertMessagePersisted({
       token: vjt.token,
       networkSlug: NETWORK_SLUG,
-      channel: NETWORK_NICK,
+      channel: PEER_NICK,
       sender: PEER_NICK,
       body: PEER_TO_VJT,
     });

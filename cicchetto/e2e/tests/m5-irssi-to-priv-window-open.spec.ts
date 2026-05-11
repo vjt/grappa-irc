@@ -45,10 +45,14 @@ test("M5 — inbound DM to focused query window renders inline, no unread", asyn
   try {
     peer.privmsg(NETWORK_NICK, MESSAGE_BODY);
 
+    // Probe via REST against channel = PEER_NICK (peer-DM aggregation
+    // OR-shape matches inbound rows). Probing channel = NETWORK_NICK
+    // would hit the own-nick narrowing path (self-msgs only) and miss
+    // peer-originated DMs — see m4 for the full rationale.
     await assertMessagePersisted({
       token: vjt.token,
       networkSlug: NETWORK_SLUG,
-      channel: NETWORK_NICK,
+      channel: PEER_NICK,
       sender: PEER_NICK,
       body: MESSAGE_BODY,
     });
