@@ -205,7 +205,7 @@ defmodule Grappa.Session.EventRouter do
     case ctcp_verb(body) do
       "VERSION" ->
         sender = Message.sender_nick(msg)
-        version = grappa_version()
+        version = Grappa.Version.current()
         reply = "NOTICE #{sender} :\x01VERSION grappa #{version}\x01"
 
         # Persist the inbound query in the DM window with the sender so
@@ -1181,17 +1181,6 @@ defmodule Grappa.Session.EventRouter do
     kind = if ctcp_action?(body), do: :action, else: :privmsg
     {state, eff} = build_persist(state, kind, channel, Message.sender_nick(msg), body, %{})
     {:cont, state, [eff]}
-  end
-
-  # Reads the OTP app version from the application spec — same value
-  # `Grappa.version/0` returns, but called here directly to avoid the
-  # cross-boundary reference (Grappa.Session is not allowed to depend
-  # on the top-level Grappa boundary). The vsn is set at compile time
-  # from `mix.exs` `@version`; bumping it requires a recompile (which
-  # the cluster's hot-reload story handles in seconds).
-  @spec grappa_version() :: String.t()
-  defp grappa_version do
-    :grappa |> Application.spec(:vsn) |> to_string()
   end
 
   @spec channels_with_member(members(), String.t()) :: [String.t()]

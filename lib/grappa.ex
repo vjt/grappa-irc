@@ -25,16 +25,9 @@ defmodule Grappa do
   callback module + supervision tree wiring) — `@moduledoc false`.
   """
 
-  # `Grappa` is the namespace anchor + a tiny `version/0` helper. Each
-  # sub-namespace under `Grappa.*` declares its own boundary with
-  # `top_level?: true`, making them flat siblings rather than children
-  # of this module's boundary — see Boundary's README "modules are
-  # determined automatically from the boundary name."
+  # `Grappa` is the namespace anchor. The version helper lives in
+  # `Grappa.Version` (its own boundary) so both this module and
+  # `Grappa.Session.EventRouter` can call it without `Session`
+  # crossing the forbidden boundary edge into `Grappa`.
   use Boundary, deps: [], exports: []
-
-  @doc "Returns the current grappa version (compile-time, from `mix.exs`)."
-  @spec version() :: String.t()
-  def version do
-    :grappa |> Application.spec(:vsn) |> to_string()
-  end
 end
