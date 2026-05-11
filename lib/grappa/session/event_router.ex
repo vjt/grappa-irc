@@ -185,11 +185,31 @@ defmodule Grappa.Session.EventRouter do
   match; this match is the equivalent here.
   """
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
+  # CTCP VERSION query — body is `\x01VERSION\x01` or `\x01VERSION ...\x01`
+  # (some clients append trailing args/space). Per RFC 2812 + CTCP spec,
+  # responses MUST go via NOTICE (not PRIVMSG) to the SENDER's nick to
+  # prevent reply loops between two responsive bots. Not persisted to
+  # scrollback — CTCP control traffic is invisible to the user.
+  def route(%Message{command: :privmsg, params: [_, body]} = msg, state)
+      when is_binary(body) and binary_part(body, 0, 1) == <<0x01>> do
+    case ctcp_verb(body) do
+      "VERSION" ->
+        sender = Message.sender_nick(msg)
+        reply = "NOTICE #{sender} :\x01VERSION grappa #{grappa_version()}\x01"
+        {:cont, state, [{:reply, reply}]}
+
+      _ ->
+        # Non-VERSION CTCP (ACTION handled below; PING / TIME / SOURCE
+        # / FINGER not implemented yet) — delegate to the generic
+        # PRIVMSG arm so ACTION still persists, others fall through
+        # as plain :privmsg rows for now.
+        privmsg_default(msg, state, body)
+    end
+  end
+
   def route(%Message{command: :privmsg, params: [channel, body]} = msg, state)
       when is_binary(channel) and is_binary(body) do
-    kind = if ctcp_action?(body), do: :action, else: :privmsg
-    {state, eff} = build_persist(state, kind, channel, Message.sender_nick(msg), body, %{})
-    {:cont, state, [eff]}
+    privmsg_default(msg, state, body)
   end
 
   def route(%Message{command: :notice, params: [channel, body]} = msg, state)
@@ -1117,6 +1137,42 @@ defmodule Grappa.Session.EventRouter do
   # produce :reply effects in Phase 5+.
   defp ctcp_action?(<<0x01, "ACTION ", _::binary>>), do: true
   defp ctcp_action?(_), do: false
+
+  # Extracts the CTCP verb from a `\x01VERB ...\x01` (or `\x01VERB\x01`)
+  # body. Returns nil if the body doesn't start with \x01 or has no
+  # parseable verb. Used by the CTCP-aware PRIVMSG arm to dispatch on
+  # verb name (VERSION today; PING / TIME / SOURCE / FINGER candidates).
+  @spec ctcp_verb(binary()) :: String.t() | nil
+  defp ctcp_verb(<<0x01, rest::binary>>) do
+    case :binary.split(rest, [" ", <<0x01>>]) do
+      ["" | _] -> nil
+      [verb | _] -> verb
+    end
+  end
+
+  defp ctcp_verb(_), do: nil
+
+  # Shared default PRIVMSG handler — used by both the generic arm and
+  # the CTCP-aware arm's fallthrough for unknown verbs. Pulls out the
+  # action/privmsg classification + persist-effect emission so the two
+  # arms don't drift on body handling.
+  @spec privmsg_default(Message.t(), state(), binary()) :: {:cont, state(), [effect()]}
+  defp privmsg_default(%Message{params: [channel, _]} = msg, state, body) do
+    kind = if ctcp_action?(body), do: :action, else: :privmsg
+    {state, eff} = build_persist(state, kind, channel, Message.sender_nick(msg), body, %{})
+    {:cont, state, [eff]}
+  end
+
+  # Reads the OTP app version from the application spec — same value
+  # `Grappa.version/0` returns, but called here directly to avoid the
+  # cross-boundary reference (Grappa.Session is not allowed to depend
+  # on the top-level Grappa boundary). The vsn is set at compile time
+  # from `mix.exs` `@version`; bumping it requires a recompile (which
+  # the cluster's hot-reload story handles in seconds).
+  @spec grappa_version() :: String.t()
+  defp grappa_version do
+    :grappa |> Application.spec(:vsn) |> to_string()
+  end
 
   @spec channels_with_member(members(), String.t()) :: [String.t()]
   defp channels_with_member(members, nick) do

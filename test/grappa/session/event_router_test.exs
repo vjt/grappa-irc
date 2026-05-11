@@ -92,6 +92,72 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.body == body
       refute Map.has_key?(attrs, :kind_tag)
     end
+
+    test "PRIVMSG carrying CTCP VERSION query emits NOTICE :reply, no persist" do
+      state = base_state()
+
+      # CTCP VERSION query: \x01VERSION\x01 (some clients send the trailing
+      # \x01; some don't — both must be handled).
+      body = <<0x01, "VERSION", 0x01>>
+      m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:reply, line}]} =
+               EventRouter.route(m, state)
+
+      # RFC 2812 + CTCP spec: response goes via NOTICE (NOT PRIVMSG) to
+      # the SENDER's nick — prevents reply loops between two responsive
+      # bots. Body is the canonical \x01VERSION grappa <version>\x01
+      # framing where <version> is read from mix.exs at runtime via
+      # Grappa.version/0 (don't hardcode the literal here — bumping
+      # mix.exs would silently rot the assertion).
+      version = :grappa |> Application.spec(:vsn) |> to_string()
+      assert IO.iodata_to_binary(line) == "NOTICE alice :\x01VERSION grappa #{version}\x01"
+    end
+
+    test "PRIVMSG carrying CTCP VERSION from a channel still replies to sender nick" do
+      state = base_state()
+
+      # CTCP VERSION sent to a channel target — response still goes to
+      # the sender's NICK, never the channel. Spamming a channel with
+      # everyone's CTCP responses would be antisocial + a reply-loop
+      # vector (every bot in the room responds to itself responding).
+      body = <<0x01, "VERSION", 0x01>>
+      m = msg(:privmsg, ["#italia", body], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:reply, line}]} =
+               EventRouter.route(m, state)
+
+      assert IO.iodata_to_binary(line) =~ "NOTICE alice :"
+    end
+
+    test "PRIVMSG carrying CTCP VERSION with trailing args still replies" do
+      state = base_state()
+
+      # Some clients append a trailing space + args after VERSION — the
+      # verb-extraction must split on space OR \x01 to handle both.
+      body = <<0x01, "VERSION ", 0x01>>
+      m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:reply, _}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "PRIVMSG carrying unknown CTCP verb falls through to :privmsg persist" do
+      state = base_state()
+
+      # Unknown CTCP verbs (PING, TIME, SOURCE, FINGER, USERINFO not yet
+      # implemented) fall through as plain :privmsg rows. The CTCP framing
+      # in the body is preserved per CLAUDE.md "CTCP control characters
+      # preserved as-is in scrollback body". Future buckets may add more
+      # verb-specific arms.
+      body = <<0x01, "PING 1234567890", 0x01>>
+      m = msg(:privmsg, ["#italia", body], {:nick, "alice", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.body == body
+    end
   end
 
   describe "route/2 — :notice" do
