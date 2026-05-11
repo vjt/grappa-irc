@@ -221,6 +221,46 @@ body {
   border-radius: 2px;
 }
 
+/* CP23 S4 B5 — bundle refresh banner. Same fixed-top + above-drawer
+   shape as socket-health-banner, but a softer blue (informational, not
+   error-grade) and an inline button. Stacks BELOW socket-health-banner
+   when both render — order in JSX puts socket-health on top, this just
+   below; CSS top:auto + position:fixed flow handles stacking via
+   document order. */
+.bundle-refresh-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  padding: 0.5rem 1rem;
+  background: #2a6;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.bundle-refresh-banner button {
+  margin-left: auto;
+  padding: 0.25rem 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.bundle-refresh-banner button:hover {
+  background: rgba(0, 0, 0, 0.4);
+}
+
 /* Sidebar */
 
 .sidebar-network {

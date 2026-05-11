@@ -310,7 +310,8 @@ export type WireUserEvent =
       reason: string | null;
       at: string | null;
     }
-  | ({ kind: "whois_bundle" } & WhoisBundle);
+  | ({ kind: "whois_bundle" } & WhoisBundle)
+  | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the
 // switch handles every arm, the parameter type narrows to `never` at

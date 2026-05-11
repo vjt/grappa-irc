@@ -59,6 +59,10 @@ vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),
 }));
 
+vi.mock("../lib/bundleHash", () => ({
+  setServerBundleHash: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -228,6 +232,27 @@ describe("userTopic", () => {
         state: "pending",
       });
       expect(ws.setPending).not.toHaveBeenCalled();
+    });
+  });
+
+  // CP23 S4 B5 — bundle_hash dispatch.
+  describe("bundle_hash arm", () => {
+    it("calls setServerBundleHash with the pushed hash", async () => {
+      const bh = await import("../lib/bundleHash");
+      channelMock.fireEvent({ kind: "bundle_hash", hash: "RvD22cM9" });
+      expect(bh.setServerBundleHash).toHaveBeenCalledWith("RvD22cM9");
+    });
+
+    it("drops bundle_hash with empty hash (no setServerBundleHash call)", async () => {
+      const bh = await import("../lib/bundleHash");
+      channelMock.fireEvent({ kind: "bundle_hash", hash: "" });
+      expect(bh.setServerBundleHash).not.toHaveBeenCalled();
+    });
+
+    it("drops bundle_hash with missing hash (no setServerBundleHash call)", async () => {
+      const bh = await import("../lib/bundleHash");
+      channelMock.fireEvent({ kind: "bundle_hash" });
+      expect(bh.setServerBundleHash).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,5 +1,6 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import BottomBar from "./BottomBar";
+import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import { displayNick } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
@@ -211,6 +212,7 @@ const Shell: Component = () => {
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
         <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
           <SocketHealthBanner />
+          <BundleRefreshBanner />
           <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
             <Sidebar onSelect={() => setSidebarOpen(false)} />
           </aside>
@@ -331,6 +333,7 @@ const Shell: Component = () => {
       */}
       <div class="shell shell-mobile">
         <SocketHealthBanner />
+        <BundleRefreshBanner />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

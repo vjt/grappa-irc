@@ -2,6 +2,7 @@ import { createEffect, createRoot, untrack } from "solid-js";
 import { assertNever, type QueryWindowEntry, type WireUserEvent } from "./api";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
+import { setServerBundleHash } from "./bundleHash";
 import { channelKey } from "./channelKey";
 import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
@@ -159,6 +160,9 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         signon: r.signon as number | null,
         channels: r.channels as string[] | null,
       };
+    case "bundle_hash":
+      if (typeof r.hash !== "string" || r.hash === "") return null;
+      return { kind: "bundle_hash", hash: r.hash };
     default:
       return null;
   }
@@ -297,6 +301,15 @@ createRoot(() => {
           setWhoisBundle(payload.network, bundle);
           return;
         }
+
+        case "bundle_hash":
+          // CP23 S4 B5 — server pushes the deployed cic bundle hash on
+          // user-topic join + on every cic-bundle-changed broadcast.
+          // bundleHash.ts compares against bootBundleHash (the hash
+          // baked into the page the browser loaded); mismatch shows the
+          // refresh banner. No focus change — banner is a passive cue.
+          setServerBundleHash(payload.hash);
+          return;
 
         default:
           assertNever(payload);
