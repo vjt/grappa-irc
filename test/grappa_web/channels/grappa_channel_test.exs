@@ -1081,7 +1081,11 @@ defmodule GrappaWeb.GrappaChannelTest do
       end
 
       test "visitor socket: #{@verb} without session returns no_session" do
-        slug = "snap-visitor-noses-#{@verb}-#{System.unique_integer([:positive])}"
+        # Slug constrained to 32 chars (Identifier.valid_network_slug?/1).
+        # Use first 3 chars of verb + random suffix to fit comfortably.
+        slug =
+          "snv-#{String.slice(@verb, 0..2)}-#{System.unique_integer([:positive])}"
+
         {:ok, network} = Networks.find_or_create_network(%{slug: slug})
         visitor = visitor_fixture(network_slug: slug)
 

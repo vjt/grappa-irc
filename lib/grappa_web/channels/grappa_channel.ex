@@ -890,10 +890,16 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # S5.3: shared dispatch path for all ops verbs.
+  # S5.3: shared dispatch path for visitor-rejecting (write) ops verbs.
+  # CP24 bucket B reviewer add-on: read-only verbs (whois/who/names/banlist)
+  # split off to `dispatch_subject_verb/2` below — visitors are entitled
+  # to issue those.
   #
   # 1. Reject visitor sockets — they have no upstream IRC session with operator
-  #    state.
+  #    state, AND the verbs that route here mutate channel/server state
+  #    (op/deop/voice/devoice/kick/ban/unban/invite/umode/mode/topic_set/
+  #    topic_clear) which the visitor's `subject_label` topic isn't
+  #    entitled to drive.
   # 2. Resolve the authenticated user.
   # 3. Invoke the caller-supplied session thunk. The thunk returns
   #    `:ok | {:error, :no_session}` — `call_session` inside Session.*
@@ -920,8 +926,9 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # C3 (CRITICAL — 2026-05-12 codebase review): subject-aware dispatch for
-  # read-only verbs that visitors are explicitly allowed to issue (WHOIS
-  # today; future visitor-eligible read verbs land here too). Mirrors
+  # read-only verbs that visitors are explicitly allowed to issue (WHOIS,
+  # WHO, NAMES, BANLIST as of CP24 bucket B reviewer add-on; future
+  # visitor-eligible read verbs land here too). Mirrors
   # `dispatch_ops_verb/2` but resolves the socket's identity into a
   # `t:Grappa.Session.subject/0` tagged tuple — `{:user, id}` for an
   # authenticated user (loaded via `safe_get_user/1`), `{:visitor, id}`
