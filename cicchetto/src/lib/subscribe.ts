@@ -1,12 +1,6 @@
 import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import {
-  assertNever,
-  type ChannelEvent,
-  displayNick,
-  ownNickForNetwork,
-  type WireChannelEvent,
-} from "./api";
+import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { seedModes, seedTopic } from "./channelTopic";
@@ -30,6 +24,7 @@ import {
 import { joinChannel } from "./socket";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
 import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from "./windowState";
+import { narrowChannelEvent } from "./wireNarrow";
 
 // WS subscription installer. Reactive side-effect module: imports for
 // effect, exports nothing public. The app entry (`main.tsx`) imports
@@ -247,7 +242,23 @@ createRoot(() => {
     key: ChannelKey,
     ownNick: string | null,
   ) => {
-    phx.on("event", (payload: WireChannelEvent) => {
+    phx.on("event", (raw: unknown) => {
+      // Bucket G H4+U3: runtime narrowing at the WS edge — same
+      // boundary-validation pattern as `userTopic.ts`'s
+      // `narrowUserEvent` (CP16-era cic M1). phoenix.js types the
+      // event payload as JSON-shaped `unknown`; pre-fix this site
+      // cast to `WireChannelEvent` directly, which is a *lie* (no
+      // runtime enforcement). Malformed payloads (kind valid but a
+      // required field missing/wrong-typed) would either crash a
+      // setter (`seedTopic(key, undefined)`) or silently corrupt
+      // store state. The narrower returns null on any shape
+      // mismatch; we drop + log so the operator can investigate
+      // without crashing the WS handler.
+      const payload = narrowChannelEvent(raw);
+      if (payload === null) {
+        console.warn("[subscribe] dropped malformed channel payload", raw);
+        return;
+      }
       // Codebase audit cic M2 — exhaustive switch + `assertNever`
       // mirrors userTopic.ts CP16 B5 pattern. Pre-fix: the handler used
       // an if-else chain ending in `if (payload.kind !== "message")
@@ -340,7 +351,15 @@ createRoot(() => {
     networkId: number,
     ownNick: string,
   ) => {
-    phx.on("event", (payload: WireChannelEvent) => {
+    phx.on("event", (raw: unknown) => {
+      // Bucket G H4+U3: same narrower as the channel handler above —
+      // see that block for the per-call rationale. The DM-listener
+      // shares the same boundary class.
+      const payload = narrowChannelEvent(raw);
+      if (payload === null) {
+        console.warn("[subscribe] dropped malformed DM payload", raw);
+        return;
+      }
       // Codebase audit cic M2 — exhaustive switch + `assertNever`.
       // The DM-listener intentionally DROPS every non-message kind
       // (topic_changed/channel_modes_changed make no sense on a nick
