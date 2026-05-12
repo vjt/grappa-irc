@@ -87,37 +87,27 @@ defmodule Grappa.IRC.AuthFSMTest do
 
     test ":sasl with LF in realname rejected at new/1 (irc/S5)" do
       assert {:error, {:invalid_line_token, :realname}} =
-               AuthFSM.new(
-                 base_opts(%{auth_method: :sasl, realname: "Vincenzo\nNICK pwn", password: "p"})
-               )
+               AuthFSM.new(base_opts(%{auth_method: :sasl, realname: "Vincenzo\nNICK pwn", password: "p"}))
     end
 
     test ":sasl with NUL in sasl_user rejected at new/1 (irc/S5)" do
       assert {:error, {:invalid_line_token, :sasl_user}} =
-               AuthFSM.new(
-                 base_opts(%{auth_method: :sasl, sasl_user: "vjt\x00", password: "p"})
-               )
+               AuthFSM.new(base_opts(%{auth_method: :sasl, sasl_user: "vjt\x00", password: "p"}))
     end
 
     test ":sasl with NUL in password rejected at new/1 (irc/S5+S4)" do
       assert {:error, {:invalid_line_token, :password}} =
-               AuthFSM.new(
-                 base_opts(%{auth_method: :sasl, password: "swo\x00rd"})
-               )
+               AuthFSM.new(base_opts(%{auth_method: :sasl, password: "swo\x00rd"}))
     end
 
     test ":server_pass with CRLF in password rejected at new/1 (irc/S5)" do
       assert {:error, {:invalid_line_token, :password}} =
-               AuthFSM.new(
-                 base_opts(%{auth_method: :server_pass, password: "p\r\nQUIT :pwn"})
-               )
+               AuthFSM.new(base_opts(%{auth_method: :server_pass, password: "p\r\nQUIT :pwn"}))
     end
 
     test ":nickserv_identify with CRLF in password rejected at new/1 (irc/S5)" do
       assert {:error, {:invalid_line_token, :password}} =
-               AuthFSM.new(
-                 base_opts(%{auth_method: :nickserv_identify, password: "p\r\nQUIT :pwn"})
-               )
+               AuthFSM.new(base_opts(%{auth_method: :nickserv_identify, password: "p\r\nQUIT :pwn"}))
     end
 
     test ":none with CRLF in nick rejected at new/1 (irc/S5)" do
@@ -144,8 +134,11 @@ defmodule Grappa.IRC.AuthFSMTest do
       # the test — simulates a future code path that re-loads the
       # credential post-init without re-validating.
       state =
-        %{new!(%{auth_method: :sasl, password: "swordfish"}) | password: "swo\x00rd"}
-        |> Map.put(:phase, :sasl_pending)
+        Map.put(
+          %{new!(%{auth_method: :sasl, password: "swordfish"}) | password: "swo\x00rd"},
+          :phase,
+          :sasl_pending
+        )
 
       assert_raise ArgumentError, ~r/NUL byte in password/, fn ->
         AuthFSM.step(state, %Message{command: :authenticate, params: ["+"]})
@@ -154,8 +147,11 @@ defmodule Grappa.IRC.AuthFSMTest do
 
     test "NUL-bearing sasl_user raises ArgumentError naming the field rather than emitting malformed AUTHENTICATE" do
       state =
-        %{new!(%{auth_method: :sasl, password: "swordfish"}) | sasl_user: "vj\x00t"}
-        |> Map.put(:phase, :sasl_pending)
+        Map.put(
+          %{new!(%{auth_method: :sasl, password: "swordfish"}) | sasl_user: "vj\x00t"},
+          :phase,
+          :sasl_pending
+        )
 
       assert_raise ArgumentError, ~r/NUL byte in sasl_user/, fn ->
         AuthFSM.step(state, %Message{command: :authenticate, params: ["+"]})
