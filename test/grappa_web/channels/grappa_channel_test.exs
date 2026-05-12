@@ -872,7 +872,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       end
     end
 
-    test "topic_set: rejects CRLF/NUL in channel at the channel boundary", %{
+    test "topic_set: rejects malformed channel at the channel boundary", %{
       socket: socket,
       network: network
     } do
@@ -883,7 +883,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "text" => "ok"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{reason: "invalid_channel"})
     end
 
     # CP24 bucket E web/S6: tag-by-source regression. Pre-fix the
@@ -891,10 +891,10 @@ defmodule GrappaWeb.GrappaChannelTest do
     # boolean check above the visitor check would silently flip the
     # error message. These tests pin per-source tag mapping by sending
     # a malformed-AND-visitor payload and asserting the error tag comes
-    # from the EARLIER check (`invalid_line`), NOT the later one
+    # from the EARLIER check (channel/line gates), NOT the later one
     # (`visitor_not_allowed`) — proving the `with` short-circuits at
     # the right step and the `else` arm targets the correct source.
-    test "topic_set: visitor + invalid_line returns invalid_line (earlier source wins)" do
+    test "topic_set: visitor + invalid_channel returns invalid_channel (earlier source wins)" do
       visitor_name = "visitor:#{Ecto.UUID.generate()}"
       topic = Topic.user(visitor_name)
 
@@ -910,7 +910,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "text" => "ok"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{reason: "invalid_channel"})
     end
 
     test "topic_set: visitor with safe line returns visitor_not_allowed" do
@@ -1049,11 +1049,11 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{reason: "no_session"})
     end
 
-    test "visitor socket: whois with empty nick returns invalid_line" do
-      # Belt-and-braces — same `Identifier.valid_nick?` rejection path that
-      # users hit, surfaced via `Session.send_whois/3`'s
-      # `{:error, :invalid_line}` return when the upstream `IRC.Client`
-      # `safe_line_token?` check fails. Pin that visitors don't bypass it.
+    test "visitor socket: whois with malformed nick returns invalid_nick" do
+      # Belt-and-braces — bucket E web/S7 added `Identifier.valid_nick?`
+      # gate at the channel inbound boundary. Pin that visitors hit the
+      # same rejection users do (defense in depth — gate fires BEFORE
+      # `Session.send_whois/3` is called).
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = await_handshake(irc_server)
@@ -1074,7 +1074,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nick" => "bad\r\nQUIT"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
     end
   end
 
@@ -1152,7 +1152,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         assert_reply(ref, :error, %{reason: "no_session"})
       end
 
-      test "visitor socket: #{@verb} with CRLF channel returns invalid_line" do
+      test "visitor socket: #{@verb} with malformed channel returns invalid_channel" do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = await_handshake(irc_server)
@@ -1173,7 +1173,7 @@ defmodule GrappaWeb.GrappaChannelTest do
             "channel" => "#bad\r\nQUIT"
           })
 
-        assert_reply(ref, :error, %{reason: "invalid_line"})
+        assert_reply(ref, :error, %{reason: "invalid_channel"})
       end
     end
   end
@@ -1427,6 +1427,182 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       ref = push(visitor_socket, "watchlist", %{"action" => "list"})
       assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+    end
+  end
+
+  # CP24 cluster post-cr-review bucket E web/S7: defense-in-depth at the
+  # Channel inbound (WS) boundary. Pre-bucket-E `handle_in/3` clauses
+  # accepted any binary `channel`/`nick`/`mask`/`target_nick` and let the
+  # upstream `Identifier.safe_line_token?` gate (inside `IRC.Client`) do
+  # the rejection. Bucket E adds explicit `Identifier.valid_channel?` /
+  # `valid_nick?` / `safe_line_token?` gates at the WS inbound boundary
+  # — a hostile cic instance (or compromised user) cannot inject
+  # malformed/CRLF/NUL bytes via WS even if the upstream `Identifier`
+  # gate ever loosens. Mirror of bucket C's irc/S5 self-defending
+  # `AuthFSM.new/1` boundary at the IRC core.
+  describe "bucket E web/S7 — Channel inbound IRC-shape validation" do
+    setup do
+      {irc_server, port} = start_irc_server()
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+      topic = Topic.user(user.name)
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      %{socket: socket, network: network}
+    end
+
+    test "op: malformed channel returns invalid_channel", %{socket: socket, network: network} do
+      ref =
+        push(socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "no-sigil",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_channel"})
+    end
+
+    test "op: malformed nick returns invalid_nick", %{socket: socket, network: network} do
+      ref =
+        push(socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["bad nick"]
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
+    end
+
+    test "op: empty nicks list returns invalid_nick", %{socket: socket, network: network} do
+      ref =
+        push(socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => []
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
+    end
+
+    test "kick: malformed nick returns invalid_nick", %{socket: socket, network: network} do
+      ref =
+        push(socket, "kick", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "no spaces",
+          "reason" => "bye"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
+    end
+
+    test "kick: CRLF reason returns invalid_line", %{socket: socket, network: network} do
+      ref =
+        push(socket, "kick", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "alice",
+          "reason" => "bye\r\nQUIT :pwn"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
+    test "ban: CRLF mask returns invalid_mask", %{socket: socket, network: network} do
+      ref =
+        push(socket, "ban", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mask" => "*!*@evil.com\r\nQUIT"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_mask"})
+    end
+
+    test "ban: empty mask returns invalid_mask", %{socket: socket, network: network} do
+      ref =
+        push(socket, "ban", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mask" => ""
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_mask"})
+    end
+
+    test "invite: malformed nick returns invalid_nick", %{socket: socket, network: network} do
+      ref =
+        push(socket, "invite", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nick" => "bad,comma"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
+    end
+
+    test "open_query_window: malformed nick returns invalid_nick", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "open_query_window", %{
+          "network_id" => network.id,
+          "target_nick" => "bad nick"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_nick"})
+    end
+
+    test "mode: CRLF in modes returns invalid_line", %{socket: socket, network: network} do
+      ref =
+        push(socket, "mode", %{
+          "network_id" => network.id,
+          "target" => "#snap",
+          "modes" => "+o\r\nQUIT",
+          "params" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
+    test "mode: CRLF in params returns invalid_line", %{socket: socket, network: network} do
+      ref =
+        push(socket, "mode", %{
+          "network_id" => network.id,
+          "target" => "#snap",
+          "modes" => "+o",
+          "params" => ["alice\r\nQUIT"]
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
+    test "umode: CRLF in modes returns invalid_line", %{socket: socket, network: network} do
+      ref =
+        push(socket, "umode", %{
+          "network_id" => network.id,
+          "modes" => "+i\r\nQUIT"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
+    test "topic_clear: malformed channel returns invalid_channel", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "topic_clear", %{
+          "network_id" => network.id,
+          "channel" => "no-sigil"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_channel"})
     end
   end
 end

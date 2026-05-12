@@ -332,9 +332,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_op({:user, user.id}, network_id, channel, nicks)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nicks: nicks) end,
+      fn user -> Session.send_op({:user, user.id}, network_id, channel, nicks) end
+    )
   end
 
   # /deop alice bob carol  →  MODE #chan -ooo alice bob carol
@@ -344,9 +346,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_deop({:user, user.id}, network_id, channel, nicks)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nicks: nicks) end,
+      fn user -> Session.send_deop({:user, user.id}, network_id, channel, nicks) end
+    )
   end
 
   # /voice alice  →  MODE #chan +v alice
@@ -356,9 +360,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_voice({:user, user.id}, network_id, channel, nicks)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nicks: nicks) end,
+      fn user -> Session.send_voice({:user, user.id}, network_id, channel, nicks) end
+    )
   end
 
   # /devoice alice  →  MODE #chan -v alice
@@ -368,9 +374,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_list(nicks) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_devoice({:user, user.id}, network_id, channel, nicks)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nicks: nicks) end,
+      fn user -> Session.send_devoice({:user, user.id}, network_id, channel, nicks) end
+    )
   end
 
   # /kick alice :bye  →  KICK #chan alice :bye
@@ -381,9 +389,11 @@ defmodule GrappaWeb.GrappaChannel do
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(nick) and
              is_binary(reason) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_kick({:user, user.id}, network_id, channel, nick, reason)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nick: nick, line: reason) end,
+      fn user -> Session.send_kick({:user, user.id}, network_id, channel, nick, reason) end
+    )
   end
 
   # /ban *!*@evil.com or /ban alice (bare nick → mask derivation in Server)
@@ -393,9 +403,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_ban({:user, user.id}, network_id, channel, mask)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, mask: mask) end,
+      fn user -> Session.send_ban({:user, user.id}, network_id, channel, mask) end
+    )
   end
 
   # /unban *!*@evil.com  →  MODE #chan -b *!*@evil.com
@@ -405,9 +417,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(mask) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_unban({:user, user.id}, network_id, channel, mask)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, mask: mask) end,
+      fn user -> Session.send_unban({:user, user.id}, network_id, channel, mask) end
+    )
   end
 
   # /invite alice  →  INVITE alice #chan (RFC 2812: nick first, channel second)
@@ -417,9 +431,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(nick) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_invite({:user, user.id}, network_id, channel, nick)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel, nick: nick) end,
+      fn user -> Session.send_invite({:user, user.id}, network_id, channel, nick) end
+    )
   end
 
   # /banlist  →  MODE #chan b (query form, no sign)
@@ -434,9 +450,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_subject_verb(socket, fn subject ->
-      Session.send_banlist(subject, network_id, channel)
-    end)
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(channel: channel) end,
+      fn subject -> Session.send_banlist(subject, network_id, channel) end
+    )
   end
 
   # C2 — /whois <nick>. Server primes the per-target accumulator and
@@ -457,9 +475,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(nick) do
-    dispatch_subject_verb(socket, fn subject ->
-      Session.send_whois(subject, network_id, nick)
-    end)
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(nick: nick) end,
+      fn subject -> Session.send_whois(subject, network_id, nick) end
+    )
   end
 
   # CP22 cluster B (channel-client-polish #14) — /who <#channel>. cic
@@ -480,9 +500,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_subject_verb(socket, fn subject ->
-      Session.send_who(subject, network_id, channel)
-    end)
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(channel: channel) end,
+      fn subject -> Session.send_who(subject, network_id, channel) end
+    )
   end
 
   # CP22 cluster B (channel-client-polish #14) — /names <#channel>.
@@ -501,9 +523,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_subject_verb(socket, fn subject ->
-      Session.send_names(subject, network_id, channel)
-    end)
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(channel: channel) end,
+      fn subject -> Session.send_names(subject, network_id, channel) end
+    )
   end
 
   # /umode +i  →  MODE own_nick +i
@@ -513,9 +537,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(modes) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_umode({:user, user.id}, network_id, modes)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(line: modes) end,
+      fn user -> Session.send_umode({:user, user.id}, network_id, modes) end
+    )
   end
 
   # /mode #chan +o-v alice bob  →  MODE #chan +o-v alice bob (verbatim, no chunking)
@@ -525,9 +551,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(target) and is_binary(modes) and is_list(params) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_mode({:user, user.id}, network_id, target, modes, params)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(line: target, line: modes, params: params) end,
+      fn user -> Session.send_mode({:user, user.id}, network_id, target, modes, params) end
+    )
   end
 
   # /topic <text>  →  TOPIC #chan :<text>
@@ -554,12 +582,13 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) and is_binary(text) do
     user_name = socket.assigns.user_name
 
-    with {:ok, _} <- check_safe_line(channel, text),
+    with {:ok, _} <- validate_args(channel: channel, line: text),
          {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
          {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
       {:reply, :ok, socket}
     else
+      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
       {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
       {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
@@ -575,9 +604,11 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_topic_clear({:user, user.id}, network_id, channel)
-    end)
+    dispatch_ops_verb(
+      socket,
+      fn -> validate_args(channel: channel) end,
+      fn user -> Session.send_topic_clear({:user, user.id}, network_id, channel) end
+    )
   end
 
   # C1.4 — open a DM (query) window.
@@ -597,12 +628,14 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(target_nick) do
     user_name = socket.assigns.user_name
 
-    with false <- visitor?(user_name),
+    with {:ok, _} <- validate_args(nick: target_nick),
+         {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
          {:ok, _} <- QueryWindows.open(user.id, network_id, target_nick, user_name) do
       {:reply, :ok, socket}
     else
-      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, _} -> {:reply, {:error, %{reason: "open_failed"}}, socket}
     end
@@ -623,12 +656,14 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(target_nick) do
     user_name = socket.assigns.user_name
 
-    with false <- visitor?(user_name),
+    with {:ok, _} <- validate_args(nick: target_nick),
+         {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name) do
       :ok = QueryWindows.close(user.id, network_id, target_nick, user_name)
       {:reply, :ok, socket}
     else
-      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
     end
   end
@@ -891,20 +926,72 @@ defmodule GrappaWeb.GrappaChannel do
   # `else false ->` arm and the second `with true <- ...` clause silently
   # remaps the error message of the first.
 
-  @spec check_safe_line(String.t(), String.t()) ::
-          {:ok, :safe} | {:error, :invalid_line}
-  defp check_safe_line(token1, token2) do
-    if Identifier.safe_line_token?(token1) and Identifier.safe_line_token?(token2),
-      do: {:ok, :safe},
-      else: {:error, :invalid_line}
-  end
-
   @spec check_not_visitor(String.t()) ::
           {:ok, :user} | {:error, :visitor_not_allowed}
   defp check_not_visitor(user_name) do
     if visitor?(user_name),
       do: {:error, :visitor_not_allowed},
       else: {:ok, :user}
+  end
+
+  # CP24 bucket E web/S7: per-arg IRC-shape validator used by every
+  # `handle_in/3` clause that accepts `channel`, `nick`, `nicks`, or
+  # `mask` payload fields. Reject the FIRST malformed token with a
+  # tagged tuple — `else` arms in `dispatch_*_verb/3` map by tag.
+  #
+  # Why a list-of-pairs and not separate predicates: every Channel
+  # `handle_in/3` clause already carries a small fixed set of
+  # IRC-shape args. A single validator gates the whole set with one
+  # function call (`validate_args(channel: chan, nicks: nicks)`)
+  # instead of a per-arg `with` chain. Order is the caller's order
+  # — first failure wins. For `nicks: [...]` the FIRST malformed
+  # nick wins.
+  #
+  # Tags chosen for stability over the cic surface:
+  # `:invalid_channel` → bad channel name; `:invalid_nick` → bad
+  # nickname; `:invalid_mask` → CRLF/NUL in a mask token (RFC 2812
+  # `mask` syntax is permissive — the only inviolable property is
+  # line-safety); `:invalid_line` → CRLF/NUL in a free-form text
+  # token (kick reason, topic body).
+  @spec validate_args(keyword()) :: {:ok, :ok} | {:error, atom()}
+  defp validate_args([]), do: {:ok, :ok}
+
+  defp validate_args([{:channel, value} | rest]) do
+    if Identifier.valid_channel?(value),
+      do: validate_args(rest),
+      else: {:error, :invalid_channel}
+  end
+
+  defp validate_args([{:nick, value} | rest]) do
+    if Identifier.valid_nick?(value),
+      do: validate_args(rest),
+      else: {:error, :invalid_nick}
+  end
+
+  defp validate_args([{:nicks, []} | _]), do: {:error, :invalid_nick}
+
+  defp validate_args([{:nicks, list} | rest]) when is_list(list) do
+    if Enum.all?(list, &Identifier.valid_nick?/1),
+      do: validate_args(rest),
+      else: {:error, :invalid_nick}
+  end
+
+  defp validate_args([{:mask, value} | rest]) do
+    if Identifier.safe_line_token?(value) and value != "",
+      do: validate_args(rest),
+      else: {:error, :invalid_mask}
+  end
+
+  defp validate_args([{:line, value} | rest]) do
+    if Identifier.safe_line_token?(value),
+      do: validate_args(rest),
+      else: {:error, :invalid_line}
+  end
+
+  defp validate_args([{:params, list} | rest]) when is_list(list) do
+    if Enum.all?(list, &Identifier.safe_line_token?/1),
+      do: validate_args(rest),
+      else: {:error, :invalid_line}
   end
 
   @spec safe_get_user(String.t()) :: {:ok, Accounts.User.t()} | :error
@@ -942,20 +1029,38 @@ defmodule GrappaWeb.GrappaChannel do
   #
   # Error mapping is kept flat and minimal — the cicchetto client needs a short
   # discriminator string, not a nested struct.
-  @spec dispatch_ops_verb(Phoenix.Socket.t(), (Accounts.User.t() -> :ok | {:error, atom()})) ::
-          {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
-  defp dispatch_ops_verb(socket, thunk) do
+  # CP24 bucket E web/S7: arity-3 dispatch that runs an inbound IRC-shape
+  # validator BEFORE visitor + user resolution + session dispatch. The
+  # `validate_thunk` returns `{:ok, _} | {:error, :invalid_*}`. Defense in
+  # depth at the outer untrusted boundary — the REST surface gates via
+  # `GrappaWeb.Validation.validate_*` (`{:error, :bad_request}` → 400);
+  # the Channel surface uses tagged-tuple atoms (`:invalid_channel` /
+  # `:invalid_nick` / `:invalid_mask` / `:invalid_line`) that the
+  # `else` arms map to a stable cicchetto-facing reason string. A
+  # hostile cic instance (or compromised user) cannot inject
+  # malformed/CRLF/NUL bytes via WS even if the upstream Identifier
+  # gate ever loosens.
+  @spec dispatch_ops_verb(
+          Phoenix.Socket.t(),
+          (-> {:ok, term()} | {:error, atom()}),
+          (Accounts.User.t() -> :ok | {:error, atom()})
+        ) :: {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
+  defp dispatch_ops_verb(socket, validate_thunk, thunk) do
     user_name = socket.assigns.user_name
 
-    with false <- visitor?(user_name),
+    with {:ok, _} <- validate_thunk.(),
+         {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
          :ok <- thunk.(user) do
       {:reply, :ok, socket}
     else
-      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+      {:error, :invalid_mask} -> {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
     end
   end
 
@@ -972,21 +1077,31 @@ defmodule GrappaWeb.GrappaChannel do
   # `subject()`. Reject-only path is `{:error, :no_session}` — visitors
   # without a live `Session.Server` get the same surface user-side
   # callers do, NOT the `visitor_not_allowed` carve-out.
+  # CP24 bucket E web/S7: arity-3 subject-verb dispatch with inbound
+  # IRC-shape validation. Mirror of `dispatch_ops_verb/3` for the
+  # read-only verbs (whois/who/names/banlist) that visitors are allowed
+  # to issue. Same defense-in-depth rationale: hostile cic should not be
+  # able to inject CRLF/NUL or malformed IRC tokens into a channel send,
+  # even if the upstream Identifier gate ever loosens.
   @spec dispatch_subject_verb(
           Phoenix.Socket.t(),
+          (-> {:ok, term()} | {:error, atom()}),
           (Session.subject() -> :ok | {:error, atom()})
-        ) ::
-          {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
-  defp dispatch_subject_verb(socket, thunk) do
+        ) :: {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
+  defp dispatch_subject_verb(socket, validate_thunk, thunk) do
     user_name = socket.assigns.user_name
 
-    with {:ok, subject} <- resolve_subject(user_name),
+    with {:ok, _} <- validate_thunk.(),
+         {:ok, subject} <- resolve_subject(user_name),
          :ok <- thunk.(subject) do
       {:reply, :ok, socket}
     else
+      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+      {:error, :invalid_mask} -> {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
     end
   end
 
