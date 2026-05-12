@@ -26,8 +26,8 @@ defmodule Grappa.Visitors.Reaper do
 
   `top_level?: true` — Reaper opts out of `Grappa.Visitors`'s
   boundary so the application supervisor can list it as a child
-  without dragging the entire Visitors public surface into
-  `Grappa.Application`'s deps.
+  without dragging the entire Visitors public surface into the
+  application's deps (see `lib/grappa/application.ex`).
   """
 
   use Boundary, top_level?: true, deps: [Grappa.Visitors]

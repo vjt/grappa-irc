@@ -66,7 +66,7 @@ defmodule Grappa.QueryWindows.Wire do
   Use this instead of inlining `%{kind: "query_windows_list", windows: ...}`
   at every broadcast / push site so the outer envelope stays in one place;
   per CLAUDE.md "Wire conversion is per-context responsibility" + bucket D's
-  cross-module/S4 lift of `Cic.Bundle.bundle_hash_payload/1`.
+  cross-module/S4 lift of `Grappa.Cic.Wire.bundle_hash/1`.
   """
   @spec windows_list_payload(windows_map()) :: windows_list_payload()
   def windows_list_payload(windows) when is_map(windows) do

@@ -5,9 +5,10 @@ defmodule Grappa.Cic.Wire do
 
   Two doors emit this contract:
 
-    * `GrappaWeb.GrappaChannel.push_bundle_hash/1` — after-join
-      snapshot push of the current bundle hash so cic can compare
-      against the hash baked into the page it loaded (CP23 S4 B4).
+    * `GrappaWeb.GrappaChannel` — after-join snapshot push of the
+      current bundle hash so cic can compare against the hash baked
+      into the page it loaded (CP23 S4 B4); see the
+      `push_bundle_hash/1` private helper there.
     * `GrappaWeb.AdminController.cic_bundle_changed/2` — re-read
       after a `scripts/deploy-cic.sh` build, broadcast to every
       live user-topic so the refresh banner pops on every connected

@@ -7,13 +7,15 @@ defmodule Grappa.SpawnOrchestrator do
   Cluster #8 (Theme 3 / resp-A1 / ext-A9 god-module decomposition,
   3/3) consolidates the duplicated quartet across:
 
-    * `Grappa.Bootstrap.spawn_with_admission/6` — boot-time spawn
-      for both user credentials AND active visitor rows. Was the
-      prototype private helper that this module promotes to a
-      public verb shared with the REST surface.
-    * `GrappaWeb.NetworksController.spawn_session_after_connect/3` —
-      operator-driven respawn after `PATCH /networks/:id` flips
-      `connection_state` to `:connected` (T32 reconnect verb).
+    * `Grappa.Bootstrap` — boot-time spawn for both user credentials
+      AND active visitor rows (see the `spawn_with_admission/6`
+      private wrapper there). Was the prototype private helper that
+      this module promotes to a public verb shared with the REST
+      surface.
+    * `GrappaWeb.NetworksController` — operator-driven respawn after
+      `PATCH /networks/:id` flips `connection_state` to `:connected`
+      (T32 reconnect verb; see the `spawn_session_after_connect/3`
+      private helper there).
 
   ## Why this is a top-level boundary, not inside `Grappa.Session`
 

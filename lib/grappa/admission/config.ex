@@ -53,8 +53,8 @@ defmodule Grappa.Admission.Config do
   @doc """
   Reads admission config from `Application.get_env/3`, validates,
   and stores in `:persistent_term` for lock-free runtime reads.
-  Called once from `Grappa.Application.start/2` before the
-  supervision tree is started.
+  Called once from the application start callback before the
+  supervision tree is started (see `lib/grappa/application.ex`).
   """
   def boot do
     raw = Application.get_env(:grappa, :admission, [])

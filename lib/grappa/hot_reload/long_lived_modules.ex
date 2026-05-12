@@ -32,8 +32,8 @@ defmodule Grappa.HotReload.LongLivedModules do
   A module belongs in `@modules` if:
 
     - it is a `GenServer` (or other long-lived process) supervised
-      under `Grappa.Application` with `restart: :permanent` or
-      `:transient`, AND
+      by the top-level application supervisor with `restart: :permanent`
+      or `:transient`, AND
     - it carries non-trivial state that is fed by callbacks (not
       just an empty map placeholder for processes that store
       everything in ETS).

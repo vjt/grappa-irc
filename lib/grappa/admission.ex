@@ -203,8 +203,9 @@ defmodule Grappa.Admission do
 
   Provider is read from `Grappa.Admission.Config.config/0` —
   `:persistent_term`-backed boot-time snapshot. Tests substitute via
-  `Grappa.Admission.Config.put_test_config/1` (Mix.env-gated), which
-  also lets Mox mocks replace the provider per-test.
+  the test-only `put_test_config/1` helper on `Grappa.Admission.Config`
+  (Mix.env-gated), which also lets Mox mocks replace the provider
+  per-test.
   """
   @spec verify_captcha(String.t() | nil, String.t() | nil) ::
           :ok | {:error, Captcha.error()}
