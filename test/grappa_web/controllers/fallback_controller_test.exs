@@ -150,4 +150,51 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert Plug.Conn.get_resp_header(conn, "retry-after") == ["1234"]
     end
   end
+
+  # Bucket G H2+U4 (codebase-review-2026-05-12): unified
+  # `{error, field_errors}` envelope for 422 changeset failures.
+  #
+  # Pre-bucket-G: 422 emitted `%{errors: %{field => [msg]}}` — no
+  # `error` discriminator, so cic's `readError` fell through to
+  # `body.errors.detail` (Phoenix default-error shape, NOT Ecto
+  # changeset shape) and from there to `res.statusText`. Every 422
+  # collapsed to "Unprocessable Entity" client-side, losing
+  # field-level error info to the operator.
+  #
+  # Post-fix: 422 emits `%{error: "validation_failed", field_errors:
+  # %{field => [msg]}}`. The discriminator follows the snake_case
+  # convention of every other arm (line 9 moduledoc); the
+  # field-level errors live as a top-level `field_errors` key
+  # alongside the existing `site_key`/`provider`/`retry_after`
+  # convention (cic's `ApiError.info` already reads body's top-level
+  # keys directly — see `Login.tsx`'s `err.info.provider` access).
+  describe "validation errors (H2+U4 unified envelope)" do
+    test "{:error, %Ecto.Changeset{}} → 422 validation_failed + field_errors" do
+      changeset =
+        {%{}, %{nick: :string, body: :string}}
+        |> Ecto.Changeset.cast(%{}, [:nick, :body])
+        |> Ecto.Changeset.validate_required([:nick, :body])
+
+      conn = FallbackController.call(build_conn_for_call(), {:error, changeset})
+
+      body = json_response(conn, 422)
+      assert body["error"] == "validation_failed"
+      assert body["field_errors"]["nick"] == ["can't be blank"]
+      assert body["field_errors"]["body"] == ["can't be blank"]
+    end
+
+    test "field_errors traverses substitution opts (e.g. {%{count}})" do
+      changeset =
+        {%{}, %{nick: :string}}
+        |> Ecto.Changeset.cast(%{nick: "x"}, [:nick])
+        |> Ecto.Changeset.validate_length(:nick, min: 3)
+
+      conn = FallbackController.call(build_conn_for_call(), {:error, changeset})
+
+      body = json_response(conn, 422)
+      assert body["error"] == "validation_failed"
+      [msg] = body["field_errors"]["nick"]
+      assert msg =~ "should be at least 3"
+    end
+  end
 end

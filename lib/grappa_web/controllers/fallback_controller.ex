@@ -17,9 +17,17 @@ defmodule GrappaWeb.FallbackController do
   the wire string falls out automatically. Don't introduce a different
   envelope (`%{message: ...}`, `%{code: ...}`) for any sub-class —
   consistency at the wire is more valuable than per-error nuance.
-  Validation errors (`%Ecto.Changeset{}`) use the **plural**
-  `%{errors: ...}` envelope — deliberately distinct so clients can
-  tell "field-level validation failed" from "single tagged error."
+
+  Validation errors (`%Ecto.Changeset{}`) use the SAME `error: "<token>"`
+  envelope with `error: "validation_failed"`, AND attach the
+  field-level error map as a top-level `field_errors` key alongside.
+  Pre-bucket-G the changeset path emitted `%{errors: %{field =>
+  [msg]}}` — no `error` discriminator, so cic's `readError` fell
+  through to `body.errors.detail` (Phoenix default-error shape, NOT
+  Ecto changeset shape) and from there to `res.statusText`. Every 422
+  collapsed to "Unprocessable Entity" client-side, losing field-level
+  info. The new shape mirrors how the captcha arm already attaches
+  `site_key` + `provider` alongside `error: "captcha_required"`.
 
   Add a new clause whenever a context introduces a new tagged error
   (e.g. `{:error, :network_unknown}` in Task 5+) and update the spec
@@ -238,7 +246,7 @@ defmodule GrappaWeb.FallbackController do
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     conn
     |> put_status(:unprocessable_entity)
-    |> json(%{errors: format_changeset_errors(changeset)})
+    |> json(%{error: "validation_failed", field_errors: format_changeset_errors(changeset)})
   end
 
   defp format_changeset_errors(changeset) do

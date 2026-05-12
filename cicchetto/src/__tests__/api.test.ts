@@ -152,6 +152,42 @@ describe("ApiError info field (T31 admission errors)", () => {
   });
 });
 
+// Bucket G H2+U4 (codebase-review-2026-05-12): unified `{error,
+// field_errors}` envelope for 422 changeset failures. Server-side
+// `FallbackController` now emits `%{error: "validation_failed",
+// field_errors: %{field => [msg]}}` matching the existing snake_case
+// `error: "<token>"` convention; cic side reads it through the same
+// `readError` path that already populates `ApiError.info`.
+//
+// Pre-bucket-G: server emitted `%{errors: %{field => [msg]}}` (no
+// `error` discriminator) and `readError` fell through to
+// `body.errors.detail` (Phoenix default-error shape). Every 422
+// collapsed to `code = res.statusText = "Unprocessable Entity"` and
+// the operator lost field-level error info.
+describe("ApiError 422 validation envelope (H2+U4)", () => {
+  it("422 validation_failed carries field_errors in ApiError.info", async () => {
+    stubFetch(422, {
+      error: "validation_failed",
+      field_errors: {
+        nick: ["can't be blank"],
+        body: ["should be at least 3 character(s)"],
+      },
+    });
+    try {
+      await api.login({ identifier: "alice" });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(api.ApiError);
+      const err = e as api.ApiError;
+      expect(err.status).toBe(422);
+      expect(err.code).toBe("validation_failed");
+      const fieldErrors = err.info.field_errors as Record<string, string[]>;
+      expect(fieldErrors.nick).toEqual(["can't be blank"]);
+      expect(fieldErrors.body).toEqual(["should be at least 3 character(s)"]);
+    }
+  });
+});
+
 describe("postTopic / postNick", () => {
   it("postTopic POSTs JSON to /networks/:slug/channels/:chan/topic", async () => {
     const fetchMock = vi

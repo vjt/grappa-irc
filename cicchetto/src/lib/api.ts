@@ -36,6 +36,23 @@ export type AdmissionError =
   | { error: "captcha_failed" }
   | { error: "service_degraded" };
 
+// Bucket G H2+U4 — unified 422 envelope for `Ecto.Changeset` failures
+// emitted by `FallbackController`. The shape mirrors the existing A7
+// `{error: "<token>"}` discriminator + ad-hoc top-level keys
+// convention (see `AdmissionError` for the captcha_required pattern
+// that already does this for `site_key`/`provider`).
+//
+// `field_errors` is the per-field error map produced by
+// `Ecto.Changeset.traverse_errors/2`; values are `string[]` because a
+// single field can carry multiple errors (e.g. `validate_required` +
+// `validate_length` both fire on the same empty input). cic surfaces
+// these via `err.info.field_errors` after `readError` populates
+// `ApiError.info` with the parsed body.
+export type ValidationError = {
+  error: "validation_failed";
+  field_errors: Record<string, string[]>;
+};
+
 export type Subject =
   | { kind: "user"; id: string; name: string }
   | { kind: "visitor"; id: string; nick: string; network_slug: string };
@@ -477,6 +494,19 @@ async function readError(res: Response): Promise<ApiError> {
   let code: string;
   try {
     body = (await res.json()) as Record<string, unknown>;
+    // Resolution order:
+    //   1. `body.error` — the canonical A7 envelope shape used by every
+    //      `FallbackController` arm (`{error: "<token>"}`), including
+    //      the bucket-G-unified 422 `{error: "validation_failed",
+    //      field_errors: ...}` shape. The whole body is captured into
+    //      `info` so callers can read `err.info.field_errors`,
+    //      `err.info.site_key`, etc. without a second round-trip.
+    //   2. `body.errors.detail` — Phoenix's default `ErrorJSON` shape
+    //      for 404/500/etc. (see `lib/grappa_web/controllers/error_json.ex`).
+    //      Distinct from the post-bucket-G changeset path (`field_errors`)
+    //      which routes through `body.error`.
+    //   3. `res.statusText` — last-resort wire-shape fallback for
+    //      pre-FallbackController paths or unrecognised body shapes.
     const errs = body.errors as { detail?: string } | undefined;
     code = (body.error as string | undefined) ?? errs?.detail ?? res.statusText;
   } catch {
