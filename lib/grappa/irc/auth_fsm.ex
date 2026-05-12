@@ -229,9 +229,24 @@ defmodule Grappa.IRC.AuthFSM do
   def step(state, %Message{command: :cap, params: params}),
     do: handle_cap(params, state)
 
-  def step(state, %Message{command: :authenticate, params: ["+"]}) do
+  # SASL PLAIN reply — only legitimate in `:sasl_pending` (the FSM phase
+  # entered when CAP REQ ACK :sasl elicits the AUTHENTICATE PLAIN we
+  # sent ourselves; the upstream's `AUTHENTICATE +` prompt is the
+  # documented next step per IRCv3 SASL spec). C1 (CRITICAL — 2026-05-12
+  # codebase review): pre-fix this clause matched UNCONDITIONALLY for
+  # every phase below `:registered`, so a buggy / hostile / MitM
+  # upstream could elicit a verbatim SASL credential reply BEFORE SASL
+  # had been negotiated by sending `AUTHENTICATE +` while the FSM was
+  # in `:pre_register` / `:awaiting_cap_ls` / `:awaiting_cap_ack`. Under
+  # Phase-1 `verify: :verify_none` the leak was network-exploitable.
+  # The phase pin closes the leak; the catch-all clause below absorbs
+  # stray pre-handshake `AUTHENTICATE` lines silently, mirroring the
+  # post-`:registered` absorption above (line 227).
+  def step(%__MODULE__{phase: :sasl_pending} = state, %Message{command: :authenticate, params: ["+"]}) do
     {:cont, state, ["AUTHENTICATE #{sasl_plain_payload(state)}\r\n"]}
   end
+
+  def step(state, %Message{command: :authenticate}), do: {:cont, state, []}
 
   def step(state, %Message{command: {:numeric, 903}}) do
     {:cont, leave_cap_negotiation(state, :pre_register), ["CAP END\r\n"]}

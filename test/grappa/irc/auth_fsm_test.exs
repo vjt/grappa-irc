@@ -453,4 +453,58 @@ defmodule Grappa.IRC.AuthFSMTest do
       assert {:cont, ^state, []} = AuthFSM.step(state, msg)
     end
   end
+
+  # C1 (CRITICAL — 2026-05-12 codebase review): the `AUTHENTICATE +`
+  # clause was matched UNCONDITIONALLY for every phase below `:registered`
+  # (the pre-existing `:registered` catch-all only absorbed the
+  # post-handshake case). A hostile / buggy / MitM upstream could
+  # therefore elicit a verbatim SASL credential reply BEFORE SASL had
+  # been negotiated by sending `AUTHENTICATE +` while the FSM was in
+  # `:pre_register` / `:awaiting_cap_ls` / `:awaiting_cap_ack`. Under
+  # Phase-1 `verify: :verify_none` this credential leak was
+  # network-exploitable.
+  #
+  # Fix: pin the AUTHENTICATE-`+` clause on `phase: :sasl_pending` (the
+  # only legitimate phase per the IRCv3 SASL spec). The S2 post-
+  # registration test above already pins the `:registered` arm; these
+  # tests pin the three remaining pre-handshake arms. Together with the
+  # existing `step/2 — SASL chain` describe block (which keeps the
+  # legitimate `:sasl_pending → AUTHENTICATE <base64>` reply working),
+  # the four-arm matrix is closed.
+  describe "step/2 — C1 pre-handshake AUTHENTICATE + phase guard" do
+    for phase <- [:pre_register, :awaiting_cap_ls, :awaiting_cap_ack] do
+      @phase phase
+
+      test "stray AUTHENTICATE + in #{@phase} phase NEVER replies with credentials" do
+        state = new!(%{auth_method: :sasl, sasl_user: "vjt", password: "secret-do-not-leak"})
+        pinned = %{state | phase: @phase}
+
+        msg = %Message{command: :authenticate, params: ["+"]}
+
+        assert {:cont, ^pinned, sends} = AuthFSM.step(pinned, msg)
+        # Critical: pre-`:sasl_pending` AUTHENTICATE + must produce ZERO
+        # bytes upstream. Any payload here would carry the SASL PLAIN
+        # blob — a credential leak under verify_none. Mirrors the S2
+        # post-registration test above.
+        assert sends == []
+      end
+    end
+
+    test "control: AUTHENTICATE + in :sasl_pending STILL emits the SASL PLAIN reply" do
+      # Belt-and-braces: the phase guard MUST NOT short-circuit the
+      # legitimate transition. Mirror of the existing SASL-chain happy
+      # path in `describe "step/2 — SASL chain"` above; restated here
+      # so a refactor of either describe block keeps both invariants
+      # visible.
+      state = new!(%{auth_method: :sasl, sasl_user: "vjt", password: "swordfish"})
+      pending = %{state | phase: :sasl_pending}
+
+      msg = %Message{command: :authenticate, params: ["+"]}
+
+      assert {:cont, ^pending, sends} = AuthFSM.step(pending, msg)
+      [line] = send_lines(sends)
+      "AUTHENTICATE " <> b64 = line
+      assert Base.decode64!(b64) == <<0, "vjt", 0, "vjt", 0, "swordfish">>
+    end
+  end
 end
