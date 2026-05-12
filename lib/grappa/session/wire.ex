@@ -104,8 +104,29 @@ defmodule Grappa.Session.Wire do
           kind: String.t(),
           network: String.t(),
           channel: String.t(),
-          members: [Grappa.Session.member()]
+          members: [member()]
         }
+
+  @typedoc """
+  Per-member wire shape — emitted by `member/1` and consumed by both
+  the REST envelope (`members_index/1` →
+  `GrappaWeb.MembersJSON.index/1`) and the Channel event
+  (`members_seeded/3` → `GrappaWeb.GrappaChannel`). Centralising the
+  per-member shape here means a future change to
+  `Grappa.Session.member()` (e.g. wrapping in a struct, adding an
+  `:account` field) flows through ONE seam — no parallel envelopes
+  to keep in lockstep.
+  """
+  @type member :: %{nick: String.t(), modes: [String.t()]}
+
+  @typedoc """
+  REST envelope returned by `GrappaWeb.MembersJSON.index/1`. Same
+  per-member shape as the Channel `members_seeded` event — surface
+  envelopes diverge intentionally (REST is a snapshot resource;
+  Channel is an event broadcast carrying network/channel context),
+  the per-member shape is the unification point.
+  """
+  @type members_index_payload :: %{members: [member()]}
 
   @type joined_payload :: %{
           kind: String.t(),
@@ -227,13 +248,46 @@ defmodule Grappa.Session.Wire do
 
   @doc """
   Pre-sorted member list emitted on `366 RPL_ENDOFNAMES`. Caller is
-  responsible for the mIRC-tier sort.
+  responsible for the mIRC-tier sort. Per-member shape is funneled
+  through `member/1` so REST + Channel agree on the per-row contract
+  (web/S3+S4 finding, codebase review 2026-05-12).
   """
   @spec members_seeded(String.t(), String.t(), [Grappa.Session.member()]) ::
           members_seeded_payload()
   def members_seeded(network_slug, channel, members)
       when is_binary(network_slug) and is_binary(channel) and is_list(members) do
-    %{kind: "members_seeded", network: network_slug, channel: channel, members: members}
+    %{
+      kind: "members_seeded",
+      network: network_slug,
+      channel: channel,
+      members: Enum.map(members, &member/1)
+    }
+  end
+
+  @doc """
+  Renders one `Grappa.Session.member()` to the per-member wire shape.
+  Today the source `Session.member()` IS already `%{nick:, modes:}`
+  so this is an identity-shaped projection — but the function is
+  load-bearing for future shape changes: any drift in the source
+  type (struct wrapping, extra fields, atom-set tightening) requires
+  a change here AND nowhere else. CLAUDE.md "Wire conversion is
+  per-context responsibility."
+  """
+  @spec member(Grappa.Session.member()) :: member()
+  def member(%{nick: nick, modes: modes}) when is_binary(nick) and is_list(modes) do
+    %{nick: nick, modes: modes}
+  end
+
+  @doc """
+  Wraps a list of `Grappa.Session.member()` rows in the canonical
+  REST envelope `%{members: [...]}`. The controller
+  (`GrappaWeb.MembersJSON.index/1`) delegates to this verb so the
+  per-member shape stays single-sourced with the Channel
+  `members_seeded` event — the two surfaces unify on `member/1`.
+  """
+  @spec members_index([Grappa.Session.member()]) :: members_index_payload()
+  def members_index(members) when is_list(members) do
+    %{members: Enum.map(members, &member/1)}
   end
 
   @doc """

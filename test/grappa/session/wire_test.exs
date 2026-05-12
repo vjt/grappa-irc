@@ -80,6 +80,56 @@ defmodule Grappa.Session.WireTest do
                members: members
              }
     end
+
+    test "per-member shape ≡ member/1 output (web/S4 envelope unification)" do
+      members = [
+        %{nick: "vjt", modes: ["@"]},
+        %{nick: "alice", modes: ["+"]},
+        %{nick: "bob", modes: []}
+      ]
+
+      payload = Wire.members_seeded("azzurra", "#grappa", members)
+      assert payload.members == Enum.map(members, &Wire.member/1)
+    end
+  end
+
+  describe "member/1" do
+    test "projects a Session.member() to the per-row wire shape" do
+      assert Wire.member(%{nick: "vjt", modes: ["@"]}) == %{nick: "vjt", modes: ["@"]}
+    end
+
+    test "preserves an empty modes list (regular voice-less member)" do
+      assert Wire.member(%{nick: "bob", modes: []}) == %{nick: "bob", modes: []}
+    end
+  end
+
+  describe "members_index/1" do
+    test "wraps a member list in the REST envelope %{members: [...]}" do
+      members = [
+        %{nick: "vjt", modes: ["@"]},
+        %{nick: "alice", modes: []}
+      ]
+
+      assert Wire.members_index(members) == %{
+               members: [
+                 %{nick: "vjt", modes: ["@"]},
+                 %{nick: "alice", modes: []}
+               ]
+             }
+    end
+
+    test "per-member shape ≡ Channel members_seeded per-member shape (web/S4)" do
+      members = [%{nick: "vjt", modes: ["@"]}, %{nick: "alice", modes: ["+"]}]
+
+      rest = Wire.members_index(members)
+      channel = Wire.members_seeded("azzurra", "#grappa", members)
+
+      assert rest.members == channel.members
+    end
+
+    test "renders an empty list to %{members: []}" do
+      assert Wire.members_index([]) == %{members: []}
+    end
   end
 
   describe "joined/2" do
