@@ -85,5 +85,34 @@ defmodule GrappaWeb.AdminControllerTest do
           }
       end
     end
+
+    # CP24 bucket E web/S5: visitor sockets must also receive the
+    # cic_bundle_changed broadcast. Pre-fix `WSPresence.register/2`
+    # was skipped for visitor sockets in `UserSocket.connect/3` (kept
+    # auto-away machinery user-only) — so visitors with long-lived
+    # tabs never saw the live bundle-hash refresh banner trigger,
+    # leaving them silently stale until manual reload.
+    test "broadcasts bundle_hash to subscribed VISITOR-topics when bundle exists", %{conn: conn} do
+      case Grappa.Cic.Bundle.current_hash() do
+        nil ->
+          :ok
+
+        expected_hash ->
+          visitor_name = "visitor:#{Ecto.UUID.generate()}"
+          fake_socket = self()
+          :ok = Grappa.WSPresence.register(visitor_name, fake_socket)
+
+          topic = Grappa.PubSub.Topic.user(visitor_name)
+          :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+          conn = post(conn, "/admin/cic-bundle-changed")
+          assert response(conn, 200) == expected_hash
+
+          assert_receive %Phoenix.Socket.Broadcast{
+            event: "event",
+            payload: %{kind: "bundle_hash", hash: ^expected_hash}
+          }
+      end
+    end
   end
 end

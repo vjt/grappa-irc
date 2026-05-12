@@ -109,6 +109,26 @@ defmodule GrappaWeb.UserSocketTest do
 
       assert :error = connect_with(%{"token" => session.id})
     end
+
+    # CP24 bucket E web/S5: visitor connects must register with
+    # WSPresence so `cic_bundle_changed` reaches visitor sockets.
+    # Pre-fix the connect path explicitly skipped `WSPresence.register/2`
+    # for visitors to keep the auto-away machinery user-only — but
+    # that exclusion accidentally hid visitors from `list_user_names/0`,
+    # which the cic-bundle-changed admin endpoint iterates to fan out
+    # the new bundle hash. Visitors with long-lived tabs would never
+    # see the refresh banner trigger. Auto-away machinery stays
+    # user-only because visitor `Session.Server` does not subscribe
+    # to `Topic.ws_presence/1` (see `Session.Server.init/1`).
+    test "visitor connect registers with WSPresence so list_user_names includes visitor" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
+
+      assert {:ok, _socket} = connect_with(%{"token" => session.id})
+
+      visitor_name = "visitor:" <> visitor.id
+      assert visitor_name in Grappa.WSPresence.list_user_names()
+    end
   end
 
   describe "id/1 visitor branch" do

@@ -130,6 +130,9 @@ defmodule Grappa.WSPresence do
 
   @doc """
   Returns the list of `user_name`s with at least one live WS connection.
+  Includes both authenticated users (`user.name`) and visitors
+  (`"visitor:" <> visitor.id`) — bucket E web/S5 unified the
+  registration so `cic-bundle-changed` reaches every connected tab.
 
   CP23 S4 B5 — used by the `cic-bundle-changed` admin endpoint to fan
   out the new bundle hash on every connected user's user-topic. Empty

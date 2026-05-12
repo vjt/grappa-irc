@@ -236,10 +236,16 @@ defmodule GrappaWeb.GrappaChannel do
   @impl Phoenix.Channel
   def handle_in("client_closing", _, socket) do
     user_name = socket.assigns.user_name
-
-    unless visitor?(user_name) do
-      :ok = WSPresence.client_closing(user_name, socket.transport_pid)
-    end
+    # CP24 bucket E web/S5: forward client_closing for visitors too —
+    # the WSPresence registry now tracks both subjects (visitor session
+    # registration is a no-op on the auto-away path because visitor
+    # `Session.Server` does not subscribe to `Topic.ws_presence/1`,
+    # but registering keeps `list_user_names/0` complete for the
+    # cic-bundle-changed broadcast). client_closing on a non-tracked
+    # pid is idempotent (the MapSet membership check inside
+    # `WSPresence.handle_call({:client_closing, ...}, ...)` no-ops
+    # if the pid was never registered).
+    :ok = WSPresence.client_closing(user_name, socket.transport_pid)
 
     {:noreply, socket}
   end

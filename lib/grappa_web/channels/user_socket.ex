@@ -54,18 +54,24 @@ defmodule GrappaWeb.UserSocket do
     with {:ok, session} <- Accounts.authenticate(token),
          {:ok, socket} <- assign_subject(socket, session) do
       socket = assign(socket, :current_session_id, session.id)
-      # S3.1: register socket pid with WSPresence so the auto-away
-      # debounce fires when all WS connections for this user close.
-      # Visitor sessions skip this — visitor disconnect = bouncer disconnect
-      # (ephemeral credential); no upstream session to mark away.
-      user_name = socket.assigns.user_name
-
-      unless String.starts_with?(user_name, "visitor:") do
-        # The transport process (self() at connect time) is the pid that owns
-        # the WS connection. When it exits, the WS is gone. We monitor it via
-        # WSPresence so auto-away fires when all connections for this user close.
-        :ok = WSPresence.register(user_name, self())
-      end
+      # S3.1 + CP24 bucket E web/S5: register every WS pid (user AND
+      # visitor) with WSPresence. The transport process (self() at
+      # connect time) is the pid that owns the WS connection; when it
+      # exits, the WS is gone.
+      #
+      # Two consumers care:
+      #   * Auto-away (user-only): user `Session.Server` subscribes to
+      #     `Topic.ws_presence/1` and debounces auto-away on
+      #     `:ws_all_disconnected`. Visitor `Session.Server` does NOT
+      #     subscribe (see `Session.Server.init/1`'s `match?({:user, _},
+      #     opts.subject)` guard) so the registration is a harmless
+      #     no-op on the auto-away path for visitors.
+      #   * cic-bundle-changed broadcast (user + visitor): the admin
+      #     endpoint iterates `WSPresence.list_user_names/0` to fan out
+      #     the new bundle hash on every connected user-topic. Pre-fix
+      #     visitor sockets were skipped at register-time so visitors
+      #     with long-lived tabs never saw the refresh banner trigger.
+      :ok = WSPresence.register(socket.assigns.user_name, self())
 
       {:ok, socket}
     else
