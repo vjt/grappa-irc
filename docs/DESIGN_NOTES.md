@@ -3980,6 +3980,185 @@ latency) is real but theoretical at current scale; sequential
 spawn is the SAFE default until the test-isolation work lands.
 
 
+## 2026-05-12 — bucket I LANDED-with-caveat: Theme 9 cross-module + docker debt + sensitivity-gate cleanup
+
+5 commits (`b9c9c55..dd98a07`) shipping the bucket I scope from
+the 2026-05-12 codebase review's mega-cluster:
+
+1. **CVE close — `decimal 2.4.1 → 3.1.0`.** GHSA-rhv4-8758-jx7v
+   (moderate DoS via unbounded exponent in `Decimal.new`)
+   published mid-bucket-window. `doctor 0.22.0`'s `~> 2.0`
+   transitive constraint blocks the bump natively (latest doctor
+   release is 2024-10-30 — stale upstream, no fix available),
+   so we declared `decimal` as a top-level dep with
+   `override: true`. Safe because grappa holds no direct
+   `Decimal.` call sites — verified by `grep -rE 'Decimal\.'
+   lib/ test/ mix.exs` returning empty. Per CLAUDE.md rule 1
+   ("fix pre-existing errors first") this had to land before any
+   bucket I substantive work; framed as I-0 sub-commit with the
+   CVE id, severity, transitive chain, and override rationale
+   in the message.
+
+2. **Theme 9 cross-module/S1 + docker/H2 — codify long-lived
+   module list.** The `scripts/deploy.sh` preflight regex
+   enumerated `Session.Server`, `WSPresence` and 4 others for
+   `defstruct`-line checks but THREE of those modules carried
+   state as bare maps (no `defstruct`); the regex was structurally
+   blind to the modules it listed. Separately, `Grappa.Visitors.Reaper`
+   (60s sweeper supervised under Application) was missing from
+   BOTH the regex AND the CLAUDE.md "Hot vs cold deploy"
+   enumeration — two enumerations had drifted independently.
+
+   New module `Grappa.HotReload.LongLivedModules` is the single
+   source of truth. `@modules` (`Backoff`, `WSPresence`,
+   `NetworkCircuit`, `Session.Server`, `IRC.Client`, `IRC.AuthFSM`,
+   `Visitors.Reaper`) + `@state_helpers` (`AwayState`,
+   `GhostRecovery`, `WindowState`) lists are atom literals, parsed
+   by `deploy.sh` via a stable `^\s+Grappa\.[A-Za-z_.0-9]+,?$`
+   grep, then translated CamelCase → snake_case →
+   `lib/grappa/.../*.ex` (`WSPresence` → `ws_presence`, `AuthFSM`
+   → `auth_fsm`, etc. via the standard `Macro.underscore` two-sed
+   pair). `deploy.sh` then scans each touched file for `defstruct`,
+   `@type t :: %{`, or `def init(` markers — covers struct shapes
+   AND bare-map state shapes, no longer transparent.
+
+   `defstruct` added to `WSPresence` (3-field state map) and
+   `Reaper` (1-field `interval_ms` state). `Session.Server` stays
+   bare-map — its state is ~280 keys with optional fields and
+   migrating to a struct would be chirurgia oltre lo scope di un
+   HIGH finding closure (carry-forward to test-infra cluster or
+   later for Dialyzer-stricter typing). `NetworkCircuit`'s state
+   is `%{}` empty (all data lives in ETS); a defstruct would be
+   vacuous and the `def init(` marker covers any future addition.
+
+   Six `put_in`/`update_in` call sites in WSPresence had to be
+   rewritten to `%{state | k: Map.put(state.k, key, val)}` because
+   structs do not implement Access by default (caught by full test
+   suite — 687 failures on first attempt, 0 after migration). Same
+   class as the bucket H regression cluster: not all "obvious"
+   refactors are obvious; the test suite caught the divergence
+   immediately on first compile-test.
+
+   `@type long_lived` and `@type state_helper` unions duplicate
+   the atom-list bodies. Kept intentional and Dialyzer-enforced:
+   dialyxir's `:underspecs` flag fails with `contract_supertype`
+   when the spec is wider than the success typing, so any
+   divergence between atom list and type union surfaces on the
+   next CI run. Single-SoT-for-script-parsing is preserved (the
+   shell grep targets `@modules` attribute lines, not the
+   typedef); the duplication only ratifies the union shape.
+
+3. **Theme 9 cross-module/S2 — auth_controller inline Logger
+   violation.** `Logger.warning("logout disconnect broadcast
+   failed for #{socket_id}", ...)` at `auth_controller.ex:204`
+   was the SOLE inline-interpolation Logger violation in the
+   codebase (`grep -rnE 'Logger\.\w+\("[^"]*#\{' lib/` returns
+   empty post-fix). Move `socket_id` to KV metadata, add
+   `:socket_id` to `config/config.exs:108-200` allowlist under
+   the Auth-context group (Phase 2 bearer-token lifecycle).
+   Per memory `project_logging_format`.
+
+4. **Sensitivity-gate carry-forward — Turnstile placeholder.**
+   `.env.example` shipped vjt's actual public Turnstile site_key
+   (vjt confirmed: public site_key, not the secret — embedded in
+   served HTML and safe to publish; cosmetic, no rotation event).
+   Replaced with `0xYOUR_TURNSTILE_SITE_KEY_HERE` placeholder +
+   generic field-meaning comment; rewrote the surrounding comment
+   to drop the deployment-hostname callout. 10+ other
+   `grappa.bad.ass` references across `.env.example`,
+   `runtime.exs` default, `README`, cic source, `docs/todo`
+   deferred to a post-Phase-5 sweep (default hostname change
+   touches fresh-clone deploy ergonomics — needs lock-step pass
+   that picks a generic placeholder and rewrites every reference).
+   `compose.prod.override.yaml` confirmed not tracked (`git
+   ls-files` empty), no history rewrite.
+
+5. **Cherry-picked docker MEDs (S2, S6, S7).** Drop dead
+   `LABEL grappa.hot_deployable=true` + 4-line dead comment from
+   `Dockerfile` (CP23 replaced the per-image-tag flip design with
+   `scripts/deploy.sh`'s git-diff preflight; no code reads the
+   label — `grep -rn hot_deployable .` empty). Drop dead `dist/`
+   from `.dockerignore` (path moved to `runtime/cicchetto-dist/`
+   in CP23, parent `runtime/` already covers). Bake
+   `runtime/cicchetto-dist/.gitkeep` + `runtime/bun-cache/.gitkeep`
+   so a fresh `git clone` then `compose --profile prod up
+   cicchetto-build` doesn't have Docker auto-create the bind-mount
+   targets as `root:root` (container UID 1000 then fails the
+   write to Vite's `dist/` or bun's cache — opaque AccessDenied
+   surface). Same UID-trap class as memory
+   `feedback_named_volume_uid_trap`; pre-creating under operator
+   UID sidesteps the auto-create-as-root path entirely.
+   `.gitignore` extended with explicit `!`/re-glob/`!` triplets
+   for the new subdirs (parent `/runtime/*` ignore +
+   `!/runtime/.gitkeep` exception did not cover them).
+
+### Caveat — ci.yml RED on FIRST RUN (test-infra carry-forward)
+
+Bucket I CI status:
+
+- ✓ `integration.yml` 25756898816 GREEN ON FIRST RUN (5m41s)
+- ✗ `ci.yml` 25756898844 RED ON FIRST RUN (2m18s) — 1 failure:
+  `test/grappa/spawn_orchestrator_test.exs:251` "rejected
+  admission does NOT reset Backoff (no operator action took
+  effect)". Expected `{:ok, :spawned, _}` at line 275 (the
+  initial `vjt_a` spawn that should succeed before the cap is
+  tripped); got `{:error, :network_cap_exceeded}` — meaning
+  the network's session-cap was already at
+  `max_concurrent_sessions: 1` BEFORE `vjt_a`'s attempt.
+
+**This is the documented shared-singleton fight** in test infra.
+`mix test` starts the Application ONCE per test process; ExUnit
+runs concurrent test cases (`max_cases=2` + `async: true`) inside
+the same VM; they share singleton GenServers — `Backoff`,
+`NetworkCircuit`, `SessionRegistry` — plus the ETS tables those
+modules own. Two async tests racing against the same network's
+cap keys produce the `:network_cap_exceeded` collision when the
+second test's `setup` inherits leftover session state from the
+first.
+
+Same root cause has surfaced repeatedly across the mega-cluster:
+
+- ci.yml run `25737232628` (yesterday, "kill Playwright CI retry")
+  failed on `spawn_orchestrator_test:157` (different line, same
+  file).
+- Bucket H's `BootstrapTest` flake series triggered the PHASE 1.3
+  `wait_until_registry_clear` helper, which patched ONE call site
+  but not the class.
+- Bucket H's lifecycle/S5 parallelize-spawn_all attempt tripped
+  6 regression failures with the identical
+  NetworkCircuit-ETS-pollution shape and was deferred for the
+  same reason.
+
+The PHASE 1.3 patch addressed `BootstrapTest` specifically; the
+class is unfixed and surfaces in whichever async-test-file ExUnit
+schedules into the bad slot. Bucket I drew the unlucky scheduling
+this run; next push may surface in a different file again.
+
+**Bucket I content does NOT cause this.** WSPresence/Reaper
+defstruct migrations + SoT module + auth_controller logger fix +
+Turnstile placeholder + Docker simplifications are structurally
+isolated from the SpawnOrchestrator → NetworkCircuit → ETS path.
+Local `scripts/check.sh` exit-0 on every commit (1554 tests, 0
+failures), local standalone `scripts/dialyzer.sh` exit-0,
+integration.yml CI green, cold-deploy + healthcheck successful.
+
+The shared-singleton fix is the principal item for the
+post-mega-cluster **test-infra** cluster, briefed in
+`/tmp/orchestrate-next-test-infra.txt`. Scope (per vjt
+direction): root-cause architectural fix (per-test ETS namespace
++ supervised-per-case Backoff/NetworkCircuit/SessionRegistry, OR
+drop `max_cases=1` for sequential-but-correct); mandatory
+test-suffix on every network slug + user id; audit every
+`async: true` test that hits Application singletons. Acceptance:
+ALL ci.yml + integration.yml GREEN ON FIRST RUN, no exceptions,
+no `gh run rerun --failed` ever.
+
+Bucket I is LANDED-with-caveat — local gates green, deploy green,
+integration green, ci.yml red traceable to the deferred class.
+Bucket Z opens for sweep + carry-forward closure + mega-cluster
+close. Test-infra cluster opens after Z.
+
+
 ---
 
 ## What's *not* in this document (on purpose)
