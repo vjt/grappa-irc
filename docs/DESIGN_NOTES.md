@@ -4158,6 +4158,257 @@ integration green, ci.yml red traceable to the deferred class.
 Bucket Z opens for sweep + carry-forward closure + mega-cluster
 close. Test-infra cluster opens after Z.
 
+## 2026-05-12 — bucket Z LANDED-with-caveat: carry-forward closures + long-tail sweep + mega-cluster close
+
+7 commits (`bf66bb2..98cae46`) shipping the bucket Z scope from the
+2026-05-12 codebase review's mega-cluster — closure batch for prior
+buckets' carry-forwards, long-tail MED+LOW sweep, mega-cluster
+retrospective.
+
+### Z-1 carry-forward closures
+
+The Z-1 phase re-evaluated every bucket's open carry-forward against
+current code BEFORE shipping. Three resolved as ship, two as
+NON-FINDING (transitively closed or misclassified), three as defer
+(behavior change / migration / refactor scope outside bucket Z's
+"sweep + close" charter):
+
+1. **H-Z1 — `query_windows_list` envelope unification** (commit
+   `bf66bb2`). Bucket D's code-review counted three "inlined sites"
+   for `%{kind: "query_windows_list", windows: ...}`; close reading
+   broke them down to two true call sites
+   (`QueryWindows.broadcast_windows_list/2`,
+   `GrappaChannel.push_query_windows_list/2`) plus one moduledoc
+   example. The per-window body already delegated via
+   `Grappa.QueryWindows.Wire.render_grouped/1`; only the OUTER
+   envelope was hand-rolled at each site. Lift to
+   `Wire.windows_list_payload/1` mirrors the bucket D pattern for
+   `Grappa.Cic.Wire.bundle_hash/1` (cross-module/S4): the helper
+   takes the already-rendered `windows_map` so callers retain the
+   existing two-step pipeline. The `GrappaChannel`
+   `@type query_windows_list_payload` becomes a thin alias for
+   `Wire.windows_list_payload/0`; the in-context `@typedoc` likewise
+   delegates so the typespec, the value constructor, and the
+   consumer all reference one source of truth. +7 unit tests in new
+   `test/grappa/query_windows/wire_test.exs`. Existing pattern-match
+   assertions in channel + context tests pin the wire contract from
+   the consumer side and stay as-is — that's the correct level of
+   coupling.
+
+2. **persistence/S18 — `User.password_hash` `redact: true`** (commit
+   `7177ad6`). Re-evaluated as MED (not the HIGH the bucket H
+   carry-forward note implied); pure schema-attribute add, no
+   migration. `Visitor.password_encrypted` and
+   `Networks.Credential.password_encrypted` both carry `redact: true`;
+   `User.password_hash` was the outlier. Argon2 PHC-format is
+   functionally not a credential, but `inspect(%User{})` leaks the
+   algorithm + salt + cost params (fingerprintable surface). One-line
+   discipline parity.
+
+3. **L3 `auth_json` `:kind` discriminator — NON-FINDING.** The
+   `kind: "user" | "visitor"` discriminator at `auth_json.ex:38,45`
+   is a controller-action shape (which subject type was logged in),
+   NOT a Wire concern. The Accounts.Wire + Visitors.Wire bodies
+   already delegate via `*_to_credential_json/1`; the `:kind` tag
+   is intrinsic to `AuthController.login/2`'s API contract. Lifting
+   to a hypothetical `Auth.Wire` would force the auth domain into
+   both context Wire modules — boundary violation. One site per
+   discriminator + zero cross-file drift surface. Documented +
+   dropped from Z scope. (The brief itself flagged this as "lower
+   urgency than H-Z1".)
+
+4. **persistence/S13 (kind-enum CHECK frozen-snapshot) —
+   NON-FINDING.** Already addressed transitively. The test at
+   `test/grappa/migrations/check_constraints_test.exs:125-146` reads
+   `Message.kinds()` from the prod accessor and asserts every kind
+   passes the CHECK; an 11th kind that the CHECK doesn't cover
+   red-flags THERE before silently slipping past. The requested
+   "drift surface" guard already exists. Documented closure.
+
+5. **persistence/S15 (`EncryptedBinary` field-name lie) —
+   DEFERRED.** Renaming `password_encrypted` →
+   `password_at_rest` (or splitting into ciphertext + virtual
+   decrypted field) is a multi-module rename touching every callsite
+   + a migration. Brief excludes "behavior change" + "migration"
+   from bucket Z. Re-evaluate post-Phase-5 hardening cluster.
+
+6. **persistence/S17 (`:utc_datetime` vs `:utc_datetime_usec`
+   precision) — DEFERRED.** Aligning `query_windows.opened_at` with
+   the microsecond-precision schema family requires an `alter table`
+   migration. Brief excludes migrations. Re-evaluate post-Phase-5.
+
+### Z-2 long-tail sweep
+
+Six commits, in the brief's "5-10 commits, 3-5 related fixes per
+commit" target. Touched the cleanest, lowest-risk findings across
+docker / cross-module / CLAUDE.md without bleeding into refactor
+or behavior-change territory:
+
+1. **Docgen warning silencing** (commit `e119b51`). `mix docs`
+   surfaced 5 in-source warnings — moduledocs / docstrings / type
+   docs referencing private functions (`Bootstrap.spawn_with_admission/6`,
+   `NetworksController.spawn_session_after_connect/3`,
+   `GrappaChannel.push_bundle_hash/1`, `Admission.Config.put_test_config/1`)
+   or hidden modules (`Grappa.Application` and its `start/2`). Each
+   reword turns the backtick-link into either a public-module
+   reference + plain-prose helper name OR a path hint to
+   `lib/grappa/application.ex`. Also caught one self-introduced
+   warning from the H-Z1 commit (the `Cic.Bundle.bundle_hash_payload/1`
+   typo — actual fn is `Grappa.Cic.Wire.bundle_hash/1`); fixed
+   inline. Residual 6 warnings are DESIGN_NOTES historical
+   references + Phoenix internals — out of scope.
+
+2. **Post-CP23 stale comment cleanup** (commit `e4a3912`). Three
+   comment-only fixes flagged by agent-docker (L1, L7, L10):
+   `scripts/dialyzer.sh` PLT comment said "named volume grappa_build"
+   but CP23 collapsed to bind-mounted `priv/plts/`; `compose.yaml`
+   said "Compose evaluates the `:?` only when consumed" but the
+   block uses `${X:-}` (empty default), never `${X:?}`;
+   `infra/snippets/security-headers.conf` said "via the nginx service
+   `volumes:` block in compose.prod.yaml" but CP23 collapsed to
+   `compose.yaml --profile prod`. Three NON-FINDINGs in the same
+   agent re-verified as already addressed: docker/M2 LABEL (already
+   removed in CP23), docker/L4 port-4002 comment (accurate), docker/L5
+   `dist/` line in `.dockerignore` (already absent).
+
+3. **`require Logger` hoist** (commit `d3266bf`, agent-cross-module
+   S9). Two private helpers each carried inline `require Logger`
+   instead of one top-of-module require. Idiomatic Elixir is one
+   require at module top; the in-helper requires were no-op
+   duplicates. First attempt placed `require Logger` BEFORE the alias
+   block; Credo's ConsistentAliasOrder check correctly flagged it
+   as a code-readability issue — the fix is post-alias placement
+   matching every other controller in the codebase. (Lesson: Credo
+   is a useful constraint on style intuitions; trust the tool's
+   judgment over the "logical pre-alias because it's a directive"
+   instinct.)
+
+4. **`async: false` rationale documentation** (commit `946e83d`,
+   agent-cross-module S8). Two test files (`Grappa.LogTest`,
+   `Grappa.ApplicationTest`) carried `async: false` without a
+   moduledoc explanation; most async-false files in the suite have
+   one. Both are genuinely async-false-required (LogTest mutates
+   `Logger.metadata/1` (process-global within the test process) +
+   asserts against the metadata it just set; ApplicationTest reads
+   `Grappa.Admission.Config.config/0` from `:persistent_term`,
+   node-global). Document via comment so the next reader knows
+   whether a refactor is safe (it isn't) without re-deriving the
+   constraint.
+
+5. **CLAUDE.md PubSub topic shape correction** (commit `98cae46`,
+   agent-cross-module S6). The highest-impact Z-2 finding because
+   CLAUDE.md is declared authority by its own moduledoc. CLAUDE.md
+   documented topics as `grappa:user:{user}`, `grappa:network:{net}`,
+   `grappa:network:{net}/channel:{chan}` — but Phase 2 sub-task 2h
+   shipped user-rooted topics (`grappa:user:{user_name}`,
+   `grappa:user:{user_name}/network:{network_slug}`,
+   `grappa:user:{user_name}/network:{network_slug}/channel:{channel_name}`)
+   for cross-user authz at the routing layer. The implementation in
+   `Grappa.PubSub.Topic` is correct; CLAUDE.md was the divergent
+   source. Drift would have misled future agents into proposing
+   non-user-rooted topics that bypass routing-layer authz partition.
+   Both occurrences fixed (key-invariant section + Phoenix/Ecto
+   patterns section); both now point at `Grappa.PubSub.Topic` as
+   SoT.
+
+### Caveat — `ci.yml` RED on FIRST RUN, integration.yml GREEN
+
+Same shape as bucket I per memory `feedback_no_ci_retries_on_first_failure`:
+
+- ✓ `integration.yml` 25759757864 GREEN ON FIRST RUN (5m26s)
+- ✗ `ci.yml` 25759757869 RED ON FIRST RUN (1m59s) — 1 failure on
+  `test/grappa/spawn_orchestrator_test.exs:186` (different line in
+  the same file as bucket I's :251 failure).
+
+Documented shared-singleton class — the test-infra cluster's
+charter. Per brief `(h.2)` "If shared-singleton class: document in
+CP24 as Z-N LANDED-with-caveat, continue with the next Z task. Do
+NOT spend bucket Z time fixing the class." Bucket Z honoured the
+brief: ship the carry-forwards + sweep, document the caveat, hand
+off to test-infra.
+
+Bucket Z content does NOT cause the failure: zero touches to
+`lib/grappa/admission/`, `lib/grappa/session/backoff.ex`,
+`lib/grappa/spawn_orchestrator.ex` implementation,
+`lib/grappa/admission/network_circuit.ex`, or
+`lib/grappa/session_registry.ex` across all 7 commits.
+
+### Mega-cluster CLOSED
+
+10 buckets (A through I plus Z, plus the H regression cluster)
+across one calendar day (2026-05-12). 37 HIGH closed; 1 deferred
+(lifecycle/S5 → test-infra). 0 CRITICAL outstanding. ~62 MED + ~58
+LOW long-tail catalogued for future-cluster cherry-picks.
+
+**What worked, mega-cluster scale:**
+
+1. **Per-bucket deploy cadence.** Memory `feedback_per_bucket_deploy`
+   discipline — every bucket close ran push → deploy → healthcheck →
+   integration smoke. Caught the bucket H regression cluster within
+   30 minutes of bucket H ship; would have taken hours to discover
+   at end-of-cluster otherwise.
+2. **Sequential bucket order.** Buckets closed in strict order, no
+   parallel buckets. Kept us out of merge-hell — no bucket's
+   worktree had to rebase against another's surprise edits. 8
+   parallel agents would have collided on `Grappa.Scrollback.Wire`,
+   `Session.Server`, and `lib/grappa/admission/` repeatedly.
+3. **Reviewer-pass discipline post bucket close.** Bucket D + bucket
+   H both ran a separate code-reviewer pass after the LANDED claim;
+   any HIGH findings either folded back into the bucket or carried
+   forward to bucket Z. The reviewer is part of the LANDED contract,
+   not optional.
+4. **Per-bucket carry-forward enumeration.** Each bucket's CP24
+   section explicitly lists what carries forward. Z had a clear
+   punch list, not an open-ended sweep.
+5. **NON-FINDING discipline.** Re-evaluating findings against
+   current code BEFORE shipping fixes (Z-1 L3, persistence/S13,
+   docker/M2/L4/L5, cross-surface/L4) avoided 4+ false-fix commits.
+   Bucket A's C2 NON-FINDING set the tone — verifying with a live
+   probe + reading the adapter source before assuming the review's
+   premise is the right reflex.
+
+**What didn't, mega-cluster scale:**
+
+1. **Shared-singleton test class.** Surfaced in CI ~5 times across
+   the mega-cluster (bucket H BootstrapTest series, bucket I
+   spawn_orchestrator_test:251, bucket Z spawn_orchestrator_test:186,
+   bucket I local cp13/cp15-b5/m9 e2e flakes). Each surface was
+   logged but not fixed — the class is unfixed across the entire
+   mega-cluster. Documentation (caveat sections in CP24, memory
+   `feedback_shared_singleton_test_class`) is no substitute for the
+   architectural fix. test-infra cluster is the explicit follow-up.
+2. **Hot-deploy preflight blind-spots.** Bucket I cross-module/S1
+   discovered the `deploy.sh` regex was structurally blind to
+   bare-map state shapes for THREE of the modules it enumerated.
+   Memory `feedback_hot_deploy_preflight` codified the lesson; the
+   `Grappa.HotReload.LongLivedModules` SoT module is the
+   architectural fix. Lesson: enumerations in shell scripts that
+   parallel atom lists in Elixir code drift silently — encode the
+   list in Elixir + parse from the script.
+3. **DESIGN_NOTES docgen residuals.** Bucket Z silenced 5 in-source
+   moduledoc warnings but DESIGN_NOTES historical references to
+   private functions / hidden modules remain. Touching DESIGN_NOTES
+   historical entries to satisfy docgen would erase the original
+   phrasing of the decision; defer to a hypothetical
+   "history-rewrite" cluster (which probably should never happen).
+4. **Mega-cluster duration.** ~13 hours from review-LANDED to
+   bucket Z LANDED-with-caveat. Sustainable in a one-day burst but
+   not as a default cadence — code-review every 2 weeks (per
+   `docs/reviewing.md`) is correctly load-spreading. Resist the
+   temptation to repeat this pattern.
+
+### Test-infra cluster opens next
+
+Per brief (i): the test-infra cluster (briefed in
+`/tmp/orchestrate-next-test-infra.txt`) is the next cluster opening.
+Its charter is the architectural fix that dissolves the
+shared-singleton class — the principal carry-forward from both
+bucket I and bucket Z. After test-infra closes, Phase 5 hardening
+opens (TLS verify_none → CA chain, PromEx, Sobelow strictness,
+NickServ-on-connect/NOTICE/REGISTER); then image-upload, /names UX
+silent bugs, hostname rename — per memory `project_post_p4_1_arc`
+arc.
+
 
 ---
 
