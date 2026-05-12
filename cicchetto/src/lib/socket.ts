@@ -104,7 +104,12 @@ export function joinUser(userName: string): Channel {
   return ch;
 }
 
-export function joinChannel(userName: string, networkSlug: string, channelName: string): Channel {
+export function joinChannel(
+  userName: string,
+  networkSlug: string,
+  channelName: string,
+  onJoinOk?: () => void,
+): Channel {
   const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`;
   const ch = getSocket().channel(topic);
   // Surface server-side join failures to the console + Phase 5
@@ -113,7 +118,19 @@ export function joinChannel(userName: string, networkSlug: string, channelName: 
   // silently). `timeout` is the phoenix.js retry-budget exhaustion
   // shape; logging it lets a stuck channel show up in operator
   // browser-console output during diagnosis.
+  //
+  // `onJoinOk` (message-replay-on-reconnect cluster, 2026-05-12) fires
+  // on EVERY successful join — both the initial join and every
+  // auto-rejoin after a socket disconnect. phoenix.js's
+  // `Push.resend()` does NOT clear the `recHooks` list (only resets
+  // ref/refEvent/receivedResp/sent), so a `.receive("ok", cb)`
+  // registered once at first join keeps firing on subsequent rejoins.
+  // The cic backfill flow uses this fan-in to detect "this is a
+  // re-join" and fetch the rows that arrived during the WS gap.
   ch.join()
+    .receive("ok", () => {
+      if (onJoinOk) onJoinOk();
+    })
     .receive("error", (err: unknown) => {
       console.error("[grappa] channel join failed", topic, err);
     })

@@ -640,6 +640,29 @@ export async function listMessages(
   return (await res.json()) as ScrollbackMessage[];
 }
 
+// Sole consumer (today): the WS-reconnect backfill flow in
+// `subscribe.ts`. After a Phoenix Channel re-join, cic asks the server
+// "give me every row whose id is greater than the last id I rendered"
+// — closes the live-stream gap caused by best-effort PubSub fan-out
+// on a transiently-disconnected WS.
+//
+// Mirror of `GrappaWeb.MessagesController.index/2`'s `?after=<id>`
+// path. Server returns rows in ASC `id` order (chronological), so
+// callers append to the existing scrollback tail directly.
+export async function listMessagesAfter(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+  afterId: number,
+): Promise<ScrollbackMessage[]> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages?after=${afterId}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as ScrollbackMessage[];
+}
+
 // Mirror of `GrappaWeb.MessagesController.create/2`. Server hardcodes
 // `kind = :privmsg` — only `body` is in the request envelope. Returns
 // 201 + the persisted Wire row; the same row also fires on the
