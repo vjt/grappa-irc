@@ -4410,6 +4410,69 @@ silent bugs, hostname rename — per memory `project_post_p4_1_arc`
 arc.
 
 
+## 2026-05-12 — Test-infra cluster (CP25): max_cases=1 closes shared-singleton class
+
+Followed CP24 mega-cluster close immediately. Sequential 3-bucket
+cluster (TI-1 + TI-2 + TI-3) addressing the latent shared-singleton
+fight that surfaced ~5 times across CP24 buckets H/I/Z without
+getting fixed.
+
+### Root cause
+
+The Application starts ONCE per `mix test` process, so
+`Grappa.Session.Backoff`, `Grappa.Admission.NetworkCircuit`,
+`Grappa.WSPresence`, and `Grappa.SessionRegistry` are application-wide
+singletons shared across every test. ExUnit defaults to
+`max_cases = schedulers_online * 2` (typically 16 on 8-core boxes);
+`Ecto.Adapters.SQL.Sandbox` covers the Repo, but those GenServers +
+ETS tables have no per-test sandbox. Two concurrent tests colliding
+on a recycled sqlite rowid (network_id) inherit each other's session
+counts / circuit state / registry entries, surfacing as intermittent
+CI failures whose surface line/file does not predict the offending
+pair.
+
+### Path chosen
+
+Two paths considered:
+
+- **Path A** — per-test supervised singleton instances + injected
+  lookup name. Preserves async perf but invasive: 3 production
+  GenServer signature changes (name + ETS table parameterization)
+  plus per-test setup scaffolding for every test that touches them.
+- **Path B** — `config :ex_unit, max_cases: 1`. 1-line config, zero
+  production code changes, ~22s → ~42s test-suite latency.
+
+vjt-blessed Path B per CLAUDE.md "Lightweight over heavyweight." The
+architectural cost of A is heavyweight relative to a problem that
+surfaces ~once-per-mega-cluster. The perf delta is bearable.
+
+### Buckets
+
+- **TI-1 `35b12ba`** — `config :ex_unit, max_cases: 1` in
+  `config/test.exs` with full rationale comment. Defense in depth:
+  each singleton module gains a `## Test isolation` moduledoc
+  paragraph documenting the `async: false` constraint at the
+  declaration site so future contributors don't reintroduce the class
+  even if `max_cases` is later relaxed for a faster lane.
+- **TI-2 `ac76ee4`** — Audit fixed all 18 bare-string
+  `user_fixture(name:)` calls. Collateral fix: two hardcoded
+  `Topic.channel("vjt", ...)` literals in
+  `messages_controller_outbound_test.exs` masked by the prior
+  fixture-name match; switched to `vjt.name` per CLAUDE.md "Use
+  production code in tests."
+- **TI-3 `3a2184c`** — Flipped `admin_controller_test.exs` from
+  `async: true` to `async: false` (cic-bundle-changed tests register
+  fake socket pids against the `Grappa.WSPresence` singleton — the
+  prior moduledoc claim "no shared state" was wrong). Audit
+  confirmed `reap_visitors_test.exs` is genuinely singleton-free.
+
+Total class is now closed: 0 `async: true` tests touch any
+application singleton, suite is sequentialized at the ExUnit level,
+and singleton modules document the rule at their declaration site.
+Acceptance criterion gating on 5 consecutive ci.yml + integration.yml
+green-on-first-run runs.
+
+
 ---
 
 ## What's *not* in this document (on purpose)
