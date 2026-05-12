@@ -82,6 +82,12 @@ defmodule Grappa.MixProject do
       {:plug, "~> 1.16"},
       {:ecto_sql, "~> 3.12"},
       {:ecto_sqlite3, "~> 0.22"},
+      # CVE GHSA-rhv4-8758-jx7v (moderate DoS via unbounded exponent in
+      # `Decimal.new`) — vulnerable < 3.0.0. ecto + ecto_sql + mix_audit
+      # all accept `~> 3.0`; doctor's pin `~> 2.0` would otherwise force
+      # the solver to 2.x. We hold no direct Decimal call sites
+      # (transitive-only dep), so `override: true` is safe.
+      {:decimal, "~> 3.0", override: true},
       {:jason, "~> 1.4"},
       {:toml, "~> 0.7"},
       {:req, "~> 0.5"},
