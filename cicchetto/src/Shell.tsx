@@ -2,12 +2,12 @@ import { type Component, createEffect, createSignal, on, onCleanup, Show } from 
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
-import { displayNick } from "./lib/api";
+import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
-import { channelsBySlug, networks, user } from "./lib/networks";
+import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
 import { setReadCursor } from "./lib/readCursor";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
@@ -50,11 +50,21 @@ const Shell: Component = () => {
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
 
-  // Own-nick derived from the authenticated user. Used by MentionsWindow
-  // to highlight rows where the body matches the operator's nick.
-  const ownNick = (): string | null => {
-    const u = user();
-    return u ? displayNick(u) : null;
+  // Per-network own IRC nick — derived via `ownNickForNetwork(net, me)`
+  // so the mention-highlight in MentionsWindow sees the IRC nick the
+  // operator runs under on THIS network (not the account name, which
+  // can drift after NickServ ghost recovery or when the account name
+  // happens to match an unrelated peer's nick on a network where the
+  // operator's configured nick is different). See `lib/api.ts`
+  // ownNickForNetwork docstring for the canonical resolution rules.
+  // Bucket F H1 fix: pre-fix this called `displayNick(me)` which
+  // returned account name and silently mis-highlighted peer mentions.
+  const ownNickForSlug = (slug: string): string | null => {
+    const me = user();
+    if (!me) return null;
+    const net = networkBySlug(slug);
+    if (!net) return null;
+    return ownNickForNetwork(net, me);
   };
 
   // C8.2 — click-to-context handler for MentionsWindow rows.
@@ -298,7 +308,7 @@ const Shell: Component = () => {
                           messages: [],
                         }
                       }
-                      ownNick={ownNick()}
+                      ownNick={ownNickForSlug(sel().networkSlug)}
                       onMentionClicked={handleMentionClicked}
                     />
                   </Show>
@@ -403,7 +413,7 @@ const Shell: Component = () => {
                         messages: [],
                       }
                     }
-                    ownNick={ownNick()}
+                    ownNick={ownNickForSlug(sel().networkSlug)}
                     onMentionClicked={handleMentionClicked}
                   />
                 </Show>

@@ -25,11 +25,17 @@ vi.mock("../lib/channelKey", () => ({
 
 // MembersPane imports `networks` + `user` for own-nick lookup and
 // networkId resolution. Mock both so render tests don't drag in
-// the full auth / localStorage stack.
-vi.mock("../lib/networks", () => ({
-  networks: vi.fn(() => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
-  user: vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" })),
-}));
+// the full auth / localStorage stack. networkBySlug derives from the
+// same `networks()` source — provided as a module-level helper so
+// MembersPane can use the canonical bnd-A2 lookup.
+vi.mock("../lib/networks", () => {
+  const networks = vi.fn(() => [
+    { id: 1, slug: "freenode", nick: "vjt", inserted_at: "x", updated_at: "y" },
+  ]);
+  const user = vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" }));
+  const networkBySlug = (slug: string) => networks()?.find((n) => n.slug === slug);
+  return { networks, user, networkBySlug };
+});
 
 // UserContextMenu is mounted by MembersPane on right-click; stub it so
 // these render tests don't need to pull in its full dependency tree.
@@ -178,5 +184,75 @@ describe("MembersPane", () => {
     fireEvent.click(btn);
     expect(qw.openQueryWindowState).not.toHaveBeenCalled();
     expect(sel.setSelectedChannel).not.toHaveBeenCalled();
+  });
+
+  // Bucket F H1 — own-nick foot-gun regression. When the operator's
+  // ACCOUNT NAME (e.g. "vjt") differs from the per-network IRC NICK
+  // (e.g. "vjt-grappa" after NickServ ghost recovery), MembersPane's
+  // ownModes derivation MUST resolve to the per-network IRC nick — NOT
+  // displayNick(me) which returns me.name for users.
+  //
+  // Pre-fix MembersPane:73 called `displayNick(user())` and looked up
+  // ownModes by ACCOUNT name. If a peer happened to be using the
+  // operator's account name as their IRC nick on this network (which is
+  // NOT the operator), the lookup would falsely return that peer's
+  // modes → UserContextMenu would render op-gated items as enabled when
+  // the operator does NOT actually hold @ on this channel, allowing the
+  // operator to issue ops actions that always 401 from the upstream
+  // server.
+  //
+  // Asserts the post-fix behavior: ownModes resolves to the row whose
+  // nick matches the per-network IRC nick (network.nick) — NOT
+  // user.name.
+  it("derives ownModes from per-network IRC nick, not from account name (H1)", async () => {
+    const { networks } = await import("../lib/networks");
+    // Operator runs on freenode under IRC nick "vjt-grappa" but account
+    // name is "vjt". A peer named "vjt" holds @ on this channel.
+    vi.mocked(networks).mockReturnValue([
+      {
+        id: 1,
+        slug: "freenode",
+        nick: "vjt-grappa",
+        connection_state: "connected",
+        inserted_at: "x",
+        updated_at: "y",
+      },
+    ] as never);
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [
+        // Peer using account-name "vjt" as IRC nick — has @ on this channel.
+        // If MembersPane resolved ownModes by account name it would falsely
+        // pick this row and treat the operator as an op.
+        { nick: "vjt", modes: ["@"] },
+        // The OPERATOR's actual row on this network: IRC nick = "vjt-grappa",
+        // plain (no modes). UserContextMenu should disable op-gated items.
+        { nick: "vjt-grappa", modes: [] },
+      ],
+    };
+
+    // Capture the ownModes the menu receives by replacing the
+    // UserContextMenu mock with one that records its props.
+    const recorded: { ownModes?: string[] } = {};
+    vi.doMock("../UserContextMenu", () => ({
+      default: (props: { ownModes: string[] }) => {
+        recorded.ownModes = props.ownModes;
+        return <div data-testid="context-menu-stub" />;
+      },
+    }));
+    // Re-import MembersPane so it picks up the doMock'd UserContextMenu.
+    vi.resetModules();
+    const { default: FreshMembersPane } = await import("../MembersPane");
+
+    render(() => <FreshMembersPane networkSlug="freenode" channelName="#italia" />);
+    // Right-click any row to open the context menu and trigger ownModes derivation.
+    const peerBtn = document.querySelector(".member-op .member-name") as HTMLElement;
+    fireEvent.contextMenu(peerBtn);
+
+    // Post-fix: ownModes is the OPERATOR's modes ([]), NOT the peer's (@).
+    // Pre-fix this would be ["@"] because lookup keyed on account name "vjt".
+    expect(recorded.ownModes).toEqual([]);
+
+    vi.doUnmock("../UserContextMenu");
   });
 });

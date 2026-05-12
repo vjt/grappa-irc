@@ -1,9 +1,9 @@
 import { type Component, createSignal, For, Show } from "solid-js";
-import { displayNick } from "./lib/api";
+import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { memberSigil } from "./lib/memberSigil";
 import { type MemberEntry, membersByChannel } from "./lib/members";
-import { networks, user } from "./lib/networks";
+import { networkBySlug, networks, user } from "./lib/networks";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
@@ -67,11 +67,25 @@ const MembersPane: Component<Props> = (props) => {
 
   // Own-nick's modes in this channel — derived from membersByChannel
   // (same source as the rendered list; no parallel state per CLAUDE.md rule).
+  //
+  // Bucket F H1 fix: own-nick is the per-network IRC nick from
+  // `ownNickForNetwork(net, me)`, NOT `displayNick(me)` which returns the
+  // operator account name for users. The two diverge after NickServ ghost
+  // recovery (account "vjt", IRC nick "vjt-grappa") OR when the account
+  // name happens to match a peer's IRC nick on a network where the
+  // operator's configured nick is something else — pre-fix the lookup
+  // returned that peer's modes and op-gated UserContextMenu items
+  // surfaced as enabled when the operator does NOT actually hold @ on
+  // this channel. See lib/api.ts ownNickForNetwork docstring for the
+  // canonical resolution rules.
   const ownModes = (): string[] => {
     const me = user();
     if (!me) return [];
-    const ownNick = displayNick(me);
-    const entry = list().find((m) => m.nick.toLowerCase() === ownNick.toLowerCase());
+    const net = networkBySlug(props.networkSlug);
+    if (!net) return [];
+    const nick = ownNickForNetwork(net, me);
+    if (!nick) return [];
+    const entry = list().find((m) => m.nick.toLowerCase() === nick.toLowerCase());
     return entry?.modes ?? [];
   };
 
