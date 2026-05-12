@@ -26,6 +26,7 @@ defmodule Grappa.Networks.Wire do
   """
 
   alias Grappa.Networks.{Credential, Network}
+  alias Grappa.Wire.Time, as: WireTime
 
   @type credential_json :: %{
           network: String.t(),
@@ -147,7 +148,7 @@ defmodule Grappa.Networks.Wire do
       autojoin_channels: c.autojoin_channels,
       connection_state: c.connection_state,
       connection_state_reason: c.connection_state_reason,
-      connection_state_changed_at: iso8601_or_nil(c.connection_state_changed_at),
+      connection_state_changed_at: WireTime.iso8601_or_nil(c.connection_state_changed_at),
       inserted_at: DateTime.to_iso8601(c.inserted_at),
       updated_at: DateTime.to_iso8601(c.updated_at)
     }
@@ -194,7 +195,7 @@ defmodule Grappa.Networks.Wire do
       nick: nick,
       connection_state: cred.connection_state,
       connection_state_reason: cred.connection_state_reason,
-      connection_state_changed_at: iso8601_or_nil(cred.connection_state_changed_at),
+      connection_state_changed_at: WireTime.iso8601_or_nil(cred.connection_state_changed_at),
       inserted_at: DateTime.to_iso8601(n.inserted_at),
       updated_at: DateTime.to_iso8601(n.updated_at)
     }
@@ -242,18 +243,7 @@ defmodule Grappa.Networks.Wire do
       from: from,
       to: to,
       reason: reason,
-      at: iso8601_or_nil(c.connection_state_changed_at)
+      at: WireTime.iso8601_or_nil(c.connection_state_changed_at)
     }
   end
-
-  # Architecture audit bnd-A11: timestamps land on the wire as ISO-8601
-  # strings, not raw `%DateTime{}` structs. Jason encodes both shapes
-  # to the same byte string, but the wire-shape typespec must match
-  # the post-Jason value so cic's TS contract (`api.ts` declares
-  # `inserted_at: string`) is honored at the Elixir boundary too.
-  # `nil` is preserved (only `connection_state_changed_at` and the
-  # `at:` field on the connection_state_changed event are nullable).
-  @spec iso8601_or_nil(DateTime.t() | nil) :: String.t() | nil
-  defp iso8601_or_nil(nil), do: nil
-  defp iso8601_or_nil(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 end

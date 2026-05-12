@@ -47,7 +47,8 @@ defmodule Grappa.Networks do
       Grappa.Repo,
       Grappa.Scrollback,
       Grappa.Session,
-      Grappa.Vault
+      Grappa.Vault,
+      Grappa.Wire.Time
     ],
     exports: [Network, NoServerError, Server, Credential, Credentials, Servers, SessionPlan, Wire]
 
