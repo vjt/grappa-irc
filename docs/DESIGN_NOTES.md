@@ -3088,6 +3088,120 @@ Six `lib/grappa/irc/*.ex` + `lib/grappa/session.ex` +
 across 7 commits. No new module added; all changes refine existing
 boundaries.
 
+## CP24 bucket D — Wire-shape boundary discipline (2026-05-12)
+
+Mega-cluster `cluster/post-cr-review` bucket D — 5 HIGH findings
+from Theme 3 of the 2026-05-12 codebase review, all wire-shape
+discipline. CLAUDE.md "Phoenix Channels" invariant (CP15 B7) made
+the rule a hard codebase law: "Wire conversion is per-context
+responsibility — context-owned `*.Wire` modules." Bucket D enforces
+the rule across the four sites where it had drifted.
+
+Bucket D added `Grappa.Cic.Wire` (the codebase's 7th wire module —
+joining `Scrollback.Wire`, `Networks.Wire`, `QueryWindows.Wire`,
+`Accounts.Wire`, `Visitors.Wire`, `Session.Wire`) and extended
+`Scrollback.Wire` + `Session.Wire` with new verbs.
+
+### lifecycle/S10 NON-FINDING
+
+Review claimed `Grappa.Cic.Bundle`'s `exports: []` blocked
+`current_hash/0` from web. Verified by reading the Boundary library:
+for `top_level?: true` boundaries, the module itself IS the exported
+surface — `exports:` only constrains submodules. Sibling
+`Grappa.WSPresence` (`top_level?: true, deps: [Grappa.PubSub]`, no
+`exports:`) is called from `AdminController` cleanly via
+`WSPresence.list_user_names/0`; same shape as `Cic.Bundle`. Live
+compile shows zero Boundary warnings. Third NON-FINDING in this
+mega-cluster (bucket A's C2 + bucket B's persistence/S7 are
+precedents) — pattern: re-read the code, contradict the reviewer
+with evidence.
+
+### web/S2 — `ArchiveJSON` delegate to `Scrollback.Wire` (commit `d878b6b`)
+
+Pre-fix `GrappaWeb.ArchiveJSON.index/1` handcrafted the per-target
+wire shape inline with **string keys** (`%{"target" => target,
+"kind" => Atom.to_string(kind), ...}`), duplicating the contract
+that `Scrollback.list_archive/3` produces. CLAUDE.md "Wire
+conversion is per-context responsibility" + "implement once, reuse
+everywhere" both ignored — every other JSON view delegates to a
+context-owned `*.Wire` module.
+
+Fix: `Scrollback.Wire.archive_entry/1` (per-target projection with
+atom keys + `Atom.to_string/1` on `:kind`) + `archive_index/1`
+(REST envelope wrapper). Controller delegates. Atom-keyed Wire
+output → Jason serializes to byte-identical string-keyed JSON;
+`ArchiveControllerTest` continues to assert the same JSON shape
+unmodified.
+
+### web/S3 + web/S4 — `Session.Wire.member/1` unifies REST + Channel (commit `1a6a77f`)
+
+Pre-fix the per-member shape lived NOWHERE: `MembersJSON.index/1`
+returned `Session.member()` directly (no Wire boundary), and the
+Channel `members_seeded` event constructed `members:` independently
+(verbatim pass-through). REST `%{members: [...]}` envelope and
+Channel `%{kind, network, channel, members}` envelope each owned
+their `members:` payload independently — drift hazard with no
+enforcement, AND a future struct-wrap on `Session.member()` would
+silently leak Elixir-internals onto the wire AND re-introduce the
+CP15 B6 fastlane-crash class on the broadcast path.
+
+Fix: `Session.Wire.member/1` (per-row projection — pattern-matches
+`%{nick: nick, modes: modes}` and rebuilds, filtering any future
+extras to the contract) + `members_index/1` (REST envelope). Both
+surfaces funnel through `member/1`:
+  * REST: `MembersJSON.index/1` → `Wire.members_index/1`.
+  * Channel: `Wire.members_seeded/3` → `Enum.map(&member/1)`.
+
+Envelope shapes stay surface-specific (REST is a snapshot resource —
+members only; Channel is an event broadcast carrying network/channel
+context). Per-member shape is the unification point. JSON wire output
+byte-identical to pre-bucket-D.
+
+### cross-module/S4 — `Cic.Wire.bundle_hash/1` (commit `7fcb869`)
+
+Pre-fix the `%{kind: "bundle_hash", hash: hash}` payload was inline
+in TWO sites — `AdminController.cic_bundle_changed/2` (deploy-cic
+broadcast on every user-topic) AND `GrappaChannel.push_bundle_hash/1`
+(after-join snapshot push). The review listed only the
+AdminController site; bucket D closed BOTH because "implement once,
+reuse everywhere" demands it (NOT bucket-broadening — strictly
+principled scope).
+
+Fix: new `Grappa.Cic.Wire` module with `bundle_hash/1`. Both sites
+delegate. `top_level?: true, deps: []` Boundary shape mirrors sibling
+`Grappa.Cic.Bundle` — independent surfaces (one reads disk, one
+renders), no shared context module. `GrappaWeb`'s Boundary deps
+gain `Grappa.Cic.Wire`. Adding fields to the cic-bundle wire (build
+timestamp, asset digests for partial refresh) is now one edit.
+
+### Reviewer follow-ups (commit `95d3a43`)
+
+Bucket D code-reviewer flagged 0 CRITICAL, 0 in-bucket HIGH, 2 MED,
+3 LOW, and 1 bucket-Z carry-forward (H-Z1: `query_windows_list`
+envelope inlined in 3 sites — same class as cross-module/S4, defer
+to bucket Z). In-bucket follow-ups landed:
+  * M1: rename test "passes the pre-sorted members list through
+    unchanged" → "emits each member through member/1" (bucket D made
+    the production code projection-shaped, not pass-through).
+  * M2: amend `members_seeded/3` docstring — projection through
+    `member/1` does NOT re-sort.
+  * L1: filter-to-contract regression test — extended source map
+    (with `:account` + `:host`) is filtered to `%{nick:, modes:}`.
+
+Bucket-Z carry-forward also includes L3 (auth_json `%{kind: "user",
+...}` + `%{kind: "visitor"}` discriminator inlined; defer to next
+architecture review since each is one site per discriminator).
+
+### Bucket D close
+
+`scripts/check.sh` exit-0; 1504 → 1518 tests (+14: 7 in
+`Scrollback.WireTest` for archive_entry/archive_index, 5 in
+`Session.WireTest` for member/members_index/parity + 2 reviewer
+follow-ups, 3 in new `Cic.WireTest`). Dialyzer 0 errors. 8 lib
+files + 4 test files touched across 4 commits (3 substantive + 1
+reviewer follow-up). One new module landed: `Grappa.Cic.Wire`
+(7th codebase wire module).
+
 ---
 
 ## What's *not* in this document (on purpose)
