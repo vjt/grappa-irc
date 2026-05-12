@@ -450,8 +450,31 @@ defmodule Grappa.IRC.AuthFSM do
   # `new/1`'s `validate_password_present/1` is the primary gate;
   # this guard is defense-in-depth for any future code path that
   # mutates `state.password` after init.
-  defp sasl_plain_payload(%{sasl_user: u, password: pw}) when is_binary(u) and is_binary(pw) do
-    Base.encode64(<<0, u::binary, 0, u::binary, 0, pw::binary>>)
+  #
+  # Codebase review 2026-05-12 irc/S4 (HIGH): RFC 4616 §2 forbids NUL
+  # in the SASL PLAIN authzid/authcid/passwd fields (NUL is the field
+  # separator). Without this encoder-side guard a NUL slipped past
+  # the H10 shape check and produced a malformed AUTHENTICATE blob
+  # the upstream cannot decode (opaque 904 ERR_SASLFAIL with no log
+  # breadcrumb). The primary gate is `new/1`'s safe-line check (irc/S5);
+  # this defense-in-depth `raise` at the encoder catches a future code
+  # path that mutates `state.{sasl_user,password}` post-init without
+  # re-validating, and surfaces as a structured ArgumentError naming
+  # the offending field rather than as a malformed wire frame.
+  defp sasl_plain_payload(%{sasl_user: u, password: pw})
+       when is_binary(u) and is_binary(pw) do
+    cond do
+      String.contains?(u, "\x00") ->
+        raise ArgumentError,
+              "sasl_plain_payload: NUL byte in sasl_user (RFC 4616 forbids; reject at irc/S5 boundary)"
+
+      String.contains?(pw, "\x00") ->
+        raise ArgumentError,
+              "sasl_plain_payload: NUL byte in password (RFC 4616 forbids; reject at irc/S5 boundary)"
+
+      true ->
+        Base.encode64(<<0, u::binary, 0, u::binary, 0, pw::binary>>)
+    end
   end
 
   # Parse a CAP LS / CAP ACK cap-list blob: space-separated cap tokens,

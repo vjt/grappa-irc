@@ -71,6 +71,41 @@ defmodule Grappa.IRC.AuthFSMTest do
     end
   end
 
+  # Codebase review 2026-05-12 irc/S4 (HIGH): RFC 4616 §2 forbids NUL
+  # in any SASL PLAIN field (NUL is the field separator). Without an
+  # encoder-side guard a NUL-bearing password / sasl_user would slip
+  # past `new/1`'s shape check (`is_binary` + non-empty) and become a
+  # malformed AUTHENTICATE blob the upstream cannot decode (opaque
+  # 904 ERR_SASLFAIL). The primary gate is `new/1`'s safe-line check
+  # (irc/S5); this defense-in-depth gate at the encoder mirrors the
+  # H10 `is_binary(pw)` clause already in place — a future code path
+  # that mutates state.{sasl_user,password} after init crashes with a
+  # FunctionClauseError naming this clause instead of leaking bytes.
+  describe "sasl_plain_payload/1 — NUL guard (irc/S4)" do
+    test "NUL-bearing password raises ArgumentError naming the field rather than emitting malformed AUTHENTICATE" do
+      # Bypass new/1's safe-line guard by mutating state.password in
+      # the test — simulates a future code path that re-loads the
+      # credential post-init without re-validating.
+      state =
+        %{new!(%{auth_method: :sasl, password: "swordfish"}) | password: "swo\x00rd"}
+        |> Map.put(:phase, :sasl_pending)
+
+      assert_raise ArgumentError, ~r/NUL byte in password/, fn ->
+        AuthFSM.step(state, %Message{command: :authenticate, params: ["+"]})
+      end
+    end
+
+    test "NUL-bearing sasl_user raises ArgumentError naming the field rather than emitting malformed AUTHENTICATE" do
+      state =
+        %{new!(%{auth_method: :sasl, password: "swordfish"}) | sasl_user: "vj\x00t"}
+        |> Map.put(:phase, :sasl_pending)
+
+      assert_raise ArgumentError, ~r/NUL byte in sasl_user/, fn ->
+        AuthFSM.step(state, %Message{command: :authenticate, params: ["+"]})
+      end
+    end
+  end
+
   describe "initial_handshake/1" do
     test ":none -> NICK + USER, no PASS, no CAP; phase stays :pre_register" do
       state = new!(%{})
