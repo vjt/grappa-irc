@@ -247,6 +247,9 @@ defmodule Grappa.IRC.AuthFSM do
   end
 
   def step(state, %Message{command: :authenticate}), do: {:cont, state, []}
+  # ^ C1 catch-all: AUTHENTICATE in `:registered` is absorbed by the
+  # line-227 phase-guard arm; this clause covers stray AUTHENTICATE
+  # in pre-`:sasl_pending` phases without leaking SASL credentials.
 
   def step(state, %Message{command: {:numeric, 903}}) do
     {:cont, leave_cap_negotiation(state, :pre_register), ["CAP END\r\n"]}
