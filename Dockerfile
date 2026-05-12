@@ -53,12 +53,6 @@ RUN mix deps.compile
 COPY . .
 RUN mix compile
 
-# Hot-deploy gate. CI image-build pipeline flips this to `false` when
-# a tag-to-tag diff touches mix.lock / mix.exs / supervision tree —
-# `scripts/hot-deploy.sh` reads the label and refuses to skip a cold
-# restart when the image isn't safe to live-reload.
-LABEL grappa.hot_deployable=true
-
 EXPOSE 4000
 
 HEALTHCHECK --interval=5s --timeout=5s --start-period=180s --retries=3 \

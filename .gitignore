@@ -37,6 +37,16 @@ priv/plts/*.plt.hash
 *.db-journal
 /runtime/*
 !/runtime/.gitkeep
+# Bake bind-mount target dirs so a fresh `git clone` doesn't hit
+# Docker auto-creating them as `root:root` on first
+# `docker compose --profile prod up cicchetto-build` (container UID
+# 1000 then fails to write Vite's `dist/` or bun's cache).
+!/runtime/cicchetto-dist/
+/runtime/cicchetto-dist/*
+!/runtime/cicchetto-dist/.gitkeep
+!/runtime/bun-cache/
+/runtime/bun-cache/*
+!/runtime/bun-cache/.gitkeep
 
 # ── Docker / env
 .env
