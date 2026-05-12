@@ -3406,6 +3406,215 @@ CLAUDE.md flags as a constraint worth listening to (the closed-set
 tag enum makes the surface explicit + future addable arg kinds
 require a `@typep` extension, NOT a silent broadening).
 
+## CP24 bucket F — Cicchetto own-nick + nick-comparison + Network type split (2026-05-12)
+
+Cluster `cluster/post-cr-review` bucket F: 4 HIGH findings from
+Theme 8 of the 2026-05-12 codebase review. Common thread: cicchetto
+correctness — type-system enforcement of contracts that the
+`?:`-optional + bare-`===` patterns left implicit. Discriminated
+unions, single-source helpers, and boundary tagging put the
+contracts at the type system instead of in scattered defensive
+checks.
+
+### Bucket F H2 — CSP allowlist hCaptcha extension (`security-headers.conf`)
+
+Pre-fix the nginx CSP `script-src` + `frame-src` allowlists
+covered Cloudflare Turnstile only. cic + server config both list
+hCaptcha as a selectable provider; selecting it in prod failed
+silently with the misleading "ad-blocker" catch-all message because
+the iframe got blocked by CSP, not by an ad-blocker.
+
+Fix: extend `connect-src` + `script-src` + `frame-src` + `style-src`
+to include `https://*.hcaptcha.com`. The wildcard covers the four
+hostnames hCaptcha rotates through (loader, assets, siteverify,
+edge). Style-src extension is needed because hCaptcha's widget
+loads its own external stylesheet that 'unsafe-inline' (already
+present) does not cover. Modern hCaptcha doesn't require
+`'unsafe-eval'` (only legacy challenge runtime did) — kept defense
+in depth.
+
+CSP edits live in the snippet so the `/` location and `/sw.js`
+override stay in lockstep with one edit instead of two-files-must-
+stay-consistent. Verification = browser smoke at bucket close
+(network-edge enforcement; not unit-testable).
+
+### Bucket F H1 — own-nick foot-gun (`Shell.tsx`, `MembersPane.tsx`)
+
+`Shell.tsx:55` (MentionsWindow ownNick prop) and
+`MembersPane.tsx:73` (UserContextMenu ownModes derivation)
+re-introduced the `displayNick(me)` foot-gun the team JUST closed
+in cic H3 on 2026-05-08. `displayNick(me)` returns `me.name` for
+users — the operator ACCOUNT name — which can diverge from the
+per-network IRC nick after NickServ ghost recovery (account "vjt",
+IRC nick "vjt-grappa") OR when the account name happens to match an
+unrelated peer's IRC nick on a network where the operator runs
+under a different nick.
+
+The codebase already had the canonical resolution helper
+`ownNickForNetwork(net, me)` in `lib/api.ts:120` with a 30-line
+warning block on `displayNick` (lines 80-89) explaining exactly why
+it's wrong as own-nick — the two regressed callsites simply didn't
+get the memo. ScrollbackPane.tsx:445 already uses the helper
+correctly; this fix aligns Shell + MembersPane with the same source
+of truth.
+
+Fix:
+* MembersPane: derive own-nick via `ownNickForNetwork(net, me)`
+  using `networkBySlug(props.networkSlug)` — the per-channel render
+  scope already has the slug.
+* Shell: replace the global `ownNick()` derivation with a per-slug
+  `ownNickForSlug(slug)` resolver; the two MentionsWindow callsites
+  pass `ownNickForSlug(sel().networkSlug)` which is in scope at
+  both branches (desktop + mobile).
+
+Failing vitest in `MembersPane.test.tsx` exercises the
+account-name ≠ IRC-nick scenario (peer "vjt" with @ on the channel,
+operator account "vjt" but per-network IRC nick "vjt-grappa") —
+pre-fix `ownModes` returned `["@"]` (peer's modes), post-fix it
+returns `[]` (operator's actual modes for the "vjt-grappa" row).
+
+### Bucket F H3 — case-insensitive nick comparison (`nickEquals` helper)
+
+`members.ts:57,62,69,76` and `ScrollbackPane.tsx:461,562` used bare
+`===` for nick comparison while `subscribe.ts:183,319,328,556`
+already used `.toLowerCase()`. The drift between two stores
+produced three distinct bug classes:
+
+* **Phantom members.** Server emits `Alice` on JOIN then `alice` on
+  QUIT (or any casing variant — IRC servers are not consistent
+  across the JOIN/PART/QUIT/KICK round-trip, especially after
+  NickServ ENFORCE / GHOST). Pre-fix the QUIT row didn't match the
+  JOIN row, the lower-cased copy lingered as a phantom member.
+  KICK same; NICK_CHANGE same. Members count drifted upward across
+  reconnects with no recovery short of leaving + rejoining.
+* **Missed self-JOIN banner.** ScrollbackPane.shouldShowBanner
+  compared `m.sender === nick` against the scrollback row's sender.
+  Server emits the JOIN with original-casing nick; cic's
+  per-network own-nick was the configured casing. Mismatch → banner
+  never fired; spec #7 join-banner surface silently dropped.
+* **ownModes lookup miss.** ScrollbackPane.ownModes did
+  `members.find((m) => m.nick === nick)`. If the operator's own
+  row in the members store had a casing variant of the per-network
+  IRC nick, the find missed and ownModes returned `[]` —
+  UserContextMenu rendered op-gated items as disabled even when the
+  operator IS an op.
+
+Per RFC 2812 §2.2 nicknames are case-insensitive; the spec defines
+a custom case-fold (`{`, `}`, `|` are lowercase forms of `[`, `]`,
+`\`) but cic uses ASCII `.toLowerCase()` for two reasons: (1)
+subscribe.ts already uses bare `.toLowerCase()` and has been
+correct in production for months — going stricter would create a
+two-policy split that silently misbehaves on the boundary, (2)
+users running nicks that distinguish `{user}` vs `[user]` are
+vanishingly rare. Future stricter casemapping = single helper edit
++ every callsite already routes through it.
+
+Per CLAUDE.md "Total consistency or nothing": every nick comparison
+in cic routes through `nickEquals`. Sites migrated:
+* `lib/members.ts` (4 sites) — JOIN/PART/QUIT/KICK/NICK_CHANGE
+  presence dispatch
+* `ScrollbackPane.tsx` (2 sites) — ownModes lookup, JOIN-self
+  banner trigger
+* `MembersPane.tsx` (1 site) — ownModes lookup (already
+  lower-cased pre-fix; migrated for single source of truth)
+* `subscribe.ts` (4 sites) — own-nick gate in routeMessage,
+  own-JOIN auto-focus, own-PART dismiss, query-window own-nick
+  skip (all four were `.toLowerCase()`-correct pre-fix; migrated
+  for consolidation)
+* `lib/modeApply.ts` (1 site, follow-up commit) — MODE target
+  match. Same bug class — silently no-op'd a MODE event whose
+  target arg arrived in a different casing than the JOIN/NAMES
+  populated store.
+
+`lib/nickEquals.ts` exposes `nickEquals(a, b)` (binary equality)
+and `normalizeNick(s)` (for Map/Set keys); both null-safe at the
+helper level. TDD via `__tests__/nickEquals.test.ts` (helper) +
+`__tests__/members.test.ts` casing-mismatch suite (5 behavior
+tests) + `__tests__/modeApply.test.ts` casing test.
+
+### Bucket F H4 — Network discriminated union (UserNetwork | VisitorNetwork)
+
+Pre-fix `Network.connection_state` (and `nick`,
+`connection_state_reason`, `connection_state_changed_at`) were
+typed `?:` optional. The optionality matched the wire reality
+(server emits two implicit shapes: visitor = bare; user = adds nick
++ 3 connection_state fields) but the type system couldn't enforce
+that `network.connection_state` was unreachable on the visitor
+branch — every consumer wrote `?.connection_state` defensively and
+the branches drifted (some sites narrowed, some didn't, none on a
+typed boundary).
+
+Per CLAUDE.md "Consistency: same problem, same solution" — this
+mirrors the user-vs-visitor `MeResponse` discriminated union that
+already lives at `lib/api.ts:63`. The kind is the same domain
+boundary; the type system enforces it the same way.
+
+Implementation:
+* `lib/api.ts` — split `Network` into `UserNetwork` (kind: "user"
+  + nick + 3 required connection_state fields) | `VisitorNetwork`
+  (kind: "visitor" + bare). New `RawNetwork` represents the
+  pre-tag wire shape.
+* `lib/api.ts` — `tagNetwork(raw, subjectKind)` boundary helper
+  promotes RawNetwork → Network. User-subject contract violations
+  (missing nick or connection_state) drop the row + log.
+* `lib/networks.ts` — networks resource re-keyed on `user`
+  (was: token) so the boundary tagger has the subject kind to
+  discriminate each row. listNetworks now returns RawNetwork[];
+  the resource filter-maps via tagNetwork before the typed store
+  sees them.
+* `lib/api.ts` — ownNickForNetwork narrows on
+  `net.kind === "user"` instead of probing for a populated nick.
+  The missing-nick branch moved upstream to tagNetwork at the
+  fetch boundary; what remains is the kind-mismatch contract
+  violation (visitor-shaped row in a user's list).
+* `lib/networks.ts` — mutateNetworkNick narrows on
+  `n.kind === "user"` before patching nick (visitors can't NICK
+  upstream — the visitor IS the nick).
+* `ComposeBox.tsx` + `Sidebar.tsx` — narrow on
+  `network.kind === "user"` before reading `connection_state` /
+  `connection_state_reason`. The `?.connection_state ??`
+  defensive patterns are now structurally unreachable on the
+  visitor branch.
+
+Server emits NO `kind` discriminator on Network records (the
+shape difference is implicit in the request authentication
+subject); cic injects the discriminator at the fetch boundary so
+every downstream consumer narrows via `network.kind === "user"`
+instead of defensive `?.connection_state ??` checks.
+
+TDD: `__tests__/api.test.ts` adds a tagNetwork describe block (5
+tests covering visitor passthrough, user complete, user missing
+nick, user empty-string nick, user missing connection_state). The
+ownNickForNetwork tests evolve to the post-split shape (user +
+VisitorNetwork is now the kind-mismatch case).
+
+### Bucket F close
+
+`scripts/check.sh` exit-0; 1543 tests / 0 failures (server-side
+unchanged — cic-only edits). Cic vitest 749 passing (was 733 +
+new H1 ownModes test + new nickEquals helper test + new H3 casing
+suite + new H4 tagNetwork suite). Dialyzer 0 errors. 11 cic source
+files + 9 test files touched across 5 commits.
+
+4 HIGH findings closed in one bucket. Pattern continuation:
+* drop-the-finding discipline (B persistence/S7) parallels the
+  H4 type split's removal of defensive `?.connection_state ??` —
+  the structural fix retires a class of code the bucket would
+  otherwise be tempted to extend
+* in-bucket reviewer follow-up (C CRIT-1, D M1+M2+L1) parallels
+  H3's modeApply follow-up — the cleanup landed in the same
+  bucket because the type system + grep made the missed callsite
+  visible immediately
+* total consistency or nothing (CLAUDE.md) — H3 migration
+  includes the already-correct subscribe.ts callsites for single
+  source of truth, NOT just the buggy ones
+
+Bucket F is the second cic-touching bucket of the cluster (D was
+the first); the structural shift here (discriminated union at the
+boundary fetcher) sets the template for U2 codegen down the line —
+the kind discriminator becomes the natural codegen anchor for
+generated TypeScript unions from the server-side `Wire` modules.
+
 
 ---
 
