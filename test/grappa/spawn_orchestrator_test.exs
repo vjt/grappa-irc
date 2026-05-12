@@ -97,6 +97,35 @@ defmodule Grappa.SpawnOrchestratorTest do
         500 -> Process.demonitor(ref, [:flush])
       end
     end)
+
+    # PHASE-1 (post-cr-review cluster, CI flake on
+    # spawn_orchestrator_test:179 "network_cap_exceeded"): poll until
+    # the Registry observes count == 0 for THIS network_id. Mirrors
+    # bootstrap_test.exs's `wait_until_registry_clear/2` helper added
+    # in T31 cleanup. Without this wait, an earlier test's session
+    # whose `on_exit` cleanup had its 500ms `:DOWN` receive expire can
+    # leave a zombie registered against a network.id that sqlite
+    # rowid-recycles into a fresh test's `network.id` — admission's
+    # `count_live_sessions/1` then reads "1 already" against cap=1
+    # and the FIRST `SpawnOrchestrator.spawn/4` returns
+    # `:network_cap_exceeded` instead of `:spawned`.
+    wait_until_registry_clear(network_id, 100)
+  end
+
+  defp wait_until_registry_clear(_, 0), do: :ok
+
+  defp wait_until_registry_clear(network_id, attempts) do
+    count =
+      Registry.count_select(Grappa.SessionRegistry, [
+        {{{:session, :_, network_id}, :_, :_}, [], [true]}
+      ])
+
+    if count == 0 do
+      :ok
+    else
+      Process.sleep(5)
+      wait_until_registry_clear(network_id, attempts - 1)
+    end
   end
 
   defp capacity_input(network_id, flow) do
