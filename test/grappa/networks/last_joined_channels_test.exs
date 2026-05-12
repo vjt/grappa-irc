@@ -19,6 +19,8 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
   """
   use Grappa.DataCase, async: true
 
+  use ExUnitProperties
+
   import Grappa.AuthFixtures
 
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
@@ -84,6 +86,59 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#x"]
                )
     end
+
+    # CP24 cluster post-cr-review bucket B, persistence/S8 — cap.
+    #
+    # `last_joined_channels` is the snapshot of currently-joined channels
+    # (Session.Server's sorted-keyset diff source), so the natural upper
+    # bound is the live join count (typically 5-50, RFC 2812 has no
+    # absolute ceiling). The cap is a safety belt: if a pathological
+    # bouncer ever holds >200 joined channels, the JSON column write +
+    # boot-time merge stay bounded — we drop the tail (the snapshot is
+    # already sorted, so "oldest by sort key" == "tail").
+    test "caps at 200 entries (tail dropped) on oversize input" do
+      {_, _, cred} = setup_credential()
+
+      oversize =
+        for n <- 1..250, do: "#chan-" <> String.pad_leading(Integer.to_string(n), 3, "0")
+
+      assert :ok =
+               Credentials.update_last_joined_channels(
+                 cred.user_id,
+                 cred.network_id,
+                 oversize
+               )
+
+      reloaded = reload(cred)
+      assert length(reloaded.last_joined_channels) == 200
+      # Head retained, tail dropped — the input was already sorted by name,
+      # so the tail = lexicographically latest entries.
+      assert hd(reloaded.last_joined_channels) == "#chan-001"
+      assert List.last(reloaded.last_joined_channels) == "#chan-200"
+      refute "#chan-201" in reloaded.last_joined_channels
+    end
+
+    test "200-entry input round-trips unchanged (boundary)" do
+      {_, _, cred} = setup_credential()
+      exactly = for n <- 1..200, do: "##{n}"
+
+      assert :ok =
+               Credentials.update_last_joined_channels(cred.user_id, cred.network_id, exactly)
+
+      assert reload(cred).last_joined_channels == exactly
+    end
+
+    property "result length never exceeds 200 regardless of input size" do
+      {_, _, cred} = setup_credential()
+
+      check all(input <- StreamData.list_of(channel_name(), max_length: 400), max_runs: 25) do
+        :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, input)
+        reloaded = reload(cred)
+        assert length(reloaded.last_joined_channels) <= 200
+        # Cap preserves head order, only tail drops.
+        assert reloaded.last_joined_channels == Enum.take(input, 200)
+      end
+    end
   end
 
   describe "SessionPlan.build_plan boot-merge — autojoin + last_joined" do
@@ -140,5 +195,14 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
   rescue
     UndefinedFunctionError ->
       flunk("SessionPlan.__merge_autojoin_for_test__/2 missing — expose the merge_autojoin/2 helper for testing")
+  end
+
+  # StreamData generator for syntactically-valid IRC channel names.
+  # Keeps the property test focused on the cap, not on changeset
+  # validation rejections from the channel-name regex.
+  defp channel_name do
+    StreamData.bind(StreamData.string(?a..?z, min_length: 1, max_length: 12), fn s ->
+      StreamData.constant("#" <> s)
+    end)
   end
 end

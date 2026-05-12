@@ -119,17 +119,29 @@ defmodule Grappa.Networks.Credentials do
   on success or `{:error, reason}` (no-op log if the credential row was
   unbound concurrently — restart-rehydrate semantics tolerate the
   missing row, the next session bind would re-establish it).
+
+  ## Cap (CP24 cluster post-cr-review bucket B, persistence/S8)
+
+  Truncated to `@last_joined_max` entries. The natural upper bound is
+  the live join count (typically 5-50; RFC 2812 has no absolute
+  ceiling). The cap is a safety belt — bounds the JSON column write +
+  boot-time merge cost so a pathological session can't grow the
+  snapshot without limit. Tail (oldest by sort key in the snapshot
+  Session.Server passes in) is dropped on overflow.
   """
+  @last_joined_max 200
   @spec update_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
           :ok | {:error, :not_found | Ecto.Changeset.t()}
   def update_last_joined_channels(user_id, network_id, channels)
       when is_binary(user_id) and is_integer(network_id) and is_list(channels) do
+    capped = Enum.take(channels, @last_joined_max)
+
     case Repo.get_by(Credential, user_id: user_id, network_id: network_id) do
       nil ->
         {:error, :not_found}
 
       %Credential{} = cred ->
-        changeset = Credential.changeset(cred, %{last_joined_channels: channels})
+        changeset = Credential.changeset(cred, %{last_joined_channels: capped})
 
         case Repo.update(changeset) do
           {:ok, _} -> :ok
