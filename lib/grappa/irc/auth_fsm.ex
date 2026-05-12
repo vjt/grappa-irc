@@ -58,7 +58,7 @@ defmodule Grappa.IRC.AuthFSM do
   itself emits no side effect beyond the returned `[iodata]` frames.
   """
 
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
 
   @auth_methods [:auto, :sasl, :server_pass, :nickserv_identify, :none]
 
@@ -116,24 +116,34 @@ defmodule Grappa.IRC.AuthFSM do
   enforces the same invariant on the write side; the FSM enforces it
   again so a half-built opts map (test, REPL, future caller) crashes
   at boot rather than mid-SASL with an opaque `<<nil::binary>>` :badarg.
-  """
-  @spec new(opts()) :: {:ok, t()} | {:error, {:missing_password, auth_method()}}
-  def new(%{auth_method: m} = opts) when m in @auth_methods do
-    case validate_password_present(opts) do
-      :ok ->
-        {:ok,
-         %__MODULE__{
-           nick: opts.nick,
-           realname: opts.realname,
-           sasl_user: opts.sasl_user,
-           password: Map.get(opts, :password),
-           auth_method: m,
-           phase: :pre_register,
-           caps_buffer: []
-         }}
 
-      err ->
-        err
+  Codebase review 2026-05-12 irc/S5 (HIGH): also rejects CR/LF/NUL in
+  any line-bound field (`nick`, `realname`, `sasl_user`, `password`)
+  with `{:error, {:invalid_line_token, field}}`. Today
+  `Networks.Credential` enforces the same invariant on the write
+  path; the FSM enforces it AGAIN so the Phase-6 listener facade
+  reusing this module as a library (and any future REST caller that
+  bypasses the schema) cannot inject CRLF into the registration
+  handshake. Self-defending boundary, not relying on upstream callers.
+  irc/S4's encoder-level guard remains as defense-in-depth.
+  """
+  @spec new(opts()) ::
+          {:ok, t()}
+          | {:error, {:missing_password, auth_method()}}
+          | {:error, {:invalid_line_token, :nick | :realname | :sasl_user | :password}}
+  def new(%{auth_method: m} = opts) when m in @auth_methods do
+    with :ok <- validate_password_present(opts),
+         :ok <- validate_line_safe(opts) do
+      {:ok,
+       %__MODULE__{
+         nick: opts.nick,
+         realname: opts.realname,
+         sasl_user: opts.sasl_user,
+         password: Map.get(opts, :password),
+         auth_method: m,
+         phase: :pre_register,
+         caps_buffer: []
+       }}
     end
   end
 
@@ -144,6 +154,31 @@ defmodule Grappa.IRC.AuthFSM do
 
   defp validate_password_present(%{auth_method: m}),
     do: {:error, {:missing_password, m}}
+
+  # irc/S5: reject CR/LF/NUL in every field that lands on the wire as
+  # part of the registration handshake. `:nick`, `:realname`, `:sasl_user`
+  # are always emitted (NICK + USER + AUTHENTICATE PLAIN); `:password`
+  # is emitted on `:server_pass` (PASS), `:nickserv_identify`
+  # (PRIVMSG NickServ :IDENTIFY), and `:sasl` (SASL PLAIN payload).
+  # `:none` carries no password but still emits NICK + USER, so the
+  # nick/realname/sasl_user gates fire regardless of method.
+  @line_bound_fields [:nick, :realname, :sasl_user]
+  defp validate_line_safe(opts) do
+    case Enum.find(@line_bound_fields, fn f ->
+           not Identifier.safe_line_token?(Map.fetch!(opts, f))
+         end) do
+      nil -> validate_password_line_safe(opts)
+      field -> {:error, {:invalid_line_token, field}}
+    end
+  end
+
+  defp validate_password_line_safe(%{auth_method: :none}), do: :ok
+
+  defp validate_password_line_safe(%{password: pw}) do
+    if Identifier.safe_line_token?(pw),
+      do: :ok,
+      else: {:error, {:invalid_line_token, :password}}
+  end
 
   @doc """
   Returns the bytes the client must send immediately after the socket

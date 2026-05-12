@@ -69,6 +69,63 @@ defmodule Grappa.IRC.AuthFSMTest do
       state = new!(%{auth_method: :sasl, password: "swordfish"})
       refute inspect(state) =~ "swordfish"
     end
+
+    # Codebase review 2026-05-12 irc/S5 (HIGH): AuthFSM trusts caller-
+    # supplied nick / realname / sasl_user / password for line
+    # construction (NICK / USER / PASS / PRIVMSG NickServ :IDENTIFY /
+    # SASL PLAIN). Today saved by `Networks.Credential` validator on
+    # the write path; the Phase-6 listener facade reuses the FSM as a
+    # library and could bypass that schema. Make AuthFSM self-defending:
+    # `new/1` rejects CRLF/NUL in any line-bound field at the boundary,
+    # not relying on upstream callers. The new error shape is
+    # `{:invalid_line_token, field}` so the operator (or future REST
+    # caller) can grep which field tripped the guard.
+    test ":sasl with CR in nick rejected at new/1 (irc/S5)" do
+      assert {:error, {:invalid_line_token, :nick}} =
+               AuthFSM.new(base_opts(%{auth_method: :sasl, nick: "vjt\rEVIL", password: "p"}))
+    end
+
+    test ":sasl with LF in realname rejected at new/1 (irc/S5)" do
+      assert {:error, {:invalid_line_token, :realname}} =
+               AuthFSM.new(
+                 base_opts(%{auth_method: :sasl, realname: "Vincenzo\nNICK pwn", password: "p"})
+               )
+    end
+
+    test ":sasl with NUL in sasl_user rejected at new/1 (irc/S5)" do
+      assert {:error, {:invalid_line_token, :sasl_user}} =
+               AuthFSM.new(
+                 base_opts(%{auth_method: :sasl, sasl_user: "vjt\x00", password: "p"})
+               )
+    end
+
+    test ":sasl with NUL in password rejected at new/1 (irc/S5+S4)" do
+      assert {:error, {:invalid_line_token, :password}} =
+               AuthFSM.new(
+                 base_opts(%{auth_method: :sasl, password: "swo\x00rd"})
+               )
+    end
+
+    test ":server_pass with CRLF in password rejected at new/1 (irc/S5)" do
+      assert {:error, {:invalid_line_token, :password}} =
+               AuthFSM.new(
+                 base_opts(%{auth_method: :server_pass, password: "p\r\nQUIT :pwn"})
+               )
+    end
+
+    test ":nickserv_identify with CRLF in password rejected at new/1 (irc/S5)" do
+      assert {:error, {:invalid_line_token, :password}} =
+               AuthFSM.new(
+                 base_opts(%{auth_method: :nickserv_identify, password: "p\r\nQUIT :pwn"})
+               )
+    end
+
+    test ":none with CRLF in nick rejected at new/1 (irc/S5)" do
+      # :none also writes NICK + USER lines; the guard applies regardless
+      # of auth_method since every method emits NICK/USER at handshake.
+      assert {:error, {:invalid_line_token, :nick}} =
+               AuthFSM.new(base_opts(%{auth_method: :none, nick: "vjt\r\nQUIT"}))
+    end
   end
 
   # Codebase review 2026-05-12 irc/S4 (HIGH): RFC 4616 §2 forbids NUL
