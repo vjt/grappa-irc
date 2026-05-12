@@ -3202,6 +3202,211 @@ files + 4 test files touched across 4 commits (3 substantive + 1
 reviewer follow-up). One new module landed: `Grappa.Cic.Wire`
 (7th codebase wire module).
 
+## CP24 bucket E — Channel inbound validation + visitor coverage (2026-05-12)
+
+Mega-cluster `cluster/post-cr-review` bucket E — 5 HIGH findings
+from Themes 4 + 5 of the 2026-05-12 codebase review. Common thread:
+the OUTER untrusted boundary (Channel WS inbound, visitor surface)
+was weaker than the inner ones. Bucket C closed the IRC core's
+self-defending pattern (irc/S5 — `AuthFSM.new/1` rejects malformed
+caller bytes); bucket E mirrors that discipline at the WS edge +
+extends visitor coverage to symmetry with users.
+
+### web/S6 — `topic_set` tagged-tuple gates (commit `f2a90c8`)
+
+Pre-fix `topic_set`'s `with`/`else` matched by raw `true`/`false`
+value: a `with true <- safe_line_token?(...)` followed by
+`with false <- visitor?(...)` shape that mapped two different
+sources to the same `else true ->`/`else false ->` arms. Adding
+ANY new boolean check above either site silently flipped the
+user-visible error message — the kind of bug that lands in
+production unnoticed because both branches still return SOME
+error, just the wrong one.
+
+Fix: two private helpers (`check_safe_line/2` later subsumed by
+`validate_args/1` in S7, `check_not_visitor/1`) that return tagged
+tuples — `else` arms now match `{:error, :invalid_line}` /
+`{:error, :visitor_not_allowed}` per source. Pinning regression
+tests (visitor + invalid input → invalid input wins; visitor +
+safe input → visitor_not_allowed) prove per-source tag mapping
+holds. Pre-fix the tests passed by ordering coincidence; post-fix
+they pass by design.
+
+### web/S7 — Channel inbound IRC-shape validation gates (commit `0443103`)
+
+The defense-in-depth fix at the WS edge. Pre-bucket-E every
+Channel `handle_in/3` clause that accepted `channel`/`nick`/`mask`/
+`target_nick` payload fields trusted the upstream
+`IRC.Client.send_*` boundary to reject malformed input. The REST
+surface ALREADY gated rigorously via `GrappaWeb.Validation.validate_*`
+(404 `:bad_request`); the Channel surface accepted any binary —
+asymmetric trust at two doors to the same backend.
+
+A hostile cic instance (or compromised user) could push CRLF/NUL
+or malformed IRC tokens via WS even though they'd eventually trip
+the IRC core gate. Bucket C's irc/S5 made `AuthFSM.new/1`
+self-defending; bucket E mirrors that discipline at the OUTER
+boundary.
+
+Implementation:
+  * New `validate_args/1` private helper — recursive list-of-pairs
+    validator (`channel:`, `nick:`, `nicks:`, `mask:`, `line:`,
+    `params:`) returning `{:ok, :ok}` or
+    `{:error, :invalid_channel | :invalid_nick | :invalid_mask
+    | :invalid_line}`. Tighter `@spec` (closed-set tag enum)
+    silenced a Dialyzer success-typing warning on first compile.
+  * `dispatch_ops_verb/2` and `dispatch_subject_verb/2` migrated
+    to arity-3 with a mandatory `validate_thunk` parameter. CLAUDE.md
+    "No default arguments via `\\`" — the old arity-2 was fully
+    removed (no two-pattern drift). All 13 verbs (op/deop/voice/
+    devoice/kick/ban/unban/invite/banlist/whois/who/names/mode/
+    umode/topic_clear/open_query_window/close_query_window) thread
+    `validate_args/1` via the new arity-3 dispatchers. `topic_set`
+    (its own `with` chain due to `{:ok, message}` return shape)
+    extended with the same `validate_args/1` call shape.
+  * Stable cic-facing tags: `:invalid_channel` / `:invalid_nick` /
+    `:invalid_mask` / `:invalid_line`. Per CLAUDE.md "Atoms or
+    `@type t :: literal | literal` — never untyped strings."
+
+13 new boundary tests pin: malformed channel → `invalid_channel`;
+malformed nick (incl. spaces, commas) → `invalid_nick`; CRLF mask
+or empty mask → `invalid_mask`; CRLF in modes/params/reason/free
+text → `invalid_line`. Existing tests updated to assert the more
+specific tag (CRLF channel → `invalid_channel`, not `invalid_line`).
+
+### web/S5 — Visitor bundle broadcast (commit `c00774a`)
+
+Pre-fix `UserSocket.connect/3` explicitly skipped
+`WSPresence.register/2` for visitor sockets to keep the auto-away
+machinery user-only. But the same registry doubles as the source
+of truth for `cic-bundle-changed`'s fan-out (`WSPresence.list_user_names/0`
+iterates connected users to push the new bundle hash). Visitors
+with long-lived tabs never saw the refresh banner trigger and
+silently rotted on stale bundles.
+
+Fix: register every WS pid (user AND visitor). Auto-away stays
+user-only because visitor `Session.Server` does not subscribe to
+`Topic.ws_presence/1` (see `Session.Server.init/1`'s
+`match?({:user, _}, opts.subject)` guard) — visitor registration
+is a harmless no-op on the auto-away path. CLAUDE.md "Implement
+once, reuse everywhere" + "Reuse the verbs, not the nouns" — one
+registry covers both consumers; a parallel `list_visitor_names/0`
+would have been the noun-fork anti-pattern. `client_closing/2`
+symmetrically forwarded for visitors so the registry decrements
+on `pagehide` immediately.
+
+Failing-first regression test: visitor connect →
+`list_user_names/0` includes `"visitor:<id>"`. Pre-fix the
+assertion failed (`right: []`); post-fix it passes by design.
+Plus an admin-controller test that visitor sockets receive the
+`bundle_hash` broadcast.
+
+### lifecycle/S1 — Visitor `credential_failer` (commit `51a8219`)
+
+Pre-fix visitor sessions had no equivalent of the user-side
+`credential_failer` callback that `Networks.SessionPlan` injects.
+K-line / permanent-SASL on a visitor exited the `Session.Server`
+silently; visitor row's `expires_at` stayed in the future;
+`Bootstrap` cheerfully respawned the rejected visitor on every
+app start with no operator signal. Cluster-wide rule violation
+per memory `feedback_silent_retry_anti_pattern` — silent retries
+mask root causes.
+
+Fix: mirror of the user-side flow:
+  * New `Visitors.mark_failed/2` expires the visitor row
+    (`expires_at = now()`) so `Bootstrap.list_active/0` stops
+    returning it; `Visitors.Reaper` sweeps the row at the next
+    60s tick. Idempotent on already-expired rows; `:not_found`
+    on a delete-between-spawn-and-failure race.
+  * Structured `Logger.error("visitor permanently rejected …",
+    user: "visitor:<id>", network: <slug>, reason: <reason>)` —
+    operator-visible signal.
+  * `Visitors.SessionPlan.build_plan/3` injects
+    `credential_failer: fn reason -> Visitors.mark_failed(visitor.id,
+    reason) end` in every visitor plan. The closure captures the
+    visitor id (not the struct) so a delete-between-spawn-and-
+    failure race surfaces cleanly through `mark_failed/2`'s
+    `:not_found` return rather than a stale-row write.
+  * `Session.Server.handle_terminal_failure/2`'s `is_function/1`
+    guard already accepted both shapes — only the injection site
+    was missing. Doc-comment updated.
+
+5 new tests: `mark_failed/2` × 3 (expires the row, idempotent,
+not_found race), SessionPlan × 2 (failer injected + closes row,
+race-tolerant on deleted visitor).
+
+### web/S8 — `list_members/3` `:uninitialized` state (commit `1028bd8`)
+
+Pre-fix `Session.list_members/3` returned `{:ok, []}` ambiguously
+for "no NAMES burst yet (uninitialized)" vs "channel has 0
+members." REST + Channel + cic all collapsed to the same wire
+shape so cic could not tell whether to show "loading…" or the
+"no members" empty state. Closes 2/3 open issues in memory
+`project_names_ux_silent_bugs`.
+
+The interesting design call: do we add state, or derive? CLAUDE.md
+"Don't duplicate state that already exists — derive it" pulls
+toward derivation. But `state.members[channel] = %{own_nick =>
+[]}` is structurally identical between "joined pre-NAMES" and
+"joined where I am alone post-NAMES" — the only signal that
+disambiguates is "did 366 RPL_ENDOFNAMES fire?" which is event
+flow, not derivable from current state. Adding a `seeded_channels
+:: MapSet.t()` sentinel is the principled fix.
+
+Implementation:
+  * `Session.Server.state` gains `seeded_channels` populated by
+    `apply_effects([{:members_seeded, channel, _}])` (366 path)
+    and pruned post-`EventRouter.route/2` via
+    `prune_seeded_channels/1` (intersect with
+    `Map.keys(state.members)`) so self-PART / self-KICK drops
+    stay consistent. Two routes through `apply_effects/2` — both
+    call `prune_seeded_channels/1`.
+  * `handle_call({:list_members, channel}, ...)` returns
+    `{:ok, :uninitialized}` when `channel ∉ seeded_channels`,
+    `{:ok, [member()]}` (possibly empty) once 366 fired at least
+    once. `Session.list_members/3`'s `@spec` widened.
+  * `MembersController.index/2`: `:uninitialized` → HTTP 204 No
+    Content; non-empty / empty list → HTTP 200 + JSON. cic's
+    fetch path is REST-free post-CP15 B5 so this matters mainly
+    for non-cic REST consumers (curl probes, future integrations).
+  * `GrappaChannel.push_members_if_seeded/4` cold-snapshot path:
+    skip on `:uninitialized` (cic's "loading…" stays visible
+    until 366 broadcasts the canonical `members_seeded` event);
+    push the empty list when NAMES emitted zero members.
+
+cic-side MembersPane needed NO changes — it already keys on
+`windowStateByChannel == "joined" && list().length > 0`
+(linea 108-109 di `MembersPane.tsx`): joined+empty → "loading…",
+non-joined → "not joined", joined+non-empty → render. Bucket E's
+fix makes the SERVER signal honest so cic's existing branches
+match reality.
+
+5 new server tests pin discrimination across all states; 1 new
+REST test pins HTTP 204 for the joined-pre-366 case. Existing
+test renamed (was asserting the buggy `{:ok, []}` shape for a
+not-in-members channel).
+
+### Bucket E close
+
+`scripts/check.sh` exit-0; 1518 → 1543 tests (+25: 2 S6 tag-source
+disambiguation, 13 S7 IRC-shape boundary, 1 S5 user_socket visitor
+WSPresence + 1 admin_controller visitor bundle broadcast, 5 S1
+mark_failed + SessionPlan failer injection, 5 S8 list_members
+states + REST 204). Dialyzer 0 errors. 7 lib files + 5 test files
+touched across 5 commits.
+
+5 HIGH findings closed in one bucket — pattern continues:
+CRITICAL+follow-on close in single bucket (A), drop-the-finding
+discipline (B persistence/S7), in-bucket reviewer follow-ups (C
+CRIT-1, D M1+M2+L1). No new wire modules (bucket D landed 7;
+bucket E reuses the discipline at the boundary, doesn't add new
+shapes). One in-bucket Dialyzer success-typing tighten
+(`validate_args/1` `@spec`) — the kind of "design signal"
+CLAUDE.md flags as a constraint worth listening to (the closed-set
+tag enum makes the surface explicit + future addable arg kinds
+require a `@typep` extension, NOT a silent broadening).
+
+
 ---
 
 ## What's *not* in this document (on purpose)
