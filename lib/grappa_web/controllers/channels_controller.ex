@@ -111,8 +111,11 @@ defmodule GrappaWeb.ChannelsController do
 
   @doc """
   `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
-  Casts `JOIN <name>` upstream through the subject's session. Returns
-  202 + `{"ok": true}`.
+  Calls through to `Session.send_join/3`, which writes
+  `window_states[ch] = :pending` AND broadcasts `window_pending` on the
+  user-level PubSub topic before returning. cic's setPending dispatch
+  has fired (and the synthetic sidebar pseudo-row has rendered) by the
+  time this returns 202 + `{"ok": true}`.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}

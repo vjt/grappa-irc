@@ -305,17 +305,39 @@ defmodule Grappa.Session do
   end
 
   @doc """
-  Queues a JOIN upstream through the session. Cast — returns `:ok` as
-  soon as the message is in the Session.Server mailbox; the actual
-  socket write happens asynchronously. The REST surface returns 202
-  Accepted to mirror this. `{:error, :no_session}` if not registered.
+  Queues a JOIN upstream through the session. **Synchronous call** — the
+  Session.Server processes the message inline: writes
+  `window_states[ch] = :pending` AND broadcasts `window_pending` on the
+  user-level PubSub topic BEFORE returning. cic's setPending dispatch
+  fires (and the synthetic sidebar row appears) by the time the REST
+  controller returns 202. The actual upstream socket write
+  (`Client.send_join` → `:gen_tcp.send`) is itself a `GenServer.call`
+  that the Session.Server issues inside the same handler, but that
+  blocking is what we WANT — backpressure surfaces synchronously
+  instead of letting cic see "still pending" while the cast sits in
+  the mailbox queue.
+
+  Pre-bucket-`post-cr-review-phase1` this was a cast: REST returned 202
+  in <30ms and the `window_pending` broadcast was delayed by the
+  Session.Server mailbox queue. Under CI load, that queue routinely
+  stretched to >5s, which made cp15-b6-kicked.spec.ts time out at line
+  71 (`expect(row).toHaveCount(1, { timeout: 5_000 })`) — the synthetic
+  pseudo-row never rendered because cic never received `window_pending`
+  in the test's polling window. Converting to call makes the broadcast
+  observable on the test's wall clock per CLAUDE.md "fix root causes"
+  rule and CLAUDE.md "no parallel client-side state machine" — cic
+  MUST see the server-driven pending state before the test polls.
+
+  `{:error, :no_session}` if not registered. `{:error, :invalid_line}`
+  if the channel name fails IRC-shape gates (CRLF/NUL or non-`#`/`&`
+  prefix). Returns `:ok` once the broadcast has fired.
   """
   @spec send_join(subject(), integer(), String.t()) ::
           :ok | {:error, :no_session | :invalid_line}
   def send_join(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
-      cast_session(subject, network_id, {:send_join, channel})
+      call_session(subject, network_id, {:send_join, channel})
     else
       {:error, :invalid_line}
     end

@@ -1199,9 +1199,9 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test ":send_join cast inserts into in_flight_joins keyed by lowercase channel" do
+    test ":send_join call inserts into in_flight_joins keyed by lowercase channel" do
       # CP15 B2 contract: every outbound JOIN — cic-initiated via the
-      # Session.send_join/3 cast — records {channel, at_ms, label?} in
+      # Session.send_join/3 call — records {channel, at_ms, label?} in
       # state.in_flight_joins keyed by String.downcase/1 of the channel
       # so a later 471/473/474/475/403/405 numeric can correlate even
       # when the upstream echoes a case-folded channel name.

@@ -207,7 +207,7 @@ defmodule Grappa.Session.Server do
 
   @typedoc """
   In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
-  JOIN — both cic-initiated `Session.send_join/3` casts and the 001
+  JOIN — both cic-initiated `Session.send_join/3` calls and the 001
   RPL_WELCOME autojoin loop — keyed by `String.downcase/1` of the
   channel so a 471/473/474/475/403/405 failure numeric can correlate
   even when the upstream echoes a case-folded channel name.
@@ -1017,26 +1017,36 @@ defmodule Grappa.Session.Server do
   end
 
   @impl GenServer
-  def handle_cast({:send_join, channel}, state) when is_binary(channel) do
+  def handle_call({:send_join, channel}, _, state) when is_binary(channel) do
     # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
     # returns `{:error, :invalid_line}` for malformed channels. The
     # `Session.send_join/3` facade gates `valid_channel?` before the
-    # cast (CRIT-1 fix), so reaching this clause with a malformed
+    # call (CRIT-1 fix), so reaching this clause with a malformed
     # channel requires a caller bypassing the facade. Defensive
     # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
     # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
     # a future bypass-caller logs + drops instead of MatchError-crashing
     # the Session.
+    #
+    # PHASE-1 (post-cr-review cluster): converted from cast to call so
+    # the `window_pending` broadcast inside `record_in_flight_join/2`
+    # fires BEFORE the REST controller returns 202. Pre-conversion the
+    # cast sat in the Session.Server mailbox under CI load, delaying
+    # the broadcast by >5s and making cp15-b6-kicked time out at the
+    # sidebar-row assertion. See `Session.send_join/3` doc for the full
+    # rationale. Reply `:ok` AFTER `record_in_flight_join` so the
+    # caller's wall clock includes the broadcast.
     case Client.send_join(state.client, channel) do
       :ok ->
-        {:noreply, record_in_flight_join(state, channel)}
+        {:reply, :ok, record_in_flight_join(state, channel)}
 
-      {:error, :invalid_line} ->
-        Logger.warning("send_join cast rejected: invalid channel name", channel: inspect(channel))
-        {:noreply, state}
+      {:error, :invalid_line} = err ->
+        Logger.warning("send_join call rejected: invalid channel name", channel: inspect(channel))
+        {:reply, err, state}
     end
   end
 
+  @impl GenServer
   def handle_cast({:send_part, channel}, state) when is_binary(channel) do
     case Client.send_part(state.client, channel) do
       :ok ->
@@ -2164,7 +2174,7 @@ defmodule Grappa.Session.Server do
 
   # CP15 B2: record an outbound JOIN as in-flight, keyed by lowercase
   # channel for case-insensitive correlation against failure-numeric
-  # echoes (RFC 2812 §2.2). Both `Session.send_join/3` casts and the
+  # echoes (RFC 2812 §2.2). Both `Session.send_join/3` calls and the
   # 001 RPL_WELCOME autojoin loop call through here so the tracking
   # behavior is identical regardless of who initiated the JOIN.
   # Label is `nil` for now — labeled-response correlation lands later.
@@ -2175,7 +2185,7 @@ defmodule Grappa.Session.Server do
   #
   # CP17 — also flips the per-channel window state to `:pending` and
   # broadcasts `SessionWire.window_pending/2` on the user-level topic.
-  # Single producer for both `{:send_join, _}` cast and 001 RPL_WELCOME
+  # Single producer for both `{:send_join, _}` call and 001 RPL_WELCOME
   # autojoin paths. Broadcast goes on `Topic.user/1` (NOT per-channel)
   # because cic only subscribes to per-channel after seeing `:pending`
   # — chicken-and-egg if we used the channel topic. cic's userTopic.ts

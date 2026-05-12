@@ -10,7 +10,7 @@ import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
-import { windowStateByChannel } from "./lib/windowState";
+import { type WindowState as WindowStateValue, windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -92,35 +92,43 @@ const Sidebar: Component<Props> = (props) => {
     return net.connection_state_reason ?? undefined;
   };
 
-  // Synthetic sidebar rows: keys with windowState != "joined" whose
+  // Synthetic sidebar rows: keys in windowStateByChannel whose
   // (slug, name) is NOT yet in channelsBySlug AND not a known query
   // (DM) target for this network. Returns name + state tuples so the
-  // JSX can render the right classList branch (pending styling vs
+  // JSX can render the right classList branch (pending vs joined vs
   // greyed) without a second windowState lookup.
   //
-  // The projection covers ALL four non-joined states — pending,
-  // failed, kicked, parked — under the same rule: cic mirrors a row
-  // whenever the operator is aware of the channel (windowState carries
-  // the key) but channelsBySlug doesn't. Without this, a failed JOIN
-  // (invite-only / banned / +k miss) leaves the operator with no
-  // sidebar entry at all: the pending row vanishes when state flips
-  // to failed and the channelsBySlug branch never receives the
-  // channel since the JOIN was rejected. Intent doc:
-  // "Sidebar entry greyed/dim" on every failed/kicked/parked window.
+  // The projection covers ALL FIVE states — pending, joined, failed,
+  // kicked, parked — under one rule: cic mirrors a row whenever the
+  // operator is aware of the channel (windowState carries the key)
+  // but channelsBySlug doesn't. Without this:
+  //   * a failed JOIN (invite-only / banned / +k miss) would leave
+  //     the operator with no sidebar entry at all (the pending row
+  //     vanishes when state flips to failed and channelsBySlug never
+  //     receives the channel since the JOIN was rejected)
+  //   * post-PHASE-1.1 (Session.send_join cast→call) the JOIN echo
+  //     fast-path emits the per-channel `joined` event BEFORE the
+  //     user-topic `channels_changed` heartbeat triggers a
+  //     `/networks/X/channels` REST refetch into channelsBySlug.
+  //     Window of empty sidebar = (channels_changed roundtrip) -
+  //     (joined-event dispatch) — small but visible (cp15-b5 was
+  //     timing out here). The joined branch keeps the row rendered
+  //     during that window; once channelsBySlug catches up, the
+  //     `live.has(name)` dedup drops the synthetic copy and the
+  //     channelsBySlug branch takes over.
   //
   // Query (DM) targets are filtered out — windowState may carry a
   // (slug, nick) entry too (the kicked/away projection plays nicely
   // with DMs), but the dedicated query-windows branch below handles
   // their rendering. Without this filter, the synthetic loop would
   // dup-render every greyed query target as a "ghost" channel row.
-  type PseudoRow = { name: string; state: "pending" | "failed" | "kicked" | "parked" };
+  type PseudoRow = { name: string; state: WindowStateValue };
   const pseudoChannelsForNetwork = (slug: string, networkId: number): PseudoRow[] => {
     const states = windowStateByChannel();
     const live = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
     const queries = new Set((queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick));
     const out: PseudoRow[] = [];
     for (const [key, state] of Object.entries(states)) {
-      if (state === "joined") continue;
       // Codebase audit cic M4 — paired decoder over open-coded
       // `key.startsWith(prefix) + key.slice(prefix.length)`. The
       // composite-key shape is owned by `lib/channelKey.ts`; one site
@@ -131,7 +139,7 @@ const Sidebar: Component<Props> = (props) => {
       const name = decoded.name;
       if (live.has(name)) continue;
       if (queries.has(name)) continue;
-      out.push({ name, state: state as PseudoRow["state"] });
+      out.push({ name, state: state as WindowStateValue });
     }
     return out;
   };
@@ -268,7 +276,17 @@ const Sidebar: Component<Props> = (props) => {
                   class so a rejected JOIN (invite-only / banned / keyed)
                   still surfaces as a row instead of vanishing. The dedup
                   gate in pseudoChannelsForNetwork drops any key already
-                  in channelsBySlug — channelsBySlug branch wins. */}
+                  in channelsBySlug — channelsBySlug branch wins.
+
+                  PHASE 1.1 (cp15-b5/b6 race fix): the joined branch
+                  renders a real-looking row (no pending class, no greyed
+                  class — modulo the network-cascade overlay below) for
+                  the small window between the per-channel `joined`
+                  event and the user-topic `channels_changed` heartbeat
+                  refetching channelsBySlug. Without this, fast JOINs
+                  flash an empty sidebar between the two broadcasts.
+                  Network-level isGreyed cascade still applies (parked
+                  / failed credentials must dim every row regardless). */}
               <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
                 {(row) => (
                   <li classList={{ selected: isSelected(network.slug, row.name) }}>
@@ -278,7 +296,9 @@ const Sidebar: Component<Props> = (props) => {
                       class={
                         row.state === "pending"
                           ? "sidebar-window-btn sidebar-window-pending"
-                          : "sidebar-window-btn sidebar-window-greyed"
+                          : row.state === "joined"
+                            ? `sidebar-window-btn${isNetworkGreyed(network.slug) ? " sidebar-window-greyed" : ""}`
+                            : "sidebar-window-btn sidebar-window-greyed"
                       }
                     >
                       <span
