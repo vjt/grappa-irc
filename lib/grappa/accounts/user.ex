@@ -37,7 +37,7 @@ defmodule Grappa.Accounts.User do
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "users" do
     field :name, :string
-    field :password_hash, :string
+    field :password_hash, :string, redact: true
     field :password, :string, virtual: true, redact: true
 
     timestamps(type: :utc_datetime_usec)
