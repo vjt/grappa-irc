@@ -67,14 +67,34 @@ test("CP15 B6 — peer KICKs vjt; window flips to kicked, stays in active sideba
   // member-pane assertion below: members_seeded landing means the
   // joined-state UI surface is live.
   await composeSend(page, `/join ${NEW_CHANNEL}`);
+
+  // Bug A fix (post-bucket-H regression cluster): wait on the
+  // WS-truth signal (per-channel self-JOIN scrollback line means
+  // the JOIN echo arrived AND windowState flipped to joined AND
+  // BUG4 auto-focused the new window). Same gate-on-WS-truth
+  // pattern as cp15-b5 — the original 5s sidebar+members pane
+  // assertions raced bahamut-test's JOIN-handshake pipeline
+  // (4 hops: bahamut JOIN echo → grappa delegate → channels_changed
+  // broadcast → REST refetch + members_seeded WS push) under CI
+  // parallel pressure (max_cases:2). The page snapshot at failure
+  // time consistently showed members-pane WITH vjt-grappa already
+  // rendered, just past the 5s window.
+  await expect(
+    page
+      .locator('[data-testid="scrollback-line"][data-kind="join"]')
+      .filter({ hasText: NETWORK_NICK })
+      .filter({ hasText: NEW_CHANNEL })
+      .first(),
+  ).toBeVisible({ timeout: 10_000 });
+
   const row = sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL);
-  await expect(row).toHaveCount(1, { timeout: 5_000 });
+  await expect(row).toHaveCount(1, { timeout: 10_000 });
   // Confirm the join landed before the KICK fires — without this gate
   // a fast peer.kick race would catch vjt before bahamut completes the
   // JOIN handshake (the kick would 401 nosuchnick on the server side).
   const membersPane = page.locator(".members-pane");
   await expect(membersPane.locator("li", { hasText: NETWORK_NICK })).toBeVisible({
-    timeout: 5_000,
+    timeout: 10_000,
   });
 
   // Peer KICKs vjt. Server-side: event_router self-target KICK arm
