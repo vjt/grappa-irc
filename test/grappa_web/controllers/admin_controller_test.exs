@@ -13,9 +13,16 @@ defmodule GrappaWeb.AdminControllerTest do
   contract under test, not the reload semantics themselves (those
   belong to Phoenix).
 
-  `async: true` — no shared state.
+  `async: false` because the `cic-bundle-changed` tests register a
+  fake socket pid against the application-wide `Grappa.WSPresence`
+  singleton — concurrent tests would observe each other's
+  registrations on the same `user_name`. The TI-1 `max_cases: 1` in
+  `config/test.exs` already serializes the suite, but per the
+  WSPresence moduledoc test-isolation paragraph this contract MUST
+  be encoded at the test-file level so it survives any future
+  faster-lane carve-out.
   """
-  use GrappaWeb.ConnCase, async: true
+  use GrappaWeb.ConnCase, async: false
 
   alias Grappa.Cic.Bundle
 
