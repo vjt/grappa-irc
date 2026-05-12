@@ -60,4 +60,13 @@ describe("applyModeString", () => {
     const after = applyModeString(before, "+o", ["alice"]); // already op
     expect(after).toEqual([{ nick: "alice", modes: ["@"] }]);
   });
+
+  // Bucket F H3 follow-up — case-insensitive target match (RFC 2812 §2.2).
+  // MODE arg arrives in different casing than the JOIN/NAMES populated
+  // store row; pre-fix bare `===` silently dropped the mode change.
+  it("matches the target nick case-insensitively", () => {
+    const before = m({ Alice: [] });
+    const after = applyModeString(before, "+o", ["alice"]);
+    expect(after).toEqual([{ nick: "Alice", modes: ["@"] }]);
+  });
 });

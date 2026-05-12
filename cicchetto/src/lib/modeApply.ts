@@ -1,4 +1,5 @@
 import type { ChannelMembers } from "./memberTypes";
+import { nickEquals } from "./nickEquals";
 
 // Pure mode-string parser. Mirrors `Grappa.Session.EventRouter`'s
 // `apply_mode_string/4`: applies a single MODE event's mode string +
@@ -54,7 +55,12 @@ export function applyModeString(
     if (target === undefined) continue;
 
     working = working.map((entry) => {
-      if (entry.nick !== target) return entry;
+      // Case-insensitive nick comparison via `nickEquals` (lib/nickEquals.ts)
+      // — same RFC 2812 §2.2 simplification as the rest of the codebase.
+      // Pre-fix bare `===` would silently no-op a MODE event whose target
+      // arg arrived in a different casing than the JOIN/NAMES that
+      // populated the members store.
+      if (!nickEquals(entry.nick, target)) return entry;
       const has = entry.modes.includes(prefix);
       if (sign === "+" && has) return entry;
       if (sign === "-" && !has) return entry;
