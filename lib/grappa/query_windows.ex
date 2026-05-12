@@ -35,9 +35,10 @@ defmodule Grappa.QueryWindows do
   stable anchor). `close/4` returns `:ok` whether or not a row existed.
 
   After every successful call to `open/4` or `close/4`, the current full
-  window list is broadcast on `Topic.user(user_name)` as:
+  window list is broadcast on `Topic.user(user_name)` as the envelope
+  built by `Grappa.QueryWindows.Wire.windows_list_payload/1`:
 
-      %{kind: "query_windows_list", windows: Wire.render_grouped(list_for_user(user_id))}
+      Wire.windows_list_payload(Wire.render_grouped(list_for_user(user_id)))
 
   The payload windows shape is `t:Grappa.QueryWindows.Wire.windows_map/0`
   (snake_case keys, ISO-8601 strings). Pre-CP15 B6 the broadcast carried
@@ -92,9 +93,11 @@ defmodule Grappa.QueryWindows do
   window list for the user, keyed by `network_id`. Carries the
   `t:Grappa.QueryWindows.Wire.windows_map/0` snake_case projection
   (NOT raw `%Window{}` structs — those crashed the WS edge fastlane
-  pre-CP15 B6).
+  pre-CP15 B6). Alias for `t:Grappa.QueryWindows.Wire.windows_list_payload/0`
+  so downstream callers (channel typedoc, REST docs) can refer to the
+  envelope without reaching into the wire module.
   """
-  @type windows_list_payload :: %{kind: String.t(), windows: Wire.windows_map()}
+  @type windows_list_payload :: Wire.windows_list_payload()
 
   @doc """
   Idempotently opens a DM window for `target_nick` on `(user_id, network_id)`.
@@ -263,13 +266,13 @@ defmodule Grappa.QueryWindows do
 
   @spec broadcast_windows_list(Ecto.UUID.t(), String.t()) :: :ok
   defp broadcast_windows_list(user_id, user_name) do
-    windows = Wire.render_grouped(list_for_user(user_id))
+    payload =
+      user_id
+      |> list_for_user()
+      |> Wire.render_grouped()
+      |> Wire.windows_list_payload()
 
-    :ok =
-      Grappa.PubSub.broadcast_event(
-        Topic.user(user_name),
-        %{kind: "query_windows_list", windows: windows}
-      )
+    :ok = Grappa.PubSub.broadcast_event(Topic.user(user_name), payload)
   end
 
   @spec fetch_existing(Ecto.UUID.t(), integer(), String.t()) ::

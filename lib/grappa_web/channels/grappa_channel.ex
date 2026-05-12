@@ -170,10 +170,7 @@ defmodule GrappaWeb.GrappaChannel do
         }
 
   @typedoc "Wire payload for `query_windows_list` events pushed by this channel."
-  @type query_windows_list_payload :: %{
-          kind: String.t(),
-          windows: QueryWindows.Wire.windows_map()
-        }
+  @type query_windows_list_payload :: QueryWindows.Wire.windows_list_payload()
 
   @typedoc """
   Wire payload for the `members_seeded` cold-WS-subscribe snapshot
@@ -837,17 +834,22 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # Pushes query_windows_list for `user`. Wire-rendering delegated to
-  # `Grappa.QueryWindows.Wire` so the after_join push and the per-
-  # mutation `broadcast_windows_list` (fired from `QueryWindows.open/4`
-  # / `.close/4`) share one shape — and crucially one Jason-encodable
-  # form. A struct-shaped payload crashes the channel during fan-out
-  # (`%Window{}` doesn't derive Jason.Encoder), which in turn loses
-  # any subsequent push on the same channel ref.
+  # Pushes query_windows_list for `user`. Wire-rendering AND envelope-
+  # construction delegated to `Grappa.QueryWindows.Wire` so the after_join
+  # push and the per-mutation `broadcast_windows_list` (fired from
+  # `QueryWindows.open/4` / `.close/4`) share one shape — and crucially
+  # one Jason-encodable form. A struct-shaped payload crashes the channel
+  # during fan-out (`%Window{}` doesn't derive Jason.Encoder), which in
+  # turn loses any subsequent push on the same channel ref.
   @spec push_query_windows_list(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
   defp push_query_windows_list(%Accounts.User{} = user, socket) do
-    windows = user.id |> QueryWindows.list_for_user() |> QueryWindows.Wire.render_grouped()
-    push(socket, "event", %{kind: "query_windows_list", windows: windows})
+    payload =
+      user.id
+      |> QueryWindows.list_for_user()
+      |> QueryWindows.Wire.render_grouped()
+      |> QueryWindows.Wire.windows_list_payload()
+
+    push(socket, "event", payload)
   end
 
   @spec push_topic_if_cached(Session.subject(), Network.t(), String.t(), Phoenix.Socket.t()) :: :ok
