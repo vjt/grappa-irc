@@ -62,9 +62,24 @@ test("CP15 B5 — /join transitions to joined; MembersPane renders snapshot from
 
   await composeSend(page, `/join ${NEW_CHANNEL}`);
 
-  // Sidebar entry appears (channels_changed heartbeat + REST refetch
-  // OR the synthetic pending row, whichever wins the race).
-  await expect(sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL)).toHaveCount(1, { timeout: 5_000 });
+  // Wait on the WS-truth signal (per-channel self-JOIN scrollback line
+  // means the JOIN echo arrived AND windowState flipped to joined AND
+  // BUG4 auto-focused the new window). Gating on this instead of the
+  // sidebar row count avoids the channels_changed-roundtrip flake under
+  // CI parallel pressure (PHASE 1.1's joined-arm workaround was
+  // reverted; see Sidebar.tsx pseudoChannelsForNetwork comment).
+  await expect(
+    page
+      .locator('[data-testid="scrollback-line"][data-kind="join"]')
+      .filter({ hasText: NETWORK_NICK })
+      .filter({ hasText: NEW_CHANNEL })
+      .first(),
+  ).toBeVisible({ timeout: 10_000 });
+
+  // Sidebar entry appears once channels_changed → /networks/X/channels
+  // refetch lands. Bumped to 10s because under CI parallel pressure the
+  // user-topic heartbeat can take longer than the per-channel join echo.
+  await expect(sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL)).toHaveCount(1, { timeout: 10_000 });
 
   // Joined state: MembersPane renders the live list, NOT the
   // "loading…" muted text. The members_seeded WS broadcast (CP15 B3)

@@ -549,53 +549,6 @@ describe("Sidebar", () => {
     });
   });
 
-  // PHASE 1.1 — race fix between server-side `joined` event (per-channel
-  // topic) and `channels_changed` heartbeat (user topic). The fast path
-  // post-cast→call lands `joined` before channelsBySlug refetches; without
-  // the joined-state projection the sidebar would flash an empty row
-  // window, breaking cp15-b5's `expect(row).toHaveCount(1)` assertion.
-  // The synthetic row keeps the channel visible AS A LIVE ROW (no
-  // pending class, no greyed class — modulo network cascade) until
-  // channelsBySlug catches up + the dedup gate hands the row over.
-  describe("PHASE 1.1 — synthetic joined row during channelsBySlug catch-up", () => {
-    it("renders a synthetic row for a channel in state=joined NOT yet in channelsBySlug", () => {
-      mockWindowState = { "freenode #just-joined": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
-      expect(screen.getByText("#just-joined")).toBeInTheDocument();
-    });
-
-    it("synthetic joined row does NOT carry .sidebar-window-greyed (network connected)", () => {
-      mockNetworkConnectionState = { freenode: "connected" };
-      mockWindowState = { "freenode #just-joined": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
-      const li = screen.getByText("#just-joined").closest("li");
-      const btn = li?.querySelector(".sidebar-window-btn");
-      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(false);
-      expect(btn?.classList.contains("sidebar-window-pending")).toBe(false);
-    });
-
-    it("synthetic joined row DOES cascade greyed when network is parked", () => {
-      // Network-level cascade still applies — a parked credential must
-      // dim every row regardless of windowState (T32 derivation).
-      mockNetworkConnectionState = { freenode: "parked" };
-      mockWindowState = { "freenode #just-joined": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
-      const li = screen.getByText("#just-joined").closest("li");
-      const btn = li?.querySelector(".sidebar-window-btn");
-      expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
-    });
-
-    it("does NOT duplicate a synthetic joined row when channelsBySlug already carries the channel", () => {
-      // Once channels_changed lands and channelsBySlug catches up, the
-      // dedup gate (`live.has(name)`) drops the synthetic copy; the
-      // channelsBySlug branch wins.
-      mockWindowState = { "freenode #italia": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
-      const matches = screen.getAllByText("#italia");
-      expect(matches.length).toBe(1);
-    });
-  });
-
   // CP15 B5 — archive list filters live (joined channel OR open query)
   // entries. Mirrors server-side `Scrollback.list_archive/3`'s
   // `active_keyset` exclusion at render time. Without the filter,
