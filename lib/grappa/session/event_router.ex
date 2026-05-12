@@ -1601,12 +1601,11 @@ defmodule Grappa.Session.EventRouter do
   # CP22 cluster B — drain the /names accumulator on 366 RPL_ENDOFNAMES.
   # Returns `{state_with_entry_removed, effects}`. Effects shape:
   #   - no entry: `[]` (route's members_seeded effect still fires).
-  #   - entry exists, target IS in state.members: `[]` (joined target —
-  #     defer to members_seeded refresh; no scrollback rows). Entry is
-  #     still dropped to keep names_pending bounded.
-  #   - entry exists, target NOT in state.members: `[nick_list_row, eof_row]`
-  #     persisted to `$server`. The nick list row carries the full
-  #     `[prefix]nick` tokens in `meta.names`; the EOF row carries
+  #   - entry exists: `[nick_list_row, eof_row]` ALWAYS emitted (silence
+  #     is the bug — /names UX cluster N-1+N-2). Route channel order:
+  #     `accum.origin_window` (cic focused window when /names was typed)
+  #     → target if joined → `$server`. The nick list row carries the
+  #     full `[prefix]nick` tokens in `meta.names`; the EOF row carries
   #     `meta.names_target` for cic to scope rendering.
   @spec drain_names_pending(state(), String.t()) ::
           {state(), [effect()]}
@@ -1622,34 +1621,47 @@ defmodule Grappa.Session.EventRouter do
         next_state = %{state | names_pending: Map.delete(pending, chan_key)}
         target_display = Map.get(accum, :target_display, channel)
         names = Map.get(accum, :names, [])
+        sender = state.network_slug
+        route_channel = pick_names_route(accum, target_display, state.members)
 
-        if Map.has_key?(state.members, target_display) do
-          {next_state, []}
-        else
-          sender = state.network_slug
+        {state_after_row, row_effect} =
+          build_persist(
+            next_state,
+            :notice,
+            route_channel,
+            sender,
+            format_names_row(target_display, names),
+            %{numeric: 353, names_target: target_display, names: names}
+          )
 
-          {state_after_row, row_effect} =
-            build_persist(
-              next_state,
-              :notice,
-              "$server",
-              sender,
-              format_names_row(target_display, names),
-              %{numeric: 353, names_target: target_display, names: names}
-            )
+        {final_state, eof_effect} =
+          build_persist(
+            state_after_row,
+            :notice,
+            route_channel,
+            sender,
+            "*** End of /NAMES list for #{target_display}",
+            %{numeric: 366, names_target: target_display}
+          )
 
-          {final_state, eof_effect} =
-            build_persist(
-              state_after_row,
-              :notice,
-              "$server",
-              sender,
-              "*** End of /NAMES list for #{target_display}",
-              %{numeric: 366, names_target: target_display}
-            )
+        {final_state, [row_effect, eof_effect]}
+    end
+  end
 
-          {final_state, [row_effect, eof_effect]}
-        end
+  # /names UX cluster N-1+N-2 — pick the route channel for the 2 :notice
+  # rows. Preference order: explicit `origin_window` from the accumulator
+  # (set by `Session.send_names/4` carrying cic's focused window) → the
+  # target itself if the operator is joined → `$server` (legacy fallback
+  # for non-joined targets without an origin_window — preserves shape for
+  # callers that don't carry origin_window yet).
+  @spec pick_names_route(map(), String.t(), members()) :: String.t()
+  defp pick_names_route(accum, target_display, members) do
+    case Map.get(accum, :origin_window) do
+      origin when is_binary(origin) and origin != "" ->
+        origin
+
+      _ ->
+        if Map.has_key?(members, target_display), do: target_display, else: "$server"
     end
   end
 

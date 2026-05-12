@@ -482,15 +482,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "names": {
           // CP22 cluster B (channel-client-polish #14) — /names #channel.
-          // Joined target → MembersPane refresh via the existing
-          // members_seeded broadcast (server emits on every 366
-          // RPL_ENDOFNAMES per MembersPane.tsx:26-27); non-joined target
-          // → 2 :notice scrollback rows in $server (nick list + EOF).
-          // Both paths handled server-side; no client routing needed.
+          // /names UX cluster N-1+N-2: server now ALWAYS emits 2 :notice
+          // rows (silence is the bug); they're routed to the originating
+          // window (`channelName` — the operator's focused window) so the
+          // operator gets feedback in the window they typed in, regardless
+          // of joined-vs-non-joined target.
           if (cmd.target === null) return { error: "/names requires a #channel target" };
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/names: network not found" };
-          pushNames(networkId, cmd.target);
+          pushNames(networkId, cmd.target, channelName);
           result = { ok: true };
           break;
         }

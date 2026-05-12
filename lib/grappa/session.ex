@@ -875,11 +875,12 @@ defmodule Grappa.Session do
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
   if the channel syntax is rejected by `Grappa.IRC.Client.send_names/2`.
   """
-  @spec send_names(subject(), integer(), String.t()) ::
+  @spec send_names(subject(), integer(), String.t(), String.t() | nil) ::
           :ok | {:error, :no_session | :invalid_line}
-  def send_names(subject, network_id, channel)
-      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:send_names, channel})
+  def send_names(subject, network_id, channel, origin_window)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             (is_nil(origin_window) or is_binary(origin_window)) do
+    call_session(subject, network_id, {:send_names, channel, origin_window})
   end
 
   @doc """

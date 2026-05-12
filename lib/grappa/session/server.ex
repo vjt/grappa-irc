@@ -345,11 +345,10 @@ defmodule Grappa.Session.Server do
           # `:send_names`; 353 RPL_NAMREPLY rows merge their nick lists
           # into the entry; 366 RPL_ENDOFNAMES emits 2 `{:persist, :notice,
           # attrs}` effects (one carrying the full nick list + one EOF
-          # terminator) ONLY if the operator is NOT joined to the target —
-          # joined targets defer to the existing JOIN-time members_seeded
-          # flow (the 366 route below still fires that effect; the
-          # /names-driven scrollback rows are gated on non-joined). NOT
-          # persisted across crashes.
+          # terminator). /names UX cluster N-1+N-2: rows are ALWAYS emitted
+          # (silence is the bug); routing channel is `:origin_window` if
+          # set (cic-side focused window when /names was issued), else the
+          # target if joined, else `$server`. NOT persisted across crashes.
           names_pending: %{String.t() => map()}
         }
 
@@ -803,9 +802,23 @@ defmodule Grappa.Session.Server do
   # On send_line failure the accumulator stays primed — a transient
   # send error doesn't strand the NAMES flow because no numerics will
   # arrive to drain it; harmless until the next /names replaces the entry.
-  def handle_call({:send_names, target}, _, state) when is_binary(target) do
+  #
+  # /names UX cluster bucket N-1+N-2: `origin_window` (cic-side focused
+  # window when the operator typed /names) is captured in the accumulator
+  # so the 366 drain routes the 2 :notice rows to the originating window
+  # rather than always landing in $server. nil falls back to legacy
+  # routing (target if joined, $server otherwise).
+  def handle_call({:send_names, target, origin_window}, _, state)
+      when is_binary(target) and (is_nil(origin_window) or is_binary(origin_window)) do
     chan_key = String.downcase(target)
-    next_pending = Map.put(state.names_pending, chan_key, %{target_display: target, names: []})
+
+    next_pending =
+      Map.put(state.names_pending, chan_key, %{
+        target_display: target,
+        names: [],
+        origin_window: origin_window
+      })
+
     next_state = %{state | names_pending: next_pending}
     {:reply, Client.send_names(state.client, target), next_state}
   end

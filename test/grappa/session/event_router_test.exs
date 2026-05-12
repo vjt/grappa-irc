@@ -1948,7 +1948,12 @@ defmodule Grappa.Session.EventRouterTest do
       assert eof_attrs.body =~ "End of /NAMES"
     end
 
-    test "366 with pending entry AND joined target drops accumulator without persisting rows" do
+    test "366 with pending entry AND joined target emits 2 :persist :notice rows to the target channel" do
+      # N-1 (project_names_ux_silent_bugs): silence is the bug. Emit the
+      # nick-list + EOF rows even when the target is already in
+      # state.members. The MembersPane refresh path (members_seeded effect)
+      # still fires; the rows give the operator visible feedback in the
+      # window the operator was looking at.
       state =
         base_state(%{
           members: %{"#bofh" => %{"vjt" => []}},
@@ -1965,9 +1970,20 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.names_pending == %{}
 
-      # Only members_seeded — NO :persist effects (joined target = refresh
-      # MembersPane, not list rows).
-      assert [{:members_seeded, "#bofh", _}] = effects
+      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
+
+      assert {:persist, :notice, row_attrs} = row
+      assert row_attrs.channel == "#bofh"
+      assert row_attrs.meta.numeric == 353
+      assert row_attrs.meta.names_target == "#bofh"
+      assert row_attrs.meta.names == ["@alice", "+bob"]
+      assert row_attrs.body =~ "alice"
+
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.channel == "#bofh"
+      assert eof_attrs.meta.numeric == 366
+      assert eof_attrs.meta.names_target == "#bofh"
+      assert eof_attrs.body =~ "End of /NAMES"
     end
 
     test "366 with no pending entry only emits members_seeded (no /names was issued)" do
@@ -1977,6 +1993,35 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, _, effects} = EventRouter.route(m, state)
       assert [{:members_seeded, "#bofh", _}] = effects
+    end
+
+    test "366 with origin_window routes 2 :persist :notice rows to that window (overrides joined/non-joined fallback)" do
+      # /names UX cluster N-2 — operator typed `/names #bofh` from a
+      # different focused window (`#elsewhere`). With origin_window
+      # threaded through pushNames → channel handler → Session.send_names/4
+      # → names_pending accumulator, the drain routes both rows to
+      # `#elsewhere`, regardless of whether the operator is joined to
+      # `#bofh`. This is the "originating window wins" rule.
+      state =
+        base_state(%{
+          members: %{"#bofh" => %{"vjt" => []}},
+          names_pending: %{
+            "#bofh" => %{
+              target_display: "#bofh",
+              names: ["@alice"],
+              origin_window: "#elsewhere"
+            }
+          }
+        })
+
+      m = msg({:numeric, 366}, ["vjt", "#bofh", "End of /NAMES list"], {:server, "irc.test.org"})
+
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:members_seeded, "#bofh", _}, row, eof] = effects
+      assert {:persist, :notice, row_attrs} = row
+      assert row_attrs.channel == "#elsewhere"
+      assert {:persist, :notice, eof_attrs} = eof
+      assert eof_attrs.channel == "#elsewhere"
     end
 
     test "366 lookup is case-insensitive on target channel (RFC 2812 §2.2)" do

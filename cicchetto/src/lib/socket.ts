@@ -327,14 +327,19 @@ export function pushWho(networkId: number, channel: string): void {
 }
 
 // CP22 cluster B (channel-client-polish #14) — /names <#channel>.
+// CP22 cluster B (channel-client-polish #14) — /names <#channel>.
 // Pushes on the user-level channel; server primes names_pending +
-// emits NAMES upstream. The 353/366 burst either refreshes
-// MembersPane (joined target — existing members_seeded path) or
-// lands as 2 :notice scrollback rows in $server (non-joined target —
-// nick list + EOF terminator) — no client-side accumulator needed.
-export function pushNames(networkId: number, channel: string): void {
+// emits NAMES upstream. The 353/366 burst lands as 2 :notice scrollback
+// rows ALWAYS (silence is the bug — /names UX cluster N-1+N-2),
+// routed to `originWindow` (cic's focused window when /names was
+// typed) when supplied, else target if joined, else $server.
+export function pushNames(
+  networkId: number,
+  channel: string,
+  originWindow: string | null,
+): void {
   if (_userChannel === null) return;
-  _userChannel.push("names", { network_id: networkId, channel });
+  _userChannel.push("names", { network_id: networkId, channel, origin_window: originWindow });
 }
 
 // C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level

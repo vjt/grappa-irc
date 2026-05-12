@@ -4462,7 +4462,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
       assert {:error, :no_session} = Session.send_whois({:user, uid}, 9_999, "alice")
       assert {:error, :no_session} = Session.send_who({:user, uid}, 9_999, "#bofh")
-      assert {:error, :no_session} = Session.send_names({:user, uid}, 9_999, "#bofh")
+      assert {:error, :no_session} = Session.send_names({:user, uid}, 9_999, "#bofh", nil)
     end
   end
 
@@ -4740,7 +4740,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "/names #channel sends NAMES upstream", %{server: server, user: user, network: network, pid: pid} do
-      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh", nil)
 
       assert {:ok, "NAMES #bofh\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
@@ -4748,7 +4748,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "353+366 burst persists nick-list rows + 1 EOF row to $server when not joined", %{
+    test "353+366 burst persists nick-list rows + 1 EOF row to $server when not joined and no origin_window", %{
       server: server,
       user: user,
       network: network,
@@ -4757,7 +4757,7 @@ defmodule Grappa.Session.ServerTest do
       topic = Topic.channel(user.name, network.slug, "$server")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
-      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh", nil)
       _ = IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
 
       IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :@alice +bob carol\r\n")
@@ -4793,12 +4793,13 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "353+366 burst on JOINED channel refreshes members_seeded WITHOUT persisting scrollback rows", %{
-      server: server,
-      user: user,
-      network: network,
-      pid: pid
-    } do
+    test "353+366 burst on JOINED channel persists 2 :notice rows to the target window AND fires members_seeded (/names UX N-1)",
+         %{
+           server: server,
+           user: user,
+           network: network,
+           pid: pid
+         } do
       topic = Topic.channel(user.name, network.slug, "#bofh")
       server_topic = Topic.channel(user.name, network.slug, "$server")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
@@ -4817,7 +4818,7 @@ defmodule Grappa.Session.ServerTest do
         500 -> flunk("expected initial members_seeded after JOIN")
       end
 
-      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh")
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh", nil)
       _ = IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
 
       IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :grappa-test @alice +bob\r\n")
@@ -4830,19 +4831,61 @@ defmodule Grappa.Session.ServerTest do
                      },
                      1_500
 
-      # NO :notice scrollback row in #bofh (joined target — refresh, not list).
-      refute_receive %Phoenix.Socket.Broadcast{
+      # /names UX N-1: 2 :notice rows ALSO land in #bofh (silence is the bug).
+      assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 353}}}
                      },
-                     200
+                     1_500
 
-      # NO :notice scrollback row in $server either.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 366}}}
+                     },
+                     1_500
+
+      # NO row in $server (joined target without origin_window routes to target).
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: %{numeric: 353}}}
                      },
                      200
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "/names with origin_window routes 2 :notice rows to that window regardless of joined state (/names UX N-2)", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      origin_topic = Topic.channel(user.name, network.slug, "#elsewhere")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, origin_topic)
+
+      assert :ok = Session.send_names({:user, user.id}, network.id, "#bofh", "#elsewhere")
+      _ = IRCServer.wait_for_line(server, &(&1 == "NAMES #bofh\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 353 grappa-test = #bofh :@alice\r\n")
+      IRCServer.feed(server, ":irc.test.org 366 grappa-test #bofh :End of /NAMES list\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "message",
+                         message: %{kind: :notice, channel: "#elsewhere", meta: %{numeric: 353}}
+                       }
+                     },
+                     1_500
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "message",
+                         message: %{kind: :notice, channel: "#elsewhere", meta: %{numeric: 366}}
+                       }
+                     },
+                     1_500
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
