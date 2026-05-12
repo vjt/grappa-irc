@@ -2683,7 +2683,126 @@ emit the bundle effect rather than just stub the path.
 
 ---
 
-## Design-hygiene rules in force
+## 2026-05-12 — CP24 bucket A: post-cr-review CRITICAL trifecta (C1+C3 fixed, C2 disputed)
+
+Codebase review 2026-05-12 (commit `408b392`) flagged 3 CRITICAL findings.
+Bucket A landed C1 (SASL credential leak in pre-handshake phases) and C3
+(visitor WHOIS broken); C2 (SQLite `PRAGMA foreign_keys` never enabled in
+dev/prod) was contradicted by live-container probe and downgraded to
+NON-FINDING.
+
+### C1 — SASL phase guard
+
+`lib/grappa/irc/auth_fsm.ex:232-234`. The `step/2` clause for
+`%Message{command: :authenticate, params: ["+"]}` was matched
+UNCONDITIONALLY for any phase below `:registered` (the existing
+`:registered` catch-all at line 227 only absorbed the post-handshake
+case). A hostile / buggy / MitM upstream could elicit a verbatim SASL
+credential reply BEFORE SASL had been negotiated by sending
+`AUTHENTICATE +` while the FSM was in `:pre_register` /
+`:awaiting_cap_ls` / `:awaiting_cap_ack`. Under Phase-1
+`verify: :verify_none` the leak was network-exploitable.
+
+Fix: pin the AUTHENTICATE-`+` clause on `phase: :sasl_pending` (the
+only legitimate phase per the IRCv3 SASL spec); add a catch-all
+`%Message{command: :authenticate}` clause that absorbs stray
+pre-handshake AUTHENTICATE lines silently, mirroring the
+post-`:registered` absorption. 4 regression tests added to
+`test/grappa/irc/auth_fsm_test.exs` (one per non-`:sasl_pending`
+phase × stray AUTHENTICATE +; plus a control verifying the legitimate
+`:sasl_pending` reply still fires).
+
+### C3 — Visitor WHOIS dispatch carve-out
+
+`lib/grappa_web/channels/grappa_channel.ex:445-454`. The "whois"
+`handle_in/3` clause comment EXPLICITLY flagged the bug
+("`dispatch_ops_verb` IS used to short-circuit the visitor path —
+but that's wrong for WHOIS; use the user-only form-and-call helper
+instead") but the implementation used the rejected path. Visitors
+issuing `/whois <nick>` got `{:error, %{reason: "visitor_not_allowed"}}`
+despite the documented carve-out (visitors ARE allowed read-only
+verbs that broadcast on the visitor's own subject_label topic).
+
+Fix: factored a new `dispatch_subject_verb/2` helper that mirrors
+`dispatch_ops_verb/2` but resolves the socket's identity into a
+`t:Grappa.Session.subject/0` tagged tuple — `{:user, id}` for an
+authenticated user (loaded via `safe_get_user/1`), `{:visitor, id}`
+for a visitor (id extracted from the `"visitor:<uuid>"` user_name
+assigned by `UserSocket.connect/3`). The thunk receives the subject
+and dispatches to the existing `Session.send_whois/3` facade which
+already accepts `subject()`. Reject path is `{:error, :no_session}` —
+visitors without a live `Session.Server` get the same surface as user
+sockets do, NOT the `visitor_not_allowed` carve-out. 3 regression
+tests added to `test/grappa_web/channels/grappa_channel_test.exs`
+(visitor with live session sends WHOIS upstream; visitor without
+session returns `no_session`; CRLF nick rejected as `invalid_line`).
+
+### C2 — FALSE FINDING (FK pragma already ON)
+
+The original C2 finding claimed `PRAGMA foreign_keys = OFF` in
+dev/prod, with the consequence that 23 migrations' worth of
+`references(..., on_delete: ...)` were runtime-dead. Live-container
+probe (2026-05-12 bucket A pre-fix) contradicted this:
+
+```
+iex> Grappa.Repo.query!("PRAGMA foreign_keys").rows
+[[1]]
+
+iex> Grappa.Repo.query!("INSERT INTO sessions (id, user_id, created_at, last_seen_at) VALUES ('deadbeef-...', '00000000-...', '2026-05-12 ...', '2026-05-12 ...')")
+** (Exqlite.Error) FOREIGN KEY constraint failed
+```
+
+Root cause of the false finding: `deps/exqlite/lib/exqlite/pragma.ex:52`
+defaults `:foreign_keys` to `:on`; `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:85`
+explicitly documents *"`:foreign_keys` — we set it to `:on`, for
+better relational guarantees. This is also the default of the
+underlying `Exqlite` driver."* The reviewer (and the persistence
+draft) read "SQLite ships with PRAGMA foreign_keys = OFF" as the
+runtime default and missed the adapter-side connection-init override.
+
+The `validate_subject_exists/1` pre-flight checks in
+`Accounts.create_session/4`, `QueryWindows.open/4`,
+`UserSettings.get_or_init/1` exist for a SEPARATE, REAL ecto_sqlite3
+limitation: the engine returns the FK constraint NAME as `nil` so
+`Ecto.Changeset.assoc_constraint/3` cannot pattern-match the raised
+exception to produce a clean changeset error. The pre-flight produces
+the changeset error before the insert raises; the FK constraint is
+the backstop on TOCTOU. The existing source comments at
+`lib/grappa/accounts.ex:179-189`, `lib/grappa/query_windows.ex:228-239`,
+`lib/grappa/user_settings.ex:76-81` already describe this correctly
+(they say "a concurrently-deleted user / visitor would still trip
+the DB FK as a backstop" — which is true, FK enforcement IS on).
+No source edits required.
+
+Bucket A action: docs-only correction across compiled review doc +
+persistence draft + CP24. Persistence/S7's "without S1 fixed there
+is NO backstop" framing also wrong — re-validate at bucket B.
+CRITICAL tally drops from **3 to 2**.
+
+### Lessons
+
+1. **Probe before code.** When a finding cites runtime behaviour
+   ("PRAGMA X = OFF in dev/prod"), validate against the running
+   container BEFORE designing the fix. A 30-second `Grappa.Repo.query!`
+   would have caught C2 at the review-write phase. Memory
+   `feedback_orchestrator_autonomy` already warns "HALT on big
+   architectural deviations" — adding "HALT when finding contradicts
+   probe" as a corollary.
+2. **Adapter defaults matter.** Two layers of "the default is X"
+   documentation in `deps/ecto_sqlite3/` + `deps/exqlite/` were enough
+   to override SQLite's engine default; the reviewer read the engine
+   default and stopped there. Future SQLite-angle reviews should
+   `grep` the adapter source for `set_pragma\|maybe_set_pragma` before
+   asserting a pragma is OFF.
+3. **Don't rewrite history; supersede with a correction section.**
+   The original C2 text is preserved in the review doc + persistence
+   draft + CP24 with explicit "HISTORICAL — invalidated text retained
+   for audit" markers. Per memory `feedback_landed_claim_evidence` +
+   CLAUDE.md "directions over code": removing the false finding silently
+   would have lost the lesson about reviewer process. The audit trail
+   carries the lesson forward.
+
+---
 
 Roll-up of the decisions above as a pre-merge checklist:
 

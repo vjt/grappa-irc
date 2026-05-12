@@ -55,7 +55,26 @@ The CP S1-S4 review comment at lines 209-227 explicitly enumerated this exact th
 
 **Fix:** Guard the AUTHENTICATE clause on `phase: :sasl_pending` (the only legitimate phase per IRCv3 SASL spec). Add regression tests covering each non-`:sasl_pending` phase against a stray `AUTHENTICATE +`.
 
-### C2. SQLite `PRAGMA foreign_keys` never enabled in dev/prod (persistence/S1)
+### C2. SQLite `PRAGMA foreign_keys` never enabled in dev/prod (persistence/S1) — ❌ FALSE FINDING (corrected 2026-05-12 bucket A)
+
+**Original claim (preserved verbatim below for audit):** `config/runtime.exs:22-27` ; `config/dev.exs:3-6` ; `config/config.exs:71-73`. SQLite ships with `PRAGMA foreign_keys = OFF` by default. Nowhere in the codebase do we set it for dev or prod. Test runs only enable it implicitly via Sandbox defaults — which is precisely why every `assoc_constraint` works in tests but the comments throughout the codebase describe FK errors as un-pattern-matchable in prod.
+
+**Reality (probed on live container 2026-05-12 bucket A pre-fix):**
+- `Grappa.Repo.query!("PRAGMA foreign_keys").rows == [[1]]` — **FK enforcement is ON.**
+- Probe insert with orphan `user_id` raises `Exqlite.Error "FOREIGN KEY constraint failed"` — confirmed propagation.
+- `deps/exqlite/lib/exqlite/pragma.ex:52` defaults `:foreign_keys` to `:on`. `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:85` documents: *"`:foreign_keys` — we set it to `:on`, for better relational guarantees. This is also the default of the underlying `Exqlite` driver."* The reviewer (and the persistence draft) read "SQLite ships with PRAGMA foreign_keys = OFF" as the runtime default and missed that ecto_sqlite3 / exqlite override it on every connection-init.
+
+**Downstream consequences:**
+- All migrations' `references(..., on_delete: :delete_all|:restrict|:cascade)` ARE enforced at runtime.
+- CASCADE on user/visitor delete (Reaper, `purge_if_anon`, `accounts.user.delete_all`) DOES cascade.
+- The `:restrict` guard on `messages.network_id → networks.id` DOES block the network drop. The `Scrollback.has_messages_for_network?/1` cascade gate is a CONVENIENCE that produces a clean `{:error, :scrollback_present}` return instead of a raised `Ecto.ConstraintError`.
+- The `validate_subject_exists/1` pre-flight checks in `Accounts.create_session/4`, `QueryWindows.open/4`, `UserSettings.get_or_init/1` exist for a SEPARATE, REAL ecto_sqlite3 limitation: the engine returns the FK constraint NAME as `nil`, so `Ecto.Changeset.assoc_constraint/3` cannot pattern-match the raised exception to produce a clean changeset error. The pre-flight `Repo.exists?` converts the miss to a clean changeset error BEFORE the insert; the FK constraint is the backstop on TOCTOU. The existing source comments at `lib/grappa/accounts.ex:179-189`, `lib/grappa/query_windows.ex:228-239`, `lib/grappa/user_settings.ex:76-81` already describe this correctly — they are NOT "load-bearing for FK enforcement" (original review claim) but "load-bearing for changeset-error UX." No source edits required.
+
+**Trajectory section impact:** the "Risk check" item 2 ("C2 (FK pragma OFF) — every CASCADE/RESTRICT/CHECK in 23 migrations is decorative in prod") is FALSE. The migrations are enforced. The trajectory section's "data-integrity invariants we thought were enforced are not" framing reverses to "data-integrity invariants we thought were not enforced are." The CRITICAL severity tally is now **2 (C1+C3), not 3.** Persistence/S7 ("validate_subject_exists TOCTOU loses its backstop without C2 fix") was wrong about the backstop disappearance — re-evaluate at bucket B before promoting to a HIGH if the changeset-error UX itself is at risk.
+
+**Bucket A action:** Document-only correction. No source-tree changes for C2. C1 (SASL phase guard) and C3 (visitor WHOIS) remain CRITICAL and were fixed in bucket A as planned.
+
+### C2 (HISTORICAL — invalidated text retained for audit)
 
 `config/runtime.exs:22-27` ; `config/dev.exs:3-6` ; `config/config.exs:71-73`. SQLite ships with `PRAGMA foreign_keys = OFF` by default. Nowhere in the codebase do we set it for dev or prod. Test runs only enable it implicitly via Sandbox defaults — which is precisely why every `assoc_constraint` works in tests but the comments throughout the codebase describe FK errors as un-pattern-matchable in prod.
 

@@ -6,6 +6,11 @@
 ## CRITICAL
 
 ### S1. `foreign_keys` PRAGMA never enabled — every FK + every CHECK is a no-op in prod
+
+❌ **FALSE FINDING — corrected 2026-05-12 bucket A.** The `ecto_sqlite3` adapter sets `PRAGMA foreign_keys = ON` on every connection-init by default (see `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:85` + `deps/exqlite/lib/exqlite/pragma.ex:52`). Live-container probe confirmed `Grappa.Repo.query!("PRAGMA foreign_keys").rows == [[1]]` AND that an orphan-FK insert raises `Exqlite.Error "FOREIGN KEY constraint failed"`. The reviewer read "SQLite ships with PRAGMA foreign_keys = OFF" as the runtime default and missed the adapter's connection-init override. See compiled review doc's C2 section for the full correction. The S7 finding below also inherits the false premise — re-validate at bucket B.
+
+### S1 (HISTORICAL — invalidated text retained for audit)
+
 **File:** `config/runtime.exs:22-27` ; `config/dev.exs:3-6` ; `config/config.exs:71-73`
 **Category:** SQLite / data integrity
 SQLite ships with `PRAGMA foreign_keys = OFF` by default — it must be re-enabled on every connection. Nowhere in the codebase do we set it: prod, dev and the `config/config.exs` defaults all configure `Grappa.Repo` without `foreign_keys: true` (the option `ecto_sqlite3` exposes for connection-init pragmas). Test runs only enable it implicitly via the Sandbox pool's defaults — which is precisely why every `assoc_constraint` works in tests but the comments throughout the codebase describe FK errors as un-pattern-matchable in prod ("ecto_sqlite3 returns the constraint name as `nil`").
