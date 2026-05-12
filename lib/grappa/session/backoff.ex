@@ -94,6 +94,22 @@ defmodule Grappa.Session.Backoff do
   counter but adding a per-failure event would create a noisy stream
   that PromEx consumers don't currently need. Add when there's a
   metric that requires it.
+
+  ## Test isolation
+
+  Application-wide singleton (`name: __MODULE__`, ETS table
+  `:session_backoff_state`) shared across the entire `mix test` run.
+  `Ecto.Adapters.SQL.Sandbox` covers the Repo, but neither this
+  GenServer nor its named ETS table has a per-test sandbox. Two
+  concurrent tests colliding on a recycled sqlite rowid (network_id)
+  would inherit each other's failure counts, producing intermittent
+  failures whose surface line/file does not predict the offending
+  pair. `config :ex_unit, max_cases: 1` in `config/test.exs` is the
+  global guard — every test runs in series and inherits a clean
+  singleton state via `setup` helpers. Tests touching this module
+  (`Backoff.{record_failure,record_success,reset,wait_ms,
+  failure_count}/2`) MUST stay `async: false` so the same constraint
+  applies even if `max_cases` is later relaxed for a faster lane.
   """
   use GenServer
 

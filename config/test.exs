@@ -34,6 +34,32 @@ config :grappa, GrappaWeb.Endpoint,
 
 config :logger, level: :warning
 
+# Test-infra cluster (2026-05-12, post-mega-cluster): force ExUnit to
+# run one test case at a time. The Application starts ONCE per
+# `mix test` process, so `Grappa.Session.Backoff`,
+# `Grappa.Admission.NetworkCircuit`, `Grappa.WSPresence`, and
+# `Grappa.SessionRegistry` are singletons shared across every test.
+# `Ecto.Adapters.SQL.Sandbox` covers the Repo, but those GenServer +
+# ETS singletons have no per-test sandbox — two concurrent tests
+# colliding on a recycled sqlite rowid (network_id) produce
+# `{:error, :network_cap_exceeded}` instead of `{:ok, :spawned, _}`
+# from `SpawnOrchestrator.spawn/4`, surfacing as intermittent CI
+# failures across files that don't directly touch each other (bucket
+# I `spawn_orchestrator_test:251` 2026-05-12 was the latest instance;
+# bucket H `BootstrapTest:413`, lifecycle/S5 6-test fan-out, and
+# spawn_orchestrator_test:157 were prior surfaces of the same class).
+#
+# Picking `max_cases: 1` over per-test singleton instances (the
+# alternative considered) per CLAUDE.md "Lightweight over heavyweight":
+# 1-line config beats touching 3 production GenServers + 30+ test
+# setups for a class that surfaces ~once-per-mega-cluster. Acceptance
+# criterion: ALL ci.yml + integration.yml GREEN ON FIRST RUN, no
+# `gh run rerun --failed` ever (memory
+# `feedback_no_ci_retries_on_first_failure`).
+#
+# Cost: ~22s async → ~45s sequential test-suite latency.
+config :ex_unit, max_cases: 1
+
 # Test runs invoke Grappa.Bootstrap explicitly via Bootstrap.run/0; we
 # don't want the application start to autoload bound credentials and
 # try to connect to real upstream IRC servers during `mix test`.

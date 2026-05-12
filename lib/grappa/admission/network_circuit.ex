@@ -55,6 +55,21 @@ defmodule Grappa.Admission.NetworkCircuit do
   cap (default 1) + CAPTCHA + network-total cap together serialize
   concurrent attempts → no thundering herd risk worth the gating
   complexity of half-open.
+
+  ## Test isolation
+
+  Application-wide singleton (`name: __MODULE__`, ETS table
+  `:admission_network_circuit_state`) shared across the entire
+  `mix test` run. `Ecto.Adapters.SQL.Sandbox` covers the Repo, but
+  this GenServer + ETS table have no per-test sandbox. Two concurrent
+  tests crashing on the same `network_id` (sqlite rowid recycling)
+  would inherit each other's circuit state, producing intermittent
+  Login `:upstream_unreachable` returns whose surface does not
+  predict the offending pair. `config :ex_unit, max_cases: 1` in
+  `config/test.exs` is the global guard. Tests touching this module
+  (`NetworkCircuit.{record_failure,record_success,check}/1`) MUST
+  stay `async: false` so the same constraint applies even if
+  `max_cases` is later relaxed for a faster lane.
   """
   use GenServer
 

@@ -51,6 +51,13 @@ defmodule Grappa.Application do
         # Registry before DynamicSupervisor — Session.Server registers
         # itself under {:session, user, network_id} via this Registry,
         # and lookups happen in DynamicSupervisor's start_child cascade.
+        # Application-wide singleton (`name: Grappa.SessionRegistry`)
+        # shared across the entire `mix test` run; tests sharing the
+        # same `network_id` would observe each other's registered
+        # session pids. `config :ex_unit, max_cases: 1` in
+        # `config/test.exs` is the global guard. Tests touching this
+        # registry (Session.whereis/2 callers, Bootstrap.spawn_*,
+        # SpawnOrchestrator.spawn/4) MUST stay `async: false`.
         {Registry, keys: :unique, name: Grappa.SessionRegistry},
 
         # Backoff before SessionSupervisor — owns the ETS table that

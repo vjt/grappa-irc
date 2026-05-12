@@ -51,6 +51,18 @@ defmodule Grappa.WSPresence do
   A crash in WSPresence (which is `:permanent`) causes a restart with empty
   state — auto-away for current sessions is lost until the user next
   disconnects. Session.Servers are unaffected (no link to WSPresence).
+
+  ## Test isolation
+
+  Application-wide singleton (`name: __MODULE__`) shared across the
+  entire `mix test` run. The `sockets` map is keyed by `user_name`;
+  two concurrent tests reusing the same fixture name would inherit
+  each other's pid sets, producing spurious `:ws_all_disconnected`
+  notifications. `config :ex_unit, max_cases: 1` in `config/test.exs`
+  is the global guard. Tests touching this module
+  (`WSPresence.{register,client_closing,reset_for_test}/*`) MUST stay
+  `async: false` so the same constraint applies even if `max_cases`
+  is later relaxed for a faster lane.
   """
   use GenServer
 
