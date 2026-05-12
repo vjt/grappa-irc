@@ -254,6 +254,75 @@ defmodule Grappa.Scrollback do
     |> Repo.all()
   end
 
+  @doc """
+  Fetches up to `limit` rows for `(subject, network_id, channel)` whose
+  `id` is strictly greater than `after_id`, in ASCENDING `id` order.
+
+  Sole consumer (today): cic's reconnect-backfill flow (CP25-cluster
+  message-replay-on-reconnect, 2026-05-12). Cic tracks
+  `lastSeenMessageId` per channel/dm window and, on Phoenix Channel
+  re-join, calls
+  `GET /api/networks/:slug/channels/:chan/messages?after=<id>` to pull
+  any rows that arrived during the WS gap. The fire-and-forget PubSub
+  broadcast can drop in-flight events when the WS is down; the
+  scrollback DB is the source of truth.
+
+  Mirror-symmetric to `fetch/6` in shape (subject filter, network_id
+  filter, channel-vs-DM dispatch, optional own-nick narrowing,
+  `:network` preload, max-page clamp) but inverts the cursor key:
+  uses `id > after_id` instead of `server_time > t`. Two reasons:
+
+    1. The wire shape (`Wire.to_json/1`) already exposes `id`, so cic
+       has the value cheap.
+    2. `id` is monotonic per-row; same-millisecond `server_time` ties
+       (the existing `fetch/6` docstring's caveat) become a non-issue.
+
+  Returns ASC so cic appends in chronological order without a flip
+  in the consumer. The cursor is a numeric comparison only — passing
+  an `after_id` for a row that was deleted (or never existed) is
+  legal: the query returns every row with a strictly greater `id`,
+  which is the desired resume-from-gap behaviour.
+
+  `:network` is preloaded — same wire-shape-ready contract as
+  `fetch/6` (A26).
+  """
+  @spec fetch_after(subject(), integer(), String.t(), integer(), pos_integer()) :: [Message.t()]
+  def fetch_after(subject, network_id, channel, after_id, limit),
+    do: fetch_after(subject, network_id, channel, after_id, limit, nil)
+
+  @doc """
+  6-arity variant of `fetch_after/5` with explicit `own_nick` for own-nick
+  query window narrowing — symmetric with `fetch/6` (CP14 B3 narrowing
+  rule). When `own_nick` matches `channel` (case-insensitive), the fetch
+  restricts to self-msgs (rows where channel == dm_with == own_nick),
+  preventing every inbound DM from leaking into the own-nick window's
+  backfill page. Pass `nil` when the caller doesn't have a session
+  (the channel-shape default applies).
+  """
+  @spec fetch_after(
+          subject(),
+          integer(),
+          String.t(),
+          integer(),
+          pos_integer(),
+          String.t() | nil
+        ) :: [Message.t()]
+  def fetch_after(subject, network_id, channel, after_id, limit, own_nick)
+      when is_integer(network_id) and is_integer(after_id) and is_integer(limit) and limit > 0 and
+             (is_binary(own_nick) or is_nil(own_nick)) do
+    capped = min(limit, @max_limit)
+
+    Message
+    |> subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> channel_or_dm_where(channel, own_nick)
+    |> where([m], m.id > ^after_id)
+    |> order_by([m], asc: m.id)
+    |> limit(^capped)
+    |> preload(:network)
+    |> Repo.all()
+  end
+
   @typedoc """
   CP15 B4 — archive entry shape returned by `list_archive/3`.
 

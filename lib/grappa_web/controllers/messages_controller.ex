@@ -55,6 +55,13 @@ defmodule GrappaWeb.MessagesController do
   Optional query params:
     * `before` — `server_time` cursor; only rows strictly less than it
       are returned. Absent: latest page. Unparseable: 400.
+    * `after` — `id` cursor; returns rows whose `id` is strictly
+      GREATER than the value, in ASCENDING `id` order (newest at the
+      bottom). Sole consumer is cic's reconnect-backfill flow — the
+      WS dropped, cic missed PubSub broadcasts, scrollback DB is the
+      source of truth. Mutually exclusive with `before` (per intent:
+      one direction per request). Unparseable: 400; both supplied
+      together: 400.
     * `limit` — page size (default `#{@default_limit}`, hard cap in
       `Grappa.Scrollback.fetch/5`). Must be a positive integer when
       present. Absent: default. Non-positive or non-integer: 400.
@@ -75,31 +82,37 @@ defmodule GrappaWeb.MessagesController do
     # fetch. Without this, an invalid segment would fall through to
     # `Scrollback.fetch/5` and return 200 + empty list, hiding the typo.
     with :ok <- validate_target_name(channel),
-         {:ok, cursor} <- parse_cursor(params["before"]),
+         {:ok, direction} <- parse_direction(params),
          {:ok, limit} <- parse_limit(params["limit"]) do
-      # `:network` is preloaded by `Scrollback.fetch/6` itself —
-      # the boundary contract returns wire-shape-ready rows. No
-      # post-fetch preload helper here; A26 collapsed the
-      # controller's `preload_networks/2` into the Scrollback
-      # boundary so the contract is single-sourced.
+      # `:network` is preloaded by `Scrollback.fetch/6` /
+      # `Scrollback.fetch_after/6` themselves — the boundary contract
+      # returns wire-shape-ready rows. No post-fetch preload helper here;
+      # A26 collapsed the controller's `preload_networks/2` into the
+      # Scrollback boundary so the contract is single-sourced.
       #
       # `own_nick` resolves the live IRC nick for this `(subject,
-      # network)` so `Scrollback.fetch/6` can narrow the OWN-NICK
-      # query window's filter to self-msgs only — preventing every
-      # inbound DM (which the server stores at `channel = own_nick,
-      # dm_with = peer`) from leaking into the own-nick scrollback.
-      # `nil` falls back to the standard channel/peer-DM filter shape.
-      # Falls back to nil on `:no_session` (parked / unbootstrapped /
-      # transient supervisor restart) — the OR-shape for peer DMs is
-      # still safe; only own-nick narrowing is gated on session
-      # presence.
+      # network)` so the fetch can narrow the OWN-NICK query window's
+      # filter to self-msgs only — preventing every inbound DM (which
+      # the server stores at `channel = own_nick, dm_with = peer`)
+      # from leaking into the own-nick scrollback. `nil` falls back to
+      # the standard channel/peer-DM filter shape. Falls back to nil
+      # on `:no_session` (parked / unbootstrapped / transient
+      # supervisor restart) — the OR-shape for peer DMs is still safe;
+      # only own-nick narrowing is gated on session presence.
       own_nick =
         case Session.current_nick(subject, network.id) do
           {:ok, nick} -> nick
           {:error, :no_session} -> nil
         end
 
-      messages = Scrollback.fetch(subject, network.id, channel, cursor, limit, own_nick)
+      messages =
+        case direction do
+          {:before, cursor} ->
+            Scrollback.fetch(subject, network.id, channel, cursor, limit, own_nick)
+
+          {:after, after_id} ->
+            Scrollback.fetch_after(subject, network.id, channel, after_id, limit, own_nick)
+        end
 
       render(conn, :index, messages: messages)
     end
@@ -146,9 +159,27 @@ defmodule GrappaWeb.MessagesController do
 
   def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
 
-  defp parse_cursor(nil), do: {:ok, nil}
+  defp parse_direction(params) do
+    before_param = params["before"]
+    after_param = params["after"]
 
-  defp parse_cursor(s) when is_binary(s) do
+    case {before_param, after_param} do
+      {nil, nil} ->
+        {:ok, {:before, nil}}
+
+      {b, nil} ->
+        with {:ok, n} <- parse_int(b), do: {:ok, {:before, n}}
+
+      {nil, a} ->
+        with {:ok, n} <- parse_int(a), do: {:ok, {:after, n}}
+
+      {_, _} ->
+        # Mutually exclusive — silent precedence would mask client bugs.
+        {:error, :bad_request}
+    end
+  end
+
+  defp parse_int(s) when is_binary(s) do
     case Integer.parse(s) do
       {n, ""} -> {:ok, n}
       _ -> {:error, :bad_request}

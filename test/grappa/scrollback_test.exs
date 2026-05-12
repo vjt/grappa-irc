@@ -545,6 +545,194 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # Message-replay-on-reconnect cluster — server-side delta for the
+  # cic backfill flow. `fetch_after/6` mirror-symmetric to `fetch/6`
+  # but with cursor on `id > after_id` (NOT server_time): the wire
+  # already exposes `id` (`Wire.to_json/1`), the auto-increment is
+  # monotonic, and using id avoids the same-ms-collision class the
+  # existing `before:` cursor docstring warns about. Returns rows in
+  # ASC `id` order so cic can append in chronological sequence
+  # without flipping in the consumer.
+  describe "fetch_after/6" do
+    test "returns rows strictly after `after_id` in ASCENDING id order",
+         %{user: user, network: net} do
+      rows =
+        for i <- 0..4 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [_, _, m2 | _] = rows
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m2.id, 10)
+
+      assert Enum.map(page, & &1.body) == ["msg 3", "msg 4"]
+    end
+
+    test "returns [] when after_id is the newest row", %{user: user, network: net} do
+      latest =
+        for i <- 0..2 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+        |> List.last()
+
+      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", latest.id, 10) == []
+    end
+
+    test "returns [] when after_id is greater than the newest row id",
+         %{user: user, network: net} do
+      for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+
+      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 999_999_999, 10) == []
+    end
+
+    test "after_id of a deleted/non-existent row still returns rows with id > that value",
+         %{user: user, network: net} do
+      # The cursor is a numeric comparison, NOT a join — referenced row
+      # need not exist. Cic might persist the last-seen id, then the
+      # operator hard-deletes that row via a future admin path; the
+      # backfill must still be able to resume from the gap.
+      rows =
+        for i <- 0..3 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [m0, _, m2, m3] = rows
+
+      # Pick an id that is between m0 and m2 but not in the table.
+      gap_id = m0.id + 1
+      Repo.delete!(Enum.at(rows, 1))
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", gap_id, 10)
+      assert Enum.map(page, & &1.id) == [m2.id, m3.id]
+    end
+
+    test "filters by (user_id, network_id, channel) — same per-user iso as fetch/5",
+         %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
+      {:ok, alice} = Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, mine} = ScrollbackHelpers.insert(sample(user, net, 0, %{body: "mine"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#other", body: "wrong-chan"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{body: "wrong-net"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 3, %{sender: "alice", body: "wrong-user"}))
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", mine.id - 1, 10)
+      assert Enum.map(page, & &1.body) == ["mine"]
+    end
+
+    test "clamps limit to max_page_size/0", %{user: user, network: net} do
+      cap = Scrollback.max_page_size()
+
+      first_id_seed =
+        for i <- 0..(cap + 4) do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+        |> hd()
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", first_id_seed.id - 1, cap + 1_000)
+      assert length(page) == cap
+    end
+
+    test "raises FunctionClauseError on non-positive limit", %{user: user, network: net} do
+      assert_raise FunctionClauseError, fn ->
+        Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 1, 0)
+      end
+    end
+
+    test "rows have :network preloaded — wire-shape-ready contract",
+         %{user: user, network: net} do
+      {:ok, m0} = ScrollbackHelpers.insert(sample(user, net, 0))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1))
+
+      [row | _] = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10)
+      assert %Network{id: id, slug: slug} = row.network
+      assert id == net.id
+      assert slug == net.slug
+    end
+
+    test "DM bidirectional — peer target merges inbound + outbound after the cursor",
+         %{user: user, network: net} do
+      # Outbound /msg peer → channel=peer
+      {:ok, outbound} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "peer",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "out",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      # Inbound peer→ownnick → channel=ownnick, dm_with=peer
+      {:ok, inbound} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 101,
+          kind: :privmsg,
+          sender: "peer",
+          body: "in",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "peer", outbound.id - 1, 10, "vjt-grappa")
+      assert Enum.map(page, & &1.id) == [outbound.id, inbound.id]
+    end
+
+    test "own-nick query window narrows to self-msgs only when own_nick supplied",
+         %{user: user, network: net} do
+      # Inbound DM from peer (channel=ownnick, dm_with=peer) — must NOT
+      # leak into own-nick window's backfill.
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 100,
+          kind: :privmsg,
+          sender: "peer",
+          body: "from-peer",
+          meta: %{},
+          dm_with: "peer"
+        })
+
+      # Self-msg /msg ownnick (channel=ownnick, dm_with=ownnick).
+      {:ok, self_msg} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: "vjt-grappa",
+          server_time: 101,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "to-self",
+          meta: %{},
+          dm_with: "vjt-grappa"
+        })
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "vjt-grappa", 0, 10, "vjt-grappa")
+      assert Enum.map(page, & &1.id) == [self_msg.id]
+    end
+
+    test "5-arity wrapper passes nil own_nick (channel-shape default)",
+         %{user: user, network: net} do
+      {:ok, m0} = ScrollbackHelpers.insert(sample(user, net, 0))
+      {:ok, m1} = ScrollbackHelpers.insert(sample(user, net, 1))
+
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10)
+      assert Enum.map(page, & &1.id) == [m1.id]
+    end
+  end
+
   # CP14 B3 — DM history bidirectional via :dm_with.
   #
   # Bug: cic's loadInitialScrollback(peer) for a DM (query) window

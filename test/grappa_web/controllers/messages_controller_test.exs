@@ -163,6 +163,49 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 
+  # Message-replay-on-reconnect cluster — `?after=<id>` cursor for cic's
+  # WS-reconnect backfill. ASC by `id`, exclusive of the cursor row.
+  test "GET ?after=<id> returns rows with id > cursor in ASC id order",
+       %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    # Pick the second-oldest row's id; should yield m2, m3, m4 ascending.
+    conn0 = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
+    body0 = json_response(conn0, 200)
+    # Body is DESC; the second-oldest is the second-from-last.
+    second_oldest = Enum.at(body0, -2)
+
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?after=#{second_oldest["id"]}")
+    body = json_response(conn, 200)
+    assert Enum.map(body, & &1["body"]) == ["m2", "m3", "m4"]
+  end
+
+  test "GET ?after=<huge> returns []", %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?after=999999999")
+    assert json_response(conn, 200) == []
+  end
+
+  test "GET ?after=banana returns 400", %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?after=banana")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  test "GET ?before and ?after together returns 400 (mutually exclusive)",
+       %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=10&after=5")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  test "GET ?after=<id>&limit=2 caps the page size", %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    # cursor BELOW the lowest id in the table — yields all five, capped to 2.
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?after=0&limit=2")
+    body = json_response(conn, 200)
+    assert length(body) == 2
+    # ASC: lowest two of m0..m4 (which are inserted with server_time = 0..4).
+    assert Enum.map(body, & &1["body"]) == ["m0", "m1"]
+  end
+
   # After the C4/DM fix-up: the target validator accepts BOTH channel-sigil
   # names AND valid IRC nicks (DM targets). A plain nick like "notachan"
   # is a valid DM target — it returns 200+[] (no scrollback rows) not 400.
