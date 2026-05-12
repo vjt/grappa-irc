@@ -1071,6 +1071,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           })
 
         assert_reply(ref, :ok)
+
         {:ok, _} =
           IRCServer.wait_for_line(
             irc_server,
