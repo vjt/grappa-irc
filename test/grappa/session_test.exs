@@ -53,6 +53,22 @@ defmodule Grappa.SessionTest do
                Session.send_join({:user, @user_id}, @network_id, "#chan\r\nQUIT")
     end
 
+    # Code-review CRIT-1 (bucket C): irc/S2 added `valid_channel?/1` to
+    # `Client.send_join`/`send_part` — pre-CRIT-1 the Session facade
+    # only gated `safe_line_token?`, so a malformed channel slipped to
+    # the cast and `Server.handle_cast/2`'s strict `:ok = ...` would
+    # MatchError. Tighten the facade so the rejection happens BEFORE
+    # the cast, mirroring `send_topic`'s shape.
+    test "rejects malformed channel (missing prefix) before whereis lookup (CRIT-1)" do
+      assert {:error, :invalid_line} =
+               Session.send_join({:user, @user_id}, @network_id, "no-hash")
+    end
+
+    test "rejects empty channel before whereis lookup (CRIT-1)" do
+      assert {:error, :invalid_line} =
+               Session.send_join({:user, @user_id}, @network_id, "")
+    end
+
     test "valid input falls through to :no_session for unknown session" do
       assert {:error, :no_session} =
                Session.send_join({:user, @user_id}, @network_id, "#chan")
@@ -63,6 +79,16 @@ defmodule Grappa.SessionTest do
     test "rejects \\r\\n in channel before whereis lookup" do
       assert {:error, :invalid_line} =
                Session.send_part({:user, @user_id}, @network_id, "#chan\r\nQUIT")
+    end
+
+    test "rejects malformed channel (missing prefix) before whereis lookup (CRIT-1)" do
+      assert {:error, :invalid_line} =
+               Session.send_part({:user, @user_id}, @network_id, "no-hash")
+    end
+
+    test "rejects empty channel before whereis lookup (CRIT-1)" do
+      assert {:error, :invalid_line} =
+               Session.send_part({:user, @user_id}, @network_id, "")
     end
 
     test "valid input falls through to :no_session for unknown session" do

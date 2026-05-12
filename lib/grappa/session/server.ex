@@ -994,13 +994,34 @@ defmodule Grappa.Session.Server do
 
   @impl GenServer
   def handle_cast({:send_join, channel}, state) when is_binary(channel) do
-    :ok = Client.send_join(state.client, channel)
-    {:noreply, record_in_flight_join(state, channel)}
+    # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
+    # returns `{:error, :invalid_line}` for malformed channels. The
+    # `Session.send_join/3` facade gates `valid_channel?` before the
+    # cast (CRIT-1 fix), so reaching this clause with a malformed
+    # channel requires a caller bypassing the facade. Defensive
+    # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
+    # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
+    # a future bypass-caller logs + drops instead of MatchError-crashing
+    # the Session.
+    case Client.send_join(state.client, channel) do
+      :ok ->
+        {:noreply, record_in_flight_join(state, channel)}
+
+      {:error, :invalid_line} ->
+        Logger.warning("send_join cast rejected: invalid channel name", channel: inspect(channel))
+        {:noreply, state}
+    end
   end
 
   def handle_cast({:send_part, channel}, state) when is_binary(channel) do
-    :ok = Client.send_part(state.client, channel)
-    {:noreply, state}
+    case Client.send_part(state.client, channel) do
+      :ok ->
+        {:noreply, state}
+
+      {:error, :invalid_line} ->
+        Logger.warning("send_part cast rejected: invalid channel name", channel: inspect(channel))
+        {:noreply, state}
+    end
   end
 
   # Deferred Client.start_link/1 from `handle_continue({:start_client, _}, _)`'s

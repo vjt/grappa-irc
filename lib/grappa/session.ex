@@ -314,7 +314,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line}
   def send_join(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    if Identifier.safe_line_token?(channel) do
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
       cast_session(subject, network_id, {:send_join, channel})
     else
       {:error, :invalid_line}
@@ -329,7 +329,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line}
   def send_part(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    if Identifier.safe_line_token?(channel) do
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
       cast_session(subject, network_id, {:send_part, channel})
     else
       {:error, :invalid_line}

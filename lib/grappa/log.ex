@@ -45,6 +45,15 @@ defmodule Grappa.Log do
 
   @type session_metadata :: [user: String.t(), network: String.t()]
 
+  # Mirrored at `Grappa.IRC.Client.session_metadata` (irc/S6, 2026-05-12
+  # bucket C) — kept structurally identical but DUPLICATED so the IRC
+  # boundary stays free of `Grappa.Log` (extraction memory
+  # `project_extract_irc_libs`: parser + client are slated for split
+  # into standalone hex libs post-Phase-5; their Boundary spec is
+  # `deps: []`). When extending this schema (e.g. Phase 5 adds
+  # `:request_id`), update BOTH type aliases. Drift is silent — there
+  # is no architecture test pinning the two types in sync.
+
   @doc """
   Returns the canonical session-context keyword list — `[user: u,
   network: n]`. Use this whenever you need to pass the context as data
