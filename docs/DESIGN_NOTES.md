@@ -4485,6 +4485,107 @@ zero production-code changes (only moduledoc additions documenting
 the constraint at the declaration site), ~20s test-suite latency
 cost, class provably closed at the lowest possible cost.
 
+## CP26 — Message replay on reconnect (2026-05-13)
+
+Vjt-observed live 2026-05-12 ~22:51 CEST: cic on iOS Safari (and other
+tab-suspending contexts) loses live messages after a transient WS
+disconnect. Server scrollback DB has the rows; only a full page
+refresh recovers them. Multiple consecutive misses on `#it-opers`,
+14s gap. NEVER happened before the post-cr-review mega-cluster per
+vjt — even on iOS Safari which routinely suspends tabs.
+
+The triggering regression was in the mega-cluster but the
+**architectural gap** is older: server-side `Phoenix.PubSub.broadcast/2`
+is fire-and-forget. If the WS drops the instant before a row's
+broadcast, the in-flight payload has no live subscriber and is
+silently lost for THAT cic session. Scrollback DB is source-of-truth;
+the live stream is best-effort.
+
+The cluster fixes the architectural gap, not just the mega-cluster
+regression that surfaced it.
+
+### Server-side delta — `Scrollback.fetch_after/6`
+
+Mirror-symmetric to existing `fetch/6` but with cursor on `id > after_id`
+(NOT `server_time`). Three reasons:
+
+  - The wire shape (`Wire.to_json/1`) already exposes `id` so cic has
+    the value cheap.
+  - `id` is monotonic per-row; same-millisecond `server_time` ties (the
+    existing `fetch/6` docstring's caveat) become a non-issue.
+  - Returns ASC (chronological) so cic appends in natural sequence
+    without a flip in the consumer.
+
+REST controller adds `?after=<id>` query param. Mutually exclusive
+with `?before=` (silent precedence would mask client bugs); both
+unparseable / both supplied together → 400.
+
+### Cic-side reconnect-backfill — three concerns, one module
+
+`cicchetto/src/lib/reconnectBackfill.ts`:
+
+  - `recordSeen(key, msg)` — high-water mark per topic, monotonic.
+    Wired into `routeMessage` so EVERY rendered row updates the
+    cursor. Live and backfilled rows go through the same site by
+    design.
+  - `noteJoinOk(slug, name)` — per-topic join counter. First call
+    returns false (initial subscribe); subsequent calls return true
+    (re-join after disconnect). phoenix.js's `Push.resend()` does
+    not clear `recHooks`, so a single `.receive("ok", cb)` registered
+    at first join keeps firing on every auto-rejoin — the WS reconnect
+    lifecycle is the natural detector, no parallel signal needed.
+  - `runBackfill(slug, name)` — REST GET `?after=<lastSeenId>`,
+    dispatches each row through `appendToScrollback` (the SAME verb
+    the live WS handler uses → dedupe-by-id is automatic, ordering
+    preserved by monotonic id, no special interleave logic).
+    Concurrency-guarded (no overlapping fetches per key); errors log
+    + leave cursor for next reconnect to retry.
+
+`socket.ts:joinChannel` gained an optional `onJoinOk` callback parameter;
+all 5 join sites in `subscribe.ts` (channels, pending, query, dm-listener,
+$server) pass `() => noteJoinOk(...) && runBackfill(...)`. The
+DM-listener variant carries an extra paragraph explaining why
+own-nick-topic backfill recovers self-msgs only (CP14-B3 own-nick
+narrowing on the controller); inbound peer DM gap recovery rides
+each per-peer query window's own backfill cursor.
+
+### Bonus — defensive resync on socket-open transitions
+
+A second gap class: a topic added server-side DURING the disconnect
+window. Cic never learns of it because the `channels_changed`
+broadcast on the user-topic was best-effort fan-out and got dropped
+on the disconnected WS. Phoenix.js's auto-rejoin handles known
+Channel objects; topics cic never knew about are silently absent
+forever (until the next page refresh).
+
+Fix: a new createEffect in `subscribe.ts` watches `socketHealth().state`
+and on every transition into "open" (post-initial) calls
+`refetchNetworks()` + `refetchChannels()`. Forces the channels-loop
+createEffect to re-run with fresh server-side truth so any topic
+added during the gap is picked up. The `prev` filter masks the
+initial open transition so the bootstrap path isn't double-fired.
+
+Together with the per-topic backfill, the cluster covers BOTH the
+missed-message gap and the missed-topic gap. Per the cluster prompt:
+"the right behavior is BOTH: 1. Resub ALL channels on reconnect
+(no missed topic) 2. Backfill any messages that arrived during the
+gap." Both shipped in the same cluster.
+
+### Acceptance + LANDED evidence
+
+`scripts/check.sh` exit-0:
+- `8 doctests, 29 properties, 1577 tests, 0 failures`
+- `Total errors: 0, Skipped: 0, Unnecessary Skips: 0` (Dialyzer)
+
+`scripts/integration.sh message-replay-on-reconnect`:
+- `1 passed (430ms inside the parallel suite)` first-run green
+- `1 passed (746ms standalone)` second-run green
+
+Pre-existing local-only flake observed: `cp13-server-window:171`.
+Confirmed identical failure on plain `main` (pre-cluster) — NOT a
+regression from this cluster. CI on `main` remains green per
+`gh run list`.
+
 
 ---
 
