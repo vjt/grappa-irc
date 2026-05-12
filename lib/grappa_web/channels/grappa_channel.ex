@@ -422,14 +422,19 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # /banlist  →  MODE #chan b (query form, no sign)
+  #
+  # CP24 bucket B reviewer add-on: read-only verb — visitors are
+  # entitled to issue it. The 367/368 numerics broadcast on the
+  # subject's own subject_label topic (mirror of WHOIS post-C3),
+  # so the visitor's cic surface is the only consumer.
   def handle_in(
         "banlist",
         %{"network_id" => network_id, "channel" => channel},
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_banlist({:user, user.id}, network_id, channel)
+    dispatch_subject_verb(socket, fn subject ->
+      Session.send_banlist(subject, network_id, channel)
     end)
   end
 
@@ -462,14 +467,20 @@ defmodule GrappaWeb.GrappaChannel do
   # The 352/315 burst then folds into N+1 :persist :notice rows routed
   # to the target channel (if joined) or $server (otherwise) — all
   # downstream of this bridge, no extra wiring needed here.
+  #
+  # CP24 bucket B reviewer add-on: read-only verb — visitors are
+  # entitled to issue it. Routes via `dispatch_subject_verb/2` (mirror
+  # of WHOIS post-C3); the WHO bundle's broadcast topic uses the
+  # subject's `subject_label` so the visitor's own cic surface is the
+  # only consumer.
   def handle_in(
         "who",
         %{"network_id" => network_id, "channel" => channel},
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_who({:user, user.id}, network_id, channel)
+    dispatch_subject_verb(socket, fn subject ->
+      Session.send_who(subject, network_id, channel)
     end)
   end
 
@@ -480,14 +491,17 @@ defmodule GrappaWeb.GrappaChannel do
   # MembersPane (joined target — existing members_seeded path) or
   # persists 2 :notice rows in $server (non-joined target — nick list
   # + EOF terminator) — all downstream of this bridge.
+  #
+  # CP24 bucket B reviewer add-on: read-only verb — visitors are
+  # entitled to issue it. Routes via `dispatch_subject_verb/2`.
   def handle_in(
         "names",
         %{"network_id" => network_id, "channel" => channel},
         socket
       )
       when is_integer(network_id) and is_binary(channel) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_names({:user, user.id}, network_id, channel)
+    dispatch_subject_verb(socket, fn subject ->
+      Session.send_names(subject, network_id, channel)
     end)
   end
 

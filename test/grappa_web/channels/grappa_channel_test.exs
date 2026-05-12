@@ -1032,6 +1032,101 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # CP24 cluster post-cr-review bucket B reviewer add-on: read-only
+  # ops verbs (`who`, `names`, `banlist`) were still routing through
+  # `dispatch_ops_verb/2` post-bucket-A — visitors got `visitor_not_allowed`
+  # despite the same spec-#2 carve-out logic that drove C3 (read-only
+  # verbs broadcast on the visitor's own subject_label topic, so visitors
+  # ARE entitled to issue them). These tests mirror the C3 WHOIS trio
+  # for each verb: live-session ↔ upstream wire, no-session → `no_session`,
+  # malformed channel → `invalid_line`.
+  describe "bucket B reviewer add-on — visitor read-only verb carve-out (who/names/banlist)" do
+    for {verb, wire_prefix} <- [
+          {"who", "WHO "},
+          {"names", "NAMES "},
+          {"banlist", "MODE "}
+        ] do
+      @verb verb
+      @wire_prefix wire_prefix
+
+      test "visitor socket: #{@verb} with live session sends upstream line" do
+        {irc_server, port} = start_irc_server()
+        {visitor, network} = setup_visitor_and_network_with_session(port)
+        :ok = await_handshake(irc_server)
+        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+        flush_server(irc_server)
+
+        visitor_name = "visitor:#{visitor.id}"
+        topic = Topic.user(visitor_name)
+
+        {:ok, _, visitor_socket} =
+          visitor_name
+          |> build_socket()
+          |> subscribe_and_join(topic, %{})
+
+        ref =
+          push(visitor_socket, @verb, %{
+            "network_id" => network.id,
+            "channel" => "#test"
+          })
+
+        assert_reply(ref, :ok)
+        {:ok, _} =
+          IRCServer.wait_for_line(
+            irc_server,
+            &String.starts_with?(&1, @wire_prefix <> "#test"),
+            1_000
+          )
+      end
+
+      test "visitor socket: #{@verb} without session returns no_session" do
+        slug = "snap-visitor-noses-#{@verb}-#{System.unique_integer([:positive])}"
+        {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+        visitor = visitor_fixture(network_slug: slug)
+
+        visitor_name = "visitor:#{visitor.id}"
+        topic = Topic.user(visitor_name)
+
+        {:ok, _, visitor_socket} =
+          visitor_name
+          |> build_socket()
+          |> subscribe_and_join(topic, %{})
+
+        ref =
+          push(visitor_socket, @verb, %{
+            "network_id" => network.id,
+            "channel" => "#test"
+          })
+
+        assert_reply(ref, :error, %{reason: "no_session"})
+      end
+
+      test "visitor socket: #{@verb} with CRLF channel returns invalid_line" do
+        {irc_server, port} = start_irc_server()
+        {visitor, network} = setup_visitor_and_network_with_session(port)
+        :ok = await_handshake(irc_server)
+        IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+        flush_server(irc_server)
+
+        visitor_name = "visitor:#{visitor.id}"
+        topic = Topic.user(visitor_name)
+
+        {:ok, _, visitor_socket} =
+          visitor_name
+          |> build_socket()
+          |> subscribe_and_join(topic, %{})
+
+        ref =
+          push(visitor_socket, @verb, %{
+            "network_id" => network.id,
+            "channel" => "#bad\r\nQUIT"
+          })
+
+        assert_reply(ref, :error, %{reason: "invalid_line"})
+      end
+    end
+  end
+
   describe "join rejects malformed topics" do
     test "rejects Phase 1 grappa:network: shape (regression check)" do
       # Sub-task 2h removed the Phase 1 `grappa:network:*` channel
