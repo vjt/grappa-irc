@@ -144,10 +144,12 @@ classifies the change:
   - `mix.lock` or `mix.exs` changed (deps + version + apps callback)
   - `lib/grappa/application.ex` changed (supervision tree read at
     boot only)
-  - `defstruct` line modified in a long-lived GenServer module
-    (Session.Server, IRC.Client, AuthFSM, WSPresence,
-    Admission.NetworkCircuit) — pattern-match crash on next callback
-    would otherwise be silent + deferred
+  - state-shape change in a long-lived `GenServer` — `defstruct`,
+    `@type t :: %{...}`, or `init/1` map literal modified.
+    Authoritative module list is
+    `lib/grappa/hot_reload/long_lived_modules.ex` (`@modules` +
+    `@state_helpers`); `deploy.sh` parses that file at preflight
+    time so the doc + script + Dialyzer cannot drift.
   - `Dockerfile`, `compose.yaml`, `bin/start.sh` (image substrate)
 
 Conservative bias: in doubt, COLD. `Phoenix.CodeReloader` does NOT

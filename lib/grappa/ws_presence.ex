@@ -72,7 +72,9 @@ defmodule Grappa.WSPresence do
   # `notify_pids` — %{user_name => pid()} for test overrides; in production nil
   # `refs_to_user` — %{reference() => user_name} for monitor → user lookup
 
-  @type state :: %{
+  defstruct sockets: %{}, notify_pids: %{}, refs_to_user: %{}
+
+  @type t :: %__MODULE__{
           sockets: %{String.t() => MapSet.t(pid())},
           notify_pids: %{String.t() => pid()},
           refs_to_user: %{reference() => String.t()}
@@ -185,12 +187,7 @@ defmodule Grappa.WSPresence do
 
   @impl GenServer
   def init(_) do
-    {:ok,
-     %{
-       sockets: %{},
-       notify_pids: %{},
-       refs_to_user: %{}
-     }}
+    {:ok, %__MODULE__{}}
   end
 
   @impl GenServer
@@ -206,15 +203,17 @@ defmodule Grappa.WSPresence do
         ref = Process.monitor(socket_pid)
         updated_set = MapSet.put(existing_set, socket_pid)
 
-        state
-        |> put_in([:sockets, user_name], updated_set)
-        |> put_in([:refs_to_user, ref], user_name)
+        %{
+          state
+          | sockets: Map.put(state.sockets, user_name, updated_set),
+            refs_to_user: Map.put(state.refs_to_user, ref, user_name)
+        }
       end
 
     # Store notify_pid override (last write wins — idempotent)
     state2 =
       if notify_pid != nil do
-        put_in(state1, [:notify_pids, user_name], notify_pid)
+        %{state1 | notify_pids: Map.put(state1.notify_pids, user_name, notify_pid)}
       else
         state1
       end
@@ -253,7 +252,7 @@ defmodule Grappa.WSPresence do
 
     if MapSet.size(remaining) == 0 and MapSet.member?(existing_set, socket_pid) do
       # Remove from sockets immediately (pid DOWN will be idempotent)
-      state1 = put_in(state, [:sockets, user_name], remaining)
+      state1 = %{state | sockets: Map.put(state.sockets, user_name, remaining)}
       notify(user_name, {:ws_all_disconnected, user_name}, state1)
       {:reply, :ok, state1}
     else
@@ -262,7 +261,7 @@ defmodule Grappa.WSPresence do
   end
 
   def handle_call(:reset_for_test, _, _) do
-    {:reply, :ok, %{sockets: %{}, notify_pids: %{}, refs_to_user: %{}}}
+    {:reply, :ok, %__MODULE__{}}
   end
 
   @impl GenServer
@@ -272,10 +271,10 @@ defmodule Grappa.WSPresence do
         {:noreply, state}
 
       user_name ->
-        state = update_in(state, [:refs_to_user], &Map.delete(&1, ref))
+        state = %{state | refs_to_user: Map.delete(state.refs_to_user, ref)}
         existing_set = Map.get(state.sockets, user_name, MapSet.new())
         updated_set = MapSet.delete(existing_set, pid)
-        state = put_in(state, [:sockets, user_name], updated_set)
+        state = %{state | sockets: Map.put(state.sockets, user_name, updated_set)}
 
         # Only fire ws_all_disconnected if we actually removed the pid from the set
         # (i.e., the pid was still tracked). If client_closing/2 already removed it
@@ -296,7 +295,7 @@ defmodule Grappa.WSPresence do
 
   # In production: find all Session.Servers for the user via the registry and
   # send the event to each. In tests: use the stored notify_pid override.
-  @spec notify(String.t(), term(), state()) :: :ok
+  @spec notify(String.t(), term(), t()) :: :ok
   defp notify(user_name, event, state) do
     case Map.get(state.notify_pids, user_name) do
       nil ->

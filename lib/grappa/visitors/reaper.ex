@@ -42,6 +42,10 @@ defmodule Grappa.Visitors.Reaper do
 
   @type opts :: [interval_ms: pos_integer(), name: GenServer.name()]
 
+  defstruct [:interval_ms]
+
+  @type t :: %__MODULE__{interval_ms: pos_integer()}
+
   @spec start_link(opts()) :: GenServer.on_start()
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -79,7 +83,7 @@ defmodule Grappa.Visitors.Reaper do
   def init(opts) do
     interval = Keyword.get(opts, :interval_ms, @default_interval_ms)
     schedule_tick(interval)
-    {:ok, %{interval_ms: interval}}
+    {:ok, %__MODULE__{interval_ms: interval}}
   end
 
   @impl GenServer

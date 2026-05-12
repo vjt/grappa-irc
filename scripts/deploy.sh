@@ -17,10 +17,13 @@
 #   - lib/grappa/application.ex changed → supervision tree re-read
 #     only at boot; new children never started, old strategy
 #     unchanged.
-#   - `defstruct` changed in a long-lived GenServer (Session.Server,
-#     IRC.Client) → next callback pattern-matches new shape against
-#     OLD state in the running process; crash deferred to that
-#     moment (could be hours later).
+#   - state-shape change in a long-lived GenServer (defstruct,
+#     `@type t :: %{...}`, or `init/1` map literal) → next callback
+#     pattern-matches new shape against OLD state in the running
+#     process; crash deferred to that moment (could be hours later).
+#     Authoritative module list lives in
+#     `lib/grappa/hot_reload/long_lived_modules.ex` — that file IS
+#     the SoT for both this script and CLAUDE.md "Hot vs cold deploy".
 #
 # Phoenix.CodeReloader cannot detect any of these — only compile
 # errors. So the preflight has to be in this script: diff
@@ -102,18 +105,42 @@ preflight() {
         return 1
     fi
 
-    # Class 3: defstruct changes in long-lived GenServer state. Static
-    # detection only: any `defstruct` line modified in known long-lived
-    # process modules. False-positive is preferable to false-negative
-    # here (deferred crash on shape mismatch is silent + far in the
-    # future).
-    local long_lived='lib/grappa/session/server\.ex|lib/grappa/session/[a-z_]+\.ex|lib/grappa/irc/client\.ex|lib/grappa/irc/auth_fsm\.ex|lib/grappa/ws_presence\.ex|lib/grappa/admission/network_circuit\.ex'
+    # Class 3: state-shape changes in long-lived GenServer modules.
+    # The authoritative module list lives in
+    # `lib/grappa/hot_reload/long_lived_modules.ex` (so docs +
+    # script + Dialyzer cannot drift). We parse the `@modules` and
+    # `@state_helpers` attributes out of that file with a stable
+    # one-module-per-line shape, then translate
+    # `Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex` and grep each
+    # touched file for unsafe shape markers.
+    #
+    # Markers, any one is fatal:
+    #   - `defstruct` line added/removed
+    #   - `@type t :: %{` line added/removed (bare-map state shape)
+    #   - `init(...) do` body added/removed (map-literal init for
+    #     bare-map modules)
+    #
+    # Conservative bias: in doubt, COLD. False positives just trigger
+    # a (~30s) cold deploy; false negatives produce a silent deferred
+    # shape-mismatch crash hours later.
+    local sot_file="lib/grappa/hot_reload/long_lived_modules.ex"
+    local module_atoms long_lived_files
+    module_atoms="$(grep -E '^\s+Grappa\.[A-Za-z_.0-9]+,?$' "$sot_file" | sed -E 's/[ ,]//g')"
+    if [ -z "$module_atoms" ]; then
+        die "preflight: failed to parse module list from $sot_file. Is the @modules / @state_helpers shape still 'one Grappa.X.Y per line'?"
+    fi
+    long_lived_files="$(echo "$module_atoms" \
+        | sed -E 's/^Grappa\.//; s/\./\//g' \
+        | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z]+)([A-Z][a-z])/\1_\2/g' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's|^|lib/grappa/|; s|$|.ex|')"
+
     local touched_long_lived
-    touched_long_lived="$(echo "$changed" | grep -E "^($long_lived)$" || true)"
+    touched_long_lived="$(echo "$changed" | grep -Fxf <(echo "$long_lived_files") || true)"
     if [ -n "$touched_long_lived" ]; then
         for f in $touched_long_lived; do
-            if git diff "$from..$to" -- "$f" | grep -qE '^[+-]\s*defstruct'; then
-                echo "  → defstruct changed in $f → COLD"
+            if git diff "$from..$to" -- "$f" | grep -qE '^[+-]\s*(defstruct|@type t ::\s*%\{|def init\()'; then
+                echo "  → state-shape marker changed in $f → COLD"
                 return 1
             fi
         done
