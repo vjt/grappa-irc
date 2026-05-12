@@ -23,7 +23,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
     # Pre-bind "vjt" + "azzurra" credential so Session.Server.init can
     # resolve the row at boot. The bearer-token session attaches the
     # same vjt to conn.assigns.current_user_id.
-    vjt = user_fixture(name: "vjt")
+    vjt = user_fixture(name: "vjt-#{u()}")
     {:ok, conn: put_bearer(conn, session_fixture(vjt).id), vjt: vjt}
   end
 

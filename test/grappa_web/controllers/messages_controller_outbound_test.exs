@@ -30,7 +30,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     # end-to-end). Pre-2g this used a different user's session because
     # Session.send_privmsg routed via Session.placeholder_user — that
     # mismatch is now a contract violation that would 404 every POST.
-    vjt = user_fixture(name: "vjt")
+    vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
     session = session_fixture(vjt)
     {:ok, conn: put_bearer(conn, session.id), vjt: vjt}
   end
@@ -62,7 +62,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", network.slug, "#sniffo")
+          Topic.channel(vjt.name, network.slug, "#sniffo")
         )
 
       # Sub-task 2h regression: Phase 1 topic shape gets nothing now.
@@ -190,7 +190,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Topic.channel("vjt", network.slug, "#other")
+          Topic.channel(vjt.name, network.slug, "#other")
         )
 
       pid = start_session_for(vjt, network)

@@ -37,7 +37,7 @@ defmodule GrappaWeb.NetworksControllerTest do
 
   describe "GET /networks — user subject" do
     test "with valid Bearer returns 200 + list of bound networks", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-list")
+      vjt = user_fixture(name: "vjt-list-#{u()}")
       session = session_fixture(vjt)
 
       {azzurra, _} = network_with_server(port: 6667, slug: "azzurra-list-#{u()}")
@@ -69,7 +69,7 @@ defmodule GrappaWeb.NetworksControllerTest do
     end
 
     test "nick in response matches the credential's configured IRC nick", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-nick-check")
+      vjt = user_fixture(name: "vjt-nick-check-#{u()}")
       session = session_fixture(vjt)
       {net, _} = network_with_server(port: 6671, slug: "azzurra-nick-#{u()}")
       _ = credential_fixture(vjt, net, %{nick: "irc-grappa"})
@@ -92,7 +92,7 @@ defmodule GrappaWeb.NetworksControllerTest do
     # row state is `:connected` (the bind_credential default), so a
     # freshly-bound network MUST report `connection_state: "connected"`.
     test "T32 fields surface in user network listing", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-t32-fields")
+      vjt = user_fixture(name: "vjt-t32-fields-#{u()}")
       session = session_fixture(vjt)
       {net, _} = network_with_server(port: 6672, slug: "azzurra-t32-#{u()}")
       _ = credential_fixture(vjt, net)
@@ -112,7 +112,7 @@ defmodule GrappaWeb.NetworksControllerTest do
     end
 
     test "T32 fields reflect a parked credential post-/disconnect", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-t32-parked")
+      vjt = user_fixture(name: "vjt-t32-parked-#{u()}")
       session = session_fixture(vjt)
       {net, _} = network_with_server(port: 6673, slug: "azzurra-parked-#{u()}")
       cred = credential_fixture(vjt, net)
@@ -134,7 +134,7 @@ defmodule GrappaWeb.NetworksControllerTest do
     end
 
     test "returns empty list when user has no bindings", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-empty")
+      vjt = user_fixture(name: "vjt-empty-#{u()}")
       session = session_fixture(vjt)
 
       conn =
@@ -146,8 +146,8 @@ defmodule GrappaWeb.NetworksControllerTest do
     end
 
     test "does not include other users' networks (per-user iso)", %{conn: conn} do
-      vjt = user_fixture(name: "vjt-iso")
-      alice = user_fixture(name: "alice-iso")
+      vjt = user_fixture(name: "vjt-iso-#{u()}")
+      alice = user_fixture(name: "alice-iso-#{u()}")
 
       {vjt_net, _} = network_with_server(port: 6669, slug: "vjt-only-#{u()}")
       {alice_net, _} = network_with_server(port: 6670, slug: "alice-only-#{u()}")
