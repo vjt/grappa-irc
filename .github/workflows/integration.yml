@@ -21,8 +21,8 @@ name: integration
 #
 # Failure artifacts: Playwright writes traces (zip), screenshots, and
 # videos to cicchetto/e2e/test-results/ on test failure (configured in
-# playwright.config.ts: trace=on-first-retry, screenshot=only-on-failure,
-# video=retain-on-failure). The HTML report lands in
+# playwright.config.ts: trace=retain-on-failure, screenshot=only-on-failure,
+# video=retain-on-failure, retries=0 — pass-or-fail, no flake masking). The HTML report lands in
 # cicchetto/e2e/playwright-report/. Both are uploaded as artifacts when
 # the job fails — the trace zip is the primary debug surface, opens in
 # `npx playwright show-trace <zip>`.
