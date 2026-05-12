@@ -147,6 +147,7 @@ defmodule GrappaWeb.GrappaChannel do
 
   alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
   alias Grappa.Cic.Bundle, as: CicBundle
+  alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
@@ -758,7 +759,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_bundle_hash(socket) do
     case CicBundle.current_hash() do
       nil -> :ok
-      hash -> push(socket, "event", %{kind: "bundle_hash", hash: hash})
+      hash -> push(socket, "event", CicWire.bundle_hash(hash))
     end
   end
 

@@ -43,6 +43,7 @@ defmodule GrappaWeb.AdminController do
   use GrappaWeb, :controller
 
   alias Grappa.Cic.Bundle, as: CicBundle
+  alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.PubSub, as: GrappaPubSub
   alias Grappa.PubSub.Topic
   alias Grappa.WSPresence
@@ -64,7 +65,7 @@ defmodule GrappaWeb.AdminController do
         send_resp(conn, :no_content, "")
 
       hash when is_binary(hash) ->
-        payload = %{kind: "bundle_hash", hash: hash}
+        payload = CicWire.bundle_hash(hash)
 
         for user_name <- WSPresence.list_user_names() do
           GrappaPubSub.broadcast_event(Topic.user(user_name), payload)
