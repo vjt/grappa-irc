@@ -1,4 +1,9 @@
 defmodule Grappa.LogTest do
+  # async: false because tests mutate `Logger.metadata/1` (process-global
+  # within the test process) AND assert against captured log lines via
+  # `Logger.metadata`. Concurrent tests would interleave metadata reads
+  # with the after-block reset and surface flakes that don't reproduce
+  # locally.
   use ExUnit.Case, async: false
 
   alias Grappa.Log
