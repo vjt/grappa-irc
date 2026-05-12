@@ -201,7 +201,8 @@ defmodule GrappaWeb.AuthController do
         # PubSub server unreachable — session row already revoked, so
         # the live WS will be rejected on its next message anyway.
         # Log + swallow rather than crash the logout response.
-        Logger.warning("logout disconnect broadcast failed for #{socket_id}",
+        Logger.warning("logout disconnect broadcast failed",
+          socket_id: socket_id,
           reason: inspect(reason)
         )
 

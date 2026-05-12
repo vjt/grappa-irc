@@ -144,10 +144,15 @@ config :logger, :console,
     :args,
     # Auth context (Phase 2): bearer-token session lifecycle. `session_id`
     # rides every authn-plug failure and revoke; `affected` rides the
-    # revoke audit log so a typo'd-id revoke is greppable.
+    # revoke audit log so a typo'd-id revoke is greppable. `socket_id`
+    # rides the logout-side `Endpoint.broadcast(socket_id, "disconnect")`
+    # path (auth_controller.ex broadcast_disconnect/1) so an operator
+    # grep can correlate a logout with the WS lifecycle line that picked
+    # up the disconnect.
     :session_id,
     :affected,
     :authn_failure,
+    :socket_id,
     # Visitor identity (Phase 4 — Task 15): visitor_id rides the
     # +r-observed → commit_password log lines so operator can grep
     # the visitor lifecycle across login + first-IDENTIFY.
