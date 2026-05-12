@@ -10,23 +10,43 @@ Full protocol at `docs/reviewing.md`.
 
 ## Argument: `codebase`
 
-Line-level scan. 6 parallel background agents, one per scope:
+Line-level scan. 8 parallel background agents, one per scope:
 
 | Agent | Scope |
 |-------|-------|
 | irc/ | `lib/grappa/irc/` (parser, client, message struct) |
-| persistence/ | `lib/grappa/scrollback*`, `priv/repo/migrations/` |
-| lifecycle/ | `lib/grappa/{application,bootstrap,config,release,repo,session}*`, `lib/grappa/session/` |
-| web/ | `lib/grappa_web/` (endpoint, router, controllers, channels) |
+| persistence/ | `lib/grappa/scrollback*`, `lib/grappa/{accounts,networks,query_windows,user_settings,visitors}*`, `priv/repo/migrations/`, `lib/grappa/repo.ex`, `lib/grappa/vault.ex`. **Explicit SQLite angle**: WAL + `journal_mode` + `busy_timeout` + `synchronous` configuration in `config/runtime.exs`; `foreign_keys` pragma per-connection vs migration-time; `defer_foreign_keys` (CP19 lesson — see `feedback_*` memories); index coverage vs hot read patterns (Scrollback page query, query_windows list, last_joined_channels boot read); JSON `:map` column patterns vs custom Ecto types (`Grappa.Scrollback.Meta` reference); transaction granularity (long-running writes vs Session.Server message ingest hot path); connection pool sizing for single-writer SQLite reality; schema_migrations consistency + idempotency; Cloak.Vault encrypted-at-rest column types; sqlite-specific quirks (no native datetime, ISO-8601 string convention) |
+| lifecycle/ | `lib/grappa/{application,bootstrap,config,release,repo,session,version,cic,spawn_orchestrator,admission}*`, `lib/grappa/session/`, `lib/grappa/admission/` |
+| web/ | `lib/grappa_web/` (endpoint, router, controllers, channels, plugs, JSON views) |
 | cicchetto/ | `cicchetto/src/**`, `cicchetto/{tsconfig.json,vite.config.ts,vitest.config.ts,biome.json,package.json,index.html}`, `cicchetto/public/{manifest.json,sw.js,icon*}` |
-| cross-module + infra | Patterns across all server modules + `scripts/`, `Dockerfile`, `compose*.yaml`, `config/`, `infra/nginx.conf`, `.env.example`, `grappa.toml.example`, `cicchetto/biome.json`, `cicchetto/vite.config.ts`, `cicchetto/package.json` ↔ `cicchetto/bun.lock` sync, `scripts/bun.sh` |
+| cross-module | Patterns across all server modules: `Application.{get,put}_env` outside boot path, `String.to_atom/1`, default arguments via `\\`, `Logger` inline-interpolation vs allowlisted KV, bare `catch _, _` / `rescue _`, Boundary annotations + violations, migration ordering/idempotency, inter-context call discipline, `@spec` coverage on public context functions, structured-event PubSub topic naming consistency. **NO infra in this scope** — Docker/scripts split out below. |
+| docker | **DEDICATED simplification-focused review.** Files: `Dockerfile`, `compose.yaml`, `compose.override.yaml.example`, all `scripts/*.sh` (especially `_lib.sh`, `deploy.sh`, `deploy-cic.sh`, `mix.sh`, `iex.sh`, `test.sh`, `integration.sh`, `bun.sh`, `register-dns.sh`, `monitor.sh`, `observer.sh`, `healthcheck.sh`, `db.sh`), `infra/nginx.conf`, `.env.example`, `.dockerignore`. **Primary lens: SIMPLIFICATION**. What can be removed, collapsed, made standard? Single-stage vs multi-stage tradeoffs (CP23 S1 collapsed to single-stage); profile usage (`--profile prod` for nginx + cicchetto-build); named volumes vs bind mounts (UID drop trap memory); image size; healthcheck adequacy; oneshot semantics (`compose up --wait` oneshot-exit-trap memory); cicchetto-build oneshot pipeline; deploy.sh hot-vs-cold preflight regex coverage (long-lived GenServer enumeration, defstruct detection); script duplication vs `_lib.sh` reuse; worktree-awareness invariants; UID/cache layout consistency across mix.sh + bun.sh; bash 4+ assumption documentation. Treat the Docker substrate as a product surface, not glue. |
+| cross-surface | **DEDICATED grappa↔cicchetto consistency review.** Reads BOTH sides: `lib/grappa/{accounts,networks,scrollback,query_windows,user_settings}/wire.ex` + `lib/grappa_web/{controllers,channels}/**` + `cicchetto/src/lib/{api,socket,subscribe,auth,messages,*Store,windowState,channelClient,messageClient}.ts` + `cicchetto/src/components/**`. Look for: wire-shape drift (server Wire field exists, cic type missing or narrower); event-name divergence (server emits `kind: "joined"` but cic dispatcher branches on `"join"`); error-shape inconsistency (FallbackController response shape vs cic `readError` parsing); REST-vs-Channel contract divergence for the same domain entity; auth-flow seams (server admission decisions ↔ cic login UX, capability checks); time-stamp format consistency (ISO-8601 vs epoch ms); naming conventions (snake_case server JSON vs camelCase cic types — boundary clarity); version/bundle-hash protocol (server emits `bundle_hash`, cic compares — verify hash field shape); state-mirror discipline (cic windowState reads server `window_states`; CLAUDE.md "cic NEVER originates state" — flag any optimistic client state); duplicated logic (parsing/validation in cic that the server already enforces, or vice versa); things that should be SHARED (a single source of truth for the closed `MessageKind` set, network `connection_state` enum, etc.) but are restated independently. Output should highlight unification opportunities. |
 
 Each agent MUST read EVERY file in scope + `CLAUDE.md` + the active
 checkpoint under `docs/checkpoints/` + `docs/DESIGN_NOTES.md`. The
 cicchetto/ agent additionally reads its server-side wire-shape
-counterparts (`lib/grappa/{accounts,networks,scrollback}/wire.ex`,
+counterparts (`lib/grappa/{accounts,networks,scrollback,query_windows,user_settings}/wire.ex`,
 `lib/grappa_web/controllers/*_json.ex`) so wire-shape drift is caught
-against the source of truth.
+against the source of truth (the cross-surface agent does this
+exhaustively from a different angle — both lenses are intentional).
+
+### Severity gates (codebase review)
+
+Agents report ALL severities (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`)
+so the triage step has full data. Triage focus per vjt direction:
+
+- **All CRITICAL** — must-fix before next cluster.
+- **All HIGH** — must-fix or formal defer-with-rationale.
+- **MEDIUM only when** the finding is an architecture smell,
+  maintainability hazard, best-practice gap, or evolution risk
+  (i.e. it will hurt a future cluster). Cosmetic MEDIUMs may be
+  noted but are not gates.
+- **LOW** is informational only — collected for later sweep,
+  not blocking.
+
+The triage output (mega-cluster plan in Phase 3) MUST list every
+CRITICAL + HIGH and every gating MEDIUM with a bucket assignment.
 
 ### Agent instructions (include in every agent prompt)
 
@@ -117,9 +137,9 @@ keyboard layout, theme system, nick lists, mode indicators, topic
 bar, mobile ergonomics, voice I/O — flag bugs but not "the layout is
 messy").
 
-### Cross-module + infra agent additions
+### Cross-module agent additions
 
-The cross-module agent additionally searches the ENTIRE `lib/` for:
+The cross-module agent searches the ENTIRE `lib/` for:
 - `\\` default arguments in all function signatures
 - `Application.get_env/get_env!/fetch_env!` outside `config/` and
   `lib/grappa/application.ex` (the documented exception)
@@ -133,18 +153,15 @@ The cross-module agent additionally searches the ENTIRE `lib/` for:
   `mix boundary.find_violations`)
 - Migration drift (`priv/repo/migrations/` order, idempotency,
   schema_migrations consistency)
-- Infra: `scripts/*.sh` consistency, `Dockerfile` stages, compose
-  files (project-name conflicts, port collisions, env var coverage),
-  `.env.example` ↔ `runtime.exs` symmetry, `compose.yaml (--profile prod)` env
-  vars vs `runtime.exs` reads, `infra/nginx.conf` reverse-proxy
-  allowlist vs `lib/grappa_web/router.ex` routes (any new server
-  route must land in nginx OR be intentionally bouncer-internal)
-- Cicchetto-side cross-cutting: `cicchetto/biome.json` rule
-  consistency, `cicchetto/vite.config.ts` build target / outDir
-  matching `compose.yaml (--profile prod)` `cicchetto-build` expectations,
-  `cicchetto/package.json` version pinning AND lockfile sync
-  (`cicchetto/bun.lock`), `scripts/bun.sh` UID/cache layout
-  matching `compose.yaml (--profile prod)` `cicchetto-build`
+- `@spec` coverage on public context functions; structs returned vs
+  `map()` leaks
+- PubSub topic-shape consistency across modules
+- Cross-context import cycles + Boundary violations
+
+The Docker agent owns infra (Dockerfile / compose / scripts / nginx /
+.env.example) — **do NOT duplicate** that scope from cross-module.
+The cross-surface agent owns server↔client wire/event/error/auth/state
+consistency — **do NOT duplicate** that scope either.
 
 ## Argument: `architecture`
 
