@@ -3841,6 +3841,145 @@ runtime payload validation (wireNarrow.ts → drop-and-log) —
 single source for both paths.
 
 
+## CP24 bucket H — Lifecycle correctness + boot perf (2026-05-12)
+
+**Theme 6** of `docs/reviews/codebase/2026-05-12-codebase-review.md`
+— lifecycle classification + boot perf cluster. **3 HIGH closed**
+(lifecycle/S2 unify, S3 Client EXIT classification, S4 service
+target allowlist). Lifecycle/S5 (parallelize spawn_all) **deferred**
+— see "Bucket H lifecycle/S5 deferral" below.
+
+### Bucket H lifecycle/S4 — `service_target?/1` closed allowlist (commit TBD)
+
+The `*Serv` privacy filter for outbound PRIVMSG used
+`String.ends_with?(target, "serv")` after lowercase. Pre-fix, ANY
+target ending in those bytes silently bypassed scrollback +
+PubSub broadcast — channels like `#dataserv` or `#aiserv`, nicks
+like `Conserv` / `Reserv` / `Dataserv` (legitimate ops nicks on
+some networks) all got the privacy treatment intended only for
+the IRC services suite (`NickServ` / `ChanServ` / etc.). The
+silent drop is the worst kind of bug: the operator sees nothing
+in scrollback and has no log entry to correlate against.
+
+Fix replaces the substring match with a closed allowlist of the
+seven well-known service nicks (`nickserv chanserv memoserv
+operserv botserv hostserv helpserv`). Channel-prefixed targets
+(`#`, `&`, `+`, `!`) bypass the check entirely via dedicated
+function clauses — services are nicks by definition (PRIVMSG to
+a channel goes to the room, not a service bot), so the
+prefix-match is a faster + clearer rejection than the lowercase
++ allowlist roundtrip.
+
+Three new tests in `test/grappa/session/server_test.exs`:
+`#dataserv` channel target persists + broadcasts (proves
+channel-prefix bypass), `Conserv` nick target persists +
+broadcasts (proves substring-match removal), full allowlist
+sweep (`BotServ` + `OperServ` + `HostServ` + `HelpServ` +
+`MemoServ` all skipped — proves no allowlist regression for the
+remaining service nicks beyond the existing NickServ + ChanServ
+tests).
+
+### Bucket H lifecycle/S3 — Client EXIT classification fix (commit TBD)
+
+The clean-Client-EXIT clause in `Grappa.Session.Server`
+(`handle_info({:EXIT, client_pid, reason}, ...)` for
+`reason ∈ {:normal, :shutdown}`) returned
+`{:stop, {:client_exit, reason}, _}`. The wrapped tuple was
+documented as "consistent shape with the abnormal clause" but
+the supervisor's `:transient` strategy classifies anything other
+than `:normal | :shutdown | {:shutdown, _}` as **abnormal** —
+which means the wrapped clean exit triggered an immediate
+supervisor restart. The comment explicitly claimed the
+opposite ("Bootstrap won't respawn the session unless asked
+via T32 unpark"); code + comment contradicted.
+
+Today the clause is unreachable in production (Client has no
+self-stop path, and supervisor `:shutdown` of the parent bypasses
+this clause via `terminate/2`'s graceful-QUIT handler), but the
+structural bug had to close before a future caller introduces
+`Client.stop/1` and silently trips the restart. Per CLAUDE.md
+"Restart strategy: `:transient` per-user sessions don't restart
+on `:normal` shutdown", code wins: clean Client exit returns
+`{:stop, :normal, _}` so `:transient` honors the no-restart
+contract.
+
+Two new tests probe the supervisor side: after `GenServer.stop`
+the linked Client with `:normal` (then `:shutdown`),
+`Session.whereis(subject, network_id)` MUST return `nil`. A
+restart would re-register a fresh pid under the same `{:via,
+Registry, ...}` name; absence proves no restart fired. The
+existing Backoff-accounting tests stay green — clean exit
+doesn't bump the counter, abnormal exit still does.
+
+### Bucket H lifecycle/S2 — Bootstrap two-pass unification (commit TBD)
+
+Pre-fix `Bootstrap.run/0` walked the credential set TWICE: once
+through `validate_credential_servers!/2` (calling
+`Servers.list_servers/1` per distinct network for the
+hard-fail-on-empty invariant), once through `spawn_all/1`'s
+`SessionPlan.resolve/1` (calling `Servers.pick_server!/1`
+per credential). Two passes for one verb; both fired the same
+SQL against `network_servers`.
+
+Fix collapses to ONE in-memory walk by upgrading
+`Credentials.list_credentials_for_all_users/0`'s preload from
+`[:network]` to `[network: :servers]`. The preload happens once
+inside the credential-fetching query; both downstream consumers
+read the in-memory association without re-querying:
+
+* `validate_credential_servers!/2` reads `n.servers` directly
+  (zero queries).
+* `SessionPlan.resolve/1`'s `Repo.preload(network: :servers)`
+  becomes a no-op on the already-loaded assoc.
+
+Visitor-side rows still need slug→Network resolution (visitor
+rows don't ride a credential preload), but the visitor-side
+fetch is consolidated through a new
+`Networks.get_network_with_servers_by_slug/1` helper that
+preloads `:servers` in the same call — Networks owns Network
+preload semantics, so Bootstrap stays Boundary-clean (no Repo
+direct dep needed for one preload site).
+
+The verb separation is preserved: `validate_credential_servers!/2`
+remains a hard-fail invariant (raise if any network has zero
+enabled servers), `SessionPlan.resolve/1` remains a soft-error
+resolver (return `{:error, :no_server}` for Bootstrap's
+per-row failed-counter). Both verbs now read the SAME data.
+
+### Bucket H lifecycle/S5 deferral — parallelize spawn_all
+
+Initial implementation grouped credentials by `network_id`,
+ran `Task.async_stream` across groups (per-network
+serialization preserved cap correctness — see CLAUDE.md
+"Don't fix S5 by adding workers/threads if admission DB
+queries are themselves serialized"), and reduced per-group
+`%Result{}` totals at the end. Same shape for visitors keyed
+by `network_slug`.
+
+Local `scripts/test.sh test/grappa/bootstrap_test.exs` passed
+16/16. Full `scripts/check.sh` showed **6 regression failures**
+in bootstrap_test under parallel test pressure (`max_cases: 4`)
+— root cause: the singleton `Grappa.Admission.NetworkCircuit`
+ETS table is application-wide, NOT sandbox-scoped. Concurrent
+spawn-failures from one test contaminate the circuit state for
+the next test that happens to hit the same `network_id`
+(sqlite-rowid recycling). Pre-fix this was masked by the
+strictly-sequential spawn rhythm; the parallelize change
+exposed the latent test-isolation gap.
+
+Reverted in this bucket. The correct fix needs either (a)
+per-network admission lock (heavier mechanism than the
+sequential baseline it would replace), or (b) NetworkCircuit
+isolation at the sandbox boundary (test-infra change with its
+own design surface). Neither fits bucket H's scope. **Deferred
+to a dedicated cluster.** Bucket H's other 3 HIGH findings
+land standalone.
+
+The review's perf concern (~50 credentials = O(seconds) boot
+latency) is real but theoretical at current scale; sequential
+spawn is the SAFE default until the test-isolation work lands.
+
+
 ---
 
 ## What's *not* in this document (on purpose)
