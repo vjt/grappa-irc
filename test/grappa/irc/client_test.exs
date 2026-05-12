@@ -924,6 +924,15 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_part(client, "#chan\r\nQUIT")
     end
 
+    # Codebase review 2026-05-12 irc/S3: an empty target makes the wire
+    # frame `PRIVMSG  :body\r\n` (double space, no recipient) — the
+    # server quietly drops it and the operator sees a no-op, no error.
+    # Mirrors send_pong's empty-token guard (S9): non-empty + safe_line
+    # at the boundary so the silent failure surfaces as `:invalid_line`.
+    test "send_privmsg/3 rejects empty target (irc/S3)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_privmsg(client, "", "hi raga")
+    end
+
     test "send_quit/2 rejects \\r\\n in reason", %{client: client} do
       assert {:error, :invalid_line} = Client.send_quit(client, "bye\r\nNICK pwn")
     end

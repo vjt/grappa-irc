@@ -163,11 +163,15 @@ defmodule Grappa.IRC.Client do
   @doc """
   Sends `PRIVMSG <target> :<body>\\r\\n`. Rejects CR/LF/NUL in either
   field with `{:error, :invalid_line}` — see
-  `Grappa.IRC.Identifier.safe_line_token?/1` for the rationale.
+  `Grappa.IRC.Identifier.safe_line_token?/1` for the rationale. Also
+  rejects an empty `target`: an empty recipient yields the malformed
+  wire frame `PRIVMSG  :body\\r\\n` (double space, missing param)
+  which the server quietly drops, leaving the operator to debug a
+  silent no-op (codebase review irc/S3, 2026-05-12).
   """
   @spec send_privmsg(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
   def send_privmsg(client, target, body) do
-    if Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
+    if target != "" and Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
       send_line(client, "PRIVMSG #{target} :#{body}\r\n")
     else
       reject_invalid_line(:privmsg)
