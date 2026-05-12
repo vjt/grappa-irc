@@ -2804,6 +2804,130 @@ CRITICAL tally drops from **3 to 2**.
 
 ---
 
+## 2026-05-12 — CP24 bucket B: SQLite production defaults + visitor read-only verbs
+
+Second slice of the post-cr-review mega-cluster. Closed the SQLite
+contention + index-gap theme (persistence/S2-S5+S8) and the reviewer
+follow-on that surfaced during bucket A's code review (read-only
+ops verbs visitor carve-out).
+
+### S7 reframe — DROPPED, no source edits
+
+The first action of bucket B was a re-evaluation of persistence/S7
+post-C2 correction. The original framing ("`validate_subject_exists`
+TOCTOU patterns lose their backstop without C2 fix; rewrite
+'load-bearing' comments to 'convenience'") inherited C2's false
+premise. With C2 corrected to NON-FINDING, the comments at
+`accounts.ex:179-189`, `query_windows.ex:230-239`,
+`user_settings.ex:180-183` already correctly describe the actual
+problem (ecto_sqlite3 returns FK constraint name as `nil` → built-in
+handler can't match → pre-flight produces clean changeset error
+before insert raises; FK is the TOCTOU backstop). Decision: drop
+S7 entirely. CP24 bucket B opening section documents the trail.
+
+### S2 + S3 — busy_timeout: 30_000 + pool_size: 10 doc
+
+`config/runtime.exs:22-43` + `config/dev.exs:3-9`. SQLite's default
+`busy_timeout` is ~2s. With `pool_size: 10` + WAL + single-writer
+file lock, transient contention from concurrent writes (Bootstrap
+spawning N sessions, channel-mode batches, last_joined_channels
+writes) cascades into `database is locked` exceptions before the
+writer ahead releases. The CP23 S4 e2e flake (`cp15-b6-kicked` +
+`m9-cicchetto-part-x-click` retries on `Database busy`) was a direct
+symptom. 30_000ms mirrors `config/test.exs:17` which has carried
+this value since the Sandbox cascading-busy investigation.
+
+S3 (pool_size doc): the existing `pool_size: 10` is correct — it's
+a READ concurrency cap under WAL; writes serialize at the file lock
+regardless. Lower than 10 would starve cic's per-(user, network)
+query fan-out under multi-tab load. Documented in the runtime.exs
+comment instead of dropping the value (the recommendation was "doc
+OR drop"; doc is right once busy_timeout is in place).
+
+### S5 — partial index on connection_state
+
+`priv/repo/migrations/20260512083037_network_credentials_connection_state_partial_index.exs`.
+`Credentials.list_credentials_for_all_users/0` selects every row
+WHERE `connection_state = 'connected'` ORDER BY `(inserted_at,
+user_id, network_id)` at boot. Without an index the planner
+full-scans the table. New partial index (`where: "connection_state
+= 'connected'"`) mirrors the shape of
+`20260504015357_session_client_id_partial_index.exs`: only
+`:connected` rows participate, so footprint stays tiny while the
+query plan becomes a direct lookup. Verified locally:
+`sqlite_master` lists `network_credentials_connection_state_connected_index`;
+networks test suite (108 tests) stays green.
+
+### S8 — last_joined_channels cap at 200
+
+`lib/grappa/networks/credentials.ex:130-149`. Every self-JOIN /
+PART / KICK in `Session.Server` overwrites the per-credential
+`last_joined_channels` JSON column. The natural upper bound is
+the live join count (5-50; RFC 2812 has no absolute ceiling), but
+nothing structurally bounded the snapshot. Cap at 200 entries via
+`Enum.take/2` inside `update_last_joined_channels/3`. Tail dropped
+on overflow; head order preserved. TDD: failing test → cap →
+green. 3 deterministic tests + 1 StreamData property (length never
+exceeds cap; head order preserved across the take).
+
+### Reviewer add-on — read-only verbs to dispatch_subject_verb/2
+
+`lib/grappa_web/channels/grappa_channel.ex` `who`, `names`, `banlist`
+handle_in clauses. Bucket A introduced `dispatch_subject_verb/2` for
+WHOIS — visitors are entitled to issue read-only verbs because the
+broadcast topic uses the visitor's own `subject_label`. Three more
+read-only verbs were still on `dispatch_ops_verb/2` post-bucket-A:
+`who`, `names`, `banlist` (`/list` channel handler doesn't exist
+yet — channel-client-polish backlog). Migrated to
+`dispatch_subject_verb/2` mirroring the C3 fix. 9 visitor regression
+tests added (3 verbs × 3 scenarios — live-session ↔ upstream wire,
+no-session → `no_session`, CRLF channel → `invalid_line`).
+
+`dispatch_ops_verb/2` retained for write-only verbs (op/deop/voice/
+devoice/kick/ban/unban/invite/umode/mode/topic_set/topic_clear) where
+visitor-rejection IS the correct semantic.
+
+### Persistence/S4 deferred to bucket H
+
+S4 (PubSub broadcast inside `Repo.transaction`) lives in the
+lifecycle-correctness bucket per the mega-cluster plan. Out of scope
+for B.
+
+### Deploy classification
+
+Per code-review HIGH H1: hot-deploy would silently no-op the
+busy_timeout fix until pool conns recycle (`busy_timeout` is read by
+ecto_sqlite3 at connection-init; `Phoenix.CodeReloader` swaps modules,
+not pool conns). The new migration also requires a fresh `mix
+ecto.migrate` pass. Deployed via `scripts/deploy.sh --force-cold` to
+ensure both fixes land in one stop.
+
+### Lessons
+
+1. **Probe contradicts review → re-eval, don't propagate.** Bucket
+   A's C2 false-finding precedent: the reviewer-flagged
+   `validate_subject_exists` "TOCTOU loses its backstop without S1
+   fixed" framing inherited the same false premise. Bucket B opened
+   with a 5-minute re-read that confirmed the existing comments are
+   already correct → S7 dropped without a single line of source
+   change. Memory `feedback_orchestrator_autonomy` "HALT on findings
+   contradicted by probe" extends to follow-on findings that depend
+   on the contradicted one.
+2. **Cap = safety belt, not workload-shaping.** `last_joined_channels`
+   has a natural upper bound (live join count). The cap doesn't
+   change anyone's behaviour; it bounds the worst case. Don't
+   over-document the cap as if it were a design choice driving the
+   workload — it's a guardrail.
+3. **Two patterns, copy whichever.** Bucket A's `dispatch_ops_verb/2`
+   ↔ `dispatch_subject_verb/2` split was principled but partial;
+   four read-only verbs ended up split across two patterns. CLAUDE.md
+   "Total consistency or nothing" caught it during bucket A's code
+   review — bucket B closed the gap. The reviewer-add-on slot
+   exists precisely so a partial migration in bucket N becomes a
+   complete migration in bucket N+1.
+
+---
+
 Roll-up of the decisions above as a pre-merge checklist:
 
 - **Wire stays text.** No images, voice, video, file transfer, link unfurl beyond text URLs.
