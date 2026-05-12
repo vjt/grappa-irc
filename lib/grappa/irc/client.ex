@@ -178,18 +178,31 @@ defmodule Grappa.IRC.Client do
     end
   end
 
-  @doc "Sends `JOIN <channel>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
+  @doc """
+  Sends `JOIN <channel>\\r\\n`. Rejects CR/LF/NUL AND a malformed
+  channel name (missing `#`/`&`/`+`/`!` prefix, embedded whitespace
+  /comma/BELL, or length > 50) with `{:error, :invalid_line}`.
+  Without the `valid_channel?` check (codebase review irc/S2,
+  2026-05-12) the upstream-facing JOIN landed for malformed channels
+  and the pending-window state machine wedged a `:pending` entry that
+  never resolved.
+  """
   @spec send_join(pid(), String.t()) :: :ok | {:error, :invalid_line}
   def send_join(client, channel) do
-    if Identifier.safe_line_token?(channel),
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel),
       do: send_line(client, "JOIN #{channel}\r\n"),
       else: reject_invalid_line(:join)
   end
 
-  @doc "Sends `PART <channel>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
+  @doc """
+  Sends `PART <channel>\\r\\n`. Rejects CR/LF/NUL AND a malformed
+  channel name (missing `#`/`&`/`+`/`!` prefix, embedded whitespace
+  /comma/BELL, or length > 50) with `{:error, :invalid_line}`. Same
+  irc/S2 rationale as `send_join/2`.
+  """
   @spec send_part(pid(), String.t()) :: :ok | {:error, :invalid_line}
   def send_part(client, channel) do
-    if Identifier.safe_line_token?(channel),
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel),
       do: send_line(client, "PART #{channel}\r\n"),
       else: reject_invalid_line(:part)
   end

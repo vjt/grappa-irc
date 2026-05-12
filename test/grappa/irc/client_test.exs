@@ -924,6 +924,31 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_part(client, "#chan\r\nQUIT")
     end
 
+    # Codebase review 2026-05-12 irc/S2: pre-fix `send_join` / `send_part`
+    # only enforced `safe_line_token?` — a target without the RFC 2812
+    # `#&+!` prefix slipped through, creating a `:pending` window-state
+    # entry on a channel name the server can never JOIN. The pending
+    # window never resolves because the upstream replies with a 403
+    # ERR_NOSUCHCHANNEL whose `params[1]` may not even match what we
+    # think we sent. Reject at the boundary like `send_topic` already
+    # does — `valid_channel?/1` catches missing-prefix + embedded-whitespace
+    # + comma + BELL + length>50 in one regex.
+    test "send_join/2 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "no-hash")
+    end
+
+    test "send_join/2 rejects empty channel (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "")
+    end
+
+    test "send_part/2 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_part(client, "no-hash")
+    end
+
+    test "send_part/2 rejects empty channel (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_part(client, "")
+    end
+
     # Codebase review 2026-05-12 irc/S3: an empty target makes the wire
     # frame `PRIVMSG  :body\r\n` (double space, no recipient) — the
     # server quietly drops it and the operator sees a no-op, no error.
