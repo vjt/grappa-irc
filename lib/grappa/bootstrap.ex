@@ -141,7 +141,7 @@ defmodule Grappa.Bootstrap do
   use Task, restart: :transient
 
   alias Grappa.{Networks, Session, Visitors}
-  alias Grappa.Networks.{Credential, Credentials, Network, Servers, SessionPlan}
+  alias Grappa.Networks.{Credential, Credentials, Network, SessionPlan}
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias Grappa.Visitors.Visitor
 
@@ -430,6 +430,18 @@ defmodule Grappa.Bootstrap do
   # half-configured state. The honest signal is to refuse to boot and
   # point the operator at `mix grappa.add_server`. Mirrors the W7
   # visitor-network bias.
+  #
+  # Bucket H — lifecycle/S2 unification: pre-fix this ran
+  # `Servers.list_servers/1` per credential-network AND
+  # `SessionPlan.resolve/1` re-fetched the same list per row — two
+  # passes over the same Servers data. Post-fix
+  # `list_credentials_for_all_users/0` preloads `network: :servers`,
+  # so this validator reads the in-memory association (zero queries)
+  # and SessionPlan.resolve's `Repo.preload` is a no-op on the
+  # already-loaded assoc. One in-memory walk feeds both verbs.
+  # Visitors still trigger one `get_network_by_slug/1` lookup per
+  # distinct slug — visitor rows don't ride a credential preload, so
+  # the in-memory consolidation only covers the credential side.
   @spec validate_credential_servers!([Credential.t()], [Visitor.t()]) :: :ok
   defp validate_credential_servers!(credentials, visitors) do
     cred_networks =
@@ -440,7 +452,7 @@ defmodule Grappa.Bootstrap do
       |> Enum.map(& &1.network_slug)
       |> Enum.uniq()
       |> Enum.flat_map(fn slug ->
-        case Networks.get_network_by_slug(slug) do
+        case Networks.get_network_with_servers_by_slug(slug) do
           {:ok, %Network{} = n} -> [n]
           {:error, :not_found} -> []
         end
@@ -449,8 +461,8 @@ defmodule Grappa.Bootstrap do
     serverless =
       (cred_networks ++ visitor_networks)
       |> Enum.uniq_by(& &1.id)
-      |> Enum.filter(fn %Network{} = n ->
-        n |> Servers.list_servers() |> Enum.filter(& &1.enabled) == []
+      |> Enum.filter(fn %Network{servers: servers} ->
+        Enum.filter(servers, & &1.enabled) == []
       end)
       |> Enum.map(& &1.slug)
 

@@ -297,7 +297,7 @@ defmodule Grappa.Networks.Credentials do
       from(c in Credential,
         where: c.connection_state == :connected,
         order_by: [asc: c.inserted_at, asc: c.user_id, asc: c.network_id],
-        preload: [:network]
+        preload: [network: :servers]
       )
 
     Repo.all(query)

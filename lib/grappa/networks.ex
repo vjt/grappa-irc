@@ -155,6 +155,24 @@ defmodule Grappa.Networks do
   end
 
   @doc """
+  Like `get_network_by_slug/1` but preloads `:servers` on the returned
+  Network. Bucket H lifecycle/S2 unification: `Grappa.Bootstrap`'s
+  servers-bound invariant validator needs the in-memory server list
+  per visitor-pinned network; piping through Networks keeps the
+  Repo dependency where it belongs (Networks owns Network preload
+  semantics) and avoids forcing Bootstrap to add a Repo Boundary
+  edge for one preload site.
+  """
+  @spec get_network_with_servers_by_slug(String.t()) ::
+          {:ok, Network.t()} | {:error, :not_found}
+  def get_network_with_servers_by_slug(slug) when is_binary(slug) do
+    case Repo.get_by(Network, slug: slug) do
+      %Network{} = net -> {:ok, Repo.preload(net, :servers)}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Like `get_network_by_slug/1` but raises `Ecto.NoResultsError` when
   the slug isn't bound. The operator-side mix tasks
   (`grappa.add_server`, `grappa.remove_server`,
