@@ -538,6 +538,14 @@ defmodule GrappaWeb.GrappaChannel do
   # GenServer hop. The Session facade + IRC.Client both also gate via
   # `Identifier.safe_line_token?/1` (defense in depth — the channel boundary
   # is the OUTER untrusted-input surface).
+  #
+  # CP24 bucket E web/S6: `with`/`else` matches by tagged tuple per
+  # CLAUDE.md "Atoms or `@type t :: literal | literal` — never untyped
+  # strings". The pre-fix shape matched `with true <- ..., false <- ...`
+  # and `else false ->`/`true ->` mapped raw boolean values — adding
+  # any new boolean check above either site silently flipped the error
+  # message because both branches reduce to the same `false`/`true`.
+  # Tagged tuples make each `else` arm map to a single source.
   def handle_in(
         "topic_set",
         %{"network_id" => network_id, "channel" => channel, "text" => text},
@@ -546,17 +554,16 @@ defmodule GrappaWeb.GrappaChannel do
       when is_integer(network_id) and is_binary(channel) and is_binary(text) do
     user_name = socket.assigns.user_name
 
-    with true <- Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(text),
-         false <- visitor?(user_name),
+    with {:ok, _} <- check_safe_line(channel, text),
+         {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
          {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
       {:reply, :ok, socket}
     else
-      false -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
-      true -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
       {:error, _} -> {:reply, {:error, %{reason: "persist_failed"}}, socket}
     end
   end
@@ -873,6 +880,32 @@ defmodule GrappaWeb.GrappaChannel do
 
   @spec visitor?(String.t()) :: boolean()
   defp visitor?(user_name), do: String.starts_with?(user_name, "visitor:")
+
+  # CP24 bucket E web/S6 + S7: tagged-tuple gate helpers used by Channel
+  # `handle_in/3` clauses. Each predicate the `with` chain consults
+  # returns `{:ok, _}` on success or `{:error, :tag}` on failure so the
+  # `else` arms match by tag (single source) rather than by raw boolean
+  # value (ambiguous between two checks). CLAUDE.md "Atoms or `@type t
+  # :: literal | literal` — never untyped strings" applies to control
+  # flow too: an `else true ->` arm is structurally identical to an
+  # `else false ->` arm and the second `with true <- ...` clause silently
+  # remaps the error message of the first.
+
+  @spec check_safe_line(String.t(), String.t()) ::
+          {:ok, :safe} | {:error, :invalid_line}
+  defp check_safe_line(token1, token2) do
+    if Identifier.safe_line_token?(token1) and Identifier.safe_line_token?(token2),
+      do: {:ok, :safe},
+      else: {:error, :invalid_line}
+  end
+
+  @spec check_not_visitor(String.t()) ::
+          {:ok, :user} | {:error, :visitor_not_allowed}
+  defp check_not_visitor(user_name) do
+    if visitor?(user_name),
+      do: {:error, :visitor_not_allowed},
+      else: {:ok, :user}
+  end
 
   @spec safe_get_user(String.t()) :: {:ok, Accounts.User.t()} | :error
   defp safe_get_user(user_name) do

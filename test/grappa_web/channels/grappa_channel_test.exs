@@ -886,6 +886,52 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{reason: "invalid_line"})
     end
 
+    # CP24 bucket E web/S6: tag-by-source regression. Pre-fix the
+    # `with`/`else` matched by raw `true`/`false` value so ANY new
+    # boolean check above the visitor check would silently flip the
+    # error message. These tests pin per-source tag mapping by sending
+    # a malformed-AND-visitor payload and asserting the error tag comes
+    # from the EARLIER check (`invalid_line`), NOT the later one
+    # (`visitor_not_allowed`) — proving the `with` short-circuits at
+    # the right step and the `else` arm targets the correct source.
+    test "topic_set: visitor + invalid_line returns invalid_line (earlier source wins)" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "topic_set", %{
+          "network_id" => 1,
+          "channel" => "#snap\r\nQUIT :pwn",
+          "text" => "ok"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
+    end
+
+    test "topic_set: visitor with safe line returns visitor_not_allowed" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "topic_set", %{
+          "network_id" => 1,
+          "channel" => "#snap",
+          "text" => "ok"
+        })
+
+      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+    end
+
     test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
       irc_server: irc_server,
       socket: socket,
