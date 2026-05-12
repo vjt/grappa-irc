@@ -236,8 +236,8 @@ defmodule Grappa.WSPresence do
   def handle_call(:list_user_names, _, state) do
     names =
       state.sockets
-      |> Enum.filter(fn {_name, set} -> MapSet.size(set) > 0 end)
-      |> Enum.map(fn {name, _set} -> name end)
+      |> Enum.filter(fn {_, set} -> MapSet.size(set) > 0 end)
+      |> Enum.map(fn {name, _} -> name end)
 
     {:reply, names, state}
   end

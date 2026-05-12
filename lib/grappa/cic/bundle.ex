@@ -51,8 +51,8 @@ defmodule Grappa.Cic.Bundle do
   """
   @spec parse_hash(binary()) :: String.t() | nil
   def parse_hash(html) when is_binary(html) do
-    case Regex.run(@hash_re, html) do
-      [_, hash] -> hash
+    case Regex.run(@hash_re, html, capture: :all_but_first) do
+      [hash] when is_binary(hash) and hash != "" -> hash
       _ -> nil
     end
   end
