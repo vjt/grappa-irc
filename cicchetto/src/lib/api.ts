@@ -11,7 +11,9 @@
 // unauthenticated 401 from `Plugs.Authn` and the credential-failure 401
 // from login both surface here as `ApiError`.
 
+import type { ModesEntry, TopicEntry } from "./channelTopic";
 import { getOrCreateClientId } from "./clientId";
+import type { MemberEntry } from "./memberTypes";
 
 function buildHeaders(token?: string): HeadersInit {
   const headers: Record<string, string> = {
@@ -329,10 +331,66 @@ export type ScrollbackMessage = {
   meta: Record<string, unknown>;
 };
 
-export type ChannelEvent = {
-  kind: "message";
-  message: ScrollbackMessage;
-};
+// Bucket G H3 (codebase-review-2026-05-12): canonical full union of
+// per-channel WS events pushed by `GrappaWeb.GrappaChannel` on the
+// per-channel topic (`grappa:user:{u}/network:{slug}/channel:{name}`).
+// `kind` is the discriminator.
+//
+// Pre-bucket-G this type was duplicated between TWO sites with
+// DIFFERENT breadth: `api.ts` declared a narrow `ChannelEvent = {kind:
+// "message", message}` (one arm), and `subscribe.ts:96-124` redeclared
+// the full 6-kind union as a local `WireEvent` type. A future consumer
+// importing `ChannelEvent` from `api.ts` was type-blind to 5 of the 6
+// kinds — the discriminator narrowing succeeded vacuously because the
+// type knew only about `message`. The drift was a latent foot-gun:
+// adding a new wire kind here didn't surface at any consumer that
+// imported the narrow `api.ts` shape.
+//
+// Post-fix: single canonical `WireChannelEvent` union here mirrors
+// `WireUserEvent` (line 381). All consumers import from this single
+// site; `assertNever` exhaustiveness in switch handlers (subscribe.ts)
+// catches new arms at `tsc` compile time. Pattern matches what bucket
+// F's `Network` discriminated-union split achieved for the per-network
+// boundary.
+//
+// `ChannelEvent` is retained as a legacy export aliased to the
+// `message` arm so any in-tree caller that references the old name
+// keeps working — it's the single arm that pre-fix consumers could
+// validly narrow to. The rename to `WireChannelEvent` is the canonical
+// import.
+export type WireChannelEvent =
+  | { kind: "message"; message: ScrollbackMessage }
+  | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
+  | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
+  | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] }
+  // CP15 B5: typed window-state events. Server-side apply_effects arms
+  // broadcast these on the per-channel topic; the snapshot push
+  // (push_window_state_if_known) uses byte-identical payloads so cic
+  // dispatches one handler arm regardless of origin path. `:parted` is
+  // intentionally NOT broadcast — its projection is "key removed from
+  // windowStateByChannel"; cic derives it from the existing :part
+  // presence message when sender === ownNick.
+  | { kind: "joined"; network: string; channel: string; state: "joined" }
+  | {
+      kind: "join_failed";
+      network: string;
+      channel: string;
+      state: "failed";
+      reason: string | null;
+      numeric: number;
+    }
+  | {
+      kind: "kicked";
+      network: string;
+      channel: string;
+      state: "kicked";
+      by: string | null;
+      reason: string | null;
+    };
+
+// Legacy alias — narrow shape that pre-bucket-G consumers depended on.
+// New code should import `WireChannelEvent` and narrow on `kind`.
+export type ChannelEvent = Extract<WireChannelEvent, { kind: "message" }>;
 
 // Mirror of `Grappa.QueryWindows.Wire.windows_entry/0` (CP15 B6).
 // Each query-window has a `target_nick` + ISO-8601 `opened_at`. The

@@ -1,12 +1,17 @@
 import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
-import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
+import {
+  assertNever,
+  type ChannelEvent,
+  displayNick,
+  ownNickForNetwork,
+  type WireChannelEvent,
+} from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { type ModesEntry, seedModes, seedTopic, type TopicEntry } from "./channelTopic";
+import { seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent, seedMembers } from "./members";
-import type { MemberEntry } from "./memberTypes";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
@@ -92,37 +97,12 @@ import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from
 // re-keys the append to `channelKey(slug, sender)` so the message
 // lands where the user looks for it.
 
-// Full union of event payloads pushed by GrappaChannel on the
-// per-channel Phoenix topic. `kind` is the discriminator.
-type WireEvent =
-  | ChannelEvent
-  | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
-  | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
-  | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] }
-  // CP15 B5: typed window-state events. Server-side apply_effects arms
-  // broadcast these on the per-channel topic; the snapshot push
-  // (push_window_state_if_known) uses byte-identical payloads so
-  // cic dispatches one handler arm regardless of origin path.
-  // `:parted` is intentionally NOT broadcast — its projection is
-  // "key removed from windowStateByChannel"; cic derives it from the
-  // existing :part presence message when sender === ownNick.
-  | { kind: "joined"; network: string; channel: string; state: "joined" }
-  | {
-      kind: "join_failed";
-      network: string;
-      channel: string;
-      state: "failed";
-      reason: string | null;
-      numeric: number;
-    }
-  | {
-      kind: "kicked";
-      network: string;
-      channel: string;
-      state: "kicked";
-      by: string | null;
-      reason: string | null;
-    };
+// Bucket G H3: the canonical 6-kind WireChannelEvent union now lives
+// in `lib/api.ts` next to its sibling `WireUserEvent` (line 381 there).
+// Pre-bucket-G this file declared a local `WireEvent` type that ALSO
+// duplicated the full union, while api.ts declared a narrow `message`-
+// only `ChannelEvent`. Future consumers importing from api.ts were
+// type-blind to 5 of 6 arms. Single source removes the drift class.
 
 createRoot(() => {
   // Codebase review 2026-05-08 cic H2 (HIGH): track Channel objects, not
@@ -267,20 +247,20 @@ createRoot(() => {
     key: ChannelKey,
     ownNick: string | null,
   ) => {
-    phx.on("event", (payload: WireEvent) => {
+    phx.on("event", (payload: WireChannelEvent) => {
       // Codebase audit cic M2 — exhaustive switch + `assertNever`
       // mirrors userTopic.ts CP16 B5 pattern. Pre-fix: the handler used
       // an if-else chain ending in `if (payload.kind !== "message")
-      // return;` — any new arm added to `WireEvent` (e.g. a future
-      // `topic_unset` or `members_delta`) silently dropped at runtime
-      // because the catch-all guard didn't surface the new kind. The
-      // switch + `assertNever` makes that a `tsc` compile error: the
-      // default arm narrows to `never`, so an unhandled kind widens
-      // the parameter type and the build fails before the silent drop
-      // ships. Note: `mentions_bundle` / `away_confirmed` cited in the
-      // audit row are NOT channel-topic events — they fan out on
-      // `Topic.user/1` (server.ex:1852, 2190) and are handled by
-      // userTopic.ts. Adding them here would be wrong.
+      // return;` — any new arm added to `WireChannelEvent` (e.g. a
+      // future `topic_unset` or `members_delta`) silently dropped at
+      // runtime because the catch-all guard didn't surface the new
+      // kind. The switch + `assertNever` makes that a `tsc` compile
+      // error: the default arm narrows to `never`, so an unhandled
+      // kind widens the parameter type and the build fails before the
+      // silent drop ships. Note: `mentions_bundle` / `away_confirmed`
+      // cited in the audit row are NOT channel-topic events — they
+      // fan out on `Topic.user/1` (server.ex:1852, 2190) and are
+      // handled by userTopic.ts. Adding them here would be wrong.
       switch (payload.kind) {
         case "topic_changed":
           seedTopic(key, payload.topic);
@@ -360,7 +340,7 @@ createRoot(() => {
     networkId: number,
     ownNick: string,
   ) => {
-    phx.on("event", (payload: WireEvent) => {
+    phx.on("event", (payload: WireChannelEvent) => {
       // Codebase audit cic M2 — exhaustive switch + `assertNever`.
       // The DM-listener intentionally DROPS every non-message kind
       // (topic_changed/channel_modes_changed make no sense on a nick

@@ -108,6 +108,135 @@ describe("listChannels (post-A5 wire shape)", () => {
   });
 });
 
+// Bucket G H3 (codebase-review-2026-05-12): the canonical
+// `WireChannelEvent` discriminated union now lives in api.ts (it was
+// duplicated as a narrow `ChannelEvent` here + a full `WireEvent`
+// local type in subscribe.ts pre-fix). The test exercises the
+// exhaustiveness contract: `assertNever` over an exhaustive switch
+// is a `tsc` compile-time guarantee, but a runtime "every kind
+// narrows correctly" assertion locks in the discriminator field
+// shape so a server-side rename (`kind: "join_failed"` →
+// `kind: "joinFailed"`) breaks tests at the boundary, not deep in
+// the per-arm handler.
+describe("WireChannelEvent canonical union (H3)", () => {
+  // Construct one example of each arm; the exhaustive switch below
+  // exits with throw if a NEW arm is added without an arm here. Same
+  // assertNever guarantee as the production handlers in subscribe.ts.
+  const samples: Array<{ event: api.WireChannelEvent; expectedKind: string }> = [
+    {
+      event: {
+        kind: "message",
+        message: {
+          id: 1,
+          network: "azzurra",
+          channel: "#italia",
+          server_time: 1_700_000_000,
+          kind: "privmsg",
+          sender: "vjt",
+          body: "ciao",
+          meta: {},
+        },
+      },
+      expectedKind: "message",
+    },
+    {
+      event: {
+        kind: "topic_changed",
+        network: "azzurra",
+        channel: "#italia",
+        topic: { text: "ben(e)trovati", set_by: "vjt", set_at: null },
+      },
+      expectedKind: "topic_changed",
+    },
+    {
+      event: {
+        kind: "channel_modes_changed",
+        network: "azzurra",
+        channel: "#italia",
+        modes: { modes: ["n", "t"], params: {} },
+      },
+      expectedKind: "channel_modes_changed",
+    },
+    {
+      event: {
+        kind: "members_seeded",
+        network: "azzurra",
+        channel: "#italia",
+        members: [],
+      },
+      expectedKind: "members_seeded",
+    },
+    {
+      event: { kind: "joined", network: "azzurra", channel: "#italia", state: "joined" },
+      expectedKind: "joined",
+    },
+    {
+      event: {
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#italia",
+        state: "failed",
+        reason: "channel is invite-only",
+        numeric: 473,
+      },
+      expectedKind: "join_failed",
+    },
+    {
+      event: {
+        kind: "kicked",
+        network: "azzurra",
+        channel: "#italia",
+        state: "kicked",
+        by: "op",
+        reason: "spam",
+      },
+      expectedKind: "kicked",
+    },
+  ];
+
+  it("each canonical arm narrows on the discriminator", () => {
+    for (const { event, expectedKind } of samples) {
+      // Exhaustive switch — same shape as subscribe.ts handlers. If a
+      // new arm is added to WireChannelEvent without a clause here,
+      // tsc fails on the assertNever default with "Argument of type
+      // ... is not assignable to parameter of type 'never'".
+      switch (event.kind) {
+        case "message":
+        case "topic_changed":
+        case "channel_modes_changed":
+        case "members_seeded":
+        case "joined":
+        case "join_failed":
+        case "kicked":
+          expect(event.kind).toBe(expectedKind);
+          break;
+        default:
+          api.assertNever(event);
+      }
+    }
+  });
+
+  it("ChannelEvent legacy alias === Extract<WireChannelEvent, {kind:'message'}>", () => {
+    // Backwards compatibility: pre-fix consumers depended on
+    // `ChannelEvent` being a `{kind:"message", message}` shape. Lock
+    // it in so a future PR doesn't accidentally widen the alias.
+    const ev: api.ChannelEvent = {
+      kind: "message",
+      message: {
+        id: 1,
+        network: "azzurra",
+        channel: "#italia",
+        server_time: 1,
+        kind: "privmsg",
+        sender: "vjt",
+        body: "x",
+        meta: {},
+      },
+    };
+    expect(ev.kind).toBe("message");
+  });
+});
+
 describe("ApiError info field (T31 admission errors)", () => {
   it("ApiError carries parsed body in info field", async () => {
     stubFetch(400, {
