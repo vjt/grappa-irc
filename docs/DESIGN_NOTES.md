@@ -3618,6 +3618,231 @@ generated TypeScript unions from the server-side `Wire` modules.
 
 ---
 
+## CP24 bucket G — Cross-surface drift + envelope unification (2026-05-12)
+
+**Theme 7** of `docs/reviews/codebase/2026-05-12-codebase-review.md`
+plus the `U1` / `U3` / `U4` unification opportunities. 4 HIGH
+findings closed (cross-surface/H1+H2+H3+H4) + 3 unifications
+landed (U1 `Grappa.Wire.Time` shared helper, U3
+`narrowChannelEvent` runtime narrower, U4 unified
+`{error, field_errors}` 422 envelope). H5 was demoted to MED by
+the cross-surface agent (line 152 of the review) and stays on the
+bucket Z list.
+
+The bucket sits at the boundary between server (Elixir) and cic
+(TypeScript). Every finding edits the wire-shape contract OR a
+narrowing/projection across it.
+
+### Bucket G U1 — `Grappa.Wire.Time` shared helper (commit `43e5a96`)
+
+`Grappa.Networks.Wire` was the only module with a private
+`iso8601_or_nil/1` shim — every other `*.Wire` module either had
+no nullable timestamps or inlined `DateTime.to_iso8601/1`
+directly. The next site that needed a nullable timestamp would
+have re-implemented the shim, with drift inevitable (different
+sites would pick `Calendar.strftime`, omit the `nil` guard, or
+inline a per-site case clause).
+
+Extracted to `Grappa.Wire.Time.iso8601_or_nil/1` — a top-level
+module living in a NEW `lib/grappa/wire/` directory. The new
+directory sits OUTSIDE the per-context Wire boundary because
+timestamp formatting is not a context concern: `inserted_at` /
+`updated_at` / `expires_at` / `connection_state_changed_at` all
+want the same wire shape regardless of which context owns the
+row. Documented in the moduledoc as the FIRST cross-context
+helper inside `lib/grappa/wire/` and the precedent for future
+cross-context primitives (numeric coercion, bool, etc.).
+
+Boundary: `Grappa.Networks` adds `Grappa.Wire.Time` to its deps
+list; the `WireTime` alias on the import keeps callsites
+readable.
+
+TDD: 4 tests in `test/grappa/wire/time_test.exs` lock in the
+projection contract (nil verbatim, DateTime → ISO-8601 with usec
+or sec precision preserved).
+
+### Bucket G H1 — Login.tsx dead `captcha_provider_unavailable` arm (commit `1903aa6`)
+
+`Login.tsx`'s `friendlyMessage` switch had an arm for the wire
+token `"captcha_provider_unavailable"` that the server NEVER
+emits. The server-side mapping is in
+`Grappa.Admission.Captcha.SiteVerifyHttp` — every upstream-side
+verification failure (4xx, 5xx, transport error) becomes
+`{:error, :captcha_provider_unavailable}` which `FallbackController`
+renders with status 503 and wire body `%{error: "service_degraded"}`.
+The wire token is `"service_degraded"`, NOT
+`"captcha_provider_unavailable"`.
+
+Pre-fix consequence: a real captcha-provider outage hit the
+`default` arm because the dead arm matched a wire token that
+never arrives. The user saw the raw `"503 service_degraded"`
+`Error.message` instead of the documented "Login service
+temporarily unavailable" copy. Silent UX degradation hidden
+because the dead arm was *next to* the live `service_degraded`
+arm — visually they looked complementary.
+
+The fix drops the dead arm and adds a docstring to the
+`service_degraded` arm so the next reader knows where the wire
+token comes from + when this arm fires. CLAUDE.md "Total
+consistency or nothing" — one wire token, one friendlyMessage
+arm.
+
+TDD: vitest in `Login.test.tsx`
+`describe("captcha provider outage (cross-surface/H1)")` exercises
+the 503 path; asserts the friendly copy renders AND the raw wire
+token does NOT leak.
+
+### Bucket G H2+U4 — Unified `validation_failed` envelope (commit `a5a30e4`)
+
+The 422 changeset path lost field-level error info to the cic side.
+
+Pre-fix server emitted `%{errors: %{field => [msg]}}` — no `error`
+discriminator, the shape matched neither the canonical A7
+`{error: "<token>"}` envelope nor Phoenix's default `ErrorJSON`
+`{errors: {detail: ...}}` shape. cic's `readError` resolution
+chain (`body.error → errors.detail → res.statusText`) tripped
+neither path: `body.error` undefined; `body.errors.detail`
+undefined (the value was a map, not a string); `res.statusText`
+won. Every 422 collapsed to "Unprocessable Entity" client-side
+and the operator lost field-level error info.
+
+Post-fix server emits `%{error: "validation_failed", field_errors:
+%{field => [msg]}}`. The discriminator follows the same A7
+snake_case convention as every other arm; `field_errors` lives as
+a top-level key alongside the existing
+`site_key`/`provider`/`retry_after` convention (cic's
+`ApiError.info` already reads body's top-level keys directly —
+e.g. `Login.tsx`'s `err.info.provider`).
+
+cic side gains a `ValidationError` type alias mirroring
+`AdmissionError`'s discriminated-union pattern, and `readError`
+gets a docstring pinning the resolution-order contract so future
+readers don't re-introduce the drift class.
+
+Single emitter (`FallbackController`'s changeset clause), single
+client-side path (`readError`'s `body.error` → `info`).
+
+TDD: 2 ExUnit tests in `fallback_controller_test.exs`
+`describe("validation errors (H2+U4 unified envelope)")` (basic
+shape + traverse_errors substitution); 1 vitest in `api.test.ts`
+`describe("ApiError 422 validation envelope (H2+U4)")` exercising
+the field-level `info.field_errors` extraction.
+
+### Bucket G H3 — `WireChannelEvent` consolidation (commit `0c30159`)
+
+The per-channel WS event union was duplicated between TWO sites
+with DIFFERENT breadth.
+
+Pre-fix:
+* `cicchetto/src/lib/api.ts:315-318` declared a NARROW
+  `ChannelEvent = {kind: "message", message}` — one arm.
+* `cicchetto/src/lib/subscribe.ts:96-124` redeclared the FULL
+  6-kind union as a local `WireEvent` type
+  (message + topic_changed + channel_modes_changed +
+  members_seeded + joined + join_failed + kicked).
+
+Future consumer importing `ChannelEvent` from api.ts narrowed via
+discriminator vacuously: `if (ev.kind === "message")` succeeded
+because the narrow type knew nothing else; nothing surfaced when a
+new arm landed in subscribe.ts. Same drift class that motivated
+bucket F's `Network` type split (UserNetwork | VisitorNetwork).
+
+Post-fix: single canonical `WireChannelEvent` union in api.ts
+mirrors `WireUserEvent` (CP16 B5). All consumers import from one
+site; `assertNever` exhaustiveness in switch handlers catches new
+arms at `tsc` compile time. Legacy `ChannelEvent` retained as
+`Extract<WireChannelEvent, {kind: "message"}>` so existing
+callsites that imported the narrow shape (e.g. `routeMessage`'s
+`message:` parameter) keep working without a rename.
+
+Type-only imports from peer leaf modules (`channelTopic.ts`,
+`memberTypes.ts`) keep api.ts an effectively-leaf module
+load-order-wise.
+
+TDD: vitest in `api.test.ts`
+`describe("WireChannelEvent canonical union (H3)")` exercises
+discriminator narrowing on every arm + an exhaustive `assertNever`
+switch (compile-time guarantee anchored by runtime example).
+
+### Bucket G H4+U3 — `narrowChannelEvent` runtime narrower (commit `52b9148`)
+
+Per-channel WS events were not runtime-narrowed at the WS edge.
+
+Pre-fix `subscribe.ts:269,370` cast the raw Phoenix payload directly
+as `WireChannelEvent`. `phoenix.js` types the event payload as
+`unknown`-shaped JSON; the cast is a *lie* — TypeScript trusted
+shape it cannot enforce. Same gap that motivated the `userTopic.ts`
+cic-M1 fix (CP16 narrowUserEvent). A malformed server push (kind
+valid but a required field missing/wrong-typed) would either crash
+a setter (`seedTopic(key, undefined)`) or silently corrupt store
+state.
+
+Post-fix new `cicchetto/src/lib/wireNarrow.ts` module with
+`narrowChannelEvent(raw: unknown): WireChannelEvent | null` —
+exhaustive per-arm shape validator. Mirror of
+`userTopic.ts`'s `narrowUserEvent`. Returns null on any shape
+mismatch; `subscribe.ts` drops + logs.
+
+Both per-channel handlers (channel + DM-listener) now run the raw
+payload through the narrower BEFORE the dispatch switch. The
+`WireChannelEvent` cast is gone from subscribe.ts — the narrower
+returns the typed result directly.
+
+The `lib/wireNarrow.ts` module is the precedent the cluster-shape
+table sanctioned (CP24 line 301): future per-topic narrowers
+(e.g. a `narrowAdminEvent` if Phase 5 grows the LiveDashboard's WS
+surface) land here. The narrower is a leaf module — no SolidJS
+effects, no reactive store imports — which makes it trivially
+testable in isolation.
+
+TDD: 31 tests in `wireNarrow.test.ts` exercise valid + malformed
+shapes for every arm: invalid top-level shape (null, non-object,
+missing/non-string kind, unknown kind); per-arm valid envelope;
+per-arm rejection of missing required fields, wrong-typed fields,
+and (where applicable) wrong discriminator values.
+
+### Bucket G close
+
+`scripts/check.sh` exit-0. Server-side test count unchanged at
+1543 + 4 new = 1547 (4 Wire.Time tests + 2 changeset envelope
+tests; 1 prior assertion on `errors:` vs `error:` envelope updated
+in fallback_controller_test). Cic vitest 753 → 784 (+31 wireNarrow
++ 2 H3 WireChannelEvent contract + 1 H1 service_degraded + 1
+H2+U4 422 envelope = +35 net minus a couple of consolidations).
+Dialyzer 0 errors. 4 cic source files + 4 server source files
++ 4 test files (3 vitest + 2 ExUnit; counting the new
+wireNarrow.test.ts + time_test.exs as new files) touched across
+5 commits.
+
+4 HIGH closed (H1+H2+H3+H4) + 3 unifications (U1+U3+U4) closed
+in one bucket. Pattern continuation:
+* drop-the-finding discipline (D lifecycle/S10 NON-FINDING)
+  parallels H1's drop-the-dead-arm — the right answer was
+  removal, not rewriting
+* total consistency or nothing (CLAUDE.md) — H2+U4 migrates the
+  ONE 422 path and updates BOTH server + cic in one commit, not
+  half-now/half-later
+* implement once, reuse everywhere (CLAUDE.md) — U1 extracts the
+  shared helper instead of letting each Wire re-inline the shim;
+  H3 lifts the union into one module; H4+U3 build the
+  per-channel narrower as a sibling to the existing per-user one
+* infrastructure precedent — U1's `lib/grappa/wire/` directory
+  + the H4 `lib/wireNarrow.ts` cic file both establish "where
+  do shared cross-context primitives go" precedents that future
+  buckets inherit
+
+Bucket G is the third cic-touching bucket of the cluster
+(D + F + G); the structural shift here (runtime narrower at the
+WS edge) extends the type-safety floor to the boundary the type
+system can't reach alone. The H3 single-source `WireChannelEvent`
+union pairs with the H4+U3 narrower so the SAME canonical type
+serves both compile-time consumer narrowing (api.ts → tsc) AND
+runtime payload validation (wireNarrow.ts → drop-and-log) —
+single source for both paths.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
