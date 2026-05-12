@@ -72,12 +72,27 @@ defmodule Grappa.IRC.Client do
 
   require Logger
 
+  # Codebase review 2026-05-12 irc/S6: pre-fix `:logger_metadata` was
+  # typed `keyword()` — any caller could legally pass arbitrary keys
+  # which `Logger.metadata/1` accepts but the formatter then silently
+  # drops at format time (the allowlist in `config/config.exs` is the
+  # gate). Investigation: today the only caller is `Session.Server`
+  # via `Grappa.Log.session_context/2` which returns the
+  # `[user: String.t(), network: String.t()]` keyword list. Both keys
+  # ARE in the allowlist; the silent-drop risk is for FUTURE callers.
+  # Tightening to a structural alias surfaces drift at Dialyzer time
+  # rather than as missing log fields in production. The shape mirrors
+  # `Grappa.Log.session_metadata/0` but lives here so the IRC client
+  # remains free of the optional `Grappa.Log` dep (extraction memory
+  # `project_extract_irc_libs`).
+  @type session_metadata :: [user: String.t(), network: String.t()]
+
   @type opts :: %{
           required(:host) => String.t() | charlist(),
           required(:port) => :inet.port_number(),
           required(:tls) => boolean(),
           required(:dispatch_to) => pid(),
-          required(:logger_metadata) => keyword(),
+          required(:logger_metadata) => session_metadata(),
           required(:nick) => String.t(),
           required(:realname) => String.t(),
           required(:sasl_user) => String.t(),
