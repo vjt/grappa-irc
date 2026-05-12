@@ -248,7 +248,8 @@ defmodule Grappa.Session.Wire do
 
   @doc """
   Pre-sorted member list emitted on `366 RPL_ENDOFNAMES`. Caller is
-  responsible for the mIRC-tier sort. Per-member shape is funneled
+  responsible for the mIRC-tier sort; the per-member projection
+  through `member/1` does NOT re-sort. Per-member shape is funneled
   through `member/1` so REST + Channel agree on the per-row contract
   (web/S3+S4 finding, codebase review 2026-05-12).
   """

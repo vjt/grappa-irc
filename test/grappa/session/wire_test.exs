@@ -66,7 +66,7 @@ defmodule Grappa.Session.WireTest do
   end
 
   describe "members_seeded/3" do
-    test "passes the pre-sorted members list through unchanged" do
+    test "emits each member through member/1 in the seeded payload" do
       members = [
         %{nick: "vjt", modes: ["@"]},
         %{nick: "alice", modes: ["+"]},
@@ -100,6 +100,16 @@ defmodule Grappa.Session.WireTest do
 
     test "preserves an empty modes list (regular voice-less member)" do
       assert Wire.member(%{nick: "bob", modes: []}) == %{nick: "bob", modes: []}
+    end
+
+    test "filters extra source fields to the contract (future-drift insulation)" do
+      # member/1 is load-bearing for shape changes: even if a future
+      # Session.member() type acquires extra fields, the wire boundary
+      # must NOT leak them. Pattern-match-then-rebuild gives us this for
+      # free today; this test pins the contract so a regression that
+      # adds Map.put(:account, ...) to the projection is caught.
+      assert Wire.member(%{nick: "vjt", modes: ["@"], account: "leaked", host: "h.example"}) ==
+               %{nick: "vjt", modes: ["@"]}
     end
   end
 
