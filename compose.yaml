@@ -61,9 +61,10 @@ services:
       MIX_ENV: ${MIX_ENV:-dev}
       DATABASE_PATH: /app/runtime/grappa_${MIX_ENV:-dev}.db
       # Prod-required (no defaults — runtime.exs raises if missing in
-      # MIX_ENV=prod). Compose evaluates the `:?` only when the variable
-      # is consumed; with MIX_ENV=dev these stay unset and config/dev.exs
-      # fixed values cover them.
+      # MIX_ENV=prod). The `:-` (empty default) form below leaves these
+      # unset in dev where config/dev.exs fixed values cover them; in
+      # prod the host shell / .env MUST export real values or
+      # runtime.exs surfaces the missing-env error at boot.
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:-}
       SECRET_SIGNING_SALT: ${SECRET_SIGNING_SALT:-}
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:-}
