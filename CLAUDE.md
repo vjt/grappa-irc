@@ -55,11 +55,15 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   Everything else (`server-time`, `batch`, `labeled-response`, etc.) is
   opportunistic. Never assume upstream-side `CHATHISTORY` exists.
 - **Phoenix Channels is the streaming surface, not SSE.** Topics are
-  `grappa:user:{user}`, `grappa:network:{net}`, and
-  `grappa:network:{net}/channel:{chan}`. The `phoenix.js` client lib
-  handles reconnect + replay. PubSub broadcast + Channel push payloads
-  MUST be JSON-encodable — convert structs to wire shape via a
-  context-owned `*.Wire` module (`Grappa.Scrollback.Wire`,
+  user-rooted (per Phase 2 sub-task 2h, for cross-user authz at the
+  routing layer):
+  `grappa:user:{user_name}`,
+  `grappa:user:{user_name}/network:{network_slug}`, and
+  `grappa:user:{user_name}/network:{network_slug}/channel:{channel_name}`.
+  Single source of truth: `Grappa.PubSub.Topic`. The `phoenix.js`
+  client lib handles reconnect + replay. PubSub broadcast + Channel
+  push payloads MUST be JSON-encodable — convert structs to wire
+  shape via a context-owned `*.Wire` module (`Grappa.Scrollback.Wire`,
   `Grappa.QueryWindows.Wire`). Raw `%Schema{}` structs over PubSub
   crashed Phoenix's `fastlane!/1` at the WS edge during fan-out
   (CP15 B6 finding); `Jason.Encoder` derive on schemas is NOT
@@ -383,11 +387,13 @@ not the surrounding code.**
   drift between migrations and schema is a loud error.
 - **Sandbox per test (`async: true`).** Never share sandbox across
   tests. `use Grappa.DataCase, async: true`.
-- **PubSub topic naming: `grappa:` prefix mandatory.** Subtopics
-  `grappa:user:{user}`, `grappa:network:{net}`,
-  `grappa:network:{net}/channel:{chan}`. Don't introduce sibling
-  prefixes; future Phase 6 listener may need to share topics with the
-  REST surface.
+- **PubSub topic naming: `grappa:` prefix mandatory.** Topics are
+  user-rooted: `grappa:user:{user_name}`,
+  `grappa:user:{user_name}/network:{network_slug}`,
+  `grappa:user:{user_name}/network:{network_slug}/channel:{channel_name}`.
+  Single source of truth: `Grappa.PubSub.Topic`. Don't introduce
+  sibling prefixes; future Phase 6 listener may need to share topics
+  with the REST surface.
 - **Phoenix Channels = the event push surface.** REST is for resources
   (channels, messages, networks). State changes broadcast over
   Channels via `Phoenix.PubSub.broadcast/3`. Don't poll REST for
