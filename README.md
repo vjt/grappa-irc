@@ -68,9 +68,23 @@ read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
    ```sh
    scripts/deploy.sh
    ```
-   On a fresh DB, Bootstrap logs `bootstrap: no credentials bound —
-   running web-only` and Phoenix answers `/healthz`. The container
-   stays up; no IRC sessions are spawned.
+   First run is always cold (no previous HEAD to diff). The container
+   stays up; on a fresh DB, Bootstrap logs `bootstrap: no credentials
+   bound — running web-only` and Phoenix answers `/healthz`. No IRC
+   sessions are spawned until you bind a network (next section).
+
+   On subsequent deploys `scripts/deploy.sh` auto-detects whether the
+   diff is hot-safe (`Phoenix.CodeReloader` swap of running modules,
+   sessions preserved) or cold-required (mix.lock / supervision tree /
+   long-lived GenServer struct shape changed → image rebuild +
+   force-recreate). Override flags `--force-hot` / `--force-cold` for
+   the rare case where the heuristic is wrong. See CLAUDE.md for the
+   full safe-change matrix.
+
+   For cic SPA changes only (no server restart), use
+   `scripts/deploy-cic.sh`: vite-builds the new bundle into
+   `runtime/cicchetto-dist`, then POSTs `/admin/cic-bundle-changed` so
+   connected browsers see the refresh banner immediately.
 
 ### Add an operator account + bind a network
 
