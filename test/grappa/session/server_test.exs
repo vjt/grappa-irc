@@ -343,6 +343,80 @@ defmodule Grappa.Session.ServerTest do
 
       assert Backoff.failure_count({:user, user.id}, network.id) == 1
     end
+
+    # Bucket H — lifecycle/S3: clean Client exit must NOT trigger
+    # `:transient` supervisor auto-restart of the Session.
+    #
+    # Pre-fix the Session returned `{:stop, {:client_exit, :normal}, _}`
+    # which the `:transient` strategy classifies as ABNORMAL (anything
+    # other than :normal | :shutdown | {:shutdown, _}). The supervisor
+    # would re-start the Session, which would re-spawn its Client and
+    # re-connect upstream — directly contradicting the comment claim
+    # "Bootstrap won't respawn the session unless asked via T32 unpark".
+    #
+    # Today the clean-exit clause is unreachable in production (Client
+    # has no self-stop path, and supervisor :shutdown of the parent
+    # bypasses it via terminate/2). Still, the structural bug existed
+    # — code OR comment had to change. We chose code: align with the
+    # CLAUDE.md "Restart strategy" rule (`:transient` per-user
+    # sessions don't restart on clean exit) so the future caller that
+    # introduces a clean Client.stop/1 path doesn't trip the silent
+    # restart.
+    test "clean Client :normal exit does NOT trigger supervisor auto-restart" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      state = :sys.get_state(pid)
+      client_pid = state.client
+      assert is_pid(client_pid)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      :ok = GenServer.stop(client_pid, :normal, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      # Settle: give the DynamicSupervisor a tick to either restart or
+      # not. 100ms is a generous ceiling — the supervisor's restart
+      # decision is synchronous in its own mailbox; this poll is for
+      # the cross-process EXIT-then-restart machinery to land.
+      Process.sleep(100)
+
+      # Authoritative check: the registry entry for (subject, network)
+      # must be absent. A `:transient` restart would re-register a new
+      # pid under the same `{:via, Registry, ...}` name; absence proves
+      # no restart happened. Mirrors the bootstrap_test
+      # `wait_until_registry_clear` invariant.
+      assert Session.whereis({:user, user.id}, network.id) == nil,
+             "Clean Client :normal exit triggered a supervisor restart " <>
+               "(Session re-registered under same key) — :transient " <>
+               "strategy must NOT restart on clean exit per CLAUDE.md"
+    end
+
+    test "clean Client :shutdown exit does NOT trigger supervisor auto-restart" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      state = :sys.get_state(pid)
+      client_pid = state.client
+      assert is_pid(client_pid)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+      :ok = GenServer.stop(client_pid, :shutdown, 1_000)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      Process.sleep(100)
+
+      assert Session.whereis({:user, user.id}, network.id) == nil,
+             "Clean Client :shutdown exit triggered a supervisor restart"
+    end
   end
 
   describe "terminate/2 — clean QUIT on supervisor shutdown" do
@@ -2358,6 +2432,76 @@ defmodule Grappa.Session.ServerTest do
                Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
 
       assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{message: %{body: "ciao"}}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # Bucket H — lifecycle/S4: closed allowlist replaces
+    # `String.ends_with?(target, "serv")` substring match. Pre-fix, ANY
+    # target ending in "serv" was silently dropped: channels like
+    # `#dataserv`, `#aiserv`, nicks `Conserv` / `Reserv` / `Dataserv`
+    # (legitimate ops nicks on some networks) all got the privacy
+    # treatment intended only for the IRC services suite.
+    # Channel-prefixed targets (`#`, `&`, `+`, `!`) are by definition
+    # NOT services — services are nicks (PRIVMSG to a channel goes to
+    # the room, not a service bot).
+    test "channel target #dataserv: persists + broadcasts (NOT misclassified as service)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "#dataserv")
+        )
+
+      assert {:ok, %Scrollback.Message{body: "ops chat"}} =
+               Session.send_privmsg({:user, user.id}, network.id, "#dataserv", "ops chat")
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{message: %{body: "ops chat"}}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "nick target Conserv: persists + broadcasts (NOT misclassified as service)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "Conserv")
+        )
+
+      assert {:ok, %Scrollback.Message{body: "hi"}} =
+               Session.send_privmsg({:user, user.id}, network.id, "Conserv", "hi")
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{message: %{body: "hi"}}}, 1_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "BotServ + OperServ + HostServ + HelpServ + MemoServ also skipped (full allowlist)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      for target <- ["BotServ", "OperServ", "HostServ", "HelpServ", "MemoServ"] do
+        assert {:ok, :no_persist} =
+                 Session.send_privmsg({:user, user.id}, network.id, target, "secret"),
+               "#{target} should be classified as service target"
+
+        assert [] = Scrollback.fetch({:user, user.id}, network.id, target, nil, 10),
+               "#{target} scrollback must be empty"
+      end
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

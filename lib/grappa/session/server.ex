@@ -1140,16 +1140,22 @@ defmodule Grappa.Session.Server do
   end
 
   # Clean linked-Client exit (operator stop / planned teardown / supervisor
-  # shutdown) — propagate the same {:client_exit, reason} wrap shape used by
-  # the abnormal clause, but skip the Backoff bump. Wrapping :normal /
-  # :shutdown into {:client_exit, _} is intentional so the supervisor's
-  # restart strategy classification stays consistent: :transient sessions
-  # don't restart on these reasons (the wrapped tuple is "abnormal" to the
-  # supervisor, but Bootstrap won't respawn the session unless it's been
-  # asked to via T32 unpark — the operator-driven path).
+  # shutdown) — propagate as `:normal` so the `:transient` supervisor does
+  # NOT auto-restart this Session. Bucket H lifecycle/S3 fix: pre-fix this
+  # wrapped `:normal/:shutdown` into `{:client_exit, _}` which the
+  # supervisor classifies as ABNORMAL (anything other than
+  # `:normal | :shutdown | {:shutdown, _}`), so the Session would have
+  # been silently re-spawned by the supervisor — directly contradicting
+  # CLAUDE.md "Restart strategy: :transient … don't restart on :normal
+  # shutdown" and the "Bootstrap won't respawn unless asked via T32
+  # unpark" intent of the comment itself. Today the clause is unreachable
+  # in production (Client has no self-stop path; supervisor :shutdown of
+  # the parent bypasses via terminate/2), but the structural bug needed
+  # closing before a future caller introducing `Client.stop/1` trips
+  # the silent restart.
   def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
       when client_pid != nil and (reason == :normal or reason == :shutdown) do
-    {:stop, {:client_exit, reason}, %{state | client: nil}}
+    {:stop, :normal, %{state | client: nil}}
   end
 
   # Supervisor-issued shutdown of a non-Client linked process — propagate
@@ -1535,16 +1541,33 @@ defmodule Grappa.Session.Server do
       String.contains?(lower, "password incorrect")
   end
 
-  # *Serv suffix is the universal IRC services nick convention
-  # (NickServ / ChanServ / MemoServ / OperServ / BotServ / HostServ /
-  # HelpServ). Any PRIVMSG to one is a credential or control command,
-  # not a chat message — never persist body to scrollback (cleartext
-  # password leak, W12) and never broadcast over PubSub (other tabs
-  # of the same user shouldn't see the password). Generic rule, not
-  # NSInterceptor-specific: NSInterceptor's regex matches NickServ
-  # only; this scrollback skip is broader.
+  # IRC services suite — closed allowlist of well-known service nicks.
+  # PRIVMSG to one is a credential or control command (NickServ
+  # IDENTIFY, ChanServ REGISTER, OperServ ROOMS, etc.) — never persist
+  # body to scrollback (cleartext password leak, W12) and never
+  # broadcast over PubSub (other tabs of the same user shouldn't see
+  # the password). Generic rule, not NSInterceptor-specific:
+  # NSInterceptor's regex matches NickServ only; this scrollback skip
+  # is broader.
+  #
+  # Bucket H — lifecycle/S4: pre-fix this used
+  # `String.ends_with?(target, "serv")` which silently misclassified
+  # ANY target ending in those bytes — channels like `#dataserv` /
+  # `#aiserv`, nicks like `Conserv` / `Dataserv` / `Reserv` (real ops
+  # nicks on some networks) — and silently dropped them from
+  # scrollback. The closed allowlist is the privacy contract: ONLY
+  # the well-known service nicks get the skip. Channel-prefixed
+  # targets (`#`, `&`, `+`, `!`) are by definition NOT services
+  # (PRIVMSG to a channel goes to the room, not a service bot) and
+  # bypass the check entirely.
+  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv)
+  defp service_target?("#" <> _), do: false
+  defp service_target?("&" <> _), do: false
+  defp service_target?("+" <> _), do: false
+  defp service_target?("!" <> _), do: false
+
   defp service_target?(target) when is_binary(target) do
-    target |> String.downcase() |> String.ends_with?("serv")
+    String.downcase(target) in @services
   end
 
   # Existing behavior — persist scrollback row, broadcast on per-channel
