@@ -8,7 +8,7 @@ import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent, seedMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
-import { channelsBySlug, networks, user } from "./networks";
+import { channelsBySlug, networks, refetchChannels, refetchNetworks, user } from "./networks";
 import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
@@ -23,6 +23,7 @@ import {
   setSelectedChannel,
 } from "./selection";
 import { joinChannel } from "./socket";
+import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
 import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from "./windowState";
 import { narrowChannelEvent } from "./wireNarrow";
@@ -664,4 +665,53 @@ createRoot(() => {
       joined.set(key, phx);
     }
   });
+
+  // Message-replay-on-reconnect cluster bonus — defensive resync on
+  // socket-open transitions. Refetches `networks` + `channelsBySlug`
+  // so the channels-loop createEffect re-runs against fresh server
+  // state. Catches the gap class where:
+  //
+  //   1. Cic boots, loads channelsBySlug = [#a, #b].
+  //   2. Operator joins #c via slash command from another grappa
+  //      session OR via a fresh tab; server broadcasts
+  //      `channels_changed` on the user-topic — but cic's WS is
+  //      mid-reconnect and the broadcast is best-effort fan-out (no
+  //      live subscriber).
+  //   3. Cic reconnects; phoenix.js auto-rejoins user-topic +
+  //      already-known channel topics. #c is NOT in cic's
+  //      `channelsBySlug` snapshot (the channels_changed broadcast
+  //      that would have triggered refetchChannels() was dropped),
+  //      so the channels-loop never iterates over #c, never joins
+  //      its topic, never receives any of #c's traffic.
+  //   4. Operator sends from #c; cic shows nothing.
+  //
+  // The defensive refetch on every reconnect-induced socket-open
+  // event closes the gap. It is REDUNDANT with `channels_changed`
+  // for live operation (the broadcast handles changes during the
+  // session); it is the only safety net for the disconnect window.
+  //
+  // Mirror reasoning for `networks` — operators rarely add networks
+  // mid-session but the cost of refetch is one HTTP request and the
+  // alternative is silent absence.
+  //
+  // The `prev` filter masks the initial open transition (createEffect
+  // fires once at registration with prev=undefined; the bootstrap path
+  // already triggered the resource fetch). Only the
+  // post-disconnect transitions ("error" → "open" or "connecting" →
+  // "open") trigger the refetch — the steady-state "open" → "open"
+  // arm is a no-op.
+  createEffect(
+    on(
+      () => socketHealth().state,
+      (state, prev) => {
+        if (prev === undefined) return;
+        if (state !== "open") return;
+        // Transition into "open" from any non-open state means the
+        // socket re-established. Force-refresh so the channels-loop
+        // re-iterates with fresh server-side truth.
+        refetchNetworks();
+        refetchChannels();
+      },
+    ),
+  );
 });
