@@ -24,6 +24,16 @@ test("SocketHealthBanner renders origin-rejected hint after 5 errors with close 
 
   await expect(page.locator(BANNER_SELECTOR)).toHaveCount(0);
 
+  // Race fix: loginAs only waits for the REST `networks()` resource +
+  // sidebar render. The Phoenix WS handshake completes asynchronously
+  // AFTER that — and `socket.onOpen` fires `recordSocketOpen()` which
+  // resets `errorCount` to 0. If the WS open lands AFTER our reset+5x
+  // recordError dance below, it wipes our errorCount before the banner
+  // can render. Under CI's slower I/O this regularly fired between the
+  // evaluate() and the toBeVisible(). Gate on `state==="open"` here so
+  // the open callback has already happened by the time we mutate.
+  await page.waitForFunction(() => window.__cic_socketHealth?.state().state === "open");
+
   await page.evaluate(() => {
     const sh = window.__cic_socketHealth;
     if (!sh) throw new Error("__cic_socketHealth hook missing");
@@ -49,6 +59,9 @@ test("SocketHealthBanner falls back to generic close-code message for non-1006 c
 }) => {
   await loginAs(page, getSeededVjt());
 
+  // Same race-fix gate as the test above — see that comment.
+  await page.waitForFunction(() => window.__cic_socketHealth?.state().state === "open");
+
   await page.evaluate(() => {
     const sh = window.__cic_socketHealth;
     if (!sh) throw new Error("__cic_socketHealth hook missing");
@@ -71,6 +84,7 @@ declare global {
       recordError: () => void;
       recordClose: (e: { code: number; reason: string } | undefined) => void;
       reset: () => void;
+      state: () => { state: "connecting" | "open" | "error" };
     };
   }
 }

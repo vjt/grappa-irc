@@ -141,6 +141,7 @@ declare global {
       recordError: () => void;
       recordClose: (e: { code: number; reason: string } | undefined) => void;
       reset: () => void;
+      state: () => SocketHealth;
     };
   }
 }
@@ -151,5 +152,6 @@ if (typeof window !== "undefined") {
     recordError: recordSocketError,
     recordClose: (e) => recordSocketClose(e as CloseEvent | undefined),
     reset: __resetSocketHealthForTests,
+    state: signal,
   };
 }
