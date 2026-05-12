@@ -2955,6 +2955,141 @@ Tracked here until resolved in the README or an issue.
 
 ---
 
+## 2026-05-12 — CP24 bucket C: IRC outbound + AuthFSM hardening
+
+Third slice of the post-cr-review mega-cluster. Closed the IRC
+outbound trust + validation asymmetry theme (irc/S2-S6) — the five
+HIGH findings from `docs/reviews/codebase/2026-05-12-codebase-review.md`
+"Theme 1". All five fixes target the IRC core layer
+(`lib/grappa/irc/`) which the Phase-6 listener facade reuses as a
+library — making each fix self-defending at the IRC boundary, not
+relying on upstream callers, is the architectural prerequisite for
+that reuse. The boundary tightening also pre-emptively closes the
+class of "future REST/admin caller bypasses the schema" risk.
+
+### irc/S3 — `send_privmsg/3` empty-target reject (commit `3a607d5`)
+
+Pre-fix `Client.send_privmsg/3` accepted any target the
+`safe_line_token?/1` guard cleared, including `""`. An empty target
+yields the malformed wire frame `PRIVMSG  :body\r\n` (double space,
+missing recipient) — the upstream silently drops it and the operator
+sees a no-op with no error path to grep. Fix: add `target != ""` to
+the guard, mirroring `send_pong`'s S9 empty-token precedent. PRIVMSG
+deliberately does NOT require the `#&+!` channel prefix (RFC 2812
+allows nick-as-target), so "non-empty" is the right floor.
+
+### irc/S2 — `send_join`/`send_part` `valid_channel?` gate (commit `2058e9c`)
+
+Pre-fix both helpers only enforced `safe_line_token?` (CR/LF/NUL
+guard). Targets without the RFC 2812 prefix slipped through, creating
+`:pending` window-state entries on channel names the upstream could
+never JOIN. The 403 ERR_NOSUCHCHANNEL reply often carries a
+normalised channel name in `params[1]` that doesn't match what we
+sent, so the pending entry never resolves and the sidebar greys the
+window forever with no operator breadcrumb. Fix: add
+`Identifier.valid_channel?/1` to gate both helpers, mirroring the
+existing shape of `send_topic`, `send_kick`, `send_invite`, and the
+six other channel-targeted verbs that already enforced it. Closes
+the asymmetry the codebase review flagged.
+
+**CRIT-1 follow-up (commit `f129ae1`):** the bucket C code-reviewer
+caught a latent MatchError. The irc/S2 fix widened
+`Client.send_join`/`send_part`'s return contract from `:ok` to
+`:ok | {:error, :invalid_line}` but the corresponding
+`Server.handle_cast({:send_join,_},_)` and `({:send_part,_},_)`
+clauses stayed pinned to the old strict `:ok = ...` match. In
+production today the only live caller path
+(`channels_controller.ex:124`) gates `validate_channel_name/1` first
+so REST callers cannot trigger the crash, but a future bypass-caller
+(mix task, IEx, REPL, future CLI verb) would crash the Session.
+Two-layer fix per CLAUDE.md "Total consistency or nothing":
+(a) tighten `Session.send_join`/`send_part` facade to gate
+`valid_channel?` BEFORE the cast; (b) harden the cast handlers with
+defensive `case` arms that log + drop on `{:error, :invalid_line}`,
+mirroring the autojoin loop's `handle_info({:irc, %Message{command:
+{:numeric, 1}}}, _)` precedent. The reviewer's HIGH-1 (no Server
+test for the wedged `:pending` window symptom) is incidentally
+closed: malformed channels never reach the Server.cast post-fix, so
+`record_in_flight_join` never fires and no `:pending` entry is
+created. Four new facade tests pin the ordering "shape rejection
+beats whereis lookup".
+
+### irc/S6 — `:logger_metadata` type tightening (commit `5bc8836`)
+
+Pre-fix `Client.opts.logger_metadata` was typed `keyword()` — any
+caller could legally pass arbitrary keys. `Logger.metadata/1`
+accepts any keyword list, but the formatter (`config/config.exs`)
+silently drops keys that are not in the allowlist. The two paths
+diverge at format time, not at the boundary. Investigation per the
+review brief — "filter at boundary OR add keys to allowlist" — found
+the single caller today is `Session.Server.start_link` via
+`Grappa.Log.session_context/2`, returning
+`[user: String.t(), network: String.t()]`. Both keys ARE in the
+allowlist; the silent-drop risk is for FUTURE callers (Phase-6
+listener facade, future per-session children).
+
+Right answer: tighten the spec at the boundary so Dialyzer rejects
+out-of-shape calls at compile time. The allowlist remains the
+runtime gate; the spec becomes the static gate. The new alias
+`session_metadata` lives on `Grappa.IRC.Client` itself rather than
+re-exporting `Grappa.Log.session_metadata/0` so the IRC namespace
+stays free of the optional `Grappa.Log` Boundary dep (extraction
+memory `project_extract_irc_libs`: parser + client are slated for
+split into standalone hex libs post-Phase-5). The two type aliases
+mirror by hand. MED-2 follow-up adds a cross-reference comment in
+`Grappa.Log.session_metadata` reminding maintainers to update both.
+
+### irc/S4 — SASL PLAIN encoder NUL guard (commit `1d1e66d`)
+
+RFC 4616 §2 forbids NUL in any of the three SASL PLAIN fields
+(authzid, authcid, password) — NUL is the field separator. Pre-fix
+`sasl_plain_payload/1` only enforced `is_binary(u) and is_binary(pw)`
+(the H10 shape check). A NUL-bearing field slipped past, the encoder
+built the bitstring `<<0, "vjt", 0, "vjt", 0, "swo", 0, "rd">>`,
+base64 produced a payload the upstream decoded to one extra NUL
+field, and the SASL exchange failed as opaque 904 ERR_SASLFAIL.
+
+Fix: explicit `cond` arm for `String.contains?(_, "\x00")` on each
+field, raising `ArgumentError` naming the field. The raise is
+defense-in-depth behind irc/S5's `new/1` boundary; the message
+references "irc/S5 boundary" so an operator who hits it knows the
+upstream gate. Mirrors the H10 pattern: a contract violation on
+`state.password` post-init crashes with a structured operator-greppable
+error rather than emitting a malformed wire frame.
+
+### irc/S5 — `AuthFSM.new/1` self-defending CRLF/NUL boundary (commit `1d5797e`)
+
+Pre-fix `AuthFSM.new/1` only validated `validate_password_present/1`.
+Every line-bound field (`nick`, `realname`, `sasl_user`, `password`)
+flowed through to the registration handshake unchecked. Today the
+gap is closed by `Networks.Credential` validating CRLF/NUL on the
+write path, but AuthFSM is intentionally a pure FSM designed for
+reuse — the Phase-6 IRCv3 listener facade reuses this module as a
+library and any future REST or admin caller that constructs opts
+directly bypasses the schema check.
+
+Fix: `validate_line_safe/1` delegates to
+`Identifier.safe_line_token?/1` (the existing single-source-of-truth
+for "no CR/LF/NUL"). New error shape `{:error, {:invalid_line_token,
+field}}` names the offending field. Three classes:
+`:nick`/`:realname`/`:sasl_user` always-emitted (NICK + USER +
+AUTHENTICATE PLAIN), so the gate fires regardless of method;
+`:password` only when `auth_method != :none` (PASS, NickServ
+IDENTIFY, SASL PLAIN). The `with` chain preserves the existing
+`:missing_password` short-circuit. Pairs with irc/S4: `new/1` is the
+primary gate; encoder is defense-in-depth.
+
+### Bucket close
+
+`scripts/check.sh` exit-0; 1486 → 1504 tests (+18: 1 S3 + 4 S2 +
+4 facade reviewer + 7 S5 + 2 S4; S6 type-only). Dialyzer 0 errors.
+Six `lib/grappa/irc/*.ex` + `lib/grappa/session.ex` +
+`lib/grappa/session/server.ex` + `lib/grappa/log.ex` files touched
+across 7 commits. No new module added; all changes refine existing
+boundaries.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
