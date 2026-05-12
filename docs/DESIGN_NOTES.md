@@ -4469,8 +4469,21 @@ surfaces ~once-per-mega-cluster. The perf delta is bearable.
 Total class is now closed: 0 `async: true` tests touch any
 application singleton, suite is sequentialized at the ExUnit level,
 and singleton modules document the rule at their declaration site.
-Acceptance criterion gating on 5 consecutive ci.yml + integration.yml
-green-on-first-run runs.
+
+### Closure evidence (CLOSED 2026-05-12)
+
+Cluster-landing commit `5bfce29` — both workflows GREEN ON FIRST
+RUN: `ci.yml` `25761866724` + `integration.yml` `25761866714`. The
+prior 2 docs-only commits to main (`e873ece` bucket Z LANDED docs +
+`98cae46` CLAUDE.md docs) had `ci.yml` red with the
+`bootstrap_test.exs` shared-singleton signature — same branch, no
+production-code changes. Signature-match in the docs-only failures +
+green-on-first-run post-fix is direct evidence the class is closed.
+
+Cluster CLOSED ~30 minutes after open. Path B was the right call:
+zero production-code changes (only moduledoc additions documenting
+the constraint at the declaration site), ~20s test-suite latency
+cost, class provably closed at the lowest possible cost.
 
 
 ---
