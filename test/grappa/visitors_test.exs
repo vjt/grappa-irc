@@ -163,6 +163,41 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
+  # CP24 bucket E lifecycle/S1: visitor sessions had no equivalent of
+  # the user-side `credential_failer` callback that
+  # `Networks.SessionPlan` injects. K-line / permanent-SASL on a
+  # visitor exited the `Session.Server` silently, leaving the visitor
+  # row with `expires_at` still in the future — so `Bootstrap` would
+  # cheerfully respawn it on the next app start (and the next, and
+  # the next…). No operator signal for permanently-rejected
+  # visitors. `Visitors.mark_failed/2` expires the row immediately
+  # (Reaper sweeps it within 60s; Bootstrap stops respawning
+  # because `list_active/0` filters on `expires_at > now()`) +
+  # emits a structured Logger error so the operator dashboard
+  # surfaces the rejection.
+  describe "mark_failed/2 (lifecycle/S1)" do
+    test "expires the visitor immediately so Bootstrap stops respawning" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-fail", @network, "1.2.3.4")
+      assert v in Visitors.list_active()
+
+      assert :ok = Visitors.mark_failed(v.id, "k-lined: 'no spam'")
+
+      refute Enum.any?(Visitors.list_active(), &(&1.id == v.id))
+      assert Enum.any?(Visitors.list_expired(), &(&1.id == v.id))
+    end
+
+    test "is idempotent on repeat call" do
+      {:ok, v} = Visitors.find_or_provision_anon("vjt-fail2", @network, "1.2.3.4")
+      assert :ok = Visitors.mark_failed(v.id, "k-lined")
+      assert :ok = Visitors.mark_failed(v.id, "k-lined")
+    end
+
+    test "returns {:error, :not_found} for unknown visitor_id" do
+      assert {:error, :not_found} =
+               Visitors.mark_failed(Ecto.UUID.generate(), "k-lined")
+    end
+  end
+
   describe "get!/1" do
     test "returns the visitor row by id" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")

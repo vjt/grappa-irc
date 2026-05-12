@@ -1452,8 +1452,13 @@ defmodule Grappa.Session.Server do
   # gone (whereis returns nil → stop_session is a no-op → DB transition
   # and broadcast proceed normally).
   #
-  # Visitor sessions carry no credential_failer (ephemeral credential,
-  # no connection_state column) — the nil guard is intentional.
+  # CP24 bucket E lifecycle/S1: visitor sessions ALSO carry a
+  # `credential_failer` now — `Visitors.SessionPlan` injects a closure
+  # that calls `Visitors.mark_failed/2` to expire the visitor row
+  # immediately. Pre-bucket-E visitors had no failer and Bootstrap
+  # would respawn k-lined visitors forever with no operator signal.
+  # The is_function/1 guard already accepted both shapes; only the
+  # injection site was missing for visitors.
   #
   # `{:stop, :normal, state}` causes the `:transient` restart strategy
   # to NOT respawn: `:transient` only restarts on ABNORMAL exits.

@@ -85,7 +85,26 @@ defmodule Grappa.Visitors.SessionPlan do
       # carries the commit-callback so the +r-MODE-observed effect
       # path can reach commit_password/2 without a module reference
       # in the Session boundary.
-      visitor_committer: &Grappa.Visitors.commit_password/2
+      visitor_committer: &Grappa.Visitors.commit_password/2,
+      # CP24 bucket E lifecycle/S1: visitor-side equivalent of the
+      # user-side `Networks.SessionPlan.credential_failer` callback.
+      # K-line / permanent-SASL on the visitor session calls this
+      # with the upstream rejection reason; `mark_failed/2` expires
+      # the row immediately so `Bootstrap.spawn_visitors/1` stops
+      # respawning. The closure captures the visitor id rather than
+      # the full struct so a delete-between-spawn-and-failure race
+      # surfaces as `{:error, :not_found}` (handled inside
+      # `mark_failed/2`) instead of stale-row write.
+      credential_failer: fn reason ->
+        case Visitors.mark_failed(visitor.id, reason) do
+          :ok -> :ok
+          # Visitor row was reaped between spawn and failure. The
+          # operator-observable signal already fired via the
+          # `Logger.error` inside `mark_failed/2` (which is skipped
+          # on `:not_found`); log the race here so it is not lost.
+          {:error, :not_found} -> :ok
+        end
+      end
     }
   end
 

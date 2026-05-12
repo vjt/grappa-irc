@@ -63,6 +63,8 @@ defmodule Grappa.Visitors do
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
+  require Logger
+
   @anon_ttl_seconds 48 * 3600
   @registered_ttl_seconds 7 * 24 * 3600
   @touch_cadence_seconds 3600
@@ -192,6 +194,51 @@ defmodule Grappa.Visitors do
     now = DateTime.utc_now()
     query = from(v in Visitor, where: v.expires_at <= ^now)
     Repo.all(query)
+  end
+
+  @doc """
+  Mark a visitor row as permanently failed by setting `expires_at` to
+  now. The next `Grappa.Visitors.Reaper` sweep (60s cadence) will
+  delete the row; until then `Grappa.Bootstrap.list_active/0` already
+  filters on `expires_at > now()` so respawn stops immediately.
+
+  Used by `Grappa.Visitors.SessionPlan` as the visitor-side equivalent
+  of `Networks.SessionPlan`'s `credential_failer` callback —
+  K-line / permanent-SASL on a visitor session calls this with the
+  upstream rejection reason, expires the row, and emits a structured
+  `Logger.error` so the operator dashboard surfaces the
+  permanently-rejected visitor (cluster-wide rule per memory
+  `feedback_silent_retry_anti_pattern`: any reconnecting client must
+  surface a UI signal above threshold).
+
+  Idempotent: a second call on an already-expired row succeeds with
+  `:ok` (the changeset just re-writes the same `expires_at`). Returns
+  `{:error, :not_found}` if the visitor row has been reaped between
+  the failure detection and this call.
+  """
+  @spec mark_failed(Ecto.UUID.t(), String.t()) :: :ok | {:error, :not_found}
+  def mark_failed(visitor_id, reason)
+      when is_binary(visitor_id) and is_binary(reason) do
+    case Repo.get(Visitor, visitor_id) do
+      nil ->
+        {:error, :not_found}
+
+      visitor ->
+        now = DateTime.utc_now()
+
+        Logger.error("visitor permanently rejected — expiring row",
+          user: "visitor:" <> visitor.id,
+          network: visitor.network_slug,
+          reason: inspect(reason)
+        )
+
+        {:ok, _} =
+          visitor
+          |> Visitor.touch_changeset(now)
+          |> Repo.update()
+
+        :ok
+    end
   end
 
   @doc """

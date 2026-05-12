@@ -54,5 +54,32 @@ defmodule Grappa.Visitors.SessionPlanTest do
 
       assert {:error, :network_unconfigured} = SessionPlan.resolve(visitor)
     end
+
+    # CP24 bucket E lifecycle/S1: visitor plans now carry a
+    # `credential_failer` callback (closure over `visitor.id`) that
+    # `Session.Server.handle_terminal_failure/2` invokes on K-line /
+    # permanent SASL. The callback delegates to
+    # `Visitors.mark_failed/2` which expires the row immediately so
+    # `Bootstrap` stops respawning the rejected visitor.
+    test "plan injects credential_failer that expires the visitor on call" do
+      network_with_server(slug: "azzurra", port: 6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt-failer", "azzurra", "1.2.3.4")
+
+      assert {:ok, opts} = SessionPlan.resolve(visitor)
+      assert is_function(opts.credential_failer, 1)
+
+      assert :ok = opts.credential_failer.("k-lined: 'no spam'")
+
+      refute Enum.any?(Visitors.list_active(), &(&1.id == visitor.id))
+    end
+
+    test "credential_failer no-ops on already-deleted visitor (race tolerance)" do
+      network_with_server(slug: "azzurra", port: 6667)
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt-race", "azzurra", "1.2.3.4")
+      assert {:ok, opts} = SessionPlan.resolve(visitor)
+      :ok = Visitors.delete(visitor.id)
+
+      assert :ok = opts.credential_failer.("k-lined")
+    end
   end
 end
