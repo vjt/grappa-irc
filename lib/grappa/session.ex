@@ -560,13 +560,20 @@ defmodule Grappa.Session do
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
   Each entry: `%{nick: String.t(), modes: [String.t()]}`.
 
-  Returns `{:ok, []}` if the session is registered but has no members
-  recorded for the channel (operator joined but NAMES hasn't completed,
-  or unknown channel). Returns `{:error, :no_session}` if no session
-  is registered for `(subject, network_id)`.
+  CP24 bucket E web/S8 — discriminates two states the pre-bucket-E
+  shape conflated under `{:ok, []}`:
+
+    * `{:ok, :uninitialized}` — channel has not yet observed a 366
+      RPL_ENDOFNAMES (joined but pre-NAMES burst, OR not joined at
+      all). REST `/members` maps to HTTP 204; cic shows "loading…".
+    * `{:ok, [member()]}` (possibly empty list) — channel has
+      received NAMES at least once. REST returns HTTP 200; cic
+      renders the list (empty list = "no members" empty state).
+    * `{:error, :no_session}` — no `Session.Server` registered for
+      `(subject, network_id)`.
   """
   @spec list_members(subject(), integer(), String.t()) ::
-          {:ok, [member()]}
+          {:ok, :uninitialized | [member()]}
           | {:error, :no_session}
   def list_members(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do

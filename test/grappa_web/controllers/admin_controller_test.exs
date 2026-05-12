@@ -17,6 +17,8 @@ defmodule GrappaWeb.AdminControllerTest do
   """
   use GrappaWeb.ConnCase, async: true
 
+  alias Grappa.Cic.Bundle
+
   describe "POST /admin/reload — loopback gate" do
     test "allows 127.0.0.1 with 200 ok body", %{conn: conn} do
       conn = post(conn, "/admin/reload")
@@ -50,7 +52,7 @@ defmodule GrappaWeb.AdminControllerTest do
     test "returns the live bundle hash (or 204 if no bundle on disk)", %{conn: conn} do
       conn = post(conn, "/admin/cic-bundle-changed")
 
-      case Grappa.Cic.Bundle.current_hash() do
+      case Bundle.current_hash() do
         nil ->
           assert response(conn, 204) == ""
 
@@ -60,7 +62,7 @@ defmodule GrappaWeb.AdminControllerTest do
     end
 
     test "broadcasts bundle_hash to subscribed user-topics when bundle exists", %{conn: conn} do
-      case Grappa.Cic.Bundle.current_hash() do
+      case Bundle.current_hash() do
         nil ->
           # No bundle, no broadcast — covered by the 204 test above.
           :ok
@@ -93,7 +95,7 @@ defmodule GrappaWeb.AdminControllerTest do
     # tabs never saw the live bundle-hash refresh banner trigger,
     # leaving them silently stale until manual reload.
     test "broadcasts bundle_hash to subscribed VISITOR-topics when bundle exists", %{conn: conn} do
-      case Grappa.Cic.Bundle.current_hash() do
+      case Bundle.current_hash() do
         nil ->
           :ok
 

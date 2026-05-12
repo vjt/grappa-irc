@@ -107,6 +107,37 @@ defmodule GrappaWeb.MembersControllerTest do
       assert json_response(conn, 404) == %{"error" => "not_found"}
     end
 
+    # CP24 bucket E web/S8: discriminate "no NAMES burst yet" vs
+    # "channel has 0 members." Pre-fix `Session.list_members/3` returned
+    # `{:ok, []}` for both, so REST consumers couldn't tell whether to
+    # show "loading…" or "(empty channel)". Post-fix `:uninitialized`
+    # surfaces as HTTP 204 No Content (cic shows spinner); empty list
+    # surfaces as HTTP 200 + `{members: []}` (cic shows "no members"
+    # empty state). Closes 2/3 open issues in memory
+    # `project_names_ux_silent_bugs`.
+    test "204 No Content for joined channel where NAMES has not landed yet", %{
+      conn: conn,
+      vjt: vjt
+    } do
+      {server, port} = start_server()
+      slug = "az-#{System.unique_integer([:positive])}"
+      {_, pid} = setup_session_with_members(vjt, port, slug)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Self-JOIN echo lands but NO 353/366 — channel is in
+      # state.members (own_nick seeded) but never NAMES-completed.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      conn = get(conn, "/networks/#{slug}/channels/%23test/members")
+      assert response(conn, 204) == ""
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     # Task 30: visitor session reads members through the same Session API
     # via :current_subject dispatch. Pin the controller threads
     # {:visitor, _} correctly — handshake + session interaction is the

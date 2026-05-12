@@ -875,18 +875,24 @@ defmodule GrappaWeb.GrappaChannel do
   # CP15 B3: pushes the cached members list for the channel as a
   # `members_seeded` event, mirroring the broadcast emitted by the 366
   # RPL_ENDOFNAMES apply_effects arm. Closes the deploy-reconnect race
-  # where cic subscribes after the original broadcast fired. Empty
-  # members list is treated as no-cache (skip) — an empty channel is
-  # indistinguishable from "NAMES hasn't completed yet" at this surface.
+  # where cic subscribes after the original broadcast fired.
+  #
+  # CP24 bucket E web/S8: skip the cold-snapshot push when the
+  # server reports `:uninitialized` (joined but pre-NAMES, OR not
+  # joined). cic's MembersPane spinner stays visible — the
+  # canonical 366-driven `members_seeded` broadcast lands later.
+  # An empty list (`{:ok, []}` post-S8) is a real "NAMES emitted
+  # zero members" signal and IS pushed so cic flips from
+  # "loading…" to "no members".
   @spec push_members_if_seeded(Session.subject(), Network.t(), String.t(), Phoenix.Socket.t()) ::
           :ok
   defp push_members_if_seeded(subject, %Network{} = network, channel, socket) do
     case Session.list_members(subject, network.id, channel) do
-      {:ok, [_ | _] = members} ->
-        push(socket, "event", SessionWire.members_seeded(network.slug, channel, members))
-
-      {:ok, []} ->
+      {:ok, :uninitialized} ->
         :ok
+
+      {:ok, members} when is_list(members) ->
+        push(socket, "event", SessionWire.members_seeded(network.slug, channel, members))
 
       {:error, _} ->
         :ok
@@ -959,7 +965,17 @@ defmodule GrappaWeb.GrappaChannel do
   # `mask` syntax is permissive — the only inviolable property is
   # line-safety); `:invalid_line` → CRLF/NUL in a free-form text
   # token (kick reason, topic body).
-  @spec validate_args(keyword()) :: {:ok, :ok} | {:error, atom()}
+  @typep validate_arg ::
+           {:channel, String.t()}
+           | {:nick, String.t()}
+           | {:nicks, [String.t()]}
+           | {:mask, String.t()}
+           | {:line, String.t()}
+           | {:params, [String.t()]}
+
+  @spec validate_args([validate_arg()]) ::
+          {:ok, :ok}
+          | {:error, :invalid_channel | :invalid_nick | :invalid_mask | :invalid_line}
   defp validate_args([]), do: {:ok, :ok}
 
   defp validate_args([{:channel, value} | rest]) do

@@ -1888,13 +1888,84 @@ defmodule Grappa.Session.ServerTest do
                Session.list_members({:user, Ecto.UUID.generate()}, 999_999_999, "#test")
     end
 
-    test "channel not in members returns empty list" do
+    test "channel not in members returns :uninitialized (web/S8)" do
       {_, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
 
-      assert {:ok, []} = Session.list_members({:user, user.id}, network.id, "#nowhere")
+      assert {:ok, :uninitialized} =
+               Session.list_members({:user, user.id}, network.id, "#nowhere")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # CP24 bucket E web/S8: discriminate "joined but pre-NAMES burst"
+    # from "joined with 0 members." Pre-fix both collapsed to
+    # `{:ok, []}`; post-fix the former returns `{:ok, :uninitialized}`
+    # (cic shows "loading…") and the latter returns `{:ok, []}` (cic
+    # shows "no members" empty state).
+    test "joined channel pre-366 returns :uninitialized" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Self-JOIN echo only — no 353/366. state.members[#test] exists
+      # (own_nick seeded) but seeded_channels does NOT include #test.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert {:ok, :uninitialized} =
+               Session.list_members({:user, user.id}, network.id, "#test")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "joined channel post-366 with empty NAMES returns {:ok, []}" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#empty"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Self-JOIN, then a 353 with ONLY own_nick, then 366. Since the
+      # NAMES burst landed (366 observed), the channel is `seeded`.
+      # Members will contain only own_nick.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#empty\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #empty :grappa-test\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #empty :End\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert {:ok, [%{nick: "grappa-test", modes: []}]} =
+               Session.list_members({:user, user.id}, network.id, "#empty")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

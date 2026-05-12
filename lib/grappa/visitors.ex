@@ -199,7 +199,7 @@ defmodule Grappa.Visitors do
   @doc """
   Mark a visitor row as permanently failed by setting `expires_at` to
   now. The next `Grappa.Visitors.Reaper` sweep (60s cadence) will
-  delete the row; until then `Grappa.Bootstrap.list_active/0` already
+  delete the row; until then `Grappa.Visitors.list_active/0` already
   filters on `expires_at > now()` so respawn stops immediately.
 
   Used by `Grappa.Visitors.SessionPlan` as the visitor-side equivalent

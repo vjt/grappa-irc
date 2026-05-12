@@ -124,7 +124,7 @@ defmodule GrappaWeb.UserSocketTest do
       visitor = visitor_fixture()
       {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
 
-      assert {:ok, _socket} = connect_with(%{"token" => session.id})
+      assert {:ok, _} = connect_with(%{"token" => session.id})
 
       visitor_name = "visitor:" <> visitor.id
       assert visitor_name in Grappa.WSPresence.list_user_names()

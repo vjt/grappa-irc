@@ -31,6 +31,13 @@ defmodule GrappaWeb.MembersController do
   404 `not_found` via `Plugs.ResolveNetwork`. `:no_session` (registered
   user but session not running) also collapses to 404 via
   `FallbackController`'s `:no_session` clause (S14 oracle close).
+
+  CP24 bucket E web/S8: `{:ok, :uninitialized}` (joined but pre-NAMES
+  burst, OR not joined at all) collapses to HTTP 204 No Content. cic
+  shows "loading…". `{:ok, [member()]}` (possibly empty) returns
+  HTTP 200 with the JSON envelope. Pre-bucket-E both states
+  collapsed to `{members: []}` and cic couldn't tell whether to
+  show a spinner or "no members" empty state.
   """
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :no_session}
@@ -38,8 +45,10 @@ defmodule GrappaWeb.MembersController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    with {:ok, members} <- Session.list_members(subject, network.id, channel) do
-      render(conn, :index, members: members)
+    case Session.list_members(subject, network.id, channel) do
+      {:ok, :uninitialized} -> send_resp(conn, :no_content, "")
+      {:ok, members} -> render(conn, :index, members: members)
+      {:error, _} = err -> err
     end
   end
 end

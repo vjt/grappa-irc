@@ -258,6 +258,7 @@ defmodule Grappa.Session.Server do
           network_slug: String.t(),
           nick: String.t(),
           members: %{String.t() => %{String.t() => [String.t()]}},
+          seeded_channels: MapSet.t(String.t()),
           topics: %{String.t() => EventRouter.topic_entry()},
           channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
           userhost_cache: EventRouter.userhost_cache(),
@@ -413,6 +414,15 @@ defmodule Grappa.Session.Server do
       network_slug: opts.network_slug,
       nick: opts.nick,
       members: %{},
+      # CP24 bucket E web/S8: tracks per-channel "366 RPL_ENDOFNAMES
+      # observed at least once" so `list_members/3` can discriminate
+      # `{:ok, :uninitialized}` (joined, no NAMES burst yet) from
+      # `{:ok, []}` (joined, NAMES emitted empty list). MapSet of
+      # channel name (case-sensitive — matches `state.members` key
+      # casing). Wiped on self-PART of a channel + on self-JOIN
+      # (reconnect path resets per-channel NAMES expectations
+      # symmetrically with `state.members[channel]`).
+      seeded_channels: MapSet.new(),
       topics: %{},
       channel_modes: %{},
       userhost_cache: %{},
@@ -925,15 +935,29 @@ defmodule Grappa.Session.Server do
   (`@` ops alphabetical → `+` voiced alphabetical → plain alphabetical).
   Each entry: `%{nick: String.t(), modes: [String.t()]}`. Public via
   `Grappa.Session.list_members/3`.
+
+  CP24 bucket E web/S8: returns `{:ok, :uninitialized}` if the
+  channel has not yet observed a 366 RPL_ENDOFNAMES (joined but
+  pre-NAMES, OR not joined at all). Returns `{:ok, [member()]}` —
+  possibly empty — once NAMES has completed at least once. The
+  REST `/members` controller maps `:uninitialized` to HTTP 204
+  (cic shows "loading…") and the empty list to HTTP 200 + `{members:
+  []}` (cic shows "no members"). Channel cold-snapshot
+  (`push_members_if_seeded/4`) skips on `:uninitialized` so cic's
+  WS surface stays consistent with REST.
   """
   def handle_call({:list_members, channel}, _, state) when is_binary(channel) do
-    members =
-      state.members
-      |> Map.get(channel, %{})
-      |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
-      |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
+    if MapSet.member?(state.seeded_channels, channel) do
+      members =
+        state.members
+        |> Map.get(channel, %{})
+        |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
+        |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
 
-    {:reply, {:ok, members}, state}
+      {:reply, {:ok, members}, state}
+    else
+      {:reply, {:ok, :uninitialized}, state}
+    end
   end
 
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
@@ -1432,7 +1456,7 @@ defmodule Grappa.Session.Server do
         # no-op for most numerics; the state mutations it owns (e.g.
         # AWAY confirmation) still flow.
         {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
-        final_state = apply_effects(effects, next_state)
+        final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
         maybe_broadcast_channels_changed(state, final_state)
         maybe_broadcast_own_nick_changed(state, final_state)
         {:noreply, final_state}
@@ -1746,10 +1770,24 @@ defmodule Grappa.Session.Server do
   @spec delegate(Message.t(), t()) :: {:noreply, t()}
   defp delegate(msg, state) do
     {:cont, derived_state, effects} = EventRouter.route(msg, state)
-    next_state = apply_effects(effects, derived_state)
+    next_state = effects |> apply_effects(derived_state) |> prune_seeded_channels()
     maybe_broadcast_channels_changed(state, next_state)
     maybe_broadcast_own_nick_changed(state, next_state)
     {:noreply, next_state}
+  end
+
+  # CP24 bucket E web/S8: keep `seeded_channels` consistent with
+  # `state.members` keys. EventRouter mutates `state.members` for
+  # self-PART (`Map.delete(state.members, channel)`) and self-KICK
+  # (same), but doesn't know about the bucket-E sentinel set. A
+  # post-route intersect drops stale entries — symmetric with the
+  # JOIN-time wipe (self-JOIN reseeds `state.members[channel] =
+  # %{nick => []}` so the next 366 fires `apply_effects` and re-adds
+  # to `seeded_channels`).
+  @spec prune_seeded_channels(t()) :: t()
+  defp prune_seeded_channels(state) do
+    member_keys = MapSet.new(Map.keys(state.members))
+    %{state | seeded_channels: MapSet.intersection(state.seeded_channels, member_keys)}
   end
 
   @spec maybe_broadcast_channels_changed(t(), t()) :: :ok
@@ -1855,6 +1893,12 @@ defmodule Grappa.Session.Server do
       members_map
       |> Enum.map(fn {nick, modes} -> %{nick: nick, modes: modes} end)
       |> Enum.sort_by(&{member_sort_tier(&1.modes), &1.nick})
+
+    # CP24 bucket E web/S8: mark channel as NAMES-seeded so
+    # `list_members/3` discriminates `{:ok, :uninitialized}` (pre-NAMES)
+    # from `{:ok, []}` (NAMES emitted empty). Channel keys match
+    # `state.members` casing.
+    state = %{state | seeded_channels: MapSet.put(state.seeded_channels, channel)}
 
     :ok =
       Grappa.PubSub.broadcast_event(
