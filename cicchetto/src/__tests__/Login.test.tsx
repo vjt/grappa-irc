@@ -333,4 +333,41 @@ describe("Login", () => {
       });
     });
   });
+
+  // Bucket G cross-surface/H1 — captcha-provider-down path.
+  //
+  // The server-side `Grappa.Admission.Captcha.SiteVerifyHttp` maps every
+  // upstream-side captcha verification failure (4xx, 5xx, transport
+  // error) to `{:error, :captcha_provider_unavailable}`. The
+  // `FallbackController` then renders that atom with status 503 and
+  // wire body `%{error: "service_degraded"}` (see
+  // `lib/grappa_web/controllers/fallback_controller.ex` clauses for
+  // `:captcha_provider_unavailable`). The cic side MUST surface the
+  // documented "login service temporarily unavailable" copy on the
+  // `service_degraded` arm — pre-bucket-G a stale
+  // `captcha_provider_unavailable` arm in friendlyMessage() shadowed
+  // the true wire token, leaving silent UX degradation when a real
+  // captcha-provider outage hit (the server emits "service_degraded",
+  // not "captcha_provider_unavailable", so cic landed in the `default`
+  // arm and surfaced the raw "503 service_degraded" Error.message).
+  describe("captcha provider outage (cross-surface/H1)", () => {
+    it("surfaces the documented copy on 503 service_degraded", async () => {
+      vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "service_degraded"));
+      renderLogin();
+      fireEvent.input(screen.getByLabelText(/nick or email/i), {
+        target: { value: "alice" },
+      });
+      fireEvent.input(screen.getByLabelText(/password/i), {
+        target: { value: "secret" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+      await waitFor(() => {
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          /login service temporarily unavailable/i,
+        );
+      });
+      // Raw wire token must NOT leak.
+      expect(screen.queryByText(/service_degraded/)).toBeNull();
+    });
+  });
 });

@@ -93,6 +93,18 @@ function friendlyMessage(err: ApiError): string {
         : "We can't reach the network right now.";
     }
     case "service_degraded":
+      // Server-side captcha-verification outage (provider 4xx/5xx,
+      // transport error, timeout — see
+      // `Grappa.Admission.Captcha.SiteVerifyHttp` and
+      // `FallbackController` clauses for `:captcha_provider_unavailable`,
+      // which renders as 503 with wire body `{error: "service_degraded"}`)
+      // OR any other server-side dependency-degradation 503 that may
+      // surface here in the future. Bucket G H1: pre-bucket-G a stale
+      // `captcha_provider_unavailable` arm shadowed this case at the
+      // call sites that translated the server contract — but the server
+      // never emits that literal wire token, so the dead arm gave silent
+      // UX degradation (raw "503 service_degraded" Error.message
+      // landed in the alert). One arm, one contract.
       return "Login service temporarily unavailable. Please try again.";
     case "captcha_failed":
       return "Captcha challenge failed. Please try again.";
@@ -101,11 +113,6 @@ function friendlyMessage(err: ApiError): string {
       // (operator demanded captcha but wired no provider) — every
       // other captcha_required path branches into the widget mount.
       return "Verification temporarily unavailable.";
-    case "captcha_provider_unavailable":
-      // Server-side site-verify returned a 4xx/5xx or the upstream
-      // provider was unreachable — caller can retry once the verify
-      // service recovers (B2.1–B2.3 SiteVerifyHttp surface).
-      return "Verification service is unreachable. Try again shortly.";
     default:
       return err.message;
   }
