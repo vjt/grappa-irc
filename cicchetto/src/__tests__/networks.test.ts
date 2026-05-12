@@ -22,16 +22,25 @@ const mockChannel = {
   leave: vi.fn(),
 };
 
-vi.mock("../lib/api", () => ({
-  listNetworks: vi.fn(),
-  listChannels: vi.fn(),
-  listMessages: vi.fn(),
-  sendMessage: vi.fn(),
-  me: vi.fn(),
-  login: vi.fn(),
-  logout: vi.fn(),
-  setOn401Handler: vi.fn(),
-}));
+vi.mock("../lib/api", async () => {
+  // tagNetwork is NOT mocked — it's a pure boundary function and the
+  // tests rely on its real behavior to promote raw wire shapes to the
+  // discriminated Network union before the lib/networks resource
+  // surfaces them. Mocking it would short-circuit the H4 contract
+  // these tests actually want to pin.
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return {
+    listNetworks: vi.fn(),
+    listChannels: vi.fn(),
+    listMessages: vi.fn(),
+    sendMessage: vi.fn(),
+    me: vi.fn(),
+    login: vi.fn(),
+    logout: vi.fn(),
+    setOn401Handler: vi.fn(),
+    tagNetwork: actual.tagNetwork,
+  };
+});
 
 vi.mock("../lib/socket", () => ({
   joinChannel: vi.fn(() => mockChannel),
@@ -46,7 +55,16 @@ beforeEach(() => {
 const seedStubs = async () => {
   const api = await import("../lib/api");
   vi.mocked(api.listNetworks).mockResolvedValue([
-    { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+    {
+      id: 1,
+      slug: "freenode",
+      nick: "alice",
+      connection_state: "connected",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "x",
+      updated_at: "y",
+    },
   ]);
   vi.mocked(api.listChannels).mockResolvedValue([
     { name: "#grappa", joined: true, source: "autojoin" },
@@ -96,7 +114,16 @@ describe("networks resources", () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+      {
+        id: 7,
+        slug: "libera",
+        nick: "grappa",
+        connection_state: "connected",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "x",
+        updated_at: "y",
+      },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([]);
     vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
@@ -107,18 +134,32 @@ describe("networks resources", () => {
       const n = networks.networks();
       expect(n?.length).toBe(1);
     });
-    // Confirm initial nick from REST.
-    expect(networks.networks()?.[0]?.nick).toBe("grappa");
+    // Confirm initial nick from REST. Narrow on kind: post-bucket-F H4
+    // Network is a discriminated union and `.nick` is only on UserNetwork.
+    const initial = networks.networks()?.[0];
+    expect(initial?.kind).toBe("user");
+    if (initial?.kind === "user") expect(initial.nick).toBe("grappa");
     // Simulate own_nick_changed broadcast updating the live nick.
     networks.mutateNetworkNick(7, "vjt-grappa");
-    expect(networks.networks()?.[0]?.nick).toBe("vjt-grappa");
+    const updated = networks.networks()?.[0];
+    expect(updated?.kind).toBe("user");
+    if (updated?.kind === "user") expect(updated.nick).toBe("vjt-grappa");
   });
 
   it("mutateNetworkNick is a no-op for unknown network ids", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.listNetworks).mockResolvedValue([
-      { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+      {
+        id: 7,
+        slug: "libera",
+        nick: "grappa",
+        connection_state: "connected",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "x",
+        updated_at: "y",
+      },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([]);
     vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
@@ -127,7 +168,9 @@ describe("networks resources", () => {
     await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
     // Wrong id — should be a no-op.
     networks.mutateNetworkNick(999, "should-not-appear");
-    expect(networks.networks()?.[0]?.nick).toBe("grappa");
+    const out = networks.networks()?.[0];
+    expect(out?.kind).toBe("user");
+    if (out?.kind === "user") expect(out.nick).toBe("grappa");
   });
 
   // bnd-A2: slug→id / slug→Network helpers backed by createMemo Map.
@@ -139,8 +182,26 @@ describe("networks resources", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listNetworks).mockResolvedValue([
-        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
-        { id: 2, slug: "libera", inserted_at: "x", updated_at: "y" },
+        {
+          id: 1,
+          slug: "freenode",
+          nick: "vjt",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
+        {
+          id: 2,
+          slug: "libera",
+          nick: "vjt",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
       ]);
       vi.mocked(api.listChannels).mockResolvedValue([]);
       vi.mocked(api.me).mockResolvedValue({
@@ -160,7 +221,16 @@ describe("networks resources", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listNetworks).mockResolvedValue([
-        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+        {
+          id: 1,
+          slug: "freenode",
+          nick: "vjt",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
       ]);
       vi.mocked(api.listChannels).mockResolvedValue([]);
       vi.mocked(api.me).mockResolvedValue({
@@ -186,7 +256,16 @@ describe("networks resources", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listNetworks).mockResolvedValue([
-        { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+        {
+          id: 7,
+          slug: "libera",
+          nick: "grappa",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
       ]);
       vi.mocked(api.listChannels).mockResolvedValue([]);
       vi.mocked(api.me).mockResolvedValue({
@@ -201,14 +280,24 @@ describe("networks resources", () => {
       const n = networks.networkBySlug("libera");
       expect(n).toBeDefined();
       expect(n?.id).toBe(7);
-      expect(n?.nick).toBe("grappa");
+      expect(n?.kind).toBe("user");
+      if (n?.kind === "user") expect(n.nick).toBe("grappa");
     });
 
     it("networkBySlug returns undefined for an unknown slug", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listNetworks).mockResolvedValue([
-        { id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" },
+        {
+          id: 1,
+          slug: "freenode",
+          nick: "vjt",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
       ]);
       vi.mocked(api.listChannels).mockResolvedValue([]);
       vi.mocked(api.me).mockResolvedValue({
@@ -230,7 +319,16 @@ describe("networks resources", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listNetworks).mockResolvedValue([
-        { id: 7, slug: "libera", nick: "grappa", inserted_at: "x", updated_at: "y" },
+        {
+          id: 7,
+          slug: "libera",
+          nick: "grappa",
+          connection_state: "connected",
+          connection_state_reason: null,
+          connection_state_changed_at: null,
+          inserted_at: "x",
+          updated_at: "y",
+        },
       ]);
       vi.mocked(api.listChannels).mockResolvedValue([]);
       vi.mocked(api.me).mockResolvedValue({
@@ -242,9 +340,11 @@ describe("networks resources", () => {
       vi.mocked(api.listMessages).mockResolvedValue([]);
       const networks = await import("../lib/networks");
       await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
-      expect(networks.networkBySlug("libera")?.nick).toBe("grappa");
+      const before = networks.networkBySlug("libera");
+      if (before?.kind === "user") expect(before.nick).toBe("grappa");
       networks.mutateNetworkNick(7, "vjt-grappa");
-      expect(networks.networkBySlug("libera")?.nick).toBe("vjt-grappa");
+      const after = networks.networkBySlug("libera");
+      if (after?.kind === "user") expect(after.nick).toBe("vjt-grappa");
       // Slug→id stays intact across the mutation.
       expect(networks.networkIdBySlug("libera")).toBe(7);
     });

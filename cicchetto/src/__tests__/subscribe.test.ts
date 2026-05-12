@@ -44,6 +44,43 @@ vi.mock("../lib/api", () => ({
     if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
     return net.nick && net.nick !== "" ? net.nick : null;
   },
+  // Bucket F H4: lib/networks resource calls tagNetwork — passthrough
+  // mock that mirrors production behavior so tests don't need to add
+  // per-call branching.
+  //
+  // Test-flexibility relaxation: production tagNetwork drops a row
+  // when `connection_state` is missing on the user branch — but the
+  // existing `mockResolvedValue([{ id, slug, nick, inserted_at,
+  // updated_at }])` shapes scattered across this 60-test file omit it.
+  // Default connection_state to "connected" so those rows continue to
+  // promote; tests that specifically exercise the parked/failed
+  // cascade override it explicitly. The `nick === ""` branch still
+  // drops to match the cic H4 contract violation behavior.
+  tagNetwork: (
+    raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
+      string,
+      unknown
+    >,
+    subjectKind: "user" | "visitor",
+  ) => {
+    if (subjectKind === "visitor") {
+      return {
+        kind: "visitor",
+        id: raw.id,
+        slug: raw.slug,
+        inserted_at: raw.inserted_at,
+        updated_at: raw.updated_at,
+      };
+    }
+    if (raw.nick === undefined || raw.nick === "") return null;
+    return {
+      kind: "user",
+      ...raw,
+      connection_state: raw.connection_state ?? "connected",
+      connection_state_reason: raw.connection_state_reason ?? null,
+      connection_state_changed_at: raw.connection_state_changed_at ?? null,
+    };
+  },
 }));
 
 vi.mock("../lib/socket", () => ({
@@ -2492,6 +2529,31 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
         if (me == null) return null;
         if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
         return net.nick && net.nick !== "" ? net.nick : null;
+      },
+      tagNetwork: (
+        raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
+          string,
+          unknown
+        >,
+        subjectKind: "user" | "visitor",
+      ) => {
+        if (subjectKind === "visitor") {
+          return {
+            kind: "visitor",
+            id: raw.id,
+            slug: raw.slug,
+            inserted_at: raw.inserted_at,
+            updated_at: raw.updated_at,
+          };
+        }
+        if (raw.nick === undefined || raw.nick === "") return null;
+        return {
+          kind: "user",
+          ...raw,
+          connection_state: raw.connection_state ?? "connected",
+          connection_state_reason: raw.connection_state_reason ?? null,
+          connection_state_changed_at: raw.connection_state_changed_at ?? null,
+        };
       },
     }));
     vi.doMock("../lib/socket", () => ({

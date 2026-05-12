@@ -22,12 +22,22 @@ vi.mock("../lib/windowState", () => ({
 }));
 
 vi.mock("../lib/networks", () => ({
+  // Bucket F H4: ComposeBox narrows on `kind === "user"` before
+  // reading connection_state. Tests exercise the user branch (the
+  // greyed cascade only applies to user subjects' credential rows;
+  // visitors don't have one). Default to "connected" when the
+  // per-test override is absent so the not-greyed branch is the
+  // baseline.
   networkBySlug: (slug: string) => ({
+    kind: "user",
     id: 1,
     slug,
+    nick: "vjt",
     inserted_at: "",
     updated_at: "",
-    connection_state: mockNetworkConnectionState[slug],
+    connection_state: mockNetworkConnectionState[slug] ?? "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
   }),
 }));
 

@@ -42,6 +42,37 @@ vi.mock("../lib/api", () => ({
     if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
     return net.nick && net.nick !== "" ? net.nick : null;
   },
+  // Bucket F H4: lib/networks resource calls tagNetwork to promote
+  // raw wire shapes to the discriminated Network union. Mirror the
+  // production behavior with a test-flexibility relaxation: default
+  // connection_state to "connected" so existing fixtures that omit
+  // it continue to promote; the `nick === ""` branch still drops to
+  // match the cic H4 contract violation behavior.
+  tagNetwork: (
+    raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
+      string,
+      unknown
+    >,
+    subjectKind: "user" | "visitor",
+  ) => {
+    if (subjectKind === "visitor") {
+      return {
+        kind: "visitor",
+        id: raw.id,
+        slug: raw.slug,
+        inserted_at: raw.inserted_at,
+        updated_at: raw.updated_at,
+      };
+    }
+    if (raw.nick === undefined || raw.nick === "") return null;
+    return {
+      kind: "user",
+      ...raw,
+      connection_state: raw.connection_state ?? "connected",
+      connection_state_reason: raw.connection_state_reason ?? null,
+      connection_state_changed_at: raw.connection_state_changed_at ?? null,
+    };
+  },
 }));
 
 vi.mock("../lib/socket", () => ({
@@ -76,7 +107,16 @@ beforeEach(() => {
 const seedStubs = async () => {
   const api = await import("../lib/api");
   vi.mocked(api.listNetworks).mockResolvedValue([
-    { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
+    {
+      id: 1,
+      slug: "freenode",
+      nick: "alice",
+      connection_state: "connected",
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "x",
+      updated_at: "y",
+    },
   ]);
   vi.mocked(api.listChannels).mockResolvedValue([
     { name: "#grappa", joined: true, source: "autojoin" },

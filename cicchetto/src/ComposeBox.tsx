@@ -41,8 +41,12 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   const greyed = (): boolean => {
-    const networkState = networkBySlug(props.networkSlug)?.connection_state;
-    if (networkState !== undefined && NETWORK_GREYED_STATES.has(networkState)) return true;
+    // Bucket F H4: only UserNetwork carries connection_state. Narrow on
+    // network.kind before reading the field; visitor networks are
+    // never greyed at the network level (visitors have no credential
+    // row to park / fail).
+    const net = networkBySlug(props.networkSlug);
+    if (net?.kind === "user" && NETWORK_GREYED_STATES.has(net.connection_state)) return true;
     const s = windowStateByChannel()[key()];
     return s !== undefined && NOT_JOINED_STATES.has(s);
   };

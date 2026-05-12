@@ -71,9 +71,13 @@ const Sidebar: Component<Props> = (props) => {
   // failed. Drives both the network header `.sidebar-network-greyed`
   // class AND the cascading per-channel/per-query overlay in
   // `isGreyed/2` below.
+  //
+  // Bucket F H4: only UserNetwork carries connection_state. Narrow on
+  // network.kind first; visitor networks are never greyed at the
+  // network level (visitors have no credential row to park / fail).
   const isNetworkGreyed = (slug: string): boolean => {
-    const state = networkBySlug(slug)?.connection_state;
-    return state !== undefined && NETWORK_GREYED_STATES.has(state);
+    const net = networkBySlug(slug);
+    return net?.kind === "user" && NETWORK_GREYED_STATES.has(net.connection_state);
   };
 
   const isGreyed = (slug: string, name: string): boolean => {
@@ -83,7 +87,9 @@ const Sidebar: Component<Props> = (props) => {
   };
 
   const networkReason = (slug: string): string | undefined => {
-    return networkBySlug(slug)?.connection_state_reason ?? undefined;
+    const net = networkBySlug(slug);
+    if (net?.kind !== "user") return undefined;
+    return net.connection_state_reason ?? undefined;
   };
 
   // Synthetic sidebar rows: keys with windowState != "joined" whose

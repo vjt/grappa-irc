@@ -7,15 +7,23 @@ let mockNetworkConnectionReason: Record<string, string | null | undefined> = {};
 vi.mock("../lib/networks", () => ({
   networks: () => [
     {
+      // Bucket F H4: Network is now a discriminated union; the Sidebar
+      // narrows on `kind === "user"` before reading connection_state.
+      // Tests here exercise the user branch — visitors don't have a
+      // connection_state to grey out, so the visitor variant is
+      // covered by an explicit absence test below.
+      kind: "user",
       id: 1,
       slug: "freenode",
+      nick: "vjt",
       inserted_at: "",
       updated_at: "",
+      connection_state_changed_at: null,
       get connection_state() {
-        return mockNetworkConnectionState.freenode;
+        return mockNetworkConnectionState.freenode ?? "connected";
       },
       get connection_state_reason() {
-        return mockNetworkConnectionReason.freenode;
+        return mockNetworkConnectionReason.freenode ?? null;
       },
     },
   ],
@@ -29,12 +37,15 @@ vi.mock("../lib/networks", () => ({
   networkBySlug: (slug: string) => {
     if (slug !== "freenode") return undefined;
     return {
+      kind: "user",
       id: 1,
       slug: "freenode",
+      nick: "vjt",
       inserted_at: "",
       updated_at: "",
-      connection_state: mockNetworkConnectionState.freenode,
-      connection_state_reason: mockNetworkConnectionReason.freenode,
+      connection_state: mockNetworkConnectionState.freenode ?? "connected",
+      connection_state_reason: mockNetworkConnectionReason.freenode ?? null,
+      connection_state_changed_at: null,
     };
   },
 }));

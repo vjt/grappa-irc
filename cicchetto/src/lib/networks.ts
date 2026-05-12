@@ -6,6 +6,8 @@ import {
   type MeResponse,
   me,
   type Network,
+  type RawNetwork,
+  tagNetwork,
 } from "./api";
 import { token } from "./auth";
 
@@ -41,16 +43,35 @@ import { token } from "./auth";
 // see the updated nick immediately.
 
 const exports = createRoot(() => {
-  const [networks, { mutate: mutateNetworksResource, refetch: refetchNetworksResource }] =
-    createResource<Network[], string | null>(token, async (t) => {
-      if (!t) return [];
-      return listNetworks(t);
-    });
-
   const [user] = createResource<MeResponse | null, string | null>(token, async (t) => {
     if (!t) return null;
     return me(t);
   });
+
+  // Networks resource is keyed on `user` (not raw token) so the
+  // boundary tagger has the subject kind to discriminate each row.
+  // Per bucket F H4: server emits two implicit shapes (visitor: bare;
+  // user: nick + connection_state fields) but no explicit `kind`
+  // discriminator; cic injects it here at the fetch boundary so every
+  // downstream consumer narrows via `network.kind === "user"` instead
+  // of probing for `network.connection_state ?? ...` defensively.
+  // tagNetwork drops rows that fail the user-subject contract (missing
+  // nick or connection_state) — the missing-nick branch was the cic
+  // H3 silent root cause; H4 closes it at the boundary so it can't
+  // leak into the typed store.
+  const [networks, { mutate: mutateNetworksResource, refetch: refetchNetworksResource }] =
+    createResource<Network[], MeResponse | null>(user, async (currentMe) => {
+      if (!currentMe) return [];
+      const t = token();
+      if (!t) return [];
+      const raw: RawNetwork[] = await listNetworks(t);
+      const tagged: Network[] = [];
+      for (const r of raw) {
+        const n = tagNetwork(r, currentMe.kind);
+        if (n !== null) tagged.push(n);
+      }
+      return tagged;
+    });
 
   const [channelsBySlug, { refetch: refetchChannelsResource }] = createResource<
     Record<string, ChannelEntry[]>,
@@ -87,10 +108,16 @@ const exports = createRoot(() => {
   // Called by userTopic.ts when `own_nick_changed` arrives so the
   // DM-listener and query-window loops see the correct own-nick
   // without waiting for the next GET /networks refetch.
+  //
+  // Bucket F H4: only `UserNetwork` rows carry a `nick` field. A
+  // visitor row with the matching id is left untouched — visitors
+  // can't issue NICK upstream (the visitor IS the nick) so the
+  // `own_nick_changed` event for a visitor's network is a server
+  // contract violation we tolerate by no-op'ing.
   const mutateNetworkNick = (networkId: number, nick: string): void => {
     mutateNetworksResource((prev) => {
       if (!prev) return prev;
-      return prev.map((n) => (n.id === networkId ? { ...n, nick } : n));
+      return prev.map((n) => (n.id === networkId && n.kind === "user" ? { ...n, nick } : n));
     });
   };
 

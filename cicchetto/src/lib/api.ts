@@ -95,36 +95,40 @@ export function displayNick(me: MeResponse): string {
 // running as on this network". Single source for the wire-vs-account
 // disambiguation.
 //
-// Resolution rules:
-//   * visitor + matching network_slug → `me.nick` (the visitor IS the
-//     IRC nick — visitors have one network only).
-//   * visitor + other network         → `null` (visitors have no
+// Resolution rules (post-bucket-F H4 type-split):
+//   * visitor me + matching network_slug → `me.nick` (the visitor IS
+//     the IRC nick — visitors have one network only).
+//   * visitor me + other network         → `null` (visitors have no
 //     credential row on networks they didn't log into).
-//   * user + `net.nick` present       → `net.nick` (the per-credential
+//   * user me + UserNetwork              → `net.nick` (the per-credential
 //     configured IRC nick, kept live by the `own_nick_changed`
 //     user-topic event).
-//   * user + `net.nick` absent        → `null` (a server contract
-//     violation — `network_with_nick_to_json` REQUIRES non-empty nick
-//     for user subjects; a missing one means a future server change
-//     drifted from the wire spec). We log to `console.error` so the
-//     drift is loud, and return null so the caller's null-branch
-//     handles it — typically by skipping the join. The pre-fix
-//     behavior was to fall back to `displayNick(me) === me.name`,
-//     which silently DM-misrouted when account-name happened to
-//     match a peer's IRC nick on the affected network.
+//   * user me + VisitorNetwork           → `null` (subject/network kind
+//     mismatch — a visitor-shaped network row in a user's network list
+//     is a server contract violation that the boundary fetcher in
+//     `lib/networks.ts` should have rejected. We log + return null so
+//     downstream callers skip the join rather than crash.)
+//   * null me                            → `null`
 //
 // Use everywhere a per-network "own nick" comparison is made: the
 // channels-loop self-JOIN/PART detection, the query-windows-loop
 // own-nick skip, the DM-listener loop subscription topic, the
 // ScrollbackPane self-highlight + mention-match.
+//
+// Pre-bucket-F the type was a single `Network` shape with all
+// user-only fields optional, and the bottom branch checked
+// `net.nick !== undefined && net.nick !== ""`. The discriminated
+// union enforces this at the type system: `net.nick` is unreachable
+// on `VisitorNetwork`, so the kind-mismatch branch is structurally
+// distinct and the type narrowing is the documentation.
 export function ownNickForNetwork(net: Network, me: MeResponse | null | undefined): string | null {
   if (me == null) return null;
   if (me.kind === "visitor") {
     return me.network_slug === net.slug ? me.nick : null;
   }
-  if (net.nick !== undefined && net.nick !== "") return net.nick;
+  if (net.kind === "user") return net.nick;
   console.error(
-    `ownNickForNetwork: user subject but Network.nick missing for slug=${net.slug} — server contract violation (network_with_nick_to_json should have populated it). Falling through to null; caller will skip topic join. Pre-fix this fell back to user.name and silently DM-misrouted when account-name matched a peer IRC nick. See codebase review 2026-05-08 cic H3.`,
+    `ownNickForNetwork: user subject but Network.kind=visitor for slug=${net.slug} — server contract violation (a visitor-shaped network row landed in a user's network list, which the boundary fetcher in lib/networks.ts should have rejected). Falling through to null; caller will skip topic join. See codebase review 2026-05-12 cic H4.`,
   );
   return null;
 }
@@ -134,28 +138,129 @@ export function ownNickForNetwork(net: Network, me: MeResponse | null | undefine
 // Ecto FK; the `slug` is the topic-vocabulary identifier — every
 // REST URL takes `:network_id` as the slug, not the integer id.
 //
-// T32 fields (`connection_state`, `connection_state_reason`,
-// `connection_state_changed_at`) surface for user subjects only —
-// visitors have no credential row to transition. Cic derives the
-// per-network + cascading per-channel greyed cascade from
-// `connection_state ∈ {parked, failed}`.
-export type Network = {
+// Discriminated union over subject kind. The server renders TWO
+// distinct JSON shapes (visitor: bare id+slug+timestamps; user: adds
+// `nick` + the three T32 connection_state fields) but does NOT emit
+// an explicit `kind` discriminator on the wire — the shape difference
+// is implicit in the request authentication subject. Cic injects the
+// `kind` field at the fetch boundary (`lib/networks.ts` resource) by
+// joining each row against the subject from `me()`. This promotes the
+// implicit-shape contract to a TypeScript-discriminated union so
+// every consumer narrows via `network.kind === "user"` before
+// touching the user-only fields — no scattered `?.connection_state ??`
+// defensive checks downstream.
+//
+// Bucket F H4 fix: pre-fix the type was a single shape with all
+// user-only fields marked `?:` optional. The optionality was correct
+// for visitors but the type system couldn't enforce that
+// `network.connection_state` was unreachable on the visitor branch —
+// every consumer wrote `?.connection_state` "just in case" and the
+// branches drifted (some sites checked, some didn't, none narrowed
+// the type). Per CLAUDE.md "Consistency: same problem, same solution"
+// this mirrors the user-vs-visitor `MeResponse` discriminated union
+// that already lives at line 63 — the kind is the same domain
+// boundary, the type system enforces it the same way.
+export type UserNetwork = {
+  kind: "user";
   id: number;
   slug: string;
-  // nick is the per-network IRC nick as configured in the credential.
-  // Populated for user subjects (GET /networks includes it); absent for
-  // visitor subjects (visitors have no per-network credential row).
+  // The per-network IRC nick configured in the credential — REQUIRED
+  // for user subjects per server contract. Pre-bucket-F this was
+  // `nick?: string` and a missing-nick branch leaked through to
+  // `ownNickForNetwork` which logged "server contract violation" and
+  // returned null. The required-string typing here puts the
+  // contract violation at the construction boundary
+  // (`lib/networks.ts` resource fetch) instead of the consumption
+  // boundary (every callsite that reads `.nick`).
+  nick: string;
+  // T32 connection-state fields — REQUIRED for user subjects. Default
+  // for a freshly-bound credential is "connected". `failed` is a
+  // server-set transition (admission failure / network unreachable);
+  // `parked` is a user-initiated /disconnect.
+  connection_state: CredentialConnectionState | "failed";
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export type VisitorNetwork = {
+  kind: "visitor";
+  id: number;
+  slug: string;
+  inserted_at: string;
+  updated_at: string;
+};
+
+export type Network = UserNetwork | VisitorNetwork;
+
+// Raw server wire shape for `GET /networks` — the JSON the server
+// emits, BEFORE cic's boundary fetcher tags each row with the
+// `kind: "user" | "visitor"` discriminator. The wire shape is the
+// implicit-shape contract from `Grappa.Networks.Wire` (visitor
+// branch: bare; user branch: nick + connection_state fields). Cic
+// promotes the implicit shape to a discriminated union via the
+// `tagNetwork(raw, subjectKind)` boundary in `lib/networks.ts`.
+//
+// The fields are all optional here so the type matches BOTH wire
+// shapes; the post-tag `Network` type narrows them to required on
+// the user branch and absent on the visitor branch.
+export type RawNetwork = {
+  id: number;
+  slug: string;
   nick?: string;
-  // T32 connection-state fields. Present for user subjects (sourced
-  // from the per-(user, network) credential row); absent for visitor
-  // subjects (no credential row → no connection_state to surface).
-  // Default for a freshly-bound credential is "connected".
   connection_state?: CredentialConnectionState | "failed";
   connection_state_reason?: string | null;
   connection_state_changed_at?: string | null;
   inserted_at: string;
   updated_at: string;
 };
+
+// Boundary tagger — promotes a raw wire `RawNetwork` to a typed
+// `Network` discriminated by the subject `me().kind`. Called in
+// `lib/networks.ts`'s networks resource, downstream of the /me
+// resource resolution.
+//
+// On user subjects we assert nick + connection_state are present
+// (server contract); a missing nick is logged + the row is dropped
+// (returns null) so the caller filters before binding into the
+// reactive store. Pre-fix the missing-nick branch leaked through to
+// every `ownNickForNetwork` callsite which checked + logged
+// individually.
+export function tagNetwork(raw: RawNetwork, subjectKind: "user" | "visitor"): Network | null {
+  if (subjectKind === "visitor") {
+    return {
+      kind: "visitor",
+      id: raw.id,
+      slug: raw.slug,
+      inserted_at: raw.inserted_at,
+      updated_at: raw.updated_at,
+    };
+  }
+  if (raw.nick === undefined || raw.nick === "") {
+    console.error(
+      `tagNetwork: user subject but RawNetwork.nick missing for slug=${raw.slug} — server contract violation (network_with_nick_to_json should have populated it). Dropping the row from the typed networks list. See codebase review 2026-05-12 cic H4.`,
+    );
+    return null;
+  }
+  if (raw.connection_state === undefined) {
+    console.error(
+      `tagNetwork: user subject but RawNetwork.connection_state missing for slug=${raw.slug} — server contract violation. Dropping the row from the typed networks list.`,
+    );
+    return null;
+  }
+  return {
+    kind: "user",
+    id: raw.id,
+    slug: raw.slug,
+    nick: raw.nick,
+    connection_state: raw.connection_state,
+    connection_state_reason: raw.connection_state_reason ?? null,
+    connection_state_changed_at: raw.connection_state_changed_at ?? null,
+    inserted_at: raw.inserted_at,
+    updated_at: raw.updated_at,
+  };
+}
 
 // Mirror of `Grappa.Networks.Wire.channel_json/0` post-A5. Object envelope
 // extended in P4-1 with the live `joined` state and the `source` of the
@@ -411,12 +516,12 @@ export async function logout(token: string): Promise<void> {
   if (!res.ok) throw await readError(res);
 }
 
-export async function listNetworks(token: string): Promise<Network[]> {
+export async function listNetworks(token: string): Promise<RawNetwork[]> {
   const res = await fetch("/networks", {
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as Network[];
+  return (await res.json()) as RawNetwork[];
 }
 
 export async function listChannels(token: string, networkSlug: string): Promise<ChannelEntry[]> {

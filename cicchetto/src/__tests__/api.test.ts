@@ -188,7 +188,7 @@ describe("postTopic / postNick", () => {
   });
 });
 
-describe("ownNickForNetwork (cic H3 fix)", () => {
+describe("ownNickForNetwork (cic H3 fix + bucket F H4 type split)", () => {
   // Per-network IRC nick resolver — single source of truth for the
   // "what's my IRC nick on THIS network" question. Replaces the
   // per-callsite `net.nick ?? displayNick(u)` fallback that silently
@@ -196,20 +196,37 @@ describe("ownNickForNetwork (cic H3 fix)", () => {
   // peer's IRC nick on a network where the configured IRC nick was
   // different (e.g. account "vjt", peer "vjt", own IRC nick "grappa").
   // See lib/api.ts moduledoc for the full rule set.
+  //
+  // Bucket F H4: the missing-nick branch moved up to `tagNetwork` at
+  // the fetch boundary — `Network` (the discriminated union) now
+  // makes `nick` REQUIRED on `UserNetwork`. The tests here exercise
+  // the post-tag invariants; tagNetwork's own contract has its own
+  // describe block below.
 
-  const azzurra: api.Network = {
+  const azzurraUser: api.UserNetwork = {
+    kind: "user",
     id: 1,
     slug: "azzurra",
     nick: "grappa",
+    connection_state: "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
-  const ircnet: api.Network = {
+  const azzurraVisitor: api.VisitorNetwork = {
+    kind: "visitor",
+    id: 1,
+    slug: "azzurra",
+    inserted_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const ircnetVisitor: api.VisitorNetwork = {
+    kind: "visitor",
     id: 2,
     slug: "ircnet",
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-    // nick intentionally absent → server-contract violation branch
   };
 
   const userMe: api.MeResponse = {
@@ -226,43 +243,112 @@ describe("ownNickForNetwork (cic H3 fix)", () => {
     expires_at: "2026-12-31T00:00:00Z",
   };
 
-  it("user + populated net.nick → returns net.nick (canonical IRC nick)", () => {
-    expect(api.ownNickForNetwork(azzurra, userMe)).toBe("grappa");
-    // Crucially NOT "vjt" (the account name) — the pre-fix fallback
-    // would have returned "vjt" if net.nick were missing, silently
-    // mismatching the IRC nick the server broadcasts on.
+  it("user + UserNetwork → returns net.nick (canonical IRC nick)", () => {
+    expect(api.ownNickForNetwork(azzurraUser, userMe)).toBe("grappa");
+    // Crucially NOT "vjt" (the account name).
   });
 
-  it("user + missing net.nick → returns null + logs to console.error", () => {
+  it("user + VisitorNetwork → returns null + logs (kind mismatch contract violation)", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(api.ownNickForNetwork(ircnet, userMe)).toBeNull();
+    expect(api.ownNickForNetwork(azzurraVisitor, userMe)).toBeNull();
     expect(errSpy).toHaveBeenCalledTimes(1);
-    expect(errSpy.mock.calls[0]?.[0]).toContain("ircnet");
-    expect(errSpy.mock.calls[0]?.[0]).toContain("cic H3");
-    errSpy.mockRestore();
-    // The pre-fix behavior was to fall back to displayNick(me) === me.name,
-    // returning "vjt" — this test pins that we now refuse and surface the
-    // server contract drift loudly instead of DM-misrouting silently.
-  });
-
-  it("user + empty-string net.nick → returns null (treated as missing)", () => {
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(api.ownNickForNetwork({ ...azzurra, nick: "" }, userMe)).toBeNull();
+    expect(errSpy.mock.calls[0]?.[0]).toContain("azzurra");
+    expect(errSpy.mock.calls[0]?.[0]).toContain("cic H4");
     errSpy.mockRestore();
   });
 
   it("visitor + matching network_slug → returns visitor.nick", () => {
-    expect(api.ownNickForNetwork(azzurra, visitorMe)).toBe("guest42");
+    expect(api.ownNickForNetwork(azzurraVisitor, visitorMe)).toBe("guest42");
   });
 
   it("visitor + non-matching network → returns null (no credential)", () => {
-    expect(api.ownNickForNetwork(ircnet, visitorMe)).toBeNull();
+    expect(api.ownNickForNetwork(ircnetVisitor, visitorMe)).toBeNull();
     // Visitors have ONE network only — the one they logged into. Any
     // other Network.t() in their networks() list is a server bug, but
     // we tolerate it as null rather than throwing.
   });
 
   it("null me → returns null", () => {
-    expect(api.ownNickForNetwork(azzurra, null)).toBeNull();
+    expect(api.ownNickForNetwork(azzurraUser, null)).toBeNull();
+  });
+});
+
+describe("tagNetwork (bucket F H4)", () => {
+  // Boundary tagger — promotes a raw wire RawNetwork to a
+  // discriminated UserNetwork | VisitorNetwork based on the subject
+  // kind. Server contract violations on user subjects (missing nick
+  // OR missing connection_state) are dropped (return null) so the
+  // boundary fetcher in lib/networks.ts filters them before the
+  // typed store sees them.
+
+  const rawComplete: api.RawNetwork = {
+    id: 7,
+    slug: "azzurra",
+    nick: "grappa",
+    connection_state: "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
+    inserted_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  const rawBare: api.RawNetwork = {
+    id: 8,
+    slug: "guest-net",
+    inserted_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("subjectKind=visitor → returns VisitorNetwork (bare; ignores user-only fields)", () => {
+    const out = api.tagNetwork(rawComplete, "visitor");
+    expect(out).not.toBeNull();
+    expect(out?.kind).toBe("visitor");
+    expect(out).toEqual({
+      kind: "visitor",
+      id: 7,
+      slug: "azzurra",
+      inserted_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    });
+  });
+
+  it("subjectKind=user + complete raw → returns UserNetwork", () => {
+    const out = api.tagNetwork(rawComplete, "user");
+    expect(out).not.toBeNull();
+    expect(out?.kind).toBe("user");
+    if (out?.kind === "user") {
+      expect(out.nick).toBe("grappa");
+      expect(out.connection_state).toBe("connected");
+    }
+  });
+
+  it("subjectKind=user + missing nick → returns null + logs", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(api.tagNetwork(rawBare, "user")).toBeNull();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]?.[0]).toContain("guest-net");
+    expect(errSpy.mock.calls[0]?.[0]).toContain("cic H4");
+    errSpy.mockRestore();
+  });
+
+  it("subjectKind=user + empty-string nick → returns null + logs", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(api.tagNetwork({ ...rawComplete, nick: "" }, "user")).toBeNull();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
+  it("subjectKind=user + missing connection_state → returns null + logs", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const partial: api.RawNetwork = {
+      id: 9,
+      slug: "needsconn",
+      nick: "vjt",
+      inserted_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    expect(api.tagNetwork(partial, "user")).toBeNull();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
   });
 });

@@ -40,9 +40,23 @@ vi.mock("../lib/networks", () => ({
   // Per-network IRC nick must mirror userNick() so ownNickForNetwork
   // resolves to the test's expected value (avoiding the cic H3
   // server-contract-violation branch that would null + log).
+  // Bucket F H4: Network is now a discriminated union; the user
+  // branch requires `kind: "user"` + connection_state fields.
   networks: () => {
     const n = userNick();
-    return [{ id: 42, slug: "freenode", nick: n ?? "alice", inserted_at: "", updated_at: "" }];
+    return [
+      {
+        kind: "user",
+        id: 42,
+        slug: "freenode",
+        nick: n ?? "alice",
+        connection_state: "connected",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "",
+        updated_at: "",
+      },
+    ];
   },
 }));
 
