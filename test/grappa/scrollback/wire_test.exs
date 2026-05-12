@@ -89,4 +89,49 @@ defmodule Grappa.Scrollback.WireTest do
       assert wire == Wire.to_json(preloaded)
     end
   end
+
+  describe "archive_entry/1" do
+    test "stringifies :kind atom and preserves remaining fields under atom keys" do
+      assert Wire.archive_entry(%{
+               target: "#sniffo",
+               kind: :channel,
+               last_activity: 12_345,
+               row_count: 7
+             }) == %{
+               target: "#sniffo",
+               kind: "channel",
+               last_activity: 12_345,
+               row_count: 7
+             }
+    end
+
+    test "stringifies :query kind for nick-targeted DM windows" do
+      assert Wire.archive_entry(%{
+               target: "vjt-peer",
+               kind: :query,
+               last_activity: 999,
+               row_count: 1
+             }).kind == "query"
+    end
+  end
+
+  describe "archive_index/1" do
+    test "wraps a list of entries in the %{archive: [...]} envelope" do
+      entries = [
+        %{target: "vjt-peer", kind: :query, last_activity: 300, row_count: 1},
+        %{target: "#a", kind: :channel, last_activity: 100, row_count: 1}
+      ]
+
+      assert Wire.archive_index(entries) == %{
+               archive: [
+                 %{target: "vjt-peer", kind: "query", last_activity: 300, row_count: 1},
+                 %{target: "#a", kind: "channel", last_activity: 100, row_count: 1}
+               ]
+             }
+    end
+
+    test "renders an empty list to %{archive: []}" do
+      assert Wire.archive_index([]) == %{archive: []}
+    end
+  end
 end

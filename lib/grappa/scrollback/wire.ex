@@ -32,6 +32,7 @@ defmodule Grappa.Scrollback.Wire do
   """
 
   alias Grappa.Networks.Network
+  alias Grappa.Scrollback
   alias Grappa.Scrollback.{Message, Meta}
 
   @type t :: %{
@@ -46,6 +47,29 @@ defmodule Grappa.Scrollback.Wire do
         }
 
   @type event :: %{kind: String.t(), message: t()}
+
+  @typedoc """
+  Per-target archive entry — public wire shape returned by
+  `GrappaWeb.ArchiveJSON.index/1`. The `:kind` atom (`:channel |
+  :query`) is converted to its string projection at the wire
+  boundary, mirroring the `kind: STRING JSON-wire convention`
+  documented in `Grappa.Session.Wire` — closed atom sets stringify
+  here so cic never observes Elixir-specific values.
+  """
+  @type archive_wire_entry :: %{
+          target: String.t(),
+          kind: String.t(),
+          last_activity: integer(),
+          row_count: non_neg_integer()
+        }
+
+  @typedoc """
+  Top-level envelope for the per-network archive REST response — the
+  wire shape returned by `Scrollback.list_archive/3` once funneled
+  through `archive_index/1`. Single source of truth for the JSON
+  shape; the controller delegates rather than rebuilding.
+  """
+  @type archive_wire_index :: %{archive: [archive_wire_entry()]}
 
   @doc """
   Renders a `Grappa.Scrollback.Message` row to its public JSON wire
@@ -86,5 +110,36 @@ defmodule Grappa.Scrollback.Wire do
   @spec message_payload(Message.t()) :: event()
   def message_payload(%Message{} = m) do
     %{kind: "message", message: to_json(m)}
+  end
+
+  @doc """
+  Renders one `Scrollback.archive_entry()` to its public wire shape.
+  Atom-stringifies `:kind` (`:channel | :query` → `"channel" |
+  "query"`) so cic doesn't see Elixir-specific values; same
+  convention as `Session.Wire`. The schema-level keys (atoms) match
+  the rest of the wire surface — `Jason` encodes atom-keyed maps to
+  string-keyed JSON natively.
+  """
+  @spec archive_entry(Scrollback.archive_entry()) :: archive_wire_entry()
+  def archive_entry(%{target: target, kind: kind, last_activity: last_activity, row_count: row_count})
+      when is_atom(kind) do
+    %{
+      target: target,
+      kind: Atom.to_string(kind),
+      last_activity: last_activity,
+      row_count: row_count
+    }
+  end
+
+  @doc """
+  Wraps a list of `Scrollback.archive_entry()` rows as the canonical
+  REST envelope `%{archive: [archive_entry()]}`. The controller
+  (`GrappaWeb.ArchiveJSON.index/1`) delegates to this verb so wire
+  shape stays single-sourced — adding a field to the per-target
+  entry = one edit in `archive_entry/1`.
+  """
+  @spec archive_index([Scrollback.archive_entry()]) :: archive_wire_index()
+  def archive_index(entries) when is_list(entries) do
+    %{archive: Enum.map(entries, &archive_entry/1)}
   end
 end
