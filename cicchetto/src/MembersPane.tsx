@@ -4,6 +4,7 @@ import { channelKey } from "./lib/channelKey";
 import { memberSigil } from "./lib/memberSigil";
 import { type MemberEntry, membersByChannel } from "./lib/members";
 import { networkBySlug, networks, user } from "./lib/networks";
+import { nickEquals } from "./lib/nickEquals";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
@@ -85,7 +86,7 @@ const MembersPane: Component<Props> = (props) => {
     if (!net) return [];
     const nick = ownNickForNetwork(net, me);
     if (!nick) return [];
-    const entry = list().find((m) => m.nick.toLowerCase() === nick.toLowerCase());
+    const entry = list().find((m) => nickEquals(m.nick, nick));
     return entry?.modes ?? [];
   };
 

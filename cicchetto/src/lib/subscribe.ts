@@ -10,6 +10,7 @@ import type { MemberEntry } from "./memberTypes";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, user } from "./networks";
+import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { setReadCursor } from "./readCursor";
@@ -180,7 +181,7 @@ createRoot(() => {
     // must never bump unread — the operator owns those actions and has
     // already seen them. Gate before the isSelected check so own events
     // on both selected and non-selected channels are suppressed.
-    const isOwnNick = ownNick !== null && message.sender.toLowerCase() === ownNick.toLowerCase();
+    const isOwnNick = nickEquals(message.sender, ownNick);
     const isPresenceKind =
       message.kind === "join" ||
       message.kind === "part" ||
@@ -313,20 +314,12 @@ createRoot(() => {
           const { message } = payload;
 
           // BUG4: own JOIN → auto-focus the channel.
-          if (
-            message.kind === "join" &&
-            ownNick !== null &&
-            message.sender.toLowerCase() === ownNick.toLowerCase()
-          ) {
+          if (message.kind === "join" && nickEquals(message.sender, ownNick)) {
             setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
           }
 
           // BUG5a: own PART → dismiss the focused window.
-          if (
-            message.kind === "part" &&
-            ownNick !== null &&
-            message.sender.toLowerCase() === ownNick.toLowerCase()
-          ) {
+          if (message.kind === "part" && nickEquals(message.sender, ownNick)) {
             setSelectedChannel(null);
             // CP15 B5: own-PART projects to absence in the windowState
             // map. Server intentionally does NOT broadcast `kind:
@@ -553,7 +546,7 @@ createRoot(() => {
       for (const qw of windowsList) {
         // Skip own-nick — the dm-listener loop is the sole subscriber
         // for that topic and installs the correct re-keying handler.
-        if (perNetOwnNick && qw.targetNick.toLowerCase() === perNetOwnNick.toLowerCase()) continue;
+        if (nickEquals(qw.targetNick, perNetOwnNick)) continue;
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick);

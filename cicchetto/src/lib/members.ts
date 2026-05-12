@@ -4,6 +4,7 @@ import type { ChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import type { ChannelMembers } from "./memberTypes";
 import { applyModeString } from "./modeApply";
+import { nickEquals } from "./nickEquals";
 
 // Per-channel members store. Source-of-truth for the right-pane
 // MembersPane (Task 26). Module-singleton signal store mirroring
@@ -54,26 +55,30 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       switch (msg.kind) {
         case "join": {
           // Skip if already present (out-of-order JOIN after 353 NAMES).
-          if (current.some((m) => m.nick === msg.sender)) return prev;
+          // Case-insensitive (RFC 2812 §2.2) — server may emit JOIN with
+          // differently-cased nick than the prior NAMES snapshot.
+          if (current.some((m) => nickEquals(m.nick, msg.sender))) return prev;
           return { ...prev, [key]: [...current, { nick: msg.sender, modes: [] }] };
         }
         case "part":
         case "quit": {
-          const next = current.filter((m) => m.nick !== msg.sender);
+          const next = current.filter((m) => !nickEquals(m.nick, msg.sender));
           if (next.length === current.length) return prev;
           return { ...prev, [key]: next };
         }
         case "kick": {
           const target = typeof msg.meta.target === "string" ? msg.meta.target : null;
           if (!target) return prev;
-          const next = current.filter((m) => m.nick !== target);
+          const next = current.filter((m) => !nickEquals(m.nick, target));
           if (next.length === current.length) return prev;
           return { ...prev, [key]: next };
         }
         case "nick_change": {
           const newNick = typeof msg.meta.new_nick === "string" ? msg.meta.new_nick : null;
           if (!newNick) return prev;
-          const next = current.map((m) => (m.nick === msg.sender ? { ...m, nick: newNick } : m));
+          const next = current.map((m) =>
+            nickEquals(m.nick, msg.sender) ? { ...m, nick: newNick } : m,
+          );
           return { ...prev, [key]: next };
         }
         case "mode": {

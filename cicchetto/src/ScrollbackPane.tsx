@@ -16,6 +16,7 @@ import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
+import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
@@ -458,7 +459,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!nick) return [];
     const members = membersByChannel()[key()];
     if (!members) return [];
-    return members.find((m) => m.nick === nick)?.modes ?? [];
+    return members.find((m) => nickEquals(m.nick, nick))?.modes ?? [];
   };
 
   // C7.6: left-click a nick → open query window + switch focus.
@@ -559,7 +560,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (shownBanners.has(key())) return false;
     const msgs = messages();
     if (!msgs) return false;
-    return msgs.some((m) => m.kind === "join" && m.sender === nick);
+    return msgs.some((m) => m.kind === "join" && nickEquals(m.sender, nick));
   });
 
   // When shouldShowBanner transitions true → visible, mark the banner
