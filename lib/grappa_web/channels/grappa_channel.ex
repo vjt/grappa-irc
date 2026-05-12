@@ -439,17 +439,20 @@ defmodule GrappaWeb.GrappaChannel do
   # rejected here (WHOIS is a read-only query and the visitor session
   # is allowed to issue it; the bundle's broadcast topic uses the
   # visitor's `subject_label` so the visitor's own cic surface is the
-  # only consumer). `dispatch_ops_verb` IS used to short-circuit the
-  # visitor path — but that's wrong for WHOIS; use the user-only
-  # form-and-call helper instead.
+  # only consumer). C3 (CRITICAL — 2026-05-12 codebase review): pre-fix
+  # this clause routed through `dispatch_ops_verb/2`, which short-circuits
+  # visitors with `visitor_not_allowed` before the verb dispatches —
+  # contradicting the carve-out the comment described. Fix uses
+  # `dispatch_subject_verb/2`, which accepts BOTH `{:user, _}` and
+  # `{:visitor, _}` subjects and rejects only on `:no_session`.
   def handle_in(
         "whois",
         %{"network_id" => network_id, "nick" => nick},
         socket
       )
       when is_integer(network_id) and is_binary(nick) do
-    dispatch_ops_verb(socket, fn user ->
-      Session.send_whois({:user, user.id}, network_id, nick)
+    dispatch_subject_verb(socket, fn subject ->
+      Session.send_whois(subject, network_id, nick)
     end)
   end
 
@@ -899,6 +902,51 @@ defmodule GrappaWeb.GrappaChannel do
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
       {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+    end
+  end
+
+  # C3 (CRITICAL — 2026-05-12 codebase review): subject-aware dispatch for
+  # read-only verbs that visitors are explicitly allowed to issue (WHOIS
+  # today; future visitor-eligible read verbs land here too). Mirrors
+  # `dispatch_ops_verb/2` but resolves the socket's identity into a
+  # `t:Grappa.Session.subject/0` tagged tuple — `{:user, id}` for an
+  # authenticated user (loaded via `safe_get_user/1`), `{:visitor, id}`
+  # for a visitor (id extracted from the `"visitor:<uuid>"` `user_name`
+  # assigned by `UserSocket.connect/3`). The thunk receives the subject
+  # and dispatches to a `Session.send_*` facade that already accepts
+  # `subject()`. Reject-only path is `{:error, :no_session}` — visitors
+  # without a live `Session.Server` get the same surface user-side
+  # callers do, NOT the `visitor_not_allowed` carve-out.
+  @spec dispatch_subject_verb(
+          Phoenix.Socket.t(),
+          (Session.subject() -> :ok | {:error, atom()})
+        ) ::
+          {:reply, :ok | {:error, map()}, Phoenix.Socket.t()}
+  defp dispatch_subject_verb(socket, thunk) do
+    user_name = socket.assigns.user_name
+
+    with {:ok, subject} <- resolve_subject(user_name),
+         :ok <- thunk.(subject) do
+      {:reply, :ok, socket}
+    else
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+    end
+  end
+
+  # `user_name` carries `"visitor:" <> visitor.id` for visitor sockets
+  # (assigned by `UserSocket.connect/3`) and `user.name` for authenticated
+  # user sockets. Strip the prefix on visitor decode; user-side decode
+  # delegates to `safe_get_user/1` so a deleted-row race surfaces as
+  # `{:error, :not_found}` → `user_not_found` reply.
+  @spec resolve_subject(String.t()) :: {:ok, Session.subject()} | :error
+  defp resolve_subject("visitor:" <> visitor_id), do: {:ok, {:visitor, visitor_id}}
+
+  defp resolve_subject(user_name) do
+    case safe_get_user(user_name) do
+      {:ok, user} -> {:ok, {:user, user.id}}
+      :error -> :error
     end
   end
 

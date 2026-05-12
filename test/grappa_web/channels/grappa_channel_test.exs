@@ -46,6 +46,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   alias Grappa.Networks.{Credentials, Servers}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire
+  alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias GrappaWeb.UserSocket
 
   defp build_socket(user_name) do
@@ -98,6 +99,30 @@ defmodule GrappaWeb.GrappaChannelTest do
     {:ok, _} = Session.start_session({:user, user.id}, network.id, plan)
 
     {user, network}
+  end
+
+  # Visitor counterpart to `setup_user_and_network_with_session/1`. Mints a
+  # `%Visitor{}` row pointing at a fresh per-test network slug, attaches one
+  # server endpoint to the network at `port`, then resolves the visitor plan
+  # via `Visitors.SessionPlan.resolve/1` and starts a real `Session.Server`
+  # under the `{:visitor, visitor.id}` subject. Returns the visitor +
+  # network so tests can build a `"visitor:#{visitor.id}"` socket and push
+  # ops verbs through `Session.send_*` end-to-end.
+  defp setup_visitor_and_network_with_session(port) do
+    slug = "snap-visitor-net-#{System.unique_integer([:positive])}"
+    {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+    {:ok, _} = Servers.add_server(network, %{host: "127.0.0.1", port: port, tls: false})
+
+    visitor =
+      visitor_fixture(
+        nick: "grappa-snap-v#{System.unique_integer([:positive])}",
+        network_slug: slug
+      )
+
+    {:ok, plan} = VisitorSessionPlan.resolve(visitor)
+    {:ok, _} = Session.start_session({:visitor, visitor.id}, network.id, plan)
+
+    {visitor, network}
   end
 
   defp await_handshake(server) do
@@ -914,6 +939,96 @@ defmodule GrappaWeb.GrappaChannelTest do
 
       assert_reply(ref, :ok)
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "NAMES #snap\r\n"), 1_000)
+    end
+  end
+
+  # C3 (CRITICAL — 2026-05-12 codebase review): WHOIS is a read-only verb
+  # carved out of the visitor-rejection rule (see `dispatch_subject_verb/2`
+  # contract in grappa_channel.ex). Visitor sockets pushing `"whois"` MUST
+  # reach `Session.send_whois({:visitor, _}, ...)` instead of bouncing on
+  # `visitor_not_allowed`. Pre-fix the implementation routed through
+  # `dispatch_ops_verb/2` despite the comment flagging the bug, so the
+  # visitor reply was `visitor_not_allowed` for every WHOIS — these tests
+  # pin the post-fix behaviour and would have caught the original
+  # asymmetry.
+  describe "C3 — visitor WHOIS dispatch carve-out" do
+    test "visitor socket: whois with live session sends WHOIS upstream" do
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "whois", %{
+          "network_id" => network.id,
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHOIS alice\r\n"), 1_000)
+    end
+
+    test "visitor socket: whois without session returns no_session (NOT visitor_not_allowed)" do
+      # No `setup_visitor_and_network_with_session/1` here — the visitor
+      # exists but has no live `Session.Server`. The fix MUST surface
+      # `no_session` from `Session.send_whois/3` rather than short-circuit
+      # on the visitor gate the way the pre-fix `dispatch_ops_verb/2` did.
+      slug = "snap-visitor-noses-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "whois", %{
+          "network_id" => network.id,
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{reason: "no_session"})
+    end
+
+    test "visitor socket: whois with empty nick returns invalid_line" do
+      # Belt-and-braces — same `Identifier.valid_nick?` rejection path that
+      # users hit, surfaced via `Session.send_whois/3`'s
+      # `{:error, :invalid_line}` return when the upstream `IRC.Client`
+      # `safe_line_token?` check fails. Pin that visitors don't bypass it.
+      {irc_server, port} = start_irc_server()
+      {visitor, network} = setup_visitor_and_network_with_session(port)
+      :ok = await_handshake(irc_server)
+      IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor.nick} :Welcome\r\n")
+      flush_server(irc_server)
+
+      visitor_name = "visitor:#{visitor.id}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      ref =
+        push(visitor_socket, "whois", %{
+          "network_id" => network.id,
+          "nick" => "bad\r\nQUIT"
+        })
+
+      assert_reply(ref, :error, %{reason: "invalid_line"})
     end
   end
 
