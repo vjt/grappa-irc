@@ -53,6 +53,8 @@ defmodule GrappaWeb.NetworksController do
   alias Grappa.{Networks, Session}
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
 
+  require Logger
+
   @doc "`GET /networks` — list of network metadata for the bearer's subject."
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
@@ -221,8 +223,6 @@ defmodule GrappaWeb.NetworksController do
         ok
 
       {:error, reason} ->
-        require Logger
-
         Logger.warning("PATCH /connect: session plan resolve failed",
           user: user.id,
           error: inspect(reason)
@@ -245,8 +245,6 @@ defmodule GrappaWeb.NetworksController do
         {:ok, pid}
 
       {:error, reason} ->
-        require Logger
-
         Logger.warning("PATCH /connect: session spawn rejected",
           user: user.id,
           error: inspect(reason)
