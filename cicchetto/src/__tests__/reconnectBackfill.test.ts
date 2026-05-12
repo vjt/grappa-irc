@@ -134,27 +134,26 @@ describe("runBackfill", () => {
     expect(appendToScrollback).toHaveBeenNthCalledWith(2, key, backfilled[1]);
   });
 
-  it("rolls high-water mark forward as it ingests so a second reconnect resumes from the new tail",
-    async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-      const { listMessagesAfter } = await import("../lib/api");
+  it("rolls high-water mark forward as it ingests so a second reconnect resumes from the new tail", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
+    const { listMessagesAfter } = await import("../lib/api");
 
-      const key = channelKey("azzurra", "#sniffo");
-      recordSeen(key, sampleMsg(5));
+    const key = channelKey("azzurra", "#sniffo");
+    recordSeen(key, sampleMsg(5));
 
-      vi.mocked(listMessagesAfter).mockResolvedValueOnce([sampleMsg(6), sampleMsg(7)]);
-      await runBackfill("azzurra", "#sniffo");
+    vi.mocked(listMessagesAfter).mockResolvedValueOnce([sampleMsg(6), sampleMsg(7)]);
+    await runBackfill("azzurra", "#sniffo");
 
-      // Second backfill cycle (simulated reconnect after another gap)
-      // — must use the NEW high-water mark (7), not the original (5).
-      vi.mocked(listMessagesAfter).mockResolvedValueOnce([]);
-      await runBackfill("azzurra", "#sniffo");
+    // Second backfill cycle (simulated reconnect after another gap)
+    // — must use the NEW high-water mark (7), not the original (5).
+    vi.mocked(listMessagesAfter).mockResolvedValueOnce([]);
+    await runBackfill("azzurra", "#sniffo");
 
-      const calls = vi.mocked(listMessagesAfter).mock.calls;
-      expect(calls[0]).toEqual(["tok", "azzurra", "#sniffo", 5]);
-      expect(calls[1]).toEqual(["tok", "azzurra", "#sniffo", 7]);
-    });
+    const calls = vi.mocked(listMessagesAfter).mock.calls;
+    expect(calls[0]).toEqual(["tok", "azzurra", "#sniffo", 5]);
+    expect(calls[1]).toEqual(["tok", "azzurra", "#sniffo", 7]);
+  });
 
   it("logs and recovers on REST error without rewinding cursor", async () => {
     localStorage.setItem("grappa-token", "tok");
@@ -181,28 +180,27 @@ describe("runBackfill", () => {
     consoleSpy.mockRestore();
   });
 
-  it("guards against overlapping in-flight backfills on the same topic",
-    async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-      const { listMessagesAfter } = await import("../lib/api");
+  it("guards against overlapping in-flight backfills on the same topic", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
+    const { listMessagesAfter } = await import("../lib/api");
 
-      const key = channelKey("azzurra", "#sniffo");
-      recordSeen(key, sampleMsg(5));
+    const key = channelKey("azzurra", "#sniffo");
+    recordSeen(key, sampleMsg(5));
 
-      let resolveFirst: (v: ScrollbackMessage[]) => void = () => {};
-      const firstPromise = new Promise<ScrollbackMessage[]>((res) => {
-        resolveFirst = res;
-      });
-      vi.mocked(listMessagesAfter).mockReturnValueOnce(firstPromise);
-
-      const a = runBackfill("azzurra", "#sniffo");
-      // Second call while first is still pending — must be skipped.
-      const b = runBackfill("azzurra", "#sniffo");
-
-      expect(listMessagesAfter).toHaveBeenCalledTimes(1);
-
-      resolveFirst([]);
-      await Promise.all([a, b]);
+    let resolveFirst: (v: ScrollbackMessage[]) => void = () => {};
+    const firstPromise = new Promise<ScrollbackMessage[]>((res) => {
+      resolveFirst = res;
     });
+    vi.mocked(listMessagesAfter).mockReturnValueOnce(firstPromise);
+
+    const a = runBackfill("azzurra", "#sniffo");
+    // Second call while first is still pending — must be skipped.
+    const b = runBackfill("azzurra", "#sniffo");
+
+    expect(listMessagesAfter).toHaveBeenCalledTimes(1);
+
+    resolveFirst([]);
+    await Promise.all([a, b]);
+  });
 });

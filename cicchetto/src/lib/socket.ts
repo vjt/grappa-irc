@@ -376,3 +376,31 @@ export function pushWatchlistList(): Promise<{ patterns: string[] }> {
       .receive("timeout", () => reject(new Error("timeout")));
   });
 }
+
+// E2E hook (message-replay-on-reconnect cluster, 2026-05-12) — drops
+// the live socket and reconnects so Playwright can simulate the
+// tab-suspend / network-blip / iOS-Safari-tab-resume gap class
+// without juggling browser-context offline mode (which closes ALL
+// connections including the REST fetches the test depends on).
+//
+// Drop emits `phx_close` on every joined Channel; phoenix.js
+// auto-rejoins after the next `connect()`. The reconnect-backfill
+// flow's onJoinOk callback fires on every successful re-join, so
+// the gap-recovery path is exercised end-to-end. Keep gap >0ms so
+// in-flight pushes drain before the new socket lands.
+declare global {
+  interface Window {
+    __cic_dropSocketForTests?: () => Promise<void>;
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__cic_dropSocketForTests = async () => {
+    const s = _socket;
+    if (!s) return;
+    s.disconnect();
+    // Microtask boundary so phx_close fires before reconnect.
+    await Promise.resolve();
+    s.connect();
+  };
+}

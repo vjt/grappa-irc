@@ -310,13 +310,33 @@ describe("subscribe — WS join effect", () => {
       // 2 real channels + 1 DM-listener (own-nick topic) + 1 $server = 4 joins.
       expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa", expect.any(Function));
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#cicchetto", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "#grappa",
+      expect.any(Function),
+    );
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "#cicchetto",
+      expect.any(Function),
+    );
     // DM-listener join uses the operator's own nick as the channel
     // segment — server broadcasts inbound PRIVMSGs on this topic.
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "alice",
+      expect.any(Function),
+    );
     // BUG2: server-messages loop joins the $server synthetic channel.
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "$server", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "$server",
+      expect.any(Function),
+    );
     expect(mockChannel.on).toHaveBeenCalledWith("event", expect.any(Function));
   });
 
@@ -796,7 +816,12 @@ describe("subscribe — WS join effect", () => {
         // 2 channels + 1 DM-listener + 1 $server = 4.
         expect(socket.joinChannel).toHaveBeenCalledTimes(4);
       });
-      expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa", expect.any(Function));
+      expect(socket.joinChannel).toHaveBeenCalledWith(
+        "alice",
+        "freenode",
+        "#grappa",
+        expect.any(Function),
+      );
 
       fireMessageEvent("#grappa", { id: 1, body: "as A" });
       const key = channelKey("freenode", "#grappa");
@@ -842,10 +867,25 @@ describe("subscribe — WS join effect", () => {
       // channel joins because user() re-fetches asynchronously. Once it
       // fires, the channel joins are guaranteed to have happened too.
       await vi.waitFor(() => {
-        expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "bob", expect.any(Function));
+        expect(socket.joinChannel).toHaveBeenCalledWith(
+          "bob",
+          "freenode",
+          "bob",
+          expect.any(Function),
+        );
       });
-      expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa", expect.any(Function));
-      expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#cicchetto", expect.any(Function));
+      expect(socket.joinChannel).toHaveBeenCalledWith(
+        "bob",
+        "freenode",
+        "#grappa",
+        expect.any(Function),
+      );
+      expect(socket.joinChannel).toHaveBeenCalledWith(
+        "bob",
+        "freenode",
+        "#cicchetto",
+        expect.any(Function),
+      );
     });
 
     // Codebase review 2026-05-08 cic H2 (HIGH).
@@ -910,7 +950,12 @@ describe("subscribe — WS join effect", () => {
 
       // Wait for the new identity to fan out joins.
       await vi.waitFor(() => {
-        expect(socket.joinChannel).toHaveBeenCalledWith("bob", "freenode", "#grappa", expect.any(Function));
+        expect(socket.joinChannel).toHaveBeenCalledWith(
+          "bob",
+          "freenode",
+          "#grappa",
+          expect.any(Function),
+        );
       });
 
       // Critical assertion: when the socket dispatches a single event
@@ -1277,11 +1322,21 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
     await vi.waitFor(() => {
       expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "#grappa",
+      expect.any(Function),
+    );
     // Query topic uses the targetNick as the channel-name segment —
     // matches the server-side broadcast on Topic.channel(user,
     // network_slug, target) for outbound `/msg vjt body`.
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "vjt",
+      expect.any(Function),
+    );
   });
 
   it("multiple query windows on the same network → each joined exactly once", async () => {
@@ -1304,8 +1359,18 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
       // 1 channel + 2 query windows + 1 DM-listener + 1 $server = 5.
       expect(socket.joinChannel).toHaveBeenCalledTimes(5);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt", expect.any(Function));
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "carol", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "vjt",
+      expect.any(Function),
+    );
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "carol",
+      expect.any(Function),
+    );
   });
 
   it("incoming PRIVMSG on a query topic appends to the query window's scrollback", async () => {
@@ -1381,7 +1446,12 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
       // +1 join for the new query window (vjt).
       expect(socket.joinChannel).toHaveBeenCalledTimes(4);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "vjt", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "vjt",
+      expect.any(Function),
+    );
   });
 
   it("query-window join is deduped — re-render of the same window list does not re-join", async () => {
@@ -1452,7 +1522,12 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
       // 1 channel + 1 DM-listener + 1 $server = 3.
       expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "alice",
+      expect.any(Function),
+    );
   });
 
   it("inbound PRIVMSG on own-nick topic re-keys to sender's window scrollback", async () => {
@@ -1733,9 +1808,24 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
     await vi.waitFor(() => {
       expect(socket.joinChannel).toHaveBeenCalledTimes(3);
     });
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#grappa", expect.any(Function));
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "alice", expect.any(Function));
-    expect(socket.joinChannel).toHaveBeenCalledWith("alice", "freenode", "$server", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "#grappa",
+      expect.any(Function),
+    );
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "alice",
+      expect.any(Function),
+    );
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "alice",
+      "freenode",
+      "$server",
+      expect.any(Function),
+    );
     // Exactly 3 calls — no extra join for the own-nick query window.
     expect(socket.joinChannel).toHaveBeenCalledTimes(3);
   });
@@ -1828,9 +1918,19 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
     // query-windows-loop must join channel:vjt (targetNick != IRC nick "grappa").
     expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "vjt", expect.any(Function));
     // DM-listener must join channel:grappa (the actual IRC nick, from net.nick).
-    expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "grappa", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "vjt",
+      "freenode",
+      "grappa",
+      expect.any(Function),
+    );
     // $server loop joins $server.
-    expect(socket.joinChannel).toHaveBeenCalledWith("vjt", "freenode", "$server", expect.any(Function));
+    expect(socket.joinChannel).toHaveBeenCalledWith(
+      "vjt",
+      "freenode",
+      "$server",
+      expect.any(Function),
+    );
   });
 
   it("outbound DM echo (sender=grappa, channel=vjt) lands in channelKey freenode/vjt", async () => {
@@ -2598,7 +2698,12 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
     await import("../lib/subscribe");
 
     await vi.waitFor(() => {
-      expect(socketFresh.joinChannel).toHaveBeenCalledWith("alice", "freenode", "#new-room", expect.any(Function));
+      expect(socketFresh.joinChannel).toHaveBeenCalledWith(
+        "alice",
+        "freenode",
+        "#new-room",
+        expect.any(Function),
+      );
     });
   });
 });
