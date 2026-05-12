@@ -3,6 +3,10 @@ import Config
 config :grappa, Grappa.Repo,
   database: Path.expand("../runtime/grappa_dev.db", __DIR__),
   pool_size: 5,
+  # CP24 cluster `post-cr-review` bucket B, persistence/S2: mirror prod's
+  # 30s busy_timeout so iex sessions + integration scripts hit the same
+  # "database is locked" cushion as prod. Default ~2s otherwise.
+  busy_timeout: 30_000,
   show_sensitive_data_on_connection_error: true
 
 config :grappa, GrappaWeb.Endpoint,

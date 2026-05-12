@@ -21,7 +21,26 @@ if config_env() == :prod do
 
   config :grappa, Grappa.Repo,
     database: database_path,
+    # SQLite is single-writer at the file level. `pool_size: 10` is a
+    # READ-concurrency cap — every connection in the pool can serve a
+    # SELECT in parallel under WAL (`journal_mode: :wal` below). Writes
+    # always serialize at the file lock regardless of pool size; the
+    # `busy_timeout` below is what gives them a wait-for-the-writer-
+    # ahead budget. Lower than 10 starves cic's per-(user, network)
+    # query fan-out under multi-tab load; higher would mostly idle.
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+    # CP24 cluster `post-cr-review` bucket B, persistence/S2: SQLite's
+    # default `busy_timeout` is ~2s. With `pool_size: 10` + WAL +
+    # single-writer file lock, transient contention from concurrent
+    # writes (Bootstrap spawning N sessions, channel-mode batches,
+    # last_joined_channels writes) cascades into `database is locked`
+    # exceptions before the writer ahead releases. The CP23 S4 e2e
+    # flake (`cp15-b6-kicked` + `m9-cicchetto-part-x-click` retries on
+    # `Database busy`) was a direct symptom. 30_000ms mirrors
+    # `config/test.exs` which has carried this value since the Sandbox
+    # cascading-busy investigation. Read concurrency stays uncapped;
+    # this only delays the write-side raise, not block reads.
+    busy_timeout: 30_000,
     journal_mode: :wal,
     cache_size: -64_000,
     temp_store: :memory
