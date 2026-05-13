@@ -48,9 +48,13 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `(network_id, channel, server_time DESC)`-indexed; a future
   `CHATHISTORY` listener facade (Phase 6) is a mechanical query
   translation, not a redesign.
-- **No server-side `MARKREAD` / read cursors.** Read position is
-  client-side only. Adding it later is forward-compatible; removing it
-  later would break clients that came to depend on it.
+- **Read state is server-owned, per (subject, network, channel).**
+  Cursor stored as `last_read_message_id` (FK to `messages.id`). cic
+  reads the cursor from the subject envelope on login + per-window
+  from a topic event; cic POSTs cursor advancements as the operator
+  reads. Phase 6 IRCv3 facade exposes the same cursor as
+  `+draft/read-marker` MARKREAD lines on the listener side. Removing
+  server-side cursor is a breaking change.
 - **`CAP LS` + SASL is the only required upstream IRCv3 feature.**
   Everything else (`server-time`, `batch`, `labeled-response`, etc.) is
   opportunistic. Never assume upstream-side `CHATHISTORY` exists.

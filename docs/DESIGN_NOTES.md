@@ -4676,6 +4676,76 @@ Hot-vs-cold preflight: this cluster modifies
 
 ---
 
+### 2026-05-13 — invariant flip: read state moves server-side
+
+Original CLAUDE.md invariant from Phase 1: *"No server-side `MARKREAD`
+/ read cursors. Read position is client-side only. Adding it later is
+forward-compatible; removing it later would break clients that came to
+depend on it."* That invariant is being deliberately flipped in the
+`server-side-read-state` cluster (plan:
+`docs/plans/2026-05-13-server-side-read-state.md`). Three forces drove
+the flip at once:
+
+1. **The cp13-S5 race.** `tests/cp13-server-window.spec.ts:171` fails
+   in cluster ordering on macOS local but passes on Linux CI. Logs
+   from `.worktrees/p0-numerics/` on 2026-05-13 caught the race
+   timeline: cic GETs `/messages` (empty), POSTs PRIVMSG, server
+   inserts the upstream `401 :notice`, broadcasts on the per-channel
+   topic — and the cic Phoenix Channel JOIN lands ~20ms LATER. The
+   broadcast fires before subscribe; the `401` row vanishes from cic
+   state. The shape of the bug is "cic is the cursor authority": when
+   the WS join lands after the broadcast, the row is lost forever
+   because cic has no way to ask "what did I miss since cursor X".
+   With server-side cursor + a unified `?after=<id>` endpoint +
+   refresh-on-join-ok, the WS join becomes "tell me what I missed
+   since cursor X" and the row is recovered deterministically. The
+   U-line server-config bug investigated 2026-05-12 was a red herring
+   — cp13-S5 reproduces with the U-line fix REVERTED.
+
+2. **Multi-device sync.** Today each cic instance is its own island.
+   Read on phone → no badge cleared on laptop. Operator-grade tools
+   are expected to sync read state across devices.
+
+3. **Phase 6 IRCv3 facade alignment.** `+draft/read-marker` (`MARKREAD
+   #chan timestamp=X`) and CHATHISTORY both presume server-side cursor
+   storage. Building it now means the listener facade is a thin
+   translation layer, not a redesign.
+
+A fourth bug (operator's own JOIN/PART/QUIT counts against `eventsUnread`
+on rejoin) lands cleanly in the same cluster — the badge logic is
+touched in the same file (`cicchetto/src/lib/subscribe.ts`).
+
+**New invariant** (per plan §"CLAUDE.md invariant change"):
+
+> Read state is server-owned, per (subject, network, channel). Cursor
+> stored as `last_read_message_id` (FK to `messages.id`). cic reads the
+> cursor from the subject envelope on login + per-window from a topic
+> event; cic POSTs cursor advancements as the operator reads. Phase 6
+> IRCv3 facade exposes the same cursor as `+draft/read-marker` MARKREAD
+> lines on the listener side. Removing server-side cursor is a breaking
+> change.
+
+Schema lives at `read_cursors (subject, network_id, channel,
+last_read_message_id)` with subject XOR check + partial unique indexes
+mirroring `messages` schema convention. `Grappa.ReadCursor` is the
+context module. The cic-side `lib/readCursor.ts` is replaced (same name,
+new shape) by a signal-map fed from `/me` envelope + Phoenix Channel
+join replies + `read_cursor_set` typed wire events on the per-channel
+topic. No feature flag, no transition period — straight cutover per
+CLAUDE.md "total consistency" rule. cic state is reconstructable from
+server state on first load post-flip.
+
+**Apply:** the cluster ships in seven buckets (R-1 schema + context →
+R-2 REST unification → R-3 POST + envelope + WS push → R-4 cic cutover
+→ R-5 refresh-on-join → R-6 own-action unread filter → R-Z legacy
+cleanup). Per-bucket commit + deploy + healthcheck + browser smoke.
+After R-5 the parked `cluster/numeric-delegation-p0` branch unblocks
+(rebase onto main, verify cp13-S5 green, merge cold-deploy, continue
+P-0b through P-0e).
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
