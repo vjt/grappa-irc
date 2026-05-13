@@ -144,6 +144,11 @@ vi.mock("../lib/api", () => ({
 
 vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
+  decodeChannelKey: (key: string) => {
+    const sep = key.indexOf(" ");
+    if (sep < 0) return null;
+    return { slug: key.slice(0, sep), name: key.slice(sep + 1) };
+  },
 }));
 
 // windowState — Shell + TopicBar gate the members aside / hamburger /
@@ -152,10 +157,14 @@ vi.mock("../lib/channelKey", () => ({
 // joined-state UI; suppression branches (DM/server/non-joined) are
 // covered explicitly below. Sidebar also imports
 // `windowStateByChannel` to drive its greyed/synthetic-row treatment;
-// mock it as an empty signal so those branches no-op.
+// `windowStateMap` is mutable per-test so the /names UX cluster N-3
+// auto-select-first-joined-channel effect can be exercised.
 const mockWindowIsJoined = vi.fn((_key: string) => true);
+const windowStateMap = vi.hoisted(() => ({
+  current: {} as Record<string, "pending" | "joined" | "failed" | "kicked" | "parked">,
+}));
 vi.mock("../lib/windowState", () => ({
-  windowStateByChannel: () => ({}),
+  windowStateByChannel: () => windowStateMap.current,
   windowFailureByChannel: () => ({}),
   windowKickedMetaByChannel: () => ({}),
   windowIsJoined: (key: string) => mockWindowIsJoined(key),
@@ -174,6 +183,7 @@ beforeEach(() => {
   selectionState.setSelSig(null);
   mobileState.value = false;
   mockWindowIsJoined.mockReturnValue(true);
+  windowStateMap.current = {};
 });
 
 describe("Shell — three-pane integration", () => {
@@ -187,6 +197,44 @@ describe("Shell — three-pane integration", () => {
   it("renders 'select a channel' fallback when nothing is selected", () => {
     render(() => <Shell />);
     expect(screen.getByText(/select a channel/i)).toBeInTheDocument();
+  });
+
+  it("/names UX cluster N-3 — auto-selects first joined channel on cold load when nothing is selected", async () => {
+    // Cold-load shape: selectedChannel is null, channelsBySlug already
+    // populated (REST), windowStateByChannel has at least one "joined"
+    // entry (WS replay landed). The Shell effect picks the first joined
+    // channel in flat (network → channels) iteration order so the
+    // operator lands on a channel instead of the empty stub.
+    windowStateMap.current = { "freenode #a": "joined", "freenode #b": "joined" };
+    render(() => <Shell />);
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "#a",
+        kind: "channel",
+      });
+    });
+  });
+
+  it("/names UX cluster N-3 — does NOT auto-select when no channel has reached :joined", () => {
+    // Pending-only state: REST resolved channelsBySlug but the WS replay
+    // hasn't yet flipped any window into :joined. Effect must NOT
+    // pick a pending channel — that would land the operator in a
+    // non-interactive window.
+    windowStateMap.current = { "freenode #a": "pending", "freenode #b": "pending" };
+    render(() => <Shell />);
+    expect(selectionState.setSelectedChannelMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/select a channel/i)).toBeInTheDocument();
+  });
+
+  it("/names UX cluster N-3 — does NOT override an existing selection", () => {
+    // Operator has already picked a channel (via sidebar click or via
+    // a prior auto-select that still holds). Even when more joined
+    // channels exist, the effect must not re-fire and override.
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#b", kind: "channel" });
+    windowStateMap.current = { "freenode #a": "joined", "freenode #b": "joined" };
+    render(() => <Shell />);
+    expect(selectionState.setSelectedChannelMock).not.toHaveBeenCalled();
   });
 
   it("renders TopicBar + ScrollbackPane + ComposeBox once a channel is selected", async () => {

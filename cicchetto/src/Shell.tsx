@@ -11,7 +11,7 @@ import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
 import { setReadCursor } from "./lib/readCursor";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
-import { isActiveChannelJoined } from "./lib/windowState";
+import { isActiveChannelJoined, windowStateByChannel } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import ScrollbackPane from "./ScrollbackPane";
@@ -214,6 +214,43 @@ const Shell: Component = () => {
       { defer: true },
     ),
   );
+
+  // /names UX cluster N-3 — cold-load auto-select first joined channel.
+  // Fresh page load lands on `selectedChannel === null` with the empty
+  // "select a channel below" stub + an empty members aside; operators
+  // perceive this as "members pane broken" rather than "nothing
+  // selected yet". Auto-select the first joined channel (in flat
+  // network → channels iteration order) once both `channelsBySlug`
+  // (REST) and `windowStateByChannel` (WS replay-driven) have a joined
+  // entry. ONE-SHOT — fires once on cold load, then disarms forever.
+  //
+  // Without the disarm, subsequent self-PART → setSelectedChannel(null)
+  // transitions would re-trigger this effect and re-select a sibling
+  // joined channel, fighting the BUG5a "PART rolls selection to empty
+  // stub" contract.
+  let coldLoadAutoSelected = false;
+  createEffect(() => {
+    if (coldLoadAutoSelected) return;
+    if (selectedChannel() !== null) {
+      coldLoadAutoSelected = true;
+      return;
+    }
+    const cbs = channelsBySlug() ?? {};
+    const states = windowStateByChannel();
+    for (const net of networks() ?? []) {
+      for (const ch of cbs[net.slug] ?? []) {
+        if (states[channelKey(net.slug, ch.name)] === "joined") {
+          setSelectedChannel({
+            networkSlug: net.slug,
+            channelName: ch.name,
+            kind: "channel",
+          });
+          coldLoadAutoSelected = true;
+          return;
+        }
+      }
+    }
+  });
 
   return (
     <Show

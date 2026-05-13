@@ -333,11 +333,7 @@ export function pushWho(networkId: number, channel: string): void {
 // rows ALWAYS (silence is the bug — /names UX cluster N-1+N-2),
 // routed to `originWindow` (cic's focused window when /names was
 // typed) when supplied, else target if joined, else $server.
-export function pushNames(
-  networkId: number,
-  channel: string,
-  originWindow: string | null,
-): void {
+export function pushNames(networkId: number, channel: string, originWindow: string | null): void {
   if (_userChannel === null) return;
   _userChannel.push("names", { network_id: networkId, channel, origin_window: originWindow });
 }
