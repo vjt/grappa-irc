@@ -1794,7 +1794,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.whois_pending["alice"][:away_message] == "Gone fishing"
     end
 
-    test "301 with no whois_pending entry is dropped silently (P-0b will own standalone case)" do
+    test "301 with no whois_pending entry emits :peer_away typed effect (P-0b standalone)" do
       state = base_state(%{whois_pending: %{}})
 
       m =
@@ -1804,7 +1804,7 @@ defmodule Grappa.Session.EventRouterTest do
           {:server, "irc.test.org"}
         )
 
-      {:cont, new_state, []} = EventRouter.route(m, state)
+      {:cont, new_state, [{:peer_away, "alice", "Gone fishing"}]} = EventRouter.route(m, state)
       assert new_state.whois_pending == %{}
     end
 

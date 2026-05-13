@@ -4569,6 +4569,25 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "P-0b standalone 301 (no whois pending) broadcasts peer_away on Topic.user/1", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # No /whois sent — 301 arrives standalone (operator just /msg'd alice).
+      IRCServer.feed(server, ":irc.test.org 301 grappa-test alice :Gone fishing\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "peer_away"} = ev}, 1_500
+      assert ev.network == network.slug
+      assert ev.peer == "alice"
+      assert ev.message == "Gone fishing"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

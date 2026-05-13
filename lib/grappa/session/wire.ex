@@ -78,6 +78,7 @@ defmodule Grappa.Session.Wire do
           | :away_confirmed
           | :mentions_bundle
           | :whois_bundle
+          | :peer_away
 
   @type channels_changed_payload :: %{kind: String.t()}
 
@@ -232,6 +233,22 @@ defmodule Grappa.Session.Wire do
           away_message: String.t() | nil,
           actually_host: String.t() | nil,
           actually_ip: String.t() | nil
+        }
+
+  @typedoc """
+  P-0b — standalone 301 RPL_AWAY ephemeral. Fires when the operator
+  /msg's an away peer; upstream replies with a 301 carrying the away
+  message. Server emits one event per upstream 301 (no server-side
+  rate-limit / dedup — display-rate is a UI concern); cic's dm-listener
+  renders an inline ephemeral row in the peer's DM window. cic owns
+  the human-readable rendering per
+  `feedback_no_localized_strings_server_side`.
+  """
+  @type peer_away_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          peer: String.t(),
+          message: String.t()
         }
 
   @doc """
@@ -499,5 +516,18 @@ defmodule Grappa.Session.Wire do
       actually_host: Map.get(accum, :actually_host),
       actually_ip: Map.get(accum, :actually_ip)
     }
+  end
+
+  @doc """
+  P-0b — standalone 301 RPL_AWAY. Broadcast on `Topic.user/1`
+  (mirroring `whois_bundle/3`'s ephemeral routing); cic's dm-listener
+  arm inspects the `peer:` field and renders an inline ephemeral row
+  in that peer's DM window. NOT persisted in scrollback — the away
+  banner is a transient hint, not a chat message.
+  """
+  @spec peer_away(String.t(), String.t(), String.t()) :: peer_away_payload()
+  def peer_away(network_slug, peer, message)
+      when is_binary(network_slug) and is_binary(peer) and is_binary(message) do
+    %{kind: "peer_away", network: network_slug, peer: peer, message: message}
   end
 end

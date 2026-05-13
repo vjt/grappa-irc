@@ -533,6 +533,18 @@ export type WireUserEvent =
       at: string | null;
     }
   | ({ kind: "whois_bundle" } & WhoisBundle)
+  | {
+      // P-0b — standalone 301 RPL_AWAY ephemeral. Fires when the
+      // operator /msg's an away peer; cic dm-listener arm renders
+      // an inline "(peer is away: <message>)" in the peer's DM
+      // window. Server emits one event per upstream 301 — no
+      // server-side dedup; display rate is a UI concern owned by
+      // cic.
+      kind: "peer_away";
+      network: string;
+      peer: string;
+      message: string;
+    }
   | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the

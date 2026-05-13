@@ -63,6 +63,10 @@ vi.mock("../lib/bundleHash", () => ({
   setServerBundleHash: vi.fn(),
 }));
 
+vi.mock("../lib/peerAway", () => ({
+  setPeerAway: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -253,6 +257,41 @@ describe("userTopic", () => {
       const bh = await import("../lib/bundleHash");
       channelMock.fireEvent({ kind: "bundle_hash" });
       expect(bh.setServerBundleHash).not.toHaveBeenCalled();
+    });
+  });
+
+  // P-0b — peer_away dispatch.
+  describe("peer_away arm", () => {
+    it("calls setPeerAway with (network, peer, message)", async () => {
+      const pa = await import("../lib/peerAway");
+      channelMock.fireEvent({
+        kind: "peer_away",
+        network: "azzurra",
+        peer: "alice",
+        message: "Gone fishing",
+      });
+      expect(pa.setPeerAway).toHaveBeenCalledWith("azzurra", "alice", "Gone fishing");
+    });
+
+    it("drops peer_away missing `peer` (no setPeerAway call)", async () => {
+      const pa = await import("../lib/peerAway");
+      channelMock.fireEvent({
+        kind: "peer_away",
+        network: "azzurra",
+        message: "Gone fishing",
+      });
+      expect(pa.setPeerAway).not.toHaveBeenCalled();
+    });
+
+    it("drops peer_away with non-string `message` (no setPeerAway call)", async () => {
+      const pa = await import("../lib/peerAway");
+      channelMock.fireEvent({
+        kind: "peer_away",
+        network: "azzurra",
+        peer: "alice",
+        message: 42,
+      });
+      expect(pa.setPeerAway).not.toHaveBeenCalled();
     });
   });
 });

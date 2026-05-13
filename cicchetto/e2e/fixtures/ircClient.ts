@@ -27,6 +27,7 @@ const MODE_TIMEOUT_MS = 5_000;
 const KICK_TIMEOUT_MS = 5_000;
 const OPER_TIMEOUT_MS = 5_000;
 const NICKSERV_TIMEOUT_MS = 5_000;
+const AWAY_TIMEOUT_MS = 5_000;
 
 export class IrcPeer {
   private readonly client: Client;
@@ -153,6 +154,27 @@ export class IrcPeer {
     );
     this.client.raw(["PRIVMSG", "NickServ", `IDENTIFY ${password}`]);
     await Promise.all([noticeReceived, umodeRSet]);
+  }
+
+  // Set the peer's AWAY message. Resolves on bahamut's 306 RPL_NOWAWAY
+  // (which it sends back to the AWAY-issuing client). Used by P-0b
+  // peer-away e2e — once the peer is away, the operator's PRIVMSG to
+  // them triggers a 301 RPL_AWAY back to the operator.
+  //
+  // Empty `message` is the "I'm back" form; bahamut replies with 305
+  // RPL_UNAWAY instead. Caller can pass empty + change the predicate
+  // if they need that path.
+  async away(message: string): Promise<void> {
+    const ack = onceMatching(
+      this.client,
+      "raw",
+      (event: { line?: string }) =>
+        typeof event.line === "string" && / 306 /.test(event.line),
+      AWAY_TIMEOUT_MS,
+      `away ack (306 RPL_NOWAWAY) for ${this.nick}`,
+    );
+    this.client.raw(["AWAY", `:${message}`]);
+    await ack;
   }
 
   async part(channel: string, reason: string): Promise<void> {

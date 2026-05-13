@@ -6,6 +6,7 @@ import { setServerBundleHash } from "./bundleHash";
 import { channelKey } from "./channelKey";
 import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
+import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
@@ -193,6 +194,17 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "bundle_hash":
       if (typeof r.hash !== "string" || r.hash === "") return null;
       return { kind: "bundle_hash", hash: r.hash };
+    case "peer_away":
+      // P-0b — standalone 301 RPL_AWAY. cic dm-listener routes by
+      // `peer:` field; banner renders inline at the top of the
+      // peer's DM scrollback when that window is selected.
+      if (
+        typeof r.network !== "string" ||
+        typeof r.peer !== "string" ||
+        typeof r.message !== "string"
+      )
+        return null;
+      return { kind: "peer_away", network: r.network, peer: r.peer, message: r.message };
     default:
       return null;
   }
@@ -339,6 +351,15 @@ createRoot(() => {
           // baked into the page the browser loaded); mismatch shows the
           // refresh banner. No focus change — banner is a passive cue.
           setServerBundleHash(payload.hash);
+          return;
+
+        case "peer_away":
+          // P-0b — standalone 301 RPL_AWAY ephemeral. Stored keyed
+          // on (network slug, peer-nick lowercased); ScrollbackPane
+          // mounts the banner only when the selected window matches.
+          // Last-write-wins: re-/msg'ing the same away peer replaces
+          // the prior message. No focus change.
+          setPeerAway(payload.network, payload.peer, payload.message);
           return;
 
         default:

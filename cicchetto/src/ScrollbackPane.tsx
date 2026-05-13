@@ -24,6 +24,7 @@ import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import PeerAwayBanner from "./PeerAwayBanner";
 import UserContextMenu from "./UserContextMenu";
 import WhoisCard from "./WhoisCard";
 
@@ -887,6 +888,13 @@ const ScrollbackPane: Component<Props> = (props) => {
           we gate the mount on networkSlug being a string to avoid
           subscribing the signal from non-channel renders. */}
       <WhoisCard networkSlug={props.networkSlug} />
+      {/* P-0b — peer-away banner. Mount only on DM windows; the
+          banner short-circuits to null when no entry exists for
+          (slug, peer). The "peer" is the channelName itself for
+          query windows. */}
+      <Show when={props.kind === "query"}>
+        <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+      </Show>
       <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
         <Show
           when={(messages()?.length ?? 0) > 0}

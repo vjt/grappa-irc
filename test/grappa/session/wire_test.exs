@@ -364,6 +364,25 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "peer_away/3" do
+    test "projects (network, peer, message) into the wire shape with kind: injected" do
+      payload = Wire.peer_away("azzurra", "alice", "Gone fishing")
+
+      assert payload == %{
+               kind: "peer_away",
+               network: "azzurra",
+               peer: "alice",
+               message: "Gone fishing"
+             }
+    end
+
+    test "tolerates an empty message string (some servers send 301 with empty trailing)" do
+      payload = Wire.peer_away("azzurra", "alice", "")
+      assert payload.kind == "peer_away"
+      assert payload.message == ""
+    end
+  end
+
   describe "kind: discriminator string contract" do
     test "every Wire fn output carries kind: as a String.t()" do
       payloads = [
@@ -378,7 +397,8 @@ defmodule Grappa.Session.WireTest do
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", "present"),
         Wire.mentions_bundle("net", "from", "to", nil, []),
-        Wire.whois_bundle("net", "alice", %{})
+        Wire.whois_bundle("net", "alice", %{}),
+        Wire.peer_away("net", "alice", "Gone fishing")
       ]
 
       for p <- payloads do

@@ -2123,6 +2123,20 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # P-0b — standalone 301 RPL_AWAY ephemeral. Broadcast on the
+  # user-level topic (mirrors :whois_bundle); cic's dm-listener routes
+  # by `peer:` field and renders inline in the peer's DM window. No
+  # server-side dedup / rate-limit: display rate is a UI concern.
+  defp apply_effects([{:peer_away, peer, message} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.peer_away(state.network_slug, peer, message)
+      )
+
+    apply_effects(rest, state)
+  end
+
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)
 

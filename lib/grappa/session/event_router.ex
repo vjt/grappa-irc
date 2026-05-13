@@ -174,6 +174,7 @@ defmodule Grappa.Session.EventRouter do
           | {:parted, String.t()}
           | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil}
           | {:whois_bundle, target :: String.t(), accum :: map()}
+          | {:peer_away, peer :: String.t(), away_message :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -902,13 +903,17 @@ defmodule Grappa.Session.EventRouter do
     {:cont, whois_fold(state, target, %{using_ssl: true}), []}
   end
 
-  # 301 RPL_AWAY (WHOIS-bundle case): `:server 301 own_nick target :away message`.
-  # Dual-purpose — folds into the bundle when a /whois is pending for the
-  # target; otherwise standalone-PRIVMSG-to-away-user case (P-0b will own
-  # the `:peer_away` typed event). For now, no-pending-entry returns
-  # `{:cont, state, []}` — the catch-all delegation flag prevents the
-  # bare-notice persistence, and the standalone case is dropped silently
-  # until P-0b lands.
+  # 301 RPL_AWAY: `:server 301 own_nick target :away message`. Dual-purpose:
+  #
+  #   * WHOIS-bundle case (whois_pending entry exists for target) — fold
+  #     `away_message` into the bundle accumulator. Bundle emits at 318.
+  #
+  #   * Standalone case (no whois_pending entry) — operator just /msg'd an
+  #     away peer and upstream replied with the away note. Emit a typed
+  #     `{:peer_away, target, msg}` effect; `Server.apply_effects` broadcasts
+  #     a `peer_away` wire event on the user-level topic, cic dm-listener
+  #     renders an inline ephemeral row in the peer's DM window. cic owns
+  #     localization (no human-readable string baked into the wire payload).
   def route(
         %Message{command: {:numeric, 301}, params: [_, target | rest]},
         state
@@ -916,14 +921,14 @@ defmodule Grappa.Session.EventRouter do
       when is_binary(target) do
     nick_key = normalize_nick(target)
     pending = Map.get(state, :whois_pending, %{})
+    msg = whois_trailing(rest)
 
     case Map.has_key?(pending, nick_key) do
       true ->
-        msg = whois_trailing(rest)
         {:cont, whois_fold(state, target, %{away_message: msg}), []}
 
       false ->
-        {:cont, state, []}
+        {:cont, state, [{:peer_away, target, msg}]}
     end
   end
 

@@ -1334,3 +1334,51 @@ body {
   margin-right: 0.4rem;
   color: var(--fg);
 }
+
+/* P-0b — peer-away banner. Lives at the top of the scrollback in DM
+   windows when the operator /msg's an away peer. Visual mirrors
+   `.whois-card` (border-left accent, dim panel) but tighter — single
+   line of text. */
+.peer-away-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-muted);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+.peer-away-banner-peer {
+  font-weight: bold;
+  font-style: normal;
+  color: var(--accent);
+}
+
+.peer-away-banner-message {
+  color: var(--fg);
+  font-style: normal;
+}
+
+.peer-away-banner-label {
+  flex: 1 1 auto;
+}
+
+.peer-away-banner-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.3rem;
+}
+
+.peer-away-banner-close:hover {
+  color: var(--fg);
+}
