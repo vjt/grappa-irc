@@ -397,6 +397,73 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # CP29 R-3 — channel join reply carries the current read cursor (or
+  # nil when no cursor exists yet). cic uses this to skip a per-window
+  # REST round-trip on subscribe; the bulk envelope from /me is the
+  # boot-time path.
+  describe "join reply — read cursor (CP29 R-3)" do
+    test "channel topic join returns nil when no cursor exists" do
+      user_name = "rc-cursor-nil-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "rc-net-#{System.unique_integer([:positive])}"})
+
+      topic = Topic.channel(user_name, network.slug, "#fresh")
+
+      {:ok, reply, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{read_cursor: nil}
+    end
+
+    test "channel topic join returns the cursor id when present" do
+      user_name = "rc-cursor-hit-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+
+      {:ok, network} =
+        Networks.find_or_create_network(%{slug: "rc-net-#{System.unique_integer([:positive])}"})
+
+      {:ok, msg} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#hit",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "hi"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.advance({:user, user.id}, network.id, "#hit", msg.id)
+
+      topic = Topic.channel(user_name, network.slug, "#hit")
+
+      {:ok, reply, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{read_cursor: msg.id}
+    end
+
+    test "user-level topic join returns an empty join reply (no cursor concept)" do
+      user_name = "rc-user-empty-#{System.unique_integer([:positive])}"
+      _ = user_fixture(name: user_name)
+
+      topic = Topic.user(user_name)
+
+      {:ok, reply, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert reply == %{}
+    end
+  end
+
   describe "join grappa:user:{user}" do
     test "subscribes to the user-level topic and pushes events verbatim" do
       user_name = "ch_user_test-#{System.unique_integer([:positive])}"

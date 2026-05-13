@@ -145,7 +145,7 @@ defmodule GrappaWeb.GrappaChannel do
   """
   use GrappaWeb, :channel
 
-  alias Grappa.{Accounts, Networks, QueryWindows, Session, UserSettings, WSPresence}
+  alias Grappa.{Accounts, Networks, QueryWindows, ReadCursor, Session, UserSettings, WSPresence}
   alias Grappa.Cic.Bundle, as: CicBundle
   alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.IRC.Identifier
@@ -197,12 +197,36 @@ defmodule GrappaWeb.GrappaChannel do
       # fastlane subscription (installed by Phoenix.Channel.Server.init/1)
       # is the ONLY subscriber needed. See moduledoc + BUG 6.
       Process.send_after(self(), {:after_join, parsed}, 0)
-      {:ok, socket}
+      {:ok, join_reply(parsed), socket}
     else
       :error -> {:error, %{reason: "unknown topic"}}
       {:error, :forbidden} -> {:error, %{reason: "forbidden"}}
     end
   end
+
+  # CP29 R-3: per-channel topic joins return the current read cursor in
+  # the join reply so cic doesn't need a per-window REST round-trip on
+  # subscribe. `nil` for channels with no cursor yet (fresh subject) or
+  # for cases the server can't resolve cleanly (deleted user, missing
+  # network) — cic treats both as "no cursor" and falls back to the
+  # bulk envelope from `/me`. User + network topics get an empty map
+  # (no per-channel cursor concept; bulk fetch lives at `/me`).
+  @spec join_reply(Topic.parsed()) :: %{optional(:read_cursor) => integer() | nil}
+  defp join_reply({:channel, user_name, network_slug, channel}) do
+    cursor =
+      with {:ok, subject} <- resolve_subject(user_name),
+           {:ok, %Network{} = network} <- Networks.get_network_by_slug(network_slug),
+           %ReadCursor.Cursor{last_read_message_id: id} <-
+             ReadCursor.get(subject, network.id, channel) do
+        id
+      else
+        _ -> nil
+      end
+
+    %{read_cursor: cursor}
+  end
+
+  defp join_reply(_), do: %{}
 
   @impl Phoenix.Channel
   def handle_info({:after_join, {:user, user_name}}, socket) do

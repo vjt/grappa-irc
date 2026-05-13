@@ -21,6 +21,7 @@ defmodule GrappaWeb do
       Grappa.Networks,
       Grappa.PubSub,
       Grappa.QueryWindows,
+      Grappa.ReadCursor,
       Grappa.Scrollback,
       Grappa.Session,
       Grappa.SpawnOrchestrator,

@@ -100,6 +100,8 @@ defmodule GrappaWeb.Router do
     get "/channels/:channel_id/messages", MessagesController, :index
     post "/channels/:channel_id/messages", MessagesController, :create
 
+    post "/channels/:channel_id/read-cursor", ReadCursorController, :create
+
     get "/channels/:channel_id/members", MembersController, :index
 
     get "/archive", ArchiveController, :index

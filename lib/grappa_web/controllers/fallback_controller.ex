@@ -52,6 +52,7 @@ defmodule GrappaWeb.FallbackController do
            | :upstream_unreachable
            | :timeout
            | :internal
+           | :invalid_message
            | {:anon_collision, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
@@ -228,6 +229,18 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:internal_server_error)
     |> json(%{error: "internal"})
+  end
+
+  # CP29 R-3: `Grappa.ReadCursor.advance/4` returns this when the
+  # `message_id` exists but doesn't belong to (subject, network,
+  # channel) — request shape was valid; the data referenced a
+  # different scope. 422 is the right surface for "well-formed but
+  # semantically rejected"; distinguished from 400 (request shape bad)
+  # and 404 (resource missing entirely).
+  def call(conn, {:error, :invalid_message}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_message"})
   end
 
   # 409 anon_collision: tuple shape mirrors `{:network_circuit_open,

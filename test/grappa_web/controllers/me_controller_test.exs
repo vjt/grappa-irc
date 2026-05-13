@@ -31,6 +31,8 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["id"] == user.id
       assert body["name"] == user.name
       assert is_binary(body["inserted_at"])
+      # CP29 R-3: read_cursors envelope. Empty for a fresh subject.
+      assert body["read_cursors"] == %{}
       refute Map.has_key?(body, "password_hash")
       refute Map.has_key?(body, "password")
       refute Map.has_key?(body, "nick")
@@ -90,6 +92,8 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["nick"] == "vjt"
       assert body["network_slug"] == "azzurra"
       assert is_binary(body["expires_at"])
+      # CP29 R-3: read_cursors envelope present for visitors too.
+      assert body["read_cursors"] == %{}
       refute Map.has_key?(body, "name")
       refute Map.has_key?(body, "inserted_at")
       refute Map.has_key?(body, "password_encrypted")
@@ -105,6 +109,39 @@ defmodule GrappaWeb.MeControllerTest do
         |> get("/me")
 
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  # CP29 R-3 — read_cursors envelope from /me reflects what
+  # `Grappa.ReadCursor.bulk_for_subject/1` returns. End-to-end check
+  # that the controller wires the bulk fetch + the renderer keeps the
+  # nested {slug => {channel => id}} shape.
+  describe "GET /me — read_cursors envelope" do
+    test "returns nested shape grouped by network slug then channel", %{conn: conn} do
+      {user, session} = user_and_session()
+      {network, _} = network_with_server(port: 7401, slug: "envelope-#{System.unique_integer([:positive])}")
+      _ = credential_fixture(user, network)
+
+      {:ok, m1} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#a",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "hi"
+        })
+
+      {:ok, _} = Grappa.ReadCursor.advance({:user, user.id}, network.id, "#a", m1.id)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+      assert body["read_cursors"][network.slug] == %{"#a" => m1.id}
     end
   end
 

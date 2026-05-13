@@ -19,19 +19,39 @@ defmodule GrappaWeb.MeController do
   use GrappaWeb, :controller
 
   @doc """
-  `GET /me` — discriminated profile for the bearer's subject.
+  `GET /me` — discriminated profile for the bearer's subject + the
+  per-(network, channel) read cursor envelope (CP29 R-3).
 
   W8: defensive fall-through clause guards against a regressed pipeline
   (`/me` mounted outside `:authn`, or a future subject kind added without
   updating this controller). With the fall-through the failure mode is a
   uniform 401 via `FallbackController`, not a `KeyError` 500.
+
+  ## Read cursor envelope
+
+  The response carries `read_cursors: %{network_slug => %{channel =>
+  id}}` (per plan O1: nested by network) so cic doesn't need a
+  per-window REST round-trip on login. Built from
+  `Grappa.ReadCursor.bulk_for_subject/1` — single query bounded by
+  ~600 rows in the worst case.
+
+  Empty `%{}` for a fresh subject with no cursors yet — cic treats
+  missing keys as "no cursor for this window" and falls back to
+  unread-everything semantics until the first POST advances one.
   """
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :unauthorized}
   def show(conn, _) do
     case conn.assigns[:current_subject] do
-      {:user, user} -> render(conn, :show, user: user)
-      {:visitor, visitor} -> render(conn, :show, visitor: visitor)
-      _ -> {:error, :unauthorized}
+      {:user, user} ->
+        cursors = Grappa.ReadCursor.bulk_for_subject({:user, user.id})
+        render(conn, :show, user: user, read_cursors: cursors)
+
+      {:visitor, visitor} ->
+        cursors = Grappa.ReadCursor.bulk_for_subject({:visitor, visitor.id})
+        render(conn, :show, visitor: visitor, read_cursors: cursors)
+
+      _ ->
+        {:error, :unauthorized}
     end
   end
 end
