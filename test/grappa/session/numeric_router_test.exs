@@ -74,10 +74,11 @@ defmodule Grappa.Session.NumericRouterTest do
               numeric <- integer(400..499),
               # Pre-CP13 active/deny + CP15 B2 join-failure delegated codes
               # + channel-state numerics (324/329/331/332/333 delegated post
-              # cluster `channel-created-notice`) short-circuit before the
-              # param scan; exclude all classes so the property exercises the
-              # channel-prefix fallthrough only.
-              numeric not in [421, 432, 433, 437, 461, 471, 473, 474, 475, 403, 405, 324, 329, 331, 332, 333],
+              # cluster `channel-created-notice`) + P-0c WHOWAS not-found
+              # (406 delegated post numeric-delegation-p0) short-circuit
+              # before the param scan; exclude all classes so the property
+              # exercises the channel-prefix fallthrough only.
+              numeric not in [421, 432, 433, 437, 461, 471, 473, 474, 475, 403, 405, 324, 329, 331, 332, 333, 406],
               chan_body <- string(:alphanumeric, min_length: 1, max_length: 20)
             ) do
         chan = "#" <> chan_body
@@ -200,7 +201,13 @@ defmodule Grappa.Session.NumericRouterTest do
     329,
     331,
     332,
-    333
+    333,
+    # P-0c — WHOWAS bundle (314, 369, 406). 312 already in the WHOIS
+    # leg above; the EventRouter conflict-gates between whois_pending
+    # and whowas_pending so 312 still routes correctly.
+    314,
+    369,
+    406
   ]
 
   describe "delegated numerics → :delegated" do

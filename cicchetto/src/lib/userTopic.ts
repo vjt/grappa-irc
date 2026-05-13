@@ -12,6 +12,7 @@ import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
+import { setWhowasBundle } from "./whowasCard";
 import { setPending } from "./windowState";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
@@ -230,6 +231,32 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         max_global: intOrNull(r.max_global),
       };
     }
+    case "whowas_bundle":
+      // P-0c — WHOWAS bundle. `not_found` discriminates the 406 case;
+      // when true, historical fields are nil. cic owns the rendering
+      // (single card per network, last-write-wins per /whowas).
+      if (
+        typeof r.network !== "string" ||
+        typeof r.target !== "string" ||
+        typeof r.not_found !== "boolean" ||
+        (r.user !== null && typeof r.user !== "string") ||
+        (r.host !== null && typeof r.host !== "string") ||
+        (r.realname !== null && typeof r.realname !== "string") ||
+        (r.server !== null && typeof r.server !== "string") ||
+        (r.logoff_time !== null && typeof r.logoff_time !== "string")
+      )
+        return null;
+      return {
+        kind: "whowas_bundle",
+        network: r.network,
+        target: r.target,
+        user: r.user as string | null,
+        host: r.host as string | null,
+        realname: r.realname as string | null,
+        server: r.server as string | null,
+        logoff_time: r.logoff_time as string | null,
+        not_found: r.not_found,
+      };
     default:
       return null;
   }
@@ -394,6 +421,18 @@ createRoot(() => {
           // the operator's window.
           const { kind: _omit, network, ...snapshot } = payload;
           setLusersBundle(network, snapshot);
+          return;
+        }
+
+        case "whowas_bundle": {
+          // P-0c — WHOWAS bundle. Last-write-wins per-network. Renders
+          // inline above the active window scrollback (mirrors WhoisCard).
+          // No focus change: operator typed /whowas from the window
+          // they're looking at; the card renders there. The 406
+          // not_found case is folded into the same arm — cic renders a
+          // "no history" surface from the boolean.
+          const { kind: _omit, ...bundle } = payload;
+          setWhowasBundle(payload.network, bundle);
           return;
         }
 

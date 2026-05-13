@@ -81,6 +81,7 @@ defmodule Grappa.Session.Wire do
           | :peer_away
           | :invite_ack
           | :lusers_bundle
+          | :whowas_bundle
 
   @type channels_changed_payload :: %{kind: String.t()}
 
@@ -293,6 +294,32 @@ defmodule Grappa.Session.Wire do
           max_local: integer() | nil,
           current_global: integer() | nil,
           max_global: integer() | nil
+        }
+
+  @typedoc """
+  P-0c — WHOWAS bundle. Aggregated reply to operator-issued `/whowas`.
+  Server emits typed structured fields only — `not_found` is the
+  boolean discriminator between "history found" and "no such nickname"
+  (406 ERR_WASNOSUCHNICK). When `not_found: true` the historical-user
+  fields (user/host/realname/server/logoff_time) are nil; when
+  `not_found: false` the most-recent historical entry is projected
+  into them. cic owns the human-readable rendering per
+  `feedback_no_localized_strings_server_side` — `logoff_time` ships
+  as the upstream-supplied display string (Bahamut sends a localized
+  ctime from `:server`'s locale; cic shows it verbatim, no parsing).
+  Multi-history-entry rendering is out of MVP — the bundle exposes
+  only the most-recent entry; future cluster can extend if needed.
+  """
+  @type whowas_bundle_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          target: String.t(),
+          user: String.t() | nil,
+          host: String.t() | nil,
+          realname: String.t() | nil,
+          server: String.t() | nil,
+          logoff_time: String.t() | nil,
+          not_found: boolean()
         }
 
   @doc """
@@ -613,6 +640,49 @@ defmodule Grappa.Session.Wire do
       max_local: Map.get(accum, :max_local),
       current_global: Map.get(accum, :current_global),
       max_global: Map.get(accum, :max_global)
+    }
+  end
+
+  @doc """
+  P-0c — WHOWAS bundle. Broadcast on `Topic.user/1` (mirrors
+  `whois_bundle/3` — single-entity historical-user data, ephemeral).
+  cic dispatches in `userTopic.ts`'s `whowas_bundle` arm into the
+  per-network `whowasCard.ts` store (last-write-wins replacement).
+
+  `not_found: true` flags the 406 ERR_WASNOSUCHNICK case — historical
+  fields stay nil and cic renders a "no history" surface. Otherwise
+  the most-recent 314 RPL_WHOWASUSER entry is projected into the
+  user/host/realname/server/logoff_time fields. NOT persisted —
+  operator types /whowas to refresh.
+  """
+  @spec whowas_bundle(String.t(), String.t(), map()) :: whowas_bundle_payload()
+  def whowas_bundle(network_slug, target, accum)
+      when is_binary(network_slug) and is_binary(target) and is_map(accum) do
+    not_found = Map.get(accum, :not_found, false)
+
+    last_entry =
+      if not_found do
+        %{}
+      else
+        case Map.get(accum, :entries, []) do
+          [] -> %{}
+          # Entries are stored REVERSED by EventRouter (head = most
+          # recent 314 RPL_WHOWASUSER). MVP renders only the most-
+          # recent entry; multi-history is out of scope.
+          [head | _] -> head
+        end
+      end
+
+    %{
+      kind: "whowas_bundle",
+      network: network_slug,
+      target: target,
+      user: Map.get(last_entry, :user),
+      host: Map.get(last_entry, :host),
+      realname: Map.get(last_entry, :realname),
+      server: Map.get(last_entry, :server),
+      logoff_time: Map.get(last_entry, :logoff_time),
+      not_found: not_found
     }
   end
 end

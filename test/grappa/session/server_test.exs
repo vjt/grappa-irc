@@ -4662,6 +4662,81 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "P-0c /whowas <nick> primes pending and 314+312+369 burst flushes :whowas_bundle on Topic.user/1",
+         %{
+           server: server,
+           user: user,
+           network: network,
+           pid: pid
+         } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # Operator issues /whowas alice — primes whowas_pending["alice"].
+      assert :ok = Grappa.Session.send_whowas({:user, user.id}, network.id, "alice")
+
+      # Bahamut emits the WHOWAS reply: 314 (historical user), 312
+      # (server + ctime logoff_time), 369 (terminator).
+      IRCServer.feed(
+        server,
+        ":irc.test.org 314 grappa-test alice alice_u alice.host * :Alice Liddell\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 312 grappa-test alice irc.test.org :Mon May 13 12:34:56 2026\r\n"
+      )
+
+      IRCServer.feed(server, ":irc.test.org 369 grappa-test alice :End of WHOWAS\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "whowas_bundle"} = ev
+                     },
+                     1_500
+
+      assert ev.network == network.slug
+      assert ev.target == "alice"
+      assert ev.user == "alice_u"
+      assert ev.host == "alice.host"
+      assert ev.realname == "Alice Liddell"
+      assert ev.server == "irc.test.org"
+      assert ev.logoff_time == "Mon May 13 12:34:56 2026"
+      assert ev.not_found == false
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "P-0c /whowas <ghost> 406 ERR_WASNOSUCHNICK flushes :whowas_bundle with not_found: true",
+         %{
+           server: server,
+           user: user,
+           network: network,
+           pid: pid
+         } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert :ok = Grappa.Session.send_whowas({:user, user.id}, network.id, "ghost")
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 406 grappa-test ghost :There was no such nickname\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "whowas_bundle"} = ev
+                     },
+                     1_500
+
+      assert ev.network == network.slug
+      assert ev.target == "ghost"
+      assert ev.not_found == true
+      assert ev.user == nil
+      assert ev.logoff_time == nil
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

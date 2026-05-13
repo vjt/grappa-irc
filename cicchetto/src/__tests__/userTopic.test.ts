@@ -71,6 +71,10 @@ vi.mock("../lib/lusersBundle", () => ({
   setLusersBundle: vi.fn(),
 }));
 
+vi.mock("../lib/whowasCard", () => ({
+  setWhowasBundle: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -365,6 +369,83 @@ describe("userTopic", () => {
         total_users: 42,
       });
       expect(lb.setLusersBundle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("whowas_bundle arm (P-0c)", () => {
+    it("calls setWhowasBundle with the bundle (kind stripped) on success path", async () => {
+      const wc = await import("../lib/whowasCard");
+      channelMock.fireEvent({
+        kind: "whowas_bundle",
+        network: "azzurra",
+        target: "alice",
+        user: "alice_u",
+        host: "alice.host",
+        realname: "Alice Liddell",
+        server: "irc.test.org",
+        logoff_time: "Mon May 13 12:34:56 2026",
+        not_found: false,
+      });
+      expect(wc.setWhowasBundle).toHaveBeenCalledWith("azzurra", {
+        network: "azzurra",
+        target: "alice",
+        user: "alice_u",
+        host: "alice.host",
+        realname: "Alice Liddell",
+        server: "irc.test.org",
+        logoff_time: "Mon May 13 12:34:56 2026",
+        not_found: false,
+      });
+    });
+
+    it("accepts not_found: true with all historical fields nil (406 case)", async () => {
+      const wc = await import("../lib/whowasCard");
+      channelMock.fireEvent({
+        kind: "whowas_bundle",
+        network: "azzurra",
+        target: "ghost",
+        user: null,
+        host: null,
+        realname: null,
+        server: null,
+        logoff_time: null,
+        not_found: true,
+      });
+      expect(wc.setWhowasBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ target: "ghost", not_found: true, user: null }),
+      );
+    });
+
+    it("drops payload missing `not_found` boolean (no setWhowasBundle call)", async () => {
+      const wc = await import("../lib/whowasCard");
+      channelMock.fireEvent({
+        kind: "whowas_bundle",
+        network: "azzurra",
+        target: "alice",
+        user: null,
+        host: null,
+        realname: null,
+        server: null,
+        logoff_time: null,
+      });
+      expect(wc.setWhowasBundle).not.toHaveBeenCalled();
+    });
+
+    it("drops payload with non-string user (type mismatch)", async () => {
+      const wc = await import("../lib/whowasCard");
+      channelMock.fireEvent({
+        kind: "whowas_bundle",
+        network: "azzurra",
+        target: "alice",
+        user: 42,
+        host: null,
+        realname: null,
+        server: null,
+        logoff_time: null,
+        not_found: false,
+      });
+      expect(wc.setWhowasBundle).not.toHaveBeenCalled();
     });
   });
 });

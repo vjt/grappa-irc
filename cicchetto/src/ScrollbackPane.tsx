@@ -29,6 +29,7 @@ import type { WindowKind } from "./lib/windowKinds";
 import PeerAwayBanner from "./PeerAwayBanner";
 import UserContextMenu from "./UserContextMenu";
 import WhoisCard from "./WhoisCard";
+import WhowasCard from "./WhowasCard";
 
 // Right-pane component: pure projection of the per-channel scrollback list.
 // Mounted by `Shell.tsx` only when `selectedChannel()` is non-null; the
@@ -890,6 +891,11 @@ const ScrollbackPane: Component<Props> = (props) => {
           we gate the mount on networkSlug being a string to avoid
           subscribing the signal from non-channel renders. */}
       <WhoisCard networkSlug={props.networkSlug} />
+      {/* P-0c — WHOWAS card. Inline above the active window scrollback,
+          mirrors WhoisCard mount shape (every window kind, not just
+          $server). The card itself short-circuits to null when no
+          bundle exists for the selected window's network. */}
+      <WhowasCard networkSlug={props.networkSlug} />
       {/* P-0b — peer-away banner. Mount only on DM windows; the
           banner short-circuits to null when no entry exists for
           (slug, peer). The "peer" is the channelName itself for

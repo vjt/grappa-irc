@@ -151,6 +151,14 @@ defmodule Grappa.Session.NumericRouter do
                         365,
                         # INVITE-ack (341)
                         341,
+                        # P-0c WHOWAS bundle (314, 369, 406). 312 RPL_WHOISSERVER is
+                        # already delegated above for the WHOIS leg; the EventRouter
+                        # 312 handler conflict-gates between whois_pending and
+                        # whowas_pending so a stray 312 carrying a logoff_time string
+                        # folds into the right accumulator.
+                        314,
+                        369,
+                        406,
                         # LUSERS bundle (251, 252, 253, 254, 255, 265, 266)
                         251,
                         252,

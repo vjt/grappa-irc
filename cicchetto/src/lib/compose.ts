@@ -31,6 +31,7 @@ import {
   pushWatchlistList,
   pushWho,
   pushWhois,
+  pushWhowas,
 } from "./socket";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
 
@@ -522,6 +523,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/whois: network not found" };
           pushWhois(networkId, cmd.nick);
+          result = { ok: true };
+          break;
+        }
+        // P-0c — /whowas <nick>. Push on the user-level channel; the
+        // server primes whowas_pending and emits WHOWAS upstream. The
+        // bundle arrives later as `whowas_bundle` on the user topic
+        // (handled by userTopic.ts → setWhowasBundle), or as a
+        // not_found bundle on 406 ERR_WASNOSUCHNICK.
+        case "whowas": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/whowas: network not found" };
+          pushWhowas(networkId, cmd.nick);
           result = { ok: true };
           break;
         }

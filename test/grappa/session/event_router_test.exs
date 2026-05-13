@@ -2206,6 +2206,228 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # P-0c — WHOWAS bundle (314/369/406) with 312 conflict-gate. Mirror
+  # of the WHOIS shape: send_whowas primes whowas_pending[target_lower];
+  # 314 appends entries; 312 (gated for WHOWAS in event_router.ex) folds
+  # logoff_time into the LAST entry; 369 emits :whowas_bundle, 406
+  # emits a not_found bundle.
+  describe "P-0c — WHOWAS bundle (314 / 369 / 406) + 312 conflict-gate" do
+    defp whowas_pending_state(target_display) do
+      base_state(%{
+        whowas_pending: %{
+          String.downcase(target_display) => %{target_display: target_display, entries: []}
+        }
+      })
+    end
+
+    test "314 RPL_WHOWASUSER appends a historical entry to entries list" do
+      state = whowas_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 314},
+          ["vjt", "alice", "alice_u", "alice.host", "*", "Alice Liddell"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+
+      assert new_state.whowas_pending["alice"][:entries] == [
+               %{user: "alice_u", host: "alice.host", realname: "Alice Liddell"}
+             ]
+    end
+
+    test "314 with no whowas_pending entry is silently ignored (unsolicited)" do
+      state = base_state(%{whowas_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 314},
+          ["vjt", "ghost", "u", "h", "*", "Ghost"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whowas_pending == %{}
+    end
+
+    test "multiple 314 entries accumulate REVERSED (head = most recent for O(1) head-fold by 312)" do
+      state = whowas_pending_state("alice")
+
+      m1 =
+        msg(
+          {:numeric, 314},
+          ["vjt", "alice", "u1", "h1", "*", "Alice@h1"],
+          {:server, "irc.test.org"}
+        )
+
+      m2 =
+        msg(
+          {:numeric, 314},
+          ["vjt", "alice", "u2", "h2", "*", "Alice@h2"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, s1, []} = EventRouter.route(m1, state)
+      {:cont, s2, []} = EventRouter.route(m2, s1)
+
+      entries = s2.whowas_pending["alice"][:entries]
+      assert length(entries) == 2
+      # Head = most recent (m2). Wire builder reads `hd(entries)` for the
+      # most-recent projection per MVP scope.
+      assert Enum.at(entries, 0) == %{user: "u2", host: "h2", realname: "Alice@h2"}
+      assert Enum.at(entries, 1) == %{user: "u1", host: "h1", realname: "Alice@h1"}
+    end
+
+    test "312 with whowas_pending and NO whois_pending folds server + logoff_time into MOST-RECENT entry (head)" do
+      state =
+        base_state(%{
+          whois_pending: %{},
+          whowas_pending: %{
+            "alice" => %{
+              target_display: "alice",
+              # Most recent entry (m2) at head; older (m1) at tail.
+              entries: [
+                %{user: "u2", host: "h2", realname: "Alice@h2"},
+                %{user: "u1", host: "h1", realname: "Alice@h1"}
+              ]
+            }
+          }
+        })
+
+      m =
+        msg(
+          {:numeric, 312},
+          ["vjt", "alice", "irc.test.org", "Mon May 13 12:34:56 2026"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      [head, older] = new_state.whowas_pending["alice"][:entries]
+      assert head[:server] == "irc.test.org"
+      assert head[:logoff_time] == "Mon May 13 12:34:56 2026"
+      # head's original fields preserved
+      assert head[:user] == "u2"
+      # older entry untouched
+      assert older[:user] == "u1"
+      refute Map.has_key?(older, :server)
+    end
+
+    test "312 with whois_pending entry takes precedence over whowas_pending (WHOIS-bias)" do
+      state =
+        base_state(%{
+          whois_pending: %{"alice" => %{target_display: "alice"}},
+          whowas_pending: %{
+            "alice" => %{target_display: "alice", entries: [%{user: "u", host: "h"}]}
+          }
+        })
+
+      m =
+        msg(
+          {:numeric, 312},
+          ["vjt", "alice", "irc.test.org", "irc.test.org server info"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:server] == "irc.test.org"
+      assert new_state.whois_pending["alice"][:server_info] == "irc.test.org server info"
+      # whowas entry untouched
+      [last] = new_state.whowas_pending["alice"][:entries]
+      refute Map.has_key?(last, :server)
+      refute Map.has_key?(last, :logoff_time)
+    end
+
+    test "312 with whowas_pending but EMPTY entries list is a no-op (defensive)" do
+      state =
+        base_state(%{
+          whois_pending: %{},
+          whowas_pending: %{"alice" => %{target_display: "alice", entries: []}}
+        })
+
+      m =
+        msg(
+          {:numeric, 312},
+          ["vjt", "alice", "irc.test.org", "info"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whowas_pending["alice"][:entries] == []
+    end
+
+    test "369 RPL_ENDOFWHOWAS emits :whowas_bundle effect with accum + drops entry" do
+      state =
+        base_state(%{
+          whowas_pending: %{
+            "alice" => %{
+              target_display: "Alice",
+              entries: [%{user: "u", host: "h", realname: "Alice"}]
+            }
+          }
+        })
+
+      m = msg({:numeric, 369}, ["vjt", "Alice", "End of WHOWAS"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:whowas_bundle, target, accum}]} = EventRouter.route(m, state)
+      assert target == "Alice"
+      assert length(accum[:entries]) == 1
+      assert new_state.whowas_pending == %{}
+    end
+
+    test "369 with no pending entry is silently ignored (unsolicited terminator)" do
+      state = base_state(%{whowas_pending: %{}})
+
+      m = msg({:numeric, 369}, ["vjt", "ghost", "End of WHOWAS"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whowas_pending == %{}
+    end
+
+    test "369 lookup is case-insensitive on target nick (RFC 2812 §2.2)" do
+      state =
+        base_state(%{
+          whowas_pending: %{"alice" => %{target_display: "alice", entries: [%{user: "u"}]}}
+        })
+
+      m = msg({:numeric, 369}, ["vjt", "ALICE", "End of WHOWAS"], {:server, "irc.test.org"})
+
+      {:cont, new_state, [{:whowas_bundle, _, accum}]} = EventRouter.route(m, state)
+      assert hd(accum[:entries])[:user] == "u"
+      assert new_state.whowas_pending == %{}
+    end
+
+    test "406 ERR_WASNOSUCHNICK emits :whowas_bundle with not_found: true" do
+      state = whowas_pending_state("ghost")
+
+      m =
+        msg(
+          {:numeric, 406},
+          ["vjt", "ghost", "There was no such nickname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, [{:whowas_bundle, target, accum}]} = EventRouter.route(m, state)
+      assert target == "ghost"
+      assert accum[:not_found] == true
+      assert new_state.whowas_pending == %{}
+    end
+
+    test "406 with no pending entry is silently ignored" do
+      state = base_state(%{whowas_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 406},
+          ["vjt", "noone", "There was no such nickname"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whowas_pending == %{}
+    end
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
   # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
   # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}

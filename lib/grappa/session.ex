@@ -846,6 +846,27 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends `WHOWAS <nick>` upstream and primes the per-target accumulator
+  in `state.whowas_pending` so EventRouter appends 314 entries + folds
+  the 312 reuse (logoff_time) into the last entry. The bundle is
+  broadcast on `Topic.user/1` as a `whowas_bundle` event when 369
+  RPL_ENDOFWHOWAS arrives, or with `not_found: true` on 406
+  ERR_WASNOSUCHNICK.
+
+  Per spec #2: ephemeral — NOT persisted in scrollback. Bundle replaces
+  any prior bundle for the same target.
+
+  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
+  if the nick syntax is rejected by `Grappa.IRC.Client.send_whowas/2`.
+  """
+  @spec send_whowas(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :invalid_line}
+  def send_whowas(subject, network_id, nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
+    call_session(subject, network_id, {:send_whowas, nick})
+  end
+
+  @doc """
   Sends `WHO <channel>` upstream and primes the per-target accumulator
   in `state.who_pending` so EventRouter folds 352 RPL_WHOREPLY rows
   into a bundle. The bundle is persisted as N+1 `:notice` scrollback

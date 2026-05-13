@@ -489,6 +489,25 @@ export type WhoisBundle = {
   actually_ip: string | null;
 };
 
+// P-0c — WHOWAS bundle payload. Mirrors `Grappa.Session.Wire.whowas_bundle/3`.
+// Aggregated reply to `/whowas <nick>` issued by the operator. The
+// most-recent historical entry is projected into the user/host/realname/
+// server/logoff_time fields by the server. `not_found: true` is the 406
+// ERR_WASNOSUCHNICK case — historical fields stay null and cic renders
+// a "no history" surface. `logoff_time` ships as the upstream-supplied
+// localized ctime string (server emits it verbatim — cic does NOT
+// parse).
+export type WhowasBundle = {
+  network: string;
+  target: string;
+  user: string | null;
+  host: string | null;
+  realname: string | null;
+  server: string | null;
+  logoff_time: string | null;
+  not_found: boolean;
+};
+
 // Mirror of the events fanned out on the user-level PubSub topic
 // (`Topic.user(user_name)`), pinned by:
 //   * `Grappa.Session.Wire.{channels_changed/0, own_nick_changed/2,
@@ -576,6 +595,7 @@ export type WireUserEvent =
       current_global: number | null;
       max_global: number | null;
     }
+  | ({ kind: "whowas_bundle" } & WhowasBundle)
   | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the

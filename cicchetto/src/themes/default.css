@@ -1451,3 +1451,78 @@ body {
   color: var(--fg-muted);
   font-size: 0.8rem;
 }
+
+/* P-0c — WHOWAS card. Mirror of `.whois-card` shape (inline ephemeral
+   surface above scrollback) with a different accent so the operator can
+   tell at a glance whether the reply is a live WHOIS or a historical
+   WHOWAS. The 406 not_found case reuses `.whowas-card-empty`. */
+.whowas-card {
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-muted);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+}
+
+.whowas-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-weight: bold;
+  color: var(--fg-muted);
+  margin-bottom: 0.25rem;
+}
+
+.whowas-card-title {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.whowas-card-target {
+  flex: 0 0 auto;
+  color: var(--fg);
+}
+
+.whowas-card-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.3rem;
+}
+
+.whowas-card-close:hover {
+  color: var(--fg);
+}
+
+.whowas-card-empty {
+  margin: 0;
+  font-style: italic;
+}
+
+.whowas-card-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+}
+
+.whowas-card-fields dt {
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.whowas-card-fields dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.whowas-card-logoff {
+  color: var(--fg-muted);
+}

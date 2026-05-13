@@ -381,6 +381,26 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
+  Sends `WHOWAS <nick>\\r\\n`. Validates nick syntax with
+  `{:error, :invalid_line}` on rejection. Single-target form only —
+  multi-target WHOWAS (RFC 2812 §3.6.3 allows comma-separated list +
+  optional `<count> <server>`) is out of MVP scope.
+
+  Numerics 314 RPL_WHOWASUSER (one per historical entry) + 312
+  RPL_WHOISSERVER reuse (carrying ctime(logoff_time) in trailing) + 369
+  RPL_ENDOFWHOWAS (terminator) reply with the WHOWAS list. 406
+  ERR_WASNOSUCHNICK fires on no-history. EventRouter folds the burst
+  into `state.whowas_pending` and emits `{:whowas_bundle, target, accum}`
+  on 369 (or a `not_found: true` bundle on 406).
+  """
+  @spec send_whowas(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  def send_whowas(client, nick) do
+    if Identifier.valid_nick?(nick),
+      do: send_line(client, "WHOWAS #{nick}\r\n"),
+      else: reject_invalid_line(:whowas)
+  end
+
+  @doc """
   Sends `WHO <channel>\\r\\n`. Validates channel syntax with
   `{:error, :invalid_line}` on rejection. The single-target form is
   the ergonomic call shape — RFC 2812 §3.6.1 allows a server-side
@@ -491,6 +511,7 @@ defmodule Grappa.IRC.Client do
            | :umode
            | :topic_clear
            | :whois
+           | :whowas
            | :who
            | :names
 

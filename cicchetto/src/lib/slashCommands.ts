@@ -81,6 +81,7 @@ export type SlashCommand =
   | { kind: "links"; pattern: string | null }
   | { kind: "lusers" }
   | { kind: "whois"; nick: string }
+  | { kind: "whowas"; nick: string }
   | { kind: "watchlist"; action: "add"; pattern: string }
   | { kind: "watchlist"; action: "del"; pattern: string }
   | { kind: "watchlist"; action: "list" }
@@ -285,6 +286,12 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     const [nick] = tokens(rest);
     if (!nick) return err(verb, "/whois requires a nick");
     return { kind: "whois", nick };
+  },
+
+  whowas: (verb, rest) => {
+    const [nick] = tokens(rest);
+    if (!nick) return err(verb, "/whowas requires a nick");
+    return { kind: "whowas", nick };
   },
 
   watch: (verb, rest) => parseWatchlist(verb, rest),

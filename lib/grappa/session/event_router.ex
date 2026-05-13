@@ -177,6 +177,7 @@ defmodule Grappa.Session.EventRouter do
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
           | {:lusers_bundle, accum :: map()}
+          | {:whowas_bundle, target :: String.t(), accum :: map()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -795,14 +796,33 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # 312 RPL_WHOISSERVER: `:server 312 own_nick target serverhost :serverinfo`.
-  # Folds `server` + `server_info` into whois_pending[target_lower].
+  # Dual-purpose since P-0c — Bahamut reuses 312 for WHOWAS too, where the
+  # trailing carries `ctime(logoff_time)` (a localized human-readable
+  # timestamp) instead of `serverinfo`.
+  #
+  # Conflict-gate: prefer the whois fold when an entry exists; otherwise if
+  # whowas_pending has an entry for the target, fold `server` + the
+  # trailing as `logoff_time` into the LAST WHOWAS entry (most recent 314
+  # row); otherwise the existing whois fold is a no-op (no pending entry).
+  # The interleaved WHOIS+WHOWAS-for-same-target case is rare (operator-
+  # driven, one at a time); we bias toward whois because it's the more
+  # common verb.
   def route(
         %Message{command: {:numeric, 312}, params: [_, target, server | rest]},
         state
       )
       when is_binary(target) and is_binary(server) do
-    server_info = whois_trailing(rest)
-    {:cont, whois_fold(state, target, %{server: server, server_info: server_info}), []}
+    nick_key = normalize_nick(target)
+    whois_pending = Map.get(state, :whois_pending, %{})
+    trailing = whois_trailing(rest)
+
+    case Map.has_key?(whois_pending, nick_key) do
+      true ->
+        {:cont, whois_fold(state, target, %{server: server, server_info: trailing}), []}
+
+      false ->
+        {:cont, whowas_fold_last_entry(state, target, %{server: server, logoff_time: trailing}), []}
+    end
   end
 
   # 313 RPL_WHOISOPERATOR: `:server 313 own_nick target :is an IRC operator`.
@@ -1318,6 +1338,89 @@ defmodule Grappa.Session.EventRouter do
     {:cont, Map.put(state, :lusers_pending, nil), [{:lusers_bundle, accum}]}
   end
 
+  # P-0c — WHOWAS bundle (314 / 369 / 406). Bahamut emits a multi-row
+  # historical-user reply terminated by 369 (success) or a single 406
+  # (no history). 312 RPL_WHOISSERVER is reused to carry logoff_time —
+  # see the conflict-gated 312 clause above.
+  #
+  # Strategy mirrors WHOIS (line ~870):
+  #   * `:send_whowas` primes `state.whowas_pending[target_lower] =
+  #     %{target_display, entries: []}` (Server.handle_call below).
+  #   * 314 appends one entry `%{user, host, realname}` to the entries list.
+  #   * 312 (gated above) folds `server` + `logoff_time` into the LAST
+  #     entry of the entries list.
+  #   * 369 emits `{:whowas_bundle, target_display, accum}` and clears the
+  #     pending entry.
+  #   * 406 emits `{:whowas_bundle, target_display, %{not_found: true}}`
+  #     and clears the pending entry; cic renders a "no history for X"
+  #     surface from the boolean.
+  #
+  # MVP scope: WHOWAS can return N historical entries for the same nick.
+  # The accumulator preserves all of them in `entries` (ordered as
+  # received); cic currently renders only the most recent (head of the
+  # list). Multi-entry rendering is out of MVP — flag if needed.
+
+  # 314 RPL_WHOWASUSER: `:server 314 own_nick target user host * :realname`.
+  # Append a new historical entry to the entries list. Skips when no
+  # whowas_pending entry exists (unsolicited 314 — operator never issued
+  # /whowas; not actionable).
+  def route(
+        %Message{command: {:numeric, 314}, params: [_, target, user, host | rest]},
+        state
+      )
+      when is_binary(target) and is_binary(user) and is_binary(host) do
+    realname = whois_trailing(rest)
+    entry = %{user: user, host: host, realname: realname}
+    {:cont, whowas_append_entry(state, target, entry), []}
+  end
+
+  # 369 RPL_ENDOFWHOWAS: `:server 369 own_nick target :End of WHOWAS`.
+  # Emits the bundle + drops the pending entry. Silently ignored if no
+  # accumulator exists (unsolicited terminator).
+  def route(
+        %Message{command: {:numeric, 369}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    pending = Map.get(state, :whowas_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      {:ok, accum} ->
+        next_state = %{state | whowas_pending: Map.delete(pending, nick_key)}
+
+        {:cont, next_state, [{:whowas_bundle, Map.get(accum, :target_display, target), accum}]}
+
+      :error ->
+        {:cont, state, []}
+    end
+  end
+
+  # 406 ERR_WASNOSUCHNICK: `:server 406 own_nick target :There was no
+  # such nickname`. No history for the target; flush a bundle carrying
+  # `not_found: true` so cic renders a single "no history" surface
+  # instead of two arms (success vs not-found). Silently ignored if no
+  # accumulator exists.
+  def route(
+        %Message{command: {:numeric, 406}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    pending = Map.get(state, :whowas_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      {:ok, accum} ->
+        next_state = %{state | whowas_pending: Map.delete(pending, nick_key)}
+        target_display = Map.get(accum, :target_display, target)
+
+        {:cont, next_state, [{:whowas_bundle, target_display, %{target_display: target_display, not_found: true}}]}
+
+      :error ->
+        {:cont, state, []}
+    end
+  end
+
   # BUG2: MOTD numerics (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD)
   # persist to the synthetic "$server" channel so the server-messages window
   # has content. Previously these hit the catch-all and were silently dropped.
@@ -1824,6 +1927,59 @@ defmodule Grappa.Session.EventRouter do
   defp lusers_fold(state, fold) when is_map(fold) do
     accum = Map.get(state, :lusers_pending) || %{}
     Map.put(state, :lusers_pending, Map.merge(accum, fold))
+  end
+
+  # P-0c — append a 314 RPL_WHOWASUSER entry to the WHOWAS accumulator's
+  # entries list. Entries are stored REVERSED (head = most recent 314)
+  # so 312's fold-into-LAST-entry becomes a head-prepend (O(1) vs the
+  # O(n) `++ [entry]` shape Credo's MapInto check rejects). The wire
+  # builder reads `hd(entries)` for the most-recent projection.
+  # Skips when no whowas_pending entry exists (operator never issued
+  # /whowas; an unsolicited 314 is not actionable).
+  @spec whowas_append_entry(state(), String.t(), map()) :: state()
+  defp whowas_append_entry(state, target, entry)
+       when is_binary(target) and is_map(entry) do
+    pending = Map.get(state, :whowas_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        entries = [entry | Map.get(accum, :entries, [])]
+        merged = Map.put(accum, :entries, entries)
+        %{state | whowas_pending: Map.put(pending, nick_key, merged)}
+    end
+  end
+
+  # P-0c — fold a 312 RPL_WHOISSERVER reuse (`server` + `logoff_time`)
+  # into the MOST-RECENT historical entry (head of the reversed
+  # entries list). Skips when no whowas_pending entry exists OR when
+  # entries is empty (a 312 arriving before the first 314 is malformed;
+  # ignore — the next 314 will create the first entry without server/
+  # logoff_time).
+  @spec whowas_fold_last_entry(state(), String.t(), map()) :: state()
+  defp whowas_fold_last_entry(state, target, fold)
+       when is_binary(target) and is_map(fold) do
+    pending = Map.get(state, :whowas_pending, %{})
+    nick_key = normalize_nick(target)
+
+    case Map.fetch(pending, nick_key) do
+      :error ->
+        state
+
+      {:ok, accum} ->
+        case Map.get(accum, :entries, []) do
+          [] ->
+            state
+
+          [head | tail] ->
+            new_entries = [Map.merge(head, fold) | tail]
+            merged = Map.put(accum, :entries, new_entries)
+            %{state | whowas_pending: Map.put(pending, nick_key, merged)}
+        end
+    end
   end
 
   # P-0d — extract `count` integers from an IRC param. Some servers

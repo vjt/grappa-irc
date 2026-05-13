@@ -320,6 +320,16 @@ export function pushWhois(networkId: number, nick: string): void {
   _userChannel.push("whois", { network_id: networkId, nick });
 }
 
+// P-0c — /whowas <nick> → WHOWAS nick — pushes on the user-level
+// channel. Server primes whowas_pending + emits WHOWAS upstream;
+// 314/312/369/406 fold into the bundle which broadcasts as
+// `whowas_bundle` on Topic.user/1. cic dispatches in userTopic.ts
+// and the WhowasCard renders inline above the active window.
+export function pushWhowas(networkId: number, nick: string): void {
+  if (_userChannel === null) return;
+  _userChannel.push("whowas", { network_id: networkId, nick });
+}
+
 // CP22 cluster B (channel-client-polish #14) — /who <#channel>. Pushes
 // on the user-level channel; server primes who_pending + emits WHO
 // upstream. The 352/315 burst lands as N+1 :notice scrollback rows

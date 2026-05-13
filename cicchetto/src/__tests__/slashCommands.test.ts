@@ -31,6 +31,16 @@ describe("parseSlash — /whois (C2)", () => {
   });
 });
 
+describe("parseSlash — /whowas (P-0c)", () => {
+  it("/whowas <nick> parses to {kind: 'whowas', nick}", () => {
+    expect(parseSlash("/whowas alice")).toEqual({ kind: "whowas", nick: "alice" });
+  });
+
+  it("/whowas bare → error (nick required)", () => {
+    expect(parseSlash("/whowas")).toMatchObject({ kind: "error", verb: "whowas" });
+  });
+});
+
 describe("parseSlash — /me", () => {
   it("/me <action>", () => {
     expect(parseSlash("/me waves")).toEqual({ kind: "me", body: "waves" });

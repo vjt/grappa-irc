@@ -444,6 +444,66 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "whowas_bundle/3" do
+    test "projects MOST-RECENT entry (head of reversed list) into typed historical fields" do
+      # EventRouter stores entries reversed (head = most recent 314).
+      # Wire builder reads `hd(entries)` for the projection.
+      accum = %{
+        target_display: "Alice",
+        entries: [
+          %{
+            user: "alice_u",
+            host: "alice.host",
+            realname: "Alice Liddell",
+            server: "irc.test.org",
+            logoff_time: "Mon May 13 12:34:56 2026"
+          },
+          %{user: "old_u", host: "old.host", realname: "Old Alice"}
+        ]
+      }
+
+      payload = Wire.whowas_bundle("azzurra", "Alice", accum)
+
+      assert payload == %{
+               kind: "whowas_bundle",
+               network: "azzurra",
+               target: "Alice",
+               user: "alice_u",
+               host: "alice.host",
+               realname: "Alice Liddell",
+               server: "irc.test.org",
+               logoff_time: "Mon May 13 12:34:56 2026",
+               not_found: false
+             }
+    end
+
+    test "not_found: true projects nil for all historical fields (406 ERR_WASNOSUCHNICK case)" do
+      payload = Wire.whowas_bundle("net", "ghost", %{not_found: true})
+
+      assert payload == %{
+               kind: "whowas_bundle",
+               network: "net",
+               target: "ghost",
+               user: nil,
+               host: nil,
+               realname: nil,
+               server: nil,
+               logoff_time: nil,
+               not_found: true
+             }
+    end
+
+    test "empty entries with not_found absent defaults to not_found: false + nil fields" do
+      payload = Wire.whowas_bundle("net", "alice", %{entries: []})
+
+      assert payload.kind == "whowas_bundle"
+      assert payload.target == "alice"
+      assert payload.not_found == false
+      assert payload.user == nil
+      assert payload.logoff_time == nil
+    end
+  end
+
   describe "kind: discriminator string contract" do
     test "every Wire fn output carries kind: as a String.t()" do
       payloads = [
@@ -461,7 +521,9 @@ defmodule Grappa.Session.WireTest do
         Wire.whois_bundle("net", "alice", %{}),
         Wire.peer_away("net", "alice", "Gone fishing"),
         Wire.invite_ack("net", "#italia", "alice"),
-        Wire.lusers_bundle("net", %{})
+        Wire.lusers_bundle("net", %{}),
+        Wire.whowas_bundle("net", "alice", %{}),
+        Wire.whowas_bundle("net", "ghost", %{not_found: true})
       ]
 
       for p <- payloads do

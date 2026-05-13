@@ -368,7 +368,16 @@ defmodule Grappa.Session.Server do
           # (silence is the bug); routing channel is `:origin_window` if
           # set (cic-side focused window when /names was issued), else the
           # target if joined, else `$server`. NOT persisted across crashes.
-          names_pending: %{String.t() => map()}
+          names_pending: %{String.t() => map()},
+          # P-0c — pending WHOWAS accumulators keyed by lowercased target
+          # nick. Set up on `:send_whowas`; 314 RPL_WHOWASUSER appends an
+          # entry `%{user, host, realname}` to `entries`; 312 (gated for
+          # WHOWAS in EventRouter) merges `server` + `logoff_time` into
+          # the LAST entry; 369 RPL_ENDOFWHOWAS emits `{:whowas_bundle,
+          # target, accum}` and 406 ERR_WASNOSUCHNICK emits a bundle with
+          # `not_found: true`. Bounded by in-flight /whowas commands
+          # (typically 0-1 at a time). NOT persisted across crashes.
+          whowas_pending: %{String.t() => map()}
         }
 
   ## API
@@ -491,7 +500,13 @@ defmodule Grappa.Session.Server do
       # full nick list + one EOF) when NOT joined to target — joined
       # targets defer to the existing members_seeded refresh path. NOT
       # persisted across crashes.
-      names_pending: %{}
+      names_pending: %{},
+      # P-0c — pending WHOWAS accumulators keyed by lowercased target nick.
+      # Set up on `:send_whowas`; 314 appends entries; 312 (gated) merges
+      # logoff_time into the last entry; 369 emits :whowas_bundle and 406
+      # emits a not_found bundle. Bounded by in-flight /whowas commands
+      # (typically 0-1 at a time). NOT persisted across crashes.
+      whowas_pending: %{}
     }
 
     # S3.1 / S3.2: subscribe to the WSPresence PubSub topic for this user so
@@ -807,6 +822,25 @@ defmodule Grappa.Session.Server do
     next_pending = Map.put(state.whois_pending, nick_key, %{target_display: target})
     next_state = %{state | whois_pending: next_pending}
     {:reply, Client.send_whois(state.client, target), next_state}
+  end
+
+  # P-0c — /whowas <nick>. Mirror of :send_whois shape. Two effects:
+  # (1) prime the accumulator entry in state.whowas_pending so EventRouter
+  # appends 314 RPL_WHOWASUSER entries + folds 312 logoff_time into the
+  # last entry; (2) emit `WHOWAS nick\r\n`. The entry's `target_display`
+  # is the user-typed nick (case preserved); EventRouter normalises to
+  # lowercase for the lookup key. Replaces any prior accumulator for the
+  # same target (running /whowas twice without a 369 in between drops
+  # the first). On send_line failure the accumulator stays primed —
+  # harmless until the next /whowas replaces the entry.
+  def handle_call({:send_whowas, target}, _, state) when is_binary(target) do
+    nick_key = String.downcase(target)
+
+    next_pending =
+      Map.put(state.whowas_pending, nick_key, %{target_display: target, entries: []})
+
+    next_state = %{state | whowas_pending: next_pending}
+    {:reply, Client.send_whowas(state.client, target), next_state}
   end
 
   # CP22 cluster B (channel-client-polish #14) — /who <#channel>. Two
@@ -2141,6 +2175,22 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.user(state.subject_label),
         SessionWire.whois_bundle(state.network_slug, target, accum)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # P-0c — WHOWAS bundle ephemeral. Broadcast on the user-level topic
+  # (mirrors :whois_bundle — single-entity historical-user data routed
+  # via Topic.user/1 because the wire payload carries its own `network`
+  # field). cic dispatches in `userTopic.ts`'s `whowas_bundle` arm into
+  # the per-network `whowasCard.ts` store (last-write-wins replacement
+  # per network). NOT persisted — operator types /whowas to refresh.
+  defp apply_effects([{:whowas_bundle, target, accum} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.whowas_bundle(state.network_slug, target, accum)
       )
 
     apply_effects(rest, state)

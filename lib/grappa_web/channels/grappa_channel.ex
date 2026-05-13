@@ -509,6 +509,24 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
+  # P-0c — /whowas <nick>. Read-only verb; visitors entitled to issue
+  # it (mirrors WHOIS post-C3). Server primes whowas_pending and emits
+  # WHOWAS upstream; EventRouter folds 314/312/369/406 and 369 (or 406)
+  # broadcasts the bundle on `Topic.user/1` so the visitor's own cic
+  # surface is the only consumer.
+  def handle_in(
+        "whowas",
+        %{"network_id" => network_id, "nick" => nick},
+        socket
+      )
+      when is_integer(network_id) and is_binary(nick) do
+    dispatch_subject_verb(
+      socket,
+      fn -> validate_args(nick: nick) end,
+      fn subject -> Session.send_whowas(subject, network_id, nick) end
+    )
+  end
+
   # P-0d — /lusers. No args, read-only network query. Visitors are
   # entitled to issue it (mirrors WHOIS post-C3); the LUSERS bundle's
   # broadcast topic uses the issuing subject's `subject_label` so the
