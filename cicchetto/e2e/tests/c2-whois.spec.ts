@@ -16,19 +16,11 @@
 //
 // P-0a — Cluster `numeric-delegation-p0` 2026-05-13 added 11 additional
 // WHOIS-leg numeric folds (275/307/325/326/378/etc — services / SSL /
-// umodes / actually-host). The testnet DOES run azzurra/services
-// (cicchetto/e2e/infra/services/) so the services-emitted numerics
-// are theoretically wirable here. In practice an attempt to drive
-// `is_registered` via NickServ REGISTER + IDENTIFY hit a flaky
-// services<->ircd SVSMODE +r propagation gap (5s wait timed out
-// repeatedly even with EMAIL:0 + FORCE_AUTH:0 conf — likely a leaf-
-// burst-state + services-master timing issue). The P-0a wire shape +
-// fold logic + cic render are exhaustively unit-tested in
-// `cicchetto/src/__tests__/WhoisCard.test.tsx` (component vitest with
-// mocked store) + `test/grappa/session/event_router_test.exs`
-// (per-numeric server fold + bundle-integration). Live verification
-// per the plan's "Deploy P-0a" step is `/whois <known-IsRegNick+
-// IsUmodez>` on Azzurra at deploy time.
+// umodes / actually-host). The end-to-end proof for one services-
+// emitted numeric (307 RPL_WHOISREGNICK → "registered" tag chip) is
+// `p0a-whois-flags.spec.ts`. Per-numeric folds are exhaustively unit-
+// tested in `test/grappa/session/event_router_test.exs` +
+// `cicchetto/src/__tests__/WhoisCard.test.tsx`.
 
 import { test, expect } from "@playwright/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";

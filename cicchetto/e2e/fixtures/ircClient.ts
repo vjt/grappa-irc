@@ -26,6 +26,7 @@ const NICK_TIMEOUT_MS = 5_000;
 const MODE_TIMEOUT_MS = 5_000;
 const KICK_TIMEOUT_MS = 5_000;
 const OPER_TIMEOUT_MS = 5_000;
+const NICKSERV_TIMEOUT_MS = 5_000;
 
 export class IrcPeer {
   private readonly client: Client;
@@ -103,6 +104,55 @@ export class IrcPeer {
   // commands, observe grappa state for delivery confirmation.
   action(target: string, body: string): void {
     this.client.action(target, body);
+  }
+
+  // Register a nick with NickServ. Used by P-0a e2es to put a peer
+  // into +r (registered) state so a subsequent /whois returns 307
+  // RPL_WHOISREGNICK. EMAIL:0 in the testnet conf disables the
+  // email-auth requirement, but services still validates the email
+  // FORMAT — `*.local` TLDs are rejected; use a well-formed address.
+  async nickservRegister(password: string, email: string): Promise<void> {
+    const noticeReceived = once(
+      this.client,
+      "notice",
+      NICKSERV_TIMEOUT_MS,
+      `nickserv register notice for ${this.nick}`,
+    );
+    this.client.raw(["PRIVMSG", "NickServ", `REGISTER ${password} ${email}`]);
+    await noticeReceived;
+  }
+
+  // Identify with NickServ + wait for the +r umode to actually land
+  // BEFORE resolving. Services emits SVSMODE +r over the S2S link
+  // after the IDENTIFY notice, and the leaf-side `m_svsmode` then
+  // emits a regular MODE event back to the locally-connected user.
+  // Both events can land in either order; starting both listeners
+  // BEFORE the IDENTIFY rules out the race that otherwise lets a
+  // post-identify /whois fire before bahamut's `IsRegNick` gate
+  // (s_user.c:2240) is satisfied. Requires services to be U-lined on
+  // the leaf the peer connects to (azzurra-testnet d998d09).
+  //
+  // Note on the irc-framework event name: it emits `mode` (NOT
+  // `user mode`) for both channel and user MODE lines, distinguished
+  // by `target` (channel name vs nick). User-targeted MODE arrives as
+  // `:nick MODE nick :+modes` so `target === this.nick`.
+  async nickservIdentify(password: string): Promise<void> {
+    const noticeReceived = once(
+      this.client,
+      "notice",
+      NICKSERV_TIMEOUT_MS,
+      `nickserv identify notice for ${this.nick}`,
+    );
+    const umodeRSet = onceMatching(
+      this.client,
+      "mode",
+      (event: { target: string; raw_modes: string }) =>
+        event.target === this.nick && event.raw_modes.includes("+r"),
+      NICKSERV_TIMEOUT_MS,
+      `umode +r on ${this.nick}`,
+    );
+    this.client.raw(["PRIVMSG", "NickServ", `IDENTIFY ${password}`]);
+    await Promise.all([noticeReceived, umodeRSet]);
   }
 
   async part(channel: string, reason: string): Promise<void> {
