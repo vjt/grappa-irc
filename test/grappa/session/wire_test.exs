@@ -313,7 +313,21 @@ defmodule Grappa.Session.WireTest do
                is_operator: true,
                idle_seconds: 42,
                signon: 1_700_000_000,
-               channels: ["@#italia", "+#grappa"]
+               channels: ["@#italia", "+#grappa"],
+               # P-0a — 11 new WHOIS-leg flags / strings (default false / nil
+               # when the corresponding numeric did not fire).
+               using_ssl: false,
+               is_registered: false,
+               is_admin: false,
+               is_services_admin: false,
+               is_helper: false,
+               is_chanop: false,
+               is_agent: false,
+               is_java: false,
+               umodes: nil,
+               away_message: nil,
+               actually_host: nil,
+               actually_ip: nil
              }
     end
 
@@ -332,7 +346,20 @@ defmodule Grappa.Session.WireTest do
                is_operator: false,
                idle_seconds: nil,
                signon: nil,
-               channels: nil
+               channels: nil,
+               # P-0a defaults
+               using_ssl: false,
+               is_registered: false,
+               is_admin: false,
+               is_services_admin: false,
+               is_helper: false,
+               is_chanop: false,
+               is_agent: false,
+               is_java: false,
+               umodes: nil,
+               away_message: nil,
+               actually_host: nil,
+               actually_ip: nil
              }
     end
   end

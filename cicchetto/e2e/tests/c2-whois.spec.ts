@@ -13,6 +13,17 @@
 //   - target nick is shown in the header;
 //   - userhost dt/dd renders the peer's actual user@host;
 //   - Close button dismisses the card (data-testid disappears).
+//
+// P-0a — Cluster `numeric-delegation-p0` 2026-05-13 added 11 additional
+// WHOIS-leg numeric folds (275/307/325/326/378/etc — services / SSL /
+// umodes / actually-host). The bahamut testnet does NOT run an Azzurra
+// services package, so it never emits those numerics — they're verified
+// live against Azzurra at deploy-verify time per the plan's "Deploy
+// P-0a" step. The P-0a cic-side rendering is covered by
+// `cicchetto/src/__tests__/WhoisCard.test.tsx` (component vitest) +
+// `test/grappa/session/event_router_test.exs` (server-side fold tests
+// + bundle-integration test asserting all flags marshal through the
+// wire shape).
 
 import { test, expect } from "@playwright/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";

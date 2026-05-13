@@ -1742,6 +1742,293 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # P-0a — Cluster `numeric-delegation-p0` 2026-05-13. 11 additional
+  # WHOIS-leg numerics fold typed flags / strings / integers into
+  # `whois_pending[target_lower]`. Per `feedback_no_localized_strings_server_side`
+  # the wire shape carries booleans + extracted strings (umodes, host, ip,
+  # away_message); cic localizes the human-readable strings ("Services
+  # Agent" etc).
+  describe "P-0a — extended WHOIS-leg numeric folds (275/301/307/308/309/310/316/325/326/339/378)" do
+    # whois_pending_state/1 is defined module-level in the C2 describe block above
+    # (line ~1579) — reuse rather than redefine.
+
+    test "275 RPL_USINGSSL folds using_ssl: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 275},
+          ["vjt", "alice", "is using a secure connection (SSL)"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:using_ssl] == true
+    end
+
+    test "275 with no whois_pending entry is silently ignored (no fold, no notice)" do
+      state = base_state(%{whois_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 275},
+          ["vjt", "ghost", "is using a secure connection (SSL)"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending == %{}
+    end
+
+    test "301 RPL_AWAY folds away_message into bundle when whois_pending entry exists" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 301},
+          ["vjt", "alice", "Gone fishing"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:away_message] == "Gone fishing"
+    end
+
+    test "301 with no whois_pending entry is dropped silently (P-0b will own standalone case)" do
+      state = base_state(%{whois_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 301},
+          ["vjt", "alice", "Gone fishing"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending == %{}
+    end
+
+    test "307 RPL_WHOISREGNICK folds is_registered: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 307},
+          ["vjt", "alice", "has identified for this nick"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_registered] == true
+    end
+
+    test "308 RPL_WHOISADMIN folds is_admin: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 308},
+          ["vjt", "alice", "is an IRC Server Administrator"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_admin] == true
+    end
+
+    test "309 RPL_WHOISSADMIN folds is_services_admin: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 309},
+          ["vjt", "alice", "is a Services Administrator"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_services_admin] == true
+    end
+
+    test "310 RPL_WHOISHELPER folds is_helper: true" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 310},
+          ["vjt", "alice", "is a Help Operator"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_helper] == true
+    end
+
+    test "316 RPL_WHOISCHANOP folds is_chanop: true" do
+      state = whois_pending_state("alice")
+
+      m = msg({:numeric, 316}, ["vjt", "alice", "is a chanop"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_chanop] == true
+    end
+
+    test "325 RPL_WHOISAGENT folds is_agent: true (Azzurra services)" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 325},
+          ["vjt", "alice", "is a Services Agent"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_agent] == true
+    end
+
+    test "326 RPL_WHOISMODES extracts mode string from localized prefix" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 326},
+          ["vjt", "alice", "is using modes +iZ"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:umodes] == "+iZ"
+    end
+
+    test "326 with unexpected template (not the Bahamut prefix) folds nothing" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 326},
+          ["vjt", "alice", "some other ircd format here"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      refute Map.has_key?(new_state.whois_pending["alice"], :umodes)
+    end
+
+    test "339 RPL_WHOISJAVA folds is_java: true" do
+      state = whois_pending_state("alice")
+
+      m = msg({:numeric, 339}, ["vjt", "alice", "is a Java User"], {:server, "irc.test.org"})
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:is_java] == true
+    end
+
+    test "378 RPL_WHOISACTUALLY extracts host + ip from localized template" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 378},
+          ["vjt", "alice", "is connecting from real.host.example [192.0.2.42]"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.whois_pending["alice"][:actually_host] == "real.host.example"
+      assert new_state.whois_pending["alice"][:actually_ip] == "192.0.2.42"
+    end
+
+    test "378 with malformed template folds nothing" do
+      state = whois_pending_state("alice")
+
+      m =
+        msg(
+          {:numeric, 378},
+          ["vjt", "alice", "some other format without brackets"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      refute Map.has_key?(new_state.whois_pending["alice"], :actually_host)
+      refute Map.has_key?(new_state.whois_pending["alice"], :actually_ip)
+    end
+
+    test "318 RPL_ENDOFWHOIS bundle carries all P-0a flags through to wire payload" do
+      # Synthetic full-WHOIS sequence: all 11 new numerics + 311/312/319
+      # baseline, terminated by 318. Asserts the wire shape carries
+      # every typed flag.
+      state = whois_pending_state("alice")
+
+      msgs = [
+        msg({:numeric, 311}, ["vjt", "alice", "alice_u", "alice.host", "*", "Alice Realname"]),
+        msg({:numeric, 378}, ["vjt", "alice", "is connecting from real.host [10.0.0.1]"]),
+        msg({:numeric, 326}, ["vjt", "alice", "is using modes +iZ"]),
+        msg({:numeric, 319}, ["vjt", "alice", "@#italia +#grappa"]),
+        msg({:numeric, 312}, ["vjt", "alice", "irc.azzurra.org", "Azzurra Hub"]),
+        msg({:numeric, 307}, ["vjt", "alice", "has identified for this nick"]),
+        msg({:numeric, 301}, ["vjt", "alice", "AFK biking"]),
+        msg({:numeric, 275}, ["vjt", "alice", "is using a secure connection (SSL)"]),
+        msg({:numeric, 313}, ["vjt", "alice", "is an IRC operator"]),
+        msg({:numeric, 325}, ["vjt", "alice", "is a Services Agent"]),
+        msg({:numeric, 310}, ["vjt", "alice", "is a Help Operator"]),
+        msg({:numeric, 339}, ["vjt", "alice", "is a Java User"]),
+        msg({:numeric, 308}, ["vjt", "alice", "is an IRC Server Administrator"]),
+        msg({:numeric, 309}, ["vjt", "alice", "is a Services Administrator"]),
+        msg({:numeric, 316}, ["vjt", "alice", "is a chanop"])
+      ]
+
+      final_state =
+        Enum.reduce(msgs, state, fn m, s ->
+          {:cont, s2, []} = EventRouter.route(m, s)
+          s2
+        end)
+
+      end_msg = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"])
+      {:cont, _, [{:whois_bundle, target, accum}]} = EventRouter.route(end_msg, final_state)
+
+      payload = Grappa.Session.Wire.whois_bundle("test-net", target, accum)
+
+      assert payload.kind == "whois_bundle"
+      assert payload.using_ssl == true
+      assert payload.is_registered == true
+      assert payload.is_admin == true
+      assert payload.is_services_admin == true
+      assert payload.is_helper == true
+      assert payload.is_chanop == true
+      assert payload.is_agent == true
+      assert payload.is_java == true
+      assert payload.umodes == "+iZ"
+      assert payload.away_message == "AFK biking"
+      assert payload.actually_host == "real.host"
+      assert payload.actually_ip == "10.0.0.1"
+      # baseline 311/312/319 fields still present
+      assert payload.user == "alice_u"
+      assert payload.host == "alice.host"
+      assert payload.realname == "Alice Realname"
+      assert payload.server == "irc.azzurra.org"
+      assert payload.is_operator == true
+      assert payload.channels == ["@#italia", "+#grappa"]
+    end
+
+    test "wire payload defaults all P-0a booleans to false when accum is empty" do
+      payload = Grappa.Session.Wire.whois_bundle("test-net", "ghost", %{})
+
+      assert payload.using_ssl == false
+      assert payload.is_registered == false
+      assert payload.is_admin == false
+      assert payload.is_services_admin == false
+      assert payload.is_helper == false
+      assert payload.is_chanop == false
+      assert payload.is_agent == false
+      assert payload.is_java == false
+      assert payload.umodes == nil
+      assert payload.away_message == nil
+      assert payload.actually_host == nil
+      assert payload.actually_ip == nil
+    end
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
   # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
   # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}

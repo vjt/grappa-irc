@@ -1,5 +1,6 @@
 import { type Component, For, Show } from "solid-js";
 import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
+import type { WhoisBundle } from "./lib/api";
 
 // C2 — WHOIS card. Renders the aggregated WHOIS bundle inline at the top
 // of the active window's scrollback pane. Per spec #2:
@@ -14,6 +15,12 @@ import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
 // Empty bundle (only `target` populated, no upstream numerics): renders
 // a "no such nick" banner. Operator users: 313 RPL_WHOISOPERATOR adds
 // an [oper] tag. Idle / signon: rendered as relative human text.
+//
+// P-0a — Cluster `numeric-delegation-p0` 2026-05-13. 11 additional
+// WHOIS-leg flags rendered as inline tags + structured rows. Per
+// `feedback_no_localized_strings_server_side`, ALL human strings are
+// built here from server-emitted typed booleans / strings — never
+// echoed from upstream wire trailing.
 //
 // Close affordance: × button on the right calls `dismissWhoisCard` for
 // this network. Mounted by `ScrollbackPane.tsx` only when a bundle
@@ -39,6 +46,24 @@ const formatSignon = (epochSeconds: number | null): string | null => {
   return new Date(epochSeconds * 1000).toLocaleString();
 };
 
+// P-0a — collect inline tag chips derived from typed booleans. The label
+// strings are owned here (locale-extensible), NOT by the server.
+type TagChip = { label: string; cssMod: string };
+
+const collectTags = (b: WhoisBundle): TagChip[] => {
+  const tags: TagChip[] = [];
+  if (b.is_operator) tags.push({ label: "oper", cssMod: "oper" });
+  if (b.is_admin) tags.push({ label: "server admin", cssMod: "admin" });
+  if (b.is_services_admin) tags.push({ label: "services admin", cssMod: "sadmin" });
+  if (b.is_agent) tags.push({ label: "services agent", cssMod: "agent" });
+  if (b.is_helper) tags.push({ label: "helper", cssMod: "helper" });
+  if (b.is_chanop) tags.push({ label: "chanop", cssMod: "chanop" });
+  if (b.is_registered) tags.push({ label: "registered", cssMod: "registered" });
+  if (b.using_ssl) tags.push({ label: "SSL", cssMod: "ssl" });
+  if (b.is_java) tags.push({ label: "java", cssMod: "java" });
+  return tags;
+};
+
 const WhoisCard: Component<Props> = (props) => {
   const bundle = () => whoisCardBySlug()[props.networkSlug];
   const hasFields = (): boolean => {
@@ -51,7 +76,19 @@ const WhoisCard: Component<Props> = (props) => {
       b.server !== null ||
       b.is_operator ||
       b.idle_seconds !== null ||
-      b.channels !== null
+      b.channels !== null ||
+      // P-0a — extended flags also count as "has data"
+      b.using_ssl ||
+      b.is_registered ||
+      b.is_admin ||
+      b.is_services_admin ||
+      b.is_helper ||
+      b.is_chanop ||
+      b.is_agent ||
+      b.is_java ||
+      b.umodes !== null ||
+      b.away_message !== null ||
+      b.actually_host !== null
     );
   };
 
@@ -61,9 +98,11 @@ const WhoisCard: Component<Props> = (props) => {
         <div class="whois-card" data-testid="whois-card">
           <div class="whois-card-header">
             <span class="whois-card-target">{b().target}</span>
-            <Show when={b().is_operator}>
-              <span class="whois-card-tag whois-card-tag-oper">oper</span>
-            </Show>
+            <For each={collectTags(b())}>
+              {(tag) => (
+                <span class={`whois-card-tag whois-card-tag-${tag.cssMod}`}>{tag.label}</span>
+              )}
+            </For>
             <button
               type="button"
               class="whois-card-close"
@@ -91,6 +130,21 @@ const WhoisCard: Component<Props> = (props) => {
               <Show when={b().realname}>
                 <dt>realname</dt>
                 <dd>{b().realname}</dd>
+              </Show>
+              <Show when={b().away_message}>
+                <dt>away</dt>
+                <dd class="whois-card-away">{b().away_message}</dd>
+              </Show>
+              <Show when={b().actually_host}>
+                <dt>connecting from</dt>
+                <dd>
+                  {b().actually_host}
+                  <Show when={b().actually_ip}> [{b().actually_ip}]</Show>
+                </dd>
+              </Show>
+              <Show when={b().umodes}>
+                <dt>modes</dt>
+                <dd class="whois-card-umodes">{b().umodes}</dd>
               </Show>
               <Show when={b().server}>
                 <dt>server</dt>

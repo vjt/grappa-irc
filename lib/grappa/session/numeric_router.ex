@@ -185,7 +185,46 @@ defmodule Grappa.Session.NumericRouter do
                         329,
                         331,
                         332,
-                        333
+                        333,
+                        # Cluster `numeric-delegation-p0` 2026-05-13 P-0a — WHOIS
+                        # leg completion. Same disease shape as 332/333 above:
+                        # without delegation, Server's catch-all persists every
+                        # WHOIS-class numeric as a bare `:notice` row leaking
+                        # the localized trailing param verbatim ("has identified
+                        # for this nick", "is using a secure connection (SSL)",
+                        # "is a Services Agent" etc.). EventRouter folds each
+                        # one into `whois_pending[target_lower]`; the 318
+                        # bundle emits typed booleans / strings / integers
+                        # via `:whois_bundle`. Per
+                        # `feedback_no_localized_strings_server_side`, server
+                        # never emits the English templates — cic builds the
+                        # human strings from typed flags.
+                        #
+                        # 275 RPL_USINGSSL          (IsUmodeS)
+                        # 301 RPL_AWAY              (dual-purpose — see
+                        #                            EventRouter route/2 for
+                        #                            the `whois_pending` gate;
+                        #                            standalone case is P-0b)
+                        # 307 RPL_WHOISREGNICK      (IsRegNick)
+                        # 308 RPL_WHOISADMIN        (server admin)
+                        # 309 RPL_WHOISSADMIN       (services admin)
+                        # 310 RPL_WHOISHELPER       (IsUmodeh)
+                        # 316 RPL_WHOISCHANOP       (RFC1459 compat)
+                        # 325 RPL_WHOISAGENT        (IsUmodez — Azzurra)
+                        # 326 RPL_WHOISMODES        (IsAnOper — Azzurra)
+                        # 339 RPL_WHOISJAVA         (Azzurra)
+                        # 378 RPL_WHOISACTUALLY     (oper-visible — Azzurra)
+                        275,
+                        301,
+                        307,
+                        308,
+                        309,
+                        310,
+                        316,
+                        325,
+                        326,
+                        339,
+                        378
                       ])
 
   # ---------------------------------------------------------------------------

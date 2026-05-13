@@ -132,6 +132,12 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // missing values (boolean false / null) per Wire.whois_bundle/3
       // shape. Defensive: any malformed shape returns null and the
       // dispatcher logs + drops.
+      //
+      // P-0a — 11 additional WHOIS-leg flags / strings folded by
+      // EventRouter (275/301/307/308/309/310/316/325/326/339/378).
+      // Booleans default false on the server when the corresponding
+      // numeric did not fire; cic narrows defensively (server bug or
+      // legacy mismatch returns null).
       if (
         typeof r.network !== "string" ||
         typeof r.target !== "string" ||
@@ -143,7 +149,19 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         typeof r.is_operator !== "boolean" ||
         (r.idle_seconds !== null && typeof r.idle_seconds !== "number") ||
         (r.signon !== null && typeof r.signon !== "number") ||
-        (r.channels !== null && !Array.isArray(r.channels))
+        (r.channels !== null && !Array.isArray(r.channels)) ||
+        typeof r.using_ssl !== "boolean" ||
+        typeof r.is_registered !== "boolean" ||
+        typeof r.is_admin !== "boolean" ||
+        typeof r.is_services_admin !== "boolean" ||
+        typeof r.is_helper !== "boolean" ||
+        typeof r.is_chanop !== "boolean" ||
+        typeof r.is_agent !== "boolean" ||
+        typeof r.is_java !== "boolean" ||
+        (r.umodes !== null && typeof r.umodes !== "string") ||
+        (r.away_message !== null && typeof r.away_message !== "string") ||
+        (r.actually_host !== null && typeof r.actually_host !== "string") ||
+        (r.actually_ip !== null && typeof r.actually_ip !== "string")
       )
         return null;
       return {
@@ -159,6 +177,18 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         idle_seconds: r.idle_seconds as number | null,
         signon: r.signon as number | null,
         channels: r.channels as string[] | null,
+        using_ssl: r.using_ssl,
+        is_registered: r.is_registered,
+        is_admin: r.is_admin,
+        is_services_admin: r.is_services_admin,
+        is_helper: r.is_helper,
+        is_chanop: r.is_chanop,
+        is_agent: r.is_agent,
+        is_java: r.is_java,
+        umodes: r.umodes as string | null,
+        away_message: r.away_message as string | null,
+        actually_host: r.actually_host as string | null,
+        actually_ip: r.actually_ip as string | null,
       };
     case "bundle_hash":
       if (typeof r.hash !== "string" || r.hash === "") return null;

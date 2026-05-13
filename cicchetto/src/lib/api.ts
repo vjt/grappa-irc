@@ -435,6 +435,23 @@ export type WhoisBundle = {
   idle_seconds: number | null;
   signon: number | null;
   channels: string[] | null;
+  // P-0a — Cluster `numeric-delegation-p0` 2026-05-13. Server emits typed
+  // booleans / strings / integers; cic owns the human-readable rendering
+  // ("Services Agent" / "is using SSL" / etc) per
+  // `feedback_no_localized_strings_server_side`. Booleans default false
+  // when the corresponding numeric did not fire; optional strings nil.
+  using_ssl: boolean;
+  is_registered: boolean;
+  is_admin: boolean;
+  is_services_admin: boolean;
+  is_helper: boolean;
+  is_chanop: boolean;
+  is_agent: boolean;
+  is_java: boolean;
+  umodes: string | null;
+  away_message: string | null;
+  actually_host: string | null;
+  actually_ip: string | null;
 };
 
 // Mirror of the events fanned out on the user-level PubSub topic

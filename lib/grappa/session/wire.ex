@@ -213,7 +213,25 @@ defmodule Grappa.Session.Wire do
           is_operator: boolean(),
           idle_seconds: integer() | nil,
           signon: integer() | nil,
-          channels: [String.t()] | nil
+          channels: [String.t()] | nil,
+          # P-0a — Cluster `numeric-delegation-p0` 2026-05-13. Add-only
+          # extension for 11 newly delegated WHOIS-leg numerics. cic builds
+          # the human-readable strings from these typed flags per
+          # `feedback_no_localized_strings_server_side`. Default false for
+          # boolean flags (legacy bundles without the new numerics still
+          # marshal cleanly); nil for optional strings.
+          using_ssl: boolean(),
+          is_registered: boolean(),
+          is_admin: boolean(),
+          is_services_admin: boolean(),
+          is_helper: boolean(),
+          is_chanop: boolean(),
+          is_agent: boolean(),
+          is_java: boolean(),
+          umodes: String.t() | nil,
+          away_message: String.t() | nil,
+          actually_host: String.t() | nil,
+          actually_ip: String.t() | nil
         }
 
   @doc """
@@ -465,7 +483,21 @@ defmodule Grappa.Session.Wire do
       is_operator: Map.get(accum, :is_operator, false),
       idle_seconds: Map.get(accum, :idle_seconds),
       signon: Map.get(accum, :signon),
-      channels: Map.get(accum, :channels)
+      channels: Map.get(accum, :channels),
+      # P-0a — 11 new WHOIS-leg flags / strings folded by EventRouter.
+      # Booleans default to false; strings default to nil. cic localizes.
+      using_ssl: Map.get(accum, :using_ssl, false),
+      is_registered: Map.get(accum, :is_registered, false),
+      is_admin: Map.get(accum, :is_admin, false),
+      is_services_admin: Map.get(accum, :is_services_admin, false),
+      is_helper: Map.get(accum, :is_helper, false),
+      is_chanop: Map.get(accum, :is_chanop, false),
+      is_agent: Map.get(accum, :is_agent, false),
+      is_java: Map.get(accum, :is_java, false),
+      umodes: Map.get(accum, :umodes),
+      away_message: Map.get(accum, :away_message),
+      actually_host: Map.get(accum, :actually_host),
+      actually_ip: Map.get(accum, :actually_ip)
     }
   end
 end

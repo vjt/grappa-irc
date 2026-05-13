@@ -878,6 +878,151 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
+  # P-0a — Cluster `numeric-delegation-p0` 2026-05-13: 11 additional WHOIS-leg
+  # numerics fold into `whois_pending[target_lower]` per the same shape as
+  # 311/312/313/317/319 above. Per `feedback_no_localized_strings_server_side`
+  # the server emits typed booleans / strings / integers; cic owns the
+  # human-readable strings ("Services Agent" / "is using SSL" / etc).
+  #
+  # The 11 numerics fold simple boolean flags (`is_*: true`) except for:
+  #   * 301 — dual-purpose (WHOIS-bundle vs standalone-PRIVMSG); gated on
+  #     `whois_pending[target_lower]` presence. P-0b will replace the
+  #     no-pending-entry fallback with a typed `:peer_away` event.
+  #   * 326 — trailing carries `"is using modes <modes>"`; we extract
+  #     `<modes>` via `parse_whois_modes_trailing/1`.
+  #   * 378 — trailing carries `"is connecting from <host> [<ip>]"`; we
+  #     extract host + ip via `parse_whois_actually_trailing/1`.
+
+  # 275 RPL_USINGSSL: `:server 275 own_nick target :is using a secure connection (SSL)`.
+  def route(
+        %Message{command: {:numeric, 275}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{using_ssl: true}), []}
+  end
+
+  # 301 RPL_AWAY (WHOIS-bundle case): `:server 301 own_nick target :away message`.
+  # Dual-purpose — folds into the bundle when a /whois is pending for the
+  # target; otherwise standalone-PRIVMSG-to-away-user case (P-0b will own
+  # the `:peer_away` typed event). For now, no-pending-entry returns
+  # `{:cont, state, []}` — the catch-all delegation flag prevents the
+  # bare-notice persistence, and the standalone case is dropped silently
+  # until P-0b lands.
+  def route(
+        %Message{command: {:numeric, 301}, params: [_, target | rest]},
+        state
+      )
+      when is_binary(target) do
+    nick_key = normalize_nick(target)
+    pending = Map.get(state, :whois_pending, %{})
+
+    case Map.has_key?(pending, nick_key) do
+      true ->
+        msg = whois_trailing(rest)
+        {:cont, whois_fold(state, target, %{away_message: msg}), []}
+
+      false ->
+        {:cont, state, []}
+    end
+  end
+
+  # 307 RPL_WHOISREGNICK: `:server 307 own_nick target :has identified for this nick`.
+  def route(
+        %Message{command: {:numeric, 307}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_registered: true}), []}
+  end
+
+  # 308 RPL_WHOISADMIN: `:server 308 own_nick target :is an IRC Server Administrator`.
+  def route(
+        %Message{command: {:numeric, 308}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_admin: true}), []}
+  end
+
+  # 309 RPL_WHOISSADMIN: `:server 309 own_nick target :is a Services Administrator`.
+  def route(
+        %Message{command: {:numeric, 309}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_services_admin: true}), []}
+  end
+
+  # 310 RPL_WHOISHELPER: `:server 310 own_nick target :is a Help Operator`.
+  def route(
+        %Message{command: {:numeric, 310}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_helper: true}), []}
+  end
+
+  # 316 RPL_WHOISCHANOP: `:server 316 own_nick target :<text>` (RFC1459-compat,
+  # NULL in current Bahamut but defined for legacy ircds).
+  def route(
+        %Message{command: {:numeric, 316}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_chanop: true}), []}
+  end
+
+  # 325 RPL_WHOISAGENT (Azzurra): `:server 325 own_nick target :is a Services Agent`.
+  def route(
+        %Message{command: {:numeric, 325}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_agent: true}), []}
+  end
+
+  # 326 RPL_WHOISMODES (Azzurra): `:server 326 own_nick target :is using modes +iZ`.
+  # Extract the mode string from the localized trailing prefix; on parse
+  # failure (unexpected template, server emits a non-Bahamut variant) fold
+  # nothing — the bundle still emits, just without `umodes`.
+  def route(
+        %Message{command: {:numeric, 326}, params: [_, target | rest]},
+        state
+      )
+      when is_binary(target) do
+    case parse_whois_modes_trailing(whois_trailing(rest)) do
+      nil -> {:cont, state, []}
+      modes -> {:cont, whois_fold(state, target, %{umodes: modes}), []}
+    end
+  end
+
+  # 339 RPL_WHOISJAVA (Azzurra): `:server 339 own_nick target :is a Java User`.
+  def route(
+        %Message{command: {:numeric, 339}, params: [_, target | _]},
+        state
+      )
+      when is_binary(target) do
+    {:cont, whois_fold(state, target, %{is_java: true}), []}
+  end
+
+  # 378 RPL_WHOISACTUALLY (Azzurra, oper-visible): `:server 378 own_nick
+  # target :is connecting from <host> [<ip>]`. Extracts host + ip from the
+  # localized trailing template; on parse failure folds nothing.
+  def route(
+        %Message{command: {:numeric, 378}, params: [_, target | rest]},
+        state
+      )
+      when is_binary(target) do
+    case parse_whois_actually_trailing(whois_trailing(rest)) do
+      nil ->
+        {:cont, state, []}
+
+      {host, ip} ->
+        {:cont, whois_fold(state, target, %{actually_host: host, actually_ip: ip}), []}
+    end
+  end
+
   # CP22 cluster B (channel-client-polish #14) — 315 RPL_ENDOFWHO:
   # `:server 315 own_nick target :End of /WHO list`. Drains the per-target
   # accumulator into N+1 :notice :persist effects: one row per 352
@@ -1560,6 +1705,38 @@ defmodule Grappa.Session.EventRouter do
   defp whois_trailing(rest) when is_list(rest) do
     case List.last(rest) do
       s when is_binary(s) -> s
+      _ -> nil
+    end
+  end
+
+  # P-0a — Cluster `numeric-delegation-p0`: 326 RPL_WHOISMODES trailing
+  # parser. Bahamut emits `"is using modes <modes>"` (s_err.c:369). We
+  # extract `<modes>` so the wire shape carries a structured umode string
+  # rather than the localized English template — per
+  # `feedback_no_localized_strings_server_side`. Returns nil on
+  # unexpected template (defensive — unknown ircds may emit a different
+  # shape; folding nothing keeps the bundle consistent).
+  @spec parse_whois_modes_trailing(String.t() | nil) :: String.t() | nil
+  defp parse_whois_modes_trailing(nil), do: nil
+
+  defp parse_whois_modes_trailing(text) when is_binary(text) do
+    case String.split(text, "is using modes ", parts: 2) do
+      ["", modes] when modes != "" -> modes
+      _ -> nil
+    end
+  end
+
+  # P-0a — 378 RPL_WHOISACTUALLY trailing parser. Bahamut emits
+  # `"is connecting from <host> [<ip>]"` (s_err.c:425). Extracts both
+  # tokens. Returns nil when the template doesn't match — an unknown
+  # ircd may format differently and we'd rather skip the fold than
+  # surface garbled fields.
+  @spec parse_whois_actually_trailing(String.t() | nil) :: {String.t(), String.t()} | nil
+  defp parse_whois_actually_trailing(nil), do: nil
+
+  defp parse_whois_actually_trailing(text) when is_binary(text) do
+    case Regex.run(~r/^is connecting from (\S+) \[([^\]]+)\]$/, text) do
+      [_, host, ip] -> {host, ip}
       _ -> nil
     end
   end
