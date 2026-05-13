@@ -4589,6 +4589,93 @@ regression from this cluster. CI on `main` remains green per
 
 ---
 
+## 2026-05-13 — channel-state numerics delegated, 329 RPL_CREATIONTIME wired (CP28 cluster `channel-created-notice`)
+
+### Bug
+
+Live DB on `raccooncity.azzurra.chat` had 94 rows of
+`kind: notice, body: "1776720934", meta: %{"numeric": 333}` — the
+333 RPL_TOPICWHOTIME unix timestamp leaking as user-visible
+scrollback noise. Same disease for 332 RPL_TOPIC (94 rows
+duplicating the topic text already conveyed by the typed
+`topic_changed` event).
+
+### Diagnosis history (the orchestrator brief was wrong)
+
+The brief proposed handling a "Bahamut bare-integer NOTICE"
+pattern + treating 329 RPL_CREATIONTIME as silently dropped at
+the `event_router.ex` catch-all. Live DB query disproved both:
+
+- `count(*) WHERE meta LIKE '%329%'` → 0 rows (Bahamut/Azzurra
+  doesn't emit 329 at all).
+- `count(*) WHERE kind='notice' AND meta='{}' AND body GLOB '[0-9]*'`
+  → 0 rows (no bare-int NOTICE pattern in evidence).
+
+The actual source: `lib/grappa/session/numeric_router.ex
+@delegated_numerics` was missing `324, 329, 331, 332, 333`.
+`Server.handle_info({:irc, %Message{command: {:numeric, _}}}, ...)`
+persists every non-delegated numeric as a bare `:notice` row
+BEFORE delegating. EventRouter's dedicated handlers for 331/332/
+333/324 update `state.topics` / `state.channel_modes` correctly —
+but the dual-path also wrote duplicate notice rows with
+body=trailing-param.
+
+Per CLAUDE.md "Challenge the spec" + memory
+`feedback_orchestrator_autonomy` (HALT only on big deviations),
+the sibling halted before writing code, paged the human, and
+re-scoped on confirmation.
+
+### Fix
+
+1. Added 324/329/331/332/333 to `@delegated_numerics`. Stops the
+   dual-persist for all five.
+2. New 329 RPL_CREATIONTIME handler in EventRouter caches a parsed
+   `DateTime.t()` in `state.channels_created` (lifecycle mirrors
+   `state.topics` — drop on self-PART, self-KICK) and emits
+   `{:channel_created, channel, dt}`.
+3. New `:channel_created` Server apply_effects clause broadcasts
+   on the per-channel topic via `SessionWire.channel_created/3`.
+   Wire shape carries an ISO 8601 string (`DateTime.to_iso8601/1`)
+   so Jason encoding stays trivial.
+4. Cic: `channelTopic` store gains `createdByChannel` signal +
+   `seedChannelCreated` setter. `JoinBanner` renders 2 new
+   irssi-style lines:
+   - "Channel was created on …" (from 329 cache)
+   - "Topic set by … on …" (from existing 333-fed `set_by` /
+     `set_at` — store had the data, JoinBanner just wasn't
+     rendering it pre-cluster).
+
+### Why a separate state field instead of extending topic_entry
+
+`state.channels_created` is a sibling cache, not a field of
+`topic_entry`. Same lifecycle (per-channel, JOIN-time,
+PART/KICK-cleanup) but different domain — channel creation time
+is a property of the channel, topic set-by/set-at is a property
+of the topic. Per CLAUDE.md "no leaky abstractions" + "reuse the
+verbs, not the nouns": shared execution shape (cache + effect +
+broadcast + cic store + JoinBanner line) is fine; merging the
+nouns under `topic_entry` would have polluted a topic-named
+struct with a non-topic field.
+
+### Acceptance + LANDED evidence
+
+`scripts/check.sh` exit-0:
+- `8 doctests, 29 properties, 1581 tests, 0 failures`
+
+`scripts/bun.sh run test`:
+- `808 tests, 0 failures`
+
+`scripts/bun.sh run check`:
+- biome + tsc clean, 102 files
+
+Hot-vs-cold preflight: this cluster modifies
+`Grappa.Session.Server`'s `@type t :: %{...}` (adds
+`channels_created` field) so `deploy.sh` auto-classifies as COLD.
+~30s session downtime on deploy.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
