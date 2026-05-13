@@ -419,16 +419,20 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
-  // Focus-session boundary timestamp — the server_time captured AT WINDOW
-  // MOUNT. Marker injection only considers messages whose server_time
-  // falls in `(cursor, sessionStart]`. Anything arriving DURING the focus
-  // session (server_time > sessionStart) is "live read" and never spawns
-  // a new marker, even peer replies after an own-msg send. Reset on key
-  // change so each window mount captures its own boundary. Without this,
-  // a focused send → peer reply pair injected a fresh "1 unread" marker
-  // because the cursor only advances on own-msg, leaving peer replies
-  // > cursor (memory: feedback target-window UX rule, vjt 2026-05-10).
-  const [sessionStart, setSessionStart] = createSignal<number>(Date.now());
+  // Focus-session boundary id — the highest message id present in this
+  // window AT MOUNT TIME. Marker injection only considers messages whose
+  // id falls in `(cursor, sessionTopId]`. Anything arriving DURING the
+  // focus session (id > sessionTopId) is "live read" and never spawns a
+  // new marker, even peer replies after an own-msg send. Reset on key
+  // change so each window mount captures its own boundary.
+  //
+  // CP29 R-4: id replaces the previous server_time-based bound. Server
+  // ids are strictly monotonic (sqlite AUTOINCREMENT) so "highest id at
+  // mount" is the unambiguous "everything that existed when I started
+  // looking at this window". `null` until the messages signal flushes —
+  // an empty window has no meaningful upper bound and the marker stays
+  // hidden until a real row lands.
+  const [sessionTopId, setSessionTopId] = createSignal<number | null>(null);
 
   // C7.6: context menu state — null when closed.
   type ContextMenuState = { targetNick: string; x: number; y: number };
@@ -483,50 +487,49 @@ const ScrollbackPane: Component<Props> = (props) => {
   // The first message never gets a day-separator before it.
   //
   // Unread computation (C7.3 / CLAUDE.md "derive, don't duplicate"):
-  //   cursor = getReadCursor(networkSlug, channelName) — localStorage, sync.
-  //   sessionStart = ms timestamp captured at window mount (key change).
+  //   cursor = getReadCursor(networkSlug, channelName) — server-owned id.
+  //   sessionTopId = max(message.id) captured at window mount (key change).
   //   unread count = messages.filter(m =>
-  //                    m.server_time > cursor AND
-  //                    m.server_time <= sessionStart  // pre-arrival only
+  //                    m.id > cursor AND
+  //                    m.id <= sessionTopId  // pre-arrival only
   //                  ).length
   //   The cursor is a stable value for the lifetime of this channel view;
   //   it only advances when the user navigates AWAY from the window
   //   (selection.ts on(selectedChannel)'s focus-leave hook). The
-  //   sessionStart bound prevents NEW arrivals during the focus session
+  //   sessionTopId bound prevents NEW arrivals during the focus session
   //   from spawning a fresh marker — they're live-read by definition.
   const rows = createMemo((): Row[] => {
     const msgs = messages();
     if (!msgs || msgs.length === 0) return [];
     const cursor = getReadCursor(props.networkSlug, props.channelName);
-    const session = sessionStart();
-    // How many messages have server_time strictly after the cursor AND
+    const sessionTop = sessionTopId();
+    // How many messages have id strictly after the cursor AND
     // at-or-before the focus-session boundary?
     // Operator-action echoes (e.g. /msg → 401 notice) are excluded — the
     // operator owns the action that produced them, mirroring the
     // subscribe.ts sidebar-badge gate so badge and in-pane marker agree.
     const unreadCount =
-      cursor !== null
-        ? msgs.filter(
-            (m) => m.server_time > cursor && m.server_time <= session && !isOperatorActionEcho(m),
-          ).length
+      cursor !== null && sessionTop !== null
+        ? msgs.filter((m) => m.id > cursor && m.id <= sessionTop && !isOperatorActionEcho(m)).length
         : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
     // at the very top (before index 0). When none are unread, skip the marker.
-    const injectMarker = cursor !== null && unreadCount > 0;
+    const injectMarker = cursor !== null && sessionTop !== null && unreadCount > 0;
     const result: Row[] = [];
     let prevTime: number | null = null;
     let markerInjected = false;
     for (const msg of msgs) {
-      // C7.3: inject unread-marker BEFORE the first message with server_time > cursor
-      // AND <= sessionStart. Messages after sessionStart never get a
+      // C7.3: inject unread-marker BEFORE the first message with id > cursor
+      // AND <= sessionTopId. Messages above sessionTopId never get a
       // marker — they're live-read arrivals during the focus session.
       if (
         injectMarker &&
         !markerInjected &&
         cursor !== null &&
-        msg.server_time > cursor &&
-        msg.server_time <= session
+        sessionTop !== null &&
+        msg.id > cursor &&
+        msg.id <= sessionTop
       ) {
         result.push({ type: "unread-marker", count: unreadCount, id: "unread-marker" });
         markerInjected = true;
@@ -635,7 +638,13 @@ const ScrollbackPane: Component<Props> = (props) => {
         setBannerState("hidden");
         setMarkerScrolled(false);
         markerRef = undefined;
-        setSessionStart(Date.now());
+        // CP29 R-4: capture the boundary as the highest message id present
+        // RIGHT NOW. `messages()` is the same store the rows memo reads;
+        // an empty window leaves the boundary null and the latching
+        // effect below picks it up the first time a row lands.
+        const msgs = messages();
+        const top = msgs && msgs.length > 0 ? (msgs[msgs.length - 1]?.id ?? null) : null;
+        setSessionTopId(top);
         if (!listRef) return;
         queueMicrotask(() => {
           if (!listRef) return;
@@ -653,6 +662,26 @@ const ScrollbackPane: Component<Props> = (props) => {
       { defer: true },
     ),
   );
+
+  // CP29 R-4: cold-mount + delayed-REST settle. The key-change effect
+  // above runs with `defer: true` (skips the initial mount) and only
+  // captures sessionTopId when there's already a row in the store.
+  // Cold mounts where REST has not yet landed start with `messages()
+  // === undefined` and would leave sessionTopId at null forever — every
+  // subsequent WS arrival would then be considered "during the focus
+  // session" and never injected as unread, even when it landed before
+  // the operator looked. Latch the first non-empty observation here:
+  // when sessionTopId is null AND messages have a row, capture the
+  // tail id as the boundary. Idempotent — no-op once set; key-change
+  // resets to null and re-arms.
+  createEffect(() => {
+    if (sessionTopId() !== null) return;
+    const msgs = messages();
+    if (!msgs || msgs.length === 0) return;
+    const last = msgs[msgs.length - 1];
+    if (last === undefined) return;
+    setSessionTopId(last.id);
+  });
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
   // was at the bottom before the update. The effect tracks

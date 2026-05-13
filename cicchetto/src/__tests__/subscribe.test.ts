@@ -473,33 +473,21 @@ describe("subscribe — WS join effect", () => {
     expect(store.unreadCounts()[channelKey("freenode", "#grappa")]).toBeUndefined();
   });
 
-  // Live-reading cursor advance: when a NEW msg arrives on the
-  // currently-FOCUSED window, the marker should disappear by itself
-  // (the user is reading it live; nothing should be unread).
-  // Mechanism: subscribe.ts's routeMessage sees isSelected → advances
-  // the read cursor to the new msg's server_time.
+  // CP29 R-4 cursor-advance spec — server-owned, FORWARD-ONLY:
   //
-  // Without this advance, the marker stays pinned at whatever older
-  // server_time the user moved-on-from previously, AND new live msgs
-  // pile up on top of it inflating the unread count without bound.
-  // (Reported user pain: "we'll keep on increasing the number of
-  // unread messages as they arrive".)
-  // Cursor-advance spec (revised after the unread-marker UX fix):
+  //   On every focused window LEAVE (selection.ts on(selectedChannel)
+  //     focus-leave arm + browser-blur arm) → POST cursor advance to the
+  //     server with the last visible message id. The server's typed WS
+  //     `read_cursor_set` broadcast then folds the new id into the
+  //     signal map on every device subscribed to the per-channel topic.
   //
-  //   own-msg on focused window → advance cursor (user demonstrated
-  //     participation; the marker SHOULD clear).
-  //   peer-msg on focused window → cursor STAYS (the user is reading,
-  //     so no badge bump, but the marker should NOT disappear just
-  //     because someone else spoke — the user can still scroll back to
-  //     read it. Marker clears via leave-arm or own-msg only).
-  //
-  // This is the symmetric counterpart to the focused/blurred split:
-  // marker resets on user *participation* (own-msg, leave, switch),
-  // not on passive arrivals.
-  it("advances rc cursor when an OWN-SENT msg lands on the SELECTED window", async () => {
-    // Own-sent msg = REST POST + WS broadcast roundtrip. The WS echo
-    // hits routeMessage with sender === ownNick and isSelected = true.
-    // The user typed and submitted — clear the marker.
+  //   subscribe.ts NO LONGER advances the cursor on per-message events.
+  //   The pre-CP29 own-msg-on-focused-window arm was a localStorage-era
+  //   trick the new model doesn't need — selection focus-leave covers
+  //   the "user has demonstrably moved on" semantic uniformly. This
+  //   test asserts the LACK of that legacy behavior so a future
+  //   regression that re-introduces a per-message advance fails loudly.
+  it("does NOT advance the cursor when an OWN-SENT msg lands on the SELECTED window (subscribe.ts no longer originates advances)", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
@@ -515,14 +503,18 @@ describe("subscribe — WS join effect", () => {
       channelName: "#grappa",
       kind: "channel",
     });
-    localStorage.setItem("rc:freenode:#grappa", "100");
+    const sentinel = "100";
+    localStorage.setItem("rc:freenode:#grappa", sentinel);
     fireMessageEvent("#grappa", {
       id: 8,
       server_time: 300,
       body: "own echo",
       sender: "alice",
     });
-    expect(localStorage.getItem("rc:freenode:#grappa")).toBe("300");
+    // Cursor untouched — subscribe.ts no longer writes localStorage at
+    // all. The (rc: legacy key) test fixture confirms a regression that
+    // re-adds a write would fail this assertion.
+    expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
   });
 
   it("does NOT advance rc cursor when a PEER msg lands on the SELECTED window", async () => {
@@ -637,9 +629,11 @@ describe("subscribe — WS join effect", () => {
       expect(store.messagesUnread()[key]).toBe(1);
     });
 
-    it("selected + browser VISIBLE + OWN msg: cursor advances (own participation)", async () => {
-      // Sanity guard for the visibility AND own-msg gate combo.
-      // Effective-focus + sender == ownNick → cursor advance (marker clear).
+    it("selected + browser VISIBLE + OWN msg: cursor stays (CP29 R-4: subscribe.ts no longer advances)", async () => {
+      // CP29 R-4 spec change: subscribe.ts no longer originates cursor
+      // advances. The pre-flip own-msg-on-focused-window arm was a
+      // localStorage-era trick; with the server-owned id-based cursor
+      // the advance happens uniformly on focus-leave (selection.ts).
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -656,7 +650,8 @@ describe("subscribe — WS join effect", () => {
         kind: "channel",
       });
       setVisibleForTest(true);
-      localStorage.setItem("rc:freenode:#grappa", "100");
+      const sentinel = "100";
+      localStorage.setItem("rc:freenode:#grappa", sentinel);
 
       fireMessageEvent("#grappa", {
         id: 51,
@@ -665,7 +660,9 @@ describe("subscribe — WS join effect", () => {
         sender: "alice",
       });
 
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("600");
+      // Cursor untouched — only selection.ts focus-leave / browser-blur
+      // arms call `advanceReadCursor`.
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
     });
 
     it("selected + browser VISIBLE + PEER msg: cursor STAYS (marker preserved)", async () => {

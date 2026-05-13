@@ -123,10 +123,20 @@ vi.mock("../lib/mentionsWindow", () => ({
   }),
 }));
 
-const setReadCursorMock = vi.fn();
 vi.mock("../lib/readCursor", () => ({
+  // CP29 R-4: Shell.tsx no longer imports readCursor (the mention-click
+  // cursor-rewind hack was dropped — the new id-based server cursor model
+  // can't express "rewind to just before an arbitrary timestamp"; the
+  // MentionsBundle wire shape doesn't even carry message ids). Module
+  // mock kept as a no-op so any transitive import (e.g. via networks.ts
+  // hydrating /me) doesn't trigger the real localStorage purge inside
+  // jsdom.
   getReadCursor: vi.fn(() => null),
-  setReadCursor: (...args: unknown[]) => setReadCursorMock(...args),
+  applyMeEnvelope: vi.fn(),
+  applyJoinReply: vi.fn(),
+  applyReadCursorSet: vi.fn(),
+  advanceReadCursor: vi.fn().mockResolvedValue(undefined),
+  clearReadCursors: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -426,7 +436,7 @@ describe("Shell — three-pane integration", () => {
     expect(container.querySelector(".topic-bar")).not.toBeInTheDocument();
   });
 
-  it("C8.2: clicking a mentions row switches focus to channel and sets read cursor", async () => {
+  it("C8.2: clicking a mentions row switches focus to the source channel (CP29 R-4: cursor rewind dropped)", async () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
@@ -441,9 +451,13 @@ describe("Shell — three-pane integration", () => {
       channelName: "#grappa",
       kind: "channel",
     });
-    // Should set read cursor to serverTime - 1 so ScrollbackPane scrolls
-    // to the unread marker positioned just before the clicked message.
-    expect(setReadCursorMock).toHaveBeenCalledWith("freenode", "#grappa", 1_746_442_199_999);
+    // CP29 R-4: pre-flip the click set a localStorage cursor to
+    // server_time-1 so ScrollbackPane scrolled to a marker just above
+    // the clicked message. The new server-owned id-based cursor model
+    // can't express that operation (no message id in MentionsBundle wire
+    // shape; advance is forward-only). Drop documented in Shell.tsx;
+    // restoring the UX requires extending MentionsBundle with ids and
+    // threading a one-shot scroll-to verb — separate cluster.
   });
 });
 

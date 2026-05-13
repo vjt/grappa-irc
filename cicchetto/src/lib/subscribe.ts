@@ -12,7 +12,7 @@ import { channelsBySlug, networks, refetchChannels, refetchNetworks, user } from
 import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
-import { setReadCursor } from "./readCursor";
+import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { noteJoinOk, recordSeen, runBackfill } from "./reconnectBackfill";
 import { appendToScrollback } from "./scrollback";
 import {
@@ -207,18 +207,11 @@ createRoot(() => {
     const isEffectivelyFocused = isSelected && isDocumentVisible();
     if (isEffectivelyFocused) {
       // No badge bump — the user is reading this window right now.
-      // But the read-cursor only advances on USER PARTICIPATION (own-msg).
-      // Peer msgs arriving on a focused window leave the cursor in place,
-      // so any pre-existing unread-marker stays put — the user can still
-      // see the boundary between "what I had read before" and "what
-      // arrived since". The marker clears on:
-      //   * own-msg in this window (user typed → cursor advances here);
-      //   * window leave (selection.ts leave-arm advances cursor);
-      //   * browser blur (selection.ts visibility-blur arm).
-      // None of those are passive arrivals from peers.
-      if (isOwnNick) {
-        setReadCursor(slug, displayName, message.server_time);
-      }
+      // CP29 R-4: cursor advancement is owned by `selection.ts`'s
+      // focus-leave arm (and the browser-blur arm). Per the post-flip
+      // invariant the cursor is server-authoritative + forward-only;
+      // the per-message advance from inside the WS handler was a
+      // localStorage-era trick that the new model doesn't need.
       return;
     }
     bumpUnread(key);
@@ -328,6 +321,12 @@ createRoot(() => {
         case "kicked":
           setKicked(key, payload.by, payload.reason);
           return;
+        // CP29 R-4: cross-device cursor sync. Server emits on every
+        // successful `Grappa.ReadCursor.advance/4`; route into the
+        // signal-map applier (forward-only guard inside).
+        case "read_cursor_set":
+          applyReadCursorSet(slug, name, payload.last_read_message_id);
+          return;
         case "message": {
           const { message } = payload;
 
@@ -406,6 +405,12 @@ createRoot(() => {
           // even if it did, the DM window's surface is not the right
           // place for them.
           return;
+        // CP29 R-4: cursor for the own-nick query window. Server emits
+        // on advance just like channel topics; route into the signal
+        // map keyed on (slug, ownNick).
+        case "read_cursor_set":
+          applyReadCursorSet(slug, ownNick, payload.last_read_message_id);
+          return;
         case "message": {
           const message = payload.message;
           if (message.kind === "privmsg" || message.kind === "action") {
@@ -452,6 +457,20 @@ createRoot(() => {
     });
   };
 
+  // CP29 R-4 — narrower for the per-channel join reply
+  // (`%{read_cursor: <id_or_nil>}`). phoenix.js delivers the reply as
+  // `unknown`-shaped JSON; same boundary-validation pattern as
+  // `narrowChannelEvent`. Returns the cursor id (number) or null on
+  // missing/invalid shape — consumers pass straight into
+  // `applyJoinReply` which itself no-ops on null.
+  const cursorFromJoinReply = (reply: unknown): number | null => {
+    if (typeof reply !== "object" || reply === null) return null;
+    const r = reply as Record<string, unknown>;
+    if (r.read_cursor === null) return null;
+    if (typeof r.read_cursor !== "number") return null;
+    return r.read_cursor;
+  };
+
   // Channels loop — one join per real IRC channel in channelsBySlug.
   createEffect(() => {
     // Channel topics are addressed by the server's socket-side
@@ -483,7 +502,8 @@ createRoot(() => {
       for (const ch of list) {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
-        const phx = joinChannel(name, slug, ch.name, () => {
+        const phx = joinChannel(name, slug, ch.name, (reply) => {
+          applyJoinReply(slug, ch.name, cursorFromJoinReply(reply));
           if (noteJoinOk(slug, ch.name)) void runBackfill(slug, ch.name);
         });
         installChannelHandler(phx, slug, ch.name, key, ownNick);
@@ -533,7 +553,8 @@ createRoot(() => {
       const net = nets.find((n) => n.slug === slug) ?? null;
       if (net === null) continue;
       const ownNick = ownNickForNetwork(net, u);
-      const phx = joinChannel(name, slug, channelName, () => {
+      const phx = joinChannel(name, slug, channelName, (reply) => {
+        applyJoinReply(slug, channelName, cursorFromJoinReply(reply));
         if (noteJoinOk(slug, channelName)) void runBackfill(slug, channelName);
       });
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
@@ -580,7 +601,8 @@ createRoot(() => {
         if (nickEquals(qw.targetNick, perNetOwnNick)) continue;
         const key = channelKey(net.slug, qw.targetNick);
         if (joined.has(key)) continue;
-        const phx = joinChannel(userName, net.slug, qw.targetNick, () => {
+        const phx = joinChannel(userName, net.slug, qw.targetNick, (reply) => {
+          applyJoinReply(net.slug, qw.targetNick, cursorFromJoinReply(reply));
           if (noteJoinOk(net.slug, qw.targetNick)) void runBackfill(net.slug, qw.targetNick);
         });
         // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
@@ -619,7 +641,8 @@ createRoot(() => {
       if (!ownNick) continue;
       const key = channelKey(net.slug, ownNick);
       if (joined.has(key)) continue;
-      const phx = joinChannel(userName, net.slug, ownNick, () => {
+      const phx = joinChannel(userName, net.slug, ownNick, (reply) => {
+        applyJoinReply(net.slug, ownNick, cursorFromJoinReply(reply));
         // DM-listener topic backfill: fetches self-msgs only because
         // the controller applies own-nick narrowing when channel ==
         // own_nick (CP14-B3 rule). Inbound peer DMs persist with
@@ -661,7 +684,8 @@ createRoot(() => {
     for (const net of nets) {
       const key = channelKey(net.slug, SERVER_WINDOW_NAME);
       if (joined.has(key)) continue;
-      const phx = joinChannel(userName, net.slug, SERVER_WINDOW_NAME, () => {
+      const phx = joinChannel(userName, net.slug, SERVER_WINDOW_NAME, (reply) => {
+        applyJoinReply(net.slug, SERVER_WINDOW_NAME, cursorFromJoinReply(reply));
         if (noteJoinOk(net.slug, SERVER_WINDOW_NAME))
           void runBackfill(net.slug, SERVER_WINDOW_NAME);
       });

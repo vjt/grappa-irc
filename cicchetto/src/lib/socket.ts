@@ -108,7 +108,7 @@ export function joinChannel(
   userName: string,
   networkSlug: string,
   channelName: string,
-  onJoinOk?: () => void,
+  onJoinOk?: (reply: unknown) => void,
 ): Channel {
   const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`;
   const ch = getSocket().channel(topic);
@@ -127,9 +127,13 @@ export function joinChannel(
   // registered once at first join keeps firing on subsequent rejoins.
   // The cic backfill flow uses this fan-in to detect "this is a
   // re-join" and fetch the rows that arrived during the WS gap.
+  //
+  // The join `reply` carries the per-channel cursor for CP29 R-4 read
+  // state (`%{read_cursor: <id_or_nil>}`); subscribers narrow it via
+  // `readCursor.ts:applyJoinReply/3`.
   ch.join()
-    .receive("ok", () => {
-      if (onJoinOk) onJoinOk();
+    .receive("ok", (reply: unknown) => {
+      if (onJoinOk) onJoinOk(reply);
     })
     .receive("error", (err: unknown) => {
       console.error("[grappa] channel join failed", topic, err);

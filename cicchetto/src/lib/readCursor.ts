@@ -1,91 +1,50 @@
-// Read-cursor store — signal-backed in-memory map + localStorage durability.
+// Read-cursor store — Solid signal-map of last-read message id per
+// (networkSlug, channel) hydrated from the server. Authority is server-
+// side per the post-CP29-R1 invariant flip ("Read state is server-owned,
+// per (subject, network, channel)" in CLAUDE.md).
 //
-// C7.3: tracks the server_time of the last-read message per (networkSlug,
-// channel) pair. Used by ScrollbackPane to render the unread-marker:
-// messages after the cursor are "unread"; messages at or before are "read".
+// CP29 R-4: localStorage backend REMOVED. Cursor lives only in this
+// module's Solid signal map; sources of truth are
+//   1. `/me` envelope (`read_cursors: %{slug => %{chan => id}}`) at login
+//      via `applyMeEnvelope/1` — covers the cold-load bulk hydration.
+//   2. Phoenix Channel join reply (`%{read_cursor: <id_or_nil>}`) per
+//      per-channel topic via `applyJoinReply/3` — covers per-window
+//      refresh on every reconnect/rejoin.
+//   3. `read_cursor_set` typed WS event on the per-channel topic via
+//      `applyReadCursorSet/3` — covers cross-device live sync (device A
+//      advances, device B reflects).
 //
-// Key format: `rc:<networkSlug>:<channel>` — human-readable, scoped by the
-// `rc:` prefix so bulk clearance is possible without touching unrelated keys.
+// Writes go to the server via `advanceReadCursor(slug, chan, message_id)`
+// which POSTs to `/networks/:slug/channels/:chan/read-cursor`. Forward-
+// only is enforced server-side (`Grappa.ReadCursor.advance/4` no-ops on
+// equal-or-lower id) so this module sends eagerly without debounce.
+// The post's typed WS broadcast then fans the new cursor back into the
+// signal map via the `read_cursor_set` arm — single source, even on the
+// originating device.
 //
-// Storage layering — Solid signal IN FRONT, localStorage BEHIND:
-//   * The signal-backed `cursors` Record is the reactive source consumed by
-//     ScrollbackPane's `rows` createMemo. When `setReadCursor` writes,
-//     every memo/effect reading `getReadCursor(slug, name)` re-runs.
-//   * localStorage is the durability tier. Hydrated at module init; written
-//     synchronously on every set. Survives reload.
+// One-shot localStorage migration: the legacy backend persisted under
+// the `rc:` prefix. Module-load runs `purgeLegacyKeys()` once to clear
+// the leftover bytes; idempotent on subsequent loads (no `rc:` keys
+// remain to delete). Keeps the migration confined to this file.
 //
-// Why signal + localStorage (not "just localStorage"):
-//   The unread-marker bug. `subscribe.ts` calls `appendToScrollback` THEN
-//   `setReadCursor` for live-reading. Without reactivity, ScrollbackPane's
-//   memo invalidates on the scrollback write, evaluates with the OLD cursor
-//   (synchronous localStorage read), injects the marker, and never re-runs
-//   when the cursor advance lands a microtask later — pinning the marker
-//   above the just-arrived msg with a stale "1 unread" count.
-//   Making the cursor reactive forces the second memo run after the cursor
-//   write so the marker disappears.
-//
-// Per-key reactivity granularity:
-//   The signal stores a Record<key, number>. Writing one key creates a NEW
-//   Record (immutable update via spread), but Solid's default equality is
-//   referential so all consumers re-run on any write. We accept this cost:
-//   the consumer set is small (one ScrollbackPane mounted at a time), and
-//   the memo body is cheap. If a future profile shows a hot path, swap to
-//   a Map of per-key signals.
-//
-// Identity-scoped cleanup: `clearReadCursors()` is called on logout/rotation
-// (mirrors the on(token) cleanup arms in scrollback.ts / selection.ts).
-// The auth module calls this when the bearer changes. This prevents a
-// cross-user cursor leak when a second user logs in on the same browser.
-//
-// C8 extension point: if the cursor ever needs to drive a server-side
-// MARKREAD endpoint, extend this module with an async flush function — the
-// signal + localStorage shape stays as the synchronous fast path.
+// Identity-scoped reset: `clearReadCursors()` empties the signal map on
+// logout / token rotation — same shape every other identity-scoped
+// store uses (`scrollback.ts`, `selection.ts`, `members.ts`).
 
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
 
-const KEY_PREFIX = "rc:";
+const LEGACY_KEY_PREFIX = "rc:";
 
-const storageKey = (networkSlug: string, channel: string): string =>
-  `${KEY_PREFIX}${networkSlug}:${channel}`;
-
-// Cache key matches the channelKey shape used by other stores: slug + space
-// + channel. Plain string concat — earlier biome auto-format inserted a NUL
-// byte into a one-line template, so we use explicit + to keep the file
-// text-clean (and grep-friendly).
 const cacheKey = (networkSlug: string, channel: string): string => `${networkSlug} ${channel}`;
 
-// Hydrate the in-memory cache from localStorage at module load. Walks every
-// `rc:`-prefixed key — bounded by the number of channels the operator has
-// touched on this browser. clearReadCursors() can re-empty the cache;
-// post-hydration, every getReadCursor read is a Map lookup with no I/O.
-const hydrate = (): Record<string, number> => {
-  const out: Record<string, number> = {};
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (!k?.startsWith(KEY_PREFIX)) continue;
-    const raw = localStorage.getItem(k);
-    if (raw === null) continue;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) continue;
-    // Decompose `rc:<slug>:<channel>` — the channel segment may contain `:`
-    // (e.g. `:server`), so split on the FIRST `:` after the prefix only.
-    const rest = k.slice(KEY_PREFIX.length);
-    const sep = rest.indexOf(":");
-    if (sep === -1) continue;
-    const slug = rest.slice(0, sep);
-    const channel = rest.slice(sep + 1);
-    out[cacheKey(slug, channel)] = n;
-  }
-  return out;
-};
-
-const [cursors, setCursors] = createRoot(() => createSignal(hydrate()));
+const [cursors, setCursors] = createRoot(() => createSignal<Record<string, number>>({}));
 
 /**
- * Returns the stored read-cursor server_time for `(networkSlug, channel)`,
- * or null if no cursor has been stored yet. Tracked by Solid — consumers
- * inside reactive contexts re-run when the cursor changes.
+ * Returns the stored read-cursor `last_read_message_id` for
+ * `(networkSlug, channel)`, or `null` if none is known. Tracked by
+ * Solid — consumers inside reactive contexts re-run when the cursor
+ * advances.
  */
 export const getReadCursor = (networkSlug: string, channel: string): number | null => {
   const v = cursors()[cacheKey(networkSlug, channel)];
@@ -93,36 +52,127 @@ export const getReadCursor = (networkSlug: string, channel: string): number | nu
 };
 
 /**
- * Persists the read cursor for `(networkSlug, channel)` to localStorage and
- * the in-memory signal. `serverTime` is the epoch-ms timestamp of the
- * last-read message. Triggers Solid invalidation of every consumer reading
- * this key (or any key — see "Per-key reactivity granularity" above).
+ * Bulk-hydrate the signal map from the `/me` envelope's `read_cursors`
+ * nested map (`%{slug => %{chan => id}}`). Called once at login by the
+ * networks resource. Replaces the entire map — `/me` is the cold-load
+ * source of truth and a stale entry from a prior session would mask a
+ * cleared cursor.
  */
-export const setReadCursor = (networkSlug: string, channel: string, serverTime: number): void => {
-  localStorage.setItem(storageKey(networkSlug, channel), String(serverTime));
-  setCursors((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: serverTime }));
+export const applyMeEnvelope = (envelope: Record<string, Record<string, number>>): void => {
+  const next: Record<string, number> = {};
+  for (const [slug, perChannel] of Object.entries(envelope)) {
+    for (const [chan, id] of Object.entries(perChannel)) {
+      if (typeof id === "number" && Number.isFinite(id)) {
+        next[cacheKey(slug, chan)] = id;
+      }
+    }
+  }
+  setCursors(next);
 };
 
 /**
- * Clears ALL read-cursor entries from localStorage AND the signal. Called on
- * identity transition (logout / token rotation) so a new user starts with a
- * clean slate and doesn't inherit the previous user's read positions.
+ * Apply the per-channel cursor delivered in a Phoenix Channel join
+ * reply (`%{read_cursor: <id_or_nil>}`). `null` is a no-op — the
+ * server's "no cursor for this (subject, network, channel)" answer
+ * never overwrites a hydrated value. Called from `subscribe.ts` on
+ * every successful per-channel join (initial + post-reconnect).
+ */
+export const applyJoinReply = (
+  networkSlug: string,
+  channel: string,
+  cursor: number | null,
+): void => {
+  if (cursor === null) return;
+  setCursors((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: cursor }));
+};
+
+/**
+ * Apply a `read_cursor_set` WS event on the per-channel topic. Forward-
+ * only at the wire layer too: the server only emits on a successful
+ * advance, so an equal-or-lower id should never arrive — but the guard
+ * here keeps a buggy server or out-of-order delivery from regressing
+ * the cursor.
+ */
+export const applyReadCursorSet = (
+  networkSlug: string,
+  channel: string,
+  lastReadMessageId: number,
+): void => {
+  setCursors((prev) => {
+    const k = cacheKey(networkSlug, channel);
+    const existing = prev[k];
+    if (existing !== undefined && existing >= lastReadMessageId) return prev;
+    return { ...prev, [k]: lastReadMessageId };
+  });
+};
+
+/**
+ * POST `/networks/:slug/channels/:chan/read-cursor` to advance the
+ * server-side cursor. Fire-and-forget: the server's `read_cursor_set`
+ * WS broadcast lands the new id in the signal map (same arm whether
+ * the advance came from this device or another). Eager send — no
+ * debounce — because the server is idempotent (forward-only) and
+ * cross-device latency matters.
+ *
+ * Returns `void`: the response payload is read only when needed for
+ * tests; production code learns the result via the typed WS event.
+ *
+ * `bearer` is injected at the call site rather than read from `auth`
+ * here so this module stays free of the auth ↔ readCursor cycle and
+ * tests can drive a deterministic token without `vi.mock`-ing auth.
+ */
+export const advanceReadCursor = async (
+  bearer: string,
+  networkSlug: string,
+  channel: string,
+  messageId: number,
+): Promise<void> => {
+  const url = `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) {
+    console.warn(`[readCursor] advance failed`, networkSlug, channel, messageId, res.status);
+  }
+};
+
+/**
+ * Empties the signal map. Wired to the `on(token)` cleanup arm below;
+ * also called from tests between cases.
  */
 export const clearReadCursors = (): void => {
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k?.startsWith(KEY_PREFIX)) keysToRemove.push(k);
-  }
-  for (const k of keysToRemove) localStorage.removeItem(k);
   setCursors({});
 };
 
+// Module-load one-shot purge of the pre-CP29-R4 localStorage backend.
+// The legacy module persisted under `rc:<slug>:<chan>` keys; delete
+// them so a freshly-flipped browser doesn't carry stale bytes that no
+// code reads. Idempotent: a second load finds no `rc:` keys and walks
+// the loop without mutating anything. Guarded for non-browser
+// environments (vitest jsdom defines `localStorage`; node SSR would
+// not — but cic doesn't SSR, the guard is paranoia).
+const purgeLegacyKeys = (): void => {
+  if (typeof localStorage === "undefined") return;
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(LEGACY_KEY_PREFIX)) keysToRemove.push(k);
+  }
+  for (const k of keysToRemove) localStorage.removeItem(k);
+};
+
+purgeLegacyKeys();
+
 // Identity-transition cleanup arm. Mirrors the pattern in scrollback.ts,
 // selection.ts, members.ts, mentions.ts, compose.ts, subscribe.ts.
-// `prev != null` filters both the initial run (prev === undefined) and the
-// cold-start login (prev === null) — only logout (tokA→null) and rotation
-// (tokA→tokB) trigger the wipe.
+// `prev != null` filters both the initial run (prev === undefined) and
+// the cold-start login (prev === null) — only logout (tokA→null) and
+// rotation (tokA→tokB) trigger the wipe.
 createRoot(() => {
   createEffect(
     on(token, (t, prev) => {

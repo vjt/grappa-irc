@@ -79,14 +79,29 @@ export type LoginResponse = {
 // discriminator lets every consumer (Shell header, mention-match,
 // ScrollbackPane self-highlight) dispatch on a single field instead
 // of probing for `name` vs `nick`.
+// CP29 R-3: `read_cursors` is the bulk envelope (`%{slug => %{chan =>
+// id}}`) per plan O1. Hydrated once at login by `readCursor.ts`'s
+// `applyMeEnvelope/1`. Empty `{}` for a fresh subject. Optional in the
+// type so test mocks predating R-3 don't have to be touched — production
+// /me always emits it (server-side `MeJSON.show/1` puts it on the
+// envelope unconditionally).
+export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
+
 export type MeResponse =
-  | { kind: "user"; id: string; name: string; inserted_at: string }
+  | {
+      kind: "user";
+      id: string;
+      name: string;
+      inserted_at: string;
+      read_cursors?: ReadCursorsEnvelope;
+    }
   | {
       kind: "visitor";
       id: string;
       nick: string;
       network_slug: string;
       expires_at: string;
+      read_cursors?: ReadCursorsEnvelope;
     };
 
 // Display-nick for a `MeResponse` — `user.name` for users,
@@ -387,6 +402,15 @@ export type WireChannelEvent =
       state: "kicked";
       by: string | null;
       reason: string | null;
+    }
+  // CP29 R-4: cross-device cursor sync. Server emits on every successful
+  // `Grappa.ReadCursor.advance/4`; cic's `subscribe.ts` per-channel
+  // handler routes through `readCursor.ts:applyReadCursorSet/3`. Forward-
+  // only at the wire level (server only emits on advance), but the
+  // applier guards against regression too. Plan O6.
+  | {
+      kind: "read_cursor_set";
+      last_read_message_id: number;
     };
 
 // Legacy alias — narrow shape that pre-bucket-G consumers depended on.

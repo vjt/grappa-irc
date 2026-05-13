@@ -1,22 +1,28 @@
 import { createEffect, createRoot } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// C7.3: readCursor — localStorage-backed read-cursor store.
+// CP29 R-4: server-owned read cursor — module is a Solid signal map of
+// `last_read_message_id` per (networkSlug, channel), hydrated from
+// /me + per-channel WS join replies + cross-device read_cursor_set
+// events. Writes go to the server via fire-and-forget POST.
+//
 // Tests cover:
 //   1. getReadCursor returns null for unknown keys.
-//   2. setReadCursor persists to localStorage.
-//   3. getReadCursor returns the stored value after setReadCursor.
-//   4. clearReadCursors wipes all cursors (called on identity change).
-//   5. Key format is `(networkSlug, channel)` — different keys don't collide.
-//   6. on(token) cleanup arm: clearReadCursors is called on token rotation/logout.
-//   7. unread-marker bug: getReadCursor MUST be reactive so that ScrollbackPane's
-//      rows memo re-evaluates when setReadCursor lands after appendToScrollback.
-//      Without reactivity the marker stays pinned with stale unread count.
+//   2. applyMeEnvelope hydrates the bulk envelope from /me.
+//   3. applyJoinReply is a no-op on null but advances on a real cursor.
+//   4. applyReadCursorSet writes forward-only; equal/lower id is no-op.
+//   5. advanceReadCursor POSTs the right URL + body shape.
+//   6. clearReadCursors wipes all entries.
+//   7. on(token) cleanup arm wipes on logout/rotation.
+//   8. getReadCursor is reactive — Solid effects re-run on advance.
+//   9. Module-load purges legacy `rc:`-prefixed localStorage keys
+//      one-shot (idempotent on subsequent loads).
+//
+// auth module is mocked so we can drive the token signal deterministically
+// without touching localStorage. The mock is registered BEFORE the
+// readCursor module is imported in tests so the createRoot effect at
+// module load wires to the mock signal.
 
-import { clearReadCursors, getReadCursor, setReadCursor } from "../lib/readCursor";
-
-// auth module is mocked so we can control the token signal without touching
-// localStorage's grappa-token key, which would bleed into cursor keys.
 vi.mock("../lib/auth", async () => {
   const { createSignal } = await import("solid-js");
   const [tok, setTok] = createSignal<string | null>(null);
@@ -25,67 +31,115 @@ vi.mock("../lib/auth", async () => {
 
 beforeEach(() => {
   localStorage.clear();
-  // Wipe the signal-backed cache too — localStorage.clear alone leaks
-  // prior-test cursors into the next test through the in-memory Map.
-  clearReadCursors();
+  vi.restoreAllMocks();
 });
 
 afterEach(() => {
   localStorage.clear();
-  clearReadCursors();
 });
 
-describe("readCursor (C7.3)", () => {
-  it("getReadCursor returns null for an unknown (networkSlug, channel) pair", () => {
+describe("readCursor (CP29 R-4)", () => {
+  it("getReadCursor returns null for an unknown (networkSlug, channel) pair", async () => {
+    const { getReadCursor, clearReadCursors } = await import("../lib/readCursor");
+    clearReadCursors();
     expect(getReadCursor("freenode", "#grappa")).toBeNull();
   });
 
-  it("setReadCursor persists the server_time cursor to localStorage", () => {
-    setReadCursor("freenode", "#grappa", 1_700_000_000_000);
-    // Raw localStorage entry must exist under a deterministic key.
-    const rawKey = "rc:freenode:#grappa";
-    expect(localStorage.getItem(rawKey)).toBe("1700000000000");
-  });
-
-  it("getReadCursor returns the stored server_time after setReadCursor", () => {
-    setReadCursor("freenode", "#grappa", 1_700_000_042_000);
-    expect(getReadCursor("freenode", "#grappa")).toBe(1_700_000_042_000);
-  });
-
-  it("different (slug, channel) pairs have independent cursors", () => {
-    setReadCursor("freenode", "#grappa", 100);
-    setReadCursor("freenode", "#cicchetto", 200);
-    setReadCursor("libera", "#grappa", 300);
+  it("applyMeEnvelope hydrates nested {slug => {chan => id}} into the signal map", async () => {
+    const { applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+    applyMeEnvelope({
+      freenode: { "#grappa": 100, "#cicchetto": 200 },
+      libera: { "#grappa": 300 },
+    });
     expect(getReadCursor("freenode", "#grappa")).toBe(100);
     expect(getReadCursor("freenode", "#cicchetto")).toBe(200);
     expect(getReadCursor("libera", "#grappa")).toBe(300);
+    expect(getReadCursor("freenode", "#unknown")).toBeNull();
   });
 
-  it("clearReadCursors removes all read-cursor entries from localStorage", () => {
-    setReadCursor("freenode", "#grappa", 100);
-    setReadCursor("freenode", "#cicchetto", 200);
+  it("applyMeEnvelope replaces the whole map (cold-load source of truth)", async () => {
+    const { applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+    applyMeEnvelope({ freenode: { "#stale": 999 } });
+    expect(getReadCursor("freenode", "#stale")).toBe(999);
+    // Second envelope from a fresh login overwrites entirely.
+    applyMeEnvelope({ libera: { "#fresh": 1 } });
+    expect(getReadCursor("freenode", "#stale")).toBeNull();
+    expect(getReadCursor("libera", "#fresh")).toBe(1);
+  });
+
+  it("applyJoinReply is a no-op when the join reply carries null cursor", async () => {
+    const { applyJoinReply, applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+    applyMeEnvelope({ freenode: { "#grappa": 50 } });
+    applyJoinReply("freenode", "#grappa", null);
+    // Existing value preserved — null never overwrites.
+    expect(getReadCursor("freenode", "#grappa")).toBe(50);
+  });
+
+  it("applyJoinReply advances the cursor for the given (slug, channel)", async () => {
+    const { applyJoinReply, getReadCursor, clearReadCursors } = await import("../lib/readCursor");
+    clearReadCursors();
+    applyJoinReply("freenode", "#grappa", 42);
+    expect(getReadCursor("freenode", "#grappa")).toBe(42);
+  });
+
+  it("applyReadCursorSet is forward-only — equal or lower id is a no-op", async () => {
+    const { applyReadCursorSet, getReadCursor, clearReadCursors } = await import(
+      "../lib/readCursor"
+    );
+    clearReadCursors();
+    applyReadCursorSet("freenode", "#grappa", 100);
+    applyReadCursorSet("freenode", "#grappa", 100); // equal — no-op
+    applyReadCursorSet("freenode", "#grappa", 50); // lower — no-op
+    expect(getReadCursor("freenode", "#grappa")).toBe(100);
+    applyReadCursorSet("freenode", "#grappa", 200); // higher — advances
+    expect(getReadCursor("freenode", "#grappa")).toBe(200);
+  });
+
+  it("advanceReadCursor POSTs to the cursor endpoint with the right body shape", async () => {
+    const { advanceReadCursor } = await import("../lib/readCursor");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ last_read_message_id: 42 }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await advanceReadCursor("tokABC", "freenode", "#grappa", 42);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/networks/freenode/channels/%23grappa/read-cursor");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ message_id: 42 }));
+    const headers = init.headers as Record<string, string>;
+    expect(headers["content-type"]).toBe("application/json");
+    expect(headers.authorization).toBe("Bearer tokABC");
+  });
+
+  it("advanceReadCursor swallows non-OK responses (fire-and-forget contract)", async () => {
+    const { advanceReadCursor } = await import("../lib/readCursor");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // Must not throw — production code never awaits the result.
+    await expect(advanceReadCursor("t", "n", "c", 1)).resolves.toBeUndefined();
+  });
+
+  it("clearReadCursors removes every entry from the signal map", async () => {
+    const { clearReadCursors, applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+    applyMeEnvelope({ freenode: { "#grappa": 100, "#cicchetto": 200 } });
     clearReadCursors();
     expect(getReadCursor("freenode", "#grappa")).toBeNull();
     expect(getReadCursor("freenode", "#cicchetto")).toBeNull();
   });
 
-  it("setReadCursor overwrites a previous cursor for the same window", () => {
-    setReadCursor("freenode", "#grappa", 100);
-    setReadCursor("freenode", "#grappa", 999);
-    expect(getReadCursor("freenode", "#grappa")).toBe(999);
-  });
-
   describe("Solid reactivity (unread-marker bug fix)", () => {
-    it("getReadCursor is tracked: setReadCursor invalidates a Solid effect that read it", async () => {
+    it("getReadCursor is tracked: applyReadCursorSet invalidates a Solid effect", async () => {
       // Repro for the unread-marker pinning bug. ScrollbackPane's `rows`
-      // createMemo reads getReadCursor inside its body. When subscribe.ts
-      // routes an inbound msg, the sequence is:
-      //   1. appendToScrollback (signal write) → memo invalidates
-      //   2. memo re-runs → reads OLD cursor (synchronous) → injects marker
-      //   3. setReadCursor (this MUST also invalidate the memo)
-      //   4. memo re-runs → reads NEW cursor → marker disappears
-      // If getReadCursor is not a tracked source, step 3-4 never happens
-      // and the marker stays in the DOM with the stale count.
+      // createMemo reads getReadCursor inside its body. When a
+      // `read_cursor_set` WS event lands the memo MUST re-run with the
+      // new cursor so the marker disappears.
+      const { applyReadCursorSet, getReadCursor, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
       let observed: number | null = -1;
       let runs = 0;
       const dispose = createRoot((dispose) => {
@@ -99,22 +153,24 @@ describe("readCursor (C7.3)", () => {
       expect(observed).toBeNull();
       const initialRuns = runs;
 
-      setReadCursor("freenode", "#grappa", 100);
+      applyReadCursorSet("freenode", "#grappa", 100);
       // Solid effects flush synchronously when a tracked source changes.
       expect(observed).toBe(100);
       expect(runs).toBe(initialRuns + 1);
 
-      setReadCursor("freenode", "#grappa", 200);
+      applyReadCursorSet("freenode", "#grappa", 200);
       expect(observed).toBe(200);
       expect(runs).toBe(initialRuns + 2);
 
       dispose();
     });
 
-    it("clearReadCursors invalidates effects tracking previously-set cursors", () => {
-      // Identity-transition cleanup: on logout/rotation, every consumer
-      // tracking a stale cursor must re-run with null.
-      setReadCursor("freenode", "#grappa", 100);
+    it("clearReadCursors invalidates effects tracking previously-set cursors", async () => {
+      const { applyReadCursorSet, getReadCursor, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyReadCursorSet("freenode", "#grappa", 100);
       let observed: number | null = -1;
       const dispose = createRoot((dispose) => {
         createEffect(() => {
@@ -131,20 +187,20 @@ describe("readCursor (C7.3)", () => {
     });
   });
 
-  describe("on(token) identity cleanup arm", () => {
-    it("clearReadCursors clears all rc: keys — simulates what the cleanup arm does on token rotation", () => {
-      // The cleanup arm calls clearReadCursors() when the token changes.
-      // This test verifies clearReadCursors works correctly as the arm's action.
-      // The registration of the arm in readCursor.ts is tested structurally
-      // via the vi.mock("../lib/auth") + signal-driven integration below.
-      setReadCursor("freenode", "#grappa", 500);
-      setReadCursor("libera", "#test", 600);
-      // Verify non-cursor keys are preserved (clearReadCursors is scoped to `rc:` prefix)
+  describe("legacy localStorage purge", () => {
+    it("purges any pre-CP29-R4 `rc:`-prefixed localStorage keys at module load", async () => {
+      // Stage legacy bytes BEFORE importing the module so the module's
+      // load-time `purgeLegacyKeys()` runs against this fixture. Use
+      // `vi.resetModules` first so a prior test's module load doesn't
+      // poison the fresh import.
+      vi.resetModules();
+      localStorage.setItem("rc:freenode:#grappa", "1700000000000");
+      localStorage.setItem("rc:libera:#test", "1700000001000");
+      // A non-`rc:`-prefixed key must NOT be touched.
       localStorage.setItem("grappa-token", "tokABC");
-      clearReadCursors();
-      expect(getReadCursor("freenode", "#grappa")).toBeNull();
-      expect(getReadCursor("libera", "#test")).toBeNull();
-      // grappa-token key must NOT be wiped by clearReadCursors
+      await import("../lib/readCursor");
+      expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
+      expect(localStorage.getItem("rc:libera:#test")).toBeNull();
       expect(localStorage.getItem("grappa-token")).toBe("tokABC");
     });
   });

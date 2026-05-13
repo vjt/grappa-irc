@@ -10,6 +10,7 @@ import {
   tagNetwork,
 } from "./api";
 import { token } from "./auth";
+import { applyMeEnvelope } from "./readCursor";
 
 // Network/channel tree resources. Module-singleton — every consumer
 // reads the same fine-grained signals; no provider boilerplate.
@@ -45,7 +46,16 @@ import { token } from "./auth";
 const exports = createRoot(() => {
   const [user] = createResource<MeResponse | null, string | null>(token, async (t) => {
     if (!t) return null;
-    return me(t);
+    const m = await me(t);
+    // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
+    // BEFORE downstream consumers (subscribe.ts join effects, etc.)
+    // observe `user()` and start joining channel topics. The join-reply
+    // arm (`applyJoinReply`) layers per-channel refreshes on top later;
+    // this is the cold-load primer. Default to `{}` if the server omits
+    // the field (older test mocks predating the field landing in
+    // `MeResponse`) — production /me always emits it.
+    applyMeEnvelope(m.read_cursors ?? {});
+    return m;
   });
 
   // Networks resource is keyed on `user` (not raw token) so the

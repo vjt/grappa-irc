@@ -213,6 +213,12 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
         by: r.by as string | null,
         reason: r.reason as string | null,
       };
+    case "read_cursor_set":
+      if (typeof r.last_read_message_id !== "number") return null;
+      return {
+        kind: "read_cursor_set",
+        last_read_message_id: r.last_read_message_id,
+      };
     default:
       return null;
   }

@@ -17,6 +17,21 @@ vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
 }));
 
+// CP29 R-4: selection.ts now POSTs to the server via
+// `advanceReadCursor` on focus-leave / browser-blur. Stub the verb so
+// tests stay self-contained — the cursor-write path is exercised by
+// `readCursor.test.ts` end-to-end (mocked fetch). Without this mock the
+// real `advanceReadCursor` calls `fetch()` with a relative URL that
+// jsdom's WHATWG fetch implementation rejects with `ERR_INVALID_URL`.
+vi.mock("../lib/readCursor", () => ({
+  advanceReadCursor: vi.fn().mockResolvedValue(undefined),
+  applyMeEnvelope: vi.fn(),
+  applyJoinReply: vi.fn(),
+  applyReadCursorSet: vi.fn(),
+  getReadCursor: vi.fn(() => null),
+  clearReadCursors: vi.fn(),
+}));
+
 // documentVisibility is NOT mocked — we drive it through the actual jsdom
 // document.visibilityState + visibilitychange event so the real module's
 // signal updates. Mocking would require disposing prior createRoot scopes
@@ -206,11 +221,19 @@ describe("selection store", () => {
   // (or on every WS append) hides the marker before the user has had
   // a chance to see it. Cursor advancing only on LEAVE preserves the
   // "unread until you've moved on" semantic.
+  //
+  // CP29 R-4: cursor backend flipped from localStorage to server-side
+  // (POST /networks/:slug/channels/:chan/read-cursor). Tests assert on
+  // calls to the mocked `advanceReadCursor` verb instead of localStorage
+  // bytes. The verb is fire-and-forget; the server-side broadcast that
+  // would normally land via `applyReadCursorSet` is out of scope here
+  // (covered by `readCursor.test.ts`).
   describe("read-cursor advance on focus-leave", () => {
-    it("switching from A to B advances rc:A to A's last msg server_time", async () => {
+    it("switching from A to B advances A's cursor to A's last msg id", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const aKey = channelKey("freenode", "#grappa");
@@ -241,26 +264,27 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // Cursor not yet set on focus alone — only on leave.
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
+      // Cursor not yet advanced on focus alone — only on leave.
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#cicchetto",
         kind: "channel",
       });
-      // After leave: cursor advanced to last msg's server_time.
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(String(1_700_000_001_000));
+      // After leave: cursor advanced to last msg's id.
+      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 2);
     });
 
-    it("switching from A to null (deselect) also advances rc:A", async () => {
+    it("switching from A to null (deselect) also advances A's cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const aKey = channelKey("freenode", "#grappa");
       scrollback.appendToScrollback(aKey, {
-        id: 1,
+        id: 7,
         network: "freenode",
         channel: "#grappa",
         server_time: 1_700_000_005_000,
@@ -275,13 +299,14 @@ describe("selection store", () => {
         kind: "channel",
       });
       selection.setSelectedChannel(null);
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(String(1_700_000_005_000));
+      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 7);
     });
 
-    it("leaving a window with no scrollback yet does NOT write a cursor", async () => {
+    it("leaving a window with no scrollback yet does NOT advance the cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       // No seeded scrollback — only the focus + leave dance.
       selection.setSelectedChannel({
@@ -294,14 +319,15 @@ describe("selection store", () => {
         channelName: "#other",
         kind: "channel",
       });
-      // No cursor written for #empty: nothing to mark as read.
-      expect(localStorage.getItem("rc:freenode:#empty")).toBeNull();
+      // Nothing to mark as read.
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
     });
 
     it("re-selecting the same window does NOT advance the cursor (no leave occurred)", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const aKey = channelKey("freenode", "#grappa");
@@ -320,14 +346,12 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // Seed a sentinel cursor — re-select must NOT touch it.
-      localStorage.setItem("rc:freenode:#grappa", "999");
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#grappa",
         kind: "channel",
       });
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("999");
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
     });
   });
 
@@ -338,15 +362,16 @@ describe("selection store", () => {
   // Without this, returning to the browser would show no marker even
   // for msgs that arrived while the user was demonstrably away.
   describe("read-cursor advance on browser-blur (visibility transition)", () => {
-    it("focused on #grappa, browser blurs → cursor advances to last visible msg server_time", async () => {
+    it("focused on #grappa, browser blurs → cursor advances to last visible msg id", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const key = channelKey("freenode", "#grappa");
       scrollback.appendToScrollback(key, {
-        id: 1,
+        id: 42,
         network: "freenode",
         channel: "#grappa",
         server_time: 1_700_000_010_000,
@@ -360,17 +385,18 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // Pre-blur: cursor not yet set (focus alone doesn't advance).
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
+      // Pre-blur: cursor not yet advanced (focus alone doesn't advance).
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
 
       setVisibilityForTest(false);
       await Promise.resolve(); // let the createEffect flush
 
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe(String(1_700_000_010_000));
+      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
     });
 
-    it("no selected window: blur does NOT write any cursor", async () => {
+    it("no selected window: blur does NOT advance any cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       // No setSelectedChannel call — selection is null at module load.
       expect(selection.selectedChannel()).toBeNull();
@@ -378,18 +404,14 @@ describe("selection store", () => {
       setVisibilityForTest(false);
       await Promise.resolve();
 
-      // No rc:* keys should exist for any channel.
-      let count = 0;
-      for (let i = 0; i < localStorage.length; i++) {
-        if (localStorage.key(i)?.startsWith("rc:")) count++;
-      }
-      expect(count).toBe(0);
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
     });
 
-    it("focused on empty-scrollback window: blur does NOT write a cursor", async () => {
+    it("focused on empty-scrollback window: blur does NOT advance the cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       // Select but don't seed any scrollback — there is nothing to mark as read.
       selection.setSelectedChannel({
@@ -400,7 +422,7 @@ describe("selection store", () => {
       setVisibilityForTest(false);
       await Promise.resolve();
 
-      expect(localStorage.getItem("rc:freenode:#empty")).toBeNull();
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
     });
 
     it("blur followed by focus regain does NOT advance the cursor again", async () => {
@@ -410,11 +432,12 @@ describe("selection store", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const key = channelKey("freenode", "#grappa");
       scrollback.appendToScrollback(key, {
-        id: 1,
+        id: 100,
         network: "freenode",
         channel: "#grappa",
         server_time: 100,
@@ -430,13 +453,18 @@ describe("selection store", () => {
       });
       setVisibilityForTest(false);
       await Promise.resolve();
-      // Sentinel: cursor at 100. A focus regain must NOT clobber it
-      // (e.g. with a stale value or null).
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("100");
+      expect(readCursor.advanceReadCursor).toHaveBeenCalledTimes(1);
+      expect(readCursor.advanceReadCursor).toHaveBeenLastCalledWith(
+        "tok",
+        "freenode",
+        "#grappa",
+        100,
+      );
 
       setVisibilityForTest(true);
       await Promise.resolve();
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBe("100");
+      // Focus regain must NOT trigger another advance.
+      expect(readCursor.advanceReadCursor).toHaveBeenCalledTimes(1);
     });
 
     it("initial visibility=true does NOT spuriously advance any cursor", async () => {
@@ -446,6 +474,7 @@ describe("selection store", () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
       const scrollback = await import("../lib/scrollback");
       const key = channelKey("freenode", "#grappa");
@@ -465,9 +494,9 @@ describe("selection store", () => {
         kind: "channel",
       });
       // No setVisibilityForTest call — visibility stays at its initial true.
-      // After microtask flush, cursor must NOT be set.
+      // After microtask flush, cursor must NOT be advanced.
       await Promise.resolve();
-      expect(localStorage.getItem("rc:freenode:#grappa")).toBeNull();
+      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
     });
   });
   // Badge clear on browser-focus-regain — symmetric counterpart to the

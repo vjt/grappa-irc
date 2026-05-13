@@ -8,7 +8,6 @@ import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
-import { setReadCursor } from "./lib/readCursor";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import { isActiveChannelJoined, windowStateByChannel } from "./lib/windowState";
@@ -68,16 +67,23 @@ const Shell: Component = () => {
   };
 
   // C8.2 — click-to-context handler for MentionsWindow rows.
-  // Sets read cursor to serverTime-1 so ScrollbackPane's unread-marker
-  // appears just before the clicked message, then switches focus to the
-  // source channel. The existing C7.3 scroll-to-marker infrastructure in
-  // ScrollbackPane handles the visual scroll.
+  //
+  // CP29 R-4: previously this called `setReadCursor(slug, ch, serverTime-1)`
+  // to position the unread-marker just before the clicked message. The
+  // server-side cursor model (id-based, forward-only, validated against
+  // (subject, network, channel)) cannot express "rewind to just before
+  // an arbitrary timestamp" — the MentionsBundle wire shape doesn't
+  // even carry message ids, only server_time. Drop the cursor-rewind
+  // here; focus-switch alone still navigates the operator to the
+  // mention's window. Restoring "scroll to mention with marker just
+  // above" requires a wider fix (extend MentionsBundle wire shape with
+  // message id + thread the id through to a one-shot scroll-to verb in
+  // ScrollbackPane). Deferred — separate cluster.
   const handleMentionClicked = (args: {
     networkSlug: string;
     channel: string;
     serverTime: number;
   }) => {
-    setReadCursor(args.networkSlug, args.channel, args.serverTime - 1);
     setSelectedChannel({
       networkSlug: args.networkSlug,
       channelName: args.channel,
