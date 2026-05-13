@@ -155,6 +155,57 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
     });
   });
 
+  // Cluster `channel-created-notice` 2026-05-13 — 329 RPL_CREATIONTIME
+  // surface. created_at is server-projected via DateTime.to_iso8601/1
+  // so the wire shape carries a string; cic parses on demand.
+  describe("kind: channel_created", () => {
+    it("narrows a complete envelope", () => {
+      const out = narrowChannelEvent({
+        kind: "channel_created",
+        network: "azzurra",
+        channel: "#italia",
+        created_at: "2024-09-22T10:00:00Z",
+      });
+      expect(out).toEqual({
+        kind: "channel_created",
+        network: "azzurra",
+        channel: "#italia",
+        created_at: "2024-09-22T10:00:00Z",
+      });
+    });
+
+    it("rejects missing network", () => {
+      expect(
+        narrowChannelEvent({
+          kind: "channel_created",
+          channel: "#italia",
+          created_at: "2024-09-22T10:00:00Z",
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects missing channel", () => {
+      expect(
+        narrowChannelEvent({
+          kind: "channel_created",
+          network: "azzurra",
+          created_at: "2024-09-22T10:00:00Z",
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects non-string created_at", () => {
+      expect(
+        narrowChannelEvent({
+          kind: "channel_created",
+          network: "azzurra",
+          channel: "#italia",
+          created_at: 1727000000,
+        }),
+      ).toBeNull();
+    });
+  });
+
   describe("kind: members_seeded", () => {
     it("narrows empty members list", () => {
       const out = narrowChannelEvent({

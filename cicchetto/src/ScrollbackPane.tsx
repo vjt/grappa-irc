@@ -10,7 +10,7 @@ import {
 } from "solid-js";
 import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
-import { topicByChannel } from "./lib/channelTopic";
+import { createdByChannel, topicByChannel } from "./lib/channelTopic";
 import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
@@ -744,6 +744,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // JOIN-self banner render — pure, no scrollback persistence.
   const JoinBanner: Component = () => {
     const topic = () => topicByChannel()[key()] ?? null;
+    const createdAt = () => createdByChannel()[key()] ?? null;
     const members = () => membersByChannel()[key()] ?? null;
     const opCount = () => members()?.filter((m) => m.modes.includes("@")).length ?? 0;
     const totalCount = () => members()?.length ?? 0;
@@ -755,11 +756,49 @@ const ScrollbackPane: Component<Props> = (props) => {
       return list !== null && list.length > 0 ? list : undefined;
     };
 
+    // Format a server-emitted ISO 8601 timestamp into the operator's
+    // locale-default human form. Returns null when the input fails to
+    // parse so the <Show> gate can hide the row entirely (rather than
+    // rendering "Invalid Date"). Server contract: `created_at` from
+    // 329 RPL_CREATIONTIME, `set_at` from 333 RPL_TOPICWHOTIME — both
+    // are wire-projected via `DateTime.to_iso8601/1` so the parse path
+    // here only fails on a malformed payload (which `narrowChannelEvent`
+    // already drops, but the defensive null keeps the UI honest).
+    const formatTs = (iso: string | null): string | null => {
+      if (iso === null) return null;
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return d.toLocaleString();
+    };
+
+    const createdLine = () => formatTs(createdAt());
+    const topicSetLine = () => {
+      const t = topic();
+      if (t === null || t.set_by === null || t.set_at === null) return null;
+      const when = formatTs(t.set_at);
+      if (when === null) return null;
+      return `Topic set by ${t.set_by} on ${when}`;
+    };
+
     return (
       <div class="join-banner" data-testid="join-banner">
         <div class="join-banner-heading">You joined {props.channelName}</div>
+        <Show when={createdLine()}>
+          {(when) => (
+            <div class="join-banner-created" data-testid="join-banner-created">
+              Channel was created on {when()}
+            </div>
+          )}
+        </Show>
         <Show when={topic()?.text}>
           {(text) => <div class="join-banner-topic">Topic: {text()}</div>}
+        </Show>
+        <Show when={topicSetLine()}>
+          {(line) => (
+            <div class="join-banner-topic-set" data-testid="join-banner-topic-set">
+              {line()}
+            </div>
+          )}
         </Show>
         <Show
           when={nonEmptyMembers()}

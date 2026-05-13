@@ -261,6 +261,16 @@ defmodule Grappa.Session.Server do
           seeded_channels: MapSet.t(String.t()),
           topics: %{String.t() => EventRouter.topic_entry()},
           channel_modes: %{String.t() => EventRouter.channel_mode_entry()},
+          # Cluster `channel-created-notice` 2026-05-13 — per-channel
+          # creation timestamp from 329 RPL_CREATIONTIME. Lifecycle
+          # mirrors `topics` (populated on JOIN-time numeric, dropped on
+          # self-PART/self-KICK). Empty map until first 329 lands;
+          # Azzurra/Bahamut historically don't emit 329 so this stays
+          # empty for that network. Wire event `channel_created` carries
+          # the DateTime (via SessionWire.channel_created/3) so cic's
+          # `channelCreated` store seeds JoinBanner's "Channel was created
+          # on …" line.
+          channels_created: %{String.t() => DateTime.t()},
           userhost_cache: EventRouter.userhost_cache(),
           # CP15 B1 + cluster #6 extraction: per-channel window state
           # bundle (states + failure_reasons + failure_numerics +
@@ -424,6 +434,7 @@ defmodule Grappa.Session.Server do
       seeded_channels: MapSet.new(),
       topics: %{},
       channel_modes: %{},
+      channels_created: %{},
       userhost_cache: %{},
       window_state: WindowState.new(),
       in_flight_joins: %{},
@@ -1919,6 +1930,16 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
         SessionWire.channel_modes_changed(state.network_slug, channel, entry)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  defp apply_effects([{:channel_created, channel, %DateTime{} = dt} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        SessionWire.channel_created(state.network_slug, channel, dt)
       )
 
     apply_effects(rest, state)

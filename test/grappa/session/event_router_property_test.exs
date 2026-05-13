@@ -73,6 +73,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         nick: nick,
         members: members,
         topics: %{},
+        channels_created: %{},
         channel_modes: %{},
         userhost_cache: %{}
       }

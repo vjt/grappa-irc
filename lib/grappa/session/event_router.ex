@@ -166,6 +166,7 @@ defmodule Grappa.Session.EventRouter do
           | {:visitor_r_observed, String.t()}
           | {:topic_changed, String.t(), topic_entry()}
           | {:channel_modes_changed, String.t(), channel_mode_entry()}
+          | {:channel_created, String.t(), DateTime.t()}
           | {:away_confirmed, :present | :away}
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
           | {:joined, String.t()}
@@ -360,6 +361,17 @@ defmodule Grappa.Session.EventRouter do
            Map.get(state, :userhost_cache, %{})}
       end
 
+    # Channel-creation cache lifecycle mirrors topics: drop on self-PART
+    # only. Other-user PART leaves the cache untouched (we're still in
+    # the channel; the entry is still relevant). Done out-of-band from
+    # the cond above to keep the existing tuple shape narrow.
+    channels_created =
+      if sender == state.nick do
+        Map.delete(Map.get(state, :channels_created, %{}), normalize_channel(channel))
+      else
+        Map.get(state, :channels_created, %{})
+      end
+
     {state, eff} =
       build_persist(
         %{
@@ -367,6 +379,7 @@ defmodule Grappa.Session.EventRouter do
           | members: members,
             topics: topics,
             channel_modes: channel_modes,
+            channels_created: channels_created,
             userhost_cache: userhost_cache
         },
         :part,
@@ -549,6 +562,16 @@ defmodule Grappa.Session.EventRouter do
     {members, topics, channel_modes, userhost_cache} =
       kick_state_update(state, channel, target)
 
+    # Channel-creation cache lifecycle mirrors topics: drop on self-KICK
+    # only. Done out-of-band from kick_state_update to keep the existing
+    # tuple shape narrow (mirrors the PART path above).
+    channels_created =
+      if target == state.nick do
+        Map.delete(Map.get(state, :channels_created, %{}), normalize_channel(channel))
+      else
+        Map.get(state, :channels_created, %{})
+      end
+
     {state, eff} =
       build_persist(
         %{
@@ -556,6 +579,7 @@ defmodule Grappa.Session.EventRouter do
           | members: members,
             topics: topics,
             channel_modes: channel_modes,
+            channels_created: channels_created,
             userhost_cache: userhost_cache
         },
         :kick,
@@ -663,6 +687,37 @@ defmodule Grappa.Session.EventRouter do
     entry = %{text: nil, set_by: nil, set_at: nil}
     topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
     {:cont, %{state | topics: topics}, [{:topic_changed, channel, entry}]}
+  end
+
+  # 329 RPL_CREATIONTIME: channel creation unix timestamp (Bahamut + most
+  # modern ircds emit on JOIN; Azzurra/Bahamut historically didn't, hence
+  # no presence in pre-cluster DB samples — but the handler must be ready
+  # for non-Bahamut networks). Caches a parsed `DateTime.t()` into
+  # `state.channels_created` and emits `{:channel_created, channel, dt}`
+  # so Server's apply_effects can broadcast `channel_created` on the
+  # per-channel topic. cic's `channelCreated` store seeds from the event
+  # and JoinBanner renders an irssi-style "Channel was created on …" line.
+  #
+  # Malformed timestamps (non-integer trailing param) are silently dropped
+  # — no cache write, no effect, no scrollback row. The numeric is in
+  # NumericRouter `@delegated_numerics` so Server skips its dual-persist
+  # path; without that, a malformed 329 would still leak the bogus
+  # trailing as a `:notice` body.
+  def route(
+        %Message{command: {:numeric, 329}, params: [_, channel, unix_ts_str]},
+        state
+      )
+      when is_binary(channel) and is_binary(unix_ts_str) do
+    case Integer.parse(unix_ts_str) do
+      {ts, ""} when ts > 0 ->
+        chan_key = normalize_channel(channel)
+        dt = DateTime.from_unix!(ts)
+        channels_created = Map.put(Map.get(state, :channels_created, %{}), chan_key, dt)
+        {:cont, %{state | channels_created: channels_created}, [{:channel_created, channel, dt}]}
+
+      _ ->
+        {:cont, state, []}
+    end
   end
 
   # 324 RPL_CHANNELMODEIS: initial mode snapshot after JOIN. Replaces the

@@ -159,6 +159,15 @@ describe("WireChannelEvent canonical union (H3)", () => {
     },
     {
       event: {
+        kind: "channel_created",
+        network: "azzurra",
+        channel: "#italia",
+        created_at: "2024-09-22T10:00:00Z",
+      },
+      expectedKind: "channel_created",
+    },
+    {
+      event: {
         kind: "members_seeded",
         network: "azzurra",
         channel: "#italia",
@@ -204,6 +213,7 @@ describe("WireChannelEvent canonical union (H3)", () => {
         case "message":
         case "topic_changed":
         case "channel_modes_changed":
+        case "channel_created":
         case "members_seeded":
         case "joined":
         case "join_failed":

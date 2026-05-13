@@ -69,6 +69,7 @@ defmodule Grappa.Session.Wire do
           | :own_nick_changed
           | :topic_changed
           | :channel_modes_changed
+          | :channel_created
           | :members_seeded
           | :joined
           | :window_pending
@@ -98,6 +99,13 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           channel: String.t(),
           modes: map()
+        }
+
+  @type channel_created_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          created_at: String.t()
         }
 
   @type members_seeded_payload :: %{
@@ -244,6 +252,26 @@ defmodule Grappa.Session.Wire do
   def channel_modes_changed(network_slug, channel, entry)
       when is_binary(network_slug) and is_binary(channel) and is_map(entry) do
     %{kind: "channel_modes_changed", network: network_slug, channel: channel, modes: entry}
+  end
+
+  @doc """
+  Channel-creation timestamp from 329 RPL_CREATIONTIME. Emitted on
+  the per-channel topic so cic's `channelCreated` store can seed
+  JoinBanner's "Channel was created on …" line. The DateTime is
+  projected to its ISO 8601 string at the wire boundary — every
+  other consumer (`set_at` in `topic_changed`'s topic entry) does the
+  same, keeping the on-wire shape Jason-encoder-trivial without
+  relying on the bespoke `Jason.Encoder` derive on DateTime.
+  """
+  @spec channel_created(String.t(), String.t(), DateTime.t()) :: channel_created_payload()
+  def channel_created(network_slug, channel, %DateTime{} = dt)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{
+      kind: "channel_created",
+      network: network_slug,
+      channel: channel,
+      created_at: DateTime.to_iso8601(dt)
+    }
   end
 
   @doc """

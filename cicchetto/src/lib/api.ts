@@ -362,6 +362,7 @@ export type WireChannelEvent =
   | { kind: "message"; message: ScrollbackMessage }
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
   | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
+  | { kind: "channel_created"; network: string; channel: string; created_at: string }
   | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] }
   // CP15 B5: typed window-state events. Server-side apply_effects arms
   // broadcast these on the per-channel topic; the snapshot push

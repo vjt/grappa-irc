@@ -73,9 +73,11 @@ defmodule Grappa.Session.NumericRouterTest do
       check all(
               numeric <- integer(400..499),
               # Pre-CP13 active/deny + CP15 B2 join-failure delegated codes
-              # short-circuit before the param scan; exclude both classes so
-              # the property exercises the channel-prefix fallthrough only.
-              numeric not in [421, 432, 433, 437, 461, 471, 473, 474, 475, 403, 405],
+              # + channel-state numerics (324/329/331/332/333 delegated post
+              # cluster `channel-created-notice`) short-circuit before the
+              # param scan; exclude all classes so the property exercises the
+              # channel-prefix fallthrough only.
+              numeric not in [421, 432, 433, 437, 461, 471, 473, 474, 475, 403, 405, 324, 329, 331, 332, 333],
               chan_body <- string(:alphanumeric, min_length: 1, max_length: 20)
             ) do
         chan = "#" <> chan_body
@@ -188,7 +190,17 @@ defmodule Grappa.Session.NumericRouterTest do
     474,
     475,
     403,
-    405
+    405,
+    # Channel-state numerics (EventRouter caches into state.topics /
+    # state.channel_modes / state.channels_created — must be delegated
+    # so Server.handle_info doesn't double-persist them as `:notice`
+    # rows with body=trailing-param (which for 333 leaks the unix_ts
+    # as user-visible noise).
+    324,
+    329,
+    331,
+    332,
+    333
   ]
 
   describe "delegated numerics → :delegated" do

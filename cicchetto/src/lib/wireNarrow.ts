@@ -155,6 +155,20 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
       if (modes === null) return null;
       return { kind: "channel_modes_changed", network: r.network, channel: r.channel, modes };
     }
+    case "channel_created": {
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        typeof r.created_at !== "string"
+      )
+        return null;
+      return {
+        kind: "channel_created",
+        network: r.network,
+        channel: r.channel,
+        created_at: r.created_at,
+      };
+    }
     case "members_seeded": {
       if (typeof r.network !== "string" || typeof r.channel !== "string") return null;
       const members = narrowMembers(r.members);

@@ -26,6 +26,7 @@ defmodule Grappa.Session.EventRouterTest do
         nick: "vjt",
         members: %{},
         topics: %{},
+        channels_created: %{},
         channel_modes: %{},
         userhost_cache: %{},
         who_pending: %{},
@@ -1144,6 +1145,29 @@ defmodule Grappa.Session.EventRouterTest do
                {:topic_changed, "#italia", %{set_by: "ChanServ"}} -> true
                _ -> false
              end)
+    end
+  end
+
+  describe "route/2 — :numeric 329 RPL_CREATIONTIME (channel creation timestamp)" do
+    test "329 caches DateTime in state.channels_created and emits :channel_created effect" do
+      state = base_state()
+      m = msg({:numeric, 329}, ["vjt", "#italia", "1717890000"], {:server, "irc"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert %DateTime{} = new_state.channels_created["#italia"]
+      assert DateTime.to_unix(new_state.channels_created["#italia"]) == 1_717_890_000
+
+      assert Enum.any?(effects, fn
+               {:channel_created, "#italia", %DateTime{}} -> true
+               _ -> false
+             end)
+    end
+
+    test "329 with malformed unix_ts is silently dropped (no cache write, no effect)" do
+      state = base_state()
+      m = msg({:numeric, 329}, ["vjt", "#italia", "not-a-number"], {:server, "irc"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
   end
 

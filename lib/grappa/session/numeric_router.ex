@@ -166,7 +166,26 @@ defmodule Grappa.Session.NumericRouter do
                         474,
                         475,
                         403,
-                        405
+                        405,
+                        # Cluster `channel-created-notice` 2026-05-13 —
+                        # channel-state numerics that EventRouter caches
+                        # into state.{topics, channel_modes, channels_created}
+                        # and broadcasts via dedicated wire events
+                        # (`topic_changed`, `channel_modes_changed`,
+                        # `channel_created`). Without delegation, Server's
+                        # numeric handler ALSO persists each one as a bare
+                        # `:notice` row with body=trailing-param — which
+                        # for 333 leaks the unix timestamp ("1776720934")
+                        # as user-visible scrollback noise, and for 332
+                        # duplicates the topic text already conveyed by
+                        # `topic_changed`. cic renders these from the
+                        # channelTopic / channelCreated stores fed by
+                        # the dedicated events.
+                        324,
+                        329,
+                        331,
+                        332,
+                        333
                       ])
 
   # ---------------------------------------------------------------------------

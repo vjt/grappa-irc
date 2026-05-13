@@ -79,4 +79,29 @@ describe("channelTopic store", () => {
     expect(mod.compactModeString([])).toBe("");
     expect(mod.compactModeString(["m"])).toBe("+m");
   });
+
+  // Cluster `channel-created-notice` 2026-05-13 — 329 RPL_CREATIONTIME
+  // surface. Single shared store with topic + modes since lifecycle +
+  // origin (per-channel JOIN-time numerics) are identical.
+  it("createdByChannel returns empty object initially", async () => {
+    const mod = await import("../lib/channelTopic");
+    expect(mod.createdByChannel()).toEqual({});
+  });
+
+  it("seedChannelCreated stores the ISO 8601 timestamp for the channel key", async () => {
+    const mod = await import("../lib/channelTopic");
+    const key = channelKey("freenode", "#grappa");
+    mod.seedChannelCreated(key, "2024-09-22T10:00:00Z");
+    expect(mod.createdByChannel()[key]).toBe("2024-09-22T10:00:00Z");
+  });
+
+  it("seedChannelCreated for multiple channels stores independently", async () => {
+    const mod = await import("../lib/channelTopic");
+    const key1 = channelKey("freenode", "#grappa");
+    const key2 = channelKey("libera", "#test");
+    mod.seedChannelCreated(key1, "2024-09-22T10:00:00Z");
+    mod.seedChannelCreated(key2, "2025-01-01T00:00:00Z");
+    expect(mod.createdByChannel()[key1]).toBe("2024-09-22T10:00:00Z");
+    expect(mod.createdByChannel()[key2]).toBe("2025-01-01T00:00:00Z");
+  });
 });
