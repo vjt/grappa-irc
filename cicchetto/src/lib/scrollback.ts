@@ -1,8 +1,14 @@
 import { createSignal } from "solid-js";
-import { sendMessage as apiSendMessage, listMessages, type ScrollbackMessage } from "./api";
+import {
+  sendMessage as apiSendMessage,
+  listMessages,
+  listMessagesAfter,
+  type ScrollbackMessage,
+} from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
+import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 
 // Per-channel scrollback store: the source of truth for messages
 // rendered in `ScrollbackPane`. Module-singleton signal store mirroring
@@ -189,11 +195,95 @@ const exports = identityScopedStore((onIdentityChange) => {
     await apiSendMessage(t, slug, name, body);
   };
 
+  // CP29 R-5 — refresh-on-WS-join-ok. Called from `subscribe.ts`'s 5
+  // join callbacks on EVERY successful per-channel join (initial AND
+  // every auto-rejoin after a socket disconnect). Closes the cp13-S5
+  // race class by construction: once the WS join completes, this verb
+  // pulls every row whose id > the resume cursor and ingests via
+  // `appendToScrollback` (id-deduped, so any row that ALSO arrives via
+  // the live WS during/after the fetch is a no-op on the second
+  // arrival).
+  //
+  // Resume cursor source order:
+  //   1. `reconnectBackfill.getResumeCursor` — live high-water mark
+  //      from `recordSeen` (definitive when cic has rendered any row
+  //      this session); falls back to the server-side read cursor.
+  //   2. Tail id of the local `scrollbackByChannel[key]` — covers the
+  //      cp13-S5 race shape: a freshly-opened window (e.g. query
+  //      window from `/msg`) whose `loadInitialScrollback` returned
+  //      a possibly-empty page BEFORE the WS subscribe completed; the
+  //      reconnectBackfill cursor sources are both null but the local
+  //      pane has the REST seed's tail id (or 0 for an empty seed) we
+  //      can resume from. Fetching `?after=<tail_id>` recovers any row
+  //      whose persist landed between the REST page response and the
+  //      WS-subscribe completion.
+  //   3. `0` — pane never opened locally either (rare: a join callback
+  //      firing for a pane the operator hasn't focused yet). Fetch
+  //      from the beginning; the per-key in-flight guard +
+  //      appendToScrollback id-dedupe preclude duplication if
+  //      `loadInitialScrollback` later races the same rows. Limit is
+  //      capped at 200 server-side so this is bounded even on a busy
+  //      channel.
+  //
+  // In-flight guard: per-key Set prevents double-fetch under bursty
+  // rejoin sequences (phoenix.js's `Push.resend()` can fire
+  // `.receive("ok")` twice for stale outbound pushes that succeed
+  // post-rejoin — see socket.ts moduledoc). Released in `finally` so a
+  // transient REST error doesn't latch out future retries.
+  //
+  // High-water mark rolls forward as we ingest so a SECOND disconnect
+  // mid-refresh resumes from the new highest id rather than the
+  // original cursor — same property the pre-CP29-R5 reconnectBackfill
+  // ran inside `runBackfill`, preserved here for the same reason.
+  const refreshInFlight = new Set<ChannelKey>();
+  const REFRESH_LIMIT = 200;
+
+  const refreshScrollback = async (slug: string, name: string): Promise<void> => {
+    const t = token();
+    if (!t) return;
+    const key = channelKey(slug, name);
+    if (refreshInFlight.has(key)) return;
+    let cursor = getResumeCursor(slug, name);
+    if (cursor === null) {
+      // Local-pane fallback (cp13-S5 race shape). The REST seed has
+      // landed (or is in flight as an empty seed); resume from
+      // whatever's at the tail. `0` covers both an empty seed AND a
+      // pane that hasn't been opened locally yet — the per-key
+      // in-flight guard + appendToScrollback id-dedupe make a
+      // racing `loadInitialScrollback` safe.
+      const local = scrollbackByChannel()[key];
+      cursor = local && local.length > 0 ? (local[local.length - 1]?.id ?? 0) : 0;
+    }
+    refreshInFlight.add(key);
+    try {
+      // CP29 R-2 unified surface: ASC by id when ?after=<id>. Caller
+      // limit kept explicit at the call site so a future tuning (e.g.
+      // dynamic per-channel cap) doesn't have to thread through the
+      // api.ts helper signature.
+      const page = await listMessagesAfter(t, slug, name, cursor, REFRESH_LIMIT);
+      for (const msg of page) {
+        appendToScrollback(key, msg);
+        // Roll the high-water mark forward as we ingest so a second
+        // disconnect mid-refresh resumes from the new highest id
+        // rather than the original cursor.
+        recordSeen(key, msg);
+      }
+    } catch (err) {
+      // Transient error — leave the cursor alone so the next reconnect
+      // retries. Log to console for operator diagnosis; Phase 5
+      // telemetry hook will replace this.
+      console.error("[scrollback] refreshScrollback failed", slug, name, err);
+    } finally {
+      refreshInFlight.delete(key);
+    }
+  };
+
   return {
     scrollbackByChannel,
     appendToScrollback,
     loadInitialScrollback,
     loadMore,
+    refreshScrollback,
     sendMessage,
   };
 });
@@ -202,4 +292,5 @@ export const scrollbackByChannel = exports.scrollbackByChannel;
 export const appendToScrollback = exports.appendToScrollback;
 export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
+export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;

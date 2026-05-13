@@ -2,33 +2,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 
-// Boundary: mock REST (`lib/api`) and the scrollback append verb
-// (`lib/scrollback`). The reconnect-backfill module is pure logic over
-// (token-gated REST fetch → append-via-verb), so we stub both.
+// CP29 R-5: reconnectBackfill collapsed to a cursor-source helper.
+// Owns the high-water-mark map (`recordSeen`) + the resume-cursor
+// resolution heuristic (`getResumeCursor`). The actual REST fetch +
+// noteJoinOk count-gate moved into `lib/scrollback.ts:refreshScrollback`
+// (called from every per-channel join callback in subscribe.ts —
+// initial + every auto-rejoin, no count-gate). See module headers.
+//
+// Boundary: mock `lib/readCursor` (the server-side cursor fallback in
+// the resume-cursor heuristic).
 
-vi.mock("../lib/api", () => ({
-  listMessagesAfter: vi.fn(),
-  listMessages: vi.fn(),
-  listNetworks: vi.fn(),
-  listChannels: vi.fn(),
-  sendMessage: vi.fn(),
-  me: vi.fn(),
-  login: vi.fn(),
-  logout: vi.fn(),
-  setOn401Handler: vi.fn(),
-}));
-
-vi.mock("../lib/scrollback", () => ({
-  appendToScrollback: vi.fn(),
-  scrollbackByChannel: vi.fn(() => ({})),
-  loadInitialScrollback: vi.fn(),
-  loadMore: vi.fn(),
+const mockReadCursor = vi.fn<(slug: string, chan: string) => number | null>(() => null);
+vi.mock("../lib/readCursor", () => ({
+  getReadCursor: (slug: string, chan: string) => mockReadCursor(slug, chan),
+  applyMeEnvelope: vi.fn(),
+  applyJoinReply: vi.fn(),
+  applyReadCursorSet: vi.fn(),
+  advanceReadCursor: vi.fn().mockResolvedValue(undefined),
+  clearReadCursors: vi.fn(),
 }));
 
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
+  mockReadCursor.mockReturnValue(null);
 });
 
 const sampleMsg = (id: number, body = "x"): ScrollbackMessage => ({
@@ -43,164 +41,57 @@ const sampleMsg = (id: number, body = "x"): ScrollbackMessage => ({
 });
 
 describe("recordSeen", () => {
-  it("tracks the high-water mark per topic", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-    vi.mocked(listMessagesAfter).mockResolvedValue([]);
-
+  it("tracks the high-water mark per topic — getResumeCursor reflects the max", async () => {
+    const { recordSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
     const key = channelKey("azzurra", "#sniffo");
     recordSeen(key, sampleMsg(5));
     recordSeen(key, sampleMsg(10));
-
-    await runBackfill("azzurra", "#sniffo");
-    // Two recordSeen calls: high-water mark should be 10 (max), so
-    // backfill REST is called with after=10.
-    expect(listMessagesAfter).toHaveBeenCalledWith("tok", "azzurra", "#sniffo", 10);
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(10);
   });
 
   it("does not rewind on out-of-order arrivals", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-    vi.mocked(listMessagesAfter).mockResolvedValue([]);
-
+    const { recordSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
     const key = channelKey("azzurra", "#sniffo");
     recordSeen(key, sampleMsg(20));
-    recordSeen(key, sampleMsg(10)); // older — must not rewind
+    recordSeen(key, sampleMsg(10));
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(20);
+  });
 
-    await runBackfill("azzurra", "#sniffo");
-    expect(listMessagesAfter).toHaveBeenCalledWith("tok", "azzurra", "#sniffo", 20);
+  it("tracks high-water mark independently per (slug, channel)", async () => {
+    const { recordSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
+    recordSeen(channelKey("azzurra", "#a"), sampleMsg(5));
+    recordSeen(channelKey("azzurra", "#b"), sampleMsg(7));
+    recordSeen(channelKey("freenode", "#a"), sampleMsg(9));
+    expect(getResumeCursor("azzurra", "#a")).toBe(5);
+    expect(getResumeCursor("azzurra", "#b")).toBe(7);
+    expect(getResumeCursor("freenode", "#a")).toBe(9);
   });
 });
 
-describe("noteJoinOk", () => {
-  it("returns false on first call (initial join), true on subsequent (rejoin)", async () => {
-    const { noteJoinOk } = await import("../lib/reconnectBackfill");
-    expect(noteJoinOk("azzurra", "#sniffo")).toBe(false);
-    expect(noteJoinOk("azzurra", "#sniffo")).toBe(true);
-    expect(noteJoinOk("azzurra", "#sniffo")).toBe(true);
+describe("getResumeCursor heuristic", () => {
+  it("prefers the live high-water mark over the server read cursor", async () => {
+    const { recordSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
+    mockReadCursor.mockReturnValue(2); // older server-side cursor
+    recordSeen(channelKey("azzurra", "#sniffo"), sampleMsg(50));
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(50);
   });
 
-  it("tracks join counts independently per (slug, channel)", async () => {
-    const { noteJoinOk } = await import("../lib/reconnectBackfill");
-    expect(noteJoinOk("azzurra", "#a")).toBe(false);
-    expect(noteJoinOk("azzurra", "#b")).toBe(false);
-    expect(noteJoinOk("freenode", "#a")).toBe(false);
-
-    expect(noteJoinOk("azzurra", "#a")).toBe(true);
-    expect(noteJoinOk("azzurra", "#b")).toBe(true);
-    expect(noteJoinOk("freenode", "#a")).toBe(true);
-  });
-});
-
-describe("runBackfill", () => {
-  it("is a no-op if no high-water mark recorded for the topic", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-
-    await runBackfill("azzurra", "#never-seen");
-    expect(listMessagesAfter).not.toHaveBeenCalled();
+  it("falls back to the server read cursor when no live high-water mark exists", async () => {
+    const { getResumeCursor } = await import("../lib/reconnectBackfill");
+    mockReadCursor.mockReturnValue(42);
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(42);
   });
 
-  it("is a no-op if no token", async () => {
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-
-    const key = channelKey("azzurra", "#sniffo");
-    recordSeen(key, sampleMsg(5));
-    // No token set → backfill must skip the REST call.
-    await runBackfill("azzurra", "#sniffo");
-    expect(listMessagesAfter).not.toHaveBeenCalled();
+  it("returns null when neither source has a value (cold load, no cursor yet)", async () => {
+    const { getResumeCursor } = await import("../lib/reconnectBackfill");
+    mockReadCursor.mockReturnValue(null);
+    expect(getResumeCursor("azzurra", "#sniffo")).toBeNull();
   });
 
-  it("dispatches each backfilled row through appendToScrollback", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-    const { appendToScrollback } = await import("../lib/scrollback");
-
-    const key = channelKey("azzurra", "#sniffo");
-    recordSeen(key, sampleMsg(5));
-
-    const backfilled = [sampleMsg(6, "missed-1"), sampleMsg(7, "missed-2")];
-    vi.mocked(listMessagesAfter).mockResolvedValue(backfilled);
-
-    await runBackfill("azzurra", "#sniffo");
-
-    expect(appendToScrollback).toHaveBeenCalledTimes(2);
-    expect(appendToScrollback).toHaveBeenNthCalledWith(1, key, backfilled[0]);
-    expect(appendToScrollback).toHaveBeenNthCalledWith(2, key, backfilled[1]);
-  });
-
-  it("rolls high-water mark forward as it ingests so a second reconnect resumes from the new tail", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-
-    const key = channelKey("azzurra", "#sniffo");
-    recordSeen(key, sampleMsg(5));
-
-    vi.mocked(listMessagesAfter).mockResolvedValueOnce([sampleMsg(6), sampleMsg(7)]);
-    await runBackfill("azzurra", "#sniffo");
-
-    // Second backfill cycle (simulated reconnect after another gap)
-    // — must use the NEW high-water mark (7), not the original (5).
-    vi.mocked(listMessagesAfter).mockResolvedValueOnce([]);
-    await runBackfill("azzurra", "#sniffo");
-
-    const calls = vi.mocked(listMessagesAfter).mock.calls;
-    expect(calls[0]).toEqual(["tok", "azzurra", "#sniffo", 5]);
-    expect(calls[1]).toEqual(["tok", "azzurra", "#sniffo", 7]);
-  });
-
-  it("logs and recovers on REST error without rewinding cursor", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-    const { appendToScrollback } = await import("../lib/scrollback");
-
-    const key = channelKey("azzurra", "#sniffo");
-    recordSeen(key, sampleMsg(5));
-
-    vi.mocked(listMessagesAfter).mockRejectedValueOnce(new Error("network down"));
-    await runBackfill("azzurra", "#sniffo");
-
-    expect(appendToScrollback).not.toHaveBeenCalled();
-    expect(consoleSpy).toHaveBeenCalled();
-
-    // Next reconnect: the cursor stayed at 5 (no rewind), so a retry
-    // gets to fire and ingest correctly.
-    vi.mocked(listMessagesAfter).mockResolvedValueOnce([sampleMsg(6)]);
-    await runBackfill("azzurra", "#sniffo");
-    expect(appendToScrollback).toHaveBeenCalledWith(key, sampleMsg(6));
-
-    consoleSpy.mockRestore();
-  });
-
-  it("guards against overlapping in-flight backfills on the same topic", async () => {
-    localStorage.setItem("grappa-token", "tok");
-    const { recordSeen, runBackfill } = await import("../lib/reconnectBackfill");
-    const { listMessagesAfter } = await import("../lib/api");
-
-    const key = channelKey("azzurra", "#sniffo");
-    recordSeen(key, sampleMsg(5));
-
-    let resolveFirst: (v: ScrollbackMessage[]) => void = () => {};
-    const firstPromise = new Promise<ScrollbackMessage[]>((res) => {
-      resolveFirst = res;
-    });
-    vi.mocked(listMessagesAfter).mockReturnValueOnce(firstPromise);
-
-    const a = runBackfill("azzurra", "#sniffo");
-    // Second call while first is still pending — must be skipped.
-    const b = runBackfill("azzurra", "#sniffo");
-
-    expect(listMessagesAfter).toHaveBeenCalledTimes(1);
-
-    resolveFirst([]);
-    await Promise.all([a, b]);
+  it("falls back to the server cursor even when the live mark exists for OTHER topics", async () => {
+    const { recordSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
+    mockReadCursor.mockReturnValue(7);
+    recordSeen(channelKey("azzurra", "#other"), sampleMsg(100));
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(7);
   });
 });

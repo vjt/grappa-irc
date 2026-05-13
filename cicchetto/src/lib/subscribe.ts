@@ -13,8 +13,8 @@ import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
-import { noteJoinOk, recordSeen, runBackfill } from "./reconnectBackfill";
-import { appendToScrollback } from "./scrollback";
+import { recordSeen } from "./reconnectBackfill";
+import { appendToScrollback, refreshScrollback } from "./scrollback";
 import {
   bumpEventUnread,
   bumpMessageUnread,
@@ -159,12 +159,12 @@ createRoot(() => {
     // NOTE: the topic key the operator subscribed to is NOT necessarily
     // the same as the routing `key`. The DM-listener handler subscribes
     // to the own-nick topic but re-keys the append to the SENDER's key.
-    // For backfill purposes the topic-of-subscription is what we need,
-    // because `runBackfill(slug, name)` calls
+    // For refresh-on-join purposes the topic-of-subscription is what we
+    // need, because `refreshScrollback(slug, name)` calls
     // `GET .../channels/<topic-channel>/messages?after=<id>` against
     // the topic the WS uses. The DM-listener installs its own
     // subscription on the own-nick topic — that subscription gets its
-    // own backfill cursor via the recordSeen call inside
+    // own resume cursor via the recordSeen call inside
     // installDmListenerHandler (see below), keyed on (slug, ownNick).
     // Per-window query topic subscriptions get their cursor here under
     // routeMessage's `key` (which IS the (slug, peer) topic for query
@@ -504,7 +504,11 @@ createRoot(() => {
         if (joined.has(key)) continue;
         const phx = joinChannel(name, slug, ch.name, (reply) => {
           applyJoinReply(slug, ch.name, cursorFromJoinReply(reply));
-          if (noteJoinOk(slug, ch.name)) void runBackfill(slug, ch.name);
+          // CP29 R-5: refresh on EVERY successful join (initial + every
+          // auto-rejoin). The per-key in-flight guard inside
+          // refreshScrollback dedupes bursty rejoins; the resume-cursor
+          // heuristic short-circuits when there's nothing to fetch.
+          void refreshScrollback(slug, ch.name);
         });
         installChannelHandler(phx, slug, ch.name, key, ownNick);
         joined.set(key, phx);
@@ -555,7 +559,7 @@ createRoot(() => {
       const ownNick = ownNickForNetwork(net, u);
       const phx = joinChannel(name, slug, channelName, (reply) => {
         applyJoinReply(slug, channelName, cursorFromJoinReply(reply));
-        if (noteJoinOk(slug, channelName)) void runBackfill(slug, channelName);
+        void refreshScrollback(slug, channelName);
       });
       installChannelHandler(phx, slug, channelName, typedKey, ownNick);
       joined.set(typedKey, phx);
@@ -603,7 +607,7 @@ createRoot(() => {
         if (joined.has(key)) continue;
         const phx = joinChannel(userName, net.slug, qw.targetNick, (reply) => {
           applyJoinReply(net.slug, qw.targetNick, cursorFromJoinReply(reply));
-          if (noteJoinOk(net.slug, qw.targetNick)) void runBackfill(net.slug, qw.targetNick);
+          void refreshScrollback(net.slug, qw.targetNick);
         });
         // Query-window handler: ownNick is perNetOwnNick so BUG5b (own-nick
         // presence suppression) works for query topics too. BUG4/BUG5a
@@ -643,20 +647,20 @@ createRoot(() => {
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, ownNick, (reply) => {
         applyJoinReply(net.slug, ownNick, cursorFromJoinReply(reply));
-        // DM-listener topic backfill: fetches self-msgs only because
+        // DM-listener topic refresh: fetches self-msgs only because
         // the controller applies own-nick narrowing when channel ==
         // own_nick (CP14-B3 rule). Inbound peer DMs persist with
         // channel=ownNick AND dm_with=peer; the narrowing filters
         // them out from this fetch by intent (the own-nick query
         // window display would otherwise leak every peer's DMs in).
         // Recovery for inbound peer DMs goes through each open
-        // per-peer query window's own backfill — that subscription's
+        // per-peer query window's own refresh — that subscription's
         // rejoin uses the (slug, peer) cursor and the bidirectional
         // DM fetch shape returns BOTH directions. First-contact DMs
         // that arrive during the gap (no per-peer subscription
         // existed yet) are not recovered by this design — deferred
-        // edge case, documented in `reconnectBackfill.ts`.
-        if (noteJoinOk(net.slug, ownNick)) void runBackfill(net.slug, ownNick);
+        // edge case, documented here for traceability.
+        void refreshScrollback(net.slug, ownNick);
       });
       installDmListenerHandler(phx, net.slug, net.id, ownNick);
       joined.set(key, phx);
@@ -686,8 +690,7 @@ createRoot(() => {
       if (joined.has(key)) continue;
       const phx = joinChannel(userName, net.slug, SERVER_WINDOW_NAME, (reply) => {
         applyJoinReply(net.slug, SERVER_WINDOW_NAME, cursorFromJoinReply(reply));
-        if (noteJoinOk(net.slug, SERVER_WINDOW_NAME))
-          void runBackfill(net.slug, SERVER_WINDOW_NAME);
+        void refreshScrollback(net.slug, SERVER_WINDOW_NAME);
       });
       installChannelHandler(phx, net.slug, SERVER_WINDOW_NAME, key, null);
       joined.set(key, phx);

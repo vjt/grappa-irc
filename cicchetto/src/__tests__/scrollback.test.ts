@@ -15,11 +15,24 @@ vi.mock("../lib/api", () => ({
   listNetworks: vi.fn(),
   listChannels: vi.fn(),
   listMessages: vi.fn(),
+  listMessagesAfter: vi.fn(),
   sendMessage: vi.fn(),
   me: vi.fn(),
   login: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
+}));
+
+// CP29 R-5: refreshScrollback consumes `getResumeCursor` from
+// reconnectBackfill (live high-water mark > server cursor > null).
+// Stub it so each test can drive the cursor source deterministically.
+// `recordSeen` is also exported by reconnectBackfill but refreshScrollback
+// calls it as a side-effect during ingestion — stub as a no-op so we
+// don't have to wire the high-water-mark map back here.
+const mockGetResumeCursor = vi.fn<(slug: string, chan: string) => number | null>(() => null);
+vi.mock("../lib/reconnectBackfill", () => ({
+  getResumeCursor: (slug: string, chan: string) => mockGetResumeCursor(slug, chan),
+  recordSeen: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -391,5 +404,169 @@ describe("loadMore — B2 concurrency guard + end-of-history latch", () => {
     vi.mocked(api.listMessages).mockResolvedValueOnce([]);
     await scrollback.loadMore("freenode", "#grappa");
     expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+// CP29 R-5: refreshScrollback — refresh-on-WS-join-ok verb.
+//
+// Called from subscribe.ts's 5 join callbacks on EVERY successful
+// per-channel join (initial + every auto-rejoin). Closes the cp13-S5
+// race class. Tests cover the contract:
+//   1. cursor source: getResumeCursor(slug, chan) drives the ?after=
+//      param; null cursor = no fetch (cold-load owns seeding).
+//   2. fetch shape: ?after=<cursor>&limit=200 ASC by id.
+//   3. ingestion: each row goes through appendToScrollback (id-deduped).
+//   4. in-flight guard: bursty rejoins converge to one REST request.
+//   5. error tolerance: a transient REST error doesn't latch out
+//      future retries.
+//
+// recordSeen mock from the module-level vi.mock is a no-op — the
+// high-water-mark roll-forward behavior lives in reconnectBackfill.ts
+// and is exercised by reconnectBackfill.test.ts.
+describe("refreshScrollback (CP29 R-5)", () => {
+  const sample = (id: number, body = "x"): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: id * 1000,
+    kind: "privmsg",
+    sender: "alice",
+    body,
+    meta: {},
+  });
+
+  beforeEach(() => {
+    mockGetResumeCursor.mockReset();
+    mockGetResumeCursor.mockReturnValue(null);
+  });
+
+  it("falls back to id=0 when getResumeCursor is null AND local pane is empty/absent", async () => {
+    // CP29 R-5 cp13-S5 race shape: a freshly-opened window whose
+    // resume-cursor sources are both null (no live high-water mark, no
+    // server-side cursor) STILL fires a refresh from id=0 so a row
+    // that landed during the WS-subscribe gap is recovered. The
+    // append-by-id dedupe + the per-key in-flight guard make a
+    // concurrent loadInitialScrollback safe.
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(null);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([]);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledWith("tok", "freenode", "#grappa", 0, 200);
+  });
+
+  it("uses the local pane's tail id when getResumeCursor is null but the pane has rows", async () => {
+    // After the REST seed has landed but before any live row was
+    // recordSeen'd: the high-water mark is null, the local pane has
+    // the seed's tail. Resume from there to recover any row whose
+    // persist landed AFTER the seed but BEFORE the WS-subscribe
+    // completed.
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("freenode", "#grappa");
+    scrollback.appendToScrollback(key, sample(11, "seed-tail"));
+    mockGetResumeCursor.mockReturnValue(null);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([]);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledWith("tok", "freenode", "#grappa", 11, 200);
+  });
+
+  it("is a no-op without a token", async () => {
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(42);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).not.toHaveBeenCalled();
+  });
+
+  it("calls listMessagesAfter with the resume cursor + limit=200", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(42);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([]);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42, 200);
+  });
+
+  it("appends each fetched row through appendToScrollback (id-deduped)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(5);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([
+      sample(6, "missed-1"),
+      sample(7, "missed-2"),
+    ]);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+
+    const key = channelKey("freenode", "#grappa");
+    const list = scrollback.scrollbackByChannel()[key] ?? [];
+    expect(list.map((m) => m.id)).toEqual([6, 7]);
+  });
+
+  it("dedupes rows whose id is already in the per-channel list", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("freenode", "#grappa");
+    // Pre-seed via the live WS path; refresh then races the same id back.
+    scrollback.appendToScrollback(key, sample(6, "live"));
+    mockGetResumeCursor.mockReturnValue(5);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([sample(6, "fetched-dupe")]);
+
+    await scrollback.refreshScrollback("freenode", "#grappa");
+
+    const list = scrollback.scrollbackByChannel()[key] ?? [];
+    expect(list.length).toBe(1);
+    // First-write wins (live arrival kept); the refresh row is dropped.
+    expect(list[0]?.body).toBe("live");
+  });
+
+  it("guards against overlapping in-flight refreshes on the same topic", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(5);
+
+    let resolveFirst: (v: ScrollbackMessage[]) => void = () => {};
+    const firstPromise = new Promise<ScrollbackMessage[]>((res) => {
+      resolveFirst = res;
+    });
+    vi.mocked(api.listMessagesAfter).mockReturnValueOnce(firstPromise);
+
+    const a = scrollback.refreshScrollback("freenode", "#grappa");
+    const b = scrollback.refreshScrollback("freenode", "#grappa");
+
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+
+    resolveFirst([]);
+    await Promise.all([a, b]);
+  });
+
+  it("releases the in-flight guard on REST error — subsequent refreshes can retry", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    mockGetResumeCursor.mockReturnValue(5);
+
+    vi.mocked(api.listMessagesAfter).mockRejectedValueOnce(new Error("network down"));
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalled();
+
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([]);
+    await scrollback.refreshScrollback("freenode", "#grappa");
+    expect(api.listMessagesAfter).toHaveBeenCalledTimes(2);
+
+    consoleSpy.mockRestore();
   });
 });

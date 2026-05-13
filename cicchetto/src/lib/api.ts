@@ -685,23 +685,28 @@ export async function listMessages(
   return (await res.json()) as ScrollbackMessage[];
 }
 
-// Sole consumer (today): the WS-reconnect backfill flow in
-// `subscribe.ts`. After a Phoenix Channel re-join, cic asks the server
-// "give me every row whose id is greater than the last id I rendered"
-// — closes the live-stream gap caused by best-effort PubSub fan-out
-// on a transiently-disconnected WS.
+// Sole consumer (today): the WS-reconnect refresh flow in
+// `lib/scrollback.ts:refreshScrollback`. After a Phoenix Channel
+// re-join, cic asks the server "give me every row whose id is greater
+// than the resume cursor" — closes the live-stream gap caused by best-
+// effort PubSub fan-out on a transiently-disconnected WS.
 //
 // Mirror of `GrappaWeb.MessagesController.index/2`'s `?after=<id>`
 // path. Server returns rows in ASC `id` order (chronological), so
-// callers append to the existing scrollback tail directly.
+// callers append to the existing scrollback tail directly. `limit` is
+// optional; when omitted the server defaults to its own `@default_limit`
+// (50). The R-5 caller passes 200 (the server's `@max_http_limit`) so
+// a long disconnect can recover in a single round-trip.
 export async function listMessagesAfter(
   token: string,
   networkSlug: string,
   channelName: string,
   afterId: number,
+  limit?: number,
 ): Promise<ScrollbackMessage[]> {
+  const limitQs = limit === undefined ? "" : `&limit=${limit}`;
   const res = await fetch(
-    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages?after=${afterId}`,
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages?after=${afterId}${limitQs}`,
     { headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
