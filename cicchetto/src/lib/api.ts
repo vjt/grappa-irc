@@ -640,9 +640,12 @@ export async function listChannels(token: string, networkSlug: string): Promise<
 
 // Mirror of `GrappaWeb.MessagesController.index/2`. Returns rows DESC by
 // (server_time, id) — newest first. The server emits a flat array, not a
-// `{messages, next_cursor}` envelope; the cursor is `server_time` of the
-// oldest row in the page (callers feed it back as `?before=`). Empty
-// page = no more history.
+// `{messages, next_cursor}` envelope; the cursor is the `id` of the
+// oldest row in the page (callers feed it back as `?before=<id>`).
+// Empty page = no more history.
+//
+// Cursor semantics flipped from server_time → id in CP29 R-2 to
+// eliminate same-millisecond ties straddling page boundaries.
 export async function listMessages(
   token: string,
   networkSlug: string,

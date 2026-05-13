@@ -1,8 +1,8 @@
 import { render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
-import WhoisCard from "../WhoisCard";
 import type { WhoisBundle } from "../lib/api";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
+import WhoisCard from "../WhoisCard";
 
 // P-0a — Cluster `numeric-delegation-p0` 2026-05-13. Verifies WhoisCard
 // renders all 11 newly-folded WHOIS-leg flags as inline tag chips +

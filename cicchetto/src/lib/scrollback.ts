@@ -157,7 +157,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (!oldest) return;
     loadMoreInFlight.add(key);
     try {
-      const page = await listMessages(t, slug, name, oldest.server_time);
+      // CP29 R-2: cursor flipped from `oldest.server_time` to
+      // `oldest.id`. The server-side `?before=` parameter now expects
+      // a `messages.id` value, eliminating same-ms ties that straddled
+      // page boundaries pre-flip.
+      const page = await listMessages(t, slug, name, oldest.id);
       // CP14 B2: empty page from the server means there's no older
       // history to load. Latch the channel so subsequent scroll-to-
       // top events don't re-fetch.

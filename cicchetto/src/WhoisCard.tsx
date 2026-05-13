@@ -1,6 +1,6 @@
 import { type Component, For, Show } from "solid-js";
-import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
 import type { WhoisBundle } from "./lib/api";
+import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
 
 // C2 — WHOIS card. Renders the aggregated WHOIS bundle inline at the top
 // of the active window's scrollback pane. Per spec #2:

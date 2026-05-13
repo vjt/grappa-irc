@@ -444,12 +444,12 @@ defmodule Grappa.ScrollbackTest do
       assert Enum.map(page, & &1.body) == ["msg 4", "msg 3", "msg 2"]
     end
 
-    test "paginates by `before` cursor (strict less-than on server_time)",
+    test "paginates by `before` cursor (strict less-than on id post-CP29 R-2)",
          %{user: user, network: net} do
       for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       [_, last_of_first_page] = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 2)
-      next_page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", last_of_first_page.server_time, 2)
+      next_page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", last_of_first_page.id, 2)
 
       assert Enum.map(next_page, & &1.body) == ["msg 2", "msg 1"]
     end
@@ -1270,6 +1270,68 @@ defmodule Grappa.ScrollbackTest do
       assert "must set user_id or visitor_id" in errors_on(changeset).subject
       refute Map.has_key?(errors_on(changeset), :user_id)
       refute Map.has_key?(errors_on(changeset), :visitor_id)
+    end
+  end
+
+  # --------------------------------------------------------------------
+  # CP29 R-2 — fetch_around/6 (window centered on cursor)
+  # --------------------------------------------------------------------
+  describe "fetch_around/6" do
+    test "returns floor(limit/2) before + ceil(limit/2) after, merged DESC",
+         %{user: user, network: net} do
+      rows =
+        for i <- 0..6 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [_, _, _, m3 | _] = rows
+
+      page = Scrollback.fetch_around({:user, user.id}, net.id, "#sniffo", m3.id, 4, nil)
+
+      # limit=4 → floor(4/2)=2 before-or-at, ceil(4/2)=2 after.
+      # Before-or-at m3.id (DESC): m3, m2. After m3.id (ASC): m4, m5.
+      # Merged DESC: reverse(after) ++ before = [m5, m4, m3, m2].
+      assert Enum.map(page, & &1.body) == ["msg 5", "msg 4", "msg 3", "msg 2"]
+    end
+
+    test "returns all rows when limit exceeds row count", %{user: user, network: net} do
+      rows =
+        for i <- 0..2 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [_, m1, _] = rows
+      page = Scrollback.fetch_around({:user, user.id}, net.id, "#sniffo", m1.id, 50, nil)
+      assert Enum.map(page, & &1.body) == ["msg 2", "msg 1", "msg 0"]
+    end
+
+    test "around_id pointing at non-existent row still returns rows on either side",
+         %{user: user, network: net} do
+      rows =
+        for i <- 0..3 do
+          {:ok, m} = ScrollbackHelpers.insert(sample(user, net, i))
+          m
+        end
+
+      [_, m1, _, _] = rows
+      gap_id = m1.id + 100
+      page = Scrollback.fetch_around({:user, user.id}, net.id, "#sniffo", gap_id, 4, nil)
+      # All four rows have id < gap_id → 2 (floor 4/2) before-or-at,
+      # 0 after. DESC of those 2: ["msg 3", "msg 2"].
+      assert Enum.map(page, & &1.body) == ["msg 3", "msg 2"]
+    end
+
+    test "isolates by (subject, network, channel) — no leakage", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
+      {:ok, anchor} = ScrollbackHelpers.insert(sample(user, net, 0))
+      # Same id (probably) on a different network — should NOT leak in.
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 1, %{channel: "#sniffo"}))
+
+      page = Scrollback.fetch_around({:user, user.id}, net.id, "#sniffo", anchor.id, 10, nil)
+      assert length(page) == 1
+      assert hd(page).network_id == net.id
     end
   end
 

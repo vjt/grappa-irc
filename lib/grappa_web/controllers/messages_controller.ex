@@ -23,12 +23,20 @@ defmodule GrappaWeb.MessagesController do
   `:no_session` tag is preserved in `Session` boundary @specs and
   operator log lines for tracing, but never reaches the wire.
 
-  Pagination params (`?before=`, `?limit=`) are validated at the
-  boundary per CLAUDE.md: absent params fall back to defaults, but a
-  param that is *present and unparseable* (e.g. `?limit=banana`)
-  returns `{:error, :bad_request}` via `FallbackController`. Forgiving
-  the typo would mask client bugs; that bar is set by the read-only
-  nature of this endpoint, not relaxed by it.
+  Pagination params (`?before=`, `?after=`, `?around=`, `?limit=`) are
+  validated at the boundary per CLAUDE.md: absent params fall back to
+  defaults, but a param that is *present and unparseable* (e.g.
+  `?limit=banana`) returns `{:error, :bad_request}` via
+  `FallbackController`. Forgiving the typo would mask client bugs;
+  that bar is set by the read-only nature of this endpoint, not
+  relaxed by it. `?before=` / `?after=` / `?around=` are mutually
+  exclusive — supplying any two together returns 400.
+
+  Cursor semantics (post-CP29 R-2): all three cursors are integer
+  `messages.id` values. `?before=<id>` was previously `server_time`
+  ms; the flip eliminated same-millisecond ties straddling page
+  boundaries. Display order is unchanged (DESC by `(server_time,
+  id)`); only the cursor key flipped.
 
   POST body must contain a non-empty string `"body"`. Anything else
   (missing key, empty string, non-string) falls through to the
@@ -47,24 +55,33 @@ defmodule GrappaWeb.MessagesController do
   alias GrappaWeb.Subject
 
   @default_limit 50
+  @max_http_limit 200
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
-  paginated DESC scrollback fetch for the authenticated user.
+  paginated scrollback fetch for the authenticated subject.
 
-  Optional query params:
-    * `before` — `server_time` cursor; only rows strictly less than it
-      are returned. Absent: latest page. Unparseable: 400.
+  Optional query params (cursors are mutually exclusive — any two of
+  `before` / `after` / `around` together returns 400):
+
+    * `before` — `id` cursor; returns rows whose `id` is strictly
+      LESS than the value, in DESCENDING `(server_time, id)` order
+      (newest first). Used by cic's loadMore (scroll-up) flow.
     * `after` — `id` cursor; returns rows whose `id` is strictly
       GREATER than the value, in ASCENDING `id` order (newest at the
-      bottom). Sole consumer is cic's reconnect-backfill flow — the
-      WS dropped, cic missed PubSub broadcasts, scrollback DB is the
-      source of truth. Mutually exclusive with `before` (per intent:
-      one direction per request). Unparseable: 400; both supplied
-      together: 400.
-    * `limit` — page size (default `#{@default_limit}`, hard cap in
-      `Grappa.Scrollback.fetch/5`). Must be a positive integer when
-      present. Absent: default. Non-positive or non-integer: 400.
+      bottom). Used by cic's reconnect-backfill flow + R-5
+      refresh-on-WS-join-ok.
+    * `around` — `id` cursor; returns up to `floor(limit/2)` rows
+      with `id <= around` plus up to `ceil(limit/2)` rows with `id >
+      around`, merged DESC. Used by R-4's "open window centered on
+      cursor" flow when the user opens a channel with an existing
+      read cursor.
+    * Absent: latest page (DESC, no cursor).
+    * `limit` — page size (default `#{@default_limit}`, HTTP ceiling
+      `#{@max_http_limit}` enforced at the boundary; `Grappa.Scrollback`
+      caps internally at 500 as a backstop). Must be a positive
+      integer when present. Absent: default. Non-positive,
+      non-integer, or > `#{@max_http_limit}`: 400.
 
   Unknown slug, no credential, or wrong-user network all collapse to
   404 `not_found` via `Plugs.ResolveNetwork` BEFORE this action runs;
@@ -77,28 +94,9 @@ defmodule GrappaWeb.MessagesController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    # Reject malformed target shape with 400. Accepts both channel-sigil
-    # names (#chan, &local, etc.) and nick-shaped targets for DM scrollback
-    # fetch. Without this, an invalid segment would fall through to
-    # `Scrollback.fetch/5` and return 200 + empty list, hiding the typo.
     with :ok <- validate_target_name(channel),
          {:ok, direction} <- parse_direction(params),
          {:ok, limit} <- parse_limit(params["limit"]) do
-      # `:network` is preloaded by `Scrollback.fetch/6` /
-      # `Scrollback.fetch_after/6` themselves — the boundary contract
-      # returns wire-shape-ready rows. No post-fetch preload helper here;
-      # A26 collapsed the controller's `preload_networks/2` into the
-      # Scrollback boundary so the contract is single-sourced.
-      #
-      # `own_nick` resolves the live IRC nick for this `(subject,
-      # network)` so the fetch can narrow the OWN-NICK query window's
-      # filter to self-msgs only — preventing every inbound DM (which
-      # the server stores at `channel = own_nick, dm_with = peer`)
-      # from leaking into the own-nick scrollback. `nil` falls back to
-      # the standard channel/peer-DM filter shape. Falls back to nil
-      # on `:no_session` (parked / unbootstrapped / transient
-      # supervisor restart) — the OR-shape for peer DMs is still safe;
-      # only own-nick narrowing is gated on session presence.
       own_nick =
         case Session.current_nick(subject, network.id) do
           {:ok, nick} -> nick
@@ -112,6 +110,9 @@ defmodule GrappaWeb.MessagesController do
 
           {:after, after_id} ->
             Scrollback.fetch_after(subject, network.id, channel, after_id, limit, own_nick)
+
+          {:around, around_id} ->
+            Scrollback.fetch_around(subject, network.id, channel, around_id, limit, own_nick)
         end
 
       render(conn, :index, messages: messages)
@@ -159,23 +160,21 @@ defmodule GrappaWeb.MessagesController do
 
   def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
 
+  # Cursor mutex: at most one of `before` / `after` / `around`. Two or
+  # more present together silently picking one would mask client bugs;
+  # 400 is the right answer (consistent with the rest of this
+  # controller's "present-and-unparseable = 400" rule).
   defp parse_direction(params) do
-    before_param = params["before"]
-    after_param = params["after"]
+    cursors =
+      Enum.reject(
+        [{:before, params["before"]}, {:after, params["after"]}, {:around, params["around"]}],
+        fn {_, v} -> is_nil(v) end
+      )
 
-    case {before_param, after_param} do
-      {nil, nil} ->
-        {:ok, {:before, nil}}
-
-      {b, nil} ->
-        with {:ok, n} <- parse_int(b), do: {:ok, {:before, n}}
-
-      {nil, a} ->
-        with {:ok, n} <- parse_int(a), do: {:ok, {:after, n}}
-
-      {_, _} ->
-        # Mutually exclusive — silent precedence would mask client bugs.
-        {:error, :bad_request}
+    case cursors do
+      [] -> {:ok, {:before, nil}}
+      [{tag, raw}] -> with {:ok, n} <- parse_int(raw), do: {:ok, {tag, n}}
+      _ -> {:error, :bad_request}
     end
   end
 
@@ -188,9 +187,13 @@ defmodule GrappaWeb.MessagesController do
 
   defp parse_limit(nil), do: {:ok, @default_limit}
 
+  # HTTP-boundary ceiling per CLAUDE.md "Validate at the boundary". The
+  # underlying `Grappa.Scrollback` cap (500) stays as an internal
+  # backstop; an HTTP request that asks for 5000 rows is a client bug,
+  # not something to silently clamp.
   defp parse_limit(s) when is_binary(s) do
     case Integer.parse(s) do
-      {n, ""} when n > 0 -> {:ok, n}
+      {n, ""} when n > 0 and n <= @max_http_limit -> {:ok, n}
       _ -> {:error, :bad_request}
     end
   end

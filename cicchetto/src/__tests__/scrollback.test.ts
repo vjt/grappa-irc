@@ -80,7 +80,7 @@ describe("scrollback verbs", () => {
     expect(api.listMessages).toHaveBeenCalledTimes(1);
   });
 
-  it("loadMore fetches with before=oldest_server_time and prepends older entries", async () => {
+  it("loadMore fetches with before=oldest_id and prepends older entries", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.listMessages).mockResolvedValueOnce([
@@ -111,7 +111,8 @@ describe("scrollback verbs", () => {
     ]);
     await scrollback.loadMore("freenode", "#grappa");
     const key = channelKey("freenode", "#grappa");
-    expect(api.listMessages).toHaveBeenLastCalledWith("tok", "freenode", "#grappa", 500);
+    // CP29 R-2: cursor flipped from oldest.server_time (500) to oldest.id (5).
+    expect(api.listMessages).toHaveBeenLastCalledWith("tok", "freenode", "#grappa", 5);
     expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([3, 5]);
   });
 

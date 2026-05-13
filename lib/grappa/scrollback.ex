@@ -23,13 +23,12 @@ defmodule Grappa.Scrollback do
     * `(user_id, network_id, channel, server_time)` index makes
       per-channel DESC paginated lookup cheap.
 
-  Pagination uses a strict-less-than `before` cursor on `server_time`.
-  The DESC `id` secondary sort makes intra-page order deterministic, but
-  two rows with identical `server_time` straddling a page boundary can
-  still be lost or duplicated by the cursor. Phase 6 will switch to a
-  `(server_time, msgid)` tuple cursor when the IRCv3 `message-tags` cap
-  lands; the column is additive — no migration to the existing index is
-  needed.
+  Pagination uses a strict-less-than `before` cursor on monotonic `id`
+  (post-CP29 R-2: was `server_time` pre-cluster, but same-millisecond
+  ties straddling page boundaries could lose or duplicate rows). The
+  DESC `(server_time, id)` order is preserved for display; only the
+  cursor key flipped. Phase 6 will additionally accept an IRCv3
+  `msgid` tuple cursor — the column is additive, no migration needed.
   """
 
   use Boundary,
@@ -188,8 +187,10 @@ defmodule Grappa.Scrollback do
     * `{:user, user_id}` — partitions on `m.user_id == ^user_id`.
     * `{:visitor, visitor_id}` — partitions on `m.visitor_id == ^visitor_id`.
 
-  When `before` is an integer, only rows with `server_time < before` are
-  returned. When `nil`, returns the latest page.
+  When `before` is an integer, only rows with `id < before` are returned
+  — id-cursor semantics post-CP29 R-2 (server_time pre-cluster, but
+  same-millisecond ties straddling page boundaries could lose / duplicate
+  rows). When `nil`, returns the latest page.
 
   `limit` must be a positive integer; non-positive values raise
   `FunctionClauseError` (caller bug, let it crash per CLAUDE.md OTP
@@ -321,6 +322,82 @@ defmodule Grappa.Scrollback do
     |> limit(^capped)
     |> preload(:network)
     |> Repo.all()
+  end
+
+  @doc """
+  Fetches a window of `limit` rows centered on `around_id` for
+  `(subject, network_id, channel)`.
+
+  Returns up to `floor(limit/2)` rows where `m.id <= around_id` (DESC)
+  AND up to `ceil(limit/2)` rows where `m.id > around_id` (ASC), merged
+  into a single chronological-DESC list (newest first — same as
+  `fetch/6`).
+
+  Sole consumer: cic's "open window centered on cursor" flow landing in
+  R-4 — when a user opens a channel with an existing read cursor, cic
+  asks for ~50 rows before + ~100 rows after the cursor so the unread
+  marker has visual context on both sides. Per plan vjt 2026-05-13
+  ("50 before, 100 next").
+
+  If `around_id` doesn't exist (deleted, never existed, or belongs to a
+  different subject/network/channel), the query still returns whatever
+  rows fall on either side of that integer position — same
+  resume-from-gap semantics as `fetch_after/6`. Validation that the id
+  belongs to the (subject, network, channel) triple lives in the
+  caller (`MessagesController` does NOT validate; the cic-side R-4
+  call always derives `around_id` from a known cursor).
+
+  `:network` is preloaded — same wire-shape-ready contract as
+  `fetch/6` / `fetch_after/6`.
+
+  Splits the work into two queries (one DESC, one ASC) rather than a
+  single SQL UNION because Ecto's UNION composition would lose the
+  per-side ordering + per-side limit semantics. Two queries hit the
+  same `(subject, network_id, channel, server_time)` index; cost is
+  roughly double a single page fetch — bounded.
+  """
+  @spec fetch_around(
+          subject(),
+          integer(),
+          String.t(),
+          pos_integer(),
+          pos_integer(),
+          String.t() | nil
+        ) :: [Message.t()]
+  def fetch_around(subject, network_id, channel, around_id, limit, own_nick)
+      when is_integer(network_id) and is_integer(around_id) and around_id > 0 and
+             is_integer(limit) and limit > 0 and
+             (is_binary(own_nick) or is_nil(own_nick)) do
+    capped = min(limit, @max_limit)
+    before_count = div(capped, 2)
+    after_count = capped - before_count
+
+    base =
+      Message
+      |> subject_where(subject)
+      |> where([m], m.network_id == ^network_id)
+      |> channel_or_dm_where(channel, own_nick)
+
+    before_rows =
+      base
+      |> where([m], m.id <= ^around_id)
+      |> order_by([m], desc: m.server_time, desc: m.id)
+      |> limit(^before_count)
+      |> preload(:network)
+      |> Repo.all()
+
+    after_rows =
+      base
+      |> where([m], m.id > ^around_id)
+      |> order_by([m], asc: m.server_time, asc: m.id)
+      |> limit(^after_count)
+      |> preload(:network)
+      |> Repo.all()
+
+    # DESC merge: after-rows (newest first when reversed) followed by
+    # before-rows (already DESC). Single chronological-DESC list,
+    # consistent with fetch/6 callers.
+    Enum.reverse(after_rows) ++ before_rows
   end
 
   @typedoc """
@@ -476,8 +553,11 @@ defmodule Grappa.Scrollback do
 
   defp maybe_before(query, nil), do: query
 
+  # Cursor key is monotonic id post-CP29 R-2 — was server_time, but
+  # same-ms ties straddling a page boundary could lose / duplicate rows.
+  # Order remains `(server_time DESC, id DESC)` for display stability.
   defp maybe_before(query, before) when is_integer(before),
-    do: where(query, [m], m.server_time < ^before)
+    do: where(query, [m], m.id < ^before)
 
   @doc """
   Returns `true` if at least one row exists for `network_id`.

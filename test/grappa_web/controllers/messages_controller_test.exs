@@ -56,10 +56,17 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert Enum.at(body, 2)["body"] == "m2"
   end
 
-  test "GET ?before=3&limit=2 paginates correctly",
+  test "GET ?before=<id>&limit=2 paginates correctly (id-cursor semantics post-CP29 R-2)",
        %{conn: conn, user: user, network: network} do
     seed(user, network)
-    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=3&limit=2")
+    # CP29 R-2: ?before= is now an id cursor (was server_time). Pick the
+    # row with body "m3" — strictly less than its id should yield m2, m1
+    # in DESC order (cap 2).
+    conn0 = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
+    body0 = json_response(conn0, 200)
+    m3 = Enum.find(body0, fn row -> row["body"] == "m3" end)
+
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=#{m3["id"]}&limit=2")
     body = json_response(conn, 200)
     assert length(body) == 2
     assert Enum.at(body, 0)["body"] == "m2"
@@ -194,6 +201,65 @@ defmodule GrappaWeb.MessagesControllerTest do
        %{conn: conn} do
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=10&after=5")
     assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  # CP29 R-2: cursor mutex extended from {before, after} to {before,
+  # after, around}. Any two together is a client bug.
+  test "GET ?before and ?around together returns 400", %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=10&around=5")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  test "GET ?after and ?around together returns 400", %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?after=10&around=5")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  test "GET ?around=banana returns 400", %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?around=banana")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  # CP29 R-2: HTTP boundary ceiling at 200. Underlying Scrollback cap
+  # (500) stays as backstop; HTTP request asking 5000 is a client bug.
+  test "GET ?limit=201 returns 400 (HTTP ceiling)", %{conn: conn} do
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=201")
+    assert json_response(conn, 400)["error"] == "bad_request"
+  end
+
+  test "GET ?limit=200 is accepted (boundary)", %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=200")
+    body = json_response(conn, 200)
+    assert length(body) == 5
+  end
+
+  # CP29 R-2: ?around=<id> returns floor(limit/2) before + ceil(limit/2)
+  # after, merged DESC. With 5 rows seeded (ids ascending) and limit=4,
+  # asking around the middle row should yield 2 before + 2 after.
+  test "GET ?around=<id>&limit=4 returns rows centered on the cursor",
+       %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    conn0 = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
+    body0 = json_response(conn0, 200)
+    m2 = Enum.find(body0, fn row -> row["body"] == "m2" end)
+
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?around=#{m2["id"]}&limit=4")
+    body = json_response(conn, 200)
+    # Returned DESC: 2 after (m4, m3) then floor(4/2) = 2 before-or-at (m2, m1).
+    assert Enum.map(body, & &1["body"]) == ["m4", "m3", "m2", "m1"]
+  end
+
+  test "GET ?around=<id> with default limit returns up to 50 rows", %{conn: conn, user: user, network: network} do
+    seed(user, network)
+    conn0 = get(conn, "/networks/azzurra/channels/%23sniffo/messages")
+    body0 = json_response(conn0, 200)
+    m2 = Enum.find(body0, fn row -> row["body"] == "m2" end)
+
+    conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?around=#{m2["id"]}")
+    body = json_response(conn, 200)
+    # All 5 fit in default limit=50. DESC ordering preserved.
+    assert Enum.map(body, & &1["body"]) == ["m4", "m3", "m2", "m1", "m0"]
   end
 
   test "GET ?after=<id>&limit=2 caps the page size", %{conn: conn, user: user, network: network} do
