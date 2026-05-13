@@ -437,7 +437,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           body: "hi"
         })
 
-      {:ok, _} = Grappa.ReadCursor.advance({:user, user.id}, network.id, "#hit", msg.id)
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#hit", msg.id)
 
       topic = Topic.channel(user_name, network.slug, "#hit")
 

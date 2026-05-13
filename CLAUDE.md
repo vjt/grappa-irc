@@ -51,10 +51,11 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor stored as `last_read_message_id` (FK to `messages.id`). cic
   reads the cursor from the subject envelope on login + per-window
-  from a topic event; cic POSTs cursor advancements as the operator
-  reads. Phase 6 IRCv3 facade exposes the same cursor as
-  `+draft/read-marker` MARKREAD lines on the listener side. Removing
-  server-side cursor is a breaking change.
+  from a topic event; cic POSTs the operator's current position via
+  `Grappa.ReadCursor.set/4` (last-write-wins) on every settle event
+  (focus-leave, browser-blur). Phase 6 IRCv3 facade exposes the same
+  cursor as `+draft/read-marker` MARKREAD lines on the listener side.
+  Removing server-side cursor is a breaking change.
 - **`CAP LS` + SASL is the only required upstream IRCv3 feature.**
   Everything else (`server-time`, `batch`, `labeled-response`, etc.) is
   opportunistic. Never assume upstream-side `CHATHISTORY` exists.

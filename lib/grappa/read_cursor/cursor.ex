@@ -21,15 +21,12 @@ defmodule Grappa.ReadCursor.Cursor do
       enforce per-subject uniqueness without polluting the index with
       NULL pairs that would otherwise collide spuriously.
 
-  ## Forward-only advance
+  ## Direction
 
-  The `last_read_message_id` only moves forward. The advance logic
-  lives in the context (`Grappa.ReadCursor.advance/4`) — the changeset
-  enforces the FK + subject XOR + non-negative id. Forward-only
-  semantics are a context concern (compare-and-swap against the
-  existing row) rather than a column-level invariant, so the changeset
-  doesn't reject a "lower id" insert in isolation: the context decides
-  whether to update or no-op.
+  `last_read_message_id` is set last-write-wins by
+  `Grappa.ReadCursor.set/4`. The changeset enforces the FK + subject
+  XOR + non-negative id; direction is a context concern, not a
+  column-level invariant.
   """
 
   use Ecto.Schema
@@ -67,7 +64,7 @@ defmodule Grappa.ReadCursor.Cursor do
   end
 
   @doc """
-  Builds an insert / advance changeset.
+  Builds an insert / update changeset.
 
   All five fields are required at cast time; subject XOR validation
   (`validate_subject_xor/1`) attaches to the synthetic `:subject` key.

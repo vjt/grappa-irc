@@ -3,7 +3,7 @@ import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
-import { advanceReadCursor } from "./readCursor";
+import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import type { WindowKind } from "./windowKinds";
 
@@ -25,7 +25,7 @@ import type { WindowKind } from "./windowKinds";
 //
 // Identity-scoped via identityScopedStore (dup-A3 close): four resets
 // registered, one per signal. The two business createEffects (selection
-// transition cursor-advance + isDocumentVisible visibility transitions)
+// transition cursor-set + isDocumentVisible visibility transitions)
 // stay inline — orthogonal to identity rotation.
 //
 // C4.0: `SelectedChannel` gains a `kind: WindowKind` discriminator,
@@ -77,21 +77,19 @@ const exports = identityScopedStore((onIdentityChange) => {
     setEventsUnread((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
   };
 
-  // Shared cursor-advance helper used by both the cicchetto-leave arm
+  // Shared cursor-set helper used by both the cicchetto-leave arm
   // (selectedChannel transitions away from a window) and the browser-blur
   // arm (the focused window's browser tab loses focus). Both arms have
-  // identical semantics: "user has demonstrably moved on from this window;
-  // mark its current scrollback tail as read." Same guards: empty
-  // scrollback → no-op (nothing to mark).
+  // identical semantics: the operator settled here, then moved on; record
+  // the last visible row's id as the cursor.
   //
-  // CP29 R-4: advance now POSTs to the server. `last.id` is the message
-  // primary key; the server's `Grappa.ReadCursor.advance/4` validates
-  // belonging to (subject, network, channel) and is forward-only, so
-  // sending the latest visible row is safe even on rapid focus thrashing.
+  // POSTs the current scrollback tail's `id` to the server's
+  // `Grappa.ReadCursor.set/4`. Last-write-wins; the verb absorbs
+  // duplicates and out-of-order delivery from rapid focus thrashing.
   // Token guard: if the bearer somehow vanished mid-effect (logout race),
   // skip the POST — the identity-rotation cleanup will reset the signal
   // map anyway.
-  const advanceCursorForWindow = (networkSlug: string, channelName: string): void => {
+  const setCursorForWindow = (networkSlug: string, channelName: string): void => {
     const k = channelKey(networkSlug, channelName);
     const msgs = scrollbackByChannel()[k];
     if (!msgs || msgs.length === 0) return;
@@ -99,7 +97,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (last === undefined) return;
     const bearer = untrack(token);
     if (!bearer) return;
-    void advanceReadCursor(bearer, networkSlug, channelName, last.id);
+    void setReadCursor(bearer, networkSlug, channelName, last.id);
   };
 
   // Shared badge-clear helper used by both the cicchetto-select arm
@@ -128,15 +126,15 @@ const exports = identityScopedStore((onIdentityChange) => {
 
   createEffect(
     on(selectedChannel, (sel, prev) => {
-      // Read-cursor advance on focus-leave. When the user moves focus
-      // AWAY from a window (or to null), advance THAT window's cursor
-      // to the server_time of its last visible message. Next visit
-      // shows no marker (everything seen). Subsequent inbound msgs
-      // bump server_time past cursor → marker reappears on next visit.
+      // Cursor-set on focus-leave. When the user moves focus AWAY from
+      // a window (or to null), POST the last visible row's id as the
+      // cursor for THAT window. Next visit shows no marker (everything
+      // seen up to that point); subsequent inbound msgs sit above the
+      // cursor → marker reappears on next visit.
       //
       // Why on leave rather than on focus or on every WS append:
       //   * On focus: would hide the marker before the user could
-      //     read past it (the bug fix this implements).
+      //     read past it.
       //   * On WS append while focused: same problem one tick later.
       //   * On leave: the user has demonstrably moved on; "I've seen
       //     what was here" is the right semantic.
@@ -149,13 +147,13 @@ const exports = identityScopedStore((onIdentityChange) => {
       //   * `prev.key === sel?.key` → re-selecting the same window
       //     (e.g. component re-render fires the effect with identical
       //     value); not a leave.
-      //   * No msgs in prev's scrollback → nothing to mark as read;
-      //     advanceCursorForWindow handles this internally.
+      //   * No msgs in prev's scrollback → setCursorForWindow no-ops
+      //     internally.
       if (prev !== undefined && prev !== null) {
         const prevKey = channelKey(prev.networkSlug, prev.channelName);
         const selKey = sel ? channelKey(sel.networkSlug, sel.channelName) : null;
         if (prevKey !== selKey) {
-          advanceCursorForWindow(prev.networkSlug, prev.channelName);
+          setCursorForWindow(prev.networkSlug, prev.channelName);
         }
       }
 
@@ -171,13 +169,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   // Browser visibility arm — symmetric pair of transitions on the same
   // signal:
   //
-  //   TRUE → FALSE (browser blur): advance the selected window's cursor.
-  //     Same semantic as a cicchetto-leave; the user has demonstrably moved
-  //     on. Without this, returning to the browser would show no marker for
-  //     msgs that landed while the user was away (subscribe.ts skips the
-  //     live-cursor-advance on hidden tabs, so msgs accumulate above the
-  //     stale cursor — the cursor must be marked-as-read at the moment of
-  //     leave so the marker surfaces at the right boundary).
+  //   TRUE → FALSE (browser blur): set the selected window's cursor to
+  //     the current scrollback tail. Same semantic as a cicchetto-leave;
+  //     the user has demonstrably moved on. Without this, returning to
+  //     the browser would show no marker for msgs that landed while the
+  //     user was away (subscribe.ts skips the live cursor-set on hidden
+  //     tabs, so msgs accumulate above the stale cursor — the cursor
+  //     must be set at the moment of leave so the marker surfaces at
+  //     the right boundary).
   //
   //   FALSE → TRUE (browser focus regain): clear the selected window's
   //     badges. Same semantic as cicchetto-select; the user is now reading
@@ -188,7 +187,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   // Guards (both arms):
   //   * `prev === undefined` → initial run on module load; not a transition.
   //   * No selected window → nothing to act on.
-  //   * advanceCursorForWindow / clearBadgesForWindow no-op internally on
+  //   * setCursorForWindow / clearBadgesForWindow no-op internally on
   //     empty scrollback / absent badges.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
@@ -196,7 +195,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       const sel = untrack(selectedChannel);
       if (!sel) return;
       if (prev === true && visible === false) {
-        advanceCursorForWindow(sel.networkSlug, sel.channelName);
+        setCursorForWindow(sel.networkSlug, sel.channelName);
       } else if (prev === false && visible === true) {
         clearBadgesForWindow(sel.networkSlug, sel.channelName);
       }

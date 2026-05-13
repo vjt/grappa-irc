@@ -2,10 +2,10 @@
 //
 // Source-of-truth signal for "is the user actively looking at the cicchetto
 // browser tab?" Used by:
-//   * subscribe.ts — gates the live-reading cursor advance on incoming msgs.
-//     A focused-in-cicchetto window whose browser tab is HIDDEN must NOT
-//     auto-advance the cursor; arrivals accumulate as unread.
-//   * selection.ts — fires a "leave" advance when the focused window's
+//   * subscribe.ts — gates the live cursor-set on incoming msgs. A
+//     focused-in-cicchetto window whose browser tab is HIDDEN must NOT
+//     set the cursor live; arrivals accumulate as unread.
+//   * selection.ts — fires a settle-cursor-set when the focused window's
 //     browser tab loses focus (so reopening it shows the marker).
 //
 // Why both Page Visibility and window focus/blur:

@@ -22,7 +22,7 @@ grappa exposes the same underlying state through **two facades** that share a si
 1. **REST + WebSocket (Phoenix Channels)** — the primary surface. REST for resources, multiplexed WebSocket Channels for real-time event push. Consumed by cicchetto. IRC is fully terminated at the server; the web client is IRC-protocol-ignorant end-to-end. This is the design center.
 2. **IRCv3 listener** *(phase 2+)* — a secondary, optional surface that speaks `CAP LS` + SASL + `CHATHISTORY` to existing IRCv3-capable mobile IRC clients (Goguma, Quassel mobile, etc). It is a *view* over the same store the REST surface reads from — never a second source of truth.
 
-The two facades expose the same data. Neither introduces state the other does not. In particular: **no server-side `MARKREAD` / read watermark on either facade.** Read position is client-side, always.
+The two facades expose the same data. Neither introduces state the other does not. **Read state is server-owned**: per `(subject, network, channel)` cursor stored as `last_read_message_id`, advanced by cic on focus-leave + browser-blur, exposed to the IRCv3 listener facade as `+draft/read-marker` MARKREAD lines.
 
 ## Status
 
@@ -458,7 +458,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] Map paginated scrollback to `CHATHISTORY` (`BEFORE`, `AFTER`, `BETWEEN`, `LATEST`)
 - [ ] `server-time`, `message-tags`, `batch`, `labeled-response`
 - [ ] Drop-in compatibility target: [Goguma](https://sr.ht/~emersion/goguma/), [Quassel](https://quassel-irc.org/), [mIRC 7.64+](https://www.mirc.com/) with IRCv3 support
-- [ ] Deliberately **not** exposed: `MARKREAD` / server-tracked read positions
+- [ ] Expose the server-owned read cursor as `+draft/read-marker` MARKREAD lines on the listener side (REST + IRCv3 share the same `last_read_message_id` per `(subject, network, channel)`)
 
 ## Contributing
 

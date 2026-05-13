@@ -130,7 +130,7 @@ vi.mock("../lib/readCursor", () => ({
   },
   applyMeEnvelope: vi.fn(),
   applyJoinReply: vi.fn(),
-  advanceReadCursor: vi.fn().mockResolvedValue(undefined),
+  setReadCursor: vi.fn().mockResolvedValue(undefined),
   clearReadCursors: vi.fn(() => setReadCursorStore({})),
 }));
 

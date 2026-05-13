@@ -18,13 +18,13 @@ vi.mock("../lib/api", () => ({
 }));
 
 // CP29 R-4: selection.ts now POSTs to the server via
-// `advanceReadCursor` on focus-leave / browser-blur. Stub the verb so
+// `setReadCursor` on focus-leave / browser-blur. Stub the verb so
 // tests stay self-contained — the cursor-write path is exercised by
 // `readCursor.test.ts` end-to-end (mocked fetch). Without this mock the
-// real `advanceReadCursor` calls `fetch()` with a relative URL that
+// real `setReadCursor` calls `fetch()` with a relative URL that
 // jsdom's WHATWG fetch implementation rejects with `ERR_INVALID_URL`.
 vi.mock("../lib/readCursor", () => ({
-  advanceReadCursor: vi.fn().mockResolvedValue(undefined),
+  setReadCursor: vi.fn().mockResolvedValue(undefined),
   applyMeEnvelope: vi.fn(),
   applyJoinReply: vi.fn(),
   applyReadCursorSet: vi.fn(),
@@ -209,10 +209,10 @@ describe("selection store", () => {
     });
   });
 
-  // Read-cursor advance on focus-leave.
+  // Read-cursor set on focus-leave.
   //
   // Spec: when the user moves focus AWAY from a window, that window's
-  // read-cursor advances to the server_time of the last message visible
+  // read-cursor is set to the server_time of the last message visible
   // in its scrollback at the moment of leave. Next visit: no marker
   // (everything seen). New incoming msgs while away → server_time
   // exceeds cursor → marker reappears on next visit.
@@ -224,12 +224,12 @@ describe("selection store", () => {
   //
   // CP29 R-4: cursor backend flipped from localStorage to server-side
   // (POST /networks/:slug/channels/:chan/read-cursor). Tests assert on
-  // calls to the mocked `advanceReadCursor` verb instead of localStorage
+  // calls to the mocked `setReadCursor` verb instead of localStorage
   // bytes. The verb is fire-and-forget; the server-side broadcast that
   // would normally land via `applyReadCursorSet` is out of scope here
   // (covered by `readCursor.test.ts`).
-  describe("read-cursor advance on focus-leave", () => {
-    it("switching from A to B advances A's cursor to A's last msg id", async () => {
+  describe("read-cursor set on focus-leave", () => {
+    it("switching from A to B sets A's cursor to A's last msg id", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -264,18 +264,18 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // Cursor not yet advanced on focus alone — only on leave.
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      // Cursor not yet set on focus alone — only on leave.
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#cicchetto",
         kind: "channel",
       });
-      // After leave: cursor advanced to last msg's id.
-      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 2);
+      // After leave: cursor set to last msg's id.
+      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 2);
     });
 
-    it("switching from A to null (deselect) also advances A's cursor", async () => {
+    it("switching from A to null (deselect) also sets A's cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -299,10 +299,10 @@ describe("selection store", () => {
         kind: "channel",
       });
       selection.setSelectedChannel(null);
-      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 7);
+      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 7);
     });
 
-    it("leaving a window with no scrollback yet does NOT advance the cursor", async () => {
+    it("leaving a window with no scrollback yet does NOT set the cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -320,10 +320,10 @@ describe("selection store", () => {
         kind: "channel",
       });
       // Nothing to mark as read.
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
 
-    it("re-selecting the same window does NOT advance the cursor (no leave occurred)", async () => {
+    it("re-selecting the same window does NOT set the cursor (no leave occurred)", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -351,18 +351,18 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
   });
 
   // Browser-blur arm: when the focused window's browser tab loses
   // focus (Cmd-Tab away, Page Visibility hidden, etc.), the cursor
-  // for the currently-selected window must advance — same semantic as
+  // for the currently-selected window must set — same semantic as
   // a cicchetto-leave but triggered by document-visibility transitions.
   // Without this, returning to the browser would show no marker even
   // for msgs that arrived while the user was demonstrably away.
-  describe("read-cursor advance on browser-blur (visibility transition)", () => {
-    it("focused on #grappa, browser blurs → cursor advances to last visible msg id", async () => {
+  describe("read-cursor set on browser-blur (visibility transition)", () => {
+    it("focused on #grappa, browser blurs → cursor sets to last visible msg id", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -385,16 +385,16 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // Pre-blur: cursor not yet advanced (focus alone doesn't advance).
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      // Pre-blur: cursor not yet set (focus alone doesn't set).
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
 
       setVisibilityForTest(false);
       await Promise.resolve(); // let the createEffect flush
 
-      expect(readCursor.advanceReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
+      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
     });
 
-    it("no selected window: blur does NOT advance any cursor", async () => {
+    it("no selected window: blur does NOT set any cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const readCursor = await import("../lib/readCursor");
       const selection = await import("../lib/selection");
@@ -404,10 +404,10 @@ describe("selection store", () => {
       setVisibilityForTest(false);
       await Promise.resolve();
 
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
 
-    it("focused on empty-scrollback window: blur does NOT advance the cursor", async () => {
+    it("focused on empty-scrollback window: blur does NOT set the cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -422,10 +422,10 @@ describe("selection store", () => {
       setVisibilityForTest(false);
       await Promise.resolve();
 
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
 
-    it("blur followed by focus regain does NOT advance the cursor again", async () => {
+    it("blur followed by focus regain does NOT set the cursor again", async () => {
       // Only the blur transition writes; focus regain is a no-op
       // (the user is now actively reading, no msgs to mark as "seen
       // while away").
@@ -453,23 +453,18 @@ describe("selection store", () => {
       });
       setVisibilityForTest(false);
       await Promise.resolve();
-      expect(readCursor.advanceReadCursor).toHaveBeenCalledTimes(1);
-      expect(readCursor.advanceReadCursor).toHaveBeenLastCalledWith(
-        "tok",
-        "freenode",
-        "#grappa",
-        100,
-      );
+      expect(readCursor.setReadCursor).toHaveBeenCalledTimes(1);
+      expect(readCursor.setReadCursor).toHaveBeenLastCalledWith("tok", "freenode", "#grappa", 100);
 
       setVisibilityForTest(true);
       await Promise.resolve();
-      // Focus regain must NOT trigger another advance.
-      expect(readCursor.advanceReadCursor).toHaveBeenCalledTimes(1);
+      // Focus regain must NOT trigger another set.
+      expect(readCursor.setReadCursor).toHaveBeenCalledTimes(1);
     });
 
-    it("initial visibility=true does NOT spuriously advance any cursor", async () => {
+    it("initial visibility=true does NOT spuriously set any cursor", async () => {
       // Module load fires the on(isDocumentVisible) effect with prev===undefined.
-      // That initial run must skip cursor advance (otherwise every fresh
+      // That initial run must skip cursor set (otherwise every fresh
       // window with msgs would have its cursor pinned to "now" at load).
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
@@ -494,13 +489,13 @@ describe("selection store", () => {
         kind: "channel",
       });
       // No setVisibilityForTest call — visibility stays at its initial true.
-      // After microtask flush, cursor must NOT be advanced.
+      // After microtask flush, cursor must NOT be set.
       await Promise.resolve();
-      expect(readCursor.advanceReadCursor).not.toHaveBeenCalled();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
   });
   // Badge clear on browser-focus-regain — symmetric counterpart to the
-  // browser-blur cursor-advance arm. When the focused window's browser tab
+  // browser-blur cursor-set arm. When the focused window's browser tab
   // regains focus, badges (unread / messages / events) for that window
   // must clear — same semantic as cicchetto-select clear, just triggered
   // by visibility transition instead of selection change.
@@ -586,7 +581,7 @@ describe("selection store", () => {
     });
 
     it("initial visibility=true does NOT spuriously clear bumped badges", async () => {
-      // Mirror of the cursor-advance "initial run" guard. Module load fires
+      // Mirror of the cursor-set "initial run" guard. Module load fires
       // the visibility effect with prev===undefined; that initial run must
       // not clear pre-existing badges (e.g. from history-restore on cold
       // start or future cross-tab sync).

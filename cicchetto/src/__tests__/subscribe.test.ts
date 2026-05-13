@@ -661,7 +661,7 @@ describe("subscribe — WS join effect", () => {
       });
 
       // Cursor untouched — only selection.ts focus-leave / browser-blur
-      // arms call `advanceReadCursor`.
+      // arms call `setReadCursor`.
       expect(localStorage.getItem("rc:freenode:#grappa")).toBe(sentinel);
     });
 

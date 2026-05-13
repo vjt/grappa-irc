@@ -738,16 +738,17 @@ const ScrollbackPane: Component<Props> = (props) => {
     ),
   );
 
-  // Cursor advancement is owned by selection.ts (on focus-leave). Per
-  // the marker spec: a marker is shown ONCE per "I read this window"
-  // event — leaving the window is the "I've moved on" signal that
-  // advances the cursor. Doing it here on `atBottom` had two bugs:
-  // (1) the createSignal initial true fired the effect on mount before
-  // the user could see anything; (2) any auto-follow scroll on a new
-  // message kept atBottom true and re-advanced the cursor on every
-  // append, hiding the marker on the focused window before the user
-  // moved away. The selection-store leave hook lives at
-  // `lib/selection.ts`'s `on(selectedChannel)` effect.
+  // Cursor settling is owned by selection.ts (on focus-leave +
+  // browser-blur). Per the marker spec: a marker is shown ONCE per
+  // "I read this window" event — leaving the window is the "I've
+  // moved on" signal that sets the cursor. Doing it here on
+  // `atBottom` had two bugs: (1) the createSignal initial true fired
+  // the effect on mount before the user could see anything; (2) any
+  // auto-follow scroll on a new message kept atBottom true and
+  // re-set the cursor on every append, hiding the marker on the
+  // focused window before the user moved away. The selection-store
+  // leave hook lives at `lib/selection.ts`'s `on(selectedChannel)`
+  // effect.
 
   const onScroll = () => {
     if (!listRef) return;

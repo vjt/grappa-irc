@@ -1,25 +1,23 @@
 defmodule Grappa.ReadCursor do
   @moduledoc """
-  Server-owned per-(subject, network, channel) read cursor — the
-  primitive that lets cicchetto sync read state across devices, recover
-  from the cp13-S5 subscribe-after-broadcast race, and gives the Phase 6
-  IRCv3 listener facade a `+draft/read-marker` source without redesign.
+  Server-owned per-(subject, network, channel) read cursor.
 
-  ## Why this exists
+  ## Semantics
 
-  The Phase 1 invariant *"No server-side `MARKREAD` / read cursors"* is
-  deliberately flipped in the `server-side-read-state` cluster. See
-  `docs/DESIGN_NOTES.md` "2026-05-13 — invariant flip" and
-  `docs/plans/2026-05-13-server-side-read-state.md` for the full
-  motivation.
+  The cursor is "the row the operator is currently looking at". cic
+  POSTs `set/4` on every settle event — focus-leave, browser-blur,
+  future scroll-settle. Last-write-wins; direction is not enforced.
+  Moving backwards is a legitimate operation: the operator scrolled up
+  to re-read context, settled there. Cross-device fan-out via
+  `broadcast_set/4` keeps every open device aligned on the same
+  position.
 
-  ## Forward-only advance
+  Surfaces consuming the cursor:
 
-  `advance/4` is idempotent: if the existing `last_read_message_id` is
-  already greater than or equal to the requested `message_id`, the call
-  is a no-op and returns the existing row. This gives every callsite
-  the same shape — clients can fire-and-forget cursor advances on every
-  read event without bookkeeping.
+    * cic in-pane unread-marker: rows with `id > cursor` are unread.
+    * cic sidebar/bottom-bar badge counters: same predicate.
+    * Phase 6 IRCv3 listener facade: `+draft/read-marker` MARKREAD
+      lines reflect the same `last_read_message_id`.
 
   ## Subject XOR
 
@@ -108,13 +106,15 @@ defmodule Grappa.ReadCursor do
   end
 
   @doc """
-  Advances the cursor for `(subject, network_id, channel)` to
-  `message_id`.
+  Sets the cursor for `(subject, network_id, channel)` to `message_id`.
 
-  Forward-only: if a cursor already exists and its
-  `last_read_message_id` is `>= message_id`, returns `{:ok, existing}`
-  without DB mutation. If no cursor exists, inserts one. If the existing
-  cursor's id is lower, updates in place.
+  Last-write-wins. The cursor represents "the row the operator is
+  currently looking at" — cic POSTs on every settle (focus-leave,
+  browser-blur, future scroll-settle). Direction is not enforced;
+  moving backwards is a legitimate operation (operator scrolled up to
+  re-read context, settled there). Cross-device fan-out via
+  `broadcast_set/4` keeps every open device aligned on the same
+  position.
 
   Validation:
 
@@ -123,22 +123,22 @@ defmodule Grappa.ReadCursor do
       `{:error, :invalid_message}`.
     * Subject XOR enforced by changeset.
 
-  Returns `{:ok, %Cursor{}}` on advance / no-op / insert; the returned
-  struct always reflects the post-call state. `{:error, _}` on
-  validation failure (`:invalid_message` for FK / iso violation,
+  Returns `{:ok, %Cursor{}}` on insert / update; the returned struct
+  always reflects the post-call state. `{:error, _}` on validation
+  failure (`:invalid_message` for FK / iso violation,
   `Ecto.Changeset.t()` for changeset-level errors).
 
-  No broadcast is performed here — `broadcast_advance/3` is a separate
-  step the caller invokes after a successful advance, so tests + bulk
+  No broadcast is performed here — `broadcast_set/4` is a separate
+  step the caller invokes after a successful set, so tests + bulk
   paths can decide whether a fan-out is appropriate.
   """
-  @spec advance(subject(), integer(), String.t(), integer()) ::
+  @spec set(subject(), integer(), String.t(), integer()) ::
           {:ok, Cursor.t()} | {:error, :invalid_message | Ecto.Changeset.t()}
-  def advance(subject, network_id, channel, message_id)
+  def set(subject, network_id, channel, message_id)
       when is_integer(network_id) and is_binary(channel) and channel != "" and
              is_integer(message_id) and message_id > 0 do
     if message_belongs?(subject, network_id, channel, message_id) do
-      do_advance(subject, network_id, channel, message_id)
+      do_set(subject, network_id, channel, message_id)
     else
       {:error, :invalid_message}
     end
@@ -182,7 +182,7 @@ defmodule Grappa.ReadCursor do
 
   Cross-device sync: every live cic instance subscribed to the
   per-channel topic receives the event and updates its cursor signal
-  map. Per plan O6 — emit on every advance, no batching, no throttle.
+  map. Emit on every `set/4`, no batching, no throttle.
 
   The caller is responsible for resolving `user_name` + `network_slug`
   from the subject — the broadcast topic is user-rooted (per CLAUDE.md
@@ -195,8 +195,8 @@ defmodule Grappa.ReadCursor do
   sync mechanism isn't applicable (visitor sessions are single-device
   by construction).
   """
-  @spec broadcast_advance(String.t(), String.t(), String.t(), integer()) :: :ok
-  def broadcast_advance(user_name, network_slug, channel, last_read_message_id)
+  @spec broadcast_set(String.t(), String.t(), String.t(), integer()) :: :ok
+  def broadcast_set(user_name, network_slug, channel, last_read_message_id)
       when is_binary(user_name) and is_binary(network_slug) and is_binary(channel) and
              is_integer(last_read_message_id) do
     topic = Topic.channel(user_name, network_slug, channel)
@@ -211,11 +211,11 @@ defmodule Grappa.ReadCursor do
   # Private helpers
   # ---------------------------------------------------------------------------
 
-  @spec do_advance(subject(), integer(), String.t(), integer()) ::
+  @spec do_set(subject(), integer(), String.t(), integer()) ::
           {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()}
-  defp do_advance(subject, network_id, channel, message_id) do
+  defp do_set(subject, network_id, channel, message_id) do
     case get(subject, network_id, channel) do
-      %Cursor{last_read_message_id: existing_id} = cursor when existing_id >= message_id ->
+      %Cursor{last_read_message_id: ^message_id} = cursor ->
         {:ok, cursor}
 
       %Cursor{} = cursor ->

@@ -204,11 +204,9 @@ createRoot(() => {
     const isEffectivelyFocused = isSelected && isDocumentVisible();
     if (isEffectivelyFocused) {
       // No badge bump — the user is reading this window right now.
-      // CP29 R-4: cursor advancement is owned by `selection.ts`'s
-      // focus-leave arm (and the browser-blur arm). Per the post-flip
-      // invariant the cursor is server-authoritative + forward-only;
-      // the per-message advance from inside the WS handler was a
-      // localStorage-era trick that the new model doesn't need.
+      // Cursor settling is owned by `selection.ts`'s focus-leave arm
+      // (and the browser-blur arm); the WS handler doesn't touch the
+      // cursor.
       return;
     }
     bumpUnread(key);
@@ -318,9 +316,8 @@ createRoot(() => {
         case "kicked":
           setKicked(key, payload.by, payload.reason);
           return;
-        // CP29 R-4: cross-device cursor sync. Server emits on every
-        // successful `Grappa.ReadCursor.advance/4`; route into the
-        // signal-map applier (forward-only guard inside).
+        // Cross-device cursor sync. Server emits on every successful
+        // `Grappa.ReadCursor.set/4`; route into the signal-map applier.
         case "read_cursor_set":
           applyReadCursorSet(slug, name, payload.last_read_message_id);
           return;
@@ -402,9 +399,9 @@ createRoot(() => {
           // even if it did, the DM window's surface is not the right
           // place for them.
           return;
-        // CP29 R-4: cursor for the own-nick query window. Server emits
-        // on advance just like channel topics; route into the signal
-        // map keyed on (slug, ownNick).
+        // Cursor for the own-nick query window. Server emits on every
+        // `Grappa.ReadCursor.set/4` just like channel topics; route
+        // into the signal map keyed on (slug, ownNick).
         case "read_cursor_set":
           applyReadCursorSet(slug, ownNick, payload.last_read_message_id);
           return;
@@ -454,12 +451,12 @@ createRoot(() => {
     });
   };
 
-  // CP29 R-4 — narrower for the per-channel join reply
-  // (`%{read_cursor: <id_or_nil>}`). phoenix.js delivers the reply as
-  // `unknown`-shaped JSON; same boundary-validation pattern as
-  // `narrowChannelEvent`. Returns the cursor id (number) or null on
-  // missing/invalid shape — consumers pass straight into
-  // `applyJoinReply` which itself no-ops on null.
+  // Narrower for the per-channel join reply (`%{read_cursor:
+  // <id_or_nil>}`). phoenix.js delivers the reply as `unknown`-shaped
+  // JSON; same boundary-validation pattern as `narrowChannelEvent`.
+  // Returns the cursor id (number) or null on missing/invalid shape —
+  // consumers pass straight into `applyJoinReply` which itself no-ops
+  // on null.
   const cursorFromJoinReply = (reply: unknown): number | null => {
     if (typeof reply !== "object" || reply === null) return null;
     const r = reply as Record<string, unknown>;

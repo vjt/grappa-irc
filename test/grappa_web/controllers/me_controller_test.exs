@@ -133,7 +133,7 @@ defmodule GrappaWeb.MeControllerTest do
           body: "hi"
         })
 
-      {:ok, _} = Grappa.ReadCursor.advance({:user, user.id}, network.id, "#a", m1.id)
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, "#a", m1.id)
 
       conn =
         conn

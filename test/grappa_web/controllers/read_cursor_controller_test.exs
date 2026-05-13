@@ -1,17 +1,17 @@
 defmodule GrappaWeb.ReadCursorControllerTest do
   @moduledoc """
   POST `/networks/:slug/channels/:chan/read-cursor` — server-owned read
-  cursor write surface. Landed in CP29 R-3 of the
-  `server-side-read-state` cluster.
+  cursor write surface.
 
   Coverage:
-    * happy path: insert + advance + no-op for forward-only.
+    * happy path: insert + same-id no-op + last-write-wins on lower id
+      and higher id.
     * 422 when message_id doesn't belong to (subject, network, channel).
     * 400 on malformed payload (missing message_id, non-integer,
       non-positive, malformed channel).
     * 404 on unknown network slug / not-our-network — collapsed via
       `Plugs.ResolveNetwork` upstream.
-    * Cross-device WS broadcast on every successful advance.
+    * Cross-device WS broadcast on every successful set.
 
   `async: false` because the WS broadcast subscription test attaches to
   a global PubSub topic and we use stable user names per test to keep
@@ -62,7 +62,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert body == %{"last_read_message_id" => msg.id}
     end
 
-    test "advances forward when message_id is greater than the existing cursor",
+    test "moves forward when message_id is greater than the existing cursor",
          %{conn: conn, user: user, network: network} do
       m1 = insert_message(user, network, "#sniffo", 1)
       m2 = insert_message(user, network, "#sniffo", 2)
@@ -80,7 +80,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
       assert json_response(conn, 200) == %{"last_read_message_id" => m2.id}
     end
 
-    test "no-op (returns existing id) when message_id is lower than the existing cursor",
+    test "moves backward when message_id is lower than the existing cursor (operator settled higher up)",
          %{conn: conn, user: user, network: network} do
       m1 = insert_message(user, network, "#sniffo", 1)
       m2 = insert_message(user, network, "#sniffo", 2)
@@ -95,7 +95,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
           "message_id" => m1.id
         })
 
-      assert json_response(conn, 200) == %{"last_read_message_id" => m2.id}
+      assert json_response(conn, 200) == %{"last_read_message_id" => m1.id}
     end
   end
 
@@ -158,7 +158,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
   end
 
   describe "POST /read-cursor — cross-device broadcast" do
-    test "emits read_cursor_set on the per-channel topic on every advance",
+    test "emits read_cursor_set on the per-channel topic on every set",
          %{conn: conn, user: user, network: network} do
       msg = insert_message(user, network, "#sniffo")
       topic = Topic.channel(user.name, network.slug, "#sniffo")
@@ -181,7 +181,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
     test "broadcast still fires on no-op (forward-only)",
          %{conn: conn, user: user, network: network} do
       msg = insert_message(user, network, "#sniffo")
-      {:ok, _} = ReadCursor.advance({:user, user.id}, network.id, "#sniffo", msg.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, network.id, "#sniffo", msg.id)
 
       topic = Topic.channel(user.name, network.slug, "#sniffo")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)

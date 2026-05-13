@@ -4720,10 +4720,10 @@ touched in the same file (`cicchetto/src/lib/subscribe.ts`).
 > Read state is server-owned, per (subject, network, channel). Cursor
 > stored as `last_read_message_id` (FK to `messages.id`). cic reads the
 > cursor from the subject envelope on login + per-window from a topic
-> event; cic POSTs cursor advancements as the operator reads. Phase 6
-> IRCv3 facade exposes the same cursor as `+draft/read-marker` MARKREAD
-> lines on the listener side. Removing server-side cursor is a breaking
-> change.
+> event; cic POSTs the operator's current position as they settle.
+> Phase 6 IRCv3 facade exposes the same cursor as `+draft/read-marker`
+> MARKREAD lines on the listener side. Removing server-side cursor is
+> a breaking change.
 
 Schema lives at `read_cursors (subject, network_id, channel,
 last_read_message_id)` with subject XOR check + partial unique indexes
@@ -4742,6 +4742,72 @@ cleanup). Per-bucket commit + deploy + healthcheck + browser smoke.
 After R-5 the parked `cluster/numeric-delegation-p0` branch unblocks
 (rebase onto main, verify cp13-S5 green, merge cold-deploy, continue
 P-0b through P-0e).
+
+
+---
+
+## 2026-05-13 — CP29 server-side read-state cluster CLOSED
+
+The seven-bucket `cluster/server-side-read-state` shipped end-to-end.
+Buckets R-1..R-Z merged to main; `0.2.0 → 0.3.0` minor bump for the
+invariant flip. Cold-deploy gate triggered by mix.exs version change
++ new migration; per-bucket integration was done on the branch with
+the cold cutover held to R-Z so production sees the cluster as one
+atom (matches the cluster mandate).
+
+Commits (in landing order):
+
+- `c9fe7f1` R-1 — server-owned cursor schema + `Grappa.ReadCursor` context
+- `b7fc135` R-2 — unify REST surface around id cursors + `?around=`
+- `d851ec6` R-3 — `POST /networks/:slug/channels/:name/read_cursor` +
+  `/me` envelope + `read_cursor_set` typed WS push
+- `7598839` R-4 — cic-side cursor backend flip (signal map; legacy
+  localStorage one-shot nuke)
+- `1106264` R-5 — refresh-on-WS-join-ok + collapse cic
+  reconnectBackfill into `refreshScrollback` (closes cp13-S5)
+- `5189d2c` R-6 — `isOwnPresenceEvent` predicate at
+  `cicchetto/src/lib/ownPresenceEvent.ts`; refactor subscribe.ts gate
+  + extend ScrollbackPane in-pane unread-marker filter (closes vjt's
+  "/part → /join shows 'unread messages' for my own actions" bug)
+- R-Z — this docs sweep + version bump
+
+Bugs closed in production after the cold cutover lands:
+
+- **cp13-S5** (S5 caveat in `cp13-server-window.spec.ts`) — peer DM
+  during WS gap recovered by R-5's refresh-on-join.
+- **vjt's own-action unread alert** — own JOIN/PART/QUIT/MODE/NICK/KICK
+  rows no longer surface in the in-pane `── XX unread messages ──`
+  marker. Sidebar/bottom-bar badge gate (subscribe.ts:191) and in-pane
+  marker filter (ScrollbackPane.tsx) now share one predicate; the
+  drift class is closed.
+
+Decisions deferred (documented for future readers):
+
+- **Auto-set cursor on operator's own POST**: not wired. The
+  selection.ts focus-leave model (with sibling browser-blur arm) is
+  the canonical "I've moved on" signal and is uniform across own-msg
+  vs peer-msg vs scroll-up scenarios. Wiring site if needed:
+  post-`Grappa.Scrollback.persist_event/1`, before broadcast, so the
+  broadcast carries the new cursor.
+- **Explicit mark-as-unread UI**: server verb (`Grappa.ReadCursor.set/4`,
+  last-write-wins) is the wire surface; cic exposure (slash command,
+  right-click) is a follow-up cluster.
+- **Scroll-settle cursor derivation**: cic currently sets the cursor
+  to the scrollback tail on settle. Reading the actual visible row
+  from scroll position and setting the cursor there is a follow-up.
+- **Mention click cursor-rewind UX**: requires extending
+  `MentionsBundle` wire shape with message ids + a one-shot
+  scroll-to verb in `ScrollbackPane`. Separate cluster.
+
+Invariant flip wording is unchanged from R-1 (CLAUDE.md lines 51-57)
+and remains accurate post-cluster. Phase 6 IRCv3 facade exposes the
+same cursor as `+draft/read-marker` MARKREAD lines.
+
+Next-up: parked `cluster/numeric-delegation-p0` worktree unblocks
+(rebase onto main; verify cp13-S5 + m3/m4/replay green; cold deploy
+for the U-line submodule bump; continue P-0b → P-0e per
+`docs/plans/2026-05-13-numeric-delegation-p0.md`, order:
+P-0b AWAY → P-0e INVITING → P-0d LUSERS → P-0c WHOWAS).
 
 
 ---

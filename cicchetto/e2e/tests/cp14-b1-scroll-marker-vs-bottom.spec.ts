@@ -110,18 +110,36 @@ async function fetchScrollbackPage(
   }>;
 }
 
-// Pre-seed localStorage with a read cursor for `(NETWORK_SLUG, channel)`
-// at the given server_time. Mirror of `cicchetto/src/lib/readCursor.ts`'s
-// storage shape: key `rc:<slug>:<channel>`, value = String(server_time).
-// Runs via addInitScript so it lands BEFORE the SPA's first
-// `getReadCursor` read on module init.
-async function seedCursor(page: Page, channel: string, serverTime: number): Promise<void> {
-  await page.addInitScript(
-    ([slug, ch, t]) => {
-      localStorage.setItem(`rc:${slug}:${ch}`, String(t));
+// Pre-seed the SERVER-side read cursor for `(NETWORK_SLUG, channel)` at
+// the given message id. Post-CP29 R-1..R-4 the cursor is server-owned;
+// cic hydrates from the `/me` envelope at cold load + per-channel join
+// reply on subscribe. localStorage `rc:` keys are nuked on cic boot
+// (R-4 migration), so the pre-CP29 seedCursor-via-localStorage shape
+// no longer worked.
+//
+// Mirrors `cicchetto/src/lib/readCursor.ts`'s `advanceReadCursor` POST
+// (forward-only via `Grappa.ReadCursor.advance/4` — sending the same
+// id twice is idempotent). Server-side broadcast falls back to a no-op
+// for cross-device fanout because no other WS subscriber exists at
+// seed time; the cold-load `/me` envelope picks the value up when
+// `loginAs` triggers cic boot.
+async function seedCursor(page: Page, channel: string, messageId: number): Promise<void> {
+  const vjt = getSeededVjt();
+  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${vjt.token}`,
+      "content-type": "application/json",
     },
-    [NETWORK_SLUG, channel, serverTime] as const,
-  );
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) {
+    throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
+  }
+  // `page` retained as a parameter for symmetry with the prior helper
+  // shape; not currently used (server is the source of truth post-R-4).
+  void page;
 }
 
 test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open", () => {
@@ -140,10 +158,10 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
     // tail → unreadCount=0 on first render.
     const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
-    // Wire shape is DESC, so rows[0] is the newest (highest server_time).
+    // Wire shape is DESC, so rows[0] is the newest (highest id).
     const tail = page0[0];
     if (!tail) throw new Error("no seeded rows");
-    await seedCursor(page, CHANNEL, tail.server_time);
+    await seedCursor(page, CHANNEL, tail.id);
 
     await loginAs(page, vjt);
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
@@ -187,11 +205,11 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
     const page0 = await fetchScrollbackPage(vjt.token, CHANNEL);
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
     // DESC-ordered, so index 25 is the 26th-newest row. Cursor placed
-    // there means rows 0..24 (the newest 25) all satisfy
-    // `server_time > cursor` → unreadCount = 25.
+    // there means rows 0..24 (the newest 25) all satisfy `id > cursor`
+    // → unreadCount = 25.
     const cursorRow = page0[25];
     if (!cursorRow) throw new Error("seeded page too short for cursor placement");
-    await seedCursor(page, CHANNEL, cursorRow.server_time);
+    await seedCursor(page, CHANNEL, cursorRow.id);
 
     await loginAs(page, vjt);
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });

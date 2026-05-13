@@ -1,35 +1,29 @@
 // Read-cursor store — Solid signal-map of last-read message id per
-// (networkSlug, channel) hydrated from the server. Authority is server-
-// side per the post-CP29-R1 invariant flip ("Read state is server-owned,
-// per (subject, network, channel)" in CLAUDE.md).
+// (networkSlug, channel) hydrated from the server.
 //
-// CP29 R-4: localStorage backend REMOVED. Cursor lives only in this
-// module's Solid signal map; sources of truth are
-//   1. `/me` envelope (`read_cursors: %{slug => %{chan => id}}`) at login
-//      via `applyMeEnvelope/1` — covers the cold-load bulk hydration.
+// The cursor is "the row the operator is currently looking at". Server
+// is the authority (per CLAUDE.md "Read state is server-owned"); cic
+// hydrates from three sources:
+//   1. `/me` envelope (`read_cursors: %{slug => %{chan => id}}`) at
+//      login via `applyMeEnvelope/1` — cold-load bulk hydration.
 //   2. Phoenix Channel join reply (`%{read_cursor: <id_or_nil>}`) per
-//      per-channel topic via `applyJoinReply/3` — covers per-window
-//      refresh on every reconnect/rejoin.
+//      per-channel topic via `applyJoinReply/3` — refresh on every
+//      reconnect/rejoin.
 //   3. `read_cursor_set` typed WS event on the per-channel topic via
-//      `applyReadCursorSet/3` — covers cross-device live sync (device A
-//      advances, device B reflects).
+//      `applyReadCursorSet/3` — cross-device live sync (device A
+//      settles, device B reflects).
 //
-// Writes go to the server via `advanceReadCursor(slug, chan, message_id)`
-// which POSTs to `/networks/:slug/channels/:chan/read-cursor`. Forward-
-// only is enforced server-side (`Grappa.ReadCursor.advance/4` no-ops on
-// equal-or-lower id) so this module sends eagerly without debounce.
-// The post's typed WS broadcast then fans the new cursor back into the
-// signal map via the `read_cursor_set` arm — single source, even on the
-// originating device.
+// Writes go to the server via `setReadCursor(bearer, slug, chan, id)`,
+// which POSTs to `/networks/:slug/channels/:chan/read-cursor`. The
+// server is last-write-wins; cic sends eagerly without debounce on
+// every settle event (selection.ts focus-leave, browser-blur, future
+// scroll-settle). The POST's `read_cursor_set` WS broadcast feeds the
+// new id back into this signal map via the arm in subscribe.ts —
+// single source for both the originating device and any peers.
 //
-// One-shot localStorage migration: the legacy backend persisted under
-// the `rc:` prefix. Module-load runs `purgeLegacyKeys()` once to clear
-// the leftover bytes; idempotent on subsequent loads (no `rc:` keys
-// remain to delete). Keeps the migration confined to this file.
-//
-// Identity-scoped reset: `clearReadCursors()` empties the signal map on
-// logout / token rotation — same shape every other identity-scoped
-// store uses (`scrollback.ts`, `selection.ts`, `members.ts`).
+// Identity-scoped reset: `clearReadCursors()` empties the signal map
+// on logout / token rotation, mirroring scrollback.ts / selection.ts /
+// members.ts.
 
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { token } from "./auth";
@@ -44,7 +38,7 @@ const [cursors, setCursors] = createRoot(() => createSignal<Record<string, numbe
  * Returns the stored read-cursor `last_read_message_id` for
  * `(networkSlug, channel)`, or `null` if none is known. Tracked by
  * Solid — consumers inside reactive contexts re-run when the cursor
- * advances.
+ * changes.
  */
 export const getReadCursor = (networkSlug: string, channel: string): number | null => {
   const v = cursors()[cacheKey(networkSlug, channel)];
@@ -87,32 +81,26 @@ export const applyJoinReply = (
 };
 
 /**
- * Apply a `read_cursor_set` WS event on the per-channel topic. Forward-
- * only at the wire layer too: the server only emits on a successful
- * advance, so an equal-or-lower id should never arrive — but the guard
- * here keeps a buggy server or out-of-order delivery from regressing
- * the cursor.
+ * Apply a `read_cursor_set` WS event on the per-channel topic. The
+ * server emits last-write-wins, including backwards moves; the signal
+ * map adopts the new id unconditionally so cross-device settles
+ * reflect on every subscribed tab.
  */
 export const applyReadCursorSet = (
   networkSlug: string,
   channel: string,
   lastReadMessageId: number,
 ): void => {
-  setCursors((prev) => {
-    const k = cacheKey(networkSlug, channel);
-    const existing = prev[k];
-    if (existing !== undefined && existing >= lastReadMessageId) return prev;
-    return { ...prev, [k]: lastReadMessageId };
-  });
+  setCursors((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: lastReadMessageId }));
 };
 
 /**
- * POST `/networks/:slug/channels/:chan/read-cursor` to advance the
+ * POST `/networks/:slug/channels/:chan/read-cursor` to set the
  * server-side cursor. Fire-and-forget: the server's `read_cursor_set`
  * WS broadcast lands the new id in the signal map (same arm whether
- * the advance came from this device or another). Eager send — no
- * debounce — because the server is idempotent (forward-only) and
- * cross-device latency matters.
+ * the set came from this device or another). Eager send — no debounce
+ * — because cross-device latency matters and the server absorbs
+ * duplicates.
  *
  * Returns `void`: the response payload is read only when needed for
  * tests; production code learns the result via the typed WS event.
@@ -121,7 +109,7 @@ export const applyReadCursorSet = (
  * here so this module stays free of the auth ↔ readCursor cycle and
  * tests can drive a deterministic token without `vi.mock`-ing auth.
  */
-export const advanceReadCursor = async (
+export const setReadCursor = async (
   bearer: string,
   networkSlug: string,
   channel: string,
@@ -137,7 +125,7 @@ export const advanceReadCursor = async (
     body: JSON.stringify({ message_id: messageId }),
   });
   if (!res.ok) {
-    console.warn(`[readCursor] advance failed`, networkSlug, channel, messageId, res.status);
+    console.warn(`[readCursor] set failed`, networkSlug, channel, messageId, res.status);
   }
 };
 
@@ -149,13 +137,13 @@ export const clearReadCursors = (): void => {
   setCursors({});
 };
 
-// Module-load one-shot purge of the pre-CP29-R4 localStorage backend.
-// The legacy module persisted under `rc:<slug>:<chan>` keys; delete
-// them so a freshly-flipped browser doesn't carry stale bytes that no
-// code reads. Idempotent: a second load finds no `rc:` keys and walks
-// the loop without mutating anything. Guarded for non-browser
-// environments (vitest jsdom defines `localStorage`; node SSR would
-// not — but cic doesn't SSR, the guard is paranoia).
+// One-shot purge of the legacy localStorage backend. The pre-flip
+// module persisted under `rc:<slug>:<chan>` keys; delete them so a
+// freshly-flipped browser doesn't carry stale bytes no code reads.
+// Idempotent: a second load finds no `rc:` keys and exits the loop
+// without mutating anything. Guarded for non-browser environments
+// (vitest jsdom defines `localStorage`; node SSR would not — but cic
+// doesn't SSR, the guard is paranoia).
 const purgeLegacyKeys = (): void => {
   if (typeof localStorage === "undefined") return;
   const keysToRemove: string[] = [];

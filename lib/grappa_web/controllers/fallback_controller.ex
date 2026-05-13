@@ -231,12 +231,11 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "internal"})
   end
 
-  # CP29 R-3: `Grappa.ReadCursor.advance/4` returns this when the
-  # `message_id` exists but doesn't belong to (subject, network,
-  # channel) — request shape was valid; the data referenced a
-  # different scope. 422 is the right surface for "well-formed but
-  # semantically rejected"; distinguished from 400 (request shape bad)
-  # and 404 (resource missing entirely).
+  # `Grappa.ReadCursor.set/4` returns this when the `message_id` exists
+  # but doesn't belong to (subject, network, channel) — request shape
+  # was valid; the data referenced a different scope. 422 is the right
+  # surface for "well-formed but semantically rejected"; distinguished
+  # from 400 (request shape bad) and 404 (resource missing entirely).
   def call(conn, {:error, :invalid_message}) do
     conn
     |> put_status(:unprocessable_entity)

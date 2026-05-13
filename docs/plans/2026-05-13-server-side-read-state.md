@@ -1,6 +1,13 @@
 # Server-side read state — flip the cic/server cursor invariant
 
-**Status**: brainstorm — implementation NOT started.
+# Server-side read state — flip the cic/server cursor invariant
+
+**Status**: CLOSED 2026-05-13 — cluster shipped end-to-end. Buckets
+R-1..R-Z merged to main; version `0.2.0 → 0.3.0`. cp13-S5 + vjt's
+own-action unread bug both closed. See
+[DESIGN_NOTES "CP29 server-side read-state cluster CLOSED"](../DESIGN_NOTES.md#2026-05-13--cp29-server-side-read-state-cluster-closed)
+for the landing record + deferred decisions.
+
 **Position**: insert ahead of P-0b (numeric-delegation cluster). Blocks
 nothing in the P-0a server-side WHOIS leg (already LIVE-VERIFIED in
 prod), but the cluster plan in `2026-05-13-numeric-delegation-p0.md`

@@ -91,18 +91,27 @@ async function scrollbackGeometry(
   });
 }
 
-// Pre-seed localStorage with a read cursor for `(NETWORK_SLUG, channel)`
-// at the given server_time. Mirror of cp14-b1's helper — same shape:
-// key `rc:<slug>:<channel>`, value = String(server_time). addInitScript
-// places the value BEFORE the SPA's first `getReadCursor` read on
-// module init.
-async function seedCursor(page: Page, channel: string, serverTime: number): Promise<void> {
-  await page.addInitScript(
-    ([slug, ch, t]) => {
-      localStorage.setItem(`rc:${slug}:${ch}`, String(t));
+// Pre-seed the SERVER-side read cursor for `(NETWORK_SLUG, channel)` at
+// the given message id. Post-CP29 R-1..R-4 the cursor is server-owned;
+// cic hydrates from the `/me` envelope at cold load + per-channel join
+// reply on subscribe. localStorage `rc:` keys are nuked on cic boot
+// (R-4 migration), so the pre-CP29 seedCursor-via-localStorage shape
+// no longer worked. Same shape cp14-b1 uses.
+async function seedCursor(page: Page, channel: string, messageId: number): Promise<void> {
+  const vjt = getSeededVjt();
+  const url = `http://grappa-test:4000/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${vjt.token}`,
+      "content-type": "application/json",
     },
-    [NETWORK_SLUG, channel, serverTime] as const,
-  );
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) {
+    throw new Error(`seedCursor: ${res.status} ${await res.text()}`);
+  }
+  void page;
 }
 
 // Fetch the latest scrollback page via REST. Used in scenario 2 to
@@ -214,7 +223,7 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
     const cursorRow = page0[25];
     if (!cursorRow) throw new Error("seeded page too short for cursor placement");
-    await seedCursor(page, CHANNEL, cursorRow.server_time);
+    await seedCursor(page, CHANNEL, cursorRow.id);
 
     await loginAs(page, vjt);
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });

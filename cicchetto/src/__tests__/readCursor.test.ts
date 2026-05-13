@@ -1,7 +1,7 @@
 import { createEffect, createRoot } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// CP29 R-4: server-owned read cursor — module is a Solid signal map of
+// Server-owned read cursor — module is a Solid signal map of
 // `last_read_message_id` per (networkSlug, channel), hydrated from
 // /me + per-channel WS join replies + cross-device read_cursor_set
 // events. Writes go to the server via fire-and-forget POST.
@@ -9,12 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Tests cover:
 //   1. getReadCursor returns null for unknown keys.
 //   2. applyMeEnvelope hydrates the bulk envelope from /me.
-//   3. applyJoinReply is a no-op on null but advances on a real cursor.
-//   4. applyReadCursorSet writes forward-only; equal/lower id is no-op.
-//   5. advanceReadCursor POSTs the right URL + body shape.
+//   3. applyJoinReply is a no-op on null but writes on a real cursor.
+//   4. applyReadCursorSet is last-write-wins (any direction).
+//   5. setReadCursor POSTs the right URL + body shape.
 //   6. clearReadCursors wipes all entries.
 //   7. on(token) cleanup arm wipes on logout/rotation.
-//   8. getReadCursor is reactive — Solid effects re-run on advance.
+//   8. getReadCursor is reactive — Solid effects re-run on set.
 //   9. Module-load purges legacy `rc:`-prefixed localStorage keys
 //      one-shot (idempotent on subsequent loads).
 //
@@ -38,7 +38,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("readCursor (CP29 R-4)", () => {
+describe("readCursor", () => {
   it("getReadCursor returns null for an unknown (networkSlug, channel) pair", async () => {
     const { getReadCursor, clearReadCursors } = await import("../lib/readCursor");
     clearReadCursors();
@@ -75,35 +75,35 @@ describe("readCursor (CP29 R-4)", () => {
     expect(getReadCursor("freenode", "#grappa")).toBe(50);
   });
 
-  it("applyJoinReply advances the cursor for the given (slug, channel)", async () => {
+  it("applyJoinReply writes the cursor for the given (slug, channel)", async () => {
     const { applyJoinReply, getReadCursor, clearReadCursors } = await import("../lib/readCursor");
     clearReadCursors();
     applyJoinReply("freenode", "#grappa", 42);
     expect(getReadCursor("freenode", "#grappa")).toBe(42);
   });
 
-  it("applyReadCursorSet is forward-only — equal or lower id is a no-op", async () => {
+  it("applyReadCursorSet is last-write-wins (cursor moves freely in either direction)", async () => {
     const { applyReadCursorSet, getReadCursor, clearReadCursors } = await import(
       "../lib/readCursor"
     );
     clearReadCursors();
     applyReadCursorSet("freenode", "#grappa", 100);
-    applyReadCursorSet("freenode", "#grappa", 100); // equal — no-op
-    applyReadCursorSet("freenode", "#grappa", 50); // lower — no-op
     expect(getReadCursor("freenode", "#grappa")).toBe(100);
-    applyReadCursorSet("freenode", "#grappa", 200); // higher — advances
+    applyReadCursorSet("freenode", "#grappa", 50); // backwards — operator scrolled up + settled
+    expect(getReadCursor("freenode", "#grappa")).toBe(50);
+    applyReadCursorSet("freenode", "#grappa", 200); // forwards
     expect(getReadCursor("freenode", "#grappa")).toBe(200);
   });
 
-  it("advanceReadCursor POSTs to the cursor endpoint with the right body shape", async () => {
-    const { advanceReadCursor } = await import("../lib/readCursor");
+  it("setReadCursor POSTs to the cursor endpoint with the right body shape", async () => {
+    const { setReadCursor } = await import("../lib/readCursor");
     const fetchMock = vi
       .fn()
       .mockResolvedValue(
         new Response(JSON.stringify({ last_read_message_id: 42 }), { status: 200 }),
       );
     vi.stubGlobal("fetch", fetchMock);
-    await advanceReadCursor("tokABC", "freenode", "#grappa", 42);
+    await setReadCursor("tokABC", "freenode", "#grappa", 42);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/networks/freenode/channels/%23grappa/read-cursor");
@@ -114,12 +114,12 @@ describe("readCursor (CP29 R-4)", () => {
     expect(headers.authorization).toBe("Bearer tokABC");
   });
 
-  it("advanceReadCursor swallows non-OK responses (fire-and-forget contract)", async () => {
-    const { advanceReadCursor } = await import("../lib/readCursor");
+  it("setReadCursor swallows non-OK responses (fire-and-forget contract)", async () => {
+    const { setReadCursor } = await import("../lib/readCursor");
     const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 422 }));
     vi.stubGlobal("fetch", fetchMock);
     // Must not throw — production code never awaits the result.
-    await expect(advanceReadCursor("t", "n", "c", 1)).resolves.toBeUndefined();
+    await expect(setReadCursor("t", "n", "c", 1)).resolves.toBeUndefined();
   });
 
   it("clearReadCursors removes every entry from the signal map", async () => {

@@ -1,22 +1,21 @@
 defmodule Grappa.ReadCursorTest do
   @moduledoc """
-  Context tests for `Grappa.ReadCursor` — the server-owned per-(subject,
-  network, channel) read cursor primitive landed in the
-  `server-side-read-state` cluster (see `docs/plans/2026-05-13-server-side-read-state.md`).
+  Context tests for `Grappa.ReadCursor` — server-owned per-(subject,
+  network, channel) read cursor.
 
   Coverage:
 
     * `get/3` returns nil when no cursor exists, the row when it does.
-    * `advance/4` insert path (no prior cursor).
-    * `advance/4` forward-only: same-id and lower-id are no-ops.
-    * `advance/4` advances forward when target id is higher.
-    * `advance/4` rejects `:invalid_message` when the message_id doesn't
+    * `set/4` insert path (no prior cursor).
+    * `set/4` last-write-wins: same-id no-ops, lower-id moves backward,
+      higher-id moves forward.
+    * `set/4` rejects `:invalid_message` when the message_id doesn't
       belong to (subject, network, channel) — wrong network, wrong
       channel, wrong subject, or absent row.
-    * `advance/4` honors subject XOR via the changeset.
+    * `set/4` honors subject XOR via the changeset.
     * `bulk_for_subject/1` returns the nested envelope shape.
-    * `broadcast_advance/4` emits a typed `read_cursor_set` payload on
-      the per-channel topic.
+    * `broadcast_set/4` emits a typed `read_cursor_set` payload on the
+      per-channel topic.
 
   `async: true` — every test creates fresh user/network/visitor rows;
   the broadcast test subscribes to a per-user topic so distinct
@@ -80,12 +79,12 @@ defmodule Grappa.ReadCursorTest do
       assert nil == ReadCursor.get({:user, user.id}, net.id, "#sniffo")
     end
 
-    test "returns the cursor row after an advance" do
+    test "returns the cursor row after a set" do
       user = user_fixture()
       net = network_fixture()
       msg = insert_message(%{user_id: user.id}, net.id, "#sniffo", 1)
 
-      {:ok, _} = ReadCursor.advance({:user, user.id}, net.id, "#sniffo", msg.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#sniffo", msg.id)
 
       assert %Cursor{} = cursor = ReadCursor.get({:user, user.id}, net.id, "#sniffo")
       assert cursor.last_read_message_id == msg.id
@@ -101,24 +100,24 @@ defmodule Grappa.ReadCursorTest do
       net = network_fixture()
       msg = insert_message(%{user_id: alice.id}, net.id, "#sniffo", 1)
 
-      {:ok, _} = ReadCursor.advance({:user, alice.id}, net.id, "#sniffo", msg.id)
+      {:ok, _} = ReadCursor.set({:user, alice.id}, net.id, "#sniffo", msg.id)
 
       assert nil == ReadCursor.get({:user, bob.id}, net.id, "#sniffo")
     end
   end
 
   # ---------------------------------------------------------------------------
-  # advance/4 — happy path
+  # set/4 — happy path
   # ---------------------------------------------------------------------------
 
-  describe "advance/4 — insert path" do
+  describe "set/4 — insert path" do
     test "creates a cursor when none exists for (subject, network, channel)" do
       user = user_fixture()
       net = network_fixture()
       msg = insert_message(%{user_id: user.id}, net.id, "#sniffo", 1)
 
       assert {:ok, %Cursor{} = cursor} =
-               ReadCursor.advance({:user, user.id}, net.id, "#sniffo", msg.id)
+               ReadCursor.set({:user, user.id}, net.id, "#sniffo", msg.id)
 
       assert cursor.last_read_message_id == msg.id
       assert cursor.user_id == user.id
@@ -130,7 +129,7 @@ defmodule Grappa.ReadCursorTest do
       msg = insert_message(%{visitor_id: visitor.id}, net.id, "#sniffo", 1)
 
       assert {:ok, %Cursor{} = cursor} =
-               ReadCursor.advance({:visitor, visitor.id}, net.id, "#sniffo", msg.id)
+               ReadCursor.set({:visitor, visitor.id}, net.id, "#sniffo", msg.id)
 
       assert cursor.visitor_id == visitor.id
       assert cursor.user_id == nil
@@ -142,66 +141,65 @@ defmodule Grappa.ReadCursorTest do
       msg = insert_message(%{user_id: user.id}, net.id, "$server", 1, "MOTD line")
 
       assert {:ok, %Cursor{channel: "$server"}} =
-               ReadCursor.advance({:user, user.id}, net.id, "$server", msg.id)
+               ReadCursor.set({:user, user.id}, net.id, "$server", msg.id)
     end
   end
 
-  describe "advance/4 — forward-only" do
-    test "advancing to a higher id updates the cursor" do
+  describe "set/4 — last-write-wins" do
+    test "setting to a higher id updates the cursor" do
       user = user_fixture()
       net = network_fixture()
       m1 = insert_message(%{user_id: user.id}, net.id, "#x", 1)
       m2 = insert_message(%{user_id: user.id}, net.id, "#x", 2)
 
       {:ok, %Cursor{last_read_message_id: id1}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", m1.id)
+        ReadCursor.set({:user, user.id}, net.id, "#x", m1.id)
 
       assert id1 == m1.id
 
       {:ok, %Cursor{last_read_message_id: id2}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", m2.id)
+        ReadCursor.set({:user, user.id}, net.id, "#x", m2.id)
 
       assert id2 == m2.id
     end
 
-    test "advancing to the same id is a no-op (returns existing cursor)" do
+    test "setting to the same id is a no-op (returns existing cursor)" do
       user = user_fixture()
       net = network_fixture()
       msg = insert_message(%{user_id: user.id}, net.id, "#x", 1)
 
       {:ok, %Cursor{id: cursor_id, last_read_message_id: stored_id}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", msg.id)
+        ReadCursor.set({:user, user.id}, net.id, "#x", msg.id)
 
       {:ok, %Cursor{id: ^cursor_id, last_read_message_id: ^stored_id}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", msg.id)
+        ReadCursor.set({:user, user.id}, net.id, "#x", msg.id)
     end
 
-    test "advancing to a lower id is a no-op (cursor stays at higher id)" do
+    test "setting to a lower id moves the cursor backward (operator scrolled up + settled)" do
       user = user_fixture()
       net = network_fixture()
       m1 = insert_message(%{user_id: user.id}, net.id, "#x", 1)
       m2 = insert_message(%{user_id: user.id}, net.id, "#x", 2)
-      m2_id = m2.id
+      m1_id = m1.id
 
-      {:ok, %Cursor{last_read_message_id: ^m2_id}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", m2.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#x", m2.id)
 
-      {:ok, %Cursor{last_read_message_id: ^m2_id}} =
-        ReadCursor.advance({:user, user.id}, net.id, "#x", m1.id)
+      {:ok, %Cursor{last_read_message_id: ^m1_id}} =
+        ReadCursor.set({:user, user.id}, net.id, "#x", m1.id)
     end
   end
 
   # ---------------------------------------------------------------------------
-  # advance/4 — validation
+  # set/4 — validation
   # ---------------------------------------------------------------------------
 
-  describe "advance/4 — message validation" do
+  describe "set/4 — message validation" do
     test "rejects an absent message_id with :invalid_message" do
       user = user_fixture()
       net = network_fixture()
 
       assert {:error, :invalid_message} =
-               ReadCursor.advance({:user, user.id}, net.id, "#x", 999_999_999)
+               ReadCursor.set({:user, user.id}, net.id, "#x", 999_999_999)
     end
 
     test "rejects a message belonging to a different network" do
@@ -211,7 +209,7 @@ defmodule Grappa.ReadCursorTest do
       msg = insert_message(%{user_id: user.id}, net1.id, "#x", 1)
 
       assert {:error, :invalid_message} =
-               ReadCursor.advance({:user, user.id}, net2.id, "#x", msg.id)
+               ReadCursor.set({:user, user.id}, net2.id, "#x", msg.id)
     end
 
     test "rejects a message belonging to a different channel" do
@@ -220,7 +218,7 @@ defmodule Grappa.ReadCursorTest do
       msg = insert_message(%{user_id: user.id}, net.id, "#x", 1)
 
       assert {:error, :invalid_message} =
-               ReadCursor.advance({:user, user.id}, net.id, "#y", msg.id)
+               ReadCursor.set({:user, user.id}, net.id, "#y", msg.id)
     end
 
     test "rejects a message belonging to a different subject" do
@@ -230,7 +228,7 @@ defmodule Grappa.ReadCursorTest do
       msg = insert_message(%{user_id: alice.id}, net.id, "#x", 1)
 
       assert {:error, :invalid_message} =
-               ReadCursor.advance({:user, bob.id}, net.id, "#x", msg.id)
+               ReadCursor.set({:user, bob.id}, net.id, "#x", msg.id)
     end
   end
 
@@ -252,9 +250,9 @@ defmodule Grappa.ReadCursorTest do
       m2 = insert_message(%{user_id: user.id}, net1.id, "#b", 1)
       m3 = insert_message(%{user_id: user.id}, net2.id, "#c", 1)
 
-      {:ok, _} = ReadCursor.advance({:user, user.id}, net1.id, "#a", m1.id)
-      {:ok, _} = ReadCursor.advance({:user, user.id}, net1.id, "#b", m2.id)
-      {:ok, _} = ReadCursor.advance({:user, user.id}, net2.id, "#c", m3.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net1.id, "#a", m1.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net1.id, "#b", m2.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net2.id, "#c", m3.id)
 
       envelope = ReadCursor.bulk_for_subject({:user, user.id})
 
@@ -268,17 +266,17 @@ defmodule Grappa.ReadCursorTest do
       net = network_fixture()
       msg = insert_message(%{user_id: alice.id}, net.id, "#x", 1)
 
-      {:ok, _} = ReadCursor.advance({:user, alice.id}, net.id, "#x", msg.id)
+      {:ok, _} = ReadCursor.set({:user, alice.id}, net.id, "#x", msg.id)
 
       assert %{} == ReadCursor.bulk_for_subject({:user, bob.id})
     end
   end
 
   # ---------------------------------------------------------------------------
-  # broadcast_advance/4
+  # broadcast_set/4
   # ---------------------------------------------------------------------------
 
-  describe "broadcast_advance/4" do
+  describe "broadcast_set/4" do
     test "emits a typed read_cursor_set payload on the per-channel topic" do
       user_name = "rc-broadcast-user-#{uniq()}"
       slug = "rc-broadcast-net-#{uniq()}"
@@ -288,7 +286,7 @@ defmodule Grappa.ReadCursorTest do
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
-      :ok = ReadCursor.broadcast_advance(user_name, slug, channel, message_id)
+      :ok = ReadCursor.broadcast_set(user_name, slug, channel, message_id)
 
       assert_receive %Phoenix.Socket.Broadcast{
         topic: ^topic,

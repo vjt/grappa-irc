@@ -1529,3 +1529,95 @@ information needed for an unrelated UX gate fifteen sessions later.
 Wire shapes that carry production context are reusable; wire shapes
 that carry rendering decisions are not.
 
+## S43 — 2026-05-13 — The invariant flip: read state moves to the server
+
+Three weeks of production carried the rule like a load-bearing wall:
+*"no server-side `MARKREAD` / read watermark on either facade. Read
+position is client-side, always."* It was in `README.md`. It was in
+`CLAUDE.md` as a "key invariant — break only with deliberate cause."
+It was in the spec. cic stored read cursors in `localStorage` keyed
+on `(slug, channel)` and walked them forward on focus-leave. Adding
+server-side cursors later was forward-compatible by design; removing
+them later would have broken clients. So we deferred — until two bugs
+on the same day stopped being deferrable.
+
+The first was `cp13-S5`: a peer DM lands during a WebSocket gap, the
+server persists + broadcasts to a dead subscriber, the row is gone
+from the live stream. CP26 had shipped a reconnect-backfill that
+fetched `?after=<server_time>` to recover gap rows on rejoin. It
+worked when the gap was a real reconnect; it leaked on the *first*
+join because the cold REST page was supposed to cover seeding and
+the backfill arm intentionally skipped the initial join. macOS Docker
+Desktop's slower bring-up turned the race deterministic: cic GET at
+t=0 returns empty, server INSERT at t=41ms, cic Channel join at
+t=61ms — the broadcast fires before the subscribe, the row vanishes.
+CI green on Linux because the race went the other way.
+
+The second was vjt's: "if I leave and join a chan I see 'unread
+messages' for my part and join actions". Same in-pane `── X unread
+messages ──` marker S42 had attacked, but for a different row class.
+Own JOIN/PART persist in scrollback the same way peer JOIN/PART do —
+the server doesn't distinguish at the storage layer because
+upstream-side `CHATHISTORY` would need them either way. The cic
+sidebar badge gate (subscribe.ts:191) had been suppressing own-presence
+bumps since BUG5b shipped weeks ago. The in-pane marker had not. Same
+logical class, two surfaces, one predicate missing. The S42 lesson
+hadn't generalized — it had patched one instance.
+
+Both bugs traced to the same architectural seam. The cic-side cursor
+in localStorage was opaque to the server. The IRCv3 listener facade
+(Phase 6) needs `+draft/read-marker` MARKREAD lines that point at
+*server-known* message ids. cic couldn't tell the server "this is
+where I am" because the cursor model didn't admit a server endpoint.
+Refresh-on-join couldn't be cleaner-factored because the resume cursor
+was a per-window localStorage read, not a server fact. Adding
+server-side cursors closed both bugs *and* unlocked Phase 6's read-marker
+work — the kind of architectural payoff that justifies breaking a
+load-bearing invariant.
+
+vjt asked seven design questions. The cluster planning answered them
+all in one pass: nested envelope shape on `/me` for cold-load bulk
+fetch (`%{slug => %{chan => id}}`); cursor for `$server` and own-nick
+query windows (yes, uniform); auto-set on operator's own POST
+(deferred — focus-leave model already handles it); cross-device sync
+via per-channel `read_cursor_set` typed wire event; one-shot
+localStorage nuke for legacy `rc:` keys; rollout as straight cutover,
+no feature flag. Seven questions, one cluster scope.
+
+The cluster shipped in seven buckets across one day. R-1 the schema
++ context. R-2 unified the REST surface around id cursors and added
+`?around=` for navigating to a specific message. R-3 the POST endpoint
++ `/me` envelope + `read_cursor_set` typed wire push. R-4 the cic
+backend flip — every localStorage read became a signal-map read, the
+forward-only guard moved from the client to the server. R-5 the bug
+fix the cluster was named for: every per-channel join (initial AND
+every auto-rejoin) calls `refreshScrollback` against the resume cursor.
+The first-join arm no longer skips. cp13-S5 closed by construction.
+
+R-6 was the 90-minute coda. The S42 predicate (`isOperatorActionEcho`)
+got a sibling: `isOwnPresenceEvent(msg, ownNick)`. Same shape, same
+two consumers — subscribe.ts's bump-gate and ScrollbackPane's marker
+filter. The lesson S42 had patched generalized into a pattern: any
+"row produced by the operator's own action" class extracts to one
+predicate, plugs into both surfaces, scales to the next class. When
+the server starts emitting routed labeled-response replies, that's
+the third predicate; same two surfaces.
+
+The version bumped from 0.2.0 to 0.3.0. The CLAUDE.md invariant
+flipped from "client-side, always" to "server-owned, per (subject,
+network, channel)." The Phase 6 plan got cleaner — the IRCv3 facade
+exposes the same cursor as `+draft/read-marker` MARKREAD lines, no
+parallel state needed. The deferred decisions (auto-set on own
+POST; mention-click cursor-rewind UX) sit in DESIGN_NOTES with the
+wiring sites named, the way deferrals should look when next session
+picks them up.
+
+**Law:** load-bearing invariants exist to be re-evaluated when the
+load changes. The "client-side read state" rule was right when
+written — it kept the surface small while the bouncer found its
+shape. It became wrong when two unrelated bugs traced to the same
+seam and Phase 6 needed the same data. Three weeks of preserving an
+invariant cost less than one cluster of flipping it. Document the
+flip, document the deferred decisions, ship as one production atom,
+move on.
+
