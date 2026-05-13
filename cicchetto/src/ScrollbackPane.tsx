@@ -18,6 +18,7 @@ import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
+import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
@@ -508,9 +509,22 @@ const ScrollbackPane: Component<Props> = (props) => {
     // Operator-action echoes (e.g. /msg → 401 notice) are excluded — the
     // operator owns the action that produced them, mirroring the
     // subscribe.ts sidebar-badge gate so badge and in-pane marker agree.
+    // CP29 R-6: same rule for own presence verbs (own JOIN/PART/etc.) —
+    // the sidebar badge gate suppressed them at the bump site, but the
+    // in-pane marker derived from raw scrollback rows would still count
+    // an own JOIN row landing in `(cursor, sessionTopId]` after a
+    // `/part → /join` cycle. `isOwnPresenceEvent` is the shared
+    // single-source predicate (see lib/ownPresenceEvent.ts).
+    const ownNick = userNick();
     const unreadCount =
       cursor !== null && sessionTop !== null
-        ? msgs.filter((m) => m.id > cursor && m.id <= sessionTop && !isOperatorActionEcho(m)).length
+        ? msgs.filter(
+            (m) =>
+              m.id > cursor &&
+              m.id <= sessionTop &&
+              !isOperatorActionEcho(m) &&
+              !isOwnPresenceEvent(m, ownNick),
+          ).length
         : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
@@ -523,13 +537,19 @@ const ScrollbackPane: Component<Props> = (props) => {
       // C7.3: inject unread-marker BEFORE the first message with id > cursor
       // AND <= sessionTopId. Messages above sessionTopId never get a
       // marker — they're live-read arrivals during the focus session.
+      // CP29 R-6: skip own-presence + operator-action-echo rows here so
+      // the marker doesn't land above a row that isn't counted in
+      // `unreadCount` — the predicate set MUST stay in lock-step with
+      // the count filter above.
       if (
         injectMarker &&
         !markerInjected &&
         cursor !== null &&
         sessionTop !== null &&
         msg.id > cursor &&
-        msg.id <= sessionTop
+        msg.id <= sessionTop &&
+        !isOperatorActionEcho(msg) &&
+        !isOwnPresenceEvent(msg, ownNick)
       ) {
         result.push({ type: "unread-marker", count: unreadCount, id: "unread-marker" });
         markerInjected = true;

@@ -11,6 +11,7 @@ import { bumpMention } from "./mentions";
 import { channelsBySlug, networks, refetchChannels, refetchNetworks, user } from "./networks";
 import { nickEquals } from "./nickEquals";
 import { isOperatorActionEcho } from "./operatorActionEcho";
+import { isOwnPresenceEvent } from "./ownPresenceEvent";
 import { openQueryWindowState, queryWindowsByNetwork } from "./queryWindows";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
@@ -176,19 +177,15 @@ createRoot(() => {
     // there. Dispatching every event keeps routing local to members.ts.
     applyPresenceEvent(key, message);
 
-    // BUG5b: own-action presence events (join/part/quit/nick_change)
-    // must never bump unread — the operator owns those actions and has
-    // already seen them. Gate before the isSelected check so own events
-    // on both selected and non-selected channels are suppressed.
-    const isOwnNick = nickEquals(message.sender, ownNick);
-    const isPresenceKind =
-      message.kind === "join" ||
-      message.kind === "part" ||
-      message.kind === "quit" ||
-      message.kind === "nick_change" ||
-      message.kind === "mode" ||
-      message.kind === "kick";
-    if (isOwnNick && isPresenceKind) return;
+    // BUG5b / CP29 R-6: own-action presence events (join/part/quit/
+    // nick_change/mode/kick from own nick) must never bump unread — the
+    // operator owns those actions and has already seen them. Gate before
+    // the isSelected check so own events on both selected and non-
+    // selected channels are suppressed. Predicate shared with
+    // ScrollbackPane.tsx's in-pane unread-marker filter so the sidebar
+    // badge gate and the in-pane marker stay aligned (same single-source
+    // pattern as `isOperatorActionEcho`).
+    if (isOwnPresenceEvent(message, ownNick)) return;
 
     // Server-numeric-derived NOTICE: routed to the window the operator's
     // own action targeted (e.g. /msg <nick> → ERR_NOSUCHNICK 401, persisted

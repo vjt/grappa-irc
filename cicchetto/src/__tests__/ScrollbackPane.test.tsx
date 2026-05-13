@@ -1421,6 +1421,171 @@ describe("ScrollbackPane", () => {
         expect(screen.queryByTestId("unread-marker")).toBeNull();
       });
     });
+
+    // CP29 R-6: vjt's "/part → /join shows 'unread messages' for my own
+    // join action" bug. Pre-fix the unreadCount filter only excluded
+    // `isOperatorActionEcho` (numeric NOTICEs); own JOIN/PART/etc rows
+    // landing in `(cursor, sessionTopId]` produced a phantom marker.
+    // The new shared `isOwnPresenceEvent` predicate (lib/ownPresenceEvent)
+    // is mirrored from subscribe.ts's sidebar badge gate so the in-pane
+    // marker derivation and the badge-bump suppression stay aligned.
+    it("does NOT count own JOIN row toward the unread marker (vjt /part-/join bug)", () => {
+      setUserNick("vjt");
+      const ownRejoinFixture: ScrollbackMessage[] = [
+        {
+          id: 30,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "earlier",
+          meta: {},
+        },
+        // Operator's own JOIN after a /part → /join cycle. Pre-R-6 this
+        // bumped the in-pane marker to "1 unread"; post-R-6 the predicate
+        // gates it out and no marker renders.
+        {
+          id: 31,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "join",
+          sender: "vjt",
+          body: null,
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 30);
+      setScrollback({ "freenode #grappa": ownRejoinFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
+    it("does NOT count own PART row toward the unread marker", () => {
+      setUserNick("vjt");
+      const ownPartFixture: ScrollbackMessage[] = [
+        {
+          id: 40,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "earlier",
+          meta: {},
+        },
+        {
+          id: 41,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "part",
+          sender: "vjt",
+          body: "leaving",
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 40);
+      setScrollback({ "freenode #grappa": ownPartFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
+    // Symmetry check: a peer JOIN IS a real event the operator hasn't seen
+    // and MUST still produce the marker — guards against over-broad
+    // suppression that would silence legitimate channel activity.
+    it("DOES count peer JOIN row toward the unread marker", () => {
+      setUserNick("vjt");
+      const peerJoinFixture: ScrollbackMessage[] = [
+        {
+          id: 50,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "earlier",
+          meta: {},
+        },
+        {
+          id: 51,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "join",
+          sender: "carol",
+          body: null,
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 50);
+      setScrollback({ "freenode #grappa": peerJoinFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toHaveTextContent("1 unread");
+    });
+
+    // Mixed-row variant: own JOIN sandwiched between a read msg and an
+    // unread peer msg. Marker count should be 1 (the peer msg only) and
+    // marker should land BEFORE the peer msg, not before the own JOIN.
+    it("excludes own presence rows from count + injection position", () => {
+      setUserNick("vjt");
+      const mixedFixture: ScrollbackMessage[] = [
+        {
+          id: 60,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "old read msg",
+          meta: {},
+        },
+        // Own JOIN — must NOT be counted, marker must NOT land above it.
+        {
+          id: 61,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "join",
+          sender: "vjt",
+          body: null,
+          meta: {},
+        },
+        // Peer msg — IS unread, marker lands here.
+        {
+          id: 62,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_002_000,
+          kind: "privmsg",
+          sender: "carol",
+          body: "new peer msg",
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 60);
+      setScrollback({ "freenode #grappa": mixedFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const marker = screen.getByTestId("unread-marker");
+      expect(marker).toHaveTextContent("1 unread");
+      // Marker must precede the peer msg's line in DOM order, NOT the
+      // own JOIN line. Lines are returned in scrollback order; lines[1]
+      // is the own JOIN row, lines[2] is the peer msg.
+      const lines = screen.getAllByTestId("scrollback-line");
+      expect(lines).toHaveLength(3);
+      const peerLine = lines[2] as Node;
+      const ownJoinLine = lines[1] as Node;
+      // Marker → peer msg: peer follows marker.
+      expect(
+        marker.compareDocumentPosition(peerLine) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      // Marker after own JOIN: own JOIN precedes marker.
+      expect(
+        ownJoinLine.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
   });
 
   // C7.7: watchlist highlight rendering (MVP: watchlist = own nick only).

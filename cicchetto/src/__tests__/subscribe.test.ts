@@ -2277,6 +2277,85 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
     const key = channelKey("freenode", "#grappa");
     expect(store.unreadCounts()[key]).toBe(1);
   });
+
+  // CP29 R-6 — coverage for the remaining presence kinds beyond join+part
+  // (the cluster-original BUG5b shipped only join/part). Each iteration
+  // asserts the badge gate at subscribe.ts:191 (now factored into
+  // `isOwnPresenceEvent`) drops the bump for own-nick presence verbs and
+  // forwards the bump for peer-nick versions of the same verb. Parameterised
+  // table — adding a new presence kind here is a one-line edit, mirroring
+  // the new `PRESENCE_KINDS` set in lib/ownPresenceEvent.ts.
+  const PRESENCE_BUMP_CASES: Array<{ kind: "quit" | "nick_change" | "mode" | "kick" }> = [
+    { kind: "quit" },
+    { kind: "nick_change" },
+    { kind: "mode" },
+    { kind: "kick" },
+  ];
+
+  for (const { kind } of PRESENCE_BUMP_CASES) {
+    it(`self-${kind} does NOT bump unread counter for the channel`, async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedWithNick("alice");
+      const store = await loadStores();
+      await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+      const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      eventHandler({
+        kind: "message",
+        message: {
+          id: 200,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 0,
+          kind,
+          sender: "alice",
+          body: null,
+          meta: {},
+        },
+      });
+
+      const key = channelKey("freenode", "#grappa");
+      expect(store.unreadCounts()[key]).toBeUndefined();
+    });
+
+    it(`other-user ${kind} DOES bump eventsUnread`, async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedWithNick("alice");
+      const store = await loadStores();
+      await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+      const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      eventHandler({
+        kind: "message",
+        message: {
+          id: 201,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 0,
+          kind,
+          sender: "carol",
+          body: null,
+          meta: {},
+        },
+      });
+
+      const key = channelKey("freenode", "#grappa");
+      expect(store.unreadCounts()[key]).toBe(1);
+    });
+  }
+
   // members_seeded WS event — server pushes the full sorted snapshot on
   // after_join AND on every 366 RPL_ENDOFNAMES. CP15 B5 dropped the
   // GET /members REST fetch path entirely; this is the sole bootstrap
