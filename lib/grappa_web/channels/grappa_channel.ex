@@ -509,6 +509,23 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
+  # P-0d — /lusers. No args, read-only network query. Visitors are
+  # entitled to issue it (mirrors WHOIS post-C3); the LUSERS bundle's
+  # broadcast topic uses the issuing subject's `subject_label` so the
+  # visitor's own cic surface is the only consumer.
+  def handle_in(
+        "lusers",
+        %{"network_id" => network_id},
+        socket
+      )
+      when is_integer(network_id) do
+    dispatch_subject_verb(
+      socket,
+      fn -> {:ok, :ok} end,
+      fn subject -> Session.send_lusers(subject, network_id) end
+    )
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who <#channel>. cic
   # pushes after the operator types `/who #chan`; the channel relays to
   # Session.send_who/3 which primes who_pending + emits WHO upstream.

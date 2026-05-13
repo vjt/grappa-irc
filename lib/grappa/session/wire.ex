@@ -80,6 +80,7 @@ defmodule Grappa.Session.Wire do
           | :whois_bundle
           | :peer_away
           | :invite_ack
+          | :lusers_bundle
 
   @type channels_changed_payload :: %{kind: String.t()}
 
@@ -266,6 +267,32 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           channel: String.t(),
           peer: String.t()
+        }
+
+  @typedoc """
+  P-0d — LUSERS bundle. Aggregated snapshot of network state (clients,
+  invisible, operators, channels, servers, local/global) folded from
+  Bahamut's 7-numeric sequence (251/252/253/254/255/265/266). Emitted
+  on connect-welcome AND on operator-issued `/lusers`; cic
+  last-write-wins replaces the per-network snapshot. All values are
+  integers (or nil for the optional 253 RPL_LUSERUNKNOWN). cic owns
+  the human-readable rendering per `feedback_no_localized_strings_server_side`.
+  """
+  @type lusers_bundle_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          total_users: integer() | nil,
+          invisible: integer() | nil,
+          servers: integer() | nil,
+          operators: integer() | nil,
+          unknown_connections: integer() | nil,
+          channels_formed: integer() | nil,
+          local_clients: integer() | nil,
+          local_servers: integer() | nil,
+          current_local: integer() | nil,
+          max_local: integer() | nil,
+          current_global: integer() | nil,
+          max_global: integer() | nil
         }
 
   @doc """
@@ -559,5 +586,33 @@ defmodule Grappa.Session.Wire do
   def invite_ack(network_slug, channel, peer)
       when is_binary(network_slug) and is_binary(channel) and is_binary(peer) do
     %{kind: "invite_ack", network: network_slug, channel: channel, peer: peer}
+  end
+
+  @doc """
+  P-0d — LUSERS bundle. Broadcast on `Topic.user/1`; cic dispatches in
+  `userTopic.ts`'s `lusers_bundle` arm into the `lusersBundle.ts`
+  store, last-write-wins replaces the per-network snapshot. NOT
+  persisted — operator types /lusers to refresh; cic shows the most
+  recent snapshot only.
+  """
+  @spec lusers_bundle(String.t(), map()) :: lusers_bundle_payload()
+  def lusers_bundle(network_slug, accum)
+      when is_binary(network_slug) and is_map(accum) do
+    %{
+      kind: "lusers_bundle",
+      network: network_slug,
+      total_users: Map.get(accum, :total_users),
+      invisible: Map.get(accum, :invisible),
+      servers: Map.get(accum, :servers),
+      operators: Map.get(accum, :operators),
+      unknown_connections: Map.get(accum, :unknown_connections),
+      channels_formed: Map.get(accum, :channels_formed),
+      local_clients: Map.get(accum, :local_clients),
+      local_servers: Map.get(accum, :local_servers),
+      current_local: Map.get(accum, :current_local),
+      max_local: Map.get(accum, :max_local),
+      current_global: Map.get(accum, :current_global),
+      max_global: Map.get(accum, :max_global)
+    }
   end
 end

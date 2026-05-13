@@ -396,6 +396,54 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "lusers_bundle/2" do
+    test "projects accum integers into the wire shape, all 12 numeric fields present" do
+      accum = %{
+        total_users: 1234,
+        invisible: 56,
+        servers: 3,
+        operators: 7,
+        unknown_connections: 2,
+        channels_formed: 89,
+        local_clients: 100,
+        local_servers: 1,
+        current_local: 100,
+        max_local: 200,
+        current_global: 1234,
+        max_global: 5000
+      }
+
+      payload = Wire.lusers_bundle("azzurra", accum)
+
+      assert payload == %{
+               kind: "lusers_bundle",
+               network: "azzurra",
+               total_users: 1234,
+               invisible: 56,
+               servers: 3,
+               operators: 7,
+               unknown_connections: 2,
+               channels_formed: 89,
+               local_clients: 100,
+               local_servers: 1,
+               current_local: 100,
+               max_local: 200,
+               current_global: 1234,
+               max_global: 5000
+             }
+    end
+
+    test "missing accum keys project to nil (graceful degradation for partial bundles)" do
+      payload = Wire.lusers_bundle("net", %{total_users: 42})
+
+      assert payload.kind == "lusers_bundle"
+      assert payload.total_users == 42
+      assert payload.invisible == nil
+      assert payload.unknown_connections == nil
+      assert payload.max_global == nil
+    end
+  end
+
   describe "kind: discriminator string contract" do
     test "every Wire fn output carries kind: as a String.t()" do
       payloads = [
@@ -412,7 +460,8 @@ defmodule Grappa.Session.WireTest do
         Wire.mentions_bundle("net", "from", "to", nil, []),
         Wire.whois_bundle("net", "alice", %{}),
         Wire.peer_away("net", "alice", "Gone fishing"),
-        Wire.invite_ack("net", "#italia", "alice")
+        Wire.invite_ack("net", "#italia", "alice"),
+        Wire.lusers_bundle("net", %{})
       ]
 
       for p <- payloads do

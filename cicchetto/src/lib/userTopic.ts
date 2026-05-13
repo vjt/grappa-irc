@@ -4,6 +4,7 @@ import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
 import { channelKey } from "./channelKey";
+import { setLusersBundle } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { setPeerAway } from "./peerAway";
@@ -205,6 +206,30 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       )
         return null;
       return { kind: "peer_away", network: r.network, peer: r.peer, message: r.message };
+    case "lusers_bundle": {
+      // P-0d — LUSERS bundle. All counts are integer-or-null (253
+      // RPL_LUSERUNKNOWN is optional; defensive nullability covers
+      // truncated server responses).
+      if (typeof r.network !== "string") return null;
+      const intOrNull = (v: unknown): number | null =>
+        typeof v === "number" ? v : v === null ? null : null;
+      return {
+        kind: "lusers_bundle",
+        network: r.network,
+        total_users: intOrNull(r.total_users),
+        invisible: intOrNull(r.invisible),
+        servers: intOrNull(r.servers),
+        operators: intOrNull(r.operators),
+        unknown_connections: intOrNull(r.unknown_connections),
+        channels_formed: intOrNull(r.channels_formed),
+        local_clients: intOrNull(r.local_clients),
+        local_servers: intOrNull(r.local_servers),
+        current_local: intOrNull(r.current_local),
+        max_local: intOrNull(r.max_local),
+        current_global: intOrNull(r.current_global),
+        max_global: intOrNull(r.max_global),
+      };
+    }
     default:
       return null;
   }
@@ -361,6 +386,16 @@ createRoot(() => {
           // the prior message. No focus change.
           setPeerAway(payload.network, payload.peer, payload.message);
           return;
+
+        case "lusers_bundle": {
+          // P-0d — LUSERS bundle. Last-write-wins per-network snapshot.
+          // Card renders pinned at the top of the $server window.
+          // No focus change — welcome-time auto-emit shouldn't yank
+          // the operator's window.
+          const { kind: _omit, network, ...snapshot } = payload;
+          setLusersBundle(network, snapshot);
+          return;
+        }
 
         default:
           assertNever(payload);

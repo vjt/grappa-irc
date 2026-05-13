@@ -556,6 +556,26 @@ export type WireUserEvent =
       peer: string;
       message: string;
     }
+  | {
+      // P-0d — LUSERS bundle ephemeral. Fires on connect-welcome AND
+      // on operator-issued /lusers; cic last-write-wins replaces the
+      // per-network snapshot in lusersBundle.ts and renders the
+      // LusersCard pinned at the top of the $server window.
+      kind: "lusers_bundle";
+      network: string;
+      total_users: number | null;
+      invisible: number | null;
+      servers: number | null;
+      operators: number | null;
+      unknown_connections: number | null;
+      channels_formed: number | null;
+      local_clients: number | null;
+      local_servers: number | null;
+      current_local: number | null;
+      max_local: number | null;
+      current_global: number | null;
+      max_global: number | null;
+    }
   | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the

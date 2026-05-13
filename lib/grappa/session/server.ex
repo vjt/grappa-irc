@@ -350,6 +350,15 @@ defmodule Grappa.Session.Server do
           # channel if joined or `$server` otherwise. Bounded by in-flight
           # /who commands (typically 0-1 at a time).
           who_pending: %{String.t() => map()},
+          # P-0d — pending LUSERS accumulator. Bahamut emits a fixed
+          # sequence (251 → 252 → 253? → 254 → 255 → 265 → 266) on connect-
+          # welcome AND on operator-issued /lusers; there's NO terminator
+          # numeric. Implicit-end strategy: any non-LUSERS-class numeric
+          # flushes the accumulator into a `:lusers_bundle` effect.
+          # `nil` = no bundle in progress (idle); the map starts on the
+          # first LUSERS numeric and fills until flush. NOT persisted
+          # across crashes — operator types /lusers to refresh.
+          lusers_pending: nil | map(),
           # CP22 cluster B (channel-client-polish #14) — pending NAMES
           # accumulators keyed by lowercased target channel. Set up on
           # `:send_names`; 353 RPL_NAMREPLY rows merge their nick lists
@@ -469,6 +478,12 @@ defmodule Grappa.Session.Server do
       # Bounded by in-flight /who commands (typically 0-1 at a
       # time). NOT persisted across crashes.
       who_pending: %{},
+      # P-0d — pending LUSERS accumulator. nil when idle; map populated
+      # by EventRouter on 251/252/253/254/255/265/266 folds; flushed via
+      # `{:lusers_bundle, accum}` on the next non-LUSERS numeric (implicit
+      # end). Bounded by the fixed 7-numeric sequence Bahamut emits;
+      # NOT persisted across crashes.
+      lusers_pending: nil,
       # CP22 cluster B — pending NAMES accumulators keyed by lowercased
       # target channel. Set up on `:send_names`; 353 RPL_NAMREPLY rows
       # merge nick lists into the entry; 366 RPL_ENDOFNAMES drains via
@@ -763,6 +778,14 @@ defmodule Grappa.Session.Server do
   def handle_call({:send_invite, channel, nick}, _, state)
       when is_binary(channel) and is_binary(nick) do
     {:reply, Client.send_invite(state.client, channel, nick), state}
+  end
+
+  # P-0d — bare LUSERS upstream. Reply numerics fold into
+  # state.lusers_pending; 266 RPL_GLOBALUSERS flushes the bundle.
+  # No accumulator priming needed — 251 RPL_LUSERCLIENT resets the
+  # accumulator on arrival.
+  def handle_call(:send_lusers, _, state) do
+    {:reply, Client.send_lusers(state.client), state}
   end
 
   # Banlist query form — no sign, just the mode letter.
@@ -2148,6 +2171,22 @@ defmodule Grappa.Session.Server do
       Grappa.PubSub.broadcast_event(
         Topic.channel(state.subject_label, state.network_slug, channel),
         SessionWire.invite_ack(state.network_slug, channel, peer)
+      )
+
+    apply_effects(rest, state)
+  end
+
+  # P-0d — LUSERS bundle ephemeral. Broadcast on the user-level topic
+  # (mirrors `:whois_bundle` — ephemerals carrying their own `network`
+  # field route via Topic.user/1). cic dispatches in `userTopic.ts`'s
+  # `lusers_bundle` arm into the per-network `lusersBundle.ts` store
+  # (last-write-wins replacement). NOT persisted — operator types
+  # /lusers to refresh.
+  defp apply_effects([{:lusers_bundle, accum} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.lusers_bundle(state.network_slug, accum)
       )
 
     apply_effects(rest, state)

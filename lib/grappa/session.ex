@@ -801,6 +801,19 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Sends bare `LUSERS` upstream. Server replies with the 7-numeric
+  bundle (251/252/253?/254/255/265/266) which `EventRouter` folds and
+  emits as a typed `:lusers_bundle` wire event on `Topic.user/1`.
+  Returns `:ok` or `{:error, :no_session}`.
+  """
+  @spec send_lusers(subject(), integer()) ::
+          :ok | {:error, :no_session}
+  def send_lusers(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :send_lusers)
+  end
+
+  @doc """
   Sends `MODE <channel> b` upstream — the banlist query form (no sign).
   Numerics 367 RPL_BANLIST + 368 RPL_ENDOFBANLIST reply with the ban list.
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`

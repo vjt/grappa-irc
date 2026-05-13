@@ -176,6 +176,7 @@ defmodule Grappa.Session.EventRouter do
           | {:whois_bundle, target :: String.t(), accum :: map()}
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
+          | {:lusers_bundle, accum :: map()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -1225,6 +1226,98 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [{:invite_ack, channel, target}]}
   end
 
+  # P-0d — LUSERS bundle (251/252/253/254/255/265/266). Bahamut emits
+  # this 7-numeric sequence on connect-welcome AND on operator-issued
+  # /lusers; cic last-write-wins replaces the per-network snapshot.
+  #
+  # Strategy: each numeric folds an integer (or several) into
+  # `state.lusers_pending`; 266 RPL_GLOBALUSERS terminates the sequence
+  # (Bahamut + ircu always emit 266 last) and emits a typed
+  # `{:lusers_bundle, accum}` effect. RFC-only servers that stop at 255
+  # gracefully degrade — the partial accum gets clobbered on the next
+  # 251 (start of next /lusers run).
+  #
+  # Param shape varies by numeric — some servers put counts in params,
+  # others bake them into the trailing message. Defensive int extraction
+  # via `extract_lusers_ints/1` regex on the trailing covers both shapes
+  # without coupling to a specific Bahamut version.
+
+  # 251 RPL_LUSERCLIENT: `:There are <N> users and <I> invisible on <S> servers`.
+  # Resets the accumulator (start of new sequence).
+  def route(
+        %Message{command: {:numeric, 251}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n, i, s] = extract_lusers_ints(List.last(params), 3)
+
+    {:cont, Map.put(state, :lusers_pending, %{total_users: n, invisible: i, servers: s}), []}
+  end
+
+  # 252 RPL_LUSEROP: `<N> :IRC Operators online`.
+  def route(
+        %Message{command: {:numeric, 252}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
+    {:cont, lusers_fold(state, %{operators: n}), []}
+  end
+
+  # 253 RPL_LUSERUNKNOWN: `<N> :unknown connection(s)`. Optional —
+  # Bahamut omits when count = 0.
+  def route(
+        %Message{command: {:numeric, 253}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
+    {:cont, lusers_fold(state, %{unknown_connections: n}), []}
+  end
+
+  # 254 RPL_LUSERCHANNELS: `<N> :channels formed`.
+  def route(
+        %Message{command: {:numeric, 254}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
+    {:cont, lusers_fold(state, %{channels_formed: n}), []}
+  end
+
+  # 255 RPL_LUSERME: `:I have <N> clients and <S> servers`.
+  def route(
+        %Message{command: {:numeric, 255}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n, s] = extract_lusers_ints(List.last(params), 2)
+    {:cont, lusers_fold(state, %{local_clients: n, local_servers: s}), []}
+  end
+
+  # 265 RPL_LOCALUSERS: `:Current local users: <N> Max: <M>` (or shaped
+  # as separate params on some servers).
+  def route(
+        %Message{command: {:numeric, 265}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n, m] = extract_lusers_ints(List.last(params), 2)
+    {:cont, lusers_fold(state, %{current_local: n, max_local: m}), []}
+  end
+
+  # 266 RPL_GLOBALUSERS: `:Current global users: <N> Max: <M>`. Last
+  # numeric in Bahamut's emit order — flushes the bundle.
+  def route(
+        %Message{command: {:numeric, 266}, params: params},
+        state
+      )
+      when is_list(params) do
+    [n, m] = extract_lusers_ints(List.last(params), 2)
+    accum = Map.merge(Map.get(state, :lusers_pending) || %{}, %{current_global: n, max_global: m})
+    {:cont, Map.put(state, :lusers_pending, nil), [{:lusers_bundle, accum}]}
+  end
+
   # BUG2: MOTD numerics (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD)
   # persist to the synthetic "$server" channel so the server-messages window
   # has content. Previously these hit the catch-all and were silently dropped.
@@ -1721,6 +1814,52 @@ defmodule Grappa.Session.EventRouter do
         Map.put(acc, k, v)
     end)
   end
+
+  # P-0d — fold one or more LUSERS fields into `state.lusers_pending`.
+  # The accumulator starts on first 251 (which resets it explicitly);
+  # subsequent numerics merge into the existing map (or start a new one
+  # if the sequence-out-of-order case ever happens, e.g. a server emits
+  # 252 before 251 — defensive).
+  @spec lusers_fold(state(), map()) :: state()
+  defp lusers_fold(state, fold) when is_map(fold) do
+    accum = Map.get(state, :lusers_pending) || %{}
+    Map.put(state, :lusers_pending, Map.merge(accum, fold))
+  end
+
+  # P-0d — extract `count` integers from an IRC param. Some servers
+  # bake the counts into the trailing message (`:Current local users:
+  # 42 Max: 100`); others split them across positional params. The
+  # regex pulls every `\d+` token so both shapes parse uniformly.
+  # Returns a list of exactly `count` integers, padding with nil if
+  # fewer matched (defensive against truncated lines / shape drift).
+  @spec extract_lusers_ints(String.t() | nil, pos_integer()) :: [integer() | nil]
+  defp extract_lusers_ints(nil, count), do: List.duplicate(nil, count)
+
+  defp extract_lusers_ints(text, count) when is_binary(text) and is_integer(count) and count > 0 do
+    ints =
+      ~r/-?\d+/
+      |> Regex.scan(text)
+      |> Enum.map(fn [s] -> String.to_integer(s) end)
+      |> Enum.take(count)
+
+    pad = count - length(ints)
+    if pad > 0, do: ints ++ List.duplicate(nil, pad), else: ints
+  end
+
+  # 252/253/254 carry the count as params[1] (positional, e.g.
+  # `:server 252 own_nick 7 :IRC Operators online`). If params[1]
+  # parses as an integer-string, return it; otherwise fall back to
+  # the trailing message (defensive against shape drift on rare
+  # variants).
+  @spec lusers_param_or_trailing([String.t()]) :: String.t() | nil
+  defp lusers_param_or_trailing([_, count_str | _] = params) when is_binary(count_str) do
+    case Integer.parse(count_str) do
+      {_, _} -> count_str
+      :error -> List.last(params)
+    end
+  end
+
+  defp lusers_param_or_trailing(params) when is_list(params), do: List.last(params)
 
   # Returns the trailing param (last element) when present, else nil.
   # Used to extract realname / server_info / channels-chunk text from

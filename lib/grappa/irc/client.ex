@@ -455,6 +455,19 @@ defmodule Grappa.IRC.Client do
       else: reject_invalid_line(:topic_clear)
   end
 
+  @doc """
+  Sends bare `LUSERS\\r\\n` upstream — server replies with the
+  251/252/253?/254/255/265/266 sequence which `EventRouter` folds into
+  `state.lusers_pending` and `Server.apply_effects` flushes as a
+  `{:lusers_bundle, accum}` effect on 266.
+
+  No params, no validation: LUSERS is universally accepted.
+  """
+  @spec send_lusers(pid()) :: :ok
+  def send_lusers(client) do
+    send_line(client, "LUSERS\r\n")
+  end
+
   # S10 (cluster #10): byte-boundary observability for invalid_line
   # rejections. Every public send_* helper funnels its `else` arm
   # through here so a silently-rejected outbound verb is greppable

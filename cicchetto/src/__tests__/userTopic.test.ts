@@ -67,6 +67,10 @@ vi.mock("../lib/peerAway", () => ({
   setPeerAway: vi.fn(),
 }));
 
+vi.mock("../lib/lusersBundle", () => ({
+  setLusersBundle: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -292,6 +296,75 @@ describe("userTopic", () => {
         message: 42,
       });
       expect(pa.setPeerAway).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("lusers_bundle arm (P-0d)", () => {
+    it("calls setLusersBundle with (network, snapshot) — snapshot omits kind + network", async () => {
+      const lb = await import("../lib/lusersBundle");
+      channelMock.fireEvent({
+        kind: "lusers_bundle",
+        network: "azzurra",
+        total_users: 1234,
+        invisible: 56,
+        servers: 3,
+        operators: 7,
+        unknown_connections: 2,
+        channels_formed: 89,
+        local_clients: 100,
+        local_servers: 1,
+        current_local: 100,
+        max_local: 200,
+        current_global: 1234,
+        max_global: 5000,
+      });
+      expect(lb.setLusersBundle).toHaveBeenCalledWith("azzurra", {
+        total_users: 1234,
+        invisible: 56,
+        servers: 3,
+        operators: 7,
+        unknown_connections: 2,
+        channels_formed: 89,
+        local_clients: 100,
+        local_servers: 1,
+        current_local: 100,
+        max_local: 200,
+        current_global: 1234,
+        max_global: 5000,
+      });
+    });
+
+    it("accepts null fields (graceful degradation for partial bundles)", async () => {
+      const lb = await import("../lib/lusersBundle");
+      channelMock.fireEvent({
+        kind: "lusers_bundle",
+        network: "azzurra",
+        total_users: 42,
+        invisible: null,
+        servers: null,
+        operators: null,
+        unknown_connections: null,
+        channels_formed: null,
+        local_clients: null,
+        local_servers: null,
+        current_local: null,
+        max_local: null,
+        current_global: null,
+        max_global: null,
+      });
+      expect(lb.setLusersBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ total_users: 42, invisible: null, max_global: null }),
+      );
+    });
+
+    it("drops payload missing `network` (no setLusersBundle call)", async () => {
+      const lb = await import("../lib/lusersBundle");
+      channelMock.fireEvent({
+        kind: "lusers_bundle",
+        total_users: 42,
+      });
+      expect(lb.setLusersBundle).not.toHaveBeenCalled();
     });
   });
 });

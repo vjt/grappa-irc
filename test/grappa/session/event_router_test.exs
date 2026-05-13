@@ -2057,6 +2057,155 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "P-0d — LUSERS bundle (251/252/253/254/255/265/266)" do
+    test "251 RPL_LUSERCLIENT primes the accumulator with 3 ints from trailing" do
+      state = base_state()
+
+      m =
+        msg(
+          {:numeric, 251},
+          ["vjt", "There are 1234 users and 56 invisible on 3 servers"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending == %{total_users: 1234, invisible: 56, servers: 3}
+    end
+
+    test "252 RPL_LUSEROP folds operators count from positional param" do
+      state = base_state(%{lusers_pending: %{total_users: 1234, invisible: 56, servers: 3}})
+
+      m =
+        msg(
+          {:numeric, 252},
+          ["vjt", "7", "IRC Operators online"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending[:operators] == 7
+      # prior fields preserved
+      assert new_state.lusers_pending[:total_users] == 1234
+    end
+
+    test "253 RPL_LUSERUNKNOWN folds unknown_connections (when present)" do
+      state = base_state(%{lusers_pending: %{total_users: 1234}})
+
+      m =
+        msg(
+          {:numeric, 253},
+          ["vjt", "2", "unknown connection(s)"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending[:unknown_connections] == 2
+    end
+
+    test "254 RPL_LUSERCHANNELS folds channels_formed" do
+      state = base_state(%{lusers_pending: %{total_users: 1234}})
+
+      m =
+        msg(
+          {:numeric, 254},
+          ["vjt", "89", "channels formed"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending[:channels_formed] == 89
+    end
+
+    test "255 RPL_LUSERME folds local_clients + local_servers from trailing" do
+      state = base_state(%{lusers_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 255},
+          ["vjt", "I have 100 clients and 1 servers"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending[:local_clients] == 100
+      assert new_state.lusers_pending[:local_servers] == 1
+    end
+
+    test "265 RPL_LOCALUSERS folds current_local + max_local from trailing" do
+      state = base_state(%{lusers_pending: %{}})
+
+      m =
+        msg(
+          {:numeric, 265},
+          ["vjt", "Current local users: 100 Max: 200"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending[:current_local] == 100
+      assert new_state.lusers_pending[:max_local] == 200
+    end
+
+    test "266 RPL_GLOBALUSERS flushes :lusers_bundle effect with full accum + clears pending" do
+      accum_so_far = %{
+        total_users: 1234,
+        invisible: 56,
+        servers: 3,
+        operators: 7,
+        channels_formed: 89,
+        local_clients: 100,
+        local_servers: 1,
+        current_local: 100,
+        max_local: 200
+      }
+
+      state = base_state(%{lusers_pending: accum_so_far})
+
+      m =
+        msg(
+          {:numeric, 266},
+          ["vjt", "Current global users: 1234 Max: 5000"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, [{:lusers_bundle, accum}]} = EventRouter.route(m, state)
+      assert new_state.lusers_pending == nil
+      assert accum[:current_global] == 1234
+      assert accum[:max_global] == 5000
+      # prior folded fields survive into the bundle
+      assert accum[:total_users] == 1234
+      assert accum[:operators] == 7
+    end
+
+    test "266 with no prior pending (sequence-out-of-order) still emits a bundle with the global counts" do
+      state = base_state()
+
+      m =
+        msg(
+          {:numeric, 266},
+          ["vjt", "Current global users: 42 Max: 100"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, _, [{:lusers_bundle, accum}]} = EventRouter.route(m, state)
+      assert accum == %{current_global: 42, max_global: 100}
+    end
+
+    test "251 resets the accumulator (start of new sequence drops prior partial)" do
+      state = base_state(%{lusers_pending: %{stale: :data, leftover: 42}})
+
+      m =
+        msg(
+          {:numeric, 251},
+          ["vjt", "There are 5 users and 0 invisible on 1 servers"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.lusers_pending == %{total_users: 5, invisible: 0, servers: 1}
+    end
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
   # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
   # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}

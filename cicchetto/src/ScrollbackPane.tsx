@@ -9,6 +9,7 @@ import {
   Show,
 } from "solid-js";
 import InviteAckRows from "./InviteAckRows";
+import LusersCard from "./LusersCard";
 import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
@@ -895,6 +896,13 @@ const ScrollbackPane: Component<Props> = (props) => {
           query windows. */}
       <Show when={props.kind === "query"}>
         <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+      </Show>
+      {/* P-0d — LUSERS card. Mount only on the $server window for the
+          network. Card short-circuits to null when no snapshot exists.
+          Snapshot replaces last-write-wins on every /lusers (manual or
+          welcome-time auto-emit). */}
+      <Show when={props.kind === "server"}>
+        <LusersCard networkSlug={props.networkSlug} />
       </Show>
       <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
         <Show

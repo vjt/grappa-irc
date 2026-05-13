@@ -330,6 +330,16 @@ export function pushWho(networkId: number, channel: string): void {
   _userChannel.push("who", { network_id: networkId, channel });
 }
 
+// P-0d — /lusers → LUSERS upstream — bare verb, no args. Pushes on
+// the user-level channel; server emits the 7-numeric bundle which
+// EventRouter folds and 266 RPL_GLOBALUSERS flushes into a typed
+// :lusers_bundle wire event on Topic.user/1. cic dispatches in
+// userTopic.ts and renders the LusersCard in the $server window.
+export function pushLusers(networkId: number): void {
+  if (_userChannel === null) return;
+  _userChannel.push("lusers", { network_id: networkId });
+}
+
 // CP22 cluster B (channel-client-polish #14) — /names <#channel>.
 // CP22 cluster B (channel-client-polish #14) — /names <#channel>.
 // Pushes on the user-level channel; server primes names_pending +

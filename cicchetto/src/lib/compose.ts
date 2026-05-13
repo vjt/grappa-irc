@@ -24,6 +24,7 @@ import {
   pushChannelUmode,
   pushChannelUnban,
   pushChannelVoice,
+  pushLusers,
   pushNames,
   pushWatchlistAdd,
   pushWatchlistDel,
@@ -498,6 +499,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           return { error: "/list: server-side handler not yet implemented (future bucket)" };
         case "links":
           return { error: "/links: server-side handler not yet implemented (future bucket)" };
+        // P-0d — /lusers. Bare verb, no args. Pushes on user-level channel;
+        // server emits the 7-numeric LUSERS bundle. cic dispatches the
+        // typed `:lusers_bundle` wire event in userTopic.ts and renders
+        // the LusersCard pinned at the top of the $server window.
+        case "lusers": {
+          const networkId = networkIdBySlug(networkSlug);
+          if (networkId === undefined) return { error: "/lusers: network not found" };
+          pushLusers(networkId);
+          result = { ok: true };
+          break;
+        }
         // ---------------------------------------------------------------
         // C2 — /whois <nick>. Push on the user-level channel; the server
         // primes its accumulator and emits WHOIS upstream. The bundle

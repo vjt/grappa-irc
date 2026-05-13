@@ -446,3 +446,13 @@ describe("parseSlash — watchlist verbs (/watch and /highlight are aliases)", (
     expect(parseSlash("/watch foo")).toMatchObject({ kind: "error", verb: "watch" });
   });
 });
+
+describe("parseSlash — /lusers (P-0d)", () => {
+  it("parses bare /lusers", () => {
+    expect(parseSlash("/lusers")).toEqual({ kind: "lusers" });
+  });
+
+  it("ignores any trailing args (LUSERS is param-less)", () => {
+    expect(parseSlash("/lusers ignored")).toEqual({ kind: "lusers" });
+  });
+});

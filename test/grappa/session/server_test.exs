@@ -4611,6 +4611,57 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "P-0d LUSERS sequence flushes :lusers_bundle on 266 RPL_GLOBALUSERS", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # Bahamut emits the 7-numeric LUSERS sequence; 266 is the terminator.
+      IRCServer.feed(
+        server,
+        ":irc.test.org 251 grappa-test :There are 1234 users and 56 invisible on 3 servers\r\n"
+      )
+
+      IRCServer.feed(server, ":irc.test.org 252 grappa-test 7 :IRC Operators online\r\n")
+      IRCServer.feed(server, ":irc.test.org 253 grappa-test 2 :unknown connection(s)\r\n")
+      IRCServer.feed(server, ":irc.test.org 254 grappa-test 89 :channels formed\r\n")
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 255 grappa-test :I have 100 clients and 1 servers\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 265 grappa-test :Current local users: 100 Max: 200\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 266 grappa-test :Current global users: 1234 Max: 5000\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "lusers_bundle"} = ev}, 1_500
+      assert ev.network == network.slug
+      assert ev.total_users == 1234
+      assert ev.invisible == 56
+      assert ev.servers == 3
+      assert ev.operators == 7
+      assert ev.unknown_connections == 2
+      assert ev.channels_formed == 89
+      assert ev.local_clients == 100
+      assert ev.local_servers == 1
+      assert ev.current_local == 100
+      assert ev.max_local == 200
+      assert ev.current_global == 1234
+      assert ev.max_global == 5000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

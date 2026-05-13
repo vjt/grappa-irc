@@ -1407,3 +1407,47 @@ body {
   font-style: normal;
   color: var(--accent);
 }
+
+/* P-0d — LUSERS card. Pinned at the top of the $server window when a
+   snapshot exists. Visual mirrors `.whois-card` (border-left accent,
+   dim panel) — same family of structured single-entity cards. */
+.lusers-card {
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+}
+
+.lusers-card-header {
+  font-weight: bold;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.lusers-card-title {
+  text-transform: lowercase;
+}
+
+.lusers-card-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+}
+
+.lusers-card-fields dt {
+  color: var(--fg-muted);
+  text-align: right;
+}
+
+.lusers-card-fields dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.lusers-card-muted {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}

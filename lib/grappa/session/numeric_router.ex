@@ -151,6 +151,14 @@ defmodule Grappa.Session.NumericRouter do
                         365,
                         # INVITE-ack (341)
                         341,
+                        # LUSERS bundle (251, 252, 253, 254, 255, 265, 266)
+                        251,
+                        252,
+                        253,
+                        254,
+                        255,
+                        265,
+                        266,
                         # MOTD replies (375, 372, 376)
                         375,
                         372,
