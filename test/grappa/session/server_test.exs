@@ -4588,6 +4588,29 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "P-0e 341 RPL_INVITING broadcasts invite_ack on Topic.channel/3", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "#italia")
+        )
+
+      # Operator /invite alice #italia → upstream replies with 341.
+      IRCServer.feed(server, ":irc.test.org 341 grappa-test alice #italia\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "invite_ack"} = ev}, 1_500
+      assert ev.network == network.slug
+      assert ev.channel == "#italia"
+      assert ev.peer == "alice"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -365,4 +365,42 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
       ).toBeNull();
     });
   });
+
+  describe("kind: invite_ack (P-0e)", () => {
+    it("narrows a complete envelope", () => {
+      const out = narrowChannelEvent({
+        kind: "invite_ack",
+        network: "azzurra",
+        channel: "#italia",
+        peer: "alice",
+      });
+      expect(out).toEqual({
+        kind: "invite_ack",
+        network: "azzurra",
+        channel: "#italia",
+        peer: "alice",
+      });
+    });
+
+    it("rejects missing peer", () => {
+      expect(
+        narrowChannelEvent({
+          kind: "invite_ack",
+          network: "azzurra",
+          channel: "#italia",
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects non-string peer", () => {
+      expect(
+        narrowChannelEvent({
+          kind: "invite_ack",
+          network: "azzurra",
+          channel: "#italia",
+          peer: 42,
+        }),
+      ).toBeNull();
+    });
+  });
 });

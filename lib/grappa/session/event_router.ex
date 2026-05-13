@@ -175,6 +175,7 @@ defmodule Grappa.Session.EventRouter do
           | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil}
           | {:whois_bundle, target :: String.t(), accum :: map()}
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
+          | {:invite_ack, channel :: String.t(), peer :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -1202,6 +1203,26 @@ defmodule Grappa.Session.EventRouter do
   # and cicchetto derives the display from away_state, not this numeric.
   def route(%Message{command: {:numeric, 306}}, state) do
     {:cont, state, [{:away_confirmed, :away}]}
+  end
+
+  # 341 RPL_INVITING: `:server 341 own_nick target_nick channel`. Sent
+  # to the inviter as confirmation that `/invite target_nick channel` was
+  # relayed upstream. P-0e: emit a typed `{:invite_ack, channel, target}`
+  # effect; `Server.apply_effects` broadcasts an `invite_ack` wire event
+  # on the channel's per-channel topic. cic synthesizes an ephemeral
+  # inline row in the channel scrollback (NOT persisted — invite-ack is
+  # immediate-feedback, not audit log). Server emits no human-readable
+  # string per `feedback_no_localized_strings_server_side`.
+  #
+  # Bahamut sends params as [own_nick, target_nick, channel]; some
+  # variants carry a trailing description (": invitation sent") which is
+  # ignored — cic owns the rendering.
+  def route(
+        %Message{command: {:numeric, 341}, params: [_, target, channel | _]},
+        state
+      )
+      when is_binary(target) and is_binary(channel) do
+    {:cont, state, [{:invite_ack, channel, target}]}
   end
 
   # BUG2: MOTD numerics (375 RPL_MOTDSTART, 372 RPL_MOTD, 376 RPL_ENDOFMOTD)

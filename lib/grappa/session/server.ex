@@ -2137,6 +2137,22 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # P-0e — 341 RPL_INVITING ephemeral. Broadcast on the channel's
+  # per-channel topic (the operator was on that channel when they
+  # issued /invite — channel-scoped action confirmation belongs in the
+  # channel transcript). cic synthesizes an ephemeral inline row in
+  # the channel scrollback. NOT persisted — invite-ack is immediate-
+  # feedback, not audit log.
+  defp apply_effects([{:invite_ack, channel, peer} | rest], state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.channel(state.subject_label, state.network_slug, channel),
+        SessionWire.invite_ack(state.network_slug, channel, peer)
+      )
+
+    apply_effects(rest, state)
+  end
+
   defp apply_effects([{:persist, kind, attrs} | rest], state) do
     full_attrs = Map.put(attrs, :kind, kind)
 

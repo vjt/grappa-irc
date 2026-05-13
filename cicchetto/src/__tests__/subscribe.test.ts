@@ -125,6 +125,10 @@ let visibleForTest = true;
 vi.mock("../lib/documentVisibility", () => ({
   isDocumentVisible: () => visibleForTest,
 }));
+
+vi.mock("../lib/inviteAck", () => ({
+  appendInviteAck: vi.fn(),
+}));
 const setVisibleForTest = (v: boolean) => {
   visibleForTest = v;
 };
@@ -2614,6 +2618,64 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         by: "op",
         reason: "behave",
       });
+      const key = channelKey("freenode", "#grappa");
+      expect(store.scrollbackByChannel()[key]).toBeUndefined();
+      expect(store.unreadCounts()[key]).toBeUndefined();
+    });
+  });
+
+  // P-0e — invite-ack WS event: server emits `kind: "invite_ack"` on the
+  // channel topic when 341 RPL_INVITING arrives; cic appends an
+  // ephemeral synthetic row in the channel scrollback via inviteAck
+  // store.
+  describe("invite_ack WS event", () => {
+    it("dispatches appendInviteAck for the (slug, channel, peer) triple", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const inviteAck = await import("../lib/inviteAck");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "invite_ack",
+        network: "freenode",
+        channel: "#grappa",
+        peer: "bob",
+      });
+
+      expect(inviteAck.appendInviteAck).toHaveBeenCalledWith("freenode", "#grappa", "bob");
+    });
+
+    it("does NOT route invite_ack as a message (no scrollback append, no unread bump)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const store = await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+        p: unknown,
+      ) => void;
+      handler({
+        kind: "invite_ack",
+        network: "freenode",
+        channel: "#grappa",
+        peer: "bob",
+      });
+
       const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]).toBeUndefined();
       expect(store.unreadCounts()[key]).toBeUndefined();

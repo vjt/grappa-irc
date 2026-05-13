@@ -383,6 +383,19 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "invite_ack/3" do
+    test "projects (network, channel, peer) into the wire shape with kind: injected" do
+      payload = Wire.invite_ack("azzurra", "#italia", "alice")
+
+      assert payload == %{
+               kind: "invite_ack",
+               network: "azzurra",
+               channel: "#italia",
+               peer: "alice"
+             }
+    end
+  end
+
   describe "kind: discriminator string contract" do
     test "every Wire fn output carries kind: as a String.t()" do
       payloads = [
@@ -398,7 +411,8 @@ defmodule Grappa.Session.WireTest do
         Wire.away_confirmed("net", "present"),
         Wire.mentions_bundle("net", "from", "to", nil, []),
         Wire.whois_bundle("net", "alice", %{}),
-        Wire.peer_away("net", "alice", "Gone fishing")
+        Wire.peer_away("net", "alice", "Gone fishing"),
+        Wire.invite_ack("net", "#italia", "alice")
       ]
 
       for p <- payloads do

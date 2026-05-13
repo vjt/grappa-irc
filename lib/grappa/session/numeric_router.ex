@@ -149,6 +149,8 @@ defmodule Grappa.Session.NumericRouter do
                         # LINKS replies (364, 365)
                         364,
                         365,
+                        # INVITE-ack (341)
+                        341,
                         # MOTD replies (375, 372, 376)
                         375,
                         372,

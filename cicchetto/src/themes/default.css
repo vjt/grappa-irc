@@ -1382,3 +1382,28 @@ body {
 .peer-away-banner-close:hover {
   color: var(--fg);
 }
+
+/* P-0e — invite-ack synthetic rows. Renders inline at the bottom of
+   channel scrollback when the operator's /invite is acked by 341
+   RPL_INVITING. NOT persisted; ephemeral per page-load. Visual: thin
+   muted line, no background panel — mirrors irssi's "→ invited X" hint. */
+.invite-ack-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+.invite-ack-arrow {
+  color: var(--accent);
+  font-style: normal;
+}
+
+.invite-ack-peer {
+  font-weight: bold;
+  font-style: normal;
+  color: var(--accent);
+}

@@ -8,6 +8,7 @@ import {
   on,
   Show,
 } from "solid-js";
+import InviteAckRows from "./InviteAckRows";
 import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
@@ -933,6 +934,14 @@ const ScrollbackPane: Component<Props> = (props) => {
               );
             }}
           </For>
+        </Show>
+        {/* P-0e — invite-ack ephemeral synthetic rows. Renders inline at
+            the bottom of the scrollback so they scroll with the rest of
+            the content. Channel windows only — server only broadcasts
+            invite_ack on per-channel topics, and DM-listener defensive-
+            drops it if it ever leaked. */}
+        <Show when={props.kind === "channel"}>
+          <InviteAckRows networkSlug={props.networkSlug} channelName={props.channelName} />
         </Show>
       </div>
       {/* C7.4: scroll-to-bottom floating button — shown when NOT at bottom. */}

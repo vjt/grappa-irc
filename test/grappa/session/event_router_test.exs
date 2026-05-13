@@ -2029,6 +2029,34 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  describe "P-0e — 341 RPL_INVITING (invite ack)" do
+    test "341 emits typed :invite_ack effect carrying (channel, target_nick)" do
+      state = base_state()
+
+      m =
+        msg(
+          {:numeric, 341},
+          ["vjt", "alice", "#italia"],
+          {:server, "irc.test.org"}
+        )
+
+      assert {:cont, ^state, [{:invite_ack, "#italia", "alice"}]} = EventRouter.route(m, state)
+    end
+
+    test "341 with trailing description (Bahamut variant) ignores trailing — channel is the 3rd param" do
+      state = base_state()
+
+      m =
+        msg(
+          {:numeric, 341},
+          ["vjt", "alice", "#italia", "Inviting alice to #italia"],
+          {:server, "irc.test.org"}
+        )
+
+      assert {:cont, ^state, [{:invite_ack, "#italia", "alice"}]} = EventRouter.route(m, state)
+    end
+  end
+
   # CP22 cluster B (channel-client-polish #14) — /who bundle aggregation.
   # 352 RPL_WHOREPLY rows fold into state.who_pending[channel_lower].replies;
   # 315 RPL_ENDOFWHO drains the entry into a {:who_bundle, target, accum}

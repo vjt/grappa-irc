@@ -219,6 +219,19 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
         kind: "read_cursor_set",
         last_read_message_id: r.last_read_message_id,
       };
+    case "invite_ack":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        typeof r.peer !== "string"
+      )
+        return null;
+      return {
+        kind: "invite_ack",
+        network: r.network,
+        channel: r.channel,
+        peer: r.peer,
+      };
     default:
       return null;
   }

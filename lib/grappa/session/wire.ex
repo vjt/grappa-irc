@@ -79,6 +79,7 @@ defmodule Grappa.Session.Wire do
           | :mentions_bundle
           | :whois_bundle
           | :peer_away
+          | :invite_ack
 
   @type channels_changed_payload :: %{kind: String.t()}
 
@@ -249,6 +250,22 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           peer: String.t(),
           message: String.t()
+        }
+
+  @typedoc """
+  P-0e — 341 RPL_INVITING ephemeral. Fires when the operator issues
+  `/invite <peer> <channel>` and upstream confirms the relay. Broadcast
+  on the channel's per-channel topic (channel-scoped action confirmation
+  belongs in the channel transcript). cic synthesizes an ephemeral
+  inline row in the channel scrollback — NOT persisted, lost on full
+  refetch (immediate-feedback signal, not audit log). cic owns the
+  human-readable rendering per `feedback_no_localized_strings_server_side`.
+  """
+  @type invite_ack_payload :: %{
+          kind: String.t(),
+          network: String.t(),
+          channel: String.t(),
+          peer: String.t()
         }
 
   @doc """
@@ -529,5 +546,18 @@ defmodule Grappa.Session.Wire do
   def peer_away(network_slug, peer, message)
       when is_binary(network_slug) and is_binary(peer) and is_binary(message) do
     %{kind: "peer_away", network: network_slug, peer: peer, message: message}
+  end
+
+  @doc """
+  P-0e — 341 RPL_INVITING. Broadcast on `Topic.channel/3` for the
+  channel the operator was on when issuing `/invite`. cic dispatches
+  in `subscribe.ts` (channel-topic event), synthesizes an ephemeral
+  inline row in the channel scrollback. NOT persisted — invite-ack is
+  immediate-feedback, not an audit log.
+  """
+  @spec invite_ack(String.t(), String.t(), String.t()) :: invite_ack_payload()
+  def invite_ack(network_slug, channel, peer)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(peer) do
+    %{kind: "invite_ack", network: network_slug, channel: channel, peer: peer}
   end
 end

@@ -411,6 +411,17 @@ export type WireChannelEvent =
   | {
       kind: "read_cursor_set";
       last_read_message_id: number;
+    }
+  // P-0e: 341 RPL_INVITING ack. Broadcast on the channel's per-channel
+  // topic when the operator's /invite is relayed upstream. cic synthesizes
+  // an ephemeral inline row in the channel scrollback (NOT persisted —
+  // immediate-feedback signal, not audit log). Server emits no human-
+  // readable string per `feedback_no_localized_strings_server_side`.
+  | {
+      kind: "invite_ack";
+      network: string;
+      channel: string;
+      peer: string;
     };
 
 // Legacy alias — narrow shape that pre-bucket-G consumers depended on.
