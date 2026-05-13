@@ -16,14 +16,19 @@
 //
 // P-0a — Cluster `numeric-delegation-p0` 2026-05-13 added 11 additional
 // WHOIS-leg numeric folds (275/307/325/326/378/etc — services / SSL /
-// umodes / actually-host). The bahamut testnet does NOT run an Azzurra
-// services package, so it never emits those numerics — they're verified
-// live against Azzurra at deploy-verify time per the plan's "Deploy
-// P-0a" step. The P-0a cic-side rendering is covered by
-// `cicchetto/src/__tests__/WhoisCard.test.tsx` (component vitest) +
-// `test/grappa/session/event_router_test.exs` (server-side fold tests
-// + bundle-integration test asserting all flags marshal through the
-// wire shape).
+// umodes / actually-host). The testnet DOES run azzurra/services
+// (cicchetto/e2e/infra/services/) so the services-emitted numerics
+// are theoretically wirable here. In practice an attempt to drive
+// `is_registered` via NickServ REGISTER + IDENTIFY hit a flaky
+// services<->ircd SVSMODE +r propagation gap (5s wait timed out
+// repeatedly even with EMAIL:0 + FORCE_AUTH:0 conf — likely a leaf-
+// burst-state + services-master timing issue). The P-0a wire shape +
+// fold logic + cic render are exhaustively unit-tested in
+// `cicchetto/src/__tests__/WhoisCard.test.tsx` (component vitest with
+// mocked store) + `test/grappa/session/event_router_test.exs`
+// (per-numeric server fold + bundle-integration). Live verification
+// per the plan's "Deploy P-0a" step is `/whois <known-IsRegNick+
+// IsUmodez>` on Azzurra at deploy time.
 
 import { test, expect } from "@playwright/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
