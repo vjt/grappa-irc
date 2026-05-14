@@ -14,6 +14,7 @@ import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
+import { linkify } from "./lib/linkify";
 import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
@@ -193,6 +194,14 @@ const renderRun = (run: Run): JSX.Element => {
   if (run.bg !== undefined) {
     style[run.reverse ? "color" : "background-color"] = MIRC_PALETTE_16[run.bg] ?? "";
   }
+  // No-silent-drops bucket 4 (2026-05-14): linkify the run text so URLs
+  // render as <a href target="_blank" rel="noopener noreferrer">. Done
+  // INSIDE the formatting <span> so URL links inherit the run's bold /
+  // color / etc. attributes (mIRC formatting + linkification compose
+  // cleanly). Plain-text runs go through linkify too -- the cost is
+  // one regex scan per run; if no URL matches the result is a single
+  // text segment which renders identically to the pre-linkify path.
+  const segments = linkify(run.text);
   return (
     <span
       classList={{
@@ -203,7 +212,17 @@ const renderRun = (run: Run): JSX.Element => {
       }}
       style={style}
     >
-      {run.text}
+      <For each={segments}>
+        {(seg) =>
+          seg.type === "url" ? (
+            <a href={seg.href} target="_blank" rel="noopener noreferrer" class="scrollback-link">
+              {seg.value}
+            </a>
+          ) : (
+            seg.value
+          )
+        }
+      </For>
     </span>
   );
 };

@@ -1922,6 +1922,103 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // No-silent-drops bucket 4 (2026-05-14): clickable URLs in scrollback
+  // bodies. linkify() splits each mIRC Run's text into text + url
+  // segments; renderRun emits <a href target="_blank" rel="noopener
+  // noreferrer"> for url segments. mIRC formatting + linkification
+  // compose -- a URL inside a bold/colored run inherits the run's
+  // formatting via CSS `color: inherit`.
+  describe("clickable URLs in scrollback (no-silent-drops bucket 4)", () => {
+    it("PRIVMSG with https URL renders <a href target=_blank rel=noopener noreferrer>", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "check https://example.com please",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+      expect(link.href).toBe("https://example.com/");
+      expect(link.target).toBe("_blank");
+      expect(link.rel).toBe("noopener noreferrer");
+      expect(link.textContent).toBe("https://example.com");
+    });
+
+    it("bare-domain www. renders link with https:// prepended", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "bob",
+            body: "visit www.example.com",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link).not.toBeNull();
+      expect(link.href).toBe("https://www.example.com/");
+      expect(link.textContent).toBe("www.example.com");
+    });
+
+    it("plain-text body (no URL) renders no <a> elements", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "no URL here",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(document.querySelector(".scrollback-link")).toBeNull();
+    });
+
+    it("trailing punctuation is excluded from the URL", () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "see https://example.com.",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const link = document.querySelector(".scrollback-link") as HTMLAnchorElement;
+      expect(link.textContent).toBe("https://example.com");
+      // The trailing "." remains in surrounding text -- assert via the
+      // bodyEl's textContent including the "." but not inside the link.
+      const bodyEl = document.querySelector(".scrollback-body");
+      expect(bodyEl?.textContent).toContain("https://example.com.");
+    });
+  });
+
   // CP13 S10 — mIRC formatting: privmsg/notice/action bodies render
   // through parseMircFormat so bold/color/etc. produce per-Run <span>s.
   describe("mIRC body formatting (CP13 S10)", () => {

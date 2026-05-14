@@ -730,6 +730,20 @@ body {
   text-decoration: underline;
 }
 
+/* No-silent-drops bucket 4: clickable URLs in scrollback bodies.
+   Inherits color from the surrounding mIRC formatting <span> (so a
+   URL inside a colored run keeps the run's color), with explicit
+   underline to surface the click affordance. Hover bumps to the
+   accent color to differentiate from incidental underlined runs. */
+.scrollback-link {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.scrollback-link:hover {
+  color: var(--accent);
+}
+
 .scrollback-body {
   color: var(--fg);
 }
