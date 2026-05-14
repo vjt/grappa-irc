@@ -24,8 +24,11 @@ import { identityScopedStore } from "./identityScopedStore";
 
 export type InviteAckEntry = {
   peer: string;
-  // ms-resolution arrival timestamp (cic-side System.now); used as
-  // stable key for <For> + render order.
+  // Monotonic insertion sequence (closure-local counter, NOT a clock).
+  // Used as stable sort key by `InviteAckRows` when aggregating rows
+  // across multiple target-channel buckets — `Date.now()`-resolution
+  // collisions in same-millisecond appends would otherwise reorder
+  // arrivals from different buckets unpredictably.
   ts: number;
 };
 
@@ -34,11 +37,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     Record<string, Record<string, InviteAckEntry[]>>
   >({});
 
-  onIdentityChange(() => setInviteAckBySlug({}));
+  // Monotonic insertion counter — never resets across the identity
+  // lifecycle. Reset alongside the store on identity change so the
+  // ordering invariant holds within a session.
+  let seq = 0;
+
+  onIdentityChange(() => {
+    setInviteAckBySlug({});
+    seq = 0;
+  });
 
   const appendInviteAck = (networkSlug: string, channel: string, peer: string): void => {
     const channelKey = channel.toLowerCase();
-    const entry: InviteAckEntry = { peer, ts: Date.now() };
+    seq += 1;
+    const entry: InviteAckEntry = { peer, ts: seq };
     setInviteAckBySlug((prev) => {
       const networkEntries = prev[networkSlug] ?? {};
       const channelEntries = networkEntries[channelKey] ?? [];

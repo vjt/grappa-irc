@@ -4,6 +4,7 @@ import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
 import { channelKey } from "./channelKey";
+import { appendInviteAck } from "./inviteAck";
 import { setLusersBundle } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
@@ -192,6 +193,23 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         away_message: r.away_message as string | null,
         actually_host: r.actually_host as string | null,
         actually_ip: r.actually_ip as string | null,
+      };
+    case "invite_ack":
+      // P-0e + P-0f — 341 RPL_INVITING ack. Server emits structured
+      // (network, channel, peer); cic appends a synthetic row to the
+      // per-network store keyed on target channel and renders inline
+      // in the $server window scrollback.
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        typeof r.peer !== "string"
+      )
+        return null;
+      return {
+        kind: "invite_ack",
+        network: r.network,
+        channel: r.channel,
+        peer: r.peer,
       };
     case "bundle_hash":
       if (typeof r.hash !== "string" || r.hash === "") return null;
@@ -435,6 +453,15 @@ createRoot(() => {
           setWhowasBundle(payload.network, bundle);
           return;
         }
+
+        case "invite_ack":
+          // P-0e + P-0f — append a synthetic row to the per-network
+          // store keyed on target channel. `InviteAckRows` mounts on
+          // the $server window scrollback and renders one row per
+          // event. No focus change — server-window auto-yank would
+          // be antisocial.
+          appendInviteAck(payload.network, payload.channel, payload.peer);
+          return;
 
         default:
           assertNever(payload);

@@ -1,5 +1,5 @@
 import { type Component, Show } from "solid-js";
-import { lusersBundleByNetwork } from "./lib/lusersBundle";
+import { dismissLusersCard, lusersBundleByNetwork } from "./lib/lusersBundle";
 
 // P-0d — LUSERS card. Renders a structured snapshot of network state
 // (clients, operators, channels, servers, local/global counts) folded
@@ -30,6 +30,15 @@ const LusersCard: Component<Props> = (props) => {
         <div class="lusers-card" data-testid="lusers-card">
           <div class="lusers-card-header">
             <span class="lusers-card-title">network state</span>
+            {/* P-0f — close affordance, mirror of WhoisCard / WhowasCard. */}
+            <button
+              type="button"
+              class="lusers-card-close"
+              aria-label="Dismiss LUSERS"
+              onClick={() => dismissLusersCard(props.networkSlug)}
+            >
+              ×
+            </button>
           </div>
           <dl class="lusers-card-fields">
             <Show when={s.total_users !== null || s.invisible !== null}>

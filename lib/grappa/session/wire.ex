@@ -255,13 +255,16 @@ defmodule Grappa.Session.Wire do
         }
 
   @typedoc """
-  P-0e — 341 RPL_INVITING ephemeral. Fires when the operator issues
-  `/invite <peer> <channel>` and upstream confirms the relay. Broadcast
-  on the channel's per-channel topic (channel-scoped action confirmation
-  belongs in the channel transcript). cic synthesizes an ephemeral
-  inline row in the channel scrollback — NOT persisted, lost on full
-  refetch (immediate-feedback signal, not audit log). cic owns the
-  human-readable rendering per `feedback_no_localized_strings_server_side`.
+  P-0e + P-0f — 341 RPL_INVITING ephemeral. Fires when the operator
+  issues `/invite <peer> <channel>` and upstream confirms the relay.
+  Broadcast on `Topic.user/1` (P-0f flipped from per-channel topic;
+  operators usually invite peers to channels they are NOT in, so the
+  channel-topic broadcast was silent-dropping in the common case).
+  cic dispatches in `userTopic.ts`'s `invite_ack` arm and renders a
+  synthetic inline row in the $server window scrollback — NOT
+  persisted, lost on full refetch (immediate-feedback signal, not
+  audit log). cic owns the human-readable rendering per
+  `feedback_no_localized_strings_server_side`.
   """
   @type invite_ack_payload :: %{
           kind: String.t(),
@@ -603,10 +606,13 @@ defmodule Grappa.Session.Wire do
   end
 
   @doc """
-  P-0e — 341 RPL_INVITING. Broadcast on `Topic.channel/3` for the
-  channel the operator was on when issuing `/invite`. cic dispatches
-  in `subscribe.ts` (channel-topic event), synthesizes an ephemeral
-  inline row in the channel scrollback. NOT persisted — invite-ack is
+  P-0e + P-0f — 341 RPL_INVITING. Broadcast on `Topic.user/1` (P-0f
+  flipped from per-channel topic — operators usually invite peers to
+  channels they are NOT in, dropping the channel-topic broadcast on
+  the floor in the common case). cic dispatches in `userTopic.ts`'s
+  `invite_ack` arm, appends to the per-network store keyed on the
+  target channel, and `InviteAckRows` renders synthetic inline rows
+  in the $server window scrollback. NOT persisted — invite-ack is
   immediate-feedback, not an audit log.
   """
   @spec invite_ack(String.t(), String.t(), String.t()) :: invite_ack_payload()

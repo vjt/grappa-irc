@@ -205,15 +205,9 @@ describe("WireChannelEvent canonical union (H3)", () => {
       event: { kind: "read_cursor_set", last_read_message_id: 42 },
       expectedKind: "read_cursor_set",
     },
-    {
-      event: {
-        kind: "invite_ack",
-        network: "azzurra",
-        channel: "#italia",
-        peer: "alice",
-      },
-      expectedKind: "invite_ack",
-    },
+    // P-0e + P-0f — invite_ack moved from WireChannelEvent to
+    // WireUserEvent (operators usually invite peers to channels they
+    // are NOT in; per-channel routing silent-dropped). Sample removed.
   ];
 
   it("each canonical arm narrows on the discriminator", () => {
@@ -232,7 +226,6 @@ describe("WireChannelEvent canonical union (H3)", () => {
         case "join_failed":
         case "kicked":
         case "read_cursor_set":
-        case "invite_ack":
           expect(event.kind).toBe(expectedKind);
           break;
         default:

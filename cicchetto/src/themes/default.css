@@ -1421,13 +1421,33 @@ body {
 }
 
 .lusers-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
   font-weight: bold;
   color: var(--accent);
   margin-bottom: 0.25rem;
 }
 
 .lusers-card-title {
+  flex: 0 0 auto;
   text-transform: lowercase;
+}
+
+/* P-0f — close button mirror of `.whois-card-close` / `.whowas-card-close`. */
+.lusers-card-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.3rem;
+}
+
+.lusers-card-close:hover {
+  color: var(--fg);
 }
 
 .lusers-card-fields {

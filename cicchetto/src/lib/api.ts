@@ -411,18 +411,11 @@ export type WireChannelEvent =
   | {
       kind: "read_cursor_set";
       last_read_message_id: number;
-    }
-  // P-0e: 341 RPL_INVITING ack. Broadcast on the channel's per-channel
-  // topic when the operator's /invite is relayed upstream. cic synthesizes
-  // an ephemeral inline row in the channel scrollback (NOT persisted —
-  // immediate-feedback signal, not audit log). Server emits no human-
-  // readable string per `feedback_no_localized_strings_server_side`.
-  | {
-      kind: "invite_ack";
-      network: string;
-      channel: string;
-      peer: string;
     };
+// P-0e + P-0f — invite_ack moved from per-channel topic to user-topic
+// (operators usually invite peers to channels they are NOT in;
+// per-channel routing silent-dropped in the common case). The arm
+// now lives on `WireUserEvent` below.
 
 // Legacy alias — narrow shape that pre-bucket-G consumers depended on.
 // New code should import `WireChannelEvent` and narrow on `kind`.
@@ -596,6 +589,19 @@ export type WireUserEvent =
       max_global: number | null;
     }
   | ({ kind: "whowas_bundle" } & WhowasBundle)
+  | {
+      // P-0e + P-0f — 341 RPL_INVITING ack. Server broadcasts on
+      // user-topic (P-0f flipped from per-channel; operators usually
+      // invite peers to channels they are NOT in). cic appends a
+      // synthetic ephemeral row to the per-network store keyed on
+      // target channel, and `InviteAckRows` renders inline in the
+      // $server window scrollback. NOT persisted — immediate-
+      // feedback signal, not audit log.
+      kind: "invite_ack";
+      network: string;
+      channel: string;
+      peer: string;
+    }
   | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the

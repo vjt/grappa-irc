@@ -1,7 +1,7 @@
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import LusersCard from "../LusersCard";
-import { setLusersBundle } from "../lib/lusersBundle";
+import { dismissLusersCard, setLusersBundle } from "../lib/lusersBundle";
 
 // P-0d — LUSERS card component. Render assertions only — wire dispatch
 // is covered by userTopic.test.ts.
@@ -77,5 +77,43 @@ describe("LusersCard", () => {
     setLusersBundle("net-x", FULL_SNAPSHOT);
     const { container } = render(() => <LusersCard networkSlug="net-other" />);
     expect(container.querySelector("[data-testid='lusers-card']")).toBeNull();
+  });
+
+  // P-0f — close button affordance, mirror of WhoisCard / WhowasCard.
+  describe("close button (P-0f)", () => {
+    it("renders a close button in the card header", () => {
+      setLusersBundle("net-close-1", FULL_SNAPSHOT);
+      render(() => <LusersCard networkSlug="net-close-1" />);
+      expect(screen.getByLabelText("Dismiss LUSERS")).toBeInTheDocument();
+    });
+
+    it("dismissLusersCard removes the bundle so the card unmounts", () => {
+      setLusersBundle("net-close-2", FULL_SNAPSHOT);
+      const { container } = render(() => <LusersCard networkSlug="net-close-2" />);
+      expect(container.querySelector("[data-testid='lusers-card']")).not.toBeNull();
+
+      dismissLusersCard("net-close-2");
+
+      expect(container.querySelector("[data-testid='lusers-card']")).toBeNull();
+    });
+
+    it("clicking the close button dismisses the card for THIS network only", () => {
+      setLusersBundle("net-close-3a", FULL_SNAPSHOT);
+      setLusersBundle("net-close-3b", FULL_SNAPSHOT);
+      const { container: containerA } = render(() => <LusersCard networkSlug="net-close-3a" />);
+      const { container: containerB } = render(() => <LusersCard networkSlug="net-close-3b" />);
+
+      // Click the close button inside containerA scoped element so we
+      // pick a deterministic instance even though both render the same
+      // aria-label.
+      const closeA = containerA.querySelector(
+        "[aria-label='Dismiss LUSERS']",
+      ) as HTMLButtonElement;
+      fireEvent.click(closeA);
+
+      // 3a dismissed; 3b survives because it's a separate network.
+      expect(containerA.querySelector("[data-testid='lusers-card']")).toBeNull();
+      expect(containerB.querySelector("[data-testid='lusers-card']")).not.toBeNull();
+    });
   });
 });

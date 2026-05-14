@@ -43,8 +43,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setLusersBundleByNetwork((prev) => ({ ...prev, [networkSlug]: snapshot }));
   };
 
-  return { lusersBundleByNetwork, setLusersBundle };
+  // P-0f — close affordance. Mirror of `dismissWhoisCard` /
+  // `dismissWhowasCard`. The next /lusers (operator-issued OR connect-
+  // welcome auto-emit) re-populates the snapshot; dismiss is just a
+  // local "I'm done looking" action.
+  const dismissLusersCard = (networkSlug: string): void => {
+    setLusersBundleByNetwork((prev) => {
+      const next = { ...prev };
+      delete next[networkSlug];
+      return next;
+    });
+  };
+
+  return { lusersBundleByNetwork, setLusersBundle, dismissLusersCard };
 });
 
 export const lusersBundleByNetwork = exports_.lusersBundleByNetwork;
 export const setLusersBundle = exports_.setLusersBundle;
+export const dismissLusersCard = exports_.dismissLusersCard;

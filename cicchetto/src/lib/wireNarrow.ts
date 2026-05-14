@@ -219,19 +219,10 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
         kind: "read_cursor_set",
         last_read_message_id: r.last_read_message_id,
       };
-    case "invite_ack":
-      if (
-        typeof r.network !== "string" ||
-        typeof r.channel !== "string" ||
-        typeof r.peer !== "string"
-      )
-        return null;
-      return {
-        kind: "invite_ack",
-        network: r.network,
-        channel: r.channel,
-        peer: r.peer,
-      };
+    // P-0e + P-0f: invite_ack moved from per-channel topic to
+    // user-topic; narrowed in `narrowUserEvent` instead. Channel-
+    // topic should never receive invite_ack post-P-0f; default arm
+    // returns null to drop any stray.
     default:
       return null;
   }

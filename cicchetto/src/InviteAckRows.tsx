@@ -1,25 +1,34 @@
 import { type Component, For, Show } from "solid-js";
 import { inviteAckBySlug } from "./lib/inviteAck";
 
-// P-0e — invite-ack ephemeral synthetic rows. Renders one inline row
-// per invite_ack event for (networkSlug, channelName), in arrival
-// order. NOT persisted; lost on refresh / scrollback refetch.
+// P-0e + P-0f — invite-ack ephemeral synthetic rows. Renders one
+// inline row per invite_ack event for `networkSlug`, in arrival
+// order across all target channels. NOT persisted; lost on refresh.
 //
-// Mount only on channel windows (not query) — server only broadcasts
-// invite_ack on per-channel topics; the DM-listener defensive-drops it.
+// Mount: $server window for the network. P-0f flipped from per-channel
+// scrollback (which silent-dropped when the operator wasn't in the
+// target channel) to the always-visible $server window. The row text
+// includes the target channel since one $server window aggregates
+// invites issued to any channel on the network.
 //
 // Per `feedback_no_localized_strings_server_side` cic owns the human-
-// readable rendering ("→ invited <peer>"). Server emits structured
-// (network, channel, peer) only.
+// readable rendering ("→ invited <peer> to <channel>"). Server emits
+// structured (network, channel, peer) only.
 type Props = {
   networkSlug: string;
-  channelName: string;
 };
 
 const InviteAckRows: Component<Props> = (props) => {
   const entries = () => {
-    const channelKey = props.channelName.toLowerCase();
-    return inviteAckBySlug()[props.networkSlug]?.[channelKey] ?? [];
+    const networkEntries = inviteAckBySlug()[props.networkSlug];
+    if (!networkEntries) return [];
+    // Flatten across all per-channel buckets, then sort by ts so the
+    // operator sees them in true arrival order regardless of which
+    // channel was invited to.
+    const all = Object.entries(networkEntries).flatMap(([channelKey, list]) =>
+      list.map((e) => ({ ...e, channel: channelKey })),
+    );
+    return all.sort((a, b) => a.ts - b.ts);
   };
 
   return (
@@ -29,7 +38,8 @@ const InviteAckRows: Component<Props> = (props) => {
           <div class="invite-ack-row" data-testid="invite-ack-row">
             <span class="invite-ack-arrow">→</span>
             <span class="invite-ack-text">
-              invited <span class="invite-ack-peer">{entry.peer}</span>
+              invited <span class="invite-ack-peer">{entry.peer}</span> to{" "}
+              <span class="invite-ack-channel">{entry.channel}</span>
             </span>
           </div>
         )}

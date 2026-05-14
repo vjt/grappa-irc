@@ -4589,22 +4589,27 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "P-0e 341 RPL_INVITING broadcasts invite_ack on Topic.channel/3", %{
-      server: server,
-      user: user,
-      network: network,
-      pid: pid
-    } do
-      :ok =
-        Phoenix.PubSub.subscribe(
-          Grappa.PubSub,
-          Topic.channel(user.name, network.slug, "#italia")
-        )
+    test "P-0e+P-0f 341 RPL_INVITING broadcasts invite_ack on Topic.user/1 (always-subscribed surface)",
+         %{
+           server: server,
+           user: user,
+           network: network,
+           pid: pid
+         } do
+      # P-0f: route flipped from per-channel topic to user-topic. The
+      # operator usually invites peers to channels they are NOT in (e.g.
+      # /invite grappa #it-opers from #bofh) — per-channel routing
+      # silent-dropped in the common case. User-topic + $server window
+      # mount surfaces the ack regardless of what window the operator
+      # is currently focused on.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       # Operator /invite alice #italia → upstream replies with 341.
       IRCServer.feed(server, ":irc.test.org 341 grappa-test alice #italia\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "invite_ack"} = ev}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "invite_ack"} = ev},
+                     1_500
+
       assert ev.network == network.slug
       assert ev.channel == "#italia"
       assert ev.peer == "alice"

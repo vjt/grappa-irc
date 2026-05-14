@@ -949,13 +949,13 @@ const ScrollbackPane: Component<Props> = (props) => {
             }}
           </For>
         </Show>
-        {/* P-0e — invite-ack ephemeral synthetic rows. Renders inline at
-            the bottom of the scrollback so they scroll with the rest of
-            the content. Channel windows only — server only broadcasts
-            invite_ack on per-channel topics, and DM-listener defensive-
-            drops it if it ever leaked. */}
-        <Show when={props.kind === "channel"}>
-          <InviteAckRows networkSlug={props.networkSlug} channelName={props.channelName} />
+        {/* P-0e + P-0f — invite-ack ephemeral synthetic rows. Mount on
+            $server window only (P-0f flipped from per-channel; operators
+            usually invite peers to channels they are NOT in, so the
+            channel-scoped routing silent-dropped in the common case).
+            Aggregates across all target channels for this network. */}
+        <Show when={props.kind === "server"}>
+          <InviteAckRows networkSlug={props.networkSlug} />
         </Show>
       </div>
       {/* C7.4: scroll-to-bottom floating button — shown when NOT at bottom. */}

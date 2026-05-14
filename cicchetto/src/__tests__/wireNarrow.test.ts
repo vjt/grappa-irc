@@ -366,39 +366,18 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
     });
   });
 
-  describe("kind: invite_ack (P-0e)", () => {
-    it("narrows a complete envelope", () => {
-      const out = narrowChannelEvent({
-        kind: "invite_ack",
-        network: "azzurra",
-        channel: "#italia",
-        peer: "alice",
-      });
-      expect(out).toEqual({
-        kind: "invite_ack",
-        network: "azzurra",
-        channel: "#italia",
-        peer: "alice",
-      });
-    });
-
-    it("rejects missing peer", () => {
+  describe("kind: invite_ack (P-0e + P-0f)", () => {
+    // P-0f flipped invite_ack from per-channel to user-topic. The
+    // channel-event narrower now drops any stray invite_ack payload
+    // (defensive — server should never emit on the channel topic
+    // post-P-0f). User-topic narrowing is covered in userTopic.test.ts.
+    it("drops invite_ack on the channel-event surface (now lives on user-topic)", () => {
       expect(
         narrowChannelEvent({
           kind: "invite_ack",
           network: "azzurra",
           channel: "#italia",
-        }),
-      ).toBeNull();
-    });
-
-    it("rejects non-string peer", () => {
-      expect(
-        narrowChannelEvent({
-          kind: "invite_ack",
-          network: "azzurra",
-          channel: "#italia",
-          peer: 42,
+          peer: "alice",
         }),
       ).toBeNull();
     });

@@ -5,7 +5,6 @@ import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { seedChannelCreated, seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
-import { appendInviteAck } from "./inviteAck";
 import { applyPresenceEvent, seedMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
 import { bumpMention } from "./mentions";
@@ -322,13 +321,9 @@ createRoot(() => {
         case "read_cursor_set":
           applyReadCursorSet(slug, name, payload.last_read_message_id);
           return;
-        // P-0e: 341 RPL_INVITING ack. Server broadcasts on the channel
-        // topic when /invite is relayed upstream. Append an ephemeral
-        // synthetic row in this channel's scrollback (NOT persisted —
-        // immediate-feedback signal, not audit log).
-        case "invite_ack":
-          appendInviteAck(slug, payload.channel, payload.peer);
-          return;
+        // P-0e + P-0f: invite_ack moved to user-topic; the per-channel
+        // arm is gone (and `narrowChannelEvent` no longer narrows the
+        // kind so this case is unreachable at the type level).
         case "message": {
           const { message } = payload;
 
@@ -403,7 +398,6 @@ createRoot(() => {
         case "joined":
         case "join_failed":
         case "kicked":
-        case "invite_ack":
           // Defensive drop — server never emits these on a nick target;
           // even if it did, the DM window's surface is not the right
           // place for them.

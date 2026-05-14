@@ -2624,38 +2624,12 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
     });
   });
 
-  // P-0e — invite-ack WS event: server emits `kind: "invite_ack"` on the
-  // channel topic when 341 RPL_INVITING arrives; cic appends an
-  // ephemeral synthetic row in the channel scrollback via inviteAck
-  // store.
-  describe("invite_ack WS event", () => {
-    it("dispatches appendInviteAck for the (slug, channel, peer) triple", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-      );
-      await seedStubs();
-      await loadStores();
-      const inviteAck = await import("../lib/inviteAck");
-      await vi.waitFor(() => {
-        expect(mockChannel.on).toHaveBeenCalled();
-      });
-
-      const handler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
-        p: unknown,
-      ) => void;
-      handler({
-        kind: "invite_ack",
-        network: "freenode",
-        channel: "#grappa",
-        peer: "bob",
-      });
-
-      expect(inviteAck.appendInviteAck).toHaveBeenCalledWith("freenode", "#grappa", "bob");
-    });
-
-    it("does NOT route invite_ack as a message (no scrollback append, no unread bump)", async () => {
+  // P-0e + P-0f — invite-ack moved from per-channel topic to user-topic
+  // (see userTopic.test.ts for the dispatch-arm coverage). The
+  // per-channel handler post-P-0f drops any stray invite_ack payload
+  // because `narrowChannelEvent` no longer recognizes the kind.
+  describe("invite_ack WS event (per-channel surface — defensive drop post-P-0f)", () => {
+    it("does NOT route invite_ack from the channel topic — narrower drops it", async () => {
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -2663,6 +2637,7 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
       );
       await seedStubs();
       const store = await loadStores();
+      const inviteAck = await import("../lib/inviteAck");
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();
       });
@@ -2676,6 +2651,9 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
         peer: "bob",
       });
 
+      // No append — the channel-topic handler drops invite_ack post-P-0f.
+      expect(inviteAck.appendInviteAck).not.toHaveBeenCalled();
+      // No scrollback / unread side effects either.
       const key = channelKey("freenode", "#grappa");
       expect(store.scrollbackByChannel()[key]).toBeUndefined();
       expect(store.unreadCounts()[key]).toBeUndefined();

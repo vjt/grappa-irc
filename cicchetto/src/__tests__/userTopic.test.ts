@@ -75,6 +75,10 @@ vi.mock("../lib/whowasCard", () => ({
   setWhowasBundle: vi.fn(),
 }));
 
+vi.mock("../lib/inviteAck", () => ({
+  appendInviteAck: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -446,6 +450,40 @@ describe("userTopic", () => {
         not_found: false,
       });
       expect(wc.setWhowasBundle).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("invite_ack arm (P-0e + P-0f)", () => {
+    it("calls appendInviteAck with (network, channel, peer)", async () => {
+      const ia = await import("../lib/inviteAck");
+      channelMock.fireEvent({
+        kind: "invite_ack",
+        network: "azzurra",
+        channel: "#it-opers",
+        peer: "grappa",
+      });
+      expect(ia.appendInviteAck).toHaveBeenCalledWith("azzurra", "#it-opers", "grappa");
+    });
+
+    it("drops payload missing `peer` (no appendInviteAck call)", async () => {
+      const ia = await import("../lib/inviteAck");
+      channelMock.fireEvent({
+        kind: "invite_ack",
+        network: "azzurra",
+        channel: "#it-opers",
+      });
+      expect(ia.appendInviteAck).not.toHaveBeenCalled();
+    });
+
+    it("drops payload with non-string channel (no appendInviteAck call)", async () => {
+      const ia = await import("../lib/inviteAck");
+      channelMock.fireEvent({
+        kind: "invite_ack",
+        network: "azzurra",
+        channel: 42,
+        peer: "grappa",
+      });
+      expect(ia.appendInviteAck).not.toHaveBeenCalled();
     });
   });
 });
