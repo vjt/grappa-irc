@@ -40,12 +40,17 @@ defmodule Grappa.MessageEventAssertions do
         body: "hello",
         channel: "#sniffo",
         network_id: "test",
-        kind: :privmsg,
+        kind: "privmsg",
         meta: %{}
       )
 
       assert is_integer(msg.id)
       assert is_integer(msg.server_time)
+
+  Per `Grappa.Scrollback.Wire.to_json/1` (B6.3 / HIGH-26), the wire
+  shape stringifies `kind` at the boundary — so `kind:` expectations
+  must use string literals (`"privmsg"`, `"notice"`, etc.), NOT
+  atoms (`:privmsg`).
   """
   defmacro assert_message_event(expected_attrs, timeout \\ 1_000) do
     quote do

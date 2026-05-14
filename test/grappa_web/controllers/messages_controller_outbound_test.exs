@@ -95,7 +95,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       msg =
         assert_message_event(
           [
-            kind: :privmsg,
+            kind: "privmsg",
             body: "ciao raga",
             sender: "grappa-test",
             channel: "#sniffo",

@@ -40,7 +40,7 @@ defmodule Grappa.Scrollback.Wire do
           network: String.t(),
           channel: String.t(),
           server_time: integer(),
-          kind: Message.kind(),
+          kind: String.t(),
           sender: String.t(),
           body: String.t() | nil,
           meta: Meta.t()
@@ -76,6 +76,19 @@ defmodule Grappa.Scrollback.Wire do
   shape. The `:network` association MUST be preloaded — pattern match
   fails loudly otherwise. Adding a field to the wire requires
   extending the schema first, then this function and `t/0`.
+
+  ## kind atom-stringify (no-silent-drops B6.3 / HIGH-26)
+
+  `Message.kind` is an `Ecto.Enum` over `@kinds` (atom values).
+  `Jason.encode!/1` converts atom values to JSON strings on its own,
+  so the wire ALWAYS shipped a string — but this module's `t/0`
+  typespec declared `kind: Message.kind()` (atom), and the same
+  module's `archive_entry/1` correctly atom-stringified its `kind`
+  via `Atom.to_string/1`. Two patterns in one file. Now both
+  `to_json/1` and `t/0` are consistent: `kind: String.t()` typespec,
+  explicit `Atom.to_string(m.kind)` at the wire boundary. Lifts the
+  closed-set convention out of the implicit Jason-conversion path
+  and into a typed contract Dialyzer can read.
   """
   @spec to_json(Message.t()) :: t()
   def to_json(%Message{network: %Network{slug: slug}} = m) do
@@ -84,7 +97,7 @@ defmodule Grappa.Scrollback.Wire do
       network: slug,
       channel: m.channel,
       server_time: m.server_time,
-      kind: m.kind,
+      kind: Atom.to_string(m.kind),
       sender: m.sender,
       body: m.body,
       meta: m.meta

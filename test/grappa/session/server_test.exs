@@ -712,7 +712,7 @@ defmodule Grappa.Session.ServerTest do
 
       msg =
         assert_message_event(
-          kind: :privmsg,
+          kind: "privmsg",
           body: "hello",
           sender: "alice",
           channel: "#sniffo",
@@ -812,12 +812,12 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":bob!~b@host JOIN #sniffo\r\n")
       IRCServer.feed(server, ":bob!~b@host PART #sniffo :bye\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{message: %{kind: :join, sender: "bob"}}},
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{message: %{kind: "join", sender: "bob"}}},
                      1_000
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{message: %{kind: :part, sender: "bob", body: "bye"}}
+                       payload: %{message: %{kind: "part", sender: "bob", body: "bye"}}
                      },
                      1_000
 
@@ -870,7 +870,7 @@ defmodule Grappa.Session.ServerTest do
       assert msg.sender == "grappa-actual"
 
       assert_message_event(
-        kind: :privmsg,
+        kind: "privmsg",
         body: "hi",
         sender: "grappa-actual",
         channel: "#sniffo",
@@ -4805,7 +4805,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta1} = row1}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "$server", meta: meta1} = row1}
                      },
                      1_500
 
@@ -4820,7 +4820,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta2}}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "$server", meta: meta2}}
                      },
                      1_500
 
@@ -4831,7 +4831,7 @@ defmodule Grappa.Session.ServerTest do
                        event: "event",
                        payload: %{
                          kind: "message",
-                         message: %{kind: :notice, channel: "$server", meta: meta_eof, body: eof_body}
+                         message: %{kind: "notice", channel: "$server", meta: meta_eof, body: eof_body}
                        }
                      },
                      1_500
@@ -4868,7 +4868,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: meta} = row}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "#bofh", meta: meta} = row}
                      },
                      1_500
 
@@ -4878,7 +4878,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 315}}}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "#bofh", meta: %{numeric: 315}}}
                      },
                      1_500
 
@@ -4938,7 +4938,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: meta_row} = row}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "$server", meta: meta_row} = row}
                      },
                      1_500
 
@@ -4954,7 +4954,7 @@ defmodule Grappa.Session.ServerTest do
                        event: "event",
                        payload: %{
                          kind: "message",
-                         message: %{kind: :notice, channel: "$server", meta: meta_eof, body: eof_body}
+                         message: %{kind: "notice", channel: "$server", meta: meta_eof, body: eof_body}
                        }
                      },
                      1_500
@@ -5007,20 +5007,23 @@ defmodule Grappa.Session.ServerTest do
       # /names UX N-1: 2 :notice rows ALSO land in #bofh (silence is the bug).
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 353}}}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "#bofh", meta: %{numeric: 353}}}
                      },
                      1_500
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "#bofh", meta: %{numeric: 366}}}
+                       payload: %{kind: "message", message: %{kind: "notice", channel: "#bofh", meta: %{numeric: 366}}}
                      },
                      1_500
 
       # NO row in $server (joined target without origin_window routes to target).
       refute_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "message", message: %{kind: :notice, channel: "$server", meta: %{numeric: 353}}}
+                       payload: %{
+                         kind: "message",
+                         message: %{kind: "notice", channel: "$server", meta: %{numeric: 353}}
+                       }
                      },
                      200
 
@@ -5046,7 +5049,7 @@ defmodule Grappa.Session.ServerTest do
                        event: "event",
                        payload: %{
                          kind: "message",
-                         message: %{kind: :notice, channel: "#elsewhere", meta: %{numeric: 353}}
+                         message: %{kind: "notice", channel: "#elsewhere", meta: %{numeric: 353}}
                        }
                      },
                      1_500
@@ -5055,7 +5058,7 @@ defmodule Grappa.Session.ServerTest do
                        event: "event",
                        payload: %{
                          kind: "message",
-                         message: %{kind: :notice, channel: "#elsewhere", meta: %{numeric: 366}}
+                         message: %{kind: "notice", channel: "#elsewhere", meta: %{numeric: 366}}
                        }
                      },
                      1_500
@@ -5109,7 +5112,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":irc.test.org 404 vjt #sniffo :Cannot send to channel\r\n")
 
       assert_message_event(
-        kind: :notice,
+        kind: "notice",
         body: "Cannot send to channel",
         channel: "#sniffo",
         network: network.slug,
@@ -5145,7 +5148,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":irc.test.org 421 vjt BLEH :Unknown command\r\n")
 
       assert_message_event(
-        kind: :notice,
+        kind: "notice",
         channel: "$server",
         network: network.slug,
         meta: %{numeric: 421, severity: :error}
@@ -5171,7 +5174,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":irc.test.org 401 vjt ghost :No such nick/channel\r\n")
 
       assert_message_event(
-        kind: :notice,
+        kind: "notice",
         channel: "ghost",
         network: network.slug,
         meta: %{numeric: 401, severity: :error}
@@ -5195,7 +5198,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Exactly one event for this MOTD line.
       assert_message_event(
-        kind: :notice,
+        kind: "notice",
         channel: "$server",
         network: network.slug
       )
