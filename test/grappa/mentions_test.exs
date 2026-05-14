@@ -264,4 +264,83 @@ defmodule Grappa.MentionsTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # mentioned?/3 — push notifications B4 single-message predicate
+  # ---------------------------------------------------------------------------
+
+  describe "mentioned?/3 — own_nick" do
+    test "matches plain nick on word boundary" do
+      assert Mentions.mentioned?("hello vjt how are you", "vjt", [])
+    end
+
+    test "matches at start + end of body" do
+      assert Mentions.mentioned?("vjt: ping", "vjt", [])
+      assert Mentions.mentioned?("ping vjt", "vjt", [])
+    end
+
+    test "is case insensitive both directions" do
+      assert Mentions.mentioned?("hello VJT", "vjt", [])
+      assert Mentions.mentioned?("hello vjt", "VJT", [])
+    end
+
+    test "rejects substring without word boundary" do
+      refute Mentions.mentioned?("vjtx is here", "vjt", [])
+      refute Mentions.mentioned?("xvjt is here", "vjt", [])
+    end
+
+    test "rejects when nick absent + no patterns" do
+      refute Mentions.mentioned?("nothing here", "vjt", [])
+    end
+
+    test "escapes regex metacharacters in nick" do
+      assert Mentions.mentioned?("v.jt: ping", "v.jt", [])
+      refute Mentions.mentioned?("vXjt: ping", "v.jt", [])
+    end
+  end
+
+  describe "mentioned?/3 — patterns" do
+    test "matches a highlight pattern as a word-boundary token" do
+      assert Mentions.mentioned?("oncall is paged", "vjt", ["oncall"])
+    end
+
+    test "case-insensitive on patterns too" do
+      assert Mentions.mentioned?("ONCALL pinged", "vjt", ["oncall"])
+    end
+
+    test "no match when nick AND every pattern miss" do
+      refute Mentions.mentioned?("nothing here", "vjt", ["oncall", "fire"])
+    end
+
+    test "matches when at least one of multiple patterns hits" do
+      assert Mentions.mentioned?("fire alarm in #ops", "vjt", ["oncall", "fire"])
+    end
+
+    test "escapes regex metas in patterns" do
+      assert Mentions.mentioned?("got 5+1 alerts", "vjt", ["5+1"])
+      refute Mentions.mentioned?("got 555 alerts", "vjt", ["5+1"])
+    end
+  end
+
+  describe "mentioned?/3 — guards + degenerate inputs" do
+    test "nil body never matches" do
+      refute Mentions.mentioned?(nil, "vjt", ["oncall"])
+    end
+
+    test "empty body never matches" do
+      refute Mentions.mentioned?("", "vjt", ["oncall"])
+    end
+
+    test "empty own_nick + no patterns returns false" do
+      refute Mentions.mentioned?("anything", "", [])
+    end
+
+    test "empty own_nick still scans patterns" do
+      assert Mentions.mentioned?("oncall pinged", "", ["oncall"])
+    end
+
+    test "empty pattern strings are skipped (would otherwise match every body)" do
+      refute Mentions.mentioned?("anything", "vjt", [""])
+    end
+  end
 end

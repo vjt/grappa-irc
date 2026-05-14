@@ -83,6 +83,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.IRC.{AuthFSM, Client, Message}
   alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
+  alias Grappa.Push.Triggers, as: PushTriggers
   alias Grappa.Scrollback.Wire
 
   alias Grappa.Session.{
@@ -1991,6 +1992,44 @@ defmodule Grappa.Session.Server do
 
   defp maybe_broadcast_own_nick_changed(_, _), do: :ok
 
+  # Push notifications cluster B4 (2026-05-14) — fire-and-forget
+  # trigger eval after a successful Scrollback.persist_event/1 in the
+  # `:persist` apply_effects/2 arm.
+  #
+  # Three short-circuits before delegating to `Push.Triggers`:
+  #
+  #   1. Visitor sessions never push. Visitors are ephemeral and don't
+  #      install the PWA; a subscription tied to a visitor would dangle
+  #      past visitor reaping. The `Push.Subscription` schema enforces
+  #      this at write time too (no `belongs_to :visitor`).
+  #   2. Self-echoes never push. Outbound PRIVMSG / ACTION rows have
+  #      `sender == state.nick` (the per-network IRC nick reconciled at
+  #      001). Pushing an OS notification for messages the operator
+  #      typed themselves would be obviously wrong.
+  #   3. Kind gate is enforced inside `Triggers.evaluate_and_dispatch/2`
+  #      — only `:privmsg` and `:action` proceed past it. Filtering
+  #      here too would be belt-and-braces; let the canonical predicate
+  #      live in one place.
+  #
+  # `Triggers` itself spawns the unlinked Task for prefs lookup +
+  # Sender fan-out, so this call site is sub-microsecond on the hot
+  # path. No state mutation — Session.Server's struct shape is
+  # untouched, keeping the deploy preflight in HOT mode.
+  @spec maybe_dispatch_push(Scrollback.Message.t(), t()) :: :ok
+  defp maybe_dispatch_push(_, %{subject: {:visitor, _}}), do: :ok
+
+  defp maybe_dispatch_push(%Scrollback.Message{sender: sender}, %{nick: own_nick})
+       when sender == own_nick,
+       do: :ok
+
+  defp maybe_dispatch_push(message, %{subject: {:user, user_id}} = state) do
+    PushTriggers.evaluate_and_dispatch(message, %{
+      user_id: user_id,
+      network_slug: state.network_slug,
+      own_nick: state.nick
+    })
+  end
+
   @spec apply_effects([EventRouter.effect()], t()) :: t()
   defp apply_effects([], state), do: state
 
@@ -2287,6 +2326,13 @@ defmodule Grappa.Session.Server do
             Topic.channel(state.subject_label, state.network_slug, attrs.channel),
             Wire.message_payload(message)
           )
+
+        # Push notifications cluster B4 — fire-and-forget trigger
+        # eval on inbound PRIVMSG / ACTION. Triggers spawns its own
+        # unlinked Task; this call is sub-microsecond. See
+        # `maybe_dispatch_push/2` for the user-only + non-self-echo
+        # short-circuit logic.
+        :ok = maybe_dispatch_push(message, state)
 
       {:error, changeset} ->
         Logger.error("scrollback insert failed",

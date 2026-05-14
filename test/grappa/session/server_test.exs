@@ -795,6 +795,146 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "push notifications (B4) — trigger dispatch on inbound PRIVMSG" do
+    # Real P-256 client public key + auth secret — mirrors push/sender_test
+    # + push/triggers_test (lib's ECDH path crashes on random bytes).
+    @push_p256dh "BCfaYE5dGabdzef68MI0SN24b4Gsf1t_N3ftUlWaFGzkuudjHLor0CRjosM3c7SLZ7PfFufpsFUh8vsO1t8wCHs"
+    @push_auth "3aw2ceVFv0OIBXxAvkAlSA"
+
+    defp attach_push_telemetry(events) do
+      test_pid = self()
+      handler_id = "session-push-test-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach_many(
+        handler_id,
+        events,
+        fn event, measurements, metadata, _ ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+    end
+
+    defp push_subscription_fixture(user, endpoint) do
+      {:ok, sub} =
+        Grappa.Push.create(user, %{
+          endpoint: endpoint,
+          p256dh_key: @push_p256dh,
+          auth_key: @push_auth,
+          user_agent: "Mozilla/5.0 session-push-test"
+        })
+
+      sub
+    end
+
+    test "inbound PRIVMSG mentioning own_nick → Push.Sender fires (telemetry)" do
+      bypass = Bypass.open()
+      endpoint = "http://localhost:#{bypass.port}/wp"
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      attach_push_telemetry([
+        [:grappa, :push, :send, :start],
+        [:grappa, :push, :send, :stop]
+      ])
+
+      {server, port} = start_server()
+      # Credential nick = "vjt" — the per-network IRC nick used as own_nick
+      # for the trigger eval (NOT user.name — see CP15 H3 hazard).
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+      _ = push_subscription_fixture(user, endpoint)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :vjt: ping\r\n")
+
+      uid = user.id
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{user_id: ^uid}},
+                     2_000
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "inbound PRIVMSG without mention → no Push.Sender call (no telemetry)" do
+      bypass = Bypass.open()
+      endpoint = "http://localhost:#{bypass.port}/wp"
+
+      Bypass.stub(bypass, "POST", "/wp", fn conn ->
+        Plug.Conn.resp(conn, 500, "should-not-happen")
+      end)
+
+      attach_push_telemetry([[:grappa, :push, :send, :start]])
+
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+      _ = push_subscription_fixture(user, endpoint)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Default prefs: channel_messages_all=false, channel_mentions=true.
+      # Body has no mention → no notify.
+      IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello world\r\n")
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 500
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "inbound DM → Push.Sender fires (default prefs: private_messages_all)" do
+      bypass = Bypass.open()
+      endpoint = "http://localhost:#{bypass.port}/wp"
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      attach_push_telemetry([[:grappa, :push, :send, :stop]])
+
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+      _ = push_subscription_fixture(user, endpoint)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Inbound DM → channel == own_nick ("vjt").
+      IRCServer.feed(server, ":alice!~a@host PRIVMSG vjt :hi there\r\n")
+
+      uid = user.id
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "non-PRIVMSG events (JOIN, NOTICE) do NOT trigger push" do
+      bypass = Bypass.open()
+      endpoint = "http://localhost:#{bypass.port}/wp"
+
+      Bypass.stub(bypass, "POST", "/wp", fn conn ->
+        Plug.Conn.resp(conn, 500, "should-not-happen")
+      end)
+
+      attach_push_telemetry([[:grappa, :push, :send, :start]])
+
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+      _ = push_subscription_fixture(user, endpoint)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":alice!~a@host JOIN #sniffo\r\n")
+      IRCServer.feed(server, ":alice!~a@host NOTICE #sniffo :vjt fyi\r\n")
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 500
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "non-PRIVMSG events (post-E1: persisted + broadcast via EventRouter)" do
     test "JOIN + PART are persisted to scrollback + broadcast on PubSub" do
       {server, port} = start_server()

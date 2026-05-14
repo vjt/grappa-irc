@@ -45,6 +45,18 @@ defmodule Grappa.Mentions do
   This context holds no schema. It is a pure read-side aggregation that
   consumes `Grappa.Scrollback.Message`. Writes go through
   `Grappa.Scrollback.persist_event/1` as always.
+
+  ## `mentioned?/3` — single-message predicate (push notifications B4)
+
+  `mentioned?/3` exposes the same word-boundary, case-insensitive
+  matcher as `aggregate_mentions/6` for the push-notification trigger
+  hot path (`Grappa.Push.Triggers.should_notify?/4`). One matcher,
+  two consumers — same predicate guarantees the badge cic raises in
+  the sidebar and the OS push that fires server-side never disagree.
+
+  Mirror of `cicchetto/src/lib/mentionMatch.ts`'s `mentionsUser/2`. A
+  regex tweak (e.g. broader Unicode word-boundary support) MUST land
+  in both ports together.
   """
 
   use Boundary,
@@ -107,6 +119,34 @@ defmodule Grappa.Mentions do
     # re-compilation per row × per pattern.
     compiled = build_matchers([own_nick | watchlist_patterns])
     Enum.filter(rows, &body_matches?(&1.body, compiled))
+  end
+
+  # ---------------------------------------------------------------------------
+  # Single-message predicate (push notifications B4)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Returns `true` when `body` mentions `own_nick` or any string in
+  `patterns` at a word boundary, case-insensitively.
+
+  Same compile-once-per-call regex strategy as `aggregate_mentions/6`;
+  empty terms are skipped (a literal empty pattern would match every
+  body via `\\b\\b`). A `nil` or empty body never matches.
+
+  Used by `Grappa.Push.Triggers.should_notify?/4` on the inbound
+  PRIVMSG hot path. No memoization at this layer — the caller spawns
+  a `Task` per inbound message so per-call regex compilation is
+  bounded by message rate, and a global cache would re-introduce the
+  invalidation problem when `highlight_patterns` change.
+  """
+  @spec mentioned?(body :: String.t() | nil, own_nick :: String.t(), patterns :: [String.t()]) ::
+          boolean()
+  def mentioned?(body, own_nick, patterns)
+      when (is_binary(body) or is_nil(body)) and is_binary(own_nick) and is_list(patterns) do
+    case build_matchers([own_nick | patterns]) do
+      [] -> false
+      compiled -> body_matches?(body, compiled)
+    end
   end
 
   # ---------------------------------------------------------------------------

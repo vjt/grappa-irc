@@ -36,6 +36,12 @@ defmodule Grappa.Push do
 
     * `Grappa.Repo` — persistence.
     * `Grappa.Accounts` — FK reference to `User`.
+    * `Grappa.Scrollback` — B4 trigger consumes
+      `%Grappa.Scrollback.Message{}` structs.
+    * `Grappa.UserSettings` — B4 trigger reads `notification_prefs` +
+      `highlight_patterns`.
+    * `Grappa.Mentions` — B4 trigger uses `Mentions.mentioned?/3`
+      (same word-boundary predicate as the cic mention badge).
 
   The `Subscription` schema module is internal; callers OUTSIDE this
   context receive `%Subscription{}` structs by type but MUST NOT
@@ -47,8 +53,14 @@ defmodule Grappa.Push do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Repo],
-    exports: [Subscription, Sender]
+    deps: [
+      Grappa.Accounts,
+      Grappa.Mentions,
+      Grappa.Repo,
+      Grappa.Scrollback,
+      Grappa.UserSettings
+    ],
+    exports: [Payload, Sender, Subscription, Triggers]
 
   import Ecto.Query
 
