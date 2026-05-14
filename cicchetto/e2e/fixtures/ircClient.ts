@@ -190,6 +190,15 @@ export class IrcPeer {
     await parted;
   }
 
+  // Issue a raw INVITE <target_nick> <channel> line. Fire-and-forget
+  // (no upstream ack to await — bahamut emits 341 RPL_INVITING back to
+  // the inviter, but the test cares about the operator-side relay
+  // landing in cic, not the inviter-side ack). Used by no-silent-drops
+  // B6.4 b2-inbound-invite-cta.spec.ts.
+  rawInvite(targetNick: string, channel: string): void {
+    this.client.raw(["INVITE", targetNick, channel]);
+  }
+
   // Set channel modes. Resolves once upstream echoes the MODE event for
   // the target channel matching the requested raw_modes string.
   // Examples: `mode("#chan", "+i")`, `mode("#chan", "+o", "nick")`,

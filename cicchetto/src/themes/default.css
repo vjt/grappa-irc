@@ -1330,7 +1330,7 @@ body {
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: var(--muted);
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
@@ -1353,7 +1353,7 @@ body {
 }
 
 .whois-card-fields dt {
-  color: var(--fg-muted);
+  color: var(--muted);
   text-align: right;
 }
 
@@ -1379,11 +1379,11 @@ body {
   margin: 0.25rem 0.5rem 0.5rem 0.5rem;
   padding: 0.35rem 0.75rem;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--fg-muted);
+  border-left: 3px solid var(--muted);
   background: var(--bg-alt);
   font-size: 0.85rem;
   font-style: italic;
-  color: var(--fg-muted);
+  color: var(--muted);
 }
 
 .peer-away-banner-peer {
@@ -1405,7 +1405,7 @@ body {
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: var(--muted);
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
@@ -1427,7 +1427,7 @@ body {
   padding: 0.1rem 0.5rem;
   font-size: 0.85rem;
   font-style: italic;
-  color: var(--fg-muted);
+  color: var(--muted);
 }
 
 .invite-ack-arrow {
@@ -1472,7 +1472,7 @@ body {
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: var(--muted);
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
@@ -1491,7 +1491,7 @@ body {
 }
 
 .lusers-card-fields dt {
-  color: var(--fg-muted);
+  color: var(--muted);
   text-align: right;
 }
 
@@ -1501,7 +1501,7 @@ body {
 }
 
 .lusers-card-muted {
-  color: var(--fg-muted);
+  color: var(--muted);
   font-size: 0.8rem;
 }
 
@@ -1513,7 +1513,7 @@ body {
   margin: 0.25rem 0.5rem 0.5rem 0.5rem;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--fg-muted);
+  border-left: 3px solid var(--muted);
   background: var(--bg-alt);
   font-size: 0.85rem;
 }
@@ -1523,7 +1523,7 @@ body {
   align-items: baseline;
   gap: 0.5rem;
   font-weight: bold;
-  color: var(--fg-muted);
+  color: var(--muted);
   margin-bottom: 0.25rem;
 }
 
@@ -1543,7 +1543,7 @@ body {
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: var(--muted);
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
@@ -1567,7 +1567,7 @@ body {
 }
 
 .whowas-card-fields dt {
-  color: var(--fg-muted);
+  color: var(--muted);
   text-align: right;
 }
 
@@ -1577,5 +1577,5 @@ body {
 }
 
 .whowas-card-logoff {
-  color: var(--fg-muted);
+  color: var(--muted);
 }
