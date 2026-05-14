@@ -22,12 +22,13 @@ human-readable rendering.
 
 | Bucket | Surface | Risk | Deploy | Notes |
 |---|---|---|---|---|
-| 0 | `compose.ts` requireChannel | trivial cic | cic-only | rolls forward the carried-over P-0 fix; `/invite foo #chan` from $server |
-| 1 | EventRouter fallthrough → structured :notice | medium | HOT | meta.raw shape; cic ScrollbackRow gains meta.raw branch |
-| 2 | Inbound INVITE handler | small | HOT | typed `peer_invite` wire event on Topic.user/1; cic [Join] CTA |
+| 0 | `compose.ts` requireChannel | trivial cic | cic-only | LANDED — `/invite foo #chan` from $server |
+| 1 | EventRouter fallthrough → structured :notice | medium | HOT | LANDED — meta.raw shape; cic ScrollbackRow renderRawEvent arm |
+| 2 | Inbound INVITE handler | small | HOT | typed `peer_invite` row + clickable [Join] CTA |
 | 3 | Bahamut numerics audit + matrix | medium | likely COLD | every numeric: dedicated handler OR delegated structured notice |
 | 4 | Clickable URLs in scrollback | small | cic-only | linkify body; new tab; defer hover/image |
-| 5 | Sobelow hardening (Phase 5 P-1) | small | HOT | `# sobelow_skip` audit + tighten prod gate |
+| 5 | **Codebase review** (parallel agents per `/review`) | medium | none (review only) | reshape per vjt 2026-05-14 — was Sobelow; Sobelow moved to B6. Output prioritized findings (crit / high / important-med). |
+| 6 | **Sobelow + review fold-in** | small-medium | HOT | Sobelow hardening (was B5) PLUS remediate any crit/high/important-med findings from B5 review. |
 
 ## Standing rules (cluster-wide, carried from P-0)
 
@@ -465,37 +466,72 @@ value: ...} | {type: "url", href: ..., display: ...}]` segments.
 
 cic-only (`scripts/deploy-cic.sh`). No server changes.
 
-## Bucket 5 — Sobelow hardening (Phase 5 P-1)
+## Bucket 5 — Codebase review (parallel agents per `/review`)
 
-### Scope
+### Reshape note (vjt 2026-05-14)
 
-Walk all `# sobelow_skip` annotations in `lib/`. For each:
+Original B5 was Sobelow hardening. Reshape moves Sobelow to B6 and
+makes B5 a full codebase review using `docs/reviewing.md` /
+`/review` skill — parallel agents covering code quality,
+architecture, security, test discipline, etc.
 
-- **True positive** (real risk) — document the WHY in the skip
-  comment + open a follow-up bucket entry to actually fix.
-- **False positive** — promote to `# sobelow_reviewed` with
-  one-line WHY.
-- **Stale** (Sobelow has since stopped flagging) — remove the
-  annotation entirely.
+### Output
 
-Tighten the prod gate in `mix.exs` / CI:
-
-- Drop `--skip` flags where possible.
-- Gate at LOW severity instead of MEDIUM.
+Prioritized findings list:
+- **CRIT** — must fix before B6 close (security, correctness, data
+  loss)
+- **HIGH** — should fix in B6 (architecture violations, hot bugs)
+- **IMPORTANT-MED** — fold-in candidates for B6
+- **LOW / NICE-TO-HAVE** — defer to a future review-fold cluster
 
 ### Files
 
-- `lib/**/*.ex` — annotation edits per the audit.
-- `mix.exs` (`ci.check` alias) — Sobelow flag tightening.
-- `.github/workflows/ci.yml` (if Sobelow runs there separately).
+- `docs/reviews/codebase/2026-05-14-no-silent-drops.md` — review
+  output (findings + dispositions).
 
 ### Deploy
 
-HOT-eligible (no runtime impact — pure CI/static-analysis).
+None — review is read-only. The remediation lands in B6.
+
+## Bucket 6 — Sobelow + review fold-in
+
+### Scope
+
+Two surfaces in one bucket:
+
+1. **Sobelow hardening** (the original B5 work). Walk all
+   `# sobelow_skip` annotations in `lib/`. For each:
+   - **True positive** (real risk) — document the WHY in the skip
+     comment + open a follow-up bucket entry to actually fix.
+   - **False positive** — promote to `# sobelow_reviewed` with
+     one-line WHY.
+   - **Stale** (Sobelow has since stopped flagging) — remove the
+     annotation entirely.
+
+   Tighten the prod gate in `mix.exs` / CI:
+   - Drop `--skip` flags where possible.
+   - Gate at LOW severity instead of MEDIUM.
+
+2. **B5 review fold-in**. Remediate every B5 finding classified
+   CRIT, HIGH, or IMPORTANT-MED. LOW / NICE-TO-HAVE deferred to
+   their own future cluster (vjt 2026-05-14).
+
+### Files
+
+- `lib/**/*.ex` — Sobelow annotation edits + B5-finding remediations.
+- `mix.exs` (`ci.check` alias) — Sobelow flag tightening.
+- `.github/workflows/ci.yml` (if Sobelow runs there separately).
+- Plus whatever surface B5 review flagged.
+
+### Deploy
+
+HOT-eligible if the fold-in doesn't introduce struct-field changes;
+manual `--force-cold` if it does (per
+`feedback_deploy_sh_preflight_field_addition_gap`).
 
 ## Cluster close checklist
 
-Per orchestrator brief, after bucket 5 green:
+Per orchestrator brief, after bucket 6 green:
 
 1. `cd .worktrees/no-silent-drops && git fetch origin main && git rebase origin/main`.
 2. Re-run all gates after rebase.
@@ -509,5 +545,6 @@ Per orchestrator brief, after bucket 5 green:
    add `project_no_silent_drops_closed` archival memory.
 9. CP31 checkpoint at `docs/checkpoints/2026-05-XX-cp31.md`.
 10. DESIGN_NOTES + README + project-story.md updates per
-    `feedback_readme_currency`.
+    `feedback_readme_currency` (README already updated in-step at
+    bucket 0/1; sweep for late-bucket additions).
 11. Worktree cleanup or park.

@@ -26,9 +26,16 @@ The two facades expose the same data. Neither introduces state the other does no
 
 ## Status
 
-Pre-alpha — the server walking skeleton (Phase 1) and most of multi-user
-auth (Phase 2) have landed. Deployable on a single host via Docker Compose;
-not yet feature-complete. The Roadmap section below tracks per-phase progress.
+Pre-alpha, late stage. The server walking skeleton (Phase 1),
+multi-user auth (Phase 2), client walking skeleton (Phase 3), and
+most of the irssi-shape UI surface (Phase 4) have all landed and
+are deployed in production for `it-opers` people. The remaining
+work to **PUBLIC OPEN** is tracked in the "Trajectory to PUBLIC
+OPEN" section below — six focused clusters, each shipped to the
+live operator before the next begins. Self-hostable on any VPS via
+Docker Compose today; not yet self-host-friendly enough for general
+release (TLS verification, eviction policy, NickServ proxy, mobile
+polish, public docs all pending).
 
 ## Operator quickstart
 
@@ -430,29 +437,31 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [x] Send + receive `PRIVMSG` round-trip
 - [x] OTP supervision tree: one `Grappa.Session` GenServer per user under `DynamicSupervisor`
 
-### Phase 2 — auth + multi-user (in flight)
+### Phase 2 — auth + multi-user ✓
 - [x] SASL bridge for login (Cloak-encrypted upstream creds, `:auto | :sasl | :server_pass | :nickserv_identify | :none`)
 - [ ] NickServ `REGISTER` proxy
 - [x] Session tokens (Argon2-hashed password → bearer-token sessions, sliding 7-day idle)
 - [x] Per-user isolation (cross-user join authz at the channel layer)
 
-### Phase 3 — client walking skeleton (in flight)
+### Phase 3 — client walking skeleton ✓
 - [x] PWA shell, manifest, service worker
 - [x] Login flow → token → connect `/socket/websocket`
 - [x] Channel list + scrollback fetch on select
 - [x] Send message
-- [ ] Production deploy (nginx + DNS register + iPhone PWA install round-trip)
+- [x] Production deploy (nginx + DNS register + iPhone PWA install round-trip)
 
-### Phase 4 — irssi-shape UI
-- [ ] Keyboard-first layout, theme system
-- [ ] Nick list, mode indicators, topic bar
-- [ ] Mobile ergonomics layer (touch helpers, not a different shape)
-- [ ] Client-side voice I/O: per-channel TTS + STT toggle via Web Speech API; optional Vosk/piper WASM offline path
+### Phase 4 — irssi-shape UI ✓ (most surface)
+- [x] Keyboard-first layout, theme system
+- [x] Nick list, mode indicators, topic bar
+- [x] Mobile ergonomics layer (touch helpers, not a different shape) — full mobile-polish cluster still pending (see "UI polish" below)
+- [ ] Client-side voice I/O — moved to its own cluster (see "Voice TTS+STT" below)
 
-### Phase 5 — hardening
-- [ ] Reconnect + backoff
+### Phase 5 — hardening (in flight)
+- [x] Reconnect + backoff (T31 — admission caps + per-network circuit breaker + per-session ±25% jitter)
 - [ ] Scrollback eviction policy
-- [ ] Allowlist configuration for upstream networks
+- [x] Allowlist configuration for upstream networks (admission cap dimensions)
+- [ ] TLS verification (replace `verify: :verify_none` with proper CA chain — Phase 5 P-2)
+- [ ] Sobelow promotion + tightened prod gate (folded into the no-silent-drops cluster's bucket 6)
 - [ ] Docs for self-hosters
 
 ### Phase 6 — IRCv3 listener facade
@@ -462,11 +471,89 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] Drop-in compatibility target: [Goguma](https://sr.ht/~emersion/goguma/), [Quassel](https://quassel-irc.org/), [mIRC 7.64+](https://www.mirc.com/) with IRCv3 support
 - [ ] Expose the server-owned read cursor as `+draft/read-marker` MARKREAD lines on the listener side (REST + IRCv3 share the same `last_read_message_id` per `(subject, network, channel)`)
 
+## Closed clusters (recent)
+
+The codebase has shipped through a number of multi-bucket clusters
+since the Phase-1 walking skeleton landed. Each cluster solved a
+specific class of bug or shipped a coherent slice of UX. The most
+recent CLOSED clusters:
+
+- **CP29 — server-side read state** (closed 2026-05-13). Per-(subject,
+  network, channel) cursor as `last_read_message_id`; `ReadCursor.set/4`
+  last-write-wins; cic POSTs on focus-leave + browser-blur; the
+  invariant flip is in CLAUDE.md.
+- **CP28 — channel-state numerics** (closed 2026-05-13). 332/333/329
+  fold into typed `topic_changed` / `channel_modes_changed` /
+  `channel_created` events instead of leaking unix timestamps into
+  scrollback.
+- **CP26 — message replay on reconnect** (closed 2026-05-13). cic
+  reconnect path fetches missed messages via `Scrollback.fetch_after/6`
+  + defensive resync.
+- **CP25 — test-infra shared-singleton** (closed 2026-05-13). Singleton
+  test class honoring `config :ex_unit, max_cases: 1`.
+- **/names UX** (closed 2026-05-13). N1+N2+N3 covering origin-window
+  threading, always-emit, cold-load auto-select.
+- **CP23 — code reload** (closed 2026-05-12). Hot-vs-cold deploy
+  auto-detect via git-diff preflight against
+  `lib/grappa/hot_reload/long_lived_modules.ex`.
+- **CP24 — codebase review mega-cluster** (closed 2026-05-12). 10
+  buckets A-I + Z; addressed the 2026-05-12 codebase-review findings.
+- **P-0 numeric-delegation** (closed 2026-05-14). 5 typed wire events
+  (whois extended, peer_away, invite_ack, lusers_bundle, whowas_bundle).
+  P-0f route flip surfaced via live smoke; the carried-over
+  `compose.ts` requireChannel bug + the broader silent-drop class are
+  the seeds of the next cluster.
+
+Full chronological log: [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
+
+## Trajectory to PUBLIC OPEN
+
+The project is past Phase 1-3 and most of Phase 4. The road to
+**PUBLIC OPEN** is a sequence of focused clusters, each shipped to
+the live operator before the next begins. Order is set per vjt
+2026-05-14:
+
+1. **No-silent-drops cluster** *(in flight on `cluster/no-silent-drops`)* —
+   close the EventRouter fallthrough silent-drop class, ship inbound
+   INVITE handler with clickable [Join] CTA, audit Bahamut numerics
+   for structured forwarding, add clickable URLs in scrollback,
+   then a full codebase review (B5) and Sobelow hardening with any
+   review crit/high findings folded in (B6). See
+   [`docs/plans/2026-05-14-no-silent-drops.md`](docs/plans/2026-05-14-no-silent-drops.md).
+2. **Push notifications PWA gate** — surface mention/highlight
+   pings via the PWA notifications API so the bouncer is useful when
+   the browser tab isn't focused. Open issue tracks the spec.
+3. **Images cluster** — cicchetto image upload via litterbox.catbox.moe
+   (1h–72h TTL temp host) → URL inserted into IRC PRIVMSG; cic-side
+   URL pattern detection feeds an inline image overlay on click.
+   Builds on the no-silent-drops cluster's bucket 4 clickable-links
+   foundation.
+4. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
+   STT toggle via the browser's Web Speech API. On-device, no third-
+   party round-trip; Vosk/piper WASM offline path stays as the
+   long-tail fallback for browsers without Web Speech support.
+5. **UI polish cluster** — its own multi-bucket effort, mobile-first.
+   Mobile UX needs a real pass: responsive breakpoints beyond the
+   single 768px line, touch-target sizing, sidebar ergonomics, input
+   bar density, scroll behavior. The current mobile layout is
+   functional but not polished.
+6. **PUBLIC OPEN** — the milestone where grappa stops being a
+   single-operator setup hosting `it-opers` people and becomes a
+   self-hostable bouncer anyone can deploy. Pre-conditions: every
+   cluster above CLOSED, Phase 5 hardening done (TLS verification,
+   eviction policy, NickServ proxy), self-hoster docs, OpenAPI
+   schema published.
+
+Beyond PUBLIC OPEN, Phase 6 IRCv3 listener facade is the long-tail
+work — drop-in compatibility with existing IRCv3 mobile clients
+without giving up any of the REST/Channels surface.
+
 ## Contributing
 
-Pre-alpha. Issues welcome for design feedback; code PRs welcome once
-Phase 2 multi-user auth closes (the multi-user surface is still
-moving and PR review against a moving target wastes both sides).
+Pre-alpha, pre-PUBLIC-OPEN. Issues welcome for design feedback;
+code PRs welcome once the cluster trajectory above closes (the
+multi-user surface is still moving fast and PR review against a
+moving target wastes both sides).
 
 ## Why this exists (the longer story)
 
