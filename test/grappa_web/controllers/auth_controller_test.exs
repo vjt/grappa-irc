@@ -19,7 +19,7 @@ defmodule GrappaWeb.AuthControllerTest do
   import Mox
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
-  alias Grappa.Admission.NetworkCircuit
+  alias Grappa.AdmissionStateHelpers
   alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
 
@@ -28,8 +28,7 @@ defmodule GrappaWeb.AuthControllerTest do
   # the threshold for a subsequent test that creates a network with the
   # same auto-increment id.
   setup do
-    for {key, _, _, _, _} <- NetworkCircuit.entries(),
-        do: :ets.delete(:admission_network_circuit_state, key)
+    AdmissionStateHelpers.reset_network_circuit()
 
     :ok
   end

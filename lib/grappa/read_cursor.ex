@@ -195,7 +195,8 @@ defmodule Grappa.ReadCursor do
   sync mechanism isn't applicable (visitor sessions are single-device
   by construction).
   """
-  @spec broadcast_set(String.t(), String.t(), String.t(), integer()) :: :ok
+  @spec broadcast_set(String.t(), String.t(), String.t(), integer()) ::
+          :ok | {:error, term()}
   def broadcast_set(user_name, network_slug, channel, last_read_message_id)
       when is_binary(user_name) and is_binary(network_slug) and is_binary(channel) and
              is_integer(last_read_message_id) do

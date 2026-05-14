@@ -135,6 +135,19 @@ defmodule Grappa.Session.Backoff do
   for `(subject, network_id)`. `0` for fresh / cleared entries.
 
   Direct ETS lookup — no GenServer roundtrip.
+
+  ## Crash boundary (no-silent-drops B6.8 HIGH-14)
+
+  No `rescue ArgumentError` for missing-table — application.ex starts
+  this GenServer BEFORE `SessionSupervisor`, so all callers
+  (`Session.Server.handle_continue/2`'s connect path) run only after
+  the named table exists. A genuine crash of this GenServer would
+  destroy the table; the supervisor's `:permanent` policy respawns
+  within <1ms but during that window callers would see `ArgumentError`
+  here. Per CLAUDE.md "Defensive programming hides bugs" — the right
+  response is to let the caller's session crash too, get restarted
+  by `SessionSupervisor`, and surface the underlying Backoff failure
+  in supervision logs. A silent `0` return masks the real problem.
   """
   @spec wait_ms(Session.subject(), integer()) :: non_neg_integer()
   def wait_ms(subject, network_id) when is_integer(network_id) do
@@ -142,23 +155,37 @@ defmodule Grappa.Session.Backoff do
       [] -> 0
       [{_, count, _}] -> compute_wait(count)
     end
-  rescue
-    # Named table is destroyed when the owning GenServer crashes; the
-    # supervisor respawns and init/1 re-creates it within milliseconds.
-    # During that window, callers (Session.Server connect path) MUST NOT
-    # crash — they're uninvolved bystanders. Safe default: no delay,
-    # which is what a fresh / cleared entry already returns.
-    ArgumentError -> 0
   end
 
   @doc """
   Record a failed connect attempt for `(subject, network_id)`. Bumps
   the counter; the next `wait_ms/2` will return a longer delay.
-  Asynchronous (cast).
+  Synchronous (`call`) — see "Why call, not cast" below.
+
+  ## Why call, not cast (no-silent-drops B6.8 HIGH-15)
+
+  Mailbox-FIFO ordering doesn't apply across unrelated pids. Pre-fix
+  this was a `GenServer.cast` from `Session.Server.handle_info({:EXIT,
+  client_pid, reason}, _)`'s linked-Client crash path. The cast
+  enqueues into Backoff's mailbox; the dying Server returns
+  `{:stop, ...}`; SessionSupervisor's `:transient` policy spawns a
+  fresh Server within ~1ms. The new Server's `init/1` reads
+  `wait_ms/2` immediately — but the old Server's cast is still
+  queued behind whatever Backoff was processing at the crash moment
+  (a parallel `record_success` from another session, a `:cooldown_expire`
+  cast, etc.). The new `wait_ms/2` reads the OLD count, computes
+  short backoff, reconnects too soon — exactly what the Backoff was
+  meant to prevent.
+
+  Synchronous `call` from the dying Server's `terminate/2` /
+  `handle_info({:EXIT, ...}, _)` path forces the cast to flush before
+  the Server returns `{:stop, ...}`. The supervisor's restart waits
+  on the previous child fully exiting, so by the time the new
+  `init/1` runs the bumped count is visible.
   """
   @spec record_failure(Session.subject(), integer()) :: :ok
   def record_failure(subject, network_id) when is_integer(network_id) do
-    GenServer.cast(__MODULE__, {:failure, {subject, network_id}})
+    GenServer.call(__MODULE__, {:failure, {subject, network_id}})
   end
 
   @doc """
@@ -195,10 +222,6 @@ defmodule Grappa.Session.Backoff do
       [] -> 0
       [{_, count, _}] -> count
     end
-  rescue
-    # See wait_ms/2: rescue ArgumentError from missing named-table during
-    # supervisor-respawn window. Safe default mirrors the empty-row case.
-    ArgumentError -> 0
   end
 
   ## GenServer
@@ -210,7 +233,7 @@ defmodule Grappa.Session.Backoff do
   end
 
   @impl GenServer
-  def handle_cast({:failure, key}, state) do
+  def handle_call({:failure, key}, _, state) do
     new_count =
       case :ets.lookup(@table, key) do
         [] -> 1
@@ -218,9 +241,10 @@ defmodule Grappa.Session.Backoff do
       end
 
     :ets.insert(@table, {key, new_count, System.monotonic_time(:millisecond)})
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
+  @impl GenServer
   def handle_cast({:success, key}, state) do
     :ets.delete(@table, key)
     :telemetry.execute([:grappa, :session, :backoff, :success], %{count: 1}, %{key: key})
@@ -261,9 +285,5 @@ defmodule Grappa.Session.Backoff do
   @spec entries() :: [entry()]
   def entries do
     :ets.tab2list(@table)
-  rescue
-    # See wait_ms/2: rescue ArgumentError from missing named-table during
-    # supervisor-respawn window. Safe default: empty snapshot.
-    ArgumentError -> []
   end
 end

@@ -197,36 +197,14 @@ defmodule Grappa.Session.BackoffTest do
     end
   end
 
-  describe "ETS named-table survival rescue (M-life-1)" do
-    # The named ETS table is owned by the Backoff GenServer. If the
-    # owner dies, the table is destroyed; until the supervisor respawns
-    # the GenServer (and init/1 re-creates the table), direct ETS reads
-    # from CALLERS (Session.Server connect path) raise ArgumentError.
-    # That callers crash because the singleton is restarting is wrong —
-    # safe defaults (no delay / 0 count / empty list) preserve the hot
-    # path. Test by terminating the supervised child without restart,
-    # exercising the rescue branch deterministically, then restarting
-    # for downstream tests.
-    setup do
-      :ok = Supervisor.terminate_child(Grappa.Supervisor, Grappa.Session.Backoff)
-
-      on_exit(fn ->
-        {:ok, _} = Supervisor.restart_child(Grappa.Supervisor, Grappa.Session.Backoff)
-      end)
-
-      :ok
-    end
-
-    test "wait_ms/2 returns 0 when ETS table is missing" do
-      assert Backoff.wait_ms({:user, "u1"}, 1) == 0
-    end
-
-    test "failure_count/2 returns 0 when ETS table is missing" do
-      assert Backoff.failure_count({:user, "u1"}, 1) == 0
-    end
-
-    test "entries/0 returns [] when ETS table is missing" do
-      assert Backoff.entries() == []
-    end
-  end
+  # ETS named-table survival rescue tests removed in
+  # no-silent-drops B6.8 HIGH-14 (2026-05-14). Pre-fix `wait_ms/2`,
+  # `failure_count/2`, and `entries/0` rescued `ArgumentError` from
+  # the destroyed-table window during a Backoff GenServer respawn,
+  # returning safe defaults. Per CLAUDE.md "Defensive programming
+  # hides bugs" the rescue masked a real crash class with no
+  # behavioral upside — application.ex starts Backoff BEFORE
+  # SessionSupervisor + Endpoint, so the named table is guaranteed
+  # to exist by the time any caller runs. A genuine respawn-window
+  # crash IS the right signal for the supervisor to surface.
 end

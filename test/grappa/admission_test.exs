@@ -6,13 +6,12 @@ defmodule Grappa.AdmissionTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.Admission
+  alias Grappa.{Admission, AdmissionStateHelpers}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
   alias Grappa.Admission.{Config, NetworkCircuit}
 
   setup do
-    for {key, _, _, _, _} <- NetworkCircuit.entries(),
-        do: :ets.delete(:admission_network_circuit_state, key)
+    AdmissionStateHelpers.reset_network_circuit()
 
     # network_with_server/1 requires :port (Keyword.fetch!) and returns
     # a {Network.t(), Server.t()} tuple — pin both at the test boundary.

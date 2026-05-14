@@ -68,7 +68,11 @@ defmodule GrappaWeb.AdminController do
         payload = CicWire.bundle_hash(hash)
 
         for user_name <- WSPresence.list_user_names() do
-          GrappaPubSub.broadcast_event(Topic.user(user_name), payload)
+          # broadcast_event/2 returns `:ok | {:error, term()}` (HIGH-5
+          # surfacing). HIGH-17 (deferred to B6.9a) will add per-target
+          # accounting + telemetry; for now the discard is documented
+          # so future-Dialyzer doesn't re-flag it.
+          _ = GrappaPubSub.broadcast_event(Topic.user(user_name), payload)
         end
 
         text(conn, hash)

@@ -107,10 +107,6 @@ defmodule Grappa.Admission.NetworkCircuit do
   @spec entries() :: [entry()]
   def entries do
     :ets.tab2list(@table)
-  rescue
-    # See check/1: rescue ArgumentError from missing named-table during
-    # supervisor-respawn window. Safe default: empty snapshot.
-    ArgumentError -> []
   end
 
   @doc """
@@ -119,6 +115,21 @@ defmodule Grappa.Admission.NetworkCircuit do
   Direct ETS lookup — no GenServer roundtrip. `:ok` if circuit is
   closed OR the recorded cooldown has elapsed; `{:error, :open,
   retry_after_seconds}` if currently open with cooldown remaining.
+
+  ## Crash boundary (no-silent-drops B6.8 HIGH-14)
+
+  No `rescue ArgumentError` for missing-table — application.ex starts
+  this GenServer BEFORE `Endpoint`, `SessionSupervisor`, and
+  `Bootstrap`, so all admission callers (`Login`, `Bootstrap`,
+  `NetworksController.connect/2`, `SpawnOrchestrator.spawn/4`) run
+  only after the named table exists. A genuine crash of this GenServer
+  destroys the table; the supervisor's `:permanent` policy respawns
+  within <1ms but during that window callers would see `ArgumentError`
+  here. Per CLAUDE.md "Defensive programming hides bugs" — the right
+  response is to let the caller surface the underlying NetworkCircuit
+  failure in supervision logs. A silent `:ok` (= circuit closed)
+  return masks the real problem and could let a thundering-herd
+  reconnect attempt succeed against a known-bad upstream.
   """
   @spec check(integer()) :: :ok | {:error, :open, non_neg_integer()}
   def check(network_id) when is_integer(network_id) do
@@ -148,15 +159,6 @@ defmodule Grappa.Admission.NetworkCircuit do
           {:error, :open, ceil((cooled_at_ms - now) / 1_000)}
         end
     end
-  rescue
-    # Named table is destroyed when the owning GenServer crashes; the
-    # supervisor respawns and init/1 re-creates it within milliseconds.
-    # During that window, callers (Login admission hot path) MUST NOT
-    # crash — they're uninvolved bystanders. Safe default: circuit
-    # closed (= :ok), matching the no-prior-row branch above. The
-    # respawn refills state from upstream behaviour as failures recur;
-    # no false-positive open transitions from this rescue.
-    ArgumentError -> :ok
   end
 
   @doc """

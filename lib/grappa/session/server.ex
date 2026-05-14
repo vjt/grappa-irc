@@ -610,6 +610,20 @@ defmodule Grappa.Session.Server do
   # shutdown — peer just sees a connection drop instead of a graceful
   # QUIT, no worse than the pre-handler behavior. The shutdown still
   # completes in bounded time.
+  #
+  # HIGH-16 (no-silent-drops B6.8 2026-05-14): narrowed `catch :exit, _`
+  # to the precise reasons the Client may legitimately exit during
+  # graceful shutdown — `:noproc` (Client GenServer already dead),
+  # `:timeout` (call exceeded the default 5s), `:normal | :shutdown |
+  # {:shutdown, _}` (Client cleanly stopping concurrently). Any other
+  # exit reason (e.g. `:killed`, an `{:exception, _}` shape) is a real
+  # bug and must surface — pre-fix the wide `catch :exit, _` swallowed
+  # crashes that would otherwise have been visible in supervisor logs.
+  # Notably, `:gen_tcp.send` on a closed/nil socket inside the Client's
+  # handle_call raises (`MatchError`/`FunctionClauseError`); the wide
+  # catch hid this. Surfacing the wrapped `{:exit, {{:badmatch, _}, _}}`
+  # is the correct cue for a follow-up against `IRC.Client.transport_send`
+  # to handle the dead-socket SEND path explicitly.
   @impl GenServer
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
@@ -622,7 +636,13 @@ defmodule Grappa.Session.Server do
           _ = Client.send_quit(client, "grappa shutting down")
           :ok
         catch
-          :exit, _ -> :ok
+          :exit, :noproc -> :ok
+          :exit, :timeout -> :ok
+          :exit, :normal -> :ok
+          :exit, :shutdown -> :ok
+          :exit, {:shutdown, _} -> :ok
+          :exit, {:noproc, _} -> :ok
+          :exit, {:timeout, _} -> :ok
         end
     end
   end
@@ -1201,11 +1221,13 @@ defmodule Grappa.Session.Server do
   end
 
   # Linked Client crashed abnormally. Record a backoff failure (so the
-  # next respawn waits longer) then propagate the stop. The Backoff cast
-  # is asynchronous; the GenServer.cast doesn't block this stop, but the
-  # `Backoff` GenServer's mailbox processes it before our respawned
-  # init/1 re-reads `wait_ms/2` (the supervisor's restart path is not
-  # instant — it runs after this terminate completes).
+  # next respawn waits longer) then propagate the stop. The Backoff call
+  # is synchronous (HIGH-15 cast→call flip): the dying Server's
+  # handle_info returns `{:stop, ...}` only after Backoff has flushed
+  # the bumped count to ETS. SessionSupervisor's restart waits on the
+  # previous child fully exiting, so by the time the new `init/1`
+  # reads `wait_ms/2` the bumped count is visible. Pre-flip the cast
+  # raced the supervisor's restart and the new init read the OLD count.
   #
   # Reason guard excludes :normal / :shutdown — those are clean teardown
   # paths (operator-initiated park via T32 disconnect, supervisor-driven

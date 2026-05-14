@@ -24,9 +24,21 @@ defmodule Grappa.SpawnOrchestratorTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Networks, Session, SpawnOrchestrator}
+  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Session, SpawnOrchestrator}
   alias Grappa.Networks.{Credentials, Servers, SessionPlan}
   alias Grappa.Session.Backoff
+
+  # NetworkCircuit + Backoff are ETS-backed application singletons that
+  # outlive the Ecto sandbox AND the container's `mix test` boundary
+  # (the table is reborn on supervisor restart but stale rows from a
+  # prior container can collide with the next test's auto-increment
+  # network_id). Without this reset, tests intermittently fail with
+  # `{:network_circuit_open, _}` whose surface line/file does not predict
+  # the offending pair (memory `project_network_circuit_ets_leak`).
+  setup do
+    AdmissionStateHelpers.reset_all()
+    :ok
+  end
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 

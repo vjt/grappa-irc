@@ -52,13 +52,19 @@ defmodule Grappa.PubSub do
   internal observers) receive the raw `%Phoenix.Socket.Broadcast{}`
   struct.
 
-  `Phoenix.Channel.Server.broadcast` returns `:ok | {:error, term()}`
-  but the local PG2 adapter (the only one configured for this app)
-  never errors in practice — distributed adapters would. The
-  state-transition is the authoritative effect; a missed broadcast is
-  at most a stale UI badge, not a correctness problem. Returning `:ok`
-  unconditionally lets callers stay in `:ok =`-only arms (mirrors
-  the `broadcast_state_change` private helper in `Grappa.Networks`).
+  Returns `:ok` on successful dispatcher fan-out OR
+  `{:error, term()}` if the underlying `Phoenix.Channel.Server.broadcast`
+  fails. The local PG2 adapter rarely errors in practice — distributed
+  adapters CAN, and the framework's serializer fastlane has been
+  observed to crash on bad payload shapes (CP15 B6 root cause). Pre-
+  no-silent-drops B6.8 the return was discarded; broadcasters claimed
+  success and the failure surfaced hours later as a stale UI badge.
+
+  Failure cases also emit a `[:grappa, :pubsub, :broadcast_failed]`
+  telemetry event with measurements `%{count: 1}` and metadata
+  `%{topic: topic, reason: reason}` so operators can wire alerting
+  on the silent-drop class without each caller re-implementing the
+  pattern.
 
   ## Struct guard (no-silent-drops B6.2)
 
@@ -78,10 +84,32 @@ defmodule Grappa.PubSub do
   matches every struct (every `%__MODULE__{}` is also a `%{}`). The
   CP15 B6 finding stayed reachable until B6.2 tightened it.
   """
-  @spec broadcast_event(String.t(), map()) :: :ok
+  @spec broadcast_event(String.t(), map()) :: :ok | {:error, term()}
   def broadcast_event(topic, payload)
       when is_binary(topic) and is_map(payload) and not is_struct(payload) do
-    _ = Phoenix.Channel.Server.broadcast(__MODULE__, topic, "event", payload)
-    :ok
+    __MODULE__
+    |> Phoenix.Channel.Server.broadcast(topic, "event", payload)
+    |> handle_broadcast_result(topic)
+  end
+
+  @doc false
+  # Testable seam — public `@doc false` so the HIGH-5 regression test
+  # can drive the failure-path surfacing + telemetry wiring without
+  # monkeypatching `Phoenix.Channel.Server.broadcast` (an unregistered
+  # PubSub raises `ArgumentError` rather than returning `{:error, _}`,
+  # so the dispatcher branch can't be naturally driven from a unit
+  # test). Production callers MUST go through `broadcast_event/2`,
+  # which threads the started `__MODULE__` and the dispatcher result.
+  @spec handle_broadcast_result(:ok | {:error, term()}, String.t()) :: :ok | {:error, term()}
+  def handle_broadcast_result(:ok, _), do: :ok
+
+  def handle_broadcast_result({:error, reason} = err, topic) when is_binary(topic) do
+    :telemetry.execute(
+      [:grappa, :pubsub, :broadcast_failed],
+      %{count: 1},
+      %{topic: topic, reason: reason}
+    )
+
+    err
   end
 end

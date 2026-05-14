@@ -9,12 +9,12 @@ defmodule Grappa.Admission.NetworkCircuitTest do
   use ExUnit.Case, async: false
 
   alias Grappa.Admission.NetworkCircuit
+  alias Grappa.AdmissionStateHelpers
 
   setup do
     # NetworkCircuit is supervised by Grappa.Application; just clear
     # state per test.
-    for {key, _, _, _, _} <- NetworkCircuit.entries(),
-        do: :ets.delete(:admission_network_circuit_state, key)
+    AdmissionStateHelpers.reset_network_circuit()
 
     :ok
   end
@@ -286,33 +286,19 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     end
   end
 
-  describe "ETS named-table survival rescue (M-life-1)" do
-    # The named ETS table is owned by the NetworkCircuit GenServer. If
-    # the owner dies, the table is destroyed; until the supervisor
-    # respawns the GenServer (and init/1 re-creates the table), direct
-    # ETS reads from CALLERS (Login admission) raise ArgumentError.
-    # Safe defaults (circuit closed / empty entries) preserve the hot
-    # path. Test by terminating the supervised child without restart,
-    # exercising the rescue branch deterministically, then restarting
-    # for downstream tests.
-    setup do
-      :ok = Supervisor.terminate_child(Grappa.Supervisor, Grappa.Admission.NetworkCircuit)
-
-      on_exit(fn ->
-        {:ok, _} = Supervisor.restart_child(Grappa.Supervisor, Grappa.Admission.NetworkCircuit)
-      end)
-
-      :ok
-    end
-
-    test "check/1 returns :ok (circuit closed) when ETS table is missing" do
-      assert NetworkCircuit.check(1) == :ok
-    end
-
-    test "entries/0 returns [] when ETS table is missing" do
-      assert NetworkCircuit.entries() == []
-    end
-  end
+  # ETS named-table survival rescue tests removed in
+  # no-silent-drops B6.8 HIGH-14 (2026-05-14). Pre-fix `check/1` and
+  # `entries/0` rescued `ArgumentError` from the destroyed-table window
+  # during a NetworkCircuit GenServer respawn, returning safe defaults
+  # (circuit closed / empty entries). Per CLAUDE.md "Defensive
+  # programming hides bugs" the rescue masked a real crash class with
+  # a dangerous behavioral default — `:ok` (circuit closed) on a real
+  # respawn would let a thundering-herd reconnect succeed against a
+  # known-bad upstream. application.ex starts NetworkCircuit BEFORE
+  # SessionSupervisor + Endpoint + Bootstrap, so the named table is
+  # guaranteed to exist by the time any caller runs. A genuine
+  # respawn-window crash IS the right signal for the supervisor to
+  # surface.
 
   describe "telemetry — circuit close on cooldown expiry" do
     test "emits [:grappa, :admission, :circuit, :close] reason :cooldown_expired after cooldown" do

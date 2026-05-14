@@ -73,7 +73,7 @@ defmodule GrappaWeb.ReadCursorController do
           String.t(),
           String.t(),
           integer()
-        ) :: :ok
+        ) :: :ok | {:error, term()}
   defp maybe_broadcast({:user, user}, network_slug, channel, last_read_message_id) do
     ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id)
   end

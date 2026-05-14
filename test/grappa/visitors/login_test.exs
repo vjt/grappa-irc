@@ -17,6 +17,7 @@ defmodule Grappa.Visitors.LoginTest do
   alias Grappa.{Accounts, IRCServer, Repo, Session, Visitors}
   alias Grappa.Accounts.Session, as: AccountsSession
   alias Grappa.Admission.NetworkCircuit
+  alias Grappa.AdmissionStateHelpers
   alias Grappa.Networks.Network
   alias Grappa.Visitors.{Login, Visitor}
 
@@ -26,8 +27,7 @@ defmodule Grappa.Visitors.LoginTest do
   # before every test so a failure recorded in one test doesn't bleed into
   # the next test's fresh network-row with the same integer id.
   setup do
-    for {key, _, _, _, _} <- NetworkCircuit.entries(),
-        do: :ets.delete(:admission_network_circuit_state, key)
+    AdmissionStateHelpers.reset_network_circuit()
 
     :ok
   end
@@ -230,8 +230,7 @@ defmodule Grappa.Visitors.LoginTest do
   describe "capacity gates" do
     setup do
       # Clear circuit state between tests so prior failures don't bleed.
-      for {key, _, _, _, _} <- NetworkCircuit.entries(),
-          do: :ets.delete(:admission_network_circuit_state, key)
+      AdmissionStateHelpers.reset_network_circuit()
 
       # Use the visitor network slug ("azzurra") so Login.login's
       # visitor_network() lookup succeeds. No IRC server needed — capacity

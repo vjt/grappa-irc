@@ -35,7 +35,7 @@ defmodule Grappa.PubSubTest do
       payload = %{kind: "test_event", body: "hello"}
 
       Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
-      :ok = PubSub.broadcast_event(topic, payload)
+      assert :ok = PubSub.broadcast_event(topic, payload)
 
       assert_receive %Broadcast{topic: ^topic, event: "event", payload: ^payload}, 100
     end
@@ -53,6 +53,75 @@ defmodule Grappa.PubSubTest do
     test "rejects non-binary topic" do
       assert_raise FunctionClauseError, fn ->
         PubSub.broadcast_event(:not_a_string, %{ok: true})
+      end
+    end
+  end
+
+  # HIGH-5 (no-silent-drops B6.8 2026-05-14): broadcast_event/2 used to
+  # discard the dispatcher's `:ok | {:error, term()}` return — silent
+  # drops at the streaming-surface heart. Now the return is surfaced
+  # and a `[:grappa, :pubsub, :broadcast_failed]` telemetry event is
+  # emitted on `{:error, _}`. Local PG2 adapter rarely errors but
+  # serializer fastlane CAN fail (CP15 B6 class) — telemetry gives
+  # ops visibility instead of stale UI badges hours later.
+  describe "broadcast_event/2 return value + telemetry (HIGH-5)" do
+    test "returns :ok on successful broadcast" do
+      topic = "grappa:test:#{System.unique_integer([:positive])}"
+      assert :ok = PubSub.broadcast_event(topic, %{kind: "ok"})
+    end
+
+    test "emits no failure telemetry on success path" do
+      handler_id = "test-no-failure-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:grappa, :pubsub, :broadcast_failed],
+        fn event, measurements, metadata, _ ->
+          send(parent, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      try do
+        topic = "grappa:test:#{System.unique_integer([:positive])}"
+        assert :ok = PubSub.broadcast_event(topic, %{kind: "no_fail"})
+        refute_receive {:telemetry, [:grappa, :pubsub, :broadcast_failed], _, _}, 50
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "surfaces dispatcher {:error, reason} + emits telemetry" do
+      handler_id = "test-broadcast-failed-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:grappa, :pubsub, :broadcast_failed],
+        fn event, measurements, metadata, _ ->
+          send(parent, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      try do
+        # Drive the failure path by calling do_broadcast/3 with an
+        # adapter that returns {:error, _} synthetically. We can't
+        # invoke the Phoenix dispatcher's failure branch in unit tests
+        # without monkeypatching (an unregistered PubSub raises rather
+        # than returning {:error, _}), so we exercise the wrapper by
+        # invoking the failure surfacing helper directly.
+        topic = "grappa:test:#{System.unique_integer([:positive])}"
+
+        assert {:error, :synthetic_failure} =
+                 PubSub.handle_broadcast_result({:error, :synthetic_failure}, topic)
+
+        assert_receive {:telemetry, [:grappa, :pubsub, :broadcast_failed], %{count: 1},
+                        %{topic: ^topic, reason: :synthetic_failure}},
+                       200
+      after
+        :telemetry.detach(handler_id)
       end
     end
   end
