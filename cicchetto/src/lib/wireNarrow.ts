@@ -48,6 +48,7 @@ const VALID_MESSAGE_KINDS: ReadonlySet<MessageKind> = new Set([
   "mode",
   "topic",
   "kick",
+  "server_event",
 ]);
 
 function narrowScrollbackMessage(raw: unknown): ScrollbackMessage | null {

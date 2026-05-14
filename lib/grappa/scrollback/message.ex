@@ -14,6 +14,16 @@ defmodule Grappa.Scrollback.Message do
   validation rejects unknown values; raw SQL inserts that bypass Ecto
   are forbidden by CLAUDE.md ("Never apply DDL manually via raw SQL").
 
+  no-silent-drops B6.11 (HIGH-7) — `:server_event` joined the enum
+  for catch-all rows (KILL, WALLOPS, GLOBOPS, ERROR, CHGHOST, vendor
+  verbs) that EventRouter's fallthrough persists to `$server`. Pre-fix
+  these wrote `:notice + meta.raw_verb`, which leaked into any future
+  filter `kind in [:privmsg, :notice, :action]` for "human content."
+  `:server_event` is excluded from `@body_required_kinds` (catch-all
+  body is verb-name fallback, not user-meaningful text) and excluded
+  from `@dm_with_eligible_kinds` (server events are channel-scoped or
+  $server-scoped, never DM peers).
+
   Per CLAUDE.md "Atoms or `@type t :: literal | literal` — never
   untyped strings for closed sets."
 
@@ -96,7 +106,8 @@ defmodule Grappa.Scrollback.Message do
     :nick_change,
     :mode,
     :topic,
-    :kick
+    :kick,
+    :server_event
   ]
 
   @body_required_kinds [:privmsg, :notice, :action, :topic]
@@ -143,6 +154,7 @@ defmodule Grappa.Scrollback.Message do
           | :mode
           | :topic
           | :kick
+          | :server_event
 
   @type t :: %__MODULE__{
           id: integer() | nil,

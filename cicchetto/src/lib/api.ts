@@ -333,6 +333,14 @@ export type ChannelEntry = {
 // today; the rest are reserved for Phase 5 presence-event capture and
 // the Phase 6 IRCv3 `CHATHISTORY` listener facade. Renderers MUST be
 // exhaustive over this union — see `assertNever` in `ScrollbackPane`.
+//
+// no-silent-drops B6.11 (HIGH-7) — `server_event` joined the union
+// for catch-all rows on `$server` (KILL, WALLOPS, GLOBOPS, ERROR,
+// CHGHOST, vendor verbs). Pre-flip these arrived as
+// `notice + meta.raw_verb`, indistinguishable from real CTCP/NickServ
+// notices at the type level. ScrollbackPane's dispatcher now has a
+// dedicated arm; the legacy `notice + raw_verb` arm stays as a
+// fallback for any rows the cold-deploy backfill missed.
 export type MessageKind =
   | "privmsg"
   | "notice"
@@ -343,7 +351,8 @@ export type MessageKind =
   | "nick_change"
   | "mode"
   | "topic"
-  | "kick";
+  | "kick"
+  | "server_event";
 
 export type ScrollbackMessage = {
   id: number;

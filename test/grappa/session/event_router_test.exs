@@ -52,12 +52,12 @@ defmodule Grappa.Session.EventRouterTest do
     })
   end
 
-  describe "route/2 — fallthrough (no-silent-drops bucket 1 + B6.1)" do
+  describe "route/2 — fallthrough (no-silent-drops bucket 1 + B6.1 + B6.11)" do
     # Pre-bucket-1, EventRouter's catch-all returned `{:cont, state, []}`
     # for every unhandled command — KILL, WALLOPS, GLOBOPS, ERROR,
     # CHGHOST, AUTHENTICATE, vendor verbs all silently dropped on the
     # floor. Bucket 1 replaces the fallthrough with a structured
-    # :persist :notice to $server with meta carrying typed
+    # :persist row to $server with meta carrying typed
     # {verb, sender, params}, so cic can render the row + grow
     # per-verb pretty-render arms incrementally.
     #
@@ -75,11 +75,20 @@ defmodule Grappa.Session.EventRouterTest do
     #     CRIT-1 — credential-bearing verbs (AUTHENTICATE, PASS, OPER)
     #     are deny-listed BEFORE the catch-all so SASL base64 + raw
     #     server passwords never persist to $server scrollback.
-    test "unknown {:unknown, VERB} command persists :notice on $server with flat meta" do
+    #
+    # B6.11 (2026-05-14): kind flipped from :notice to :server_event
+    # (HIGH-7). Pre-flip the catch-all wrote a CONTENT kind, leaking
+    # into any future filter `kind in [:privmsg, :notice, :action]`.
+    # `:server_event` is excluded from `@body_required_kinds` AND
+    # `@dm_with_eligible_kinds` — matches the actual semantics
+    # (server-emitted, $server-scoped). Migration
+    # `20260514071049_add_server_event_to_messages_kind_enum.exs`
+    # backfills historical `notice + raw_verb` rows.
+    test "unknown {:unknown, VERB} command persists :server_event on $server with flat meta" do
       state = base_state()
       m = msg({:unknown, "FOO"}, ["arg1", "ciao"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.channel == "$server"
@@ -93,11 +102,11 @@ defmodule Grappa.Session.EventRouterTest do
              }
     end
 
-    test "WALLOPS persists :notice on $server with raw_verb=WALLOPS" do
+    test "WALLOPS persists :server_event on $server with raw_verb=WALLOPS" do
       state = base_state()
       m = msg(:wallops, ["network broadcast text"], {:nick, "vjt", "v", "h"})
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.channel == "$server"
@@ -107,11 +116,11 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta.raw_params == ["network broadcast text"]
     end
 
-    test "KILL persists :notice on $server with raw_verb=KILL" do
+    test "KILL persists :server_event on $server with raw_verb=KILL" do
       state = base_state()
       m = msg(:kill, ["target_nick", "kill reason"], {:nick, "oper", "o", "h"})
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.meta.raw_verb == "KILL"
@@ -124,7 +133,7 @@ defmodule Grappa.Session.EventRouterTest do
       state = base_state()
       m = msg(:error, ["Closing Link: bad TLS handshake"], nil)
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.meta.raw_verb == "ERROR"
@@ -137,12 +146,15 @@ defmodule Grappa.Session.EventRouterTest do
     # which validate_required(:body) rejected → silent drop. Now the
     # verb name itself is the body fallback so the row persists +
     # remains visible (cic's renderRawEvent uses raw_verb / raw_params
-    # for display so the body is fallback only).
+    # for display so the body is fallback only). B6.11 HIGH-7 also
+    # removed `:server_event` from `@body_required_kinds` so the
+    # validator no longer enforces body — verb-name fallback is now
+    # belt-and-braces (cic's renderer still expects a body string).
     test "param-less unknown command persists with verb-name body fallback" do
       state = base_state()
       m = msg({:unknown, "BARE"}, [], {:nick, "x", "u", "h"})
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.body == "BARE"
@@ -157,7 +169,7 @@ defmodule Grappa.Session.EventRouterTest do
       state = base_state()
       m = msg({:unknown, "MAYBE"}, ["arg", ""], {:nick, "x", "u", "h"})
 
-      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:persist, :server_event, attrs}]} =
                EventRouter.route(m, state)
 
       assert attrs.body == "MAYBE"
@@ -1695,6 +1707,15 @@ defmodule Grappa.Session.EventRouterTest do
     defp fixture_for(:kick) do
       {msg(:kick, ["#c", "spammer"], {:nick, "ChanServ", "u", "h"}),
        base_state(%{members: %{"#c" => %{"spammer" => []}}})}
+    end
+
+    # B6.11 HIGH-7 (no-silent-drops 2026-05-14): :server_event is the
+    # typed catch-all kind. Any unhandled IRC verb (KILL, WALLOPS,
+    # vendor verbs) routes through `EventRouter.route/2`'s catch-all
+    # and persists as :server_event on `$server`. Pick WALLOPS as the
+    # representative fixture.
+    defp fixture_for(:server_event) do
+      {msg(:wallops, ["network broadcast text"], {:nick, "vjt", "v", "h"}), base_state()}
     end
 
     test "every Scrollback kind has at least one EventRouter route producing :persist" do

@@ -1937,6 +1937,143 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // No-silent-drops B6.11 (HIGH-7): :server_event typed kind for the
+  // EventRouter catch-all. Pre-flip these arrived as `notice +
+  // raw_verb`; both flows render via `renderRawEvent`. The
+  // `case "server_event"` arm in ScrollbackPane delegates the same
+  // way as the legacy `case "notice"` arm so per-verb pretty-render
+  // (WALLOPS / KILL / ERROR / CHGHOST / INVITE) works identically.
+  // Migration backfills historical rows; new rows arrive with the
+  // typed kind.
+  describe("server_event raw-event rendering (B6.11 HIGH-7)", () => {
+    it("kind=server_event with raw_verb=WALLOPS renders 'Wallops from <sender>: <text>'", () => {
+      setScrollback({
+        "freenode $server": [
+          {
+            id: 200,
+            network: "freenode",
+            channel: "$server",
+            server_time: 200,
+            kind: "server_event",
+            sender: "vjt",
+            body: "network broadcast text",
+            meta: {
+              raw_verb: "WALLOPS",
+              raw_sender: "vjt",
+              raw_params: ["network broadcast text"],
+            },
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("Wallops from");
+      expect(line.textContent).toContain("vjt");
+      expect(line.textContent).toContain("network broadcast text");
+    });
+
+    it("kind=server_event with raw_verb=KILL renders kill summary", () => {
+      setScrollback({
+        "freenode $server": [
+          {
+            id: 201,
+            network: "freenode",
+            channel: "$server",
+            server_time: 201,
+            kind: "server_event",
+            sender: "oper",
+            body: "kill reason",
+            meta: {
+              raw_verb: "KILL",
+              raw_sender: "oper",
+              raw_params: ["target_nick", "kill reason"],
+            },
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("oper");
+      expect(line.textContent).toContain("killed");
+      expect(line.textContent).toContain("target_nick");
+      expect(line.textContent).toContain("kill reason");
+    });
+
+    it("kind=server_event with raw_verb=INVITE renders [Join] CTA", () => {
+      setScrollback({
+        "freenode $server": [
+          {
+            id: 202,
+            network: "freenode",
+            channel: "$server",
+            server_time: 202,
+            kind: "server_event",
+            sender: "vjt",
+            body: "#sbiffo",
+            meta: {
+              raw_verb: "INVITE",
+              raw_sender: "vjt",
+              raw_params: ["grappa", "#sbiffo"],
+            },
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("invited you to");
+      expect(line.textContent).toContain("#sbiffo");
+      const btn = line.querySelector(".scrollback-invite-join") as HTMLButtonElement;
+      expect(btn).not.toBeNull();
+      expect(btn.textContent).toContain("Join");
+    });
+
+    it("kind=server_event without raw_verb falls back to body render (defensive)", () => {
+      setScrollback({
+        "freenode $server": [
+          {
+            id: 203,
+            network: "freenode",
+            channel: "$server",
+            server_time: 203,
+            kind: "server_event",
+            sender: "weirdsender",
+            body: "naked body — meta missing raw_verb",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("weirdsender");
+      expect(line.textContent).toContain("naked body — meta missing raw_verb");
+    });
+
+    it("kind=server_event row gets scrollback-presence + scrollback-muted classes", () => {
+      setScrollback({
+        "freenode $server": [
+          {
+            id: 204,
+            network: "freenode",
+            channel: "$server",
+            server_time: 204,
+            kind: "server_event",
+            sender: "vjt",
+            body: "WALLOPS",
+            meta: {
+              raw_verb: "WALLOPS",
+              raw_sender: "vjt",
+              raw_params: ["WALLOPS"],
+            },
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.className).toContain("scrollback-presence");
+      expect(line.className).toContain("scrollback-muted");
+    });
+  });
+
   // No-silent-drops bucket 4 (2026-05-14): clickable URLs in scrollback
   // bodies. linkify() splits each mIRC Run's text into text + url
   // segments; renderRun emits <a href target="_blank" rel="noopener

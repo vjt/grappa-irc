@@ -488,6 +488,24 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         </span>
       );
     }
+    case "server_event": {
+      // No-silent-drops B6.11 (HIGH-7) — typed kind for catch-all
+      // rows. EventRouter's fallthrough now writes :server_event
+      // (was: :notice + meta.raw_verb). Both flow through the same
+      // structured renderer; the legacy `case "notice"` arm above
+      // keeps its raw_verb fallback for cold-deploy backfill misses.
+      const meta = msg.meta as RawEvent | undefined;
+      if (meta && typeof meta.raw_verb === "string") {
+        return renderRawEvent(meta, msg, senderSpan, handlers);
+      }
+      // Defensive: a :server_event row with no raw_verb is a server
+      // bug, but render the body so it isn't invisible.
+      return (
+        <span class="scrollback-body">
+          *** {senderSpan(msg.sender, msg.sender)} {msg.body ?? ""}
+        </span>
+      );
+    }
     default: {
       const _exhaustive: never = msg.kind;
       void _exhaustive;
@@ -504,6 +522,7 @@ const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
   "mode",
   "topic",
   "kick",
+  "server_event",
 ]);
 
 const ScrollbackLine: Component<{

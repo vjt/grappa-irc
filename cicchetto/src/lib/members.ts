@@ -94,6 +94,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "notice":
         case "action":
         case "topic":
+        case "server_event":
           return prev;
         default: {
           const _exhaustive: never = msg.kind;

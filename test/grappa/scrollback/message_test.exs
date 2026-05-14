@@ -32,6 +32,27 @@ defmodule Grappa.Scrollback.MessageTest do
       end
     end
 
+    # B6.11 HIGH-7 (no-silent-drops 2026-05-14): :server_event is the
+    # typed catch-all kind for KILL/WALLOPS/GLOBOPS/ERROR/CHGHOST and
+    # vendor verbs. Excluded from `@body_required_kinds` (the
+    # verb-name body fallback in EventRouter is belt-and-braces — the
+    # validator no longer rejects nil body for this kind). Excluded
+    # from `@dm_with_eligible_kinds` (server-emitted events are
+    # channel-scoped or $server-scoped, never DM peers).
+    test "accepts :server_event kind without body" do
+      attrs = @valid_attrs |> Map.put(:kind, :server_event) |> Map.delete(:body)
+      cs = Message.changeset(%Message{}, attrs)
+      assert cs.valid?, "expected :server_event with nil body to be valid"
+      assert cs.changes.kind == :server_event
+    end
+
+    test "rejects :server_event kind with dm_with set (channel-scope discipline)" do
+      attrs = Map.merge(@valid_attrs, %{kind: :server_event, dm_with: "alice"})
+      cs = Message.changeset(%Message{}, attrs)
+      refute cs.valid?, "expected :server_event + dm_with to be rejected"
+      assert {"may only be set on :privmsg or :action rows", _} = cs.errors[:dm_with]
+    end
+
     test "rejects an unknown kind" do
       cs = Message.changeset(%Message{}, %{@valid_attrs | kind: :ctcp})
       refute cs.valid?

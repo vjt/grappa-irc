@@ -1516,10 +1516,20 @@ defmodule Grappa.Session.EventRouter do
   # `{:cont, state, []}` for every unhandled command — KILL, WALLOPS,
   # GLOBOPS, ERROR, CHGHOST, vendor verbs all silently dropped on the
   # floor (vjt's live INVITE smoke during P-0 close surfaced this
-  # disease class). Now it persists a `:notice` row on `$server` with
-  # flat `meta.raw_{verb,sender,params}` keys so cic can render the
-  # structured fields and grow per-verb pretty-render arms
+  # disease class). Now it persists a `:server_event` row on `$server`
+  # with flat `meta.raw_{verb,sender,params}` keys so cic can render
+  # the structured fields and grow per-verb pretty-render arms
   # incrementally (KILL, WALLOPS, ERROR, CHGHOST, etc.).
+  #
+  # B6.11 HIGH-7 (2026-05-14): kind flipped from `:notice` to
+  # `:server_event`. Pre-flip the row carried a CONTENT kind
+  # (`@body_required_kinds` includes :notice; `@dm_with_eligible_kinds`
+  # includes :notice) — type-leaky for events that aren't notices. New
+  # `:server_event` excluded from both per-kind allowlists matches the
+  # actual semantics. Backfill in
+  # `priv/repo/migrations/20260514071049_add_server_event_to_messages_kind_enum.exs`
+  # reclassifies historical `notice + raw_verb` rows in the same
+  # cold-deploy.
   #
   # B6.1 HIGH-6: meta is flattened to atom-keyed top-level fields
   # (`raw_verb`, `raw_sender`, `raw_params`) instead of the previous
@@ -1535,7 +1545,11 @@ defmodule Grappa.Session.EventRouter do
   # changeset's validate_required(:body) rejected empty strings and
   # the row silently dropped — exactly the bug B1 was supposed to
   # close. cic's renderRawEvent uses raw_verb / raw_params for
-  # display so body is fallback only.
+  # display so body is fallback only. With B6.11's :server_event flip,
+  # `:server_event` is excluded from `@body_required_kinds` so the
+  # validator no longer enforces body — the verb-name fallback stays
+  # for cic's renderer expectation but is no longer load-bearing for
+  # persistence.
   #
   # Per feedback_no_localized_strings_server_side the server stores
   # only typed primitives (verb string, sender string, params list);
@@ -1561,7 +1575,7 @@ defmodule Grappa.Session.EventRouter do
       raw_params: params
     }
 
-    {state, eff} = build_persist(state, :notice, "$server", sender, body, meta)
+    {state, eff} = build_persist(state, :server_event, "$server", sender, body, meta)
     {:cont, state, [eff]}
   end
 

@@ -76,6 +76,33 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
       const bad = { ...validMessage, meta: null };
       expect(narrowChannelEvent({ kind: "message", message: bad })).toBeNull();
     });
+
+    // B6.11 HIGH-7 (no-silent-drops 2026-05-14): :server_event was
+    // missing from VALID_MESSAGE_KINDS — first integration smoke
+    // surfaced it (B2 INVITE CTA test failed with the row silently
+    // dropped at the WS edge). Pin all 11 kinds explicitly so a
+    // future enum addition that forgets to update the runtime
+    // allowlist fails this test, not a Playwright run.
+    it("accepts all 11 MessageKind values (kind allowlist exhaustiveness)", () => {
+      const kinds = [
+        "privmsg",
+        "notice",
+        "action",
+        "join",
+        "part",
+        "quit",
+        "nick_change",
+        "mode",
+        "topic",
+        "kick",
+        "server_event",
+      ];
+      for (const k of kinds) {
+        const msg = { ...validMessage, kind: k, body: null };
+        const out = narrowChannelEvent({ kind: "message", message: msg });
+        expect(out, `kind=${k} should be accepted by VALID_MESSAGE_KINDS`).not.toBeNull();
+      }
+    });
   });
 
   describe("kind: topic_changed", () => {
