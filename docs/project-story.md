@@ -1621,3 +1621,103 @@ invariant cost less than one cluster of flipping it. Document the
 flip, document the deferred decisions, ship as one production atom,
 move on.
 
+
+
+## S44 — 2026-05-14 — Five typed events, one route flip, two principle violations
+
+The P-0 numeric-delegation cluster opened against a list. Bahamut
+emits about a hundred numerics; pre-cluster the bouncer routed maybe
+forty through dedicated EventRouter handlers. The remaining sixty
+fell through to a generic `:notice` row whose body was the
+trailing-param string, verbatim, in whatever locale the upstream
+chose. cic rendered them as raw text on $server. Useless — neither
+machine-readable for cic to localize, nor structured enough to drive
+UI affordances.
+
+The cluster scoped five domains: WHOIS-leg extension (eleven extra
+flags from 275/301/307–310/316/325/326/339/378), standalone AWAY
+(301 when no /whois is in flight), INVITE-ack (341), LUSERS (the
+seven-numeric sequence 251/252/253/254/255/265/266), and WHOWAS
+(314/369/406). Each got the same shape: NumericRouter delegates,
+EventRouter folds into a per-target accumulator (or a single
+ephemeral effect), Server.apply_effects broadcasts a typed wire
+event, cic owns the human-readable rendering. The wire payloads
+ship structured fields only — booleans, integers, ISO timestamps,
+typed atoms. No human strings server-side, ever.
+
+P-0a through P-0d shipped clean. P-0e was supposed to be the same.
+The 341 RPL_INVITING handler emitted `{:invite_ack, channel, peer}`,
+the apply_effects arm broadcast on the channel's per-channel topic.
+The reasoning in the commit message read: "channel-scoped action
+confirmation belongs in the channel transcript." It wasn't wrong as
+an aesthetic — it was wrong about the topology. cic only joins the
+per-channel WS topic for channels the operator is actually IN.
+Operators usually invite peers to channels they are NOT in. The
+broadcast landed on a topic with zero listeners and dropped on the
+floor.
+
+The unit tests passed because they fed 341 directly into the test
+session and asserted the broadcast. The integration test passed
+because it had the operator on the same channel they invited the
+peer to. Neither captured the cross-channel case. The bug shipped to
+main, hot-deployed, ran live for an hour. The browser smoke at
+cluster close caught it: vjt typed `/invite Lisko #it-opers` from
+#bofh, watched cic, saw nothing. Ten minutes later we'd traced the
+route, written P-0f, flipped the broadcast to `Topic.user/1`,
+moved the cic mount to the always-visible $server window, and
+shipped the fix as a sixth bucket.
+
+That's `feedback_silent_retry_anti_pattern` re-validated for the
+third time this quarter. Anything that "should" produce visible
+output but doesn't is a bug, even when no exception fires. The
+per-bucket browser-smoke discipline (`feedback_per_bucket_deploy`)
+is how we catch them — vitest doesn't render layout, e2e fixtures
+don't reproduce production topology. A human typing into the live
+client, watching, is the only test that doesn't lie.
+
+The cluster close turned up two more silent drops, both worse than
+P-0e/P-0f because they were never in scope. The first: vjt invited
+the bouncer (`grappa`) to `#sbiffo` from his own irssi. From the
+bouncer's perspective, that's an inbound `INVITE grappa :#sbiffo`
+command, not a 341 numeric. EventRouter has no clause for inbound
+INVITE — the wildcard fallthrough returned `{:cont, state, []}`
+silently. P-0e/P-0f had built infrastructure for the wrong direction.
+The second: that wildcard fallthrough drops EVERY unhandled command.
+KILL, WALLOPS, GLOBOPS, ERROR, CHGHOST, AUTHENTICATE, and any
+vendor verb the upstream chooses to send — all gone. Three years of
+"oh that doesn't get rendered" surface, hidden behind a single
+no-op match clause.
+
+vjt's reaction was instructive: "I do not want fucking silent drop
+I want to see all IRC messages as we have to handle them all." The
+fix is simple in shape — replace the no-op fallthrough with a
+`:persist` `:notice` to $server carrying `meta.raw = %{verb, sender,
+params}`; cic owns localization. Visible first, prettified later.
+Per-verb pretty rendering can grow incrementally. The principle
+stays: the bouncer is the one source of truth for what the server
+sent, and silent drops are a category error.
+
+Both became the next cluster's first two buckets, alongside four
+more (the `compose.ts` requireChannel bug found mid-debug; verifying
+ALL Bahamut numerics route through structured wire events; clickable
+links in scrollback; Sobelow hardening). The Phase 5 list got a
+cleanup pass too — the orchestrator brief had been carrying a "P-3
+jitter" reference for weeks; turns out T31 shipped per-session ±25%
+jitter back in May. Stale plan items are how silent drops get into
+roadmaps.
+
+Five typed events shipped. The cards UX (whois, whowas, lusers all
+render as inline cards above scrollback) got a review-flag from vjt
+during the close: "I am not convinced on cards but we can renegotiate
+this at a later stage." Cards stayed for consistency; the alternative
+shape becomes its own future cluster.
+
+**Law:** the wildcard fallthrough is the most expensive line of code
+in any router. It's free at write time, free at test time, and
+catastrophically expensive at the point a user notices a missing
+feature that's been broken since the day the code shipped. Replace
+silent drops with structured visibility before adding any new feature
+that depends on the router behaving correctly. The principle scales:
+EventRouter, NumericRouter, the IRCv3 listener facade you build for
+Phase 6, every dispatcher you ever write — fallthrough means
+"surface this somewhere visible," not "ignore it."

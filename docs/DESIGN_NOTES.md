@@ -4812,6 +4812,81 @@ P-0b AWAY → P-0e INVITING → P-0d LUSERS → P-0c WHOWAS).
 
 ---
 
+## 2026-05-14 — CP30 P-0 numeric-delegation cluster CLOSED
+
+6-bucket cluster shipping 5 typed wire events for previously-leaked
+Bahamut numerics: `whois_bundle` (extended with 11 flags), `peer_away`
+(standalone 301), `invite_ack` (341), `lusers_bundle` (251–266
+sequence), `whowas_bundle` (314/369/406 with 312 conflict-gate).
+Branch `cluster/numeric-delegation-p0` merged ff-only to main as
+`8a38660`. Plan + per-bucket detail at
+`docs/plans/2026-05-13-numeric-delegation-p0.md`. Cluster close
+detail at `docs/checkpoints/2026-05-14-cp30.md`.
+
+Three slash commands wired through cic: `/lusers`, `/whowas <nick>`,
+plus `/invite` (the verb already existed but its 341 ack was
+silently dropped pre-P-0e/P-0f).
+
+**Mid-cluster route flip (P-0f).** P-0e shipped `invite_ack` on
+`Topic.channel(subject, slug, channel)` where `channel` is the
+TARGET. Live browser smoke at cluster close caught the silent drop:
+operators usually invite peers to channels they are NOT in (e.g.
+`/invite grappa #it-opers` from #bofh), and cic only subscribes to
+per-channel topics for joined channels — so the broadcast landed on
+a topic with zero listeners. P-0f flipped the route to
+`Topic.user/1` and moved the cic mount to the always-visible
+$server window. Wire payload shape unchanged; the `channel` field
+becomes informational instead of a routing key.
+`feedback_silent_retry_anti_pattern` shape — caught only because
+`feedback_per_bucket_deploy` mandates real browser smoke at cluster
+close.
+
+**Bugs surfaced (deferred to next cluster).** Two principle violations
+caught by vjt's manual smoke: (1) inbound `INVITE <ourNick> <#chan>`
+is silent-dropped by EventRouter fallthrough — P-0e/P-0f addressed
+the WRONG direction (operator-issued 341 confirmation, not inbound
+INVITE command); (2) the EventRouter fallthrough is a silent-drop
+class — KILL, WALLOPS, GLOBOPS, ERROR, CHGHOST, AUTHENTICATE,
+vendor verbs all silently dropped. Both fold into the next cluster's
+**no-silent-drops** principle — EventRouter fallthrough → structured
+`:notice` persist with `meta.raw = %{verb, sender, params}`; cic
+owns localization.
+
+**312 conflict-gate.** Bahamut reuses 312 RPL_WHOISSERVER for both
+WHOIS (carrying serverinfo) AND WHOWAS (carrying ctime(logoff_time)).
+EventRouter clause now conflict-gates: prefer whois_pending; else
+fold into most-recent WHOWAS entry; else no-op. WHOWAS entries
+stored REVERSED (head = most recent 314) so the 312 fold is O(1)
+head-prepend instead of O(n) `++ [entry]` (which Credo's MapInto
+check rejects). Wire builder reads `hd(entries)` for the most-recent
+projection; multi-history rendering deferred (RFC allows N entries
+per nick but accumulator only projects head).
+
+**Cards UX renegotiation flagged.** vjt: "I am not convinced on
+cards but we can renegotiate this at a later stage". Cards stayed in
+this cluster (consistency with WhoisCard precedent +
+`feedback_card_vs_scrollback_ux`); a brainstorm-then-bucket cluster
+will reconsider the shape post-no-silent-drops.
+
+**Cold-deploy required** because P-0c added `whowas_pending` and
+P-0d added `lusers_pending` to `Session.Server` long-lived state.
+Per `feedback_deploy_sh_preflight_field_addition_gap`, the preflight
+regex misses field-additions inside existing struct blocks; manual
+`--force-cold` was required.
+
+**Phase 5 list cleanup.** P-3 "jitter" reference in the original
+Phase 5 list is ALREADY DONE — `Grappa.Session.Backoff` has
+`@jitter_pct 25` since T31 shipped. Drop from any future Phase 5
+scoping. P-4 PromEx + P-5 NickServ Vault HSM both deferred much
+later per vjt 2026-05-14.
+
+Next cluster: **no-silent-drops** (vjt-blessed 6 buckets,
+fully orchestrator-automated). Brief in `/tmp/orchestrate-next.txt`
++ `project_post_p4_1_arc` memory.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

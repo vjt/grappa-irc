@@ -240,15 +240,17 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/nick <newnick>` | Change nick on the active network |
 | `/msg <nick> <text>` | Send a private message (opens query window) |
 | `/query <nick>` / `/q <nick>` | Open a query window without sending |
-| `/whois <nick>` | Issue WHOIS; reply renders inline in active window |
+| `/whois <nick>` | Issue WHOIS; reply renders inline as a card in the active window with structured fields (user, host, realname, server, away, idle, signon, channels, plus typed flags: oper / admin / services-admin / services-agent / helper / chanop / registered / SSL / java). All human-readable strings owned by cic per the no-localized-strings-server-side rule. |
+| `/whowas <nick>` | Issue WHOWAS; reply renders inline as a card with the most-recent historical entry (user, host, realname, last-seen-server, logoff-time). 406 ERR_WASNOSUCHNICK renders as a "no history" surface in the same card. Visitor-allowed. |
 | `/who <#chan>` | Issue WHO on a channel; replies render as scrollback rows in the target channel (joined) or `$server` (otherwise). Each 352 RPL_WHOREPLY → one `:notice` row; the 315 RPL_ENDOFWHO terminator row marks end. |
 | `/names <#chan>` | Issue NAMES on a channel. Joined target → MembersPane refresh via the `members_seeded` push (no scrollback rows). Non-joined target → 2 `:notice` rows in `$server` (full nick list + EOF terminator). |
+| `/lusers` | Issue LUSERS; reply renders as a card pinned in the `$server` window with structured network-state fields (total users, invisible, operators, channels, servers, local/global counts). Auto-emitted on connect-welcome too. Last-write-wins; closeable. Visitor-allowed. |
 | `/op <nick>...` / `/deop <nick>...` | `MODE +o` / `MODE -o` on the active channel; multi-target chunked per ISUPPORT `MODES=` |
 | `/voice <nick>...` / `/devoice <nick>...` | `MODE +v` / `MODE -v` on the active channel |
 | `/kick <nick> [reason]` | KICK on the active channel |
 | `/ban <nick-or-mask>` / `/unban <mask>` | `MODE +b` / `MODE -b`; bare nick → `*!*@host` derived from WHOIS-userhost cache, fallback `nick!*@*` |
 | `/banlist` | `MODE #chan b`; replies render inline (planned: clickable for one-tap unban) |
-| `/invite <nick> [#chan]` | INVITE; active channel by default |
+| `/invite <nick> [#chan]` | INVITE; active channel by default. Server's 341 RPL_INVITING ack renders as a synthetic row in the always-visible `$server` window (aggregates across all target channels invited to on the network). |
 | `/umode <modes>` | Set user-mode flags on own nick |
 | `/mode <target> <modes> [args]` | Raw `MODE` pass-through (escape hatch; no chunking applied) |
 | `/away [reason]` | Set explicit away with an optional reason. Bare `/away` (no reason) clears explicit away status. |
