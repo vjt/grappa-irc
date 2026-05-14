@@ -461,7 +461,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] Scrollback eviction policy
 - [x] Allowlist configuration for upstream networks (admission cap dimensions)
 - [ ] TLS verification (replace `verify: :verify_none` with proper CA chain — Phase 5 P-2)
-- [ ] Sobelow promotion + tightened prod gate (folded into the no-silent-drops cluster's bucket 6)
+- [x] Sobelow promotion + tightened prod gate (folded into CP31 no-silent-drops cluster B6.x; closed 2026-05-14)
 - [ ] Docs for self-hosters
 
 ### Phase 6 — IRCv3 listener facade
@@ -478,6 +478,18 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **CP31 — no-silent-drops** (closed 2026-05-14). 19 commits across
+  11 sub-buckets. B5 codebase review (8 parallel agents) → B6.x
+  fold-in of every actionable finding: 1 CRIT closed (CRIT-1
+  AUTHENTICATE deny-list at EventRouter catch-all), 25 HIGH closed,
+  2 NON-FINDING, 1 deferred to Phase 6. Highlights: typed
+  `:server_event` kind for catch-all rows (no more
+  `:notice`-with-meta-discrimination type leak), wire-edge runtime
+  allowlist exhaustiveness pinning in cic, sqlite table-recreate
+  dance for messages + read_cursors FK ref refresh, deploy.sh
+  preflight gaps (field-additions AST oracle + migration class +
+  nginx class) all closed, cic state-origination gap (the last
+  `cic NEVER originates state` violation post-CP17) closed.
 - **CP29 — server-side read state** (closed 2026-05-13). Per-(subject,
   network, channel) cursor as `last_read_message_id`; `ReadCursor.set/4`
   last-write-wins; cic POSTs on focus-leave + browser-blur; the
@@ -501,8 +513,8 @@ recent CLOSED clusters:
 - **P-0 numeric-delegation** (closed 2026-05-14). 5 typed wire events
   (whois extended, peer_away, invite_ack, lusers_bundle, whowas_bundle).
   P-0f route flip surfaced via live smoke; the carried-over
-  `compose.ts` requireChannel bug + the broader silent-drop class are
-  the seeds of the next cluster.
+  `compose.ts` requireChannel bug + the broader silent-drop class
+  seeded the no-silent-drops cluster (CP31).
 
 Full chronological log: [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 
@@ -513,13 +525,16 @@ The project is past Phase 1-3 and most of Phase 4. The road to
 the live operator before the next begins. Order is set per vjt
 2026-05-14:
 
-1. **No-silent-drops cluster** *(in flight on `cluster/no-silent-drops`)* —
-   close the EventRouter fallthrough silent-drop class, ship inbound
-   INVITE handler with clickable [Join] CTA, audit Bahamut numerics
-   for structured forwarding, add clickable URLs in scrollback,
-   then a full codebase review (B5) and Sobelow hardening with any
-   review crit/high findings folded in (B6). See
-   [`docs/plans/2026-05-14-no-silent-drops.md`](docs/plans/2026-05-14-no-silent-drops.md).
+1. **No-silent-drops cluster** *(CLOSED 2026-05-14)* — closed
+   the EventRouter fallthrough silent-drop class (B1 → typed
+   `:notice + raw_verb` → B6.11 typed `:server_event` kind),
+   shipped inbound INVITE handler with clickable [Join] CTA,
+   audited Bahamut numerics for structured forwarding, added
+   clickable URLs in scrollback, then the B5 codebase review (8
+   parallel agents, 152 findings) → B6.x fold-in of every
+   actionable finding (1 CRIT + 25 HIGH closed). See
+   [`docs/checkpoints/2026-05-14-cp31.md`](docs/checkpoints/2026-05-14-cp31.md)
+   for the full per-bucket ledger.
 2. **Push notifications PWA gate** — surface mention/highlight
    pings via the PWA notifications API so the bouncer is useful when
    the browser tab isn't focused. Open issue tracks the spec.

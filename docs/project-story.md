@@ -1721,3 +1721,160 @@ that depends on the router behaving correctly. The principle scales:
 EventRouter, NumericRouter, the IRCv3 listener facade you build for
 Phase 6, every dispatcher you ever write — fallthrough means
 "surface this somewhere visible," not "ignore it."
+
+## S45 — 2026-05-14 — One law shipped: silent drops are the disease, typed visibility is the cure
+
+The no-silent-drops cluster was a six-bucket plan (B0 through B5)
+that grew into eleven sub-buckets across two days. Mandate per the
+post-CP30 brief: surface every event the server produces; close
+the silent-drop class introduced in P-0's route flip plus the
+broader pattern observed across surfaces.
+
+The cluster's first two buckets shipped the obvious wins. B0 fixed
+the carried-over `compose.ts` requireChannel bug that swallowed
+`/invite` arguments. B1 replaced the EventRouter wildcard
+fallthrough — the line that returned `{:cont, state, []}` for
+every unhandled IRC verb — with a structured persist of `:notice`
+on `$server` carrying `meta.raw_verb`/`raw_sender`/`raw_params`.
+KILL, WALLOPS, GLOBOPS, ERROR, CHGHOST, vendor verbs all became
+visible. Cic grew per-verb pretty-render arms (`renderRawEvent`)
+keyed off `raw_verb`. Visible first, prettified later, exactly as
+the previous chapter's law specified.
+
+Then the codebase review.
+
+B5 was a doc-only commit. Eight parallel agents — one per surface
+(IRC, lifecycle, persistence, web, cicchetto, cross-module,
+cross-surface, docker/deploy) — produced 152 findings: 1 CRIT,
+31 HIGH, ~57 MED, ~44 LOW, ~19 NIT. The synthesis at
+`docs/reviews/codebase/2026-05-14-codebase-review.md` was the
+roadmap for B6.
+
+The CRIT was the kind of finding that justifies the whole exercise:
+**B1's catch-all was persisting `AUTHENTICATE` continuation
+payloads to `$server` scrollback as plaintext.** SASL base64,
+when split across multiple AUTHENTICATE commands, decodes to
+`\0user\0user\0password` for PLAIN. The bouncer was logging
+credentials to disk in the same window operators read. Same
+disease class as the W12 NickServ-leak hardening from earlier in
+the year; the fix was a deny-list at the catch-all head
+(`@no_persist_verbs ~w(authenticate pass oper)a`). Three lines.
+Shipped in B6.1 alongside HIGH-2 (empty-trailing verbs were
+silently dropped by `validate_required(:body)` — yes, silent
+drops in code shipped to fix silent drops; the mitigation was
+verb-name body fallback) and HIGH-6 (the meta key shape was
+nested-with-mixed-atom-and-string keys; flattened to atom-only
+top-level fields stays inside the Scrollback.Meta allowlist).
+
+Then HIGH-7 stayed open through B6.2 through B6.10. The kind enum
+discrimination problem: B1's catch-all wrote `:notice` rows for
+events that aren't notices. `:notice` is a CONTENT kind —
+`@body_required_kinds` includes it; `@dm_with_eligible_kinds`
+includes it. Any future filter `kind in [:privmsg, :notice,
+:action]` for "human content" would silently swallow KILL /
+WALLOPS / vendor noise. The fix was structural: add `:server_event`
+to `Message.@kinds`, exclude it from both per-kind allowlists,
+flip the catch-all's persist effect from `:notice` to
+`:server_event`, migrate the messages CHECK constraint via
+sqlite's table-recreate dance, backfill historical `:notice +
+raw_verb` rows.
+
+The migration is where this chapter's lesson lives.
+
+Sqlite >=3.25 auto-rewrites dependent foreign-key reference text
+during `ALTER TABLE ... RENAME`. When you rename `messages` to
+`messages_old` to recreate it with a new CHECK constraint,
+`read_cursors.last_read_message_id` (which references
+`messages.id`) gets its FK ref text auto-rewritten to point at
+`messages_old`. Once you `DROP TABLE messages_old` after the
+data copy, the `read_cursors` schema retains a dangling reference
+to a non-existent table. The schema becomes corrupt, surfacing
+on the next session boot's loader or the next read-cursor write.
+The 2026-05-04 caps/auth migration had hit exactly the same
+problem with `network_servers` and documented the pattern: any
+recreate-with-CHECK must recreate every dependent FK-referencing
+table too, in the same migration, with `defer_foreign_keys=ON`
+inside the transaction.
+
+I missed this when writing B6.11's migration. Vitest passed, server
+ci.check passed, dialyzer passed. The migration would have shipped
+to prod and corrupted the `read_cursors` schema on first boot.
+
+What caught it was a code-reviewer agent. Mid-cluster vjt called
+out my drift to linear single-thread mode — orchestrator handoff
+docs pre-loaded the implementation plan, each bucket felt small
+enough to do directly, so the agents stayed unused. I added a
+memory (`feedback_subagent_driven_development`), spawned the
+code-reviewer agent on the migration design, and the first finding
+back was the dangling FK ref. Ten-minute fix, latent prod-corruption
+bug averted. A test wouldn't have caught it; the integration suite
+exercises a fresh sqlite that doesn't carry the rename history.
+The agent caught it by reading the precedent migration's moduledoc
+and noticing the same pattern reapplied.
+
+Then the cluster surfaced one more silent-drop bug in code shipped
+to close silent-drop bugs.
+
+Cic's `wireNarrow.ts` is the WebSocket-edge runtime narrower for
+per-channel events. It validates incoming payloads against a
+`Set<MessageKind>` allowlist (`VALID_MESSAGE_KINDS`). A TypeScript
+discriminated union is compile-time only; the runtime allowlist
+is a separate moving part. B6.11 added `"server_event"` to the
+TypeScript `MessageKind` union, to the schema `@kinds`, to
+EventRouter, to the cic dispatcher, to vitest. Madonna porca, I
+missed the runtime allowlist. Vitest still passed (the unit tests
+constructed messages bypassing the narrower). The B2 INVITE-CTA
+integration smoke caught it: `.scrollback-invite-join` never
+rendered because every `:server_event` row was silently dropped
+at the WS edge. A textbook silent-drop bug in the cluster designed
+to close the silent-drop class.
+
+The mitigation isn't just adding the entry. It's pinning the
+allowlist exhaustiveness in the unit test: a vitest loop over all
+eleven `MessageKind` values asserting each is accepted. Future
+enum additions that update only the TypeScript union without the
+runtime allowlist will fail vitest, not Playwright. The deeper
+lesson: anywhere the codebase has a runtime `Set<EnumValue>`
+mirror of a type union, an exhaustiveness test is mandatory
+infrastructure. Type unions are fences; runtime allowlists are
+gates. Both need tests.
+
+The cluster closed at commit `455c481` with 25 of 31 HIGH closed,
+the CRIT closed, two NON-FINDING after re-evaluation against
+current code, one HIGH deferred to Phase 6 CHATHISTORY (the
+generated-column perf optimization for `Scrollback.list_archive/3`,
+deferred per CLAUDE.md "design AGAINST Phase 6's actual listener
+query shape, not speculatively"). Cold-deployed via
+`scripts/deploy.sh --force-cold`, both migrations applied cleanly,
+backfill found zero historical rows in dev (no historical catch-all
+rows; Server's numeric handler had been routing all numerics with
+`{numeric, severity}` meta, never `raw_verb`), cic bundle deployed
+with new hash `B7oBS3E1` broadcast to all live user-topics.
+
+**Law:** the wildcard fallthrough is just one shape of silent drop.
+Type-level reuse (a typed CONTENT kind for events that aren't
+content) is another. Wire-edge runtime allowlists out of sync with
+TypeScript unions are a third. Each shape has the same fix —
+explicit, structured, tested visibility — but each requires
+different infrastructure (the route-level structured persist for
+shape one, the closed-set kind enum for shape two, the
+exhaustiveness pin for shape three). The job isn't "fix the
+fallthrough." The job is "make every silent-drop shape impossible
+to ship without the test failing first."
+
+The Phase 5 list got another cleanup pass too. Sobelow promotion
+(originally listed as "folded into the no-silent-drops cluster's
+bucket 6") is now closed. The remaining Phase 5 items are TLS
+verification + docs for self-hosters; both are real work, both are
+visible and tracked.
+
+Eleven sub-buckets shipped. One CRIT, twenty-five HIGHs, three
+new memories (`feedback_subagent_driven_development`,
+`project_no_silent_drops_closed`, the wire-narrow exhaustiveness
+lesson rolled into the existing `feedback_no_localized_strings_server_side`
+neighbor). The arc is small if you read the diff and large if you
+read the discipline. Catch-all → typed-event → cross-surface
+discipline → runtime-allowlist exhaustiveness, all in one cluster.
+The next cluster is push notifications. The bouncer is closer to
+public open than it was on Monday.
+

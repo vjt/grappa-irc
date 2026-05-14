@@ -4885,6 +4885,127 @@ fully orchestrator-automated). Brief in `/tmp/orchestrate-next.txt`
 + `project_post_p4_1_arc` memory.
 
 
+## 2026-05-14 — CP31 no-silent-drops cluster CLOSED
+
+Closed at `455c481`. Cluster mandate per `project_post_p4_1_arc`:
+surface every event the server produces; close the silent-drop
+class introduced in P-0 (route flip) plus the broader pattern
+observed across surfaces. Fully orchestrator-automated.
+
+### Shape
+
+19 commits across 11 sub-buckets. The B5 codebase review (8 parallel
+agents covering IRC + lifecycle + persistence + web + cicchetto +
+cross-module + cross-surface + docker/deploy) produced 152 findings
+total: 1 CRIT + 31 HIGH + ~57 MED + ~44 LOW + ~19 NIT. B6.x folded
+in every actionable HIGH:
+
+* **CRIT closed:** 1/1 — CRIT-1 AUTHENTICATE deny-list at
+  `EventRouter` catch-all head (closes plaintext-credential leak
+  to `$server` scrollback, same disease class as W12 NickServ-leak).
+* **HIGH closed:** 25/31 (H-2 through H-31 — see CP31 ledger for
+  per-bucket mapping).
+* **HIGH NON-FINDING:** 2 (H-13 server-side, H-21 web — re-evaluated
+  against current code per `feedback_mega_cluster_lessons`).
+* **HIGH DEFER:** 1 (H-23 `Scrollback.list_archive/3` perf via
+  generated column → Phase 6 CHATHISTORY cluster; design AGAINST
+  Phase 6's actual listener query shape, not speculatively).
+
+### Headline lessons
+
+**1. The catch-all-vs-typed-event tradeoff resolved**
+
+B1 (the original `:notice` catch-all bucket on 2026-05-13) closed
+the visible silent-drop — KILL/WALLOPS/GLOBOPS/ERROR/CHGHOST/INVITE
+now persist + render. But it introduced THREE secondary failure
+modes the B5 review surfaced:
+
+  * CRIT-1 — credential leak (AUTHENTICATE base64) into `$server`
+    scrollback.
+  * HIGH-2 — empty-trailing verbs silently dropped by
+    `validate_required(:body)`.
+  * HIGH-7 — kind reuse: `:notice` is a CONTENT kind
+    (`@body_required_kinds` includes it), so the catch-all rows
+    leaked into any future filter `kind in [:privmsg, :notice,
+    :action]` for "human content."
+
+B6.11 ultimately resolved (3) by adding `:server_event` to
+`Message.@kinds`, excluded from `@body_required_kinds` AND
+`@dm_with_eligible_kinds`. The migration is sqlite's full
+table-recreate dance for `messages` (precedent at the 2026-05-04
+caps/auth migration) PLUS a recreate of `read_cursors` to refresh
+its `last_read_message_id → messages(id)` FK ref text — sqlite
+>=3.25 auto-rewrites dependent FK refs during ALTER TABLE RENAME,
+which would have left `read_cursors` pointing at the dropped
+`messages_old`. Same disease class the 2026-05-04 precedent fixed
+for `network_servers`. **Caught by the code-reviewer agent BEFORE
+landing**, not by tests.
+
+The arc is one of accumulated discipline: B1 fixed the wire-layer
+silent drop (rows now persist), B6.1 fixed three implementation-
+quality regressions atop that (CRIT-1 deny-list + HIGH-2 body
+fallback + HIGH-6 meta atom-key flattening), and B6.11 fixed the
+type-layer silent drop (`:server_event` kind for what isn't a
+notice). Each step depended on the previous; none could have
+shipped first.
+
+**2. Wire-edge runtime allowlists must be exhaustiveness-tested**
+
+B6.11 shipped the new `:server_event` kind end-to-end: server +
+schema + cic dispatcher + cic type union. Vitest passed (933
+tests). Then B2 INVITE-CTA integration smoke failed —
+`.scrollback-invite-join` never appeared. Root cause:
+`cicchetto/src/lib/wireNarrow.ts`'s `VALID_MESSAGE_KINDS` runtime
+allowlist (a `Set<MessageKind>`) was missing `"server_event"`. The
+narrower silently dropped every server_event row at the WS edge —
+a textbook silent-drop bug in code shipped to close silent-drop
+bugs. Madonna porca.
+
+Mitigation: `wireNarrow.test.ts` gains an exhaustiveness pin —
+loop over all 11 MessageKind values, assert each is accepted by
+the narrower. Future enum additions that update only the
+TypeScript union without the runtime allowlist will fail vitest,
+not a Playwright run.
+
+The deeper lesson: TypeScript discriminated unions are
+compile-time fences. Runtime allowlists are separate moving parts.
+Anywhere the codebase has a runtime `Set<EnumValue>` mirror of a
+type union, an exhaustiveness test is mandatory infrastructure.
+
+**3. Subagent-driven development on cluster work**
+
+Mid-cluster vjt called out my drift to linear single-thread mode.
+The orchestrator handoff doc pre-loaded the implementation plan so
+each bucket felt small enough to do directly — but the cluster as
+a whole (migration + cross-surface + cold-deploy at Z) was
+high-stakes. Switching to the code-reviewer agent for the B6.11
+migration design IMMEDIATELY caught the dangling-FK-ref bug above.
+Memory `feedback_subagent_driven_development` codifies the rule:
+Plan agent for design, Explore agent for exploration, code-reviewer
+for migration + cross-surface buckets, regardless of how detailed
+the orchestrator brief is.
+
+### Per-bucket discipline (verified)
+
+Every B6.x sub-bucket shipped with: `scripts/check.sh` exit-0
+(literal gate-tail in commit body per `feedback_landed_claim_evidence`),
+cic gates where touching cic, integration smoke at cic-touching
+buckets, `git diff --quiet HEAD` pre-push verification per
+`feedback_check_sh_working_tree_trap`. Cluster Z deploy was the
+single end-of-cluster cold-deploy event per `feedback_per_bucket_deploy`.
+
+### Trajectory
+
+Public-open trajectory advances one notch: silent-drop class
+closed end-to-end, runtime allowlist exhaustiveness pinned, web
+boundary hardening (HIGH-19 body-size cap) shipped. Remaining
+public-open blockers per CP31 § Trajectory: image upload
+(needs HIGH-19 wired into nginx via `client_max_body_size 16m`),
+voice (separate `/voice/websocket`), mobile UI polish, M3 rate
+limits, W-16 signing_salt rotation, M-cic-2 production strip of
+`__cic_*` debug globals.
+
+
 ---
 
 ## What's *not* in this document (on purpose)
