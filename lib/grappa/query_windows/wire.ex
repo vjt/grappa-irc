@@ -52,7 +52,7 @@ defmodule Grappa.QueryWindows.Wire do
 
   @doc """
   Render the full per-network grouping returned by
-  `QueryWindows.list_for_user/1` to the wire shape.
+  `QueryWindows.list_for_subject/1` to the wire shape.
   """
   @spec render_grouped(%{integer() => [Window.t()]}) :: windows_map()
   def render_grouped(grouped) when is_map(grouped) do

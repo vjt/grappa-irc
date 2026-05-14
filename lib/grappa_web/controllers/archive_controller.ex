@@ -5,7 +5,7 @@ defmodule GrappaWeb.ArchiveController do
   `GET /networks/:network_id/archive` returns the targets that have
   scrollback rows on this network for the authenticated subject AND
   are NOT currently active — joined channels (`Session.list_channels/2`)
-  + open query window targets (`QueryWindows.list_for_user/1`) form
+  + open query window targets (`QueryWindows.list_for_subject/1`) form
   the active keyset; the controller hands it to
   `Scrollback.list_archive/3` which filters those + the `$server`
   pseudo-channel out before grouping.

@@ -35,7 +35,7 @@ defmodule Grappa.Push.Subscription do
   ## Public API
 
   Callers receive `%Subscription{}` structs through `Grappa.Push`
-  context functions (`create/2`, `list_for_user/1`, `delete/1`,
+  context functions (`create/2`, `list_for_subject/1`, `delete/1`,
   `touch_last_used/1`, `delete_dead/1`). The Boundary annotation on
   `Grappa.Push` exports this module so the `t()` cross-module
   reference resolves cleanly in published docs.
