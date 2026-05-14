@@ -25,7 +25,7 @@ human-readable rendering.
 | 0 | `compose.ts` requireChannel | trivial cic | cic-only | LANDED — `/invite foo #chan` from $server |
 | 1 | EventRouter fallthrough → structured :notice | medium | HOT | LANDED — meta.raw shape; cic ScrollbackRow renderRawEvent arm |
 | 2 | Inbound INVITE handler | small | HOT | typed `peer_invite` row + clickable [Join] CTA |
-| 3 | Bahamut numerics audit + matrix | medium | likely COLD | every numeric: dedicated handler OR delegated structured notice |
+| 3 | Bahamut numerics audit + matrix | small | none (audit only — see B3 SCOPE FINDING) | LANDED — every emitted numeric has known disposition; ADD-HANDLER cases (UMODEIS / banlist / WATCH) deferred to post-cluster polish |
 | 4 | Clickable URLs in scrollback | small | cic-only | linkify body; new tab; defer hover/image |
 | 5 | **Codebase review** (parallel agents per `/review`) | medium | none (review only) | reshape per vjt 2026-05-14 — was Sobelow; Sobelow moved to B6. Output prioritized findings (crit / high / important-med). |
 | 6 | **Sobelow + review fold-in** | small-medium | HOT | Sobelow hardening (was B5) PLUS remediate any crit/high/important-med findings from B5 review. |
@@ -48,10 +48,12 @@ human-readable rendering.
   + `feedback_landed_claim_evidence`.
 - **LANDED claim evidence**: literal `scripts/check.sh` exit-0 tail
   in commit message.
-- **Hot-vs-cold deploy**: bucket 3 may add struct fields → manual
-  `--force-cold` per
-  `feedback_deploy_sh_preflight_field_addition_gap`. Buckets 1/2/4/5
-  + bucket 0 are HOT (or cic-only).
+- **Hot-vs-cold deploy**: B3 SCOPE FINDING (2026-05-14) reduced
+  bucket 3 to docs-only (no struct field added — the catch-all
+  already attaches `meta.numeric/severity` for non-delegated
+  numerics). All shipped buckets (0/1/2/4) HOT-eligible or
+  cic-only. Bucket 5 review-only; bucket 6 depends on review
+  findings.
 
 ## Bucket 0 — compose.ts requireChannel skip-when-supplied
 
@@ -419,6 +421,272 @@ Depends. If any new accumulator added (e.g. WATCH-class numerics
 need a pending bundle), state-shape changes → `--force-cold` per
 `feedback_deploy_sh_preflight_field_addition_gap`. Document at
 bucket close.
+
+### Audit matrix (2026-05-14)
+
+Sources: `/tmp/bahamut/include/numeric.h` + `/tmp/bahamut/src/s_err.c`
+(authoritative wire format strings — `replies[]` table) +
+`lib/grappa/session/numeric_router.ex` `@delegated_numerics` /
+`@active_numerics` + `lib/grappa/session/event_router.ex` numeric
+clauses.
+
+**Summary.** `numeric.h` defines ~110 unique numerics in the 1-799
+range (header has duplicate macro blocks for separate sections;
+collapsed). `s_err.c` `replies[]` shows ~95 with non-NULL format
+strings, i.e. the set Bahamut can actually emit. The rest are
+RFC reservations not used by this ircd.
+
+Status counts after the matrix:
+
+* **Already delegated with dedicated EventRouter handler:** 39 numerics
+  (LUSERS 251-255/265-266, WHOIS family 275/301/307-319/325-326/339/378,
+  WHOWAS 314/369/406, WHO/NAMES 315/352/353/366, LIST 321-323, channel
+  state 324/329/331-333, INVITE 341, LINKS 364-365, MOTD 372/375-376,
+  JOIN-fail 403/405/471/473-475).
+* **Already in `@active_numerics` (forced `$server`):** 7 numerics
+  (305, 306, 421, 432, 433, 437, 461).
+* **Param-derived → bare-notice with NO `meta.numeric` upgrade
+  (gap):** every other emitted numeric currently flows through
+  `scan_params` and lands as a plain `:notice` row WITHOUT
+  `meta.numeric` / `meta.severity`. cic can't recognise / style /
+  filter them. **Action: ADD-DELEGATION (move to
+  `@delegated_numerics`)** so Server's catch-all numeric persistence
+  attaches `meta.numeric` + `meta.severity` per the post-CP30 path.
+  This is the bulk of the cluster's silent-drop class for numerics —
+  ~50 codes affected, mostly errors + STATS/TRACE admin output.
+* **Carry STRUCTURED fields cic could render typed (gap warranting
+  ADD-HANDLER):** 5 candidates — see top of matrix:
+  - `221 RPL_UMODEIS` — current user modes string (`+iwx`).
+  - `367 RPL_BANLIST` + `368 RPL_ENDOFBANLIST` — banmask/setter/setat
+    rows; `/mode #ch +b` UI currently leaks setter/timestamp text.
+  - `600-605 RPL_LOGON/LOGOFF/WATCHOFF/NOWON/NOWOFF` (WATCH bundle) —
+    nick/user/host/timestamp tuple per entry; relevant once `/watch`
+    is wired (see channel-client-polish watchlist scope).
+  - `728 RPL_RESTRICTLIST` + `729` — channel +z restrict mask list,
+    same shape as ban list.
+  - `302 RPL_USERHOST` / `303 RPL_ISON` — space-separated tuples;
+    irc-framework already parses these; folding into a typed event
+    avoids each cic feature reparsing.
+* **Defined-only / never emitted by Bahamut:** numeric.h declares
+  ~15 codes that `s_err.c` leaves NULL (340 SHUNNED outside `#ifdef
+  SHUN`, 229 STATSWEBIRC outside `#ifdef WEBIRC`, 250 STATSCONN
+  outside `#ifdef HIGHEST_CONNECTION`, 247-248 reserved-for-Undernet,
+  280-281, 354, 416, 513). DOCUMENT-AS-IS — no action.
+
+The matrix collapses identical-analysis families into one row to
+keep the audit readable. Where a family has heterogeneous handling
+(e.g. WHOIS legs already-delegated + 316 WHOISCHANOP defined-only),
+each leg gets its own row.
+
+| Code(s) | RFC / Bahamut name | Bahamut emits? | Current treatment | Carries structured fields? | Target treatment | Action |
+|---|---|---|---|---|---|---|
+| 001-005 | RPL_WELCOME / YOURHOST / CREATED / MYINFO / ISUPPORT | YES | param-derived → `$server` (bare notice) | NO (server-text + ISUPPORT tokens — ISUPPORT already parsed by client lib) | catch-all + meta.numeric for styling | ADD-DELEGATION |
+| 200-209 | RPL_TRACE* family | YES (operators only — rarely seen) | param-derived → `$server` | NO (admin text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 211-219 | RPL_STATS* (CLINE/NLINE/ILINE/KLINE/QLINE/YLINE/COMMANDS/ENDOFSTATS) | YES (operators only) | param-derived → `$server` | NO (admin tabular text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 221 | RPL_UMODEIS | YES | param-derived → `$server` (bare notice; mode flags leak as text) | YES — `params[1]` = mode-string `+iwx` | dedicated handler folding into `state.own_modes` + `:user_modes_changed` wire event (already needed for `/umode` UI) | **ADD-HANDLER** |
+| 222-228, 250 | RPL_STATS extras (BLINE/ELINE/FLINE/ZLINE/COUNT/GLINE/SPAM/STATSCONN) | YES (oper) | param-derived → `$server` | NO (admin text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 229 | RPL_STATSWEBIRC | NO (`#ifdef WEBIRC`) | n/a | n/a | n/a | DOCUMENT-AS-IS |
+| 234, 235 | RPL_SERVLIST / RPL_SERVLISTEND | YES (rare — services listing) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 241-246, 249 | RPL_STATS extras (LLINE/UPTIME/OLINE/HLINE/SLINE/ULINE/DEBUG) | YES (oper) | param-derived → `$server` | NO (admin text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 247-248 | reserved for Undernet | NO | n/a | n/a | n/a | DOCUMENT-AS-IS |
+| 251-255, 265-266 | RPL_LUSERCLIENT/OP/UNKNOWN/CHANNELS/ME + LOCALUSERS/GLOBALUSERS | YES | **delegated (EventRouter `lusers_bundle`)** | YES — already typed | unchanged | NONE |
+| 256-259 | RPL_ADMINME/LOC1/LOC2/EMAIL | YES (`/admin`) | param-derived → `$server` | NO (text — admin contact info) | catch-all + meta.numeric | ADD-DELEGATION |
+| 261-263 | RPL_TRACELOG / RPL_ENDOFTRACE / RPL_LOAD2HI | YES (oper / load reject) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 271, 272 | RPL_SILELIST / RPL_ENDOFSILELIST | YES (`/silence`) | param-derived → `$server` (each entry as bare row) | YES — `params[2]` = silenced mask | catch-all + meta.numeric (`/silence` not in cluster-polish scope; defer typed handler) | ADD-DELEGATION |
+| 275 | RPL_USINGSSL | YES (WHOIS leg) | **delegated (EventRouter — folds into whois_pending.using_ssl bool)** | YES — typed | unchanged | NONE |
+| 301 | RPL_AWAY | YES (WHOIS leg + standalone PRIVMSG-target reply) | **delegated (EventRouter — whois_pending OR `peer_away` typed event)** | YES — typed (P-0b) | unchanged | NONE |
+| 302 | RPL_USERHOST | YES (`/userhost`) | param-derived → `$server` | YES — trailing carries `nick=+host` tuples | catch-all + meta.numeric (no in-cluster consumer; ircframework parses) | ADD-DELEGATION |
+| 303 | RPL_ISON | YES (`/ison`) | param-derived → `$server` | YES — trailing = space-separated nick list | catch-all + meta.numeric (no consumer; watchlist uses 600-series) | ADD-DELEGATION |
+| 305, 306 | RPL_UNAWAY / RPL_NOWAWAY | YES | **active-list → `$server`** | NO (ack) | unchanged | NONE |
+| 307-310 | RPL_WHOISREGNICK/ADMIN/SADMIN/HELPER | YES (WHOIS legs) | **delegated (folded into whois_pending typed flags)** | YES — typed | unchanged | NONE |
+| 311-313 | RPL_WHOISUSER/SERVER/OPERATOR | YES | **delegated (whois_pending → whois_bundle)** | YES — typed | unchanged | NONE |
+| 314 | RPL_WHOWASUSER | YES | **delegated (whowas_pending → whowas_bundle, P-0c)** | YES — typed | unchanged | NONE |
+| 315 | RPL_ENDOFWHO | YES | **delegated (closes WHO bundle)** | YES — typed | unchanged | NONE |
+| 316 | RPL_WHOISCHANOP | NO (`s_err.c` slot is NULL — RFC1459 reserved, never emitted by Bahamut) | delegated (defensive — header lists it) | n/a | unchanged (defensive entry is fine) | DOCUMENT-AS-IS |
+| 317 | RPL_WHOISIDLE | YES | **delegated (whois_pending.idle_secs / signon_unix)** | YES — typed | unchanged | NONE |
+| 318 | RPL_ENDOFWHOIS | YES | **delegated (closes WHOIS bundle, emits `whois_bundle`)** | YES — typed | unchanged | NONE |
+| 319 | RPL_WHOISCHANNELS | YES | **delegated (whois_pending.channels — prefix-stripped)** | YES — typed | unchanged | NONE |
+| 321-323 | RPL_LISTSTART / RPL_LIST / RPL_LISTEND | YES (`/list`) | **delegated (list_pending → list_window typed rows)** | YES — typed | unchanged | NONE |
+| 324 | RPL_CHANNELMODEIS | YES (post-JOIN MODE echo) | **delegated (`channel_modes_changed`)** | YES — typed | unchanged | NONE |
+| 325, 326 | RPL_WHOISAGENT / RPL_WHOISMODES | YES (Azzurra extensions) | **delegated (whois_pending typed flags)** | YES — typed | unchanged | NONE |
+| 329 | RPL_CREATIONTIME | YES (post-JOIN) | **delegated (`channel_created` typed unix-ts)** | YES — typed | unchanged | NONE |
+| 331-333 | RPL_NOTOPIC / RPL_TOPIC / RPL_TOPICWHOTIME | YES | **delegated (`topic_changed` typed)** | YES — typed | unchanged | NONE |
+| 334 | RPL_COMMANDSYNTAX | YES (some Azzurra cmds reject) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 339 | RPL_WHOISJAVA | YES (Azzurra) | **delegated (whois_pending.is_java bool)** | YES — typed | unchanged | NONE |
+| 340 | RPL_SHUNNED | NO (`#ifdef SHUN`, default off) | param-derived | n/a | n/a | DOCUMENT-AS-IS |
+| 341 | RPL_INVITING | YES | **delegated (`invite_ack` typed, P-0e/P-0f)** | YES — typed | unchanged | NONE |
+| 342 | RPL_SUMMONING | YES (vestigial — SUMMON disabled in 445) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 351 | RPL_VERSION | YES (`/version`) | param-derived → `$server` | YES — `version`, `server`, `comments` distinct fields | catch-all + meta.numeric (typed handler optional — no in-cluster consumer) | ADD-DELEGATION |
+| 352, 353, 366 | RPL_WHOREPLY / RPL_NAMREPLY / RPL_ENDOFNAMES | YES | **delegated (WHO bundle / NAMES seeding)** | YES — typed | unchanged | NONE |
+| 361-363 | RPL_KILLDONE / RPL_CLOSING / RPL_CLOSEEND | YES (oper) | param-derived → `$server` | NO (admin text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 364, 365 | RPL_LINKS / RPL_ENDOFLINKS | YES (`/links`) | **delegated (links_pending bundle)** | YES — typed | unchanged | NONE |
+| 367, 368 | RPL_BANLIST / RPL_ENDOFBANLIST | YES (`/mode #ch +b`) | param-derived → `{:channel, ch}` (each entry leaks setter+ts as text in body) | YES — `params[2]=mask`, `params[3]=setter`, `params[4]=set_at_unix` | dedicated handler accumulating `banlist_pending[ch]` → emit `:banlist` typed wire event with `[%{mask, setter, set_at}]` | **ADD-HANDLER** |
+| 369 | RPL_ENDOFWHOWAS | YES | **delegated (closes whowas_bundle, P-0c)** | YES — typed | unchanged | NONE |
+| 371, 373, 374 | RPL_INFO / RPL_INFOSTART / RPL_ENDOFINFO | YES (`/info`) | param-derived → `$server` | NO (multi-line server-text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 372, 375, 376 | RPL_MOTD / RPL_MOTDSTART / RPL_ENDOFMOTD | YES | **delegated** | NO (text) | unchanged | NONE |
+| 378 | RPL_WHOISACTUALLY | YES (oper-visible) | **delegated (whois_pending.actually)** | YES — typed | unchanged | NONE |
+| 381, 382, 384, 385 | RPL_YOUREOPER / REHASHING / MYPORTIS / NOTOPERANYMORE | YES (oper) | param-derived → `$server` | NO (text + port int — no in-cluster consumer) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 391 | RPL_TIME | YES (`/time`) | param-derived → `$server` | YES — `params[1]=server`, trailing=human ts | catch-all + meta.numeric (no consumer) | ADD-DELEGATION |
+| 392-395 | RPL_USERSSTART / RPL_USERS / RPL_ENDOFUSERS / RPL_NOUSERS | NO (Bahamut `s_err.c` NULL — RFC reserved, no emit) | n/a | n/a | n/a | DOCUMENT-AS-IS |
+| 401 | ERR_NOSUCHNICK | YES | param-derived → `{:query, nick}` if param looks nick-shaped | NO (text "No such nick/channel") | catch-all + meta.numeric (cic can render in-target window with severity:error) | ADD-DELEGATION |
+| 402 | ERR_NOSUCHSERVER | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 403 | ERR_NOSUCHCHANNEL | YES | **delegated (CP15 JOIN-fail bundle)** | YES — typed | unchanged | NONE |
+| 404 | ERR_CANNOTSENDTOCHAN | YES | param-derived → `{:channel, ch}` | NO (text — but the FACT of failure is structured) | catch-all + meta.numeric (cic shows in-channel red row) | ADD-DELEGATION |
+| 405 | ERR_TOOMANYCHANNELS | YES | **delegated (JOIN-fail bundle)** | YES — typed | unchanged | NONE |
+| 406 | ERR_WASNOSUCHNICK | YES (WHOWAS-leg) | **delegated (whowas_bundle, P-0c)** | YES — typed | unchanged | NONE |
+| 407, 408 | ERR_TOOMANYTARGETS / ERR_NOCOLORSONCHAN | YES | param-derived → `$server` / `{:channel, ch}` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 409 | ERR_NOORIGIN | YES (PING-no-origin) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 411-414 | ERR_NORECIPIENT / NOTEXTTOSEND / NOTOPLEVEL / WILDTOPLEVEL | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 421 | ERR_UNKNOWNCOMMAND | YES | **active-list → `$server`** | NO (text) | unchanged | NONE |
+| 422-424 | ERR_NOMOTD / NOADMININFO / FILEERROR | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 429 | ERR_TOOMANYAWAY | YES (away-flood) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 431 | ERR_NONICKNAMEGIVEN | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 432, 433 | ERR_ERRONEUSNICKNAME / ERR_NICKNAMEINUSE | YES | **active-list → `$server`** | NO (handled at /nick boundary) | unchanged | NONE |
+| 435 | ERR_BANONCHAN | YES (nick-change-while-banned-on-channel) | param-derived → `{:channel, ch}` | YES (could fold into `nick_change_failed` typed) — but no in-cluster consumer | catch-all + meta.numeric | ADD-DELEGATION |
+| 436 | ERR_NICKCOLLISION | YES (server-side — usually doesn't reach client) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 437 | ERR_BANNICKCHANGE / UNAVAILRESOURCE | YES | **active-list → `$server`** | NO (handled at /nick) | unchanged | NONE |
+| 438, 439 | ERR_NONICKCHANGE / ERR_TARGETTOOFAST | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 440 | ERR_SERVICESDOWN | YES (NickServ/ChanServ unreachable) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 441-447 | ERR_USERNOTINCHANNEL / NOTONCHANNEL / USERONCHANNEL / NOLOGIN / SUMMONDISABLED / USERSDISABLED / RESTRICTED | YES | param-derived (channel-shaped → `{:channel, ch}`; nick-shaped → `{:query, nick}`; else `$server`) | NO (text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 451 | ERR_NOTREGISTERED | YES (boot-time) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 461 | ERR_NEEDMOREPARAMS | YES | **active-list → `$server`** | NO (text — handled at command boundary) | unchanged | NONE |
+| 462-468 | ERR_ALREADYREGISTRED / NOPERMFORHOST / PASSWDMISMATCH / YOUREBANNEDCREEP / YOUWILLBEBANNED / KEYSET / ONLYSERVERSCANCHANGE | YES | param-derived → `$server` (or `{:channel, ch}` for 467) | NO (text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 471, 473, 474, 475 | ERR_CHANNELISFULL / INVITEONLYCHAN / BANNEDFROMCHAN / BADCHANNELKEY | YES | **delegated (CP15 JOIN-fail bundle)** | YES — typed | unchanged | NONE |
+| 472 | ERR_UNKNOWNMODE | YES | param-derived → `$server` | NO (text + the unknown mode char) | catch-all + meta.numeric | ADD-DELEGATION |
+| 476-479 | ERR_ONLYSSLCLIENTS / NEEDREGGEDNICK / BANLISTFULL / BADCHANNAME | YES | param-derived (mostly `{:channel, ch}`) | NO (text — but JOIN-fail-ish) | catch-all + meta.numeric (consider folding into CP15 JOIN-fail bundle in a future cluster — out of scope here) | ADD-DELEGATION |
+| 481-489, 491 | oper / kick-services / kill-services / non-reg / ban-reason / msg-services family | YES | param-derived → `$server` or `{:channel, ch}` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION (en-bloc) |
+| 501, 502 | ERR_UMODEUNKNOWNFLAG / ERR_USERSDONTMATCH | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 503 | ERR_GHOSTEDCLIENT (Bahamut: undelivered-msg) | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 511 | ERR_SILELISTFULL | YES (`/silence` cap) | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 512 | ERR_TOOMANYWATCH | YES (`/watch` cap) | param-derived → `$server` | NO (text — but `/watch` work in channel-client-polish will want to surface this) | catch-all + meta.numeric (sufficient for cap-warning UI) | ADD-DELEGATION |
+| 513 | reserved for Undernet | NO | n/a | n/a | n/a | DOCUMENT-AS-IS |
+| 514 | ERR_TOOMANYDCC | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 521-523 | ERR_LISTSYNTAX / WHOSYNTAX / WHOLIMEXCEED | YES | param-derived → `$server` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 600-605 | RPL_LOGON / LOGOFF / WATCHOFF / NOWON / NOWOFF | YES (WATCH replies) | param-derived → `$server` (each entry leaks as bare text including unix-ts integer) | YES — `nick`, `user`, `host`, `unix_ts`, kind discriminator from numeric | dedicated handler emitting typed `:watch_event` `%{kind: :logon \| :logoff \| :now_on \| :now_off \| :watch_off, nick, user, host, ts}` (depended-on by channel-client-polish `/watch` work) | **ADD-HANDLER** |
+| 603 | RPL_WATCHSTAT | YES | param-derived → `$server` | YES — `params[1]=local_count`, `params[2]=remote_count` (currently leaks as English text) | dedicated handler emitting `:watch_stats` `%{local, remote}` | **ADD-HANDLER** (companion to 600-605) |
+| 606, 607 | RPL_WATCHLIST / RPL_ENDOFWATCHLIST | YES | param-derived → `$server` | YES — list of nicks | dedicated handler emitting `:watch_list` typed bundle (companion to 600-605 above) | **ADD-HANDLER** (en-bloc with 600-series) |
+| 617-620 | RPL_DCCSTATUS / DCCLIST / ENDOFDCCLIST / DCCINFO | YES (DCCALLOW) | param-derived → `$server` | NO (text — DCC out of cluster scope) | catch-all + meta.numeric | ADD-DELEGATION |
+| 630 | ERR_NOCTCPSTOCHAN | YES | param-derived → `{:channel, ch}` | NO (text) | catch-all + meta.numeric | ADD-DELEGATION |
+| 728, 729 | RPL_RESTRICTLIST / RPL_ENDOFRESTRICTLIST | YES (`/mode #ch +z` list) | param-derived → `{:channel, ch}` (each entry leaks setter+ts as text) | YES — same shape as banlist (mask, setter, set_at) | catch-all + meta.numeric (typed handler depends on whether `/mode +z` UI is in-scope — defer; 367/368 banlist is the proven shape) | ADD-DELEGATION |
+
+### Notes — bucket-3 SCOPE FINDING (2026-05-14)
+
+**Mechanical scope: ZERO.** The audit's initial "ADD-DELEGATION"
+recommendation is INVERTED relative to the current code shape.
+
+In this codebase `@delegated_numerics` means "EventRouter clause
+owns persistence; `Session.Server`'s numeric handler SKIPS the
+catch-all persist for this code." Numerics NOT in
+`@delegated_numerics` flow into the param-derived branch, which at
+`server.ex:1530` already attaches `meta = %{numeric: code, severity:
+NumericRouter.severity(code)}` to the persisted `:notice` row.
+
+So a numeric like RPL_ADMINME (256) is already persisted on
+`$server` with `meta.numeric=256, meta.severity=:ok` — exactly the
+shape cic needs. Moving it INTO `@delegated_numerics` (without an
+EventRouter clause) would route it through `delegate/2` →
+EventRouter's command-verb numeric-skip clause (added in B2 to
+prevent the double-write) → `[]` effects → SILENT DROP. The
+opposite of what the matrix wanted.
+
+**The catch-all path is the right shape for "carries no structured
+fields beyond text + numeric code."** No code change needed for the
+~50 "ADD-DELEGATION" candidates. They already work.
+
+**What B3 actually closes:**
+
+1. The full mechanical audit matrix above (this section) — proof
+   that every emitted Bahamut numeric has a known disposition.
+2. Documentation of the 5 `ADD-HANDLER` candidates for future
+   buckets (UMODEIS, banlist 367/368, WATCH 600-607). Each pairs
+   with a polish-cluster scope item that doesn't yet exist.
+3. Verification of the catch-all → `meta.numeric/severity` shape
+   for every non-delegated numeric (no code change needed; tested
+   by existing `event_router_test` + `server_test` coverage).
+
+**ADD-HANDLER deferred work (filed for future polish clusters):**
+
+- **221 RPL_UMODEIS** — small, isolated; pairs with `/umode` UI
+  polish. Estimated: 1 commit (state-shape change → cold-deploy).
+- **367/368 RPL_BANLIST/RPL_ENDOFBANLIST** — pairs with `/banlist`
+  polish (already on the channel-client-polish list). Estimated:
+  2-3 commits.
+- **600-607 WATCH bundle** (LOGON/LOGOFF/WATCHOFF/NOWON/NOWOFF +
+  WATCHSTAT + WATCHLIST/ENDOFWATCHLIST) — pairs with watchlist
+  polish (also on channel-client-polish). Largest payload, most-
+  leaked text (unix-ts integers). Estimated: 4-5 commits.
+
+These three together are a small ADD-HANDLER cluster (~1 day) that
+should ship after the no-silent-drops cluster closes; they're NOT
+in the no-silent-drops scope per CLAUDE.md "don't overengineer" +
+P-0's explicit "wider audit is its own future cluster" precedent.
+
+**Defined-only / `#ifdef`-gated** (DOCUMENT-AS-IS, no action):
+
+- 229 RPL_STATSWEBIRC (`#ifdef WEBIRC`)
+- 247-248, 513 (Undernet reservations)
+- 250 RPL_STATSCONN (varies)
+- 316 RPL_WHOISCHANOP (RFC1459 reserved, never emitted by Bahamut)
+- 340 RPL_SHUNNED (`#ifdef SHUN`)
+- 354, 416 (other-vendor reservations)
+- 392-395 USERS family (Bahamut `s_err.c` NULL — disabled)
+
+The defensive `@delegated_numerics` entries for these (e.g. 316)
+are fine to keep — they cost nothing and document that the slot is
+known-handled if Bahamut ever flips the gate.
+
+### Conclusion
+
+**B3 ships as plan + matrix update, NO code change.** The audit
+proved the catch-all path is already the right shape. The
+ADD-HANDLER work goes into the post-cluster polish queue (filed in
+`project_post_p4_1_arc` memory at cluster close).
+
+### B3 latent-bug finding (2026-05-14)
+
+While verifying the audit's "ADD-DELEGATION" recommendations (and
+discovering they're inverted — see SCOPE FINDING above), surfaced a
+**pre-existing latent bug**:
+
+- `@delegated_numerics` lists 321 RPL_LISTSTART, 322 RPL_LIST, 323
+  RPL_LISTEND, 364 RPL_LINKS, 365 RPL_ENDOFLINKS as "delegated to
+  EventRouter" (per `numeric_router.ex` doc comment line 19-20).
+- EventRouter has NO clauses for these codes (only MOTD's guarded
+  clause on `[375, 372, 376]` matches a similar shape).
+- Pre-B2, EventRouter's command-verb catch-all returned `[]` for
+  these — silent drop.
+- Post-B2, the explicit numeric-skip clause returns `[]` for these
+  — same silent drop, just routed through a different pattern.
+
+**Why it doesn't surface in practice**: `/list` and `/links` are
+operator-issued slash commands. cic's `/list` handler currently
+returns the stub error
+"server-side not yet implemented" (`compose.test.ts:1061`); the
+operator never issues `/list` upstream, so the LIST numerics never
+arrive. Same for `/links`. The latent silent-drop only fires if a
+future feature wires `/list` upstream WITHOUT also adding the
+EventRouter clauses to consume 321/322/323.
+
+**Disposition**: file as a known-latent bug for the future polish
+cluster that wires `/list` and `/links` UI. NOT in
+no-silent-drops scope (the cluster's principle is "every
+INBOUND-from-upstream byte is visible" — these numerics are never
+inbound today). Either:
+
+1. Remove 321-323 + 364-365 from `@delegated_numerics` so the
+   catch-all path attaches `meta.numeric/severity` (defensive — even
+   if the cic `/list` lands without EventRouter clauses, the rows
+   appear on `$server`).
+2. Add EventRouter clauses now (overengineering for a feature that
+   doesn't exist yet).
+3. Leave as-is + document (accept the latent bug as a "land both
+   together" trip-wire for the future polish cluster).
+
+**Going with (3)** — minimum surface, documented disposition.
+The future `/list` UI cluster MUST land EventRouter clauses for
+321/322/323 in the same commit as the cic surface, or the rows
+silently drop. Pinned by this doc + a TODO in
+`numeric_router.ex` (added in this commit).
 
 ## Bucket 4 — Clickable links in scrollback
 

@@ -143,10 +143,25 @@ defmodule Grappa.Session.NumericRouter do
                         353,
                         366,
                         # LIST replies (321, 322, 323)
+                        # TODO(no-silent-drops B3 finding 2026-05-14): EventRouter
+                        # has NO clauses for 321/322/323. The doc-comment above
+                        # asserts they're "owned by dedicated handlers" but no
+                        # such handler exists. Today this is harmless: cic's
+                        # /list handler is a stub (compose.ts), so the operator
+                        # never issues /list upstream and these numerics never
+                        # arrive. When a future polish cluster wires the cic
+                        # /list UI, it MUST land EventRouter clauses for
+                        # 321/322/323 in the SAME commit -- otherwise the
+                        # numeric flow goes :delegated -> EventRouter -> []
+                        # effects -> SILENT DROP. Same trap applies to 364/365
+                        # below.
                         321,
                         322,
                         323,
-                        # LINKS replies (364, 365)
+                        # LINKS replies (364, 365) -- same latent-bug class as
+                        # LIST 321-323 above (no EventRouter clause; cic /links
+                        # is also a stub). Land EventRouter clauses + cic UI
+                        # in the same commit.
                         364,
                         365,
                         # INVITE-ack (341)
