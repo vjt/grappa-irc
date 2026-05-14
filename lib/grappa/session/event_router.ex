@@ -1486,7 +1486,46 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff]}
   end
 
-  def route(%Message{} = _, state), do: {:cont, state, []}
+  # No-silent-drops bucket 1 (2026-05-14): the catch-all used to return
+  # `{:cont, state, []}` for every unhandled command — KILL, WALLOPS,
+  # GLOBOPS, ERROR, CHGHOST, AUTHENTICATE, vendor verbs all silently
+  # dropped on the floor (vjt's live INVITE smoke during P-0 close
+  # surfaced this disease class). Now it persists a `:notice` row on
+  # `$server` with `meta.raw = %{verb, sender, params}` so cic can
+  # render the structured fields and grow per-verb pretty-render arms
+  # incrementally (KILL, WALLOPS, ERROR, CHGHOST, etc.).
+  #
+  # Body = trailing param (last element) or "" — upstream's verbatim
+  # wire text, NOT a server-side localized string. Per
+  # feedback_no_localized_strings_server_side the server faithfully
+  # stores what came in; cic owns the human-readable rendering. Body
+  # is the fallback used by cic only when no per-verb arm matches.
+  #
+  # NumericRouter handles the numeric catch-all separately (Server's
+  # numeric handler at server.ex:1545 already persists routed numerics
+  # as :notice rows with meta.numeric/severity), so this clause sees
+  # only command-verb fallthroughs. Belt-and-braces: a {:numeric, n}
+  # that somehow reaches here renders verb = Integer.to_string(n).
+  def route(%Message{command: command, params: params} = msg, state) do
+    sender = Message.sender_nick(msg)
+    body = List.last(params) || ""
+
+    meta = %{
+      raw: %{
+        "verb" => command_to_verb_string(command),
+        "sender" => sender,
+        "params" => params
+      }
+    }
+
+    {state, eff} = build_persist(state, :notice, "$server", sender, body, meta)
+    {:cont, state, [eff]}
+  end
+
+  @spec command_to_verb_string(Message.command()) :: String.t()
+  defp command_to_verb_string({:unknown, verb}) when is_binary(verb), do: verb
+  defp command_to_verb_string({:numeric, n}) when is_integer(n), do: Integer.to_string(n)
+  defp command_to_verb_string(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()
 
   # Q1: self-KICK (target == state.nick) drops the channel key entirely —
   # symmetric with self-PART. Other-user KICK preserves the inner-nick

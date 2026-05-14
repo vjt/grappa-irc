@@ -233,6 +233,75 @@ type NickHandlers = {
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
 };
 
+// No-silent-drops bucket 1 (2026-05-14): pretty-render arms for unknown
+// IRC command verbs that EventRouter's catch-all persists as :notice
+// rows on $server with meta.raw = {verb, sender, params}. Server emits
+// typed primitives only (verb/sender/params) — cic owns the localized
+// human-readable strings here, per
+// feedback_no_localized_strings_server_side. New verbs land as
+// additional case arms; the default arm renders a generic "<sender>
+// VERB params" row so the event is never invisible.
+type RawEvent = { verb?: string; sender?: string; params?: string[] };
+const renderRawEvent = (
+  raw: RawEvent,
+  msg: ScrollbackMessage,
+  senderSpan: (display: string, nick: string) => JSX.Element,
+): JSX.Element => {
+  const verb = raw.verb ?? "?";
+  const params = raw.params ?? [];
+  const sender = raw.sender ?? msg.sender;
+  const trailing = params[params.length - 1] ?? "";
+
+  switch (verb) {
+    case "WALLOPS":
+      return (
+        <span class="scrollback-body">
+          *** Wallops from {senderSpan(sender, sender)}: <MircBody body={trailing} />
+        </span>
+      );
+    case "GLOBOPS":
+      return (
+        <span class="scrollback-body">
+          *** Globops from {senderSpan(sender, sender)}: <MircBody body={trailing} />
+        </span>
+      );
+    case "KILL": {
+      const target = params[0] ?? "?";
+      return (
+        <span class="scrollback-body">
+          *** {senderSpan(sender, sender)} killed {target}
+          {trailing && trailing !== target ? ` (${trailing})` : ""}
+        </span>
+      );
+    }
+    case "ERROR":
+      return (
+        <span class="scrollback-body">
+          *** Server error: <MircBody body={trailing} />
+        </span>
+      );
+    case "CHGHOST": {
+      // Per IRCv3: CHGHOST <new_user> <new_host>
+      const newUser = params[0] ?? "?";
+      const newHost = params[1] ?? "?";
+      return (
+        <span class="scrollback-body">
+          *** {senderSpan(sender, sender)} changed host to {newUser}@{newHost}
+        </span>
+      );
+    }
+    default:
+      // Generic fallback: render verb + raw params so unknown verbs are
+      // never invisible. New verbs get a dedicated arm by adding a case
+      // above; the default keeps the principle of "no silent drops".
+      return (
+        <span class="scrollback-body">
+          *** {senderSpan(sender, sender)} {verb} {params.join(" ")}
+        </span>
+      );
+  }
+};
+
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
   // C7.6: sender button for content kinds — left-click (→ query) or
   // right-click (→ UserContextMenu). Rendered as <button> to satisfy
@@ -259,7 +328,20 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
           </span>
         </>
       );
-    case "notice":
+    case "notice": {
+      // No-silent-drops bucket 1: structured raw-event rendering.
+      // EventRouter's catch-all persists unhandled command verbs as
+      // :notice rows on $server with meta.raw = {verb, sender, params}.
+      // Pretty-render arms key off meta.raw.verb and grow incrementally
+      // (KILL, WALLOPS, ERROR, GLOBOPS, CHGHOST common cases). Body is
+      // the trailing-param fallback; the structured render takes
+      // precedence when meta.raw is present.
+      const raw = msg.meta?.raw as
+        | { verb?: string; sender?: string; params?: string[] }
+        | undefined;
+      if (raw && typeof raw === "object" && typeof raw.verb === "string") {
+        return renderRawEvent(raw, msg, senderSpan);
+      }
       return (
         <>
           {senderSpan(`-${msg.sender}-`, msg.sender)}{" "}
@@ -268,6 +350,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
           </span>
         </>
       );
+    }
     case "action":
       return (
         <span class="scrollback-body">

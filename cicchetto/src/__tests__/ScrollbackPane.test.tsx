@@ -1717,6 +1717,127 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // No-silent-drops bucket 1 (2026-05-14): structured raw-event render
+  // arms keyed off meta.raw.verb. Server's EventRouter catch-all
+  // persists unhandled command verbs as :notice rows on $server with
+  // meta.raw = {verb, sender, params}; ScrollbackPane's :notice arm
+  // detects meta.raw and routes to renderRawEvent. Per-verb arms
+  // localize (cic owns human-readable strings); default arm renders a
+  // generic verb + params row so the event is never invisible.
+  describe("notice raw-event rendering (no-silent-drops bucket 1)", () => {
+    const wallopsRow: ScrollbackMessage = {
+      id: 100,
+      network: "freenode",
+      channel: "$server",
+      server_time: 100,
+      kind: "notice",
+      sender: "vjt",
+      body: "network broadcast text",
+      meta: {
+        raw: { verb: "WALLOPS", sender: "vjt", params: ["network broadcast text"] },
+      },
+    };
+
+    const killRow: ScrollbackMessage = {
+      id: 101,
+      network: "freenode",
+      channel: "$server",
+      server_time: 101,
+      kind: "notice",
+      sender: "oper",
+      body: "kill reason",
+      meta: {
+        raw: { verb: "KILL", sender: "oper", params: ["target_nick", "kill reason"] },
+      },
+    };
+
+    const errorRow: ScrollbackMessage = {
+      id: 102,
+      network: "freenode",
+      channel: "$server",
+      server_time: 102,
+      kind: "notice",
+      sender: "*",
+      body: "Closing Link: bad TLS",
+      meta: {
+        raw: { verb: "ERROR", sender: "*", params: ["Closing Link: bad TLS"] },
+      },
+    };
+
+    const chghostRow: ScrollbackMessage = {
+      id: 103,
+      network: "freenode",
+      channel: "$server",
+      server_time: 103,
+      kind: "notice",
+      sender: "alice",
+      body: "newhost.example.com",
+      meta: {
+        raw: { verb: "CHGHOST", sender: "alice", params: ["newuser", "newhost.example.com"] },
+      },
+    };
+
+    const unknownVendorRow: ScrollbackMessage = {
+      id: 104,
+      network: "freenode",
+      channel: "$server",
+      server_time: 104,
+      kind: "notice",
+      sender: "vjt",
+      body: "trailing",
+      meta: {
+        raw: { verb: "BANCHAN", sender: "vjt", params: ["#secret", "trailing"] },
+      },
+    };
+
+    it("WALLOPS renders 'Wallops from <sender>: <text>'", () => {
+      setScrollback({ "freenode $server": [wallopsRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("Wallops from");
+      expect(line.textContent).toContain("vjt");
+      expect(line.textContent).toContain("network broadcast text");
+    });
+
+    it("KILL renders '<oper> killed <target> (<reason>)'", () => {
+      setScrollback({ "freenode $server": [killRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("oper");
+      expect(line.textContent).toContain("killed");
+      expect(line.textContent).toContain("target_nick");
+      expect(line.textContent).toContain("kill reason");
+    });
+
+    it("ERROR renders 'Server error: <text>'", () => {
+      setScrollback({ "freenode $server": [errorRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("Server error:");
+      expect(line.textContent).toContain("Closing Link: bad TLS");
+    });
+
+    it("CHGHOST renders '<sender> changed host to <user>@<host>'", () => {
+      setScrollback({ "freenode $server": [chghostRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("alice");
+      expect(line.textContent).toContain("changed host to");
+      expect(line.textContent).toContain("newuser@newhost.example.com");
+    });
+
+    it("unknown vendor verb falls through to generic '<sender> VERB params' render", () => {
+      setScrollback({ "freenode $server": [unknownVendorRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      // Generic arm puts verb + params after sender; no localized prefix.
+      expect(line.textContent).toContain("vjt");
+      expect(line.textContent).toContain("BANCHAN");
+      expect(line.textContent).toContain("#secret");
+      expect(line.textContent).toContain("trailing");
+    });
+  });
+
   // CP13 S10 — mIRC formatting: privmsg/notice/action bodies render
   // through parseMircFormat so bold/color/etc. produce per-Run <span>s.
   describe("mIRC body formatting (CP13 S10)", () => {

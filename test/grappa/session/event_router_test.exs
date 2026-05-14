@@ -52,12 +52,87 @@ defmodule Grappa.Session.EventRouterTest do
     })
   end
 
-  describe "route/2 — fallthrough" do
-    test "unknown command leaves state unchanged with no effects" do
+  describe "route/2 — fallthrough (no-silent-drops bucket 1)" do
+    # Pre-bucket-1, EventRouter's catch-all returned `{:cont, state, []}`
+    # for every unhandled command — KILL, WALLOPS, GLOBOPS, ERROR,
+    # CHGHOST, AUTHENTICATE, vendor verbs all silently dropped on the
+    # floor. Bucket 1 replaces the fallthrough with a structured
+    # :persist :notice to $server with meta.raw carrying typed
+    # {verb, sender, params}, so cic can render the row + grow
+    # per-verb pretty-render arms incrementally.
+    #
+    # Body deviates from the initial brief's `body: nil` because
+    # validate_body_for_kind enforces non-nil for :notice (see plan
+    # bucket 1 deviation note). Body = trailing param (upstream's
+    # verbatim wire text, NOT a server-side localized template).
+    test "unknown {:unknown, VERB} command persists :notice on $server with meta.raw" do
       state = base_state()
+      m = msg({:unknown, "FOO"}, ["arg1", "ciao"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, []} =
-               EventRouter.route(msg({:unknown, "FOO"}, ["bar"]), state)
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "alice"
+      assert attrs.body == "ciao"
+
+      assert attrs.meta.raw == %{
+               "verb" => "FOO",
+               "sender" => "alice",
+               "params" => ["arg1", "ciao"]
+             }
+    end
+
+    test "WALLOPS persists :notice on $server with verb=WALLOPS" do
+      state = base_state()
+      m = msg(:wallops, ["network broadcast text"], {:nick, "vjt", "v", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "vjt"
+      assert attrs.body == "network broadcast text"
+      assert attrs.meta.raw["verb"] == "WALLOPS"
+      assert attrs.meta.raw["params"] == ["network broadcast text"]
+    end
+
+    test "KILL persists :notice on $server with verb=KILL" do
+      state = base_state()
+      m = msg(:kill, ["target_nick", "kill reason"], {:nick, "oper", "o", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.meta.raw["verb"] == "KILL"
+      assert attrs.meta.raw["sender"] == "oper"
+      assert attrs.meta.raw["params"] == ["target_nick", "kill reason"]
+      assert attrs.body == "kill reason"
+    end
+
+    test "ERROR (server-originated, prefix-less) persists with anonymous sender" do
+      state = base_state()
+      m = msg(:error, ["Closing Link: bad TLS handshake"], nil)
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.meta.raw["verb"] == "ERROR"
+      # sender = "*" sentinel (Message.anonymous_sender/0)
+      assert attrs.sender == "*"
+      assert attrs.body == "Closing Link: bad TLS handshake"
+    end
+
+    test "param-less unknown command (defensive) persists with empty body" do
+      state = base_state()
+      m = msg({:unknown, "BARE"}, [], {:nick, "x", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.body == ""
+      assert attrs.meta.raw["verb"] == "BARE"
+      assert attrs.meta.raw["params"] == []
     end
   end
 

@@ -146,51 +146,83 @@ bucket 1 is purely the IRC-command-verb side. But verify nothing
 in `Session.Server.handle_info` short-circuits before reaching
 EventRouter for unknown commands.
 
+### Body shape — DEVIATION from initial brief
+
+Initial orchestrator brief said `body: nil` server-side per
+`feedback_no_localized_strings_server_side`. **Drift**:
+`Grappa.Scrollback.Message.changeset/2` rejects `body: nil` for
+`:notice` (`@body_required_kinds = [:privmsg, :notice, :action,
+:topic]` enforces `validate_required([:body])`).
+
+Two valid resolutions:
+
+1. **Add a new `:server_event` (or `:raw_event`) kind** that
+   accepts nil body. Requires schema migration + DB CHECK
+   constraint update + cold deploy. Semantically clean (unknown
+   command-verb events ARE a distinct event class).
+2. **Reuse `:notice` with body = trailing param**. Body is the
+   upstream's verbatim wire text — NOT a localized server-side
+   English template (the principle is "server doesn't manufacture
+   localized strings"; faithfully storing what came over the wire
+   is fine). meta.raw carries the structured fields for cic's
+   pretty-render arms; body is the human-readable fallback. Same
+   shape as `Session.Server`'s `numeric_router.ex:1545` catch-all
+   that already does this for unstructured numerics.
+
+**Going with (2)** — hot-deployable, consistent with NumericRouter
+precedent, no migration + cold-deploy cost. cic's pretty-render
+arms key off meta.raw.verb; body is the fallback used only when
+no per-verb arm matches.
+
 ### Fix shape
 
 Replace the fallthrough with a structured persist:
 
 ```elixir
-def route(%Message{command: command} = msg, state) do
-  sender = Message.sender_nick(msg) || Message.prefix(msg) || ""
+def route(%Message{command: command, params: params} = msg, state) do
+  sender = Message.sender_nick(msg)
+  trailing = List.last(params) || ""
   meta = %{
     raw: %{
-      verb: command_to_verb_string(command),
-      sender: sender,
-      params: msg.params
+      "verb" => command_to_verb_string(command),
+      "sender" => sender,
+      "params" => params
     }
   }
   {state, eff} =
-    build_persist(state, :notice, "$server", sender, nil, meta)
+    build_persist(state, :notice, "$server", sender, trailing, meta)
   {:cont, state, [eff]}
 end
 ```
 
 Where `command_to_verb_string/1`:
 
-- `:atom` (parsed-known like `:privmsg`) → uppercased atom string
-  ("PRIVMSG"). Unreached in practice — known verbs hit dedicated
-  clauses above. Belt-and-braces fallback.
-- `binary` (parser preserves unknown verbs as raw bytes-uppercased
-  per IRC convention) → as-is.
+- atom `:wallops` / `:invite` / `:kill` / `:authenticate` /
+  `:error` → `String.upcase(Atom.to_string(atom))`.
+- `{:unknown, "VERB"}` → `"VERB"` (parser already uppercases).
 - `{:numeric, n}` → unreachable (numerics never reach EventRouter
-  fallthrough — they hit the numeric clauses or NumericRouter).
-  Belt-and-braces: `"#{n}"`.
+  fallthrough — they go through Session.Server's numeric handler).
+  Belt-and-braces: `Integer.to_string(n)`.
 
 ### `meta.raw` shape
 
 ```elixir
 %{
   raw: %{
-    verb: String.t(),       # uppercased command verb
-    sender: String.t(),     # nick prefix or full prefix or ""
-    params: [String.t()]    # raw parsed params, last = trailing
+    "verb" => String.t(),       # uppercased command verb
+    "sender" => String.t(),     # nick prefix or "*" sentinel
+    "params" => [String.t()]    # raw parsed params, last = trailing
   }
 }
 ```
 
-Wire serialization is automatic — `Scrollback.Wire` already passes
-`meta` through (`lib/grappa/scrollback/wire.ex:90`).
+Nested map uses STRING keys (Meta only allowlists the top-level
+`:raw` atom; nested values are opaque-pass-through map). cic reads
+JSON keys-as-strings.
+
+`Scrollback.Meta.@known_keys` extended with `:raw`. `config/config.exs`
+Logger metadata already has `:raw` (line 121) — `meta_test.exs`'s
+A18 sync test passes.
 
 ### cic-side render
 
