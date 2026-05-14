@@ -89,7 +89,6 @@ defmodule Grappa.MixProject do
       # (transitive-only dep), so `override: true` is safe.
       {:decimal, "~> 3.0", override: true},
       {:jason, "~> 1.4"},
-      {:toml, "~> 0.7"},
       {:req, "~> 0.5"},
       {:argon2_elixir, "~> 4.1"},
       {:cloak, "~> 1.1"},

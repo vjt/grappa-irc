@@ -39,23 +39,23 @@ defmodule GrappaWeb.AuthController do
 
   @anon_retry_after_ceiling_seconds 48 * 3600
 
-  # M-web-2: `:visitor_network` is read at COMPILE TIME via
-  # `Application.compile_env/2`, mirroring `Grappa.Visitors.Login`'s
-  # contract (lib/grappa/visitors/login.ex) and the documented
-  # config-vs-test split in `config/config.exs` (the comment block
-  # above `config :grappa, :visitor_network, "azzurra"`). Switching to
-  # a runtime `Application.get_env/2` read is BANNED per CLAUDE.md
+  # M-web-2 + B6.6 X3 (no-silent-drops 2026-05-14): `:visitor_network`
+  # is read at COMPILE TIME via `Application.compile_env!/2`, mirroring
+  # `Grappa.Visitors.Login`'s contract (lib/grappa/visitors/login.ex)
+  # and `endpoint.ex:33` / `admission.ex:73`. Bang form because a `nil`
+  # at compile time narrows `Login.login/2`'s success typing to
+  # `:network_unconfigured` only and cascades "pattern can never
+  # match" warnings here — the right validation point is at boot, not
+  # at the first request post-deploy. Switching to a runtime
+  # `Application.get_env/2` read is BANNED per CLAUDE.md
   # ("Application.{put,get}_env/2: boot-time only, runtime banned"
   # — neither read nor written from any controller / GenServer
   # callback / plug body). Operators changing the visitor network
-  # must rebuild + redeploy; the rebuild requirement is intentional
-  # because a `nil` at compile time would narrow `Login.login/2`'s
-  # success typing and cascade Dialyzer warnings here, which is the
-  # right validation point. Boot-time-snapshot via the
+  # must rebuild + redeploy. Boot-time-snapshot via the
   # `Grappa.Admission.Config` pattern (`:persistent_term`) is the
   # alternative if runtime variability ever becomes a real operator
   # need; today it isn't.
-  @visitor_network_slug Application.compile_env(:grappa, :visitor_network)
+  @visitor_network_slug Application.compile_env!(:grappa, :visitor_network)
 
   # M-web-3: cap captcha_token at 4096 bytes BEFORE forwarding to
   # Login.login/2 (which would forward to the upstream Turnstile /

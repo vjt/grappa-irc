@@ -66,7 +66,11 @@ defmodule Grappa.Visitors.Login do
 
   require Logger
 
-  @visitor_network Application.compile_env(:grappa, :visitor_network)
+  # B6.6 X3 (no-silent-drops 2026-05-14): bang form so a missing
+  # `:visitor_network` config value crashes at compile time, not at
+  # the first request. Mirrors auth_controller.ex:58, endpoint.ex:33,
+  # admission.ex:73.
+  @visitor_network Application.compile_env!(:grappa, :visitor_network)
   @login_timeout_ms Application.compile_env(:grappa, [:admission, :login_probe_timeout_ms], 3_000)
 
   @type input :: %{
