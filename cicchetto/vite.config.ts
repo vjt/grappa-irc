@@ -31,11 +31,25 @@ import solid from "vite-plugin-solid";
 // useful. Pre-CP10 home-rolled `public/sw.js` was pinned to
 // `cicchetto-shell-v1` and never bumped; perma-stale shell on every
 // deploy after the operator's first install (CP10 review HIGH S2/S3).
+//
+// Push notifications cluster B0 (2026-05-14) — switched
+// `strategies` from the default `generateSW` to `injectManifest`.
+// `generateSW` auto-builds the SW from a workbox template and
+// gives no hook to add custom event handlers. `injectManifest`
+// compiles `src/service-worker.ts` (our source) and Workbox merges
+// `self.__WB_MANIFEST` (the precache list) at build time. We own
+// the `install`/`activate`/`fetch`/`push`/`notificationclick`
+// listeners; B2 adds the push handlers. Precache + autoUpdate
+// behavior unchanged — `precacheAndRoute(self.__WB_MANIFEST)` in
+// `service-worker.ts` keeps the same shell-only caching shape.
 export default defineConfig({
   plugins: [
     solid(),
     VitePWA({
       registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "service-worker.ts",
       // Explicit registration via `virtual:pwa-register` in main.tsx
       // — keeps the registration call visible at the entry point.
       // (Plugin's `'auto'` mode resolves to `false` here anyway because
@@ -67,26 +81,16 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
+      injectManifest: {
         // Shell-only: precache the build's hashed JS/CSS + index.html
         // + manifest + icons. Workbox's runtime handlers do nothing
         // for non-navigation requests by default, so REST `fetch`
         // calls (mode=cors/same-origin) and WS upgrades (mode=websocket)
         // pass straight through to the network — that part is
-        // architectural, not denylist-driven.
+        // architectural, not denylist-driven. The navigation fallback
+        // (denylist for /auth, /me, /networks, /socket) is wired
+        // explicitly in `service-worker.ts` via NavigationRoute.
         globPatterns: ["**/*.{js,css,html,svg,png,webmanifest,ico}"],
-        // SPA navigation fallback: a navigation to any in-app route
-        // (e.g. /shell, /login) should serve the precached
-        // index.html. The denylist excludes paths that must reach
-        // the origin server even on an explicit navigation — e.g. an
-        // OAuth-style redirect into /auth/something. Workbox's
-        // NavigationRoute only matches `request.mode === "navigate"`,
-        // so this list does NOT (and is not the mechanism that
-        // would) protect the REST + WS surface from interception —
-        // those are non-navigation requests and never reach this
-        // route. Keep these in lockstep with router.ex's REST scope
-        // prefixes if new ones are added.
-        navigateFallbackDenylist: [/^\/auth/, /^\/me/, /^\/networks/, /^\/socket/],
       },
     }),
   ],

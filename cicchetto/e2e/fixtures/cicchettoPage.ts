@@ -75,6 +75,14 @@ function isMobileViewport(page: Page): boolean {
 // Seed a token + subject into localStorage so cicchetto boots already
 // authenticated, then load the SPA and wait for the shell to be ready
 // (sidebar/bottom-bar populated with at least one network section).
+//
+// Also seeds `cic.installChoice = "browser"` to suppress the install
+// splash (push notifications cluster B0 — splash overlays the UI on
+// every fresh visit until the user picks "Install app" or "Continue
+// from browser"). Existing e2e specs predate the splash and expect a
+// chrome-free first paint; rather than have every spec dismiss the
+// splash, the test seam mirrors the production "user has chosen
+// browser-only mode" branch via the same localStorage key.
 export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   // addInitScript runs BEFORE any page script — guarantees the
   // localStorage values are present when auth.ts's `createSignal`
@@ -84,6 +92,7 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
     ([token, subjectJson]) => {
       localStorage.setItem("grappa-token", token);
       localStorage.setItem("grappa-subject", subjectJson);
+      localStorage.setItem("cic.installChoice", "browser");
     },
     [vjt.token, vjt.subjectJson] as const,
   );
