@@ -23,6 +23,7 @@
 
 import { expect, test } from "@playwright/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -78,5 +79,18 @@ test("B2 — inbound INVITE shows [Join] CTA; click mounts channel + focuses it"
     await expect(newWindow).toHaveClass(/selected/, { timeout: 5_000 });
   } finally {
     await peer.disconnect("B2 done");
+    // Test isolation: the [Join] click persists `#b2-target` into the
+    // operator's autojoin set + keeps it joined upstream for the
+    // duration of the testnet container. Subsequent specs (notably
+    // names-ux N-3) cold-load with `#b2-target` already :joined,
+    // and since `Session.list_channels/2` returns alphabetically,
+    // `#b2-target` < `#bofh` ⇒ the auto-select effect picks
+    // `#b2-target` instead. PART here restores pre-test state. The
+    // helper swallows 404 (idempotent if test bailed before [Join]
+    // click). Surfaced by no-silent-drops B6.11 closing the wireNarrow
+    // gap that had been masking this leak; pre-B6.11 the [Join]
+    // click silently failed (server_event row dropped at WS edge),
+    // so b2 left no trace and N-3 was accidentally green.
+    await partChannel(vjt.token, NETWORK_SLUG, TARGET_CHANNEL).catch(() => {});
   }
 });
