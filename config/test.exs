@@ -97,9 +97,11 @@ config :grappa, :session_backoff,
 # `Application.get_env(:web_push_elixir, ...)` reads succeed under
 # `mix test`). Real ECDSA P-256 pair (NOT random bytes — JOSE.JWS
 # rejects malformed keys at sign time, which would surface as
-# misleading test failures). Distinct from dev/prod keys per CLAUDE.md
-# secrets-rotation isolation; rotating this requires no operator
-# action since the value is non-secret + test-only.
+# misleading test failures). Non-secret + dev/test-only; rotating
+# requires no operator action. Mirrored byte-for-byte by config/dev.exs
+# (B5 added the dev mirror so the integration harness's MIX_ENV=dev
+# grappa-test boots with VAPID set). When rotating, update both files
+# in lockstep.
 config :web_push_elixir,
   vapid_public_key: "BH4P62bQOEfkSsfjpCyBWnz88Nnlyn2mtwapDEXWswb1cwR9YDE-3E-aBjNhwY2e3ErL410rgSNUBD7nQyPXGSY",
   vapid_private_key: "MIC0fm1A_ZcPF0P3ffUizcNUYwMyU-AklNw2e4aPXGw",

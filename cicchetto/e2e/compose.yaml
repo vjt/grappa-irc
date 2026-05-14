@@ -230,6 +230,21 @@ services:
       BUN_INSTALL_CACHE_DIR: /cache
     command: ["sh", "-c", "bun install --frozen-lockfile && bun run build"]
 
+  # nginx-cert-init — push notifications cluster B5 (2026-05-14).
+  # Generates a throwaway self-signed cert for nginx-test's :443
+  # listener so the cic SW + Push API + Notification API have a
+  # secure context to register against. Idempotent: subsequent
+  # `up` runs reuse the existing cert. See
+  # nginx-certs/gen-cert.sh moduledoc for why TLS is the
+  # canonical path (chromium HTTP treat-as-secure flag does not
+  # honor Playwright's launch shape).
+  nginx-cert-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - ./nginx-certs:/certs
+    command: ["/bin/sh", "/certs/gen-cert.sh"]
+
   nginx-test:
     image: nginx:alpine
     container_name: grappa-e2e-nginx
@@ -239,9 +254,12 @@ services:
         condition: service_healthy
       cicchetto-build-test:
         condition: service_completed_successfully
+      nginx-cert-init:
+        condition: service_completed_successfully
     volumes:
-      - ../../infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-test.conf:/etc/nginx/nginx.conf:ro
       - ../../infra/snippets:/etc/nginx/snippets:ro
+      - ./nginx-certs:/etc/nginx/certs:ro
       - ../../runtime/e2e/cicchetto-dist:/usr/share/nginx/html:ro
     networks:
       grappa-e2e:
@@ -267,6 +285,8 @@ services:
     depends_on:
       nginx-test:
         condition: service_healthy
+      push-catcher:
+        condition: service_healthy
     volumes:
       # Source mount so spec edits hot-reload without rebuild.
       - .:/work
@@ -286,8 +306,12 @@ services:
     environment:
       CI: "1"
       # The base URL specs hit. `nginx-test` resolves via the docker
-      # bridge (alias defined on the nginx-test service above).
-      E2E_BASE_URL: http://nginx-test
+      # bridge (alias defined on the nginx-test service above). HTTPS
+      # is required for the cic SW + Push API + Notification API to
+      # surface (push notifications cluster B5, 2026-05-14) — the
+      # nginx-test container exposes both :80 (legacy specs) and
+      # :443 (self-signed cert via nginx-certs).
+      E2E_BASE_URL: https://nginx-test
       # Hub address for ircClient.ts fixture — talks plain IRC to the
       # bahamut-test alias.
       E2E_IRC_HOST: bahamut-test
@@ -295,9 +319,36 @@ services:
       # Verbose IRC peer wire-trace. Off by default; flip to "1" for
       # debugging registration / nick collision / throttle issues.
       E2E_PEER_DEBUG: "0"
+      # Push notifications cluster B5 (2026-05-14) — base URL the
+      # push-trigger specs use for both (a) constructing the fake
+      # PushSubscription endpoint cic registers and (b) polling
+      # `/received/<id>` to confirm Sender's HTTP POST landed.
+      # See push-catcher/server.mjs for the path scheme.
+      E2E_PUSH_CATCHER_URL: http://push-catcher:3000
     networks:
       grappa-e2e: {}
     command: ["npx", "playwright", "test"]
+
+  # Push notifications cluster B5 (2026-05-14) — fake Web Push vendor
+  # for the e2e push-trigger specs. See push-catcher/server.mjs
+  # for the rationale (no real FCM / Mozilla autopush reachable from
+  # the integration network; sidecar plays the vendor role with zero
+  # production-code surface). Stdlib-only node server, no npm install.
+  push-catcher:
+    build:
+      context: ./push-catcher
+    image: grappa-e2e-push-catcher:dev
+    container_name: grappa-e2e-push-catcher
+    pull_policy: never
+    networks:
+      grappa-e2e:
+        aliases: [push-catcher]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 10
 
 volumes:
   e2e_runner_node_modules:
