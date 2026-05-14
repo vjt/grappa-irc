@@ -85,6 +85,15 @@ defmodule GrappaWeb.Router do
     get "/me", MeController, :show
 
     get "/networks", NetworksController, :index
+
+    # Push notifications cluster B1 (2026-05-14) — Web Push
+    # subscription registry. User-only (visitors get :forbidden inside
+    # the controller per the visitor-gating boundary). Powers the cic
+    # PWA's notification opt-in dance: SW.pushManager.subscribe →
+    # POST here → server stores endpoint+keys for B2's Push.Sender.
+    get "/push/subscriptions", PushSubscriptionController, :index
+    post "/push/subscriptions", PushSubscriptionController, :create
+    delete "/push/subscriptions/:id", PushSubscriptionController, :delete
   end
 
   scope "/networks/:network_id", GrappaWeb do

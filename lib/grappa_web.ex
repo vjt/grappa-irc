@@ -20,6 +20,7 @@ defmodule GrappaWeb do
       Grappa.IRC,
       Grappa.Networks,
       Grappa.PubSub,
+      Grappa.Push,
       Grappa.QueryWindows,
       Grappa.ReadCursor,
       Grappa.Scrollback,
