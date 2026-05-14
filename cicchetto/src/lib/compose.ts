@@ -431,9 +431,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "invite": {
           // /invite <nick> [#chan] — channel defaults to active window.
-          const chanOrErr = requireChannel("invite");
-          if (typeof chanOrErr !== "string") return chanOrErr;
-          const chan = cmd.channel ?? chanOrErr;
+          // P-0f follow-up (no-silent-drops bucket 0): when the channel
+          // arg is supplied explicitly, SKIP requireChannel — typing
+          // `/invite foo #it-opers` from $server (or any non-channel
+          // window) was the common workflow that pre-fix silently
+          // errored ("requires an active channel window") because
+          // requireChannel was unconditionally evaluated.
+          let chan: string;
+          if (cmd.channel !== null) {
+            chan = cmd.channel;
+          } else {
+            const chanOrErr = requireChannel("invite");
+            if (typeof chanOrErr !== "string") return chanOrErr;
+            chan = chanOrErr;
+          }
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/invite: network not found" };
           pushChannelInvite(networkId, chan, cmd.nick);

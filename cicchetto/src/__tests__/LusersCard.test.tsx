@@ -106,9 +106,7 @@ describe("LusersCard", () => {
       // Click the close button inside containerA scoped element so we
       // pick a deterministic instance even though both render the same
       // aria-label.
-      const closeA = containerA.querySelector(
-        "[aria-label='Dismiss LUSERS']",
-      ) as HTMLButtonElement;
+      const closeA = containerA.querySelector("[aria-label='Dismiss LUSERS']") as HTMLButtonElement;
       fireEvent.click(closeA);
 
       // 3a dismissed; 3b survives because it's a separate network.

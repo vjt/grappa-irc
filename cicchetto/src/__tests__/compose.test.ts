@@ -889,6 +889,47 @@ describe("compose submit — channel ops verbs", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  it("/invite <nick> <#chan> from non-channel window submits (skip requireChannel when chan supplied)", async () => {
+    // P-0f follow-up bucket 0: pre-fix, /invite alice #secret from a
+    // query window silently errored ("requires an active channel
+    // window") because requireChannel was unconditionally evaluated
+    // before the cmd.channel ?? chanOrErr fallback could apply.
+    // Post-fix: explicit channel arg short-circuits requireChannel
+    // entirely — the active window's kind is irrelevant. Don't mock
+    // selectedChannel here: the skip-path never consults it, and a
+    // mockReturnValueOnce that isn't consumed leaks into the next
+    // test (observed via /topic -delete picking up the stale mock).
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "bob");
+    compose.setDraft(k, "/invite alice #secret");
+    const result = await compose.submit(k, "freenode", "bob");
+
+    expect(socket.pushChannelInvite).toHaveBeenCalledWith(1, "#secret", "alice");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/invite <nick> bare from non-channel window returns inline error", async () => {
+    // Counterpoint: when the channel arg is omitted AND the active
+    // window isn't a channel, requireChannel still fires.
+    localStorage.setItem("grappa-token", "tok");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: "bob",
+      kind: "query",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "bob");
+    compose.setDraft(k, "/invite alice");
+    const result = await compose.submit(k, "freenode", "bob");
+
+    expect(socket.pushChannelInvite).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ error: expect.stringContaining("channel window") });
+  });
+
   it("/op without channel window returns inline error", async () => {
     localStorage.setItem("grappa-token", "tok");
     // Override selection ONCE to simulate a query window (no # prefix = not a channel).
