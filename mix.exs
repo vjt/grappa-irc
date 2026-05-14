@@ -93,6 +93,18 @@ defmodule Grappa.MixProject do
       {:argon2_elixir, "~> 4.1"},
       {:cloak, "~> 1.1"},
       {:cloak_ecto, "~> 1.3"},
+      # Web Push delivery (RFC 8030 / VAPID RFC 8292). Picked over
+      # `web_push_encryption` (last release 2021-09-15, no native
+      # 410-Gone signal) because:
+      #   * Active maintenance — 0.8.0 released 2026-05-04.
+      #   * `send_notification/2` returns `{:error, :expired}` for
+      #     404/410, mapping cleanly onto `Push.delete_dead/1`.
+      #   * Reads `vapid_{public,private,subject}_key` from
+      #     `Application.get_env/2` at request time, so
+      #     `config/runtime.exs` can populate from env vars at boot
+      #     without any compile-time leakage.
+      # Push notifications cluster B2 (2026-05-14).
+      {:web_push_elixir, "~> 0.8"},
       {:telemetry, "~> 1.3"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},

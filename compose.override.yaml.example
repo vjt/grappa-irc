@@ -35,3 +35,18 @@ services:
     environment:
       PHX_HOST: voygrappa.bad.ass
       EXTRA_CHECK_ORIGINS: "http://192.168.53.12"
+      # Push notifications cluster B2 (2026-05-14). Generate once per
+      # deployment with `scripts/mix.sh grappa.gen_vapid` and paste
+      # the output below. Required: VAPID_PUBLIC_KEY +
+      # VAPID_PRIVATE_KEY (Bootstrap raises at boot if either is
+      # missing). Optional: VAPID_SUBJECT (default
+      # mailto:admin@example.org).
+      #
+      # Keys are non-secret in the operational sense (the public key
+      # ships in every PushSubscription request), but losing the
+      # PRIVATE key invalidates every existing push subscription —
+      # rotation forces every user to re-toggle the master switch in
+      # cic settings. Back up the keypair if you care about that.
+      VAPID_PUBLIC_KEY: "BJk...replace-with-output-of-grappa.gen_vapid..."
+      VAPID_PRIVATE_KEY: "z3p...replace-with-output-of-grappa.gen_vapid..."
+      # VAPID_SUBJECT: "mailto:you@example.org"

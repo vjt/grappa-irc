@@ -80,6 +80,15 @@ services:
       GRAPPA_CAPTCHA_PROVIDER: ${GRAPPA_CAPTCHA_PROVIDER:-disabled}
       GRAPPA_CAPTCHA_SITE_KEY: ${GRAPPA_CAPTCHA_SITE_KEY:-}
       GRAPPA_CAPTCHA_SECRET: ${GRAPPA_CAPTCHA_SECRET:-}
+      # Push notifications cluster B2 (2026-05-14) — VAPID keypair for
+      # Web Push delivery. Bootstrap raises in MIX_ENV=prod when either
+      # PUBLIC or PRIVATE is missing. VAPID_SUBJECT defaults to
+      # mailto:admin@example.org server-side. Generate with
+      # `scripts/mix.sh grappa.gen_vapid` and pin in
+      # compose.override.yaml or host .env.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 5s

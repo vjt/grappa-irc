@@ -219,7 +219,16 @@ config :logger, :console,
     # IRC outbound verb (cluster #10 S10): identifies which
     # `Grappa.IRC.Client.send_*` helper rejected an invalid_line at
     # the byte boundary so silent rejections are greppable.
-    :verb
+    :verb,
+    # Push notifications cluster B2 (2026-05-14) — Push.Sender log
+    # keys. `:endpoint` is the vendor push URL (greppable across the
+    # send / 410-Gone / dead-endpoint-deleted lifecycle); `:status`
+    # is the HTTP status from non-2xx-non-410 vendor responses; `:count`
+    # is the deleted-row count from `Push.delete_dead/1`. Mirrors the
+    # B6.1 Logger-allowlist sync rule.
+    :endpoint,
+    :status,
+    :count
   ]
 
 import_config "#{config_env()}.exs"

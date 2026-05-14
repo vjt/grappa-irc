@@ -121,6 +121,52 @@ if config_env() == :prod do
       default: {Cloak.Ciphers.AES.GCM, tag: "AES.GCM.V1", key: Base.decode64!(encryption_key), iv_length: 12}
     ]
 
+  # VAPID keypair for Web Push delivery (RFC 8292) — push notifications
+  # cluster B2 (2026-05-14). Generated once with
+  # `scripts/mix.sh grappa.gen_vapid` and pasted into
+  # `compose.override.yaml`'s `grappa` service `environment:` block.
+  #
+  # `fetch_env!` so missing keys crash Bootstrap loudly rather than
+  # silently dropping push delivery — same loud-failure posture as
+  # SECRET_KEY_BASE / GRAPPA_ENCRYPTION_KEY above.
+  #
+  # The keys live in the `:web_push_elixir` application environment
+  # because that's where the upstream library reads them from at
+  # request time (see `WebPushElixir.send_notification/2` —
+  # `Application.get_env(:web_push_elixir, :vapid_public_key)`).
+  # Routing through the library's namespace avoids keeping a
+  # parallel `:grappa, :vapid` mirror that would have to be kept in
+  # sync at boot. The cic-facing controller reads from the SAME
+  # `:web_push_elixir` namespace so the two consumers cannot drift.
+  vapid_public_key =
+    System.get_env("VAPID_PUBLIC_KEY") ||
+      raise """
+      environment variable VAPID_PUBLIC_KEY is missing.
+      Generate a keypair with: scripts/mix.sh grappa.gen_vapid
+      Save the output into compose.override.yaml under the grappa
+      service's `environment:` block. Required for Web Push delivery.
+      """
+
+  vapid_private_key =
+    System.get_env("VAPID_PRIVATE_KEY") ||
+      raise """
+      environment variable VAPID_PRIVATE_KEY is missing.
+      Generate alongside VAPID_PUBLIC_KEY via:
+      scripts/mix.sh grappa.gen_vapid
+      """
+
+  vapid_subject =
+    case System.get_env("VAPID_SUBJECT") do
+      nil -> "mailto:admin@example.org"
+      "" -> "mailto:admin@example.org"
+      subject -> subject
+    end
+
+  config :web_push_elixir,
+    vapid_public_key: vapid_public_key,
+    vapid_private_key: vapid_private_key,
+    vapid_subject: vapid_subject
+
   config :logger, level: String.to_existing_atom(System.get_env("LOG_LEVEL") || "info")
 
   # T31 admission captcha — operator-set provider, secret, and public

@@ -37,15 +37,18 @@ defmodule Grappa.Push do
     * `Grappa.Repo` — persistence.
     * `Grappa.Accounts` — FK reference to `User`.
 
-  The `Subscription` schema module is internal; callers receive
-  `%Subscription{}` structs by type but MUST NOT alias the schema
-  directly. Same convention as `Grappa.QueryWindows`.
+  The `Subscription` schema module is internal; callers OUTSIDE this
+  context receive `%Subscription{}` structs by type but MUST NOT
+  alias the schema directly — go through the context's API. Modules
+  inside the `Grappa.Push` namespace itself (`Grappa.Push.Sender`)
+  are intra-context and DO alias `Subscription` directly because they
+  share the boundary. Same convention as `Grappa.QueryWindows`.
   """
 
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.Repo],
-    exports: [Subscription]
+    exports: [Subscription, Sender]
 
   import Ecto.Query
 
@@ -86,7 +89,20 @@ defmodule Grappa.Push do
   first. Empty list when the user has no subscriptions yet.
   """
   @spec list_for_user(User.t()) :: [Subscription.t()]
-  def list_for_user(%User{id: user_id}) do
+  def list_for_user(%User{id: user_id}), do: list_for_user_id(user_id)
+
+  @doc """
+  Lists every push subscription belonging to the user with the given
+  ID, newest first. Empty list when the user has no subscriptions yet.
+
+  Variant of `list_for_user/1` that takes the binary user_id directly
+  — used by `Grappa.Push.Sender` (B2) which is called from contexts
+  that already have the ID without round-tripping through the User
+  struct, and which would otherwise need `Grappa.Accounts` in its
+  Boundary dep list just to construct a bare `%User{}`.
+  """
+  @spec list_for_user_id(Ecto.UUID.t()) :: [Subscription.t()]
+  def list_for_user_id(user_id) when is_binary(user_id) do
     query = from(s in Subscription, where: s.user_id == ^user_id, order_by: [desc: s.inserted_at])
     Repo.all(query)
   end

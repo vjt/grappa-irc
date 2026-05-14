@@ -78,6 +78,18 @@ defmodule GrappaWeb.Router do
     post "/login", AuthController, :login
   end
 
+  # VAPID public key — push notifications cluster B2 (2026-05-14).
+  # Unauthenticated by design: cic SW registers a PushSubscription
+  # before user-session login, and the key is non-secret per W3C
+  # Push spec (`applicationServerKey` is published material). The
+  # downstream POST /push/subscriptions IS authenticated and binds
+  # the subscription to the operator's user.
+  scope "/push", GrappaWeb do
+    pipe_through :api
+
+    get "/vapid-public-key", PushVapidController, :show
+  end
+
   scope "/", GrappaWeb do
     pipe_through [:api, :authn]
 

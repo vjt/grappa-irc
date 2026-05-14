@@ -91,6 +91,20 @@ config :grappa, :session_backoff,
   base_ms: 5,
   cap_ms: 100
 
+# Push notifications cluster B2 (2026-05-14) — fixed VAPID keypair for
+# the `:web_push_elixir` library so `Push.Sender` tests don't need to
+# generate a fresh pair per run (and so the lib's
+# `Application.get_env(:web_push_elixir, ...)` reads succeed under
+# `mix test`). Real ECDSA P-256 pair (NOT random bytes — JOSE.JWS
+# rejects malformed keys at sign time, which would surface as
+# misleading test failures). Distinct from dev/prod keys per CLAUDE.md
+# secrets-rotation isolation; rotating this requires no operator
+# action since the value is non-secret + test-only.
+config :web_push_elixir,
+  vapid_public_key: "BH4P62bQOEfkSsfjpCyBWnz88Nnlyn2mtwapDEXWswb1cwR9YDE-3E-aBjNhwY2e3ErL410rgSNUBD7nQyPXGSY",
+  vapid_private_key: "MIC0fm1A_ZcPF0P3ffUizcNUYwMyU-AklNw2e4aPXGw",
+  vapid_subject: "mailto:test@example.org"
+
 # T31 NetworkCircuit — shrink threshold/window/cooldown so circuit-
 # transition tests don't drag. Math is identical, only magnitudes
 # shrink.
