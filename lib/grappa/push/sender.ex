@@ -310,7 +310,7 @@ defmodule Grappa.Push.Sender do
   end
 
   defp list_subscriptions(user_id) do
-    Push.list_for_user_id(user_id)
+    Push.list_for_subject({:user, user_id})
   end
 
   defp tally(results) do

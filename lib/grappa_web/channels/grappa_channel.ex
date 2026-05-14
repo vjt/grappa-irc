@@ -680,7 +680,7 @@ defmodule GrappaWeb.GrappaChannel do
     with {:ok, _} <- validate_args(nick: target_nick),
          {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name),
-         {:ok, _} <- QueryWindows.open(user.id, network_id, target_nick, user_name) do
+         {:ok, _} <- QueryWindows.open({:user, user.id}, network_id, target_nick, user_name) do
       {:reply, :ok, socket}
     else
       {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
@@ -708,7 +708,7 @@ defmodule GrappaWeb.GrappaChannel do
     with {:ok, _} <- validate_args(nick: target_nick),
          {:ok, _} <- check_not_visitor(user_name),
          {:ok, user} <- safe_get_user(user_name) do
-      :ok = QueryWindows.close(user.id, network_id, target_nick, user_name)
+      :ok = QueryWindows.close({:user, user.id}, network_id, target_nick, user_name)
       {:reply, :ok, socket}
     else
       {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
@@ -740,7 +740,7 @@ defmodule GrappaWeb.GrappaChannel do
     else
       case safe_get_user(user_name) do
         {:ok, user} ->
-          patterns = UserSettings.get_highlight_patterns(user.id)
+          patterns = UserSettings.get_highlight_patterns({:user, user.id})
           {:reply, {:ok, %{patterns: patterns}}, socket}
 
         :error ->
@@ -784,10 +784,11 @@ defmodule GrappaWeb.GrappaChannel do
   @spec watchlist_add_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
           {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
   defp watchlist_add_for_user(user_id, pattern, socket) do
-    existing = UserSettings.get_highlight_patterns(user_id)
+    subject = {:user, user_id}
+    existing = UserSettings.get_highlight_patterns(subject)
     new_patterns = if pattern in existing, do: existing, else: [pattern | existing]
 
-    case UserSettings.set_highlight_patterns(user_id, new_patterns) do
+    case UserSettings.set_highlight_patterns(subject, new_patterns) do
       {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
       {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
     end
@@ -797,12 +798,13 @@ defmodule GrappaWeb.GrappaChannel do
   @spec watchlist_del_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
           {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
   defp watchlist_del_for_user(user_id, pattern, socket) do
-    existing = UserSettings.get_highlight_patterns(user_id)
+    subject = {:user, user_id}
+    existing = UserSettings.get_highlight_patterns(subject)
 
     if pattern in existing do
       new_patterns = List.delete(existing, pattern)
 
-      case UserSettings.set_highlight_patterns(user_id, new_patterns) do
+      case UserSettings.set_highlight_patterns(subject, new_patterns) do
         {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
         {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
       end
@@ -890,8 +892,8 @@ defmodule GrappaWeb.GrappaChannel do
   @spec push_query_windows_list(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
   defp push_query_windows_list(%Accounts.User{} = user, socket) do
     payload =
-      user.id
-      |> QueryWindows.list_for_user()
+      {:user, user.id}
+      |> QueryWindows.list_for_subject()
       |> QueryWindows.Wire.render_grouped()
       |> QueryWindows.Wire.windows_list_payload()
 

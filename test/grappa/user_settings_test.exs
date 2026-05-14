@@ -39,7 +39,7 @@ defmodule Grappa.UserSettingsTest do
     test "creates a new settings row and returns {:ok, %Settings{}}" do
       user = user_fixture()
 
-      assert {:ok, %Settings{} = settings} = UserSettings.get_or_init(user.id)
+      assert {:ok, %Settings{} = settings} = UserSettings.get_or_init({:user, user.id})
 
       assert settings.user_id == user.id
       assert settings.data == %{}
@@ -49,22 +49,22 @@ defmodule Grappa.UserSettingsTest do
     test "returns the existing row on a second call — idempotent" do
       user = user_fixture()
 
-      assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init(user.id)
-      assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init(user.id)
+      assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init({:user, user.id})
+      assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init({:user, user.id})
       assert id1 == id2
     end
 
     test "returns {:error, changeset} for a nonexistent user_id (FK violation)" do
       fake_id = Ecto.UUID.generate()
-      assert {:error, %Ecto.Changeset{}} = UserSettings.get_or_init(fake_id)
+      assert {:error, %Ecto.Changeset{}} = UserSettings.get_or_init({:user, fake_id})
     end
 
     test "get_or_init for two different users creates two separate rows" do
       u1 = user_fixture()
       u2 = user_fixture()
 
-      assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init(u1.id)
-      assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init(u2.id)
+      assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init({:user, u1.id})
+      assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init({:user, u2.id})
       refute id1 == id2
     end
   end
@@ -76,36 +76,36 @@ defmodule Grappa.UserSettingsTest do
   describe "get_highlight_patterns/1" do
     test "returns [] when no settings row exists for the user" do
       fake_id = Ecto.UUID.generate()
-      assert UserSettings.get_highlight_patterns(fake_id) == []
+      assert UserSettings.get_highlight_patterns({:user, fake_id}) == []
     end
 
     test "returns [] when a settings row exists but has no highlight_patterns key" do
       user = user_fixture()
-      {:ok, _} = UserSettings.get_or_init(user.id)
-      assert UserSettings.get_highlight_patterns(user.id) == []
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == []
     end
 
     test "returns the list of patterns after set_highlight_patterns/2" do
       user = user_fixture()
       patterns = ["foo", "bar", "baz"]
 
-      {:ok, _} = UserSettings.set_highlight_patterns(user.id, patterns)
-      assert UserSettings.get_highlight_patterns(user.id) == patterns
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, patterns)
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == patterns
     end
 
     test "returns [] when data has a non-list value under 'highlight_patterns'" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       # Test-only backdoor: write an unexpected shape directly.
       Repo.update!(Settings.changeset(settings, %{data: %{"highlight_patterns" => "not-a-list"}}))
 
-      assert UserSettings.get_highlight_patterns(user.id) == []
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == []
     end
 
     test "string-key invariant: atom-keyed data doesn't crash the reader" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       # Test-only backdoor: write atom-keyed data (simulates miscoded writer).
       # JSON round-trip will turn atom keys into string keys so the reader
@@ -115,7 +115,7 @@ defmodule Grappa.UserSettingsTest do
       # After JSON round-trip the key is "highlight_patterns" (string), so
       # the reader SHOULD find it — both string-key and atom-key writes
       # round-trip identically through Jason.
-      result = UserSettings.get_highlight_patterns(user.id)
+      result = UserSettings.get_highlight_patterns({:user, user.id})
       assert is_list(result)
     end
   end
@@ -129,27 +129,27 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
 
       assert {:ok, %Settings{} = settings} =
-               UserSettings.set_highlight_patterns(user.id, ["one", "two"])
+               UserSettings.set_highlight_patterns({:user, user.id}, ["one", "two"])
 
       assert settings.data["highlight_patterns"] == ["one", "two"]
     end
 
     test "updates the patterns on an existing row" do
       user = user_fixture()
-      {:ok, _} = UserSettings.set_highlight_patterns(user.id, ["alpha"])
-      {:ok, settings} = UserSettings.set_highlight_patterns(user.id, ["beta", "gamma"])
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["alpha"])
+      {:ok, settings} = UserSettings.set_highlight_patterns({:user, user.id}, ["beta", "gamma"])
 
       assert settings.data["highlight_patterns"] == ["beta", "gamma"]
     end
 
     test "preserves other keys in data when setting highlight_patterns" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       # Write a synthetic non-watchlist key via test-only backdoor.
       Repo.update!(Settings.changeset(settings, %{data: %{"other_key" => "keep-me"}}))
 
-      {:ok, updated} = UserSettings.set_highlight_patterns(user.id, ["foo"])
+      {:ok, updated} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo"])
 
       assert updated.data["highlight_patterns"] == ["foo"]
       assert updated.data["other_key"] == "keep-me"
@@ -157,35 +157,35 @@ defmodule Grappa.UserSettingsTest do
 
     test "accepts an empty list — valid 'explicitly empty' state" do
       user = user_fixture()
-      {:ok, _} = UserSettings.set_highlight_patterns(user.id, ["something"])
-      assert {:ok, settings} = UserSettings.set_highlight_patterns(user.id, [])
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["something"])
+      assert {:ok, settings} = UserSettings.set_highlight_patterns({:user, user.id}, [])
       assert settings.data["highlight_patterns"] == []
     end
 
     test "rejects a list containing an empty string" do
       user = user_fixture()
-      assert {:error, %Ecto.Changeset{}} = UserSettings.set_highlight_patterns(user.id, [""])
+      assert {:error, %Ecto.Changeset{}} = UserSettings.set_highlight_patterns({:user, user.id}, [""])
     end
 
     test "rejects a list containing an integer element" do
       user = user_fixture()
 
       assert {:error, %Ecto.Changeset{}} =
-               UserSettings.set_highlight_patterns(user.id, [42])
+               UserSettings.set_highlight_patterns({:user, user.id}, [42])
     end
 
     test "rejects a list containing an atom element" do
       user = user_fixture()
 
       assert {:error, %Ecto.Changeset{}} =
-               UserSettings.set_highlight_patterns(user.id, [:foo])
+               UserSettings.set_highlight_patterns({:user, user.id}, [:foo])
     end
 
     test "rejects mixed valid + invalid list" do
       user = user_fixture()
 
       assert {:error, %Ecto.Changeset{}} =
-               UserSettings.set_highlight_patterns(user.id, ["valid", ""])
+               UserSettings.set_highlight_patterns({:user, user.id}, ["valid", ""])
     end
   end
 
@@ -200,7 +200,7 @@ defmodule Grappa.UserSettingsTest do
 
         ids =
           Enum.map(1..n, fn _ ->
-            {:ok, settings} = UserSettings.get_or_init(user.id)
+            {:ok, settings} = UserSettings.get_or_init({:user, user.id})
             settings.id
           end)
 
@@ -221,8 +221,8 @@ defmodule Grappa.UserSettingsTest do
             ) do
         user = user_fixture()
 
-        assert {:ok, _} = UserSettings.set_highlight_patterns(user.id, patterns)
-        assert UserSettings.get_highlight_patterns(user.id) == patterns
+        assert {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, patterns)
+        assert UserSettings.get_highlight_patterns({:user, user.id}) == patterns
       end
     end
   end
@@ -238,12 +238,12 @@ defmodule Grappa.UserSettingsTest do
                 )
             ) do
         user = user_fixture()
-        {:ok, settings} = UserSettings.get_or_init(user.id)
+        {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
         # Test-only backdoor: plant a foreign key in data.
         Repo.update!(Settings.changeset(settings, %{data: %{"synthetic_key" => other_val}}))
 
-        {:ok, updated} = UserSettings.set_highlight_patterns(user.id, patterns)
+        {:ok, updated} = UserSettings.set_highlight_patterns({:user, user.id}, patterns)
 
         assert updated.data["synthetic_key"] == other_val,
                "synthetic_key was dropped after set_highlight_patterns"
@@ -261,8 +261,8 @@ defmodule Grappa.UserSettingsTest do
       check all(_ <- StreamData.constant(:ok)) do
         user = user_fixture()
 
-        assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init(user.id)
-        assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init(user.id)
+        assert {:ok, %Settings{id: id1}} = UserSettings.get_or_init({:user, user.id})
+        assert {:ok, %Settings{id: id2}} = UserSettings.get_or_init({:user, user.id})
         assert id1 == id2
       end
     end
@@ -290,31 +290,31 @@ defmodule Grappa.UserSettingsTest do
     test "returns defaults when no settings row exists" do
       fake_id = Ecto.UUID.generate()
 
-      assert UserSettings.get_notification_prefs(fake_id) ==
+      assert UserSettings.get_notification_prefs({:user, fake_id}) ==
                UserSettings.default_notification_prefs()
     end
 
     test "returns defaults when row exists but no notification_prefs key" do
       user = user_fixture()
-      {:ok, _} = UserSettings.get_or_init(user.id)
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
 
-      assert UserSettings.get_notification_prefs(user.id) ==
+      assert UserSettings.get_notification_prefs({:user, user.id}) ==
                UserSettings.default_notification_prefs()
     end
 
     test "returns defaults when stored value is malformed (not a map)" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       Repo.update!(Settings.changeset(settings, %{data: %{"notification_prefs" => "not-a-map"}}))
 
-      assert UserSettings.get_notification_prefs(user.id) ==
+      assert UserSettings.get_notification_prefs({:user, user.id}) ==
                UserSettings.default_notification_prefs()
     end
 
     test "merges partially-populated stored prefs with defaults" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       # Persist only a subset of keys (legacy / cross-version row).
       Repo.update!(
@@ -328,7 +328,7 @@ defmodule Grappa.UserSettingsTest do
         })
       )
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_messages_all == true
       assert result.channel_messages_only == ["#italia"]
       # Missing keys filled from defaults.
@@ -339,7 +339,7 @@ defmodule Grappa.UserSettingsTest do
 
     test "drops empty strings from stored whitelist on read (defensive)" do
       user = user_fixture()
-      {:ok, settings} = UserSettings.get_or_init(user.id)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
 
       Repo.update!(
         Settings.changeset(settings, %{
@@ -352,7 +352,7 @@ defmodule Grappa.UserSettingsTest do
         })
       )
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_messages_only == ["#valid", "#italia"]
     end
   end
@@ -369,8 +369,8 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: ["alice"]
       }
 
-      assert {:ok, %Settings{}} = UserSettings.put_notification_prefs(user.id, prefs)
-      assert UserSettings.get_notification_prefs(user.id) == prefs
+      assert {:ok, %Settings{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
+      assert UserSettings.get_notification_prefs({:user, user.id}) == prefs
     end
 
     test "lowercases + trims whitelist members" do
@@ -384,9 +384,9 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: ["  Alice ", "BOB"]
       }
 
-      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_messages_only == ["#sbiffo", "#italia"]
       assert result.private_messages_only == ["alice", "bob"]
     end
@@ -402,9 +402,9 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: []
       }
 
-      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_messages_only == ["#a", "#b", "#c"]
     end
 
@@ -419,9 +419,9 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: ["alice"]
       }
 
-      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_messages_only == ["#sbiffo"]
       assert result.private_messages_only == ["alice"]
     end
@@ -437,7 +437,7 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: []
       }
 
-      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
     end
 
     test "tolerates string-keyed prefs (post-JSON-decode shape)" do
@@ -451,9 +451,9 @@ defmodule Grappa.UserSettingsTest do
         "private_messages_only" => []
       }
 
-      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
 
-      result = UserSettings.get_notification_prefs(user.id)
+      result = UserSettings.get_notification_prefs({:user, user.id})
       assert result.channel_mentions == true
       assert result.channel_messages_only == ["#italia"]
     end
@@ -469,7 +469,7 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: []
       }
 
-      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
     end
 
     test "rejects when a list field is not a list" do
@@ -483,12 +483,12 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: []
       }
 
-      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
     end
 
     test "preserves other data keys (highlight_patterns) when writing prefs" do
       user = user_fixture()
-      {:ok, _} = UserSettings.set_highlight_patterns(user.id, ["foo", "bar"])
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo", "bar"])
 
       prefs = %{
         channel_messages_all: false,
@@ -498,8 +498,8 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: []
       }
 
-      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
-      assert UserSettings.get_highlight_patterns(user.id) == ["foo", "bar"]
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
     end
   end
 end

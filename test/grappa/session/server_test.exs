@@ -819,7 +819,7 @@ defmodule Grappa.Session.ServerTest do
 
     defp push_subscription_fixture(user, endpoint) do
       {:ok, sub} =
-        Grappa.Push.create(user, %{
+        Grappa.Push.create({:user, user.id}, %{
           endpoint: endpoint,
           p256dh_key: @push_p256dh,
           auth_key: @push_auth,

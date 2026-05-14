@@ -50,7 +50,7 @@ defmodule Grappa.Push.SenderTest do
 
   defp subscription_fixture(user, endpoint) do
     {:ok, sub} =
-      Push.create(user, %{
+      Push.create({:user, user.id}, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,
@@ -168,7 +168,7 @@ defmodule Grappa.Push.SenderTest do
       user = user_fixture()
 
       {:ok, sub} =
-        Push.create(user, %{
+        Push.create({:user, user.id}, %{
           endpoint: endpoint,
           p256dh_key: Base.url_encode64("not-a-valid-p256-point", padding: false),
           auth_key: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false),

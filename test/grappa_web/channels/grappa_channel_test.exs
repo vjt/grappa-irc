@@ -559,7 +559,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       user_name = "qwsnap2-#{System.unique_integer([:positive])}"
       user = user_fixture(name: user_name)
       {:ok, network} = Networks.find_or_create_network(%{slug: "qwsnet-#{System.unique_integer([:positive])}"})
-      {:ok, _} = QueryWindows.open(user.id, network.id, "alice", user_name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "alice", user_name)
 
       topic = Topic.user(user_name)
 
@@ -629,7 +629,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       user_name = "qwjson-#{System.unique_integer([:positive])}"
       user = user_fixture(name: user_name)
       {:ok, network} = Networks.find_or_create_network(%{slug: "qwjsonnet-#{System.unique_integer([:positive])}"})
-      {:ok, _} = QueryWindows.open(user.id, network.id, "bob", user_name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "bob", user_name)
 
       topic = Topic.user(user_name)
 
@@ -1370,7 +1370,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Pre-open a window synchronously via the context (not via channel push)
       # to set up state without going through the inbound event path.
       # QueryWindows.open/4 broadcasts query_windows_list — flush it.
-      {:ok, _} = QueryWindows.open(user.id, network.id, "carol", user.name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "carol", user.name)
       assert_push("event", %{kind: "query_windows_list"})
 
       ref =

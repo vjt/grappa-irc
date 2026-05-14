@@ -36,7 +36,7 @@ defmodule Grappa.PushTest do
   describe "create/2" do
     test "inserts a new subscription with valid attrs" do
       user = user_fixture()
-      assert {:ok, %Subscription{} = sub} = Push.create(user, valid_attrs())
+      assert {:ok, %Subscription{} = sub} = Push.create({:user, user.id}, valid_attrs())
       assert sub.user_id == user.id
       assert is_binary(sub.endpoint)
       assert is_binary(sub.p256dh_key)
@@ -48,28 +48,28 @@ defmodule Grappa.PushTest do
     test "user_agent is optional (nil persists cleanly)" do
       user = user_fixture()
       attrs = Map.delete(valid_attrs(), :user_agent)
-      assert {:ok, %Subscription{user_agent: nil}} = Push.create(user, attrs)
+      assert {:ok, %Subscription{user_agent: nil}} = Push.create({:user, user.id}, attrs)
     end
 
     test "missing endpoint returns validation error" do
       user = user_fixture()
       attrs = Map.delete(valid_attrs(), :endpoint)
-      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create(user, attrs)
+      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create({:user, user.id}, attrs)
       assert {"can't be blank", _} = errors[:endpoint]
     end
 
     test "rejects endpoint exceeding 2048-byte cap" do
       user = user_fixture()
       attrs = valid_attrs(endpoint: "https://x/" <> String.duplicate("a", 3000))
-      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create(user, attrs)
+      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create({:user, user.id}, attrs)
       assert errors[:endpoint] != nil
     end
 
     test "duplicate (user_id, endpoint) returns unique-constraint error on :endpoint" do
       user = user_fixture()
       attrs = valid_attrs(endpoint: "https://example.com/push/dupe-target")
-      assert {:ok, _} = Push.create(user, attrs)
-      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create(user, attrs)
+      assert {:ok, _} = Push.create({:user, user.id}, attrs)
+      assert {:error, %Ecto.Changeset{errors: errors}} = Push.create({:user, user.id}, attrs)
       # `error_key: :endpoint` on the unique_constraint routes the
       # error to the field cic actually cares about (the endpoint URL),
       # not to the first field of the index list (`:user_id`).
@@ -83,8 +83,8 @@ defmodule Grappa.PushTest do
       a = user_fixture()
       b = user_fixture()
       attrs = valid_attrs(endpoint: "https://example.com/push/shared")
-      assert {:ok, _} = Push.create(a, attrs)
-      assert {:ok, _} = Push.create(b, attrs)
+      assert {:ok, _} = Push.create({:user, a.id}, attrs)
+      assert {:ok, _} = Push.create({:user, b.id}, attrs)
     end
 
     test "last_used_at cannot be supplied via create attrs (server-controlled)" do
@@ -101,23 +101,23 @@ defmodule Grappa.PushTest do
           DateTime.add(DateTime.utc_now(), -86_400, :second)
         )
 
-      assert {:ok, sub} = Push.create(user, attrs)
+      assert {:ok, sub} = Push.create({:user, user.id}, attrs)
       assert is_nil(sub.last_used_at)
     end
   end
 
   describe "list_for_user/1" do
     test "returns empty list for a user with no subscriptions" do
-      assert Push.list_for_user(user_fixture()) == []
+      assert Push.list_for_subject({:user, user_fixture().id}) == []
     end
 
     test "returns subscriptions newest-first" do
       user = user_fixture()
-      {:ok, first} = Push.create(user, valid_attrs(endpoint: "https://example.com/push/first"))
+      {:ok, first} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://example.com/push/first"))
       Process.sleep(2)
-      {:ok, second} = Push.create(user, valid_attrs(endpoint: "https://example.com/push/second"))
+      {:ok, second} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://example.com/push/second"))
 
-      [a, b] = Push.list_for_user(user)
+      [a, b] = Push.list_for_subject({:user, user.id})
       assert a.id == second.id
       assert b.id == first.id
     end
@@ -125,10 +125,10 @@ defmodule Grappa.PushTest do
     test "scopes to the queried user" do
       a = user_fixture()
       b = user_fixture()
-      {:ok, _} = Push.create(a, valid_attrs(endpoint: "https://example.com/push/a"))
-      {:ok, _} = Push.create(b, valid_attrs(endpoint: "https://example.com/push/b"))
+      {:ok, _} = Push.create({:user, a.id}, valid_attrs(endpoint: "https://example.com/push/a"))
+      {:ok, _} = Push.create({:user, b.id}, valid_attrs(endpoint: "https://example.com/push/b"))
 
-      [only] = Push.list_for_user(a)
+      [only] = Push.list_for_subject({:user, a.id})
       assert only.user_id == a.id
     end
   end
@@ -136,30 +136,30 @@ defmodule Grappa.PushTest do
   describe "get_for_user/2" do
     test "returns the subscription when it belongs to the user" do
       user = user_fixture()
-      {:ok, sub} = Push.create(user, valid_attrs())
-      assert {:ok, fetched} = Push.get_for_user(user, sub.id)
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      assert {:ok, fetched} = Push.get_for_subject({:user, user.id}, sub.id)
       assert fetched.id == sub.id
     end
 
     test "returns :not_found for cross-user IDs" do
       a = user_fixture()
       b = user_fixture()
-      {:ok, sub_a} = Push.create(a, valid_attrs())
-      assert {:error, :not_found} = Push.get_for_user(b, sub_a.id)
+      {:ok, sub_a} = Push.create({:user, a.id}, valid_attrs())
+      assert {:error, :not_found} = Push.get_for_subject({:user, b.id}, sub_a.id)
     end
 
     test "returns :not_found for unknown UUIDs" do
       user = user_fixture()
-      assert {:error, :not_found} = Push.get_for_user(user, Ecto.UUID.generate())
+      assert {:error, :not_found} = Push.get_for_subject({:user, user.id}, Ecto.UUID.generate())
     end
   end
 
   describe "delete/1" do
     test "removes the subscription" do
       user = user_fixture()
-      {:ok, sub} = Push.create(user, valid_attrs())
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
       assert {:ok, _} = Push.delete(sub)
-      assert Push.list_for_user(user) == []
+      assert Push.list_for_subject({:user, user.id}) == []
     end
   end
 
@@ -168,10 +168,10 @@ defmodule Grappa.PushTest do
       user = user_fixture()
 
       {:ok, _} =
-        Push.create(user, valid_attrs(endpoint: "https://example.com/push/will-die"))
+        Push.create({:user, user.id}, valid_attrs(endpoint: "https://example.com/push/will-die"))
 
       assert {1, nil} = Push.delete_dead("https://example.com/push/will-die")
-      assert Push.list_for_user(user) == []
+      assert Push.list_for_subject({:user, user.id}) == []
     end
 
     test "is idempotent for unknown endpoints" do
@@ -180,10 +180,10 @@ defmodule Grappa.PushTest do
 
     test "leaves other subscriptions untouched" do
       user = user_fixture()
-      {:ok, _} = Push.create(user, valid_attrs(endpoint: "https://example.com/push/keep"))
-      {:ok, _} = Push.create(user, valid_attrs(endpoint: "https://example.com/push/dead"))
+      {:ok, _} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://example.com/push/keep"))
+      {:ok, _} = Push.create({:user, user.id}, valid_attrs(endpoint: "https://example.com/push/dead"))
       assert {1, nil} = Push.delete_dead("https://example.com/push/dead")
-      [remaining] = Push.list_for_user(user)
+      [remaining] = Push.list_for_subject({:user, user.id})
       assert remaining.endpoint == "https://example.com/push/keep"
     end
   end
@@ -191,7 +191,7 @@ defmodule Grappa.PushTest do
   describe "touch_last_used/1" do
     test "sets last_used_at to a fresh timestamp" do
       user = user_fixture()
-      {:ok, sub} = Push.create(user, valid_attrs())
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
       assert is_nil(sub.last_used_at)
       assert {:ok, touched} = Push.touch_last_used(sub)
       assert %DateTime{} = touched.last_used_at
@@ -199,7 +199,7 @@ defmodule Grappa.PushTest do
 
     test "advances last_used_at on a second call" do
       user = user_fixture()
-      {:ok, sub} = Push.create(user, valid_attrs())
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
       {:ok, first} = Push.touch_last_used(sub)
       Process.sleep(2)
       {:ok, second} = Push.touch_last_used(first)
@@ -210,7 +210,7 @@ defmodule Grappa.PushTest do
   describe "user CASCADE delete" do
     test "subscriptions vanish when the owning user is deleted" do
       user = user_fixture()
-      {:ok, sub} = Push.create(user, valid_attrs())
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
       Grappa.Repo.delete!(user)
       assert Grappa.Repo.get(Subscription, sub.id) == nil
     end

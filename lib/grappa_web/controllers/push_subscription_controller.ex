@@ -88,7 +88,7 @@ defmodule GrappaWeb.PushSubscriptionController do
     }
 
     with {:ok, user} <- require_user(conn),
-         {:ok, sub} <- Push.create(user, attrs) do
+         {:ok, sub} <- Push.create({:user, user.id}, attrs) do
       conn
       |> put_status(:created)
       |> render(:show, subscription: sub)
@@ -106,7 +106,7 @@ defmodule GrappaWeb.PushSubscriptionController do
           Plug.Conn.t() | {:error, :forbidden | :not_found | Ecto.Changeset.t()}
   def delete(conn, %{"id" => id}) when is_binary(id) do
     with {:ok, user} <- require_user(conn),
-         {:ok, sub} <- Push.get_for_user(user, id),
+         {:ok, sub} <- Push.get_for_subject({:user, user.id}, id),
          {:ok, _} <- Push.delete(sub) do
       send_resp(conn, :no_content, "")
     end
@@ -119,7 +119,7 @@ defmodule GrappaWeb.PushSubscriptionController do
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :forbidden}
   def index(conn, _) do
     with {:ok, user} <- require_user(conn) do
-      render(conn, :index, subscriptions: Push.list_for_user(user))
+      render(conn, :index, subscriptions: Push.list_for_subject({:user, user.id}))
     end
   end
 

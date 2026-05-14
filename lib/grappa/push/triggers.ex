@@ -103,11 +103,12 @@ defmodule Grappa.Push.Triggers do
   def evaluate_and_dispatch(%Message{kind: kind} = message, ctx)
       when kind in [:privmsg, :action] and is_map(ctx) do
     %{user_id: user_id, network_slug: network_slug, own_nick: own_nick} = ctx
+    subject = {:user, user_id}
 
     {:ok, _} =
       Task.start(fn ->
-        prefs = UserSettings.get_notification_prefs(user_id)
-        patterns = UserSettings.get_highlight_patterns(user_id)
+        prefs = UserSettings.get_notification_prefs(subject)
+        patterns = UserSettings.get_highlight_patterns(subject)
 
         if should_notify?(message, own_nick, prefs, patterns) do
           payload = Payload.build(message, network_slug, own_nick)

@@ -430,7 +430,7 @@ defmodule Grappa.Scrollback do
 
   `active_keyset` is a `MapSet` of currently-active target strings —
   joined channels (from `Grappa.Session.list_channels/2`) plus open
-  query window targets (from `Grappa.QueryWindows.list_for_user/1`).
+  query window targets (from `Grappa.QueryWindows.list_for_subject/1`).
   Members of the set are filtered OUT of the archive so the active +
   archive sets are disjoint per intent doc. Empty set means everything
   with rows qualifies.

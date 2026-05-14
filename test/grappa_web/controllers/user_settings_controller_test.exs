@@ -69,7 +69,7 @@ defmodule GrappaWeb.UserSettingsControllerTest do
 
     test "reflects the most-recent PUT", %{conn: conn, user: user} do
       {:ok, _} =
-        UserSettings.put_notification_prefs(user.id, %{
+        UserSettings.put_notification_prefs({:user, user.id}, %{
           channel_messages_all: false,
           channel_messages_only: ["#sbiffo"],
           channel_mentions: true,
@@ -122,7 +122,7 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       assert %{"notification_prefs" => returned} = json_response(conn, 200)
       assert returned["channel_messages_only"] == ["#sbiffo"]
 
-      stored = UserSettings.get_notification_prefs(user.id)
+      stored = UserSettings.get_notification_prefs({:user, user.id})
       assert stored.channel_messages_only == ["#sbiffo"]
     end
 
@@ -139,7 +139,7 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       assert returned["channel_messages_only"] == ["#sbiffo", "#italia"]
       assert returned["private_messages_only"] == ["alice"]
 
-      stored = UserSettings.get_notification_prefs(user.id)
+      stored = UserSettings.get_notification_prefs({:user, user.id})
       assert stored.channel_messages_only == ["#sbiffo", "#italia"]
     end
   end
@@ -186,12 +186,12 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
 
     test "highlight_patterns survives a notification_prefs PUT", %{conn: conn, user: user} do
-      {:ok, _} = UserSettings.set_highlight_patterns(user.id, ["foo", "bar"])
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo", "bar"])
 
       conn = put(conn, "/me/settings/notification-prefs", valid_prefs_wire())
       assert json_response(conn, 200)
 
-      assert UserSettings.get_highlight_patterns(user.id) == ["foo", "bar"]
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
     end
   end
 end

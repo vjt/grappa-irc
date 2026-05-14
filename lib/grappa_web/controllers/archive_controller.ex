@@ -75,8 +75,8 @@ defmodule GrappaWeb.ArchiveController do
   @spec open_query_targets({:user, User.t()} | {:visitor, Visitor.t()}, integer()) ::
           [String.t()]
   defp open_query_targets({:user, %User{id: user_id}}, network_id) do
-    user_id
-    |> QueryWindows.list_for_user()
+    {:user, user_id}
+    |> QueryWindows.list_for_subject()
     |> Map.get(network_id, [])
     |> Enum.map(& &1.target_nick)
   end

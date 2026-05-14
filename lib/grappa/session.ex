@@ -57,6 +57,7 @@ defmodule Grappa.Session do
       Grappa.PubSub,
       Grappa.Push,
       Grappa.Scrollback,
+      Grappa.Subject,
       Grappa.UserSettings,
       Grappa.Version
     ],
@@ -967,18 +968,15 @@ defmodule Grappa.Session do
   (Task 4 migration) and `sessions.user_id` / `sessions.visitor_id`
   XOR check (Task 5 migration).
 
-  Single source of truth for the subject → FK column mapping —
-  callers in `Grappa.Session.Server` (outbound PRIVMSG / TOPIC
-  attrs) and `Grappa.Session.EventRouter` (inbound `:persist`
-  effects) all go through this helper, so a future third subject
-  kind requires one place to change.
+  Delegates to `Grappa.Subject.put_subject_id/2` (visitor-parity V1
+  promotion) so non-Session callers don't need a Boundary dep on
+  `Grappa.Session` just to thread a subject FK onto a changeset
+  attrs map. Existing in-Session callers (`event_router.ex`,
+  `server.ex`) keep using this entry point for delegation
+  symmetry — no churn.
   """
   @spec put_subject_id(map(), subject()) :: map()
-  def put_subject_id(attrs, {:user, uid}) when is_map(attrs) and is_binary(uid),
-    do: Map.put(attrs, :user_id, uid)
-
-  def put_subject_id(attrs, {:visitor, vid}) when is_map(attrs) and is_binary(vid),
-    do: Map.put(attrs, :visitor_id, vid)
+  def put_subject_id(attrs, subject), do: Grappa.Subject.put_subject_id(attrs, subject)
 
   defp call_session(subject, network_id, request) do
     case whereis(subject, network_id) do

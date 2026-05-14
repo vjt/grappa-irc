@@ -1,6 +1,6 @@
 defmodule Grappa.Push do
   @moduledoc """
-  Web Push subscription persistence — per-user, per-device PWA push
+  Web Push subscription persistence — per-subject, per-device PWA push
   endpoints.
 
   Push notifications cluster B1 (2026-05-14). Stores the opaque
@@ -8,24 +8,37 @@ defmodule Grappa.Push do
   out, plus per-device metadata (`user_agent`, `last_used_at`) for
   the cic settings drawer's "see + revoke my devices" UX (B3).
 
+  ## Subject-scoped (visitor-parity V1, 2026-05-15)
+
+  Both registered users and visitors may register push subscriptions;
+  storage uses the XOR FK shape (`user_id` XOR `visitor_id`) proven
+  by `Grappa.Scrollback.Message` and `Grappa.ReadCursor.Cursor`.
+  Visitor reaping CASCADEs the rows on TTL expiry; NickServ-
+  identified visitors with infinite TTL keep them indefinitely.
+
+  Every public function takes a `Grappa.Subject.t()` tagged tuple
+  rather than a raw `%User{}` — the helper enforces the FK column
+  invariant at the call site.
+
   ## Why it lives here
 
-  Push subscriptions are a sibling concern to Accounts (per-user) but
-  are domain-distinct enough to deserve their own context boundary.
-  Future B2 will add `Grappa.Push.Sender` (Web Push delivery via
-  VAPID-signed POSTs); B4 will add `Grappa.Push.Triggers` (PRIVMSG-
-  hot-path eval). Keeping the context standalone means Bootstrap +
-  Session.Server only need to depend on `Grappa.Push`, not reach into
-  Accounts internals.
+  Push subscriptions are a sibling concern to Accounts (per-subject)
+  but are domain-distinct enough to deserve their own context
+  boundary. Future B2 will add `Grappa.Push.Sender` (Web Push delivery
+  via VAPID-signed POSTs); B4 will add `Grappa.Push.Triggers`
+  (PRIVMSG-hot-path eval). Keeping the context standalone means
+  Bootstrap + Session.Server only need to depend on `Grappa.Push`,
+  not reach into Accounts internals.
 
   ## API
 
-    * `create/2` — insert (or 409-style replay if `(user_id, endpoint)`
-      collides — see `Subscription.changeset/2`'s unique constraint).
-    * `list_for_user/1` — every subscription belonging to a user
-      (sorted by `inserted_at`, most-recent first).
-    * `get_for_user/2` — fetch one by ID, scoped to user (404 if
-      cross-user).
+    * `create/2` — insert (or 409-style replay if
+      `(<subject_id>, endpoint)` collides — see
+      `Subscription.changeset/2`'s unique constraint).
+    * `list_for_subject/1` — every subscription belonging to a
+      subject (sorted by `inserted_at`, most-recent first).
+    * `get_for_subject/2` — fetch one by ID, scoped to subject (404
+      if cross-subject).
     * `delete/1` — by struct.
     * `delete_dead/1` — by endpoint URL. Used by B2's `Push.Sender`
       when a vendor returns 404/410 for a stale subscription.
@@ -35,7 +48,9 @@ defmodule Grappa.Push do
   ## Boundary
 
     * `Grappa.Repo` — persistence.
+    * `Grappa.Subject` — XOR FK helper.
     * `Grappa.Accounts` — FK reference to `User`.
+    * `Grappa.Visitors` — FK reference to `Visitor`.
     * `Grappa.Scrollback` — B4 trigger consumes
       `%Grappa.Scrollback.Message{}` structs.
     * `Grappa.UserSettings` — B4 trigger reads `notification_prefs` +
@@ -58,98 +73,95 @@ defmodule Grappa.Push do
       Grappa.Mentions,
       Grappa.Repo,
       Grappa.Scrollback,
+      Grappa.Subject,
       Grappa.UserSettings
     ],
+    dirty_xrefs: [Grappa.Visitors.Visitor],
     exports: [Payload, Sender, Subscription, Triggers]
 
   import Ecto.Query
 
-  alias Grappa.Accounts.User
-  alias Grappa.Push.Subscription
-  alias Grappa.Repo
+  alias Grappa.{Push.Subscription, Repo, Subject}
 
   @doc """
-  Inserts a new push subscription for the given user.
+  Inserts a new push subscription for the given subject.
 
   `attrs` must be an **atom-keyed** map carrying `:endpoint`,
   `:p256dh_key`, `:auth_key` (all required); `:user_agent` is
-  optional. The `user_id` is supplied explicitly via the first
-  argument so callers cannot accidentally cross subjects from the
-  request body — `Map.put(attrs, :user_id, user_id)` is the only
-  authoritative source for the FK. Mixed string/atom keys would
+  optional. The subject FK column is supplied via the first argument
+  through `Subject.put_subject_id/2` so callers cannot accidentally
+  cross subjects from the request body. Mixed string/atom keys would
   silently drop the non-matching half during cast; the controller
-  (B1's only caller) builds an atom-keyed map from
-  `conn.body_params` explicitly.
+  builds an atom-keyed map from `conn.body_params` explicitly.
 
   Returns `{:ok, %Subscription{}}` on success or
   `{:error, %Ecto.Changeset{}}` on validation / FK / uniqueness
-  failure. The unique constraint on `(user_id, endpoint)` surfaces
-  as a `:endpoint` field error (via the `error_key: :endpoint`
-  override in `Subscription.changeset/2`) when the same browser
-  re-subscribes — cic treats the 422 as "already subscribed,
+  failure. The unique constraint on `(<subject_id>, endpoint)`
+  surfaces as a `:endpoint` field error (via the `error_key:
+  :endpoint` override in `Subscription.changeset/2`) when the same
+  browser re-subscribes — cic treats the 422 as "already subscribed,
   refresh local cache."
   """
-  @spec create(User.t(), map()) :: {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
-  def create(%User{id: user_id}, attrs) when is_map(attrs) do
+  @spec create(Subject.t(), map()) ::
+          {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
+  def create({_, _} = subject, attrs) when is_map(attrs) do
     %Subscription{}
-    |> Subscription.changeset(Map.put(attrs, :user_id, user_id))
+    |> Subscription.changeset(Subject.put_subject_id(attrs, subject))
     |> Repo.insert()
   end
 
   @doc """
-  Lists every push subscription belonging to the given user, newest
-  first. Empty list when the user has no subscriptions yet.
+  Lists every push subscription belonging to the given subject,
+  newest first. Empty list when the subject has no subscriptions yet.
   """
-  @spec list_for_user(User.t()) :: [Subscription.t()]
-  def list_for_user(%User{id: user_id}), do: list_for_user_id(user_id)
-
-  @doc """
-  Lists every push subscription belonging to the user with the given
-  ID, newest first. Empty list when the user has no subscriptions yet.
-
-  Variant of `list_for_user/1` that takes the binary user_id directly
-  — used by `Grappa.Push.Sender` (B2) which is called from contexts
-  that already have the ID without round-tripping through the User
-  struct, and which would otherwise need `Grappa.Accounts` in its
-  Boundary dep list just to construct a bare `%User{}`.
-  """
-  @spec list_for_user_id(Ecto.UUID.t()) :: [Subscription.t()]
-  def list_for_user_id(user_id) when is_binary(user_id) do
-    query = from(s in Subscription, where: s.user_id == ^user_id, order_by: [desc: s.inserted_at])
-    Repo.all(query)
+  @spec list_for_subject(Subject.t()) :: [Subscription.t()]
+  def list_for_subject({_, _} = subject) do
+    Subscription
+    |> Subject.subject_where(subject)
+    |> order_by([s], desc: s.inserted_at)
+    |> Repo.all()
   end
 
   @doc """
-  Fetches a subscription by ID, scoped to the user. Returns
+  Fetches a subscription by ID, scoped to the subject. Returns
   `{:error, :not_found}` when the row doesn't exist OR when the row
-  exists but belongs to a different user — the wire body is uniform
-  per the FallbackController convention so a probing user cannot
-  distinguish "wrong ID" from "someone else's subscription."
+  exists but belongs to a different subject — the wire body is
+  uniform per the FallbackController convention so a probing operator
+  cannot distinguish "wrong ID" from "someone else's subscription."
   """
-  @spec get_for_user(User.t(), Ecto.UUID.t()) :: {:ok, Subscription.t()} | {:error, :not_found}
-  def get_for_user(%User{id: user_id}, id) when is_binary(id) do
+  @spec get_for_subject(Subject.t(), Ecto.UUID.t()) ::
+          {:ok, Subscription.t()} | {:error, :not_found}
+  def get_for_subject({:user, user_id}, id) when is_binary(id) do
     case Repo.get(Subscription, id) do
       %Subscription{user_id: ^user_id} = sub -> {:ok, sub}
       _ -> {:error, :not_found}
     end
   end
 
+  def get_for_subject({:visitor, visitor_id}, id) when is_binary(id) do
+    case Repo.get(Subscription, id) do
+      %Subscription{visitor_id: ^visitor_id} = sub -> {:ok, sub}
+      _ -> {:error, :not_found}
+    end
+  end
+
   @doc """
-  Deletes a subscription. The struct argument is intentional — callers
-  must have already loaded + scoped via `get_for_user/2`, which
-  prevents a controller from accidentally taking a path-parameter ID
-  straight into `Repo.delete_by/2` and bypassing the user check.
+  Deletes a subscription. The struct argument is intentional —
+  callers must have already loaded + scoped via `get_for_subject/2`,
+  which prevents a controller from accidentally taking a path-
+  parameter ID straight into `Repo.delete_by/2` and bypassing the
+  subject check.
   """
   @spec delete(Subscription.t()) :: {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
   def delete(%Subscription{} = sub), do: Repo.delete(sub)
 
   @doc """
-  Deletes any subscription matching the given endpoint URL, regardless
-  of user. Used by B2's `Push.Sender` when a vendor returns 404 / 410
-  for a stale endpoint — the subscription is dead from every user's
-  perspective (one user, one endpoint per the unique constraint, but
-  the by-endpoint shape avoids loading the row first just to delete
-  it).
+  Deletes any subscription matching the given endpoint URL,
+  regardless of subject. Used by B2's `Push.Sender` when a vendor
+  returns 404 / 410 for a stale endpoint — the subscription is dead
+  from every subject's perspective (one subject, one endpoint per the
+  unique constraint, but the by-endpoint shape avoids loading the row
+  first just to delete it).
 
   Returns `{deleted_count, nil}` per `Repo.delete_all/2` semantics.
   Idempotent — repeated calls with an already-deleted endpoint

@@ -78,7 +78,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       assert is_binary(id)
       assert is_binary(created_at)
 
-      [stored] = Push.list_for_user(user)
+      [stored] = Push.list_for_subject({:user, user.id})
       assert stored.id == id
       assert stored.endpoint == "https://example.com/push/happy"
       assert stored.user_agent == "Mozilla/5.0 e2e-test"
@@ -87,7 +87,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
     test "user_agent is nil when header is absent", %{conn: conn, user: user} do
       conn = post(conn, "/push/subscriptions", valid_body())
       assert json_response(conn, 201)
-      [stored] = Push.list_for_user(user)
+      [stored] = Push.list_for_subject({:user, user.id})
       assert stored.user_agent == nil
     end
   end
@@ -147,7 +147,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       {user, session} = user_and_session()
 
       {:ok, _} =
-        Push.create(user, %{
+        Push.create({:user, user.id}, %{
           endpoint: "https://example.com/push/list-1",
           p256dh_key: "k1",
           auth_key: "a1",
@@ -157,7 +157,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       Process.sleep(2)
 
       {:ok, second} =
-        Push.create(user, %{
+        Push.create({:user, user.id}, %{
           endpoint: "https://example.com/push/list-2",
           p256dh_key: "k2",
           auth_key: "a2",
@@ -180,14 +180,14 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       {bob, _} = user_and_session()
 
       {:ok, _} =
-        Push.create(alice, %{
+        Push.create({:user, alice.id}, %{
           endpoint: "https://example.com/push/alice",
           p256dh_key: "k",
           auth_key: "a"
         })
 
       {:ok, _} =
-        Push.create(bob, %{
+        Push.create({:user, bob.id}, %{
           endpoint: "https://example.com/push/bob",
           p256dh_key: "k",
           auth_key: "a"
@@ -197,7 +197,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       assert %{"subscriptions" => [only]} = json_response(conn, 200)
       assert only["user_agent"] == nil
       # cross-user leak check: Bob's row should not appear
-      [stored_alice] = Push.list_for_user(alice)
+      [stored_alice] = Push.list_for_subject({:user, alice.id})
       assert only["id"] == stored_alice.id
     end
   end
@@ -218,7 +218,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       {user, session} = user_and_session()
 
       {:ok, sub} =
-        Push.create(user, %{
+        Push.create({:user, user.id}, %{
           endpoint: "https://example.com/push/del",
           p256dh_key: "k",
           auth_key: "a"
@@ -226,7 +226,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
 
       conn = conn |> put_bearer(session.id) |> delete("/push/subscriptions/#{sub.id}")
       assert response(conn, 204) == ""
-      assert Push.list_for_user(user) == []
+      assert Push.list_for_subject({:user, user.id}) == []
     end
 
     test "404 on cross-user delete (probing protection)", %{conn: conn} do
@@ -234,7 +234,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       {_, bob_session} = user_and_session()
 
       {:ok, alice_sub} =
-        Push.create(alice, %{
+        Push.create({:user, alice.id}, %{
           endpoint: "https://example.com/push/cross",
           p256dh_key: "k",
           auth_key: "a"
@@ -243,7 +243,7 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       conn = conn |> put_bearer(bob_session.id) |> delete("/push/subscriptions/#{alice_sub.id}")
       assert json_response(conn, 404) == %{"error" => "not_found"}
       # Alice's row still there
-      assert [_] = Push.list_for_user(alice)
+      assert [_] = Push.list_for_subject({:user, alice.id})
     end
 
     test "404 on unknown UUID", %{conn: conn} do

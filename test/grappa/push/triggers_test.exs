@@ -206,7 +206,7 @@ defmodule Grappa.Push.TriggersTest do
 
   defp subscription_fixture(user, endpoint) do
     {:ok, sub} =
-      Push.create(user, %{
+      Push.create({:user, user.id}, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,
@@ -348,7 +348,7 @@ defmodule Grappa.Push.TriggersTest do
 
       # Override defaults: channel_mentions OFF
       {:ok, _} =
-        UserSettings.put_notification_prefs(user.id, %{
+        UserSettings.put_notification_prefs({:user, user.id}, %{
           channel_messages_all: false,
           channel_messages_only: [],
           channel_mentions: false,

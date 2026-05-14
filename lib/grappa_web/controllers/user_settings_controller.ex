@@ -52,7 +52,7 @@ defmodule GrappaWeb.UserSettingsController do
           Plug.Conn.t() | {:error, :forbidden}
   def show_notification_prefs(conn, _) do
     with {:ok, user} <- require_user(conn) do
-      prefs = UserSettings.get_notification_prefs(user.id)
+      prefs = UserSettings.get_notification_prefs({:user, user.id})
       render(conn, :notification_prefs, prefs: prefs)
     end
   end
@@ -71,8 +71,8 @@ defmodule GrappaWeb.UserSettingsController do
           Plug.Conn.t() | {:error, :forbidden | :bad_request | Ecto.Changeset.t()}
   def update_notification_prefs(conn, params) when map_size(params) > 0 do
     with {:ok, user} <- require_user(conn),
-         {:ok, _} <- UserSettings.put_notification_prefs(user.id, params) do
-      render(conn, :notification_prefs, prefs: UserSettings.get_notification_prefs(user.id))
+         {:ok, _} <- UserSettings.put_notification_prefs({:user, user.id}, params) do
+      render(conn, :notification_prefs, prefs: UserSettings.get_notification_prefs({:user, user.id}))
     end
   end
 

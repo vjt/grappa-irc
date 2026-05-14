@@ -59,11 +59,14 @@ defmodule Grappa.UserSettings.Settings do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Visitors.Visitor
 
   @type t :: %__MODULE__{
           id: integer() | nil,
           user_id: Ecto.UUID.t() | nil,
           user: User.t() | Ecto.Association.NotLoaded.t() | nil,
+          visitor_id: Ecto.UUID.t() | nil,
+          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
           data: %{optional(String.t()) => term()},
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -71,28 +74,55 @@ defmodule Grappa.UserSettings.Settings do
 
   schema "user_settings" do
     belongs_to :user, User, type: :binary_id
+    belongs_to :visitor, Visitor, type: :binary_id
 
-    # JSON blob for all per-user preference keys. Default %{} at the schema
-    # layer; the DB DEFAULT is also '{}' (see migration). Ecto handles
-    # JSON encode/decode via Jason. Read with string keys after DB round-trip.
+    # JSON blob for all per-subject preference keys. Default %{} at the
+    # schema layer; the DB DEFAULT is also '{}' (see migration). Ecto
+    # handles JSON encode/decode via Jason. Read with string keys after
+    # DB round-trip.
     field :data, :map, default: %{}
 
     timestamps(type: :utc_datetime)
   end
 
   @doc """
-  Builds an insert/update changeset. Both `:user_id` and `:data` are required.
+  Builds an insert/update changeset.
 
-  Shape validation of individual `data` keys is intentionally NOT performed
-  here — that is the responsibility of typed accessor functions in
-  `Grappa.UserSettings`. The schema-level changeset stays generic so it can
-  be reused by all accessors without coupling it to any specific key's rules.
+  Subject XOR is required (`validate_subject_xor/1` attaches errors
+  to the synthetic `:subject` key); `:data` is required at cast
+  time. Shape validation of individual `data` keys is intentionally
+  NOT performed here — that is the responsibility of typed accessor
+  functions in `Grappa.UserSettings`. The schema-level changeset
+  stays generic so it can be reused by all accessors without
+  coupling it to any specific key's rules.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(settings, attrs) do
     settings
-    |> cast(attrs, [:user_id, :data])
-    |> validate_required([:user_id, :data])
+    |> cast(attrs, [:user_id, :visitor_id, :data])
+    |> validate_required([:data])
+    |> validate_subject_xor()
     |> assoc_constraint(:user)
+    |> assoc_constraint(:visitor)
+    |> unique_constraint(:user_id, name: :user_settings_user_id_index)
+    |> unique_constraint(:visitor_id, name: :user_settings_visitor_id_index)
+    |> check_constraint(:subject,
+      name: :user_settings_subject_xor,
+      message: "user_id and visitor_id are mutually exclusive"
+    )
+  end
+
+  # Mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`.
+  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_subject_xor(changeset) do
+    user_id = get_field(changeset, :user_id)
+    visitor_id = get_field(changeset, :visitor_id)
+
+    case {user_id, visitor_id} do
+      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
+      {_, nil} -> changeset
+      {nil, _} -> changeset
+      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
+    end
   end
 end

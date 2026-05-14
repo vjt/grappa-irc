@@ -2681,7 +2681,7 @@ defmodule Grappa.Session.Server do
       started_at ->
         away_start_ms = DateTime.to_unix(started_at, :millisecond)
         away_end_ms = System.system_time(:millisecond)
-        watchlist = UserSettings.get_highlight_patterns(user_id)
+        watchlist = UserSettings.get_highlight_patterns({:user, user_id})
 
         messages =
           Mentions.aggregate_mentions(
