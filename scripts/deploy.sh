@@ -143,6 +143,35 @@ preflight() {
                 echo "  → state-shape marker changed in $f → COLD"
                 return 1
             fi
+            # B6.5 HIGH-27 (no-silent-drops 2026-05-14): field-additions
+            # AST oracle. The marker-line regex above only fires when the
+            # `defstruct` / `@type t :: %{` / `def init(` line ITSELF is
+            # added or removed. A field added INSIDE an existing
+            # `@type t :: %{...}` block silently classifies HOT —
+            # CP28 incident root cause (per
+            # `feedback_deploy_sh_preflight_field_addition_gap`).
+            #
+            # Per CLAUDE.md "Fix root causes, not examples": this oracle
+            # extracts the balanced `@type t :: %{...}` block (or the
+            # `defstruct ...` block — both have the same disease shape)
+            # from the `from` and `to` revisions of the touched file,
+            # normalizes whitespace, and diffs. Differences → COLD.
+            #
+            # Brace-matching is delegated to awk because regex can't
+            # match balanced delimiters — and HIGH-27's whole point is
+            # that regex is exactly the bug class. The awk helper lives
+            # at `scripts/_extract_state_block.awk`.
+            local awk_helper
+            awk_helper="$(dirname "$0")/_extract_state_block.awk"
+            if [ -x "$(command -v awk)" ] && [ -f "$awk_helper" ]; then
+                local from_block to_block
+                from_block="$(git show "$from:$f" 2>/dev/null | awk -f "$awk_helper" || true)"
+                to_block="$(git show "$to:$f" 2>/dev/null | awk -f "$awk_helper" || true)"
+                if [ "$from_block" != "$to_block" ]; then
+                    echo "  → @type t :: %{...} or defstruct field-set changed in $f → COLD"
+                    return 1
+                fi
+            fi
         done
     fi
 
@@ -150,6 +179,28 @@ preflight() {
     # required, can't hot-swap a docker image.
     if echo "$changed" | grep -qE '^(Dockerfile|compose\.yaml|bin/start\.sh)$'; then
         echo "  → image substrate changed → COLD"
+        return 1
+    fi
+
+    # Class 5 (B6.5 HIGH-28): new/edited migration files. The hot path
+    # POSTs /admin/reload — modules reload but `mix ecto.migrate`
+    # never runs. First query against the new column/table 500s; if
+    # Bootstrap reads it at next supervision-tree restart, BEAM
+    # crash-loops. Per `feedback_cluster_with_migration_must_cold`
+    # (CP29 R-Z lesson): cluster with migration MUST cold-deploy.
+    if echo "$changed" | grep -qE '^priv/repo/migrations/'; then
+        echo "  → new/edited migration → COLD"
+        return 1
+    fi
+
+    # Class 6 (B6.5 HIGH-29): nginx config + security-headers edits.
+    # Hot path doesn't reload nginx (it's a separate container under
+    # `--profile prod`). CSP allowlist drift is particularly bad —
+    # adding a captcha provider to the allowlist won't take effect,
+    # cic widgets 404 under CSP. Cold deploy recreates nginx with
+    # the new config.
+    if echo "$changed" | grep -qE '^infra/(nginx\.conf|snippets/)'; then
+        echo "  → nginx config changed → COLD"
         return 1
     fi
 

@@ -159,7 +159,17 @@ classifies the change:
     `lib/grappa/hot_reload/long_lived_modules.ex` (`@modules` +
     `@state_helpers`); `deploy.sh` parses that file at preflight
     time so the doc + script + Dialyzer cannot drift.
+    The marker-line regex catches added/removed declaration lines;
+    field additions INSIDE an existing `@type t :: %{...}` block
+    are caught by the AST oracle at `scripts/_extract_state_block.awk`
+    (no-silent-drops B6.5 HIGH-27, root cause of the CP28 incident).
   - `Dockerfile`, `compose.yaml`, `bin/start.sh` (image substrate)
+  - `priv/repo/migrations/*` (B6.5 HIGH-28 — hot path skips
+    `mix ecto.migrate`; new tables/columns 500 on first query post-
+    reload, BEAM crash-loops if Bootstrap reads them)
+  - `infra/nginx.conf` or `infra/snippets/*` (B6.5 HIGH-29 — hot
+    path doesn't reload nginx; CSP allowlist drift particularly
+    bad: new captcha provider won't take effect, cic widgets 404)
 
 Conservative bias: in doubt, COLD. `Phoenix.CodeReloader` does NOT
 refuse unsafe diffs at runtime — it accepts the reload, returns
