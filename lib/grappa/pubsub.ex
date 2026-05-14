@@ -59,9 +59,28 @@ defmodule Grappa.PubSub do
   at most a stale UI badge, not a correctness problem. Returning `:ok`
   unconditionally lets callers stay in `:ok =`-only arms (mirrors
   the `broadcast_state_change` private helper in `Grappa.Networks`).
+
+  ## Struct guard (no-silent-drops B6.2)
+
+  The `is_map(payload) and not is_struct(payload)` guard is
+  load-bearing. CP15 B6 root cause was a raw `%Window{}` schema struct
+  reaching Phoenix's serializer fastlane path, where `Jason.Encoder`
+  derive on the schema isn't enough because the schema's storage shape
+  rarely matches the wire shape — so the serializer crashed at the WS
+  edge during fan-out. CLAUDE.md's "PubSub broadcast + Channel push
+  payloads MUST be JSON-encodable — convert structs to wire shape via
+  a context-owned `*.Wire` module" invariant is enforced HERE: any
+  caller passing a struct gets a `FunctionClauseError` at the boundary
+  so the wrong shape is caught at the broadcast site instead of an
+  opaque encoder crash inside Phoenix's fan-out path.
+
+  Pre-fix the guard was the looser `%{} = payload` shape, which
+  matches every struct (every `%__MODULE__{}` is also a `%{}`). The
+  CP15 B6 finding stayed reachable until B6.2 tightened it.
   """
   @spec broadcast_event(String.t(), map()) :: :ok
-  def broadcast_event(topic, %{} = payload) when is_binary(topic) do
+  def broadcast_event(topic, payload)
+      when is_binary(topic) and is_map(payload) and not is_struct(payload) do
     _ = Phoenix.Channel.Server.broadcast(__MODULE__, topic, "event", payload)
     :ok
   end
