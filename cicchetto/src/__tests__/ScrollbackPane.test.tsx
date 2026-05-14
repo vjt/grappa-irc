@@ -134,6 +134,22 @@ vi.mock("../lib/readCursor", () => ({
   clearReadCursors: vi.fn(() => setReadCursorStore({})),
 }));
 
+// No-silent-drops bucket 2: mock api.postJoin + auth.token so the
+// INVITE [Join] CTA's handler doesn't hit the live REST/auth modules.
+// `mockPostJoin` returns a resolved promise so the chained
+// setSelectedChannel still runs.
+const mockPostJoin = vi.fn().mockResolvedValue(undefined);
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    postJoin: (...args: unknown[]) => mockPostJoin(...args),
+  };
+});
+vi.mock("../lib/auth", () => ({
+  token: () => "test-token",
+}));
+
 import ScrollbackPane, { resetShownBannersForTest } from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
@@ -1835,6 +1851,74 @@ describe("ScrollbackPane", () => {
       expect(line.textContent).toContain("BANCHAN");
       expect(line.textContent).toContain("#secret");
       expect(line.textContent).toContain("trailing");
+    });
+
+    // No-silent-drops bucket 2: inbound INVITE rendering with [Join]
+    // CTA. Wire shape: `:vjt INVITE grappa :#sbiffo`. params =
+    // ["grappa" (own_nick), "#sbiffo" (channel)].
+    const inviteRow: ScrollbackMessage = {
+      id: 105,
+      network: "freenode",
+      channel: "$server",
+      server_time: 105,
+      kind: "notice",
+      sender: "vjt",
+      body: "#sbiffo",
+      meta: {
+        raw: { verb: "INVITE", sender: "vjt", params: ["grappa", "#sbiffo"] },
+      },
+    };
+
+    const malformedInviteRow: ScrollbackMessage = {
+      id: 106,
+      network: "freenode",
+      channel: "$server",
+      server_time: 106,
+      kind: "notice",
+      sender: "vjt",
+      body: "weird",
+      meta: {
+        // Missing channel-prefix on params[1] — defensive arm.
+        raw: { verb: "INVITE", sender: "vjt", params: ["grappa", "weird"] },
+      },
+    };
+
+    it("INVITE renders '<sender> invited you to <chan> [Join]' button", () => {
+      setScrollback({ "freenode $server": [inviteRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("vjt");
+      expect(line.textContent).toContain("invited you to");
+      expect(line.textContent).toContain("#sbiffo");
+      const btn = line.querySelector(".scrollback-invite-join") as HTMLButtonElement;
+      expect(btn).not.toBeNull();
+      expect(btn.textContent).toContain("Join");
+    });
+
+    it("INVITE [Join] click invokes postJoin + setSelectedChannel", async () => {
+      mockPostJoin.mockClear();
+      mockSetSelectedChannel.mockClear();
+      setScrollback({ "freenode $server": [inviteRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const btn = document.querySelector(".scrollback-invite-join") as HTMLButtonElement;
+      btn.click();
+      await waitFor(() => {
+        expect(mockPostJoin).toHaveBeenCalledWith("test-token", "freenode", "#sbiffo");
+        expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+          networkSlug: "freenode",
+          channelName: "#sbiffo",
+          kind: "channel",
+        });
+      });
+    });
+
+    it("INVITE with malformed channel param falls through to generic render (no [Join])", () => {
+      setScrollback({ "freenode $server": [malformedInviteRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      // Generic arm: verb + params, no [Join] button.
+      expect(line.textContent).toContain("INVITE");
+      expect(line.querySelector(".scrollback-invite-join")).toBeNull();
     });
   });
 

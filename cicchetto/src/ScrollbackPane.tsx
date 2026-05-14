@@ -10,7 +10,8 @@ import {
 } from "solid-js";
 import InviteAckRows from "./InviteAckRows";
 import LusersCard from "./LusersCard";
-import { ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
+import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
+import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
 import { memberSigil } from "./lib/memberSigil";
@@ -231,6 +232,10 @@ const stripCtcpAction = (body: string | null): string => {
 type NickHandlers = {
   onNickClick: (nick: string) => void;
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
+  // No-silent-drops bucket 2: INVITE row's [Join] CTA. Click handler
+  // is wired by the parent ScrollbackLine, which has access to the
+  // active networkSlug + auth token via createScope.
+  onJoinChannel: (channel: string) => void;
 };
 
 // No-silent-drops bucket 1 (2026-05-14): pretty-render arms for unknown
@@ -246,6 +251,7 @@ const renderRawEvent = (
   raw: RawEvent,
   msg: ScrollbackMessage,
   senderSpan: (display: string, nick: string) => JSX.Element,
+  handlers: NickHandlers,
 ): JSX.Element => {
   const verb = raw.verb ?? "?";
   const params = raw.params ?? [];
@@ -287,6 +293,40 @@ const renderRawEvent = (
       return (
         <span class="scrollback-body">
           *** {senderSpan(sender, sender)} changed host to {newUser}@{newHost}
+        </span>
+      );
+    }
+    case "INVITE": {
+      // No-silent-drops bucket 2: inbound INVITE from a peer.
+      // Wire shape: `:vjt!~vjt@host INVITE grappa :#sbiffo`. params =
+      // ["grappa" (own_nick), "#sbiffo" (channel)]. Operator can join
+      // immediately by clicking [Join] — handler routes through the
+      // existing /join flow (postJoin + setSelectedChannel) wired at
+      // the ScrollbackLine layer where networkSlug + token are in
+      // scope.
+      //
+      // Defensive: if params[1] isn't a channel-prefixed string, fall
+      // through to the generic arm so the row remains visible (the
+      // catch-all from bucket 1 stays the safety net).
+      const invitedChannel = params[1];
+      if (typeof invitedChannel === "string" && /^[#&+!]/.test(invitedChannel)) {
+        return (
+          <span class="scrollback-body">
+            *** {senderSpan(sender, sender)} invited you to {invitedChannel}{" "}
+            <button
+              type="button"
+              class="scrollback-invite-join"
+              onClick={() => handlers.onJoinChannel(invitedChannel)}
+            >
+              [Join]
+            </button>
+          </span>
+        );
+      }
+      // Fall through to default arm if the channel param looks malformed.
+      return (
+        <span class="scrollback-body">
+          *** {senderSpan(sender, sender)} {verb} {params.join(" ")}
         </span>
       );
     }
@@ -340,7 +380,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         | { verb?: string; sender?: string; params?: string[] }
         | undefined;
       if (raw && typeof raw === "object" && typeof raw.verb === "string") {
-        return renderRawEvent(raw, msg, senderSpan);
+        return renderRawEvent(raw, msg, senderSpan, handlers);
       }
       return (
         <>
@@ -446,6 +486,7 @@ const ScrollbackLine: Component<{
   userNick: string | null;
   onNickClick: (nick: string) => void;
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
+  onJoinChannel: (channel: string) => void;
 }> = (props) => {
   const isMention = () =>
     props.msg.kind === "privmsg" && mentionsUser(props.msg.body, props.userNick);
@@ -460,6 +501,7 @@ const ScrollbackLine: Component<{
   const handlers: NickHandlers = {
     onNickClick: props.onNickClick,
     onNickContextMenu: props.onNickContextMenu,
+    onJoinChannel: props.onJoinChannel,
   };
 
   return (
@@ -566,6 +608,19 @@ const ScrollbackPane: Component<Props> = (props) => {
   const handleNickContextMenu = (nick: string, e: MouseEvent): void => {
     e.preventDefault();
     setContextMenu({ targetNick: nick, x: e.clientX, y: e.clientY });
+  };
+
+  // No-silent-drops bucket 2: [Join] CTA in INVITE rows. Mirrors the
+  // /join slash command flow in compose.ts: postJoin REST call +
+  // immediate setSelectedChannel for user-intent-driven focus. Server-
+  // driven `:pending` window-state origination still flows via
+  // record_in_flight_join; this handler only initiates.
+  const handleJoinChannel = (channel: string): void => {
+    const t = token();
+    if (!t) return;
+    void postJoin(t, props.networkSlug, channel).then(() => {
+      setSelectedChannel({ networkSlug: props.networkSlug, channelName: channel, kind: "channel" });
+    });
   };
 
   // C7.1 + C7.3: Build a mixed list of (day-separator | unread-marker | message)
@@ -1027,6 +1082,7 @@ const ScrollbackPane: Component<Props> = (props) => {
                   userNick={userNick()}
                   onNickClick={handleNickClick}
                   onNickContextMenu={handleNickContextMenu}
+                  onJoinChannel={handleJoinChannel}
                 />
               );
             }}

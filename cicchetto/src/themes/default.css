@@ -711,6 +711,25 @@ body {
   text-decoration: underline;
 }
 
+/* No-silent-drops bucket 2: [Join] CTA inline button on INVITE rows.
+   Same shape as .nick-clickable (transparent button rendered inline)
+   but with explicit accent color + bracketed visual weight so the
+   click affordance is loud against the muted notice row. */
+.scrollback-invite-join {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0 0.25em;
+  font: inherit;
+  display: inline;
+  color: var(--accent);
+  font-weight: bold;
+}
+
+.scrollback-invite-join:hover {
+  text-decoration: underline;
+}
+
 .scrollback-body {
   color: var(--fg);
 }

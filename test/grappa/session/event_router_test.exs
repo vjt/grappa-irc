@@ -134,6 +134,21 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta.raw["verb"] == "BARE"
       assert attrs.meta.raw["params"] == []
     end
+
+    test "{:numeric, _} without dedicated clause returns NO effects (Server owns numeric persist)" do
+      # Critical: numerics also flow through EventRouter via Server's
+      # numeric handler (server.ex:1555 calls EventRouter.route after
+      # its own persist), so the bucket-1 catch-all MUST skip
+      # numerics or every routed numeric lands twice on $server -- once
+      # with meta.numeric/severity (Server) and once with meta.raw
+      # (catch-all). The dedicated `def route(%Message{command:
+      # {:numeric, _}}, state), do: {:cont, state, []}` clause filters
+      # numerics out before they reach the command-verb catch-all.
+      state = base_state()
+      m = msg({:numeric, 421}, ["vjt", "BLEH", "Unknown command"], {:server, "irc.example.org"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
   end
 
   describe "route/2 — :privmsg" do

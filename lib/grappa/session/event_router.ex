@@ -1486,6 +1486,17 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff]}
   end
 
+  # Numerics that have no dedicated EventRouter clause above must NOT
+  # trigger the bucket-1 command-verb fallthrough below — they are
+  # already persisted by Server's numeric handler (server.ex:1545
+  # writes a :notice row with meta.numeric + meta.severity for every
+  # routed numeric). Without this skip, the same numeric would land
+  # twice on $server: once with meta.numeric/severity (from Server),
+  # once with meta.raw (from the bucket-1 catch-all). EventRouter's
+  # role for numerics is typed folds + state derivation; pure
+  # persistence is Server's responsibility.
+  def route(%Message{command: {:numeric, _}} = _, state), do: {:cont, state, []}
+
   # No-silent-drops bucket 1 (2026-05-14): the catch-all used to return
   # `{:cont, state, []}` for every unhandled command — KILL, WALLOPS,
   # GLOBOPS, ERROR, CHGHOST, AUTHENTICATE, vendor verbs all silently
@@ -1501,11 +1512,10 @@ defmodule Grappa.Session.EventRouter do
   # stores what came in; cic owns the human-readable rendering. Body
   # is the fallback used by cic only when no per-verb arm matches.
   #
-  # NumericRouter handles the numeric catch-all separately (Server's
-  # numeric handler at server.ex:1545 already persists routed numerics
-  # as :notice rows with meta.numeric/severity), so this clause sees
-  # only command-verb fallthroughs. Belt-and-braces: a {:numeric, n}
-  # that somehow reaches here renders verb = Integer.to_string(n).
+  # Numerics are filtered out by the previous clause (they're owned by
+  # Server's numeric handler at server.ex:1545). Belt-and-braces: a
+  # {:numeric, n} that somehow reaches command_to_verb_string/1 still
+  # renders as Integer.to_string(n).
   def route(%Message{command: command, params: params} = msg, state) do
     sender = Message.sender_nick(msg)
     body = List.last(params) || ""
