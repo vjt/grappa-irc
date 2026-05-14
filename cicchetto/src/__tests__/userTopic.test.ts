@@ -79,6 +79,10 @@ vi.mock("../lib/inviteAck", () => ({
   appendInviteAck: vi.fn(),
 }));
 
+vi.mock("../lib/whoisCard", () => ({
+  setWhoisBundle: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -484,6 +488,177 @@ describe("userTopic", () => {
         peer: "grappa",
       });
       expect(ia.appendInviteAck).not.toHaveBeenCalled();
+    });
+  });
+
+  // no-silent-drops B6.10 HIGH-11 — per-element narrowers for bundle
+  // arrays. Pre-fix the dispatcher only checked `Array.isArray()` for
+  // `mentions_bundle.messages` and `whois_bundle.channels`. A single
+  // malformed element would crash a downstream renderer that read a
+  // missing field. Now per-element narrowing drops the whole bundle
+  // on any element-shape failure.
+  describe("mentions_bundle per-element narrowing (HIGH-11)", () => {
+    const goodMessage = {
+      server_time: 1_700_000_000,
+      channel: "#italia",
+      sender_nick: "alice",
+      body: "ping vjt",
+      kind: "privmsg",
+    };
+
+    it("accepts a well-formed messages array", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [goodMessage],
+      });
+      expect(mw.setMentionsBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({
+          messages: [goodMessage],
+        }),
+      );
+    });
+
+    it("accepts an empty messages array", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [],
+      });
+      expect(mw.setMentionsBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ messages: [] }),
+      );
+    });
+
+    it("drops bundle when one message has wrong-typed `body`", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [goodMessage, { ...goodMessage, body: 42 }],
+      });
+      expect(mw.setMentionsBundle).not.toHaveBeenCalled();
+    });
+
+    it("drops bundle when one message is missing `sender_nick`", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      const broken = { ...goodMessage } as Partial<typeof goodMessage>;
+      delete broken.sender_nick;
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [broken],
+      });
+      expect(mw.setMentionsBundle).not.toHaveBeenCalled();
+    });
+
+    it("drops bundle when a message element is null", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [null],
+      });
+      expect(mw.setMentionsBundle).not.toHaveBeenCalled();
+    });
+
+    it("accepts body: null (away-period notice rows)", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [{ ...goodMessage, body: null }],
+      });
+      expect(mw.setMentionsBundle).toHaveBeenCalled();
+    });
+  });
+
+  describe("whois_bundle per-element channels narrowing (HIGH-11)", () => {
+    const baseBundle = {
+      kind: "whois_bundle",
+      network: "azzurra",
+      target: "alice",
+      user: "alice_u",
+      host: "alice.host",
+      realname: "Alice",
+      server: "irc.test",
+      server_info: "test",
+      is_operator: false,
+      idle_seconds: 0,
+      signon: 0,
+      using_ssl: false,
+      is_registered: false,
+      is_admin: false,
+      is_services_admin: false,
+      is_helper: false,
+      is_chanop: false,
+      is_agent: false,
+      is_java: false,
+      umodes: null,
+      away_message: null,
+      actually_host: null,
+      actually_ip: null,
+    };
+
+    it("accepts well-formed channels array", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: ["@#italia", "+#grappa"] });
+      expect(wc.setWhoisBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ channels: ["@#italia", "+#grappa"] }),
+      );
+    });
+
+    it("accepts channels: null (no /whois channel list)", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: null });
+      expect(wc.setWhoisBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ channels: null }),
+      );
+    });
+
+    it("drops bundle when channels has a non-string element", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: ["#italia", 42] });
+      expect(wc.setWhoisBundle).not.toHaveBeenCalled();
+    });
+
+    it("drops bundle when channels has a null element", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: ["#italia", null] });
+      expect(wc.setWhoisBundle).not.toHaveBeenCalled();
+    });
+
+    it("accepts empty channels array", async () => {
+      const wc = await import("../lib/whoisCard");
+      channelMock.fireEvent({ ...baseBundle, channels: [] });
+      expect(wc.setWhoisBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ channels: [] }),
+      );
     });
   });
 });

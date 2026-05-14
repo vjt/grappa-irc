@@ -1,4 +1,4 @@
-import { createRoot, createSignal } from "solid-js";
+import { createRoot, createSignal, untrack } from "solid-js";
 import { pushCloseQueryWindow, pushOpenQueryWindow } from "./socket";
 
 // Query-window state — which DM (query) windows are currently open.
@@ -18,14 +18,17 @@ import { pushCloseQueryWindow, pushOpenQueryWindow } from "./socket";
 // Mutations:
 //   * `setQueryWindowsByNetwork` — full replace (used by the
 //     `query_windows_list` event handler in userTopic.ts).
-//   * `closeQueryWindowState` — removes the nick from client state
-//     AND pushes `close_query_window` to the server so the row is
-//     deleted and other connected tabs get the updated list via
-//     PubSub. Case-insensitive (matches IRC nick-comparison rules).
-//   * `openQueryWindowState` — adds the nick to client state
-//     AND pushes `open_query_window` to the server (idempotent
-//     server-side via unique idx). Called from the user-action path
-//     (C1.4 / C4 will wire this from /msg, /query, nick click).
+//   * `closeQueryWindowState` — pushes `close_query_window` to the
+//     server. Server deletes the row and broadcasts the updated
+//     `query_windows_list` back; cicchetto's dispatcher populates
+//     state. No optimistic local mutation (no-silent-drops B6.10
+//     HIGH-10 — mirrors CP17 :pending pattern; cic NEVER originates
+//     state).
+//   * `openQueryWindowState` — pushes `open_query_window` to the
+//     server (idempotent server-side via unique idx). Server upserts
+//     the row and broadcasts the updated `query_windows_list`; cic's
+//     dispatcher populates state. No optimistic local mutation.
+//     Called from the user-action path (/msg, /query, nick click).
 
 export type QueryWindow = {
   targetNick: string;
@@ -40,47 +43,44 @@ const exports = createRoot(() => {
   /**
    * Closes the DM window for `targetNick` on `networkId`.
    *
-   * Removes it from local state (case-insensitive) and pushes
-   * `close_query_window` to the server. The server deletes the row and
-   * broadcasts `query_windows_list` back; cicchetto replaces state
-   * again on that event, so the final state is authoritative.
+   * Pushes `close_query_window` to the server. The server deletes the
+   * row and broadcasts the updated `query_windows_list`; the
+   * dispatcher (`userTopic.ts`) replaces local state from that
+   * authoritative push. No optimistic local mutation (cic NEVER
+   * originates state).
    */
   const closeQueryWindowState = (networkId: number, targetNick: string): void => {
-    const lowerNick = targetNick.toLowerCase();
-    setQueryWindowsByNetwork((prev) => {
-      const existing = prev[networkId] ?? [];
-      const filtered = existing.filter((w) => w.targetNick.toLowerCase() !== lowerNick);
-      return { ...prev, [networkId]: filtered };
-    });
     pushCloseQueryWindow(networkId, targetNick);
   };
 
   /**
    * Opens a DM window for `targetNick` on `networkId`.
    *
-   * Optimistically adds it to local state (deduplicated case-
-   * insensitively) and pushes `open_query_window` to the server. The
-   * server upserts the row and broadcasts `query_windows_list` back,
-   * which replaces client state with the authoritative list.
+   * Pushes `open_query_window` to the server (idempotent server-side
+   * via unique idx). Server upserts the row and broadcasts the
+   * updated `query_windows_list`; the dispatcher (`userTopic.ts`)
+   * replaces local state from that authoritative push. No optimistic
+   * local mutation (cic NEVER originates state).
    *
-   * Focus shift is the caller's responsibility — this verb only mutates
-   * state; it does NOT call setSelectedChannel (user-action focus rule).
+   * Skips the server round-trip when the window is already open
+   * (case-insensitive dedup) — server-side upsert is a no-op in that
+   * case anyway and would broadcast a redundant identical list.
+   *
+   * `openedAt` is unused now that state is server-derived; kept in
+   * the signature for caller compatibility (UserContextMenu /
+   * ScrollbackPane / compose pass `new Date().toISOString()`). The
+   * authoritative `opened_at` comes from the server's broadcast.
+   *
+   * Focus shift is the caller's responsibility — this verb only
+   * pushes; it does NOT call setSelectedChannel (user-action focus
+   * rule).
    */
-  const openQueryWindowState = (networkId: number, targetNick: string, openedAt: string): void => {
+  const openQueryWindowState = (networkId: number, targetNick: string, _openedAt: string): void => {
     const lowerNick = targetNick.toLowerCase();
-    let alreadyOpen = false;
-    setQueryWindowsByNetwork((prev) => {
-      const existing = prev[networkId] ?? [];
-      alreadyOpen = existing.some((w) => w.targetNick.toLowerCase() === lowerNick);
-      if (alreadyOpen) return prev;
-      return {
-        ...prev,
-        [networkId]: [...existing, { targetNick, openedAt }],
-      };
-    });
-    if (!alreadyOpen) {
-      pushOpenQueryWindow(networkId, targetNick);
-    }
+    const existing = untrack(queryWindowsByNetwork)[networkId] ?? [];
+    const alreadyOpen = existing.some((w) => w.targetNick.toLowerCase() === lowerNick);
+    if (alreadyOpen) return;
+    pushOpenQueryWindow(networkId, targetNick);
   };
 
   return {

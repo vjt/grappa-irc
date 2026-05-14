@@ -2,14 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // C1.2/C1.4: query window state — close + open semantics.
 //
+// no-silent-drops B6.10 HIGH-10 — state is server-authoritative. The
+// open/close verbs push to the server; the server broadcasts the
+// updated `query_windows_list` and userTopic.ts's dispatcher writes
+// it via setQueryWindowsByNetwork (full-replace). NO optimistic
+// local mutation (cic NEVER originates state — mirrors CP17 :pending
+// pattern).
+//
 // Tests the queryWindows state module — created fresh in each test by
 // resetting modules. The module exposes:
 //   * queryWindowsByNetwork(): Record<number, QueryWindow[]>
 //   * setQueryWindowsByNetwork(record): void
 //   * closeQueryWindowState(networkId, targetNick): void
-//     (client-side remove + server push)
+//     (server push only — no local mutation)
 //   * openQueryWindowState(networkId, targetNick, openedAt): void
-//     (client-side add (deduplicated) + server push)
+//     (server push only, dedupes case-insensitively against current
+//     server-authoritative state — no local mutation)
 //
 // Server push goes via socket.pushCloseQueryWindow / pushOpenQueryWindow
 // — mocked here.
@@ -53,7 +61,10 @@ describe("queryWindows state", () => {
     expect(queryWindowsByNetwork()[1]?.[0]?.targetNick).toBe("alice");
   });
 
-  it("closeQueryWindowState removes the nick from client state", async () => {
+  // HIGH-10 — closeQueryWindowState does NOT mutate local state.
+  // Server's broadcast is the only path that updates state.
+  it("closeQueryWindowState pushes close_query_window without local mutation", async () => {
+    const socket = await import("../lib/socket");
     const { queryWindowsByNetwork, setQueryWindowsByNetwork, closeQueryWindowState } = await import(
       "../lib/queryWindows"
     );
@@ -64,84 +75,54 @@ describe("queryWindows state", () => {
       ],
     });
     closeQueryWindowState(1, "alice");
-    expect(queryWindowsByNetwork()[1]).toHaveLength(1);
-    expect(queryWindowsByNetwork()[1]?.[0]?.targetNick).toBe("bob");
+    // State unchanged — server broadcast hasn't landed yet.
+    expect(queryWindowsByNetwork()[1]).toHaveLength(2);
+    // Server push was made.
+    expect(socket.pushCloseQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
 
-  it("closeQueryWindowState is case-insensitive", async () => {
-    const { queryWindowsByNetwork, setQueryWindowsByNetwork, closeQueryWindowState } = await import(
-      "../lib/queryWindows"
-    );
-    setQueryWindowsByNetwork({
-      1: [{ targetNick: "Alice", openedAt: "2026-05-04T10:00:00Z" }],
-    });
-    closeQueryWindowState(1, "alice");
-    expect(queryWindowsByNetwork()[1]).toHaveLength(0);
-  });
-
-  it("closeQueryWindowState pushes close_query_window to socket", async () => {
+  it("closeQueryWindowState always pushes (server is idempotent)", async () => {
     const socket = await import("../lib/socket");
     const { setQueryWindowsByNetwork, closeQueryWindowState } = await import("../lib/queryWindows");
-    setQueryWindowsByNetwork({
-      1: [{ targetNick: "bob", openedAt: "2026-05-04T10:00:00Z" }],
-    });
-    closeQueryWindowState(1, "bob");
-    expect(socket.pushCloseQueryWindow).toHaveBeenCalledWith(1, "bob");
-  });
-
-  it("closeQueryWindowState on non-existent nick is a no-op (idempotent)", async () => {
-    const socket = await import("../lib/socket");
-    const { queryWindowsByNetwork, setQueryWindowsByNetwork, closeQueryWindowState } = await import(
-      "../lib/queryWindows"
-    );
     setQueryWindowsByNetwork({
       1: [{ targetNick: "alice", openedAt: "2026-05-04T10:00:00Z" }],
     });
     closeQueryWindowState(1, "nobody");
-    expect(queryWindowsByNetwork()[1]).toHaveLength(1);
-    // Socket is still called even for missing nick — server is idempotent
+    // Server is called even for a missing nick — server-side close is
+    // idempotent and replies with the unchanged list.
     expect(socket.pushCloseQueryWindow).toHaveBeenCalledWith(1, "nobody");
   });
 
-  // C1.4 — openQueryWindowState tests
+  // HIGH-10 — openQueryWindowState pushes without optimistic local
+  // mutation; server broadcast populates state.
 
-  it("openQueryWindowState adds a new nick to client state", async () => {
+  it("openQueryWindowState pushes open_query_window without local mutation", async () => {
+    const socket = await import("../lib/socket");
     const { queryWindowsByNetwork, openQueryWindowState } = await import("../lib/queryWindows");
     openQueryWindowState(1, "carol", "2026-05-04T12:00:00Z");
-    expect(queryWindowsByNetwork()[1]).toHaveLength(1);
-    expect(queryWindowsByNetwork()[1]?.[0]?.targetNick).toBe("carol");
-    expect(queryWindowsByNetwork()[1]?.[0]?.openedAt).toBe("2026-05-04T12:00:00Z");
+    // State unchanged — server broadcast hasn't landed yet.
+    expect(queryWindowsByNetwork()[1]).toBeUndefined();
+    // Server push was made.
+    expect(socket.pushOpenQueryWindow).toHaveBeenCalledWith(1, "carol");
   });
 
-  it("openQueryWindowState deduplicates case-insensitively", async () => {
-    const { queryWindowsByNetwork, setQueryWindowsByNetwork, openQueryWindowState } = await import(
-      "../lib/queryWindows"
-    );
+  it("openQueryWindowState skips push when nick already open (case-insensitive dedup)", async () => {
+    const socket = await import("../lib/socket");
+    const { setQueryWindowsByNetwork, openQueryWindowState } = await import("../lib/queryWindows");
     setQueryWindowsByNetwork({
       1: [{ targetNick: "Carol", openedAt: "2026-05-04T10:00:00Z" }],
     });
     openQueryWindowState(1, "carol", "2026-05-04T12:00:00Z");
-    // No duplicate added — state unchanged
-    expect(queryWindowsByNetwork()[1]).toHaveLength(1);
-    expect(queryWindowsByNetwork()[1]?.[0]?.targetNick).toBe("Carol");
+    // No spurious round-trip when state already shows the window open.
+    // Server-side upsert would be a no-op anyway; skipping avoids a
+    // redundant identical broadcast.
+    expect(socket.pushOpenQueryWindow).not.toHaveBeenCalled();
   });
 
-  it("openQueryWindowState pushes open_query_window to socket", async () => {
+  it("openQueryWindowState pushes when nick not yet in server-authoritative state", async () => {
     const socket = await import("../lib/socket");
     const { openQueryWindowState } = await import("../lib/queryWindows");
     openQueryWindowState(1, "dave", "2026-05-04T13:00:00Z");
     expect(socket.pushOpenQueryWindow).toHaveBeenCalledWith(1, "dave");
-  });
-
-  it("openQueryWindowState does NOT push when nick is already open (dedup path)", async () => {
-    const socket = await import("../lib/socket");
-    const { setQueryWindowsByNetwork, openQueryWindowState } = await import("../lib/queryWindows");
-    setQueryWindowsByNetwork({
-      1: [{ targetNick: "eve", openedAt: "2026-05-04T10:00:00Z" }],
-    });
-    openQueryWindowState(1, "EVE", "2026-05-04T14:00:00Z");
-    // Server push is NOT made when the window is already open (avoids
-    // spurious round-trips; server is the source of truth anyway).
-    expect(socket.pushOpenQueryWindow).not.toHaveBeenCalled();
   });
 });

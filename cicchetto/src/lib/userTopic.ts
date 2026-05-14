@@ -1,5 +1,10 @@
 import { createEffect, createRoot, untrack } from "solid-js";
-import { assertNever, type QueryWindowEntry, type WireUserEvent } from "./api";
+import {
+  assertNever,
+  type MentionsBundleMessage,
+  type QueryWindowEntry,
+  type WireUserEvent,
+} from "./api";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
@@ -54,6 +59,57 @@ function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number
   return result;
 }
 
+// no-silent-drops B6.10 HIGH-11 — per-element narrowers for bundle
+// arrays. Pre-fix `narrowUserEvent` checked `Array.isArray(messages)`
+// for `mentions_bundle` and `Array.isArray(channels)` for
+// `whois_bundle` but did NOT typecheck array elements. A malformed
+// element (server bug, proxy mangling, partial response) would slip
+// through the boundary and crash a downstream renderer that read a
+// missing field. Now each element is narrowed against its wire
+// shape; any failure drops the whole bundle (loud, log-once).
+
+function narrowMentionsBundleMessage(raw: unknown): MentionsBundleMessage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.server_time !== "number" ||
+    typeof r.channel !== "string" ||
+    typeof r.sender_nick !== "string" ||
+    (r.body !== null && typeof r.body !== "string") ||
+    typeof r.kind !== "string"
+  )
+    return null;
+  return {
+    server_time: r.server_time,
+    channel: r.channel,
+    sender_nick: r.sender_nick,
+    body: r.body as string | null,
+    kind: r.kind,
+  };
+}
+
+// `whois_bundle.channels` is `string[] | null`. Wire elements arrive
+// as IRC mode-prefixed channel names (`@#italia`, `+#grappa`). Reject
+// non-string elements; preserve raw strings (cic owns the prefix
+// rendering).
+function narrowWhoisChannel(raw: unknown): string | null {
+  return typeof raw === "string" ? raw : null;
+}
+
+// Maps a per-element narrower across an array; returns the array of
+// narrowed values or null if any element fails. Strict — partial
+// bundles are server bugs, not graceful-degradation cases.
+function narrowArray<T>(raw: unknown, narrow: (el: unknown) => T | null): T[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: T[] = [];
+  for (const el of raw) {
+    const n = narrow(el);
+    if (n === null) return null;
+    out.push(n);
+  }
+  return out;
+}
+
 // Codebase audit cic M1 — runtime narrowing for WireUserEvent. The
 // `WireUserEvent` discriminated union is a TypeScript-side contract;
 // it cannot enforce shape at runtime. A malformed server push (kind
@@ -76,23 +132,25 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         kind: "query_windows_list",
         windows: r.windows as Record<string, QueryWindowEntry[]>,
       };
-    case "mentions_bundle":
+    case "mentions_bundle": {
       if (
         typeof r.network !== "string" ||
         typeof r.away_started_at !== "string" ||
         typeof r.away_ended_at !== "string" ||
-        (r.away_reason !== null && typeof r.away_reason !== "string") ||
-        !Array.isArray(r.messages)
+        (r.away_reason !== null && typeof r.away_reason !== "string")
       )
         return null;
+      const messages = narrowArray(r.messages, narrowMentionsBundleMessage);
+      if (messages === null) return null;
       return {
         kind: "mentions_bundle",
         network: r.network,
         away_started_at: r.away_started_at,
         away_ended_at: r.away_ended_at,
         away_reason: r.away_reason as string | null,
-        messages: r.messages,
+        messages,
       };
+    }
     case "away_confirmed":
       if (typeof r.network !== "string" || (r.state !== "present" && r.state !== "away"))
         return null;
@@ -130,7 +188,7 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         reason: r.reason as string | null,
         at: r.at as string | null,
       };
-    case "whois_bundle":
+    case "whois_bundle": {
       // C2 — every numeric-derived field is nullable; only network +
       // target are required. is_operator + channels also tolerate
       // missing values (boolean false / null) per Wire.whois_bundle/3
@@ -142,6 +200,10 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // Booleans default false on the server when the corresponding
       // numeric did not fire; cic narrows defensively (server bug or
       // legacy mismatch returns null).
+      //
+      // no-silent-drops B6.10 HIGH-11 — `channels` array elements are
+      // now per-element narrowed (string-only). A non-string element
+      // drops the whole bundle.
       if (
         typeof r.network !== "string" ||
         typeof r.target !== "string" ||
@@ -153,7 +215,6 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         typeof r.is_operator !== "boolean" ||
         (r.idle_seconds !== null && typeof r.idle_seconds !== "number") ||
         (r.signon !== null && typeof r.signon !== "number") ||
-        (r.channels !== null && !Array.isArray(r.channels)) ||
         typeof r.using_ssl !== "boolean" ||
         typeof r.is_registered !== "boolean" ||
         typeof r.is_admin !== "boolean" ||
@@ -168,6 +229,11 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         (r.actually_ip !== null && typeof r.actually_ip !== "string")
       )
         return null;
+      let channels: string[] | null = null;
+      if (r.channels !== null) {
+        channels = narrowArray(r.channels, narrowWhoisChannel);
+        if (channels === null) return null;
+      }
       return {
         kind: "whois_bundle",
         network: r.network,
@@ -180,7 +246,7 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         is_operator: r.is_operator,
         idle_seconds: r.idle_seconds as number | null,
         signon: r.signon as number | null,
-        channels: r.channels as string[] | null,
+        channels,
         using_ssl: r.using_ssl,
         is_registered: r.is_registered,
         is_admin: r.is_admin,
@@ -194,6 +260,7 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         actually_host: r.actually_host as string | null,
         actually_ip: r.actually_ip as string | null,
       };
+    }
     case "invite_ack":
       // P-0e + P-0f — 341 RPL_INVITING ack. Server emits structured
       // (network, channel, peer); cic appends a synthetic row to the
