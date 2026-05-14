@@ -28,10 +28,13 @@ defmodule Grappa.UserSettings do
 
   ## Known settings keys
 
-  | Key                   | Type               | Accessor(s)                     |
-  |-----------------------|--------------------|---------------------------------|
+  | Key                    | Type               | Accessor(s)                     |
+  |------------------------|--------------------|---------------------------------|
   | `"highlight_patterns"` | `list(String.t())` | `get_highlight_patterns/1`,     |
-  |                       |                    | `set_highlight_patterns/2`      |
+  |                        |                    | `set_highlight_patterns/2`      |
+  | `"notification_prefs"` | `notification_prefs()` | `get_notification_prefs/1`, |
+  |                        |                    | `put_notification_prefs/2`,     |
+  |                        |                    | `default_notification_prefs/0`  |
 
   ## Boundary
 
@@ -53,6 +56,30 @@ defmodule Grappa.UserSettings do
   alias Grappa.Accounts.User
   alias Grappa.Repo
   alias Grappa.UserSettings.Settings
+
+  @typedoc """
+  Per-user notification preferences — push-notifications cluster B3.
+
+  Five booleans + two string-list whitelists. Whitelist semantics:
+  IF `channel_messages_all` is true the `channel_messages_only` list
+  is ignored at trigger-eval time (UI greys it out, server still
+  stores the value so toggling `_all` off restores the prior list).
+  Same for `private_messages_all` / `private_messages_only`.
+
+  Channel names + nicks are stored lowercased + trimmed (set via
+  `put_notification_prefs/2`). Trigger eval (B4) uses
+  `String.downcase` on incoming message fields so the comparison
+  is case-insensitive end-to-end.
+  """
+  @type notification_prefs :: %{
+          channel_messages_all: boolean(),
+          channel_messages_only: [String.t()],
+          channel_mentions: boolean(),
+          private_messages_all: boolean(),
+          private_messages_only: [String.t()]
+        }
+
+  @notification_prefs_key "notification_prefs"
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -159,6 +186,97 @@ defmodule Grappa.UserSettings do
   end
 
   # ---------------------------------------------------------------------------
+  # notification_prefs accessors (push-notifications cluster B3)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Default notification preferences applied when a user has no row OR
+  the `"notification_prefs"` key is absent from `data`.
+
+  Defaults: channel mentions ON, all private messages ON; everything
+  else OFF. Empty whitelists. Mirrors the spec's "sensible defaults
+  for IRC users" — opt out of all-channel-noise, opt in to mentions
+  and DMs.
+
+  The spec's return type is the wider `notification_prefs()` (not the
+  Dialyzer-inferred singleton shape) so callers can pattern-match the
+  result interchangeably with `get_notification_prefs/1` results.
+  """
+  @dialyzer {:nowarn_function, default_notification_prefs: 0}
+  @spec default_notification_prefs() :: notification_prefs()
+  def default_notification_prefs do
+    %{
+      channel_messages_all: false,
+      channel_messages_only: [],
+      channel_mentions: true,
+      private_messages_all: true,
+      private_messages_only: []
+    }
+  end
+
+  @doc """
+  Returns the `notification_prefs` map for `user_id`.
+
+  Falls back to `default_notification_prefs/0` when:
+    * no settings row exists for the user;
+    * the row exists but has no `"notification_prefs"` key;
+    * the stored value is malformed (not a map).
+
+  When the stored map is partially populated (legacy row from a
+  previous shape revision), missing keys are filled from defaults
+  so the returned shape is ALWAYS a complete `notification_prefs()`.
+  Reader is side-effect-free.
+  """
+  @spec get_notification_prefs(user_id :: Ecto.UUID.t()) :: notification_prefs()
+  def get_notification_prefs(user_id) when is_binary(user_id) do
+    case Repo.get_by(Settings, user_id: user_id) do
+      nil ->
+        default_notification_prefs()
+
+      %Settings{data: data} ->
+        case data[@notification_prefs_key] do
+          %{} = stored -> merge_with_defaults(stored)
+          _ -> default_notification_prefs()
+        end
+    end
+  end
+
+  @doc """
+  Sets the `notification_prefs` map for `user_id`, preserving any
+  other keys already present in `data` (merge semantics, not
+  replace — same shape as `set_highlight_patterns/2`).
+
+  ## Validation
+
+    * At least one of the five trigger flags must be true. A prefs
+      shape with every trigger off would silently mute the user;
+      surface that as `:no_triggers_enabled` rather than persist a
+      "notifications never fire" config.
+    * `channel_messages_only` and `private_messages_only` must be
+      lists of non-empty strings. Channel names AND nicks are
+      lowercased + trimmed before persistence (IRC nicks/channels
+      are case-insensitive per RFC 2812; storing lowercased keeps
+      trigger-eval comparison cheap).
+    * Whitelists are stored even when the corresponding `_all` flag
+      is true. The UI greys them out; the server uses them only as
+      fallback at trigger-eval time. Storing means flipping `_all`
+      off restores the user's last list — better UX than discarding.
+
+  Returns `{:ok, %Settings{}}` on persistence; `{:error, changeset}`
+  with descriptive errors on either validation failure path.
+  """
+  @spec put_notification_prefs(user_id :: Ecto.UUID.t(), prefs :: notification_prefs()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_notification_prefs(user_id, prefs) when is_binary(user_id) and is_map(prefs) do
+    with {:ok, normalized} <- validate_and_normalize_prefs(prefs, user_id),
+         {:ok, settings} <- get_or_init(user_id) do
+      merged_data = Map.put(settings.data, @notification_prefs_key, stringify_prefs(normalized))
+      cs = Settings.changeset(settings, %{data: merged_data})
+      Repo.update(cs)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
 
@@ -212,5 +330,137 @@ defmodule Grappa.UserSettings do
 
       {:error, cs}
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # notification_prefs helpers
+  # ---------------------------------------------------------------------------
+
+  @prefs_bool_keys ~w(channel_messages_all channel_mentions private_messages_all)a
+  @prefs_list_keys ~w(channel_messages_only private_messages_only)a
+  @prefs_trigger_keys ~w(channel_messages_all channel_mentions private_messages_all)a
+
+  # Reads atom + string keys from `stored` (post-DB-roundtrip is string),
+  # fills missing keys from defaults so the returned shape is always
+  # the full notification_prefs() type.
+  @spec merge_with_defaults(map()) :: notification_prefs()
+  defp merge_with_defaults(stored) do
+    defaults = default_notification_prefs()
+
+    bools =
+      Map.new(@prefs_bool_keys, fn key ->
+        {key, read_bool(stored, key, Map.fetch!(defaults, key))}
+      end)
+
+    lists =
+      Map.new(@prefs_list_keys, fn key ->
+        {key, read_list(stored, key, Map.fetch!(defaults, key))}
+      end)
+
+    Map.merge(bools, lists)
+  end
+
+  defp read_bool(stored, key, default) do
+    case Map.get(stored, key, Map.get(stored, Atom.to_string(key))) do
+      v when is_boolean(v) -> v
+      _ -> default
+    end
+  end
+
+  defp read_list(stored, key, default) do
+    case Map.get(stored, key, Map.get(stored, Atom.to_string(key))) do
+      list when is_list(list) -> Enum.filter(list, &(is_binary(&1) and byte_size(&1) > 0))
+      _ -> default
+    end
+  end
+
+  # Validates trigger-enabled invariant + normalizes whitelist members.
+  # Whitelists are normalized regardless of corresponding `_all` flag —
+  # storing the user's list lets the UI restore it when `_all` is toggled
+  # off later.
+  @spec validate_and_normalize_prefs(map(), Ecto.UUID.t()) ::
+          {:ok, notification_prefs()} | {:error, Ecto.Changeset.t()}
+  defp validate_and_normalize_prefs(prefs, user_id) do
+    with {:ok, bools} <- cast_bools(prefs, user_id),
+         {:ok, lists} <- cast_lists(prefs, user_id),
+         normalized = Map.merge(bools, lists),
+         :ok <- ensure_at_least_one_trigger(normalized, user_id) do
+      {:ok, normalized}
+    end
+  end
+
+  defp cast_bools(prefs, user_id), do: cast_bools(@prefs_bool_keys, prefs, user_id, %{})
+  defp cast_bools([], _, _, acc), do: {:ok, acc}
+
+  defp cast_bools([key | rest], prefs, user_id, acc) do
+    case fetch_bool(prefs, key) do
+      {:ok, v} ->
+        cast_bools(rest, prefs, user_id, Map.put(acc, key, v))
+
+      :error ->
+        {:error, prefs_changeset_error("#{key} must be a boolean", user_id)}
+    end
+  end
+
+  defp cast_lists(prefs, user_id), do: cast_lists(@prefs_list_keys, prefs, user_id, %{})
+  defp cast_lists([], _, _, acc), do: {:ok, acc}
+
+  defp cast_lists([key | rest], prefs, user_id, acc) do
+    case fetch_list(prefs, key) do
+      {:ok, v} ->
+        cast_lists(rest, prefs, user_id, Map.put(acc, key, normalize_list(v)))
+
+      {:error, reason} ->
+        {:error, prefs_changeset_error("#{key} #{reason}", user_id)}
+    end
+  end
+
+  defp fetch_bool(prefs, key) do
+    case Map.get(prefs, key, Map.get(prefs, Atom.to_string(key))) do
+      v when is_boolean(v) -> {:ok, v}
+      _ -> :error
+    end
+  end
+
+  defp fetch_list(prefs, key) do
+    case Map.get(prefs, key, Map.get(prefs, Atom.to_string(key))) do
+      list when is_list(list) ->
+        if Enum.all?(list, &is_binary/1),
+          do: {:ok, list},
+          else: {:error, "elements must be strings"}
+
+      _ ->
+        {:error, "must be a list of strings"}
+    end
+  end
+
+  # lowercase + trim + drop empties + dedup. Preserves order on first occurrence.
+  defp normalize_list(list) do
+    list
+    |> Enum.map(&(&1 |> String.trim() |> String.downcase()))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp ensure_at_least_one_trigger(prefs, user_id) do
+    if Enum.any?(@prefs_trigger_keys, &Map.fetch!(prefs, &1)) do
+      :ok
+    else
+      {:error, prefs_changeset_error("at least one trigger must be enabled", user_id)}
+    end
+  end
+
+  defp prefs_changeset_error(message, user_id) do
+    %Settings{}
+    |> Settings.changeset(%{user_id: user_id, data: %{}})
+    |> Ecto.Changeset.add_error(:notification_prefs, message)
+  end
+
+  # Convert atom-keyed prefs to string-keyed before persisting so the
+  # in-memory shape matches the post-DB-roundtrip shape — readers always
+  # see string keys, no atom-vs-string drift.
+  @spec stringify_prefs(notification_prefs()) :: %{String.t() => term()}
+  defp stringify_prefs(prefs) do
+    Map.new(prefs, fn {k, v} -> {Atom.to_string(k), v} end)
   end
 end

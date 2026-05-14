@@ -96,6 +96,15 @@ defmodule GrappaWeb.Router do
     delete "/auth/logout", AuthController, :logout
     get "/me", MeController, :show
 
+    # Per-user settings — push notifications cluster B3 (2026-05-14).
+    # First exposed accessor: notification_prefs. User-only (visitors
+    # get :forbidden inside the controller); persists into the existing
+    # `user_settings.data` JSON column via Grappa.UserSettings typed
+    # accessors. Future per-key accessors plug in here as additional
+    # routes, not by widening /me.
+    get "/me/settings/notification-prefs", UserSettingsController, :show_notification_prefs
+    put "/me/settings/notification-prefs", UserSettingsController, :update_notification_prefs
+
     get "/networks", NetworksController, :index
 
     # Push notifications cluster B1 (2026-05-14) — Web Push

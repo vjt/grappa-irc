@@ -267,4 +267,239 @@ defmodule Grappa.UserSettingsTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # notification_prefs accessors (push-notifications cluster B3)
+  # ---------------------------------------------------------------------------
+
+  describe "default_notification_prefs/0" do
+    test "returns the documented default shape (mentions ON, DMs ON, channels OFF)" do
+      defaults = UserSettings.default_notification_prefs()
+
+      assert defaults == %{
+               channel_messages_all: false,
+               channel_messages_only: [],
+               channel_mentions: true,
+               private_messages_all: true,
+               private_messages_only: []
+             }
+    end
+  end
+
+  describe "get_notification_prefs/1" do
+    test "returns defaults when no settings row exists" do
+      fake_id = Ecto.UUID.generate()
+
+      assert UserSettings.get_notification_prefs(fake_id) ==
+               UserSettings.default_notification_prefs()
+    end
+
+    test "returns defaults when row exists but no notification_prefs key" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init(user.id)
+
+      assert UserSettings.get_notification_prefs(user.id) ==
+               UserSettings.default_notification_prefs()
+    end
+
+    test "returns defaults when stored value is malformed (not a map)" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init(user.id)
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"notification_prefs" => "not-a-map"}}))
+
+      assert UserSettings.get_notification_prefs(user.id) ==
+               UserSettings.default_notification_prefs()
+    end
+
+    test "merges partially-populated stored prefs with defaults" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init(user.id)
+
+      # Persist only a subset of keys (legacy / cross-version row).
+      Repo.update!(
+        Settings.changeset(settings, %{
+          data: %{
+            "notification_prefs" => %{
+              "channel_messages_all" => true,
+              "channel_messages_only" => ["#italia"]
+            }
+          }
+        })
+      )
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_messages_all == true
+      assert result.channel_messages_only == ["#italia"]
+      # Missing keys filled from defaults.
+      assert result.channel_mentions == true
+      assert result.private_messages_all == true
+      assert result.private_messages_only == []
+    end
+
+    test "drops empty strings from stored whitelist on read (defensive)" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init(user.id)
+
+      Repo.update!(
+        Settings.changeset(settings, %{
+          data: %{
+            "notification_prefs" => %{
+              "channel_mentions" => true,
+              "channel_messages_only" => ["#valid", "", "#italia"]
+            }
+          }
+        })
+      )
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_messages_only == ["#valid", "#italia"]
+    end
+  end
+
+  describe "put_notification_prefs/2" do
+    test "persists a complete prefs map and reads back identically" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: ["#sbiffo"],
+        channel_mentions: true,
+        private_messages_all: false,
+        private_messages_only: ["alice"]
+      }
+
+      assert {:ok, %Settings{}} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert UserSettings.get_notification_prefs(user.id) == prefs
+    end
+
+    test "lowercases + trims whitelist members" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: ["  #SBiffo  ", "#Italia"],
+        channel_mentions: true,
+        private_messages_all: false,
+        private_messages_only: ["  Alice ", "BOB"]
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_messages_only == ["#sbiffo", "#italia"]
+      assert result.private_messages_only == ["alice", "bob"]
+    end
+
+    test "deduplicates whitelist members preserving first-occurrence order" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: ["#a", "#b", "#A", "#c", "#B"],
+        channel_mentions: true,
+        private_messages_all: true,
+        private_messages_only: []
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_messages_only == ["#a", "#b", "#c"]
+    end
+
+    test "stores whitelist even when corresponding _all is true (UI fallback)" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: true,
+        channel_messages_only: ["#sbiffo"],
+        channel_mentions: true,
+        private_messages_all: true,
+        private_messages_only: ["alice"]
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_messages_only == ["#sbiffo"]
+      assert result.private_messages_only == ["alice"]
+    end
+
+    test "rejects when no trigger is enabled" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: [],
+        channel_mentions: false,
+        private_messages_all: false,
+        private_messages_only: []
+      }
+
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+    end
+
+    test "tolerates string-keyed prefs (post-JSON-decode shape)" do
+      user = user_fixture()
+
+      prefs = %{
+        "channel_messages_all" => false,
+        "channel_messages_only" => ["#italia"],
+        "channel_mentions" => true,
+        "private_messages_all" => true,
+        "private_messages_only" => []
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+
+      result = UserSettings.get_notification_prefs(user.id)
+      assert result.channel_mentions == true
+      assert result.channel_messages_only == ["#italia"]
+    end
+
+    test "rejects when a boolean field has a non-boolean value" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: [],
+        channel_mentions: "yes",
+        private_messages_all: true,
+        private_messages_only: []
+      }
+
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+    end
+
+    test "rejects when a list field is not a list" do
+      user = user_fixture()
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: "#italia",
+        channel_mentions: true,
+        private_messages_all: true,
+        private_messages_only: []
+      }
+
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_notification_prefs(user.id, prefs)
+    end
+
+    test "preserves other data keys (highlight_patterns) when writing prefs" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.set_highlight_patterns(user.id, ["foo", "bar"])
+
+      prefs = %{
+        channel_messages_all: false,
+        channel_messages_only: [],
+        channel_mentions: true,
+        private_messages_all: true,
+        private_messages_only: []
+      }
+
+      assert {:ok, _} = UserSettings.put_notification_prefs(user.id, prefs)
+      assert UserSettings.get_highlight_patterns(user.id) == ["foo", "bar"]
+    end
+  end
 end
