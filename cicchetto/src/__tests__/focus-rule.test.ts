@@ -42,20 +42,22 @@ vi.mock("../lib/api", () => ({
     if (me.kind === "visitor") return me.network_slug === net.slug ? (me.nick ?? null) : null;
     return net.nick && net.nick !== "" ? net.nick : null;
   },
-  // Bucket F H4: lib/networks resource calls tagNetwork to promote
-  // raw wire shapes to the discriminated Network union. Mirror the
-  // production behavior with a test-flexibility relaxation: default
-  // connection_state to "connected" so existing fixtures that omit
-  // it continue to promote; the `nick === ""` branch still drops to
-  // match the cic H4 contract violation behavior.
+  // HIGH-24 (no-silent-drops B6.9a 2026-05-14): tagNetwork now reads
+  // the discriminator off `raw.kind` instead of taking a subjectKind
+  // arg. The mock mirrors the production single-arg signature; legacy
+  // fixtures that omit `kind` default to "user" to match the most
+  // common test path.
   tagNetwork: (
-    raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
-      string,
-      unknown
-    >,
-    subjectKind: "user" | "visitor",
+    raw: {
+      kind?: "user" | "visitor";
+      id: number;
+      slug: string;
+      nick?: string;
+      connection_state?: string;
+    } & Record<string, unknown>,
   ) => {
-    if (subjectKind === "visitor") {
+    const kind = raw.kind ?? "user";
+    if (kind === "visitor") {
       return {
         kind: "visitor",
         id: raw.id,

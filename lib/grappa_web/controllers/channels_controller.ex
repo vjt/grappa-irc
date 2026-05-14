@@ -44,7 +44,7 @@ defmodule GrappaWeb.ChannelsController do
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credentials, Network}
   alias Grappa.{Session, Visitors}
-  alias GrappaWeb.Subject
+  alias GrappaWeb.{BodyLimit, Subject}
 
   @doc """
   `GET /networks/:network_id/channels` — lists the subject's channels
@@ -206,7 +206,8 @@ defmodule GrappaWeb.ChannelsController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
-    with :ok <- validate_channel_name(channel),
+    with :ok <- BodyLimit.check(body),
+         :ok <- validate_channel_name(channel),
          {:ok, _} <- Session.send_topic(subject, network.id, channel, body) do
       conn
       |> put_status(:accepted)

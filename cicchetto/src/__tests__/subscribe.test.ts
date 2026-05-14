@@ -50,20 +50,22 @@ vi.mock("../lib/api", () => ({
   //
   // Test-flexibility relaxation: production tagNetwork drops a row
   // when `connection_state` is missing on the user branch — but the
-  // existing `mockResolvedValue([{ id, slug, nick, inserted_at,
-  // updated_at }])` shapes scattered across this 60-test file omit it.
-  // Default connection_state to "connected" so those rows continue to
-  // promote; tests that specifically exercise the parked/failed
-  // cascade override it explicitly. The `nick === ""` branch still
-  // drops to match the cic H4 contract violation behavior.
+  // HIGH-24 (no-silent-drops B6.9a 2026-05-14): tagNetwork now reads
+  // the discriminator off `raw.kind` instead of taking a subjectKind
+  // arg. The mock mirrors the production single-arg signature; legacy
+  // fixtures that omit `kind` default to "user" to match the most
+  // common test path.
   tagNetwork: (
-    raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
-      string,
-      unknown
-    >,
-    subjectKind: "user" | "visitor",
+    raw: {
+      kind?: "user" | "visitor";
+      id: number;
+      slug: string;
+      nick?: string;
+      connection_state?: string;
+    } & Record<string, unknown>,
   ) => {
-    if (subjectKind === "visitor") {
+    const kind = raw.kind ?? "user";
+    if (kind === "visitor") {
       return {
         kind: "visitor",
         id: raw.id,
@@ -2747,13 +2749,16 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
         return net.nick && net.nick !== "" ? net.nick : null;
       },
       tagNetwork: (
-        raw: { id: number; slug: string; nick?: string; connection_state?: string } & Record<
-          string,
-          unknown
-        >,
-        subjectKind: "user" | "visitor",
+        raw: {
+          kind?: "user" | "visitor";
+          id: number;
+          slug: string;
+          nick?: string;
+          connection_state?: string;
+        } & Record<string, unknown>,
       ) => {
-        if (subjectKind === "visitor") {
+        const kind = raw.kind ?? "user";
+        if (kind === "visitor") {
           return {
             kind: "visitor",
             id: raw.id,

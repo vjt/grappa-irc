@@ -56,13 +56,13 @@ defmodule Grappa.ReadCursor do
     # `Grappa.Scrollback`'s `dirty_xrefs` rationale: the FK reference
     # carries no behaviour we'd want Boundary to gate.
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Cursor]
+    exports: [Cursor, Wire]
 
   import Ecto.Query
 
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
-  alias Grappa.ReadCursor.Cursor
+  alias Grappa.ReadCursor.{Cursor, Wire}
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
 
@@ -201,11 +201,7 @@ defmodule Grappa.ReadCursor do
       when is_binary(user_name) and is_binary(network_slug) and is_binary(channel) and
              is_integer(last_read_message_id) do
     topic = Topic.channel(user_name, network_slug, channel)
-
-    Grappa.PubSub.broadcast_event(topic, %{
-      kind: "read_cursor_set",
-      last_read_message_id: last_read_message_id
-    })
+    Grappa.PubSub.broadcast_event(topic, Wire.read_cursor_set(last_read_message_id))
   end
 
   # ---------------------------------------------------------------------------

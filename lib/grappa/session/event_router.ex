@@ -1576,30 +1576,55 @@ defmodule Grappa.Session.EventRouter do
   # entries. S2.4: evict userhost_cache for the kicked nick (same
   # channel-overlap logic as PART). Extracted from the route clause to
   # keep cyclomatic complexity below the Credo gate.
+  #
+  # HIGH-31 (no-silent-drops B6.9a 2026-05-14): pre-fix this was a
+  # 3-arm `cond` chain mixing the discriminant (self vs other vs
+  # absent) with the per-branch state surgery. Splitting into
+  # `kick_classification/3` (atom dispatch) + 3 named clauses lets each
+  # branch's state effect read at the function-clause head — a future
+  # reader of "what does self-KICK touch?" jumps straight to
+  # `apply_kick_effect(:self, ...)` without scanning the cond's
+  # predicate column.
   @spec kick_state_update(state(), String.t(), String.t()) ::
           {%{String.t() => %{String.t() => [String.t()]}}, %{String.t() => topic_entry()},
            %{String.t() => channel_mode_entry()}, userhost_cache()}
   defp kick_state_update(state, channel, target) do
+    apply_kick_effect(kick_classification(state, channel, target), state, channel, target)
+  end
+
+  @spec kick_classification(state(), String.t(), String.t()) :: :self | :other | :absent
+  defp kick_classification(state, channel, target) do
+    cond do
+      target == state.nick -> :self
+      Map.has_key?(state.members, channel) -> :other
+      true -> :absent
+    end
+  end
+
+  @spec apply_kick_effect(:self | :other | :absent, state(), String.t(), String.t()) ::
+          {%{String.t() => %{String.t() => [String.t()]}}, %{String.t() => topic_entry()},
+           %{String.t() => channel_mode_entry()}, userhost_cache()}
+  defp apply_kick_effect(:self, state, channel, target) do
     chan_key = normalize_channel(channel)
     cache = Map.get(state, :userhost_cache, %{})
+    new_members = Map.delete(state.members, channel)
+    new_cache = evict_cache_if_no_overlap(cache, new_members, target)
 
-    cond do
-      target == state.nick ->
-        new_members = Map.delete(state.members, channel)
-        new_cache = evict_cache_if_no_overlap(cache, new_members, target)
+    {new_members, Map.delete(Map.get(state, :topics, %{}), chan_key),
+     Map.delete(Map.get(state, :channel_modes, %{}), chan_key), new_cache}
+  end
 
-        {new_members, Map.delete(Map.get(state, :topics, %{}), chan_key),
-         Map.delete(Map.get(state, :channel_modes, %{}), chan_key), new_cache}
+  defp apply_kick_effect(:other, state, channel, target) do
+    cache = Map.get(state, :userhost_cache, %{})
+    new_members = Map.update!(state.members, channel, &Map.delete(&1, target))
+    new_cache = evict_cache_if_no_overlap(cache, new_members, target)
 
-      Map.has_key?(state.members, channel) ->
-        new_members = Map.update!(state.members, channel, &Map.delete(&1, target))
-        new_cache = evict_cache_if_no_overlap(cache, new_members, target)
+    {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
+  end
 
-        {new_members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), new_cache}
-
-      true ->
-        {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), cache}
-    end
+  defp apply_kick_effect(:absent, state, _, _) do
+    cache = Map.get(state, :userhost_cache, %{})
+    {state.members, Map.get(state, :topics, %{}), Map.get(state, :channel_modes, %{}), cache}
   end
 
   @spec evict_cache_if_no_overlap(

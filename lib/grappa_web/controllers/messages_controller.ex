@@ -52,7 +52,7 @@ defmodule GrappaWeb.MessagesController do
   import GrappaWeb.Validation, only: [validate_target_name: 1, validate_post_target_name: 1]
 
   alias Grappa.{Scrollback, Session}
-  alias GrappaWeb.Subject
+  alias GrappaWeb.{BodyLimit, Subject}
 
   @default_limit 50
   @max_http_limit 200
@@ -146,7 +146,8 @@ defmodule GrappaWeb.MessagesController do
     # The body's CRLF/NUL check happens inside Session.send_privmsg
     # and surfaces as :invalid_line. Two distinct error tags so client
     # UX can branch.
-    with :ok <- validate_post_target_name(channel),
+    with :ok <- BodyLimit.check(body),
+         :ok <- validate_post_target_name(channel),
          {:ok, message} <- Session.send_privmsg(subject, network.id, channel, body) do
       # `:network` is preloaded by `Scrollback.persist_event/1` —
       # the Session contract returns a wire-shape-ready row. Don't

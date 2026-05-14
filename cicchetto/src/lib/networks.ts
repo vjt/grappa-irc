@@ -59,16 +59,18 @@ const exports = createRoot(() => {
   });
 
   // Networks resource is keyed on `user` (not raw token) so the
-  // boundary tagger has the subject kind to discriminate each row.
-  // Per bucket F H4: server emits two implicit shapes (visitor: bare;
-  // user: nick + connection_state fields) but no explicit `kind`
-  // discriminator; cic injects it here at the fetch boundary so every
-  // downstream consumer narrows via `network.kind === "user"` instead
-  // of probing for `network.connection_state ?? ...` defensively.
-  // tagNetwork drops rows that fail the user-subject contract (missing
-  // nick or connection_state) — the missing-nick branch was the cic
-  // H3 silent root cause; H4 closes it at the boundary so it can't
-  // leak into the typed store.
+  // boundary tagger reads the explicit server-set `kind` discriminator
+  // off each row (no-silent-drops B6.9a HIGH-24). Pre-fix the server
+  // emitted two implicit shapes (visitor: bare; user: nick +
+  // connection_state fields) and cic joined against `me().kind` to
+  // tag — correct but added a silent dependency on /me being fetched
+  // first, AND a discriminator drift between the server's me-render
+  // and the network shape would mis-tag every row. Server now sets
+  // `kind: "user" | "visitor"` so cic reads the discriminator AT the
+  // source. tagNetwork drops rows that fail the user-subject contract
+  // (missing nick or connection_state) — the missing-nick branch was
+  // the cic H3 silent root cause; H4 closed it at the boundary so it
+  // can't leak into the typed store.
   const [networks, { mutate: mutateNetworksResource, refetch: refetchNetworksResource }] =
     createResource<Network[], MeResponse | null>(user, async (currentMe) => {
       if (!currentMe) return [];
@@ -77,7 +79,7 @@ const exports = createRoot(() => {
       const raw: RawNetwork[] = await listNetworks(t);
       const tagged: Network[] = [];
       for (const r of raw) {
-        const n = tagNetwork(r, currentMe.kind);
+        const n = tagNetwork(r);
         if (n !== null) tagged.push(n);
       }
       return tagged;

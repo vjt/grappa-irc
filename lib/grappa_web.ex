@@ -27,7 +27,8 @@ defmodule GrappaWeb do
       Grappa.SpawnOrchestrator,
       Grappa.UserSettings,
       Grappa.Visitors,
-      Grappa.WSPresence
+      Grappa.WSPresence,
+      GrappaWeb.BodyLimit
     ],
     exports: [Endpoint]
 

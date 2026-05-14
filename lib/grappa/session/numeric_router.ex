@@ -328,17 +328,33 @@ defmodule Grappa.Session.NumericRouter do
 
   @spec param_derived_route(1..999, Message.t(), router_state()) :: routing_decision()
   defp param_derived_route(code, msg, state) do
+    route_for_class(numeric_class(code), msg, state)
+  end
+
+  # HIGH-31 (no-silent-drops B6.9a 2026-05-14): pre-fix this was a
+  # 3-arm `cond` chain inside `param_derived_route/3`, mixing the
+  # class-membership predicate with the routing branch. Splitting the
+  # classification (numeric → atom) from the dispatch (atom →
+  # routing_decision) lets each pattern-match clause name its outcome
+  # at the head — a future reader doesn't have to scan a predicate
+  # column to know what each branch does. `MapSet.member?/2` is the
+  # right shape for the constant-time membership check; pattern
+  # matching is the right shape for the named-outcome dispatch. Both
+  # primitives stay in their lane.
+  @spec numeric_class(1..999) :: :delegated | :active | :scan
+  defp numeric_class(code) do
     cond do
-      MapSet.member?(@delegated_numerics, code) ->
-        :delegated
-
-      MapSet.member?(@active_numerics, code) ->
-        {:server, nil}
-
-      true ->
-        scan_params(msg.params, state)
+      MapSet.member?(@delegated_numerics, code) -> :delegated
+      MapSet.member?(@active_numerics, code) -> :active
+      true -> :scan
     end
   end
+
+  @spec route_for_class(:delegated | :active | :scan, Message.t(), router_state()) ::
+          routing_decision()
+  defp route_for_class(:delegated, _, _), do: :delegated
+  defp route_for_class(:active, _, _), do: {:server, nil}
+  defp route_for_class(:scan, msg, state), do: scan_params(msg.params, state)
 
   # Walk the params skipping params[0] (own-nick echo) and the last element
   # (trailing human-readable text). The first channel-prefix param wins; if

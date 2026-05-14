@@ -465,6 +465,7 @@ describe("tagNetwork (bucket F H4)", () => {
   // typed store sees them.
 
   const rawComplete: api.RawNetwork = {
+    kind: "user",
     id: 7,
     slug: "azzurra",
     nick: "grappa",
@@ -476,14 +477,15 @@ describe("tagNetwork (bucket F H4)", () => {
   };
 
   const rawBare: api.RawNetwork = {
+    kind: "user",
     id: 8,
     slug: "guest-net",
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
 
-  it("subjectKind=visitor → returns VisitorNetwork (bare; ignores user-only fields)", () => {
-    const out = api.tagNetwork(rawComplete, "visitor");
+  it("kind=visitor → returns VisitorNetwork (bare; ignores user-only fields)", () => {
+    const out = api.tagNetwork({ ...rawComplete, kind: "visitor" });
     expect(out).not.toBeNull();
     expect(out?.kind).toBe("visitor");
     expect(out).toEqual({
@@ -495,8 +497,8 @@ describe("tagNetwork (bucket F H4)", () => {
     });
   });
 
-  it("subjectKind=user + complete raw → returns UserNetwork", () => {
-    const out = api.tagNetwork(rawComplete, "user");
+  it("kind=user + complete raw → returns UserNetwork", () => {
+    const out = api.tagNetwork(rawComplete);
     expect(out).not.toBeNull();
     expect(out?.kind).toBe("user");
     if (out?.kind === "user") {
@@ -505,32 +507,33 @@ describe("tagNetwork (bucket F H4)", () => {
     }
   });
 
-  it("subjectKind=user + missing nick → returns null + logs", () => {
+  it("kind=user + missing nick → returns null + logs", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(api.tagNetwork(rawBare, "user")).toBeNull();
+    expect(api.tagNetwork(rawBare)).toBeNull();
     expect(errSpy).toHaveBeenCalledTimes(1);
     expect(errSpy.mock.calls[0]?.[0]).toContain("guest-net");
     expect(errSpy.mock.calls[0]?.[0]).toContain("cic H4");
     errSpy.mockRestore();
   });
 
-  it("subjectKind=user + empty-string nick → returns null + logs", () => {
+  it("kind=user + empty-string nick → returns null + logs", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(api.tagNetwork({ ...rawComplete, nick: "" }, "user")).toBeNull();
+    expect(api.tagNetwork({ ...rawComplete, nick: "" })).toBeNull();
     expect(errSpy).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
   });
 
-  it("subjectKind=user + missing connection_state → returns null + logs", () => {
+  it("kind=user + missing connection_state → returns null + logs", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const partial: api.RawNetwork = {
+      kind: "user",
       id: 9,
       slug: "needsconn",
       nick: "vjt",
       inserted_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     };
-    expect(api.tagNetwork(partial, "user")).toBeNull();
+    expect(api.tagNetwork(partial)).toBeNull();
     expect(errSpy).toHaveBeenCalledTimes(1);
     errSpy.mockRestore();
   });

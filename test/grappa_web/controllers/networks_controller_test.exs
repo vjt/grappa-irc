@@ -66,6 +66,10 @@ defmodule GrappaWeb.NetworksControllerTest do
       # subscribe to the correct DM topic (channel:<nick>) and to avoid the
       # own-nick clash when user.name matches a query window targetNick.
       assert is_binary(first["nick"])
+      # HIGH-24 (no-silent-drops B6.9a 2026-05-14): explicit kind
+      # discriminator on the wire so cic doesn't have to join against
+      # /me to tag the network shape.
+      assert first["kind"] == "user"
     end
 
     test "nick in response matches the credential's configured IRC nick", %{conn: conn} do
@@ -189,6 +193,10 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert length(body) == 1
       assert hd(body)["slug"] == network.slug
       assert hd(body)["id"] == network.id
+      # HIGH-24 (no-silent-drops B6.9a 2026-05-14): explicit kind
+      # discriminator on the wire so cic doesn't have to join against
+      # /me to tag the network shape.
+      assert hd(body)["kind"] == "visitor"
     end
 
     test "does not include other visitors' networks (per-visitor iso)", %{conn: conn} do

@@ -66,14 +66,26 @@ defmodule GrappaWeb.AdminController do
 
       hash when is_binary(hash) ->
         payload = CicWire.bundle_hash(hash)
+        user_names = WSPresence.list_user_names()
+        attempted = length(user_names)
 
-        for user_name <- WSPresence.list_user_names() do
-          # broadcast_event/2 returns `:ok | {:error, term()}` (HIGH-5
-          # surfacing). HIGH-17 (deferred to B6.9a) will add per-target
-          # accounting + telemetry; for now the discard is documented
-          # so future-Dialyzer doesn't re-flag it.
-          _ = GrappaPubSub.broadcast_event(Topic.user(user_name), payload)
-        end
+        # HIGH-17 (no-silent-drops B6.9a 2026-05-14): per-target
+        # accounting via fan-out telemetry. Pre-fix the for-comprehension
+        # discarded `broadcast_event/2`'s `:ok | {:error, _}` return — the
+        # operator's `scripts/deploy-cic.sh` would print "ok <hash>" with
+        # no signal that 0 of N targets received the push. Now a single
+        # summary event documents attempted/succeeded/failed so a
+        # downstream PromEx alarm can fire on `failed > 0`.
+        succeeded =
+          Enum.count(user_names, fn user_name ->
+            GrappaPubSub.broadcast_event(Topic.user(user_name), payload) == :ok
+          end)
+
+        :telemetry.execute(
+          [:grappa, :admin, :cic_bundle_fanout],
+          %{attempted: attempted, succeeded: succeeded, failed: attempted - succeeded},
+          %{hash: hash}
+        )
 
         text(conn, hash)
     end

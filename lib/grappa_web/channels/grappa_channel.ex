@@ -152,6 +152,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.Session.Wire, as: SessionWire
+  alias GrappaWeb.BodyLimit
 
   @typedoc "Wire payload for `topic_changed` events pushed by this channel."
   @type topic_changed_payload :: %{
@@ -293,17 +294,7 @@ defmodule GrappaWeb.GrappaChannel do
       {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
     else
       origin_window = Map.get(payload, "origin_window")
-
-      with {:ok, user} <- safe_get_user(user_name),
-           {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
-           :ok <- dispatch_set_away(user, network, reason, origin_window) do
-        {:reply, :ok, socket}
-      else
-        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-        {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
-        {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-        {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_reason"}}, socket}
-      end
+      with_body_check(socket, reason, fn -> away_set_dispatch(socket, user_name, slug, reason, origin_window) end)
     end
   end
 
@@ -416,11 +407,13 @@ defmodule GrappaWeb.GrappaChannel do
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(nick) and
              is_binary(reason) do
-    dispatch_ops_verb(
-      socket,
-      fn -> validate_args(channel: channel, nick: nick, line: reason) end,
-      fn user -> Session.send_kick({:user, user.id}, network_id, channel, nick, reason) end
-    )
+    with_body_check(socket, reason, fn ->
+      dispatch_ops_verb(
+        socket,
+        fn -> validate_args(channel: channel, nick: nick, line: reason) end,
+        fn user -> Session.send_kick({:user, user.id}, network_id, channel, nick, reason) end
+      )
+    end)
   end
 
   # /ban *!*@evil.com or /ban alice (bare nick → mask derivation in Server)
@@ -602,11 +595,13 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(modes) do
-    dispatch_ops_verb(
-      socket,
-      fn -> validate_args(line: modes) end,
-      fn user -> Session.send_umode({:user, user.id}, network_id, modes) end
-    )
+    with_body_check(socket, modes, fn ->
+      dispatch_ops_verb(
+        socket,
+        fn -> validate_args(line: modes) end,
+        fn user -> Session.send_umode({:user, user.id}, network_id, modes) end
+      )
+    end)
   end
 
   # /mode #chan +o-v alice bob  →  MODE #chan +o-v alice bob (verbatim, no chunking)
@@ -616,11 +611,13 @@ defmodule GrappaWeb.GrappaChannel do
         socket
       )
       when is_integer(network_id) and is_binary(target) and is_binary(modes) and is_list(params) do
-    dispatch_ops_verb(
-      socket,
-      fn -> validate_args(line: target, line: modes, params: params) end,
-      fn user -> Session.send_mode({:user, user.id}, network_id, target, modes, params) end
-    )
+    with_body_check(socket, modes, fn ->
+      dispatch_ops_verb(
+        socket,
+        fn -> validate_args(line: target, line: modes, params: params) end,
+        fn user -> Session.send_mode({:user, user.id}, network_id, target, modes, params) end
+      )
+    end)
   end
 
   # /topic <text>  →  TOPIC #chan :<text>
@@ -646,20 +643,7 @@ defmodule GrappaWeb.GrappaChannel do
       )
       when is_integer(network_id) and is_binary(channel) and is_binary(text) do
     user_name = socket.assigns.user_name
-
-    with {:ok, _} <- validate_args(channel: channel, line: text),
-         {:ok, _} <- check_not_visitor(user_name),
-         {:ok, user} <- safe_get_user(user_name),
-         {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
-      {:reply, :ok, socket}
-    else
-      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, _} -> {:reply, {:error, %{reason: "persist_failed"}}, socket}
-    end
+    with_body_check(socket, text, fn -> topic_set_dispatch(socket, user_name, network_id, channel, text) end)
   end
 
   # /topic -delete  →  TOPIC #chan : (empty trailing — irssi convention, S5.4)
@@ -1147,6 +1131,77 @@ defmodule GrappaWeb.GrappaChannel do
       {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+    end
+  end
+
+  # HIGH-19 (no-silent-drops B6.9a 2026-05-14): inline body cap wrapper
+  # for ops verbs that thread free-form text upstream (kick reason,
+  # umode/mode modes string). Pre-checks `BodyLimit.check/1` before
+  # `dispatch_ops_verb/3`; oversize input replies `body_too_large`
+  # without ever entering the with chain. Dialyzer's success-typing
+  # narrows the with-chain `else` arms based on actual reachable
+  # validator outputs, so adding a `:body_too_large` arm to
+  # `dispatch_ops_verb`'s `else` triggers `pattern_match never matches`
+  # — the explicit pre-check side-steps that and keeps the with chain
+  # focused on identifier-shape validation.
+  @spec with_body_check(
+          Phoenix.Socket.t(),
+          binary(),
+          (-> {:reply, term(), Phoenix.Socket.t()})
+        ) :: {:reply, term(), Phoenix.Socket.t()}
+  defp with_body_check(socket, body, dispatch_thunk) when is_binary(body) do
+    case BodyLimit.check(body) do
+      :ok -> dispatch_thunk.()
+      {:error, :body_too_large} -> {:reply, {:error, %{reason: "body_too_large"}}, socket}
+    end
+  end
+
+  # Extracted from `handle_in("topic_set", ...)` to keep that clause
+  # below Credo's nesting depth gate after the `with_body_check`
+  # wrapper landed (HIGH-19).
+  @spec topic_set_dispatch(
+          Phoenix.Socket.t(),
+          String.t(),
+          integer(),
+          String.t(),
+          String.t()
+        ) :: {:reply, term(), Phoenix.Socket.t()}
+  defp topic_set_dispatch(socket, user_name, network_id, channel, text) do
+    with {:ok, _} <- validate_args(channel: channel, line: text),
+         {:ok, _} <- check_not_visitor(user_name),
+         {:ok, user} <- safe_get_user(user_name),
+         {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
+      {:reply, :ok, socket}
+    else
+      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, _} -> {:reply, {:error, %{reason: "persist_failed"}}, socket}
+    end
+  end
+
+  # Extracted from `handle_in("away", action: "set", ...)` to keep
+  # that clause below Credo's nesting depth gate after the
+  # `with_body_check` wrapper landed (HIGH-19).
+  @spec away_set_dispatch(
+          Phoenix.Socket.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil
+        ) :: {:reply, term(), Phoenix.Socket.t()}
+  defp away_set_dispatch(socket, user_name, slug, reason, origin_window) do
+    with {:ok, user} <- safe_get_user(user_name),
+         {:ok, %Network{} = network} <- Networks.get_network_by_slug(slug),
+         :ok <- dispatch_set_away(user, network, reason, origin_window) do
+      {:reply, :ok, socket}
+    else
+      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_reason"}}, socket}
     end
   end
 

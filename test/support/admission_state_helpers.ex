@@ -40,6 +40,10 @@ defmodule Grappa.AdmissionStateHelpers do
       end
   """
 
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.Admission, Grappa.Session]
+
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Session.Backoff
 

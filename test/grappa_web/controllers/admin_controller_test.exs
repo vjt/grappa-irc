@@ -123,5 +123,50 @@ defmodule GrappaWeb.AdminControllerTest do
           }
       end
     end
+
+    # HIGH-17 (no-silent-drops B6.9a 2026-05-14): per-target accounting
+    # via summary telemetry. The fan-out used to discard each
+    # broadcast_event/2 result; the controller returned 200 even if
+    # zero of N targets received the push. Now the operator can wire a
+    # PromEx alert on `[:grappa, :admin, :cic_bundle_fanout]` with
+    # `failed > 0`.
+    test "emits [:grappa, :admin, :cic_bundle_fanout] telemetry with attempted/succeeded/failed",
+         %{conn: conn} do
+      case Bundle.current_hash() do
+        nil ->
+          :ok
+
+        expected_hash ->
+          handler_id = "test-cic-bundle-fanout-#{System.unique_integer([:positive])}"
+          parent = self()
+
+          :telemetry.attach(
+            handler_id,
+            [:grappa, :admin, :cic_bundle_fanout],
+            fn event, measurements, metadata, _ ->
+              send(parent, {:telemetry, event, measurements, metadata})
+            end,
+            nil
+          )
+
+          try do
+            user_name = "fanout-tel-#{System.unique_integer([:positive])}"
+            :ok = Grappa.WSPresence.register(user_name, self())
+
+            conn = post(conn, "/admin/cic-bundle-changed")
+            assert response(conn, 200) == expected_hash
+
+            assert_receive {:telemetry, [:grappa, :admin, :cic_bundle_fanout],
+                            %{attempted: attempted, succeeded: succeeded, failed: failed}, %{hash: ^expected_hash}}
+
+            assert is_integer(attempted) and attempted >= 1
+            assert is_integer(succeeded) and succeeded >= 1
+            assert is_integer(failed) and failed >= 0
+            assert attempted == succeeded + failed
+          after
+            :telemetry.detach(handler_id)
+          end
+      end
+    end
   end
 end

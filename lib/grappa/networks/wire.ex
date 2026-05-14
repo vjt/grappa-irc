@@ -44,6 +44,7 @@ defmodule Grappa.Networks.Wire do
         }
 
   @type network_json :: %{
+          kind: :visitor,
           id: integer(),
           slug: String.t(),
           inserted_at: String.t(),
@@ -73,6 +74,7 @@ defmodule Grappa.Networks.Wire do
   shape and cic can't derive anything.
   """
   @type network_with_nick_json :: %{
+          kind: :user,
           id: integer(),
           slug: String.t(),
           nick: String.t(),
@@ -164,6 +166,7 @@ defmodule Grappa.Networks.Wire do
   @spec network_to_json(Network.t()) :: network_json()
   def network_to_json(%Network{} = n) do
     %{
+      kind: :visitor,
       id: n.id,
       slug: n.slug,
       inserted_at: DateTime.to_iso8601(n.inserted_at),
@@ -190,6 +193,7 @@ defmodule Grappa.Networks.Wire do
   def network_with_nick_to_json(%Network{} = n, nick, %Credential{} = cred)
       when is_binary(nick) and nick != "" do
     %{
+      kind: :user,
       id: n.id,
       slug: n.slug,
       nick: nick,

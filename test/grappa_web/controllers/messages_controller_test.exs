@@ -359,6 +359,24 @@ defmodule GrappaWeb.MessagesControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
+    # HIGH-19 (no-silent-drops B6.9a 2026-05-14): body byte cap. Pre-fix
+    # an oversized body reached IRC.Client.transport_send and either
+    # truncated silently at the 512-byte RFC framing limit or got the
+    # upstream peer to disconnect — UI claimed `:ok` while the message
+    # never arrived. Surfacing as 413 + body_too_large lets cic render
+    # an actionable rejection.
+    test "body over BodyLimit cap returns 413 body_too_large", %{conn: conn} do
+      oversize = String.duplicate("x", GrappaWeb.BodyLimit.max_body_bytes() + 1)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels/%23sniffo/messages", %{"body" => oversize})
+
+      assert json_response(conn, 413)["error"] == "body_too_large"
+      assert json_response(conn, 413)["limit"] == GrappaWeb.BodyLimit.max_body_bytes()
+    end
+
     test "POST without Bearer returns 401" do
       conn =
         Phoenix.ConnTest.build_conn()

@@ -229,17 +229,21 @@ export type VisitorNetwork = {
 export type Network = UserNetwork | VisitorNetwork;
 
 // Raw server wire shape for `GET /networks` — the JSON the server
-// emits, BEFORE cic's boundary fetcher tags each row with the
-// `kind: "user" | "visitor"` discriminator. The wire shape is the
-// implicit-shape contract from `Grappa.Networks.Wire` (visitor
-// branch: bare; user branch: nick + connection_state fields). Cic
-// promotes the implicit shape to a discriminated union via the
-// `tagNetwork(raw, subjectKind)` boundary in `lib/networks.ts`.
+// emits, BEFORE cic's boundary fetcher promotes each row to the
+// `Network` discriminated union via `tagNetwork(raw)`. The wire
+// shape carries an explicit `kind: "user" | "visitor"` discriminator
+// (no-silent-drops B6.9a HIGH-24) so cic doesn't have to join against
+// `me().kind` at the call site.
 //
-// The fields are all optional here so the type matches BOTH wire
-// shapes; the post-tag `Network` type narrows them to required on
-// the user branch and absent on the visitor branch.
+// `kind` is typed optional here so legacy fixtures + the rare older
+// deployment that hasn't yet rolled forward still type-check;
+// `tagNetwork` defaults a missing `kind` based on the presence of
+// user-shape fields (`nick + connection_state`) — so the shape
+// promotion stays robust mid-rollout. Once every deployed server
+// emits `kind` explicitly, the optional marker can flip to required
+// and the inference fallback can be removed.
 export type RawNetwork = {
+  kind?: "user" | "visitor";
   id: number;
   slug: string;
   nick?: string;
@@ -251,9 +255,8 @@ export type RawNetwork = {
 };
 
 // Boundary tagger — promotes a raw wire `RawNetwork` to a typed
-// `Network` discriminated by the subject `me().kind`. Called in
-// `lib/networks.ts`'s networks resource, downstream of the /me
-// resource resolution.
+// `Network` discriminated by the server-set `kind` field. Called in
+// `lib/networks.ts`'s networks resource.
 //
 // On user subjects we assert nick + connection_state are present
 // (server contract); a missing nick is logged + the row is dropped
@@ -261,8 +264,15 @@ export type RawNetwork = {
 // reactive store. Pre-fix the missing-nick branch leaked through to
 // every `ownNickForNetwork` callsite which checked + logged
 // individually.
-export function tagNetwork(raw: RawNetwork, subjectKind: "user" | "visitor"): Network | null {
-  if (subjectKind === "visitor") {
+//
+// HIGH-24 (no-silent-drops B6.9a 2026-05-14): when `raw.kind` is
+// absent (legacy fixture / older deployment), infer the discriminator
+// from user-shape fields — a non-empty `nick` tags `user`, otherwise
+// `visitor`. This is the rolling-deployment fallback; once every
+// server emits `kind` explicitly the inference can be removed.
+export function tagNetwork(raw: RawNetwork): Network | null {
+  const kind = raw.kind ?? (raw.nick !== undefined && raw.nick !== "" ? "user" : "visitor");
+  if (kind === "visitor") {
     return {
       kind: "visitor",
       id: raw.id,

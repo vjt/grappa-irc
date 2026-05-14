@@ -11,17 +11,25 @@ defmodule GrappaWeb.ReadCursorController do
   Last-write-wins; the controller is a thin parse + dispatch +
   broadcast layer over `Grappa.ReadCursor.set/4`.
 
-  ## Cross-device broadcast
+  ## Cross-device broadcast — USER subjects only
 
-  After every successful set the cursor is broadcast on the per-channel
-  topic via `ReadCursor.broadcast_set/4` so other live cic instances
-  (different tabs / devices) update their cursor signal map. No
-  batching, no throttle.
+  After every successful set on a `{:user, _}` subject, the cursor is
+  broadcast on the per-channel topic via `ReadCursor.broadcast_set/4`
+  so other live cic instances (different tabs / devices) update their
+  cursor signal map. No batching, no throttle.
 
-  Visitor subjects also broadcast — the broadcast topic uses the
-  visitor's `subject_label` (the same convention WHOIS / WHO / NAMES
-  use for the visitor case). Single-device visitors won't hear an
-  echo from themselves; the broadcast is a no-op subscriber-side.
+  Visitor subjects are SKIPPED at the broadcast site (HIGH-20,
+  no-silent-drops B6.9a 2026-05-14). By spec visitors are single-device
+  (no token reuse across browsers — each browser tab gets its own
+  Visitor row with a unique nick), so a per-channel cursor broadcast
+  on a `"visitor:<uuid>"` topic only echoes back to the originating
+  tab — which already POSTed the cursor and updated its local state
+  before the broadcast even reached the WS edge. The cursor itself is
+  STILL persisted via `ReadCursor.set/4` so the join-reply (cic's
+  cold-load path) and `/me` envelope BOTH return the visitor's cursor
+  on the next reconnect; only the redundant per-set fan-out is
+  dropped. Net win: every scroll-settle event on a visitor session
+  saves one PubSub fan-out + JSON encode.
 
   ## Validation
 
@@ -56,7 +64,14 @@ defmodule GrappaWeb.ReadCursorController do
 
     with :ok <- validate_target_name(channel),
          {:ok, cursor} <- ReadCursor.set(subject, network.id, channel, message_id) do
-      :ok = maybe_broadcast(conn.assigns.current_subject, network.slug, channel, cursor.last_read_message_id)
+      _ =
+        maybe_broadcast(
+          conn.assigns.current_subject,
+          network.slug,
+          channel,
+          cursor.last_read_message_id
+        )
+
       json(conn, %{last_read_message_id: cursor.last_read_message_id})
     end
   end
@@ -64,10 +79,10 @@ defmodule GrappaWeb.ReadCursorController do
   def create(_, _), do: {:error, :bad_request}
 
   # Resolves the user_name embedded in the topic for cross-device
-  # broadcast. For users we have a stable `user.name`; for visitors we
-  # use the `"visitor:<uuid>"` label that `UserSocket.connect/3`
-  # registers on the WS side — same convention as WHOIS / WHO / NAMES
-  # bundles broadcast on visitor subject_label topics.
+  # broadcast. ONLY user subjects broadcast — visitors are single-
+  # device by spec so the per-channel fan-out only echoes back to the
+  # originating tab. Skipping here saves one PubSub fan-out + JSON
+  # encode per scroll-settle event on every visitor session.
   @spec maybe_broadcast(
           {:user, Grappa.Accounts.User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
           String.t(),
@@ -78,12 +93,5 @@ defmodule GrappaWeb.ReadCursorController do
     ReadCursor.broadcast_set(user.name, network_slug, channel, last_read_message_id)
   end
 
-  defp maybe_broadcast({:visitor, visitor}, network_slug, channel, last_read_message_id) do
-    ReadCursor.broadcast_set(
-      "visitor:" <> visitor.id,
-      network_slug,
-      channel,
-      last_read_message_id
-    )
-  end
+  defp maybe_broadcast({:visitor, _}, _, _, _), do: :ok
 end

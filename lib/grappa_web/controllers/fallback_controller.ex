@@ -84,6 +84,19 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "invalid_line"})
   end
 
+  # 413 body_too_large: GrappaWeb.BodyLimit boundary reject when a
+  # POST body / channel-verb text field exceeds the configured byte
+  # cap (no-silent-drops B6.9a HIGH-19). Pre-fix the payload reached
+  # IRC.Client.transport_send and either truncated silently at the
+  # 512-byte RFC framing limit or got the upstream peer to disconnect
+  # — UI claimed `:ok` while the message never arrived. Surfacing as
+  # 413 lets cic render an actionable rejection instead.
+  def call(conn, {:error, :body_too_large}) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "body_too_large", limit: GrappaWeb.BodyLimit.max_body_bytes()})
+  end
+
   def call(conn, {:error, :not_found}) do
     conn
     |> put_status(:not_found)
