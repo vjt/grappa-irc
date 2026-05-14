@@ -185,6 +185,17 @@ config :logger, :console,
     # correlate them. Mirrors Scrollback.Meta.@known_keys (A18 sync).
     :names,
     :names_target,
+    # No-silent-drops B6.1 (HIGH-6): EventRouter catch-all persists
+    # unknown command verbs as `:notice` rows on $server with FLAT
+    # atom-keyed meta — `raw_verb` (string), `raw_sender` (string |
+    # nil), `raw_params` ([string]). The pre-B6.1 nested shape
+    # (`meta.raw = %{"verb" => ...}`) bypassed both the Meta @known_keys
+    # allowlist and this Logger metadata sync. Mirrors
+    # Scrollback.Meta.@known_keys (A18 sync; meta_test.exs catches
+    # drift).
+    :raw_verb,
+    :raw_sender,
+    :raw_params,
     # Nick-mutation tracing (C6 / S13): on RPL_WELCOME reconcile and
     # self-NICK rename, log lines pair `from: old-nick, to: new-nick`
     # so the operator can grep the lifecycle of a nick across a

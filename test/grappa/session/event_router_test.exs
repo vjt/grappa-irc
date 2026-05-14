@@ -52,20 +52,30 @@ defmodule Grappa.Session.EventRouterTest do
     })
   end
 
-  describe "route/2 — fallthrough (no-silent-drops bucket 1)" do
+  describe "route/2 — fallthrough (no-silent-drops bucket 1 + B6.1)" do
     # Pre-bucket-1, EventRouter's catch-all returned `{:cont, state, []}`
     # for every unhandled command — KILL, WALLOPS, GLOBOPS, ERROR,
     # CHGHOST, AUTHENTICATE, vendor verbs all silently dropped on the
     # floor. Bucket 1 replaces the fallthrough with a structured
-    # :persist :notice to $server with meta.raw carrying typed
+    # :persist :notice to $server with meta carrying typed
     # {verb, sender, params}, so cic can render the row + grow
     # per-verb pretty-render arms incrementally.
     #
-    # Body deviates from the initial brief's `body: nil` because
-    # validate_body_for_kind enforces non-nil for :notice (see plan
-    # bucket 1 deviation note). Body = trailing param (upstream's
-    # verbatim wire text, NOT a server-side localized template).
-    test "unknown {:unknown, VERB} command persists :notice on $server with meta.raw" do
+    # B6.1 (2026-05-14): two tightenings landed atop the bucket-1 shape.
+    #   * HIGH-6 — meta is FLAT atom-keyed (`raw_verb`, `raw_sender`,
+    #     `raw_params`) instead of nested `meta.raw = %{"verb" => ...}`.
+    #     The flat shape stays inside the Scrollback.Meta @known_keys
+    #     allowlist + Logger metadata sync; the nested shape would have
+    #     atomized attacker-controlled `params` strings the moment
+    #     atomize_known/1 ever recursed.
+    #   * HIGH-2 — body falls back to the verb name when no trailing
+    #     param exists (param-less verb, or trailing-empty edge case).
+    #     The pre-fix `List.last(params) || ""` gave an empty string
+    #     that `validate_required(:body)` rejected → silent drop.
+    #     CRIT-1 — credential-bearing verbs (AUTHENTICATE, PASS, OPER)
+    #     are deny-listed BEFORE the catch-all so SASL base64 + raw
+    #     server passwords never persist to $server scrollback.
+    test "unknown {:unknown, VERB} command persists :notice on $server with flat meta" do
       state = base_state()
       m = msg({:unknown, "FOO"}, ["arg1", "ciao"], {:nick, "alice", "u", "h"})
 
@@ -76,14 +86,14 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.sender == "alice"
       assert attrs.body == "ciao"
 
-      assert attrs.meta.raw == %{
-               "verb" => "FOO",
-               "sender" => "alice",
-               "params" => ["arg1", "ciao"]
+      assert attrs.meta == %{
+               raw_verb: "FOO",
+               raw_sender: "alice",
+               raw_params: ["arg1", "ciao"]
              }
     end
 
-    test "WALLOPS persists :notice on $server with verb=WALLOPS" do
+    test "WALLOPS persists :notice on $server with raw_verb=WALLOPS" do
       state = base_state()
       m = msg(:wallops, ["network broadcast text"], {:nick, "vjt", "v", "h"})
 
@@ -93,20 +103,20 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.channel == "$server"
       assert attrs.sender == "vjt"
       assert attrs.body == "network broadcast text"
-      assert attrs.meta.raw["verb"] == "WALLOPS"
-      assert attrs.meta.raw["params"] == ["network broadcast text"]
+      assert attrs.meta.raw_verb == "WALLOPS"
+      assert attrs.meta.raw_params == ["network broadcast text"]
     end
 
-    test "KILL persists :notice on $server with verb=KILL" do
+    test "KILL persists :notice on $server with raw_verb=KILL" do
       state = base_state()
       m = msg(:kill, ["target_nick", "kill reason"], {:nick, "oper", "o", "h"})
 
       assert {:cont, ^state, [{:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
-      assert attrs.meta.raw["verb"] == "KILL"
-      assert attrs.meta.raw["sender"] == "oper"
-      assert attrs.meta.raw["params"] == ["target_nick", "kill reason"]
+      assert attrs.meta.raw_verb == "KILL"
+      assert attrs.meta.raw_sender == "oper"
+      assert attrs.meta.raw_params == ["target_nick", "kill reason"]
       assert attrs.body == "kill reason"
     end
 
@@ -117,22 +127,68 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, ^state, [{:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
-      assert attrs.meta.raw["verb"] == "ERROR"
+      assert attrs.meta.raw_verb == "ERROR"
       # sender = "*" sentinel (Message.anonymous_sender/0)
       assert attrs.sender == "*"
       assert attrs.body == "Closing Link: bad TLS handshake"
     end
 
-    test "param-less unknown command (defensive) persists with empty body" do
+    # B6.1 HIGH-2: param-less verbs used to fall through to body=""
+    # which validate_required(:body) rejected → silent drop. Now the
+    # verb name itself is the body fallback so the row persists +
+    # remains visible (cic's renderRawEvent uses raw_verb / raw_params
+    # for display so the body is fallback only).
+    test "param-less unknown command persists with verb-name body fallback" do
       state = base_state()
       m = msg({:unknown, "BARE"}, [], {:nick, "x", "u", "h"})
 
       assert {:cont, ^state, [{:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
-      assert attrs.body == ""
-      assert attrs.meta.raw["verb"] == "BARE"
-      assert attrs.meta.raw["params"] == []
+      assert attrs.body == "BARE"
+      assert attrs.meta.raw_verb == "BARE"
+      assert attrs.meta.raw_params == []
+    end
+
+    # B6.1 HIGH-2: bare WALLOPS (terminal :wallops with empty trailing)
+    # exercises the empty-string-trailing edge — pre-fix
+    # `List.last(params) || ""` returned "" and dropped the row.
+    test "verb with empty-string trailing falls back to verb-name body" do
+      state = base_state()
+      m = msg({:unknown, "MAYBE"}, ["arg", ""], {:nick, "x", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.body == "MAYBE"
+      assert attrs.meta.raw_verb == "MAYBE"
+      assert attrs.meta.raw_params == ["arg", ""]
+    end
+
+    # B6.1 CRIT-1: AUTHENTICATE / PASS / OPER MUST NOT persist —
+    # SASL base64 + cleartext server passwords would otherwise land
+    # on $server scrollback in plaintext (closed W12 NickServ-leak
+    # disease class).
+    test "AUTHENTICATE deny-list: zero effects" do
+      state = base_state()
+      payload = "AGFsaWNlAGFsaWNlAHBhc3N3b3Jk"
+      m = msg(:authenticate, [payload], nil)
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "PASS deny-list: zero effects" do
+      state = base_state()
+      m = msg(:pass, ["my-server-password"], nil)
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    test "OPER deny-list: zero effects" do
+      state = base_state()
+      m = msg(:oper, ["operuser", "operpassword"], {:nick, "vjt", "v", "h"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
 
     test "{:numeric, _} without dedicated clause returns NO effects (Server owns numeric persist)" do

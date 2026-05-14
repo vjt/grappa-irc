@@ -71,6 +71,15 @@ defmodule Grappa.Scrollback.Meta do
       :notice                       →  %{} OR %{numeric: 1..999, severity: :ok | :error}
                                                                  (server numerics route to :notice
                                                                   via NumericRouter; bare NOTICE has %{})
+                                    OR %{raw_verb: String.t(), raw_sender: String.t() | nil,
+                                         raw_params: [String.t()]}
+                                                                 (no-silent-drops B6.1 — flat
+                                                                  atom-keyed shape for
+                                                                  EventRouter catch-all rows;
+                                                                  flat keys keep the closed-set
+                                                                  Meta allowlist + Logger
+                                                                  metadata sync intact, no
+                                                                  nested string-keyed map.)
       :join    | :part              →  %{}                       (channel + sender suffice)
       :quit                         →  %{}                       (body carries optional reason)
       :nick_change                  →  %{new_nick: String.t()}
@@ -105,11 +114,13 @@ defmodule Grappa.Scrollback.Meta do
             | :who_target
             | :names
             | :names_target
-            | :raw
+            | :raw_verb
+            | :raw_sender
+            | :raw_params
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -129,7 +140,9 @@ defmodule Grappa.Scrollback.Meta do
           | :who_target
           | :names
           | :names_target
-          | :raw,
+          | :raw_verb
+          | :raw_sender
+          | :raw_params,
           ...
         ]
   def known_keys, do: @known_keys

@@ -1497,20 +1497,49 @@ defmodule Grappa.Session.EventRouter do
   # persistence is Server's responsibility.
   def route(%Message{command: {:numeric, _}} = _, state), do: {:cont, state, []}
 
+  # No-silent-drops B6.1 CRIT-1 (2026-05-14): credential-bearing verbs
+  # MUST NOT persist to scrollback. AUTHENTICATE carries SASL base64
+  # (decodes to `\0user\0user\0password` for PLAIN); PASS carries a
+  # cleartext server password; OPER carries an oper credential. The
+  # B1 catch-all below would otherwise drop these into `$server`
+  # scrollback as plaintext — a credential leak surface that
+  # re-creates the closed W12 NickServ-leak class. Skip persist; let
+  # the AuthFSM (or the IRC client's own state machine) own them
+  # invisibly.
+  @no_persist_verbs ~w(authenticate pass oper)a
+
+  def route(%Message{command: command} = _, state)
+      when command in @no_persist_verbs,
+      do: {:cont, state, []}
+
   # No-silent-drops bucket 1 (2026-05-14): the catch-all used to return
   # `{:cont, state, []}` for every unhandled command — KILL, WALLOPS,
-  # GLOBOPS, ERROR, CHGHOST, AUTHENTICATE, vendor verbs all silently
-  # dropped on the floor (vjt's live INVITE smoke during P-0 close
-  # surfaced this disease class). Now it persists a `:notice` row on
-  # `$server` with `meta.raw = %{verb, sender, params}` so cic can
-  # render the structured fields and grow per-verb pretty-render arms
+  # GLOBOPS, ERROR, CHGHOST, vendor verbs all silently dropped on the
+  # floor (vjt's live INVITE smoke during P-0 close surfaced this
+  # disease class). Now it persists a `:notice` row on `$server` with
+  # flat `meta.raw_{verb,sender,params}` keys so cic can render the
+  # structured fields and grow per-verb pretty-render arms
   # incrementally (KILL, WALLOPS, ERROR, CHGHOST, etc.).
   #
-  # Body = trailing param (last element) or "" — upstream's verbatim
-  # wire text, NOT a server-side localized string. Per
-  # feedback_no_localized_strings_server_side the server faithfully
-  # stores what came in; cic owns the human-readable rendering. Body
-  # is the fallback used by cic only when no per-verb arm matches.
+  # B6.1 HIGH-6: meta is flattened to atom-keyed top-level fields
+  # (`raw_verb`, `raw_sender`, `raw_params`) instead of the previous
+  # nested `meta.raw = %{"verb" => ..., ...}` shape. The nested shape
+  # mixed atom outer + string inner keys, bypassing the
+  # Scrollback.Meta allowlist + Logger metadata sync (a future
+  # refactor that recursed atomize_known/1 would atomize attacker-
+  # controlled `params` strings). Flat atom keys round-trip through
+  # the closed-set Meta type the same way the older meta keys do.
+  #
+  # B6.1 HIGH-2: body falls back to the verb-name string when no
+  # trailing param exists or the trailing is empty. Pre-fix the
+  # changeset's validate_required(:body) rejected empty strings and
+  # the row silently dropped — exactly the bug B1 was supposed to
+  # close. cic's renderRawEvent uses raw_verb / raw_params for
+  # display so body is fallback only.
+  #
+  # Per feedback_no_localized_strings_server_side the server stores
+  # only typed primitives (verb string, sender string, params list);
+  # cic owns the localized rendering arms.
   #
   # Numerics are filtered out by the previous clause (they're owned by
   # Server's numeric handler at server.ex:1545). Belt-and-braces: a
@@ -1518,14 +1547,18 @@ defmodule Grappa.Session.EventRouter do
   # renders as Integer.to_string(n).
   def route(%Message{command: command, params: params} = msg, state) do
     sender = Message.sender_nick(msg)
-    body = List.last(params) || ""
+    verb = command_to_verb_string(command)
+
+    body =
+      case List.last(params) do
+        s when is_binary(s) and s != "" -> s
+        _ -> verb
+      end
 
     meta = %{
-      raw: %{
-        "verb" => command_to_verb_string(command),
-        "sender" => sender,
-        "params" => params
-      }
+      raw_verb: verb,
+      raw_sender: sender,
+      raw_params: params
     }
 
     {state, eff} = build_persist(state, :notice, "$server", sender, body, meta)

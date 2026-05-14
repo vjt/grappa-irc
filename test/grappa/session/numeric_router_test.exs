@@ -166,7 +166,7 @@ defmodule Grappa.Session.NumericRouterTest do
   # ---------------------------------------------------------------------------
 
   @delegated_numerics [
-    # WHOIS / WHO / NAMES / LIST / LINKS / MOTD (pre-CP15)
+    # WHOIS / WHO / NAMES / MOTD (pre-CP15)
     311,
     312,
     313,
@@ -177,11 +177,11 @@ defmodule Grappa.Session.NumericRouterTest do
     315,
     353,
     366,
-    321,
-    322,
-    323,
-    364,
-    365,
+    # No-silent-drops B6.1 HIGH-3 (2026-05-14): LIST (321/322/323) +
+    # LINKS (364/365) REMOVED from @delegated_numerics. They never had
+    # an EventRouter handler; delegation routed them to
+    # `{:cont, state, []}` and the rows silently dropped. Default
+    # `scan_params` route now persists them as plain `:notice` rows.
     375,
     372,
     376,
@@ -223,9 +223,19 @@ defmodule Grappa.Session.NumericRouterTest do
       assert :delegated = NumericRouter.route(m, state())
     end
 
-    test "322 RPL_LIST is delegated" do
+    # B6.1 HIGH-3 — LIST (321/322/323) + LINKS (364/365) used to be
+    # `:delegated` to a phantom EventRouter handler, dropping silently.
+    # Now they fall through to `scan_params` and route to `$server` (or
+    # the channel-prefix param when present), so Server's numeric
+    # handler persists them as visible `:notice` rows.
+    test "322 RPL_LIST is no longer delegated; routes to channel param" do
       m = msg(322, ["vjt", "#chan", "42", "a channel topic"])
-      assert :delegated = NumericRouter.route(m, state())
+      assert {:channel, "#chan"} = NumericRouter.route(m, state())
+    end
+
+    test "364 RPL_LINKS is no longer delegated; routes to $server" do
+      m = msg(364, ["vjt", "irc.example.com", "*", "0 server description"])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
   end
 
@@ -287,9 +297,35 @@ defmodule Grappa.Session.NumericRouterTest do
       assert {:server, nil} = NumericRouter.route(m, state())
     end
 
-    test "2-elem params (own-nick + trailing) → no candidate → server" do
-      m = msg(999, ["vjt", "trailing"])
+    # No-silent-drops B6.1 HIGH-4 (2026-05-14): pre-fix, 2-elem
+    # `[own_nick, second]` shapes returned `[]` candidates, dropping
+    # `second` as if it were the trailing string. RFC 2812 makes the
+    # trailing optional; legacy ircds emit shape-2 numerics like 401
+    # ERR_NOSUCHNICK as `[own_nick, target]` with no trailing. Now
+    # `candidate_params([_, second])` keeps `second` as a candidate so
+    # the row routes to the target's query window.
+    test "2-elem params: trailing-shaped second still scans (B6.1 HIGH-4)" do
+      # 999 (unknown numeric, not in delegated/active) with shape-2
+      # params. Plain string with no nick/channel shape and a space →
+      # not a query candidate, not channel-prefixed → server.
+      m = msg(999, ["vjt", "trailing string"])
       assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "2-elem params: 401 ERR_NOSUCHNICK [own, target] routes to query" do
+      # Legacy tail-less 401: scan_params now keeps `target` as the
+      # candidate. 401 is in @active_numerics so it short-circuits to
+      # {:server, nil} BEFORE scan_params runs — so use a non-active
+      # numeric (999) to exercise scan_params directly with the
+      # 2-param shape. The contract is "params[1] is a candidate";
+      # 401's specific routing is policy on top of that.
+      m = msg(999, ["vjt", "someguy"])
+      assert {:query, "someguy"} = NumericRouter.route(m, state())
+    end
+
+    test "2-elem params: channel-prefixed second routes to channel" do
+      m = msg(999, ["vjt", "#sniffo"])
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, state())
     end
 
     test "empty params → server" do

@@ -1733,14 +1733,15 @@ describe("ScrollbackPane", () => {
     });
   });
 
-  // No-silent-drops bucket 1 (2026-05-14): structured raw-event render
-  // arms keyed off meta.raw.verb. Server's EventRouter catch-all
-  // persists unhandled command verbs as :notice rows on $server with
-  // meta.raw = {verb, sender, params}; ScrollbackPane's :notice arm
-  // detects meta.raw and routes to renderRawEvent. Per-verb arms
-  // localize (cic owns human-readable strings); default arm renders a
-  // generic verb + params row so the event is never invisible.
-  describe("notice raw-event rendering (no-silent-drops bucket 1)", () => {
+  // No-silent-drops bucket 1 (2026-05-14, B6.1 reshape): structured
+  // raw-event render arms keyed off meta.raw_verb. Server's EventRouter
+  // catch-all persists unhandled command verbs as :notice rows on
+  // $server with FLAT atom-keyed meta {raw_verb, raw_sender,
+  // raw_params}; ScrollbackPane's :notice arm detects raw_verb and
+  // routes to renderRawEvent. Per-verb arms localize (cic owns
+  // human-readable strings); default arm renders a generic verb +
+  // params row so the event is never invisible.
+  describe("notice raw-event rendering (no-silent-drops bucket 1 + B6.1)", () => {
     const wallopsRow: ScrollbackMessage = {
       id: 100,
       network: "freenode",
@@ -1750,7 +1751,9 @@ describe("ScrollbackPane", () => {
       sender: "vjt",
       body: "network broadcast text",
       meta: {
-        raw: { verb: "WALLOPS", sender: "vjt", params: ["network broadcast text"] },
+        raw_verb: "WALLOPS",
+        raw_sender: "vjt",
+        raw_params: ["network broadcast text"],
       },
     };
 
@@ -1763,7 +1766,9 @@ describe("ScrollbackPane", () => {
       sender: "oper",
       body: "kill reason",
       meta: {
-        raw: { verb: "KILL", sender: "oper", params: ["target_nick", "kill reason"] },
+        raw_verb: "KILL",
+        raw_sender: "oper",
+        raw_params: ["target_nick", "kill reason"],
       },
     };
 
@@ -1776,7 +1781,9 @@ describe("ScrollbackPane", () => {
       sender: "*",
       body: "Closing Link: bad TLS",
       meta: {
-        raw: { verb: "ERROR", sender: "*", params: ["Closing Link: bad TLS"] },
+        raw_verb: "ERROR",
+        raw_sender: "*",
+        raw_params: ["Closing Link: bad TLS"],
       },
     };
 
@@ -1789,7 +1796,9 @@ describe("ScrollbackPane", () => {
       sender: "alice",
       body: "newhost.example.com",
       meta: {
-        raw: { verb: "CHGHOST", sender: "alice", params: ["newuser", "newhost.example.com"] },
+        raw_verb: "CHGHOST",
+        raw_sender: "alice",
+        raw_params: ["newuser", "newhost.example.com"],
       },
     };
 
@@ -1802,7 +1811,9 @@ describe("ScrollbackPane", () => {
       sender: "vjt",
       body: "trailing",
       meta: {
-        raw: { verb: "BANCHAN", sender: "vjt", params: ["#secret", "trailing"] },
+        raw_verb: "BANCHAN",
+        raw_sender: "vjt",
+        raw_params: ["#secret", "trailing"],
       },
     };
 
@@ -1865,7 +1876,9 @@ describe("ScrollbackPane", () => {
       sender: "vjt",
       body: "#sbiffo",
       meta: {
-        raw: { verb: "INVITE", sender: "vjt", params: ["grappa", "#sbiffo"] },
+        raw_verb: "INVITE",
+        raw_sender: "vjt",
+        raw_params: ["grappa", "#sbiffo"],
       },
     };
 
@@ -1879,7 +1892,9 @@ describe("ScrollbackPane", () => {
       body: "weird",
       meta: {
         // Missing channel-prefix on params[1] — defensive arm.
-        raw: { verb: "INVITE", sender: "vjt", params: ["grappa", "weird"] },
+        raw_verb: "INVITE",
+        raw_sender: "vjt",
+        raw_params: ["grappa", "weird"],
       },
     };
 

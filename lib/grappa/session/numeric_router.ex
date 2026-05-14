@@ -142,28 +142,21 @@ defmodule Grappa.Session.NumericRouter do
                         # NAMES replies (353, 366)
                         353,
                         366,
-                        # LIST replies (321, 322, 323)
-                        # TODO(no-silent-drops B3 finding 2026-05-14): EventRouter
-                        # has NO clauses for 321/322/323. The doc-comment above
-                        # asserts they're "owned by dedicated handlers" but no
-                        # such handler exists. Today this is harmless: cic's
-                        # /list handler is a stub (compose.ts), so the operator
-                        # never issues /list upstream and these numerics never
-                        # arrive. When a future polish cluster wires the cic
-                        # /list UI, it MUST land EventRouter clauses for
-                        # 321/322/323 in the SAME commit -- otherwise the
-                        # numeric flow goes :delegated -> EventRouter -> []
-                        # effects -> SILENT DROP. Same trap applies to 364/365
-                        # below.
-                        321,
-                        322,
-                        323,
-                        # LINKS replies (364, 365) -- same latent-bug class as
-                        # LIST 321-323 above (no EventRouter clause; cic /links
-                        # is also a stub). Land EventRouter clauses + cic UI
-                        # in the same commit.
-                        364,
-                        365,
+                        # No-silent-drops B6.1 HIGH-3 (2026-05-14):
+                        # LIST (321/322/323) + LINKS (364/365) numerics
+                        # were previously listed as `:delegated` to a
+                        # phantom EventRouter handler. Removing them
+                        # lets `param_derived_route/3` fall through to
+                        # `scan_params/2`, which routes them via the
+                        # default `{:server, nil}` path — Server's
+                        # numeric handler then persists them as plain
+                        # `:notice` rows on `$server` with
+                        # `meta.numeric/severity`. Visible, never silent.
+                        # When a future polish cluster wires the cic
+                        # /list and /links UI, it can either keep this
+                        # default route (rows already visible) or
+                        # introduce a dedicated EventRouter clause +
+                        # delegation entry in the SAME commit.
                         # INVITE-ack (341)
                         341,
                         # P-0c WHOWAS bundle (314, 369, 406). 312 RPL_WHOISSERVER is
@@ -368,12 +361,22 @@ defmodule Grappa.Session.NumericRouter do
     end
   end
 
-  # params[0] = own-nick echo, last = trailing human-readable text. Drop both.
-  # Empty / 1-elem / 2-elem param lists yield no candidates.
+  # params[0] = own-nick echo, last = trailing human-readable text. Drop both
+  # for shape ≥ 3 — the standard RFC 2812 "echo + middles + trailing"
+  # template. For shape-2 numerics (legacy ircds emit 401 ERR_NOSUCHNICK
+  # as `[own_nick, target]` with no trailing string), keep params[1] as
+  # a candidate so the scan routes the row to the target's query window
+  # instead of `$server`. Empty / 1-elem param lists yield no candidates.
+  #
+  # No-silent-drops B6.1 HIGH-4 (2026-05-14): pre-fix
+  # `candidate_params([_, _])` returned `[]` unconditionally, treating
+  # the 2nd param as "the trailing" and dropping it. RFC 2812 makes the
+  # trailing param optional; the 2-param shape exercises the legacy
+  # tail-less form.
   @spec candidate_params([String.t()]) :: [String.t()]
   defp candidate_params([]), do: []
   defp candidate_params([_]), do: []
-  defp candidate_params([_, _]), do: []
+  defp candidate_params([_, second]), do: [second]
 
   defp candidate_params([_ | rest]) do
     # rest still has the trailing element at its tail — drop it.

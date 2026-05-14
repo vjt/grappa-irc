@@ -257,24 +257,30 @@ type NickHandlers = {
   onJoinChannel: (channel: string) => void;
 };
 
-// No-silent-drops bucket 1 (2026-05-14): pretty-render arms for unknown
-// IRC command verbs that EventRouter's catch-all persists as :notice
-// rows on $server with meta.raw = {verb, sender, params}. Server emits
-// typed primitives only (verb/sender/params) — cic owns the localized
-// human-readable strings here, per
-// feedback_no_localized_strings_server_side. New verbs land as
+// No-silent-drops bucket 1 (2026-05-14, B6.1 reshape): pretty-render
+// arms for unknown IRC command verbs that EventRouter's catch-all
+// persists as :notice rows on $server with FLAT atom-keyed
+// meta.{raw_verb, raw_sender, raw_params}. Server emits typed
+// primitives only — cic owns the localized human-readable strings here,
+// per feedback_no_localized_strings_server_side. New verbs land as
 // additional case arms; the default arm renders a generic "<sender>
 // VERB params" row so the event is never invisible.
-type RawEvent = { verb?: string; sender?: string; params?: string[] };
+//
+// B6.1 HIGH-6 reshape: the pre-fix nested `meta.raw = {verb, sender,
+// params}` shape mixed atom outer + string inner keys, bypassing the
+// Scrollback.Meta @known_keys allowlist. Flattening to three top-level
+// atom-keyed fields keeps both the closed-set discipline and the
+// Logger metadata sync intact.
+type RawEvent = { raw_verb?: string; raw_sender?: string; raw_params?: string[] };
 const renderRawEvent = (
   raw: RawEvent,
   msg: ScrollbackMessage,
   senderSpan: (display: string, nick: string) => JSX.Element,
   handlers: NickHandlers,
 ): JSX.Element => {
-  const verb = raw.verb ?? "?";
-  const params = raw.params ?? [];
-  const sender = raw.sender ?? msg.sender;
+  const verb = raw.raw_verb ?? "?";
+  const params = raw.raw_params ?? [];
+  const sender = raw.raw_sender ?? msg.sender;
   const trailing = params[params.length - 1] ?? "";
 
   switch (verb) {
@@ -390,16 +396,16 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "notice": {
       // No-silent-drops bucket 1: structured raw-event rendering.
       // EventRouter's catch-all persists unhandled command verbs as
-      // :notice rows on $server with meta.raw = {verb, sender, params}.
-      // Pretty-render arms key off meta.raw.verb and grow incrementally
-      // (KILL, WALLOPS, ERROR, GLOBOPS, CHGHOST common cases). Body is
-      // the trailing-param fallback; the structured render takes
-      // precedence when meta.raw is present.
-      const raw = msg.meta?.raw as
-        | { verb?: string; sender?: string; params?: string[] }
-        | undefined;
-      if (raw && typeof raw === "object" && typeof raw.verb === "string") {
-        return renderRawEvent(raw, msg, senderSpan, handlers);
+      // :notice rows on $server with FLAT atom-keyed meta:
+      // {raw_verb, raw_sender, raw_params} (B6.1 HIGH-6 reshape from
+      // the prior nested `meta.raw = {...}`). Pretty-render arms key
+      // off raw_verb and grow incrementally (KILL, WALLOPS, ERROR,
+      // GLOBOPS, CHGHOST common cases). Body is the trailing-param
+      // (or verb-name fallback per B6.1 HIGH-2); the structured
+      // render takes precedence when raw_verb is present.
+      const meta = msg.meta as RawEvent | undefined;
+      if (meta && typeof meta.raw_verb === "string") {
+        return renderRawEvent(meta, msg, senderSpan, handlers);
       }
       return (
         <>
