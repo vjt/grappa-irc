@@ -244,7 +244,7 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 | `/part [#chan] [reason]` | Part the active or named channel |
 | `/topic <text>` | Set topic on the active channel |
 | `/topic -delete` | Clear the topic (irssi convention) |
-| `/nick <newnick>` | Change nick on the active network |
+| `/nick <newnick>` | Change nick on the active network. Works for users (operator nick) and visitors (anonymous + NickServ-identified) — visitor branch pre-checks `Visitors.nick_in_use?/3` then UNIQUE-constraint-protects on persist. |
 | `/msg <nick> <text>` | Send a private message (opens query window) |
 | `/query <nick>` / `/q <nick>` | Open a query window without sending |
 | `/whois <nick>` | Issue WHOIS; reply renders inline as a card in the active window with structured fields (user, host, realname, server, away, idle, signon, channels, plus typed flags: oper / admin / services-admin / services-agent / helper / chanop / registered / SSL / java). All human-readable strings owned by cic per the no-localized-strings-server-side rule. |
@@ -442,6 +442,7 @@ It is also a tribute: **Italian Grappa!** has been the call-sign of the [Italian
 - [ ] NickServ `REGISTER` proxy
 - [x] Session tokens (Argon2-hashed password → bearer-token sessions, sliding 7-day idle)
 - [x] Per-user isolation (cross-user join authz at the channel layer)
+- [x] Two-tier visitor identity model: anonymous (48h sliding TTL, data co-terminus with session) + NickServ-identified (infinite, `expires_at = NULL` written when upstream confirms `+r`). Returning identified visitors re-authenticate with their NickServ password and reuse their existing visitor row across devices. Visitor surface is feature-equal with the registered-user surface (CP32 visitor-parity cluster, 2026-05-15) — see [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the parity invariant.
 
 ### Phase 3 — client walking skeleton ✓
 - [x] PWA shell, manifest, service worker
@@ -478,6 +479,21 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **CP32 — visitor parity + NickServ-as-identity** (closed 2026-05-15).
+  10 commits across 9 production buckets shipped same-day on
+  `cluster/visitor-parity-and-nickserv`. Subject parity invariant:
+  every server-side branch on `{:user, _}` vs `{:visitor, _}` that
+  refused the visitor branch now dispatches via `Grappa.Subject.t()`.
+  V1 XOR FK migrations extend the CP29 pattern to `query_windows`,
+  `push_subscriptions`, `user_settings` (5-table CASCADE total).
+  V7 codifies the two-tier identity model. V8 dropped at brainstorm
+  — NickServ identification IS the permanent identity. V9 lifts the
+  visitor `/nick` rename gate (`Visitors.nick_in_use?/3` pre-check +
+  UNIQUE constraint at persist). Push notifications shipped INSIDE
+  V3 instead of as their own cluster. The HOT-vs-COLD preflight gap
+  in `scripts/deploy.sh` (empty diff after local merge → false-HOT
+  classification) bit V9's deploy and got captured as
+  `feedback_deploy_preflight_empty_diff_after_merge`.
 - **CP31 — no-silent-drops** (closed 2026-05-14). 19 commits across
   11 sub-buckets. B5 codebase review (8 parallel agents) → B6.x
   fold-in of every actionable finding: 1 CRIT closed (CRIT-1
@@ -535,9 +551,15 @@ the live operator before the next begins. Order is set per vjt
    actionable finding (1 CRIT + 25 HIGH closed). See
    [`docs/checkpoints/2026-05-14-cp31.md`](docs/checkpoints/2026-05-14-cp31.md)
    for the full per-bucket ledger.
-2. **Push notifications PWA gate** — surface mention/highlight
-   pings via the PWA notifications API so the bouncer is useful when
-   the browser tab isn't focused. Open issue tracks the spec.
+2. **Push notifications PWA gate** *(CLOSED 2026-05-15)* — surfaced
+   mention/highlight pings via the PWA notifications API so the
+   bouncer is useful when the browser tab isn't focused. Initially
+   tabled as its own post-CP31 cluster; landed inside the
+   visitor-parity cluster's V3 bucket (the schema lift forced the
+   subject-shape rewrite of `Push.Sender`, so the feature came along
+   for free). Visitors get push too — V3 lifted the `require_user`
+   gate and the `defp maybe_dispatch_push(_, %{subject: {:visitor,
+   _}}), do: :ok` short-circuit.
 3. **Images cluster** — cicchetto image upload via litterbox.catbox.moe
    (1h–72h TTL temp host) → URL inserted into IRC PRIVMSG; cic-side
    URL pattern detection feeds an inline image overlay on click.
