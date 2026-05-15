@@ -15,7 +15,6 @@ defmodule Grappa.VisitorsTest do
 
   @network "azzurra"
   @ttl_anon 48 * 3600
-  @ttl_registered 7 * 24 * 3600
 
   describe "find_or_provision_anon/3" do
     test "creates new anon visitor with 48h expires_at" do
@@ -37,9 +36,9 @@ defmodule Grappa.VisitorsTest do
   end
 
   describe "commit_password/2" do
-    test "atomically writes password + bumps expires_at to 7d" do
+    test "atomically writes password + clears expires_at (NickServ-identified = ∞)" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
-      before_expires = v.expires_at
+      refute is_nil(v.expires_at)
 
       assert {:ok, committed} = Visitors.commit_password(v.id, "s3cret")
       # Cloak's EncryptedBinary roundtrips dump/load symmetrically, so the
@@ -49,9 +48,9 @@ defmodule Grappa.VisitorsTest do
       # ciphertext that `load` round-trips). We assert here only that the
       # function persisted the value the caller passed in.
       assert committed.password_encrypted == "s3cret"
-      assert DateTime.compare(committed.expires_at, before_expires) == :gt
-
-      assert DateTime.diff(committed.expires_at, DateTime.utc_now()) in (@ttl_registered - 5)..(@ttl_registered + 5)
+      # V7: identified rows have no expiry. Reaper's IS-NOT-NULL guard
+      # (V5) skips them; only operator `Visitors.delete/1` removes them.
+      assert is_nil(committed.expires_at)
     end
 
     test "returns {:error, :not_found} for unknown visitor_id" do
@@ -97,6 +96,19 @@ defmodule Grappa.VisitorsTest do
 
       reloaded = Repo.reload!(v)
       assert DateTime.compare(reloaded.expires_at, past) == :eq
+    end
+
+    test "NickServ-identified visitor (expires_at = nil) → no-op {:ok, visitor}" do
+      # V7: identified visitors don't expire. touch/1 short-circuits without
+      # writing to the DB. This pins the production-change semantics: anon
+      # = 48h sliding TTL; identified = ∞.
+      {:ok, anon} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")
+      {:ok, identified} = Visitors.commit_password(anon.id, "s3cret")
+      assert is_nil(identified.expires_at)
+
+      assert {:ok, %Visitor{expires_at: nil}} = Visitors.touch(identified.id)
+      reloaded = Repo.reload!(identified)
+      assert is_nil(reloaded.expires_at)
     end
   end
 

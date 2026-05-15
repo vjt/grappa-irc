@@ -24,9 +24,10 @@ defmodule Grappa.Visitors.Reaper do
 
   `Visitors.list_expired/0` carries an explicit `expires_at IS NOT
   NULL` guard so V7 (NickServ-identified visitors persist forever
-  via `expires_at = NULL`) does not require a coordinated change
-  here. Reaper sees only rows that have OPTED IN to expiry by
-  setting a non-NULL timestamp.
+  via `expires_at = NULL`) requires no coordinated change here —
+  the column was flipped to nullable in
+  `20260515111331_visitors_expires_at_nullable`. Reaper sees only
+  rows that have OPTED IN to expiry by setting a non-NULL timestamp.
 
   Sweeps that delete zero rows stay quiet (no log line); a non-zero
   sweep logs once at `:info` so operators can grep visitor lifecycle

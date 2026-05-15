@@ -44,7 +44,7 @@ defmodule GrappaWeb.MeJSON do
               id: Ecto.UUID.t(),
               nick: String.t(),
               network_slug: String.t(),
-              expires_at: DateTime.t(),
+              expires_at: DateTime.t() | nil,
               read_cursors: read_cursors()
             }
 

@@ -2747,7 +2747,7 @@ defmodule Grappa.Session.ServerTest do
   describe "+r MODE on own nick → atomic visitor password commit (Task 15)" do
     alias Grappa.Repo
 
-    test "visitor session: send IDENTIFY → simulate +r → password_encrypted + expires_at bumped" do
+    test "visitor session: send IDENTIFY → simulate +r → password_encrypted set + expires_at cleared" do
       {server, port} = start_server()
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
@@ -2780,10 +2780,9 @@ defmodule Grappa.Session.ServerTest do
       reloaded = Repo.reload!(visitor)
       assert reloaded.password_encrypted != nil
 
-      # Cloak EncryptedBinary roundtrip — accessing the virtual field
-      # decrypts. Anon TTL was 48h; registered TTL is 7d, so expires_at
-      # should jump forward.
-      assert DateTime.compare(reloaded.expires_at, visitor.expires_at) == :gt
+      # V7: NickServ-identified visitors persist forever — commit_password
+      # writes expires_at = NULL. Reaper's IS-NOT-NULL guard skips them.
+      assert is_nil(reloaded.expires_at)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

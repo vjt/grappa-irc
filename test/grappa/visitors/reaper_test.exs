@@ -39,6 +39,20 @@ defmodule Grappa.Visitors.ReaperTest do
       assert {:ok, 0} = Reaper.sweep()
     end
 
+    test "NULL expires_at row (NickServ-identified) survives sweep — IS-NOT-NULL guard" do
+      # V7: identified visitors carry expires_at = NULL and persist forever.
+      # `Visitors.list_expired/0`'s IS-NOT-NULL guard (V5) keeps them out
+      # of the sweep set; without it the Reaper would delete every
+      # identified visitor on the first tick post-V7.
+      slug = "azzurra-#{System.unique_integer([:positive])}"
+      {:ok, anon} = Visitors.find_or_provision_anon("identified", slug, nil)
+      {:ok, identified} = Visitors.commit_password(anon.id, "s3cret")
+      assert is_nil(identified.expires_at)
+
+      assert {:ok, 0} = Reaper.sweep()
+      assert Repo.reload(identified)
+    end
+
     test "cascade-wipes all five visitor-owned tables on sweep" do
       network = network_fixture(slug: "azzurra-reap-#{System.unique_integer([:positive])}")
       {:ok, visitor} = Visitors.find_or_provision_anon("doomed", network.slug, nil)

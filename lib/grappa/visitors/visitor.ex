@@ -7,13 +7,17 @@ defmodule Grappa.Visitors.Visitor do
   - Created on first `POST /auth/login` with a non-`@` identifier.
   - `password_encrypted` nil = anon (no NickServ password ever observed
     via +r MODE).
-  - `password_encrypted` non-nil = NickServ password atomically committed
-    after grappa observed +r MODE on the visitor's nick (see
-    `Grappa.Visitors.commit_password/2`).
-  - `expires_at` slides on user-initiated REST/WS verbs (≥1h cadence) +
-    jumps to now+7d on +r MODE observation.
-  - Reaped by `Grappa.Visitors.Reaper` when `expires_at < now()`. CASCADE
-    wipes related rows in `visitor_channels`, `messages`, `accounts_sessions`.
+  - `password_encrypted` non-nil = NickServ-identified — the password
+    was atomically committed after grappa observed +r MODE on the
+    visitor's nick (see `Grappa.Visitors.commit_password/2`).
+  - `expires_at` slides on user-initiated REST/WS verbs (≥1h cadence)
+    while the visitor is anon. V7: `commit_password/2` clears
+    `expires_at` to NULL — NickServ-identified visitors persist
+    forever, removed only via operator `Visitors.delete/1`.
+  - Reaped by `Grappa.Visitors.Reaper` when
+    `expires_at IS NOT NULL AND expires_at <= now()`. CASCADE wipes
+    related rows in `visitor_channels`, `messages`,
+    `accounts_sessions`.
 
   ## Per-row network pinning
   `network_slug` is fixed at row creation. A config rotation
@@ -85,8 +89,9 @@ defmodule Grappa.Visitors.Visitor do
 
   @doc """
   Atomically commit a NickServ password (encrypted at rest by Cloak)
-  and bump expires_at to the registered-user TTL after grappa observed
-  +r MODE on the visitor's nick.
+  and clear `expires_at` to NULL after grappa observed +r MODE on the
+  visitor's nick. V7: NickServ-identified visitors persist forever,
+  so `expires_at` is set to `nil` (not a future timestamp).
 
   Caller MUST pass a non-empty binary as `password`. Misuse raises
   `FunctionClauseError` — the +r MODE observation handler in
@@ -94,9 +99,10 @@ defmodule Grappa.Visitors.Visitor do
   let-it-crash on a bouncer-internal contract violation is the
   appropriate OTP shape.
   """
-  @spec commit_password_changeset(t(), binary(), DateTime.t()) :: Ecto.Changeset.t()
+  @spec commit_password_changeset(t(), binary(), DateTime.t() | nil) :: Ecto.Changeset.t()
   def commit_password_changeset(%__MODULE__{} = visitor, password, expires_at)
-      when is_binary(password) and byte_size(password) > 0 do
+      when is_binary(password) and byte_size(password) > 0 and
+             (is_nil(expires_at) or is_struct(expires_at, DateTime)) do
     change(visitor, %{password_encrypted: password, expires_at: expires_at})
   end
 

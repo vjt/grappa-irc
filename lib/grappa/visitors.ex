@@ -10,9 +10,10 @@ defmodule Grappa.Visitors do
       already exists; creates a fresh anon row otherwise. Per-IP cap
       enforcement is the caller's responsibility (Task 9 Login orchestrator
       composes `count_active_for_ip/1` before invoking this function).
-    * `commit_password/2` — atomic password+expires_at write triggered
-      ONLY by +r MODE observation in `Grappa.Session.Server`. Bumps
-      `expires_at` to now+7d (registered TTL).
+    * `commit_password/2` — atomic password write triggered ONLY by +r
+      MODE observation in `Grappa.Session.Server`. Clears `expires_at`
+      to NULL — NickServ-identified visitors persist forever
+      (operator-driven deletion is the only removal path).
     * `touch/1` — sliding-TTL bump on user-initiated REST/WS verbs,
       ≥1h cadence. No-op if <1h since last bump (W9).
     * `count_active_for_ip/1` — per-IP cap check primitive (W3).
@@ -39,10 +40,11 @@ defmodule Grappa.Visitors do
 
   ## TTL cadence
 
-  Anon TTL is 48h, registered TTL is 7d. `touch/1` is the sole
-  sliding-refresh verb per W9 — called from `Plugs.Authn` on
-  user-initiated REST/WS only. Inbound-IRC events and idle WebSocket
-  heartbeats do NOT bump the TTL.
+  Anon TTL is 48h sliding (`touch/1` on user-initiated REST/WS verbs,
+  ≥1h cadence per W9). NickServ-identified visitors (`password_encrypted`
+  set) have no expiry — `commit_password/2` writes `expires_at = NULL`
+  and `touch/1` is a no-op for them. Inbound-IRC events and idle
+  WebSocket heartbeats do NOT bump the TTL.
   """
 
   use Boundary,
@@ -66,7 +68,6 @@ defmodule Grappa.Visitors do
   require Logger
 
   @anon_ttl_seconds 48 * 3600
-  @registered_ttl_seconds 7 * 24 * 3600
   @touch_cadence_seconds 3600
 
   @doc """
@@ -98,34 +99,36 @@ defmodule Grappa.Visitors do
 
   @doc """
   Atomically write a NickServ password (encrypted at rest by Cloak)
-  and bump `expires_at` to the registered-user TTL (now + 7d). Called
-  from `Grappa.Session.Server` after the +r MODE observation
-  confirmed the visitor's nick is identified.
+  and clear `expires_at` to NULL. Called from `Grappa.Session.Server`
+  after the +r MODE observation confirmed the visitor's nick is
+  identified.
+
+  V7: identified visitors persist forever — only operator-driven
+  `delete/1` removes them. Reaper's IS-NOT-NULL guard in
+  `list_expired/0` skips NULL rows.
   """
   @spec commit_password(Ecto.UUID.t(), String.t()) ::
           {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
   def commit_password(visitor_id, password)
       when is_binary(visitor_id) and is_binary(password) and password != "" do
-    expires_at = DateTime.add(DateTime.utc_now(), @registered_ttl_seconds, :second)
-
     case Repo.get(Visitor, visitor_id) do
       nil ->
         {:error, :not_found}
 
       visitor ->
         visitor
-        |> Visitor.commit_password_changeset(password, expires_at)
+        |> Visitor.commit_password_changeset(password, nil)
         |> Repo.update()
     end
   end
 
   @doc """
   Slide `expires_at` forward on user-initiated REST/WS verbs. Anon
-  visitors slide to now + 48h; registered visitors (with
-  `password_encrypted` set) slide to now + 7d. No-op if the resulting
-  bump would extend the row by less than 1h (`@touch_cadence_seconds`)
-  — keeps the per-request DB-write cost negligible under sustained
-  traffic.
+  visitors slide to now + 48h; NickServ-identified visitors
+  (`password_encrypted` set + `expires_at IS NULL`) are no-ops —
+  they don't expire. No-op if the resulting bump on an anon row would
+  extend by less than 1h (`@touch_cadence_seconds`) — keeps the
+  per-request DB-write cost negligible under sustained traffic.
   """
   @spec touch(Ecto.UUID.t()) ::
           {:ok, Visitor.t()} | {:error, :not_found | :expired | Ecto.Changeset.t()}
@@ -133,6 +136,10 @@ defmodule Grappa.Visitors do
     case Repo.get(Visitor, visitor_id) do
       nil ->
         {:error, :not_found}
+
+      %Visitor{expires_at: nil} = visitor ->
+        # V7: identified visitor — no expiry, no-op.
+        {:ok, visitor}
 
       %Visitor{expires_at: exp} = visitor ->
         # Without this gate, `maybe_bump/1` would slide an EXPIRED row
@@ -148,9 +155,8 @@ defmodule Grappa.Visitors do
     end
   end
 
-  defp maybe_bump(%Visitor{password_encrypted: pwd} = visitor) do
-    extension = if is_nil(pwd), do: @anon_ttl_seconds, else: @registered_ttl_seconds
-    target = DateTime.add(DateTime.utc_now(), extension, :second)
+  defp maybe_bump(%Visitor{password_encrypted: nil} = visitor) do
+    target = DateTime.add(DateTime.utc_now(), @anon_ttl_seconds, :second)
 
     if DateTime.diff(target, visitor.expires_at, :second) >= @touch_cadence_seconds do
       visitor
@@ -162,7 +168,9 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Count visitors with `expires_at > now()` from the given `ip`.
+  Count visitors active for the given `ip`. A visitor is "active" if
+  either `expires_at IS NULL` (V7 NickServ-identified — never expires)
+  or `expires_at > now()` (anon, sliding 48h TTL not yet elapsed).
   Per-IP cap (W3, default 5) enforcement primitive — composed by the
   Login orchestrator (Task 9) before calling
   `find_or_provision_anon/3`.
@@ -170,18 +178,26 @@ defmodule Grappa.Visitors do
   @spec count_active_for_ip(String.t()) :: non_neg_integer()
   def count_active_for_ip(ip) when is_binary(ip) do
     now = DateTime.utc_now()
-    query = from(v in Visitor, where: v.ip == ^ip and v.expires_at > ^now)
+
+    query =
+      from(v in Visitor,
+        where: v.ip == ^ip and (is_nil(v.expires_at) or v.expires_at > ^now)
+      )
+
     Repo.aggregate(query, :count, :id)
   end
 
   @doc """
-  All visitors with `expires_at > now()`. Used by `Grappa.Bootstrap`
-  to enumerate sessions to respawn at app start.
+  All active visitors — `expires_at IS NULL` (V7 identified) or
+  `expires_at > now()` (anon, not yet elapsed). Used by
+  `Grappa.Bootstrap` to enumerate sessions to respawn at app start.
+  Identified visitors must always respawn; otherwise an operator
+  bounce silently destroys their session presence.
   """
   @spec list_active() :: [Visitor.t()]
   def list_active do
     now = DateTime.utc_now()
-    query = from(v in Visitor, where: v.expires_at > ^now)
+    query = from(v in Visitor, where: is_nil(v.expires_at) or v.expires_at > ^now)
     Repo.all(query)
   end
 
@@ -189,14 +205,13 @@ defmodule Grappa.Visitors do
   All visitors with `expires_at <= now()`. Used by
   `Grappa.Visitors.Reaper` to enumerate rows due for deletion.
 
-  The `expires_at IS NOT NULL` guard is defensive: today's schema
-  declares `expires_at` as `null: false`, so the predicate is
-  redundant. V7 (NickServ-identified visitors persist forever)
-  flips the column to nullable and clears it on `commit_password`
-  to mark the row as never-expires; without this guard the Reaper
-  would sweep every identified visitor on the first tick post-V7.
-  Add the guard now so the V7 migration is a one-liner column-flip
-  rather than a coordinated guard + schema change that races.
+  The `expires_at IS NOT NULL` guard is essential post-V7: NickServ-
+  identified visitors carry `expires_at = NULL` to mark "never
+  expires" — without this guard, the Reaper would delete every
+  identified visitor on the first tick. The V5 commit
+  (6ef59a0) added the guard pre-staging V7's column-flip migration;
+  the V7 migration (`20260515111331_visitors_expires_at_nullable`)
+  flipped the column to nullable, completing the design.
   """
   @spec list_expired() :: [Visitor.t()]
   def list_expired do
