@@ -58,6 +58,7 @@ const makeTestHost = (overrides: Partial<ImageHost> = {}): ImageHost => ({
   defaultTtl: "24h",
   acceptedMimeTypes: ["image/png", "image/jpeg"],
   maxFileSizeBytes: 1024 * 1024,
+  supportsProgress: true,
   upload: (_file, _options, onProgress, signal) =>
     new Promise<string>((resolve, reject) => {
       pendingResolvers.push({

@@ -5,6 +5,7 @@ import {
   type ImageHost,
   litterboxHost,
   type UploadProgress,
+  xhrUpload,
 } from "../lib/image-upload";
 
 // --------------------------------------------------------------
@@ -353,7 +354,7 @@ describe("litterboxHost.upload — abort", () => {
 });
 
 describe("litterboxHost.upload — progress callback", () => {
-  it("invokes onProgress with {loaded, total} when XHR upload fires progress", async () => {
+  it("does NOT attach an upload progress listener (litterbox lacks CORS preflight)", async () => {
     const events: UploadProgress[] = [];
     const upload = litterboxHost.upload(
       sampleFile(),
@@ -364,15 +365,72 @@ describe("litterboxHost.upload — progress callback", () => {
     const xhr = MockXMLHttpRequest.instances[0];
     if (!xhr) throw new Error("expected XHR");
 
+    // Even if the browser were to fire a progress event, no listener
+    // is attached so onProgress must remain unobserved. Drives
+    // `<progress>` to its indeterminate visual state — see the host
+    // moduledoc CORS-preflight gotcha note.
     xhr.triggerUploadProgress(512, 2048);
     xhr.triggerUploadProgress(2048, 2048);
     xhr.triggerLoad(200, "https://litter.catbox.moe/x.png");
     await upload;
 
+    expect(events).toEqual([]);
+    expect(xhr.upload.listeners.has("progress")).toBe(false);
+  });
+
+  it("declares supportsProgress=false (preflight gotcha pin)", () => {
+    expect(litterboxHost.supportsProgress).toBe(false);
+  });
+});
+
+// Synthetic CORS-friendly host exercises the supportsProgress=true
+// branch in xhrUpload — pins behaviour for the next provider impl.
+const corsFriendlyMockHost: ImageHost = {
+  id: "cors-friendly-mock",
+  displayName: "cors-friendly mock",
+  retentionStatement: "Files are not actually stored anywhere.",
+  ttlOptions: [],
+  defaultTtl: null,
+  acceptedMimeTypes: ["image/png"],
+  maxFileSizeBytes: null,
+  supportsProgress: true,
+  upload: (file, _options, onProgress, signal) => {
+    const body = new FormData();
+    body.append("file", file);
+    return xhrUpload({
+      url: "https://example.invalid/upload",
+      body,
+      onProgress,
+      signal,
+      parseResponse: (status, text) =>
+        status >= 200 && status < 300 ? text : { kind: "http", status, body: text },
+      supportsProgress: true,
+    });
+  },
+};
+
+describe("supportsProgress=true (synthetic CORS-friendly host)", () => {
+  it("attaches the progress listener and forwards loaded/total events", async () => {
+    const events: UploadProgress[] = [];
+    const upload = corsFriendlyMockHost.upload(
+      sampleFile(),
+      { ttl: "24h" },
+      (p) => events.push(p),
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    xhr.triggerUploadProgress(256, 1024);
+    xhr.triggerUploadProgress(1024, 1024);
+    xhr.triggerLoad(200, "https://example.invalid/ok.png");
+    await upload;
+
     expect(events).toEqual([
-      { loaded: 512, total: 2048 },
-      { loaded: 2048, total: 2048 },
+      { loaded: 256, total: 1024 },
+      { loaded: 1024, total: 1024 },
     ]);
+    expect(xhr.upload.listeners.has("progress")).toBe(true);
   });
 });
 
@@ -402,6 +460,7 @@ const mockHost: ImageHost = {
   defaultTtl: null,
   acceptedMimeTypes: ["image/png"],
   maxFileSizeBytes: null,
+  supportsProgress: false,
   upload: (_file, _options, _onProgress, _signal) =>
     Promise.resolve("https://example.invalid/mock.png"),
 };

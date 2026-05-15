@@ -23,6 +23,18 @@
 // progress events across the browser targets we care about; XHR's
 // `upload.addEventListener("progress")` is the only way to drive a
 // multi-MB iPhone screenshot's progress bar in real time.
+//
+// CORS preflight gotcha: attaching a listener to `XMLHttpRequestUpload`
+// promotes the request from "simple" to "non-simple" CORS, triggering
+// an OPTIONS preflight even when the body itself (multipart/form-data)
+// would not. Hosts that do not advertise CORS preflight headers
+// (litterbox.catbox.moe — empirically tested 2026-05-16) reject the
+// preflight and the actual POST never fires; cic surfaces "network
+// error" with no useful diagnostic. The `supportsProgress` flag on
+// `ImageHost` documents this per-host posture: when `false`, the
+// progress listener is NOT attached and uploads use the simple CORS
+// path. UI falls back to indeterminate progress (`<progress>` with
+// no value attribute renders as indeterminate per HTML spec).
 
 export type UploadProgress = { loaded: number; total: number };
 
@@ -66,6 +78,13 @@ export interface ImageHost {
   /** Client-side pre-check ceiling. `null` = unknown / no enforced
    *  cap (still gated by the host's actual upload limit on rejection). */
   readonly maxFileSizeBytes: number | null;
+  /** Whether attaching an `xhr.upload` progress listener is safe with
+   *  this host's CORS posture. `false` → host does not advertise CORS
+   *  preflight headers, so attaching the listener (which promotes the
+   *  request to "non-simple" and triggers an OPTIONS preflight) makes
+   *  every upload fail. The progress bar falls back to indeterminate.
+   *  See the moduledoc note on the CORS preflight gotcha. */
+  readonly supportsProgress: boolean;
 
   /** Upload `file`, resolving with the public URL string. Provider
    *  decides request body shape, headers, and response parsing.
@@ -92,16 +111,21 @@ export interface ImageHost {
 
 type ResponseParser = (status: number, body: string) => string | UploadError;
 
-type XhrUploadArgs = {
+export type XhrUploadArgs = {
   url: string;
   body: FormData;
   headers?: Record<string, string>;
   onProgress: (p: UploadProgress) => void;
   signal: AbortSignal;
   parseResponse: ResponseParser;
+  /** Mirror of `ImageHost.supportsProgress`. When `false`, the
+   *  `xhr.upload` progress listener is NOT attached so the request
+   *  stays a "simple" CORS request and avoids the OPTIONS preflight
+   *  that hosts like litterbox cannot answer. */
+  supportsProgress: boolean;
 };
 
-function xhrUpload(args: XhrUploadArgs): Promise<string> {
+export function xhrUpload(args: XhrUploadArgs): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     if (args.signal.aborted) {
       reject({ kind: "abort" } satisfies UploadError);
@@ -114,9 +138,11 @@ function xhrUpload(args: XhrUploadArgs): Promise<string> {
       for (const [k, v] of Object.entries(args.headers)) xhr.setRequestHeader(k, v);
     }
 
-    xhr.upload.addEventListener("progress", (ev) => {
-      args.onProgress({ loaded: ev.loaded, total: ev.total });
-    });
+    if (args.supportsProgress) {
+      xhr.upload.addEventListener("progress", (ev) => {
+        args.onProgress({ loaded: ev.loaded, total: ev.total });
+      });
+    }
 
     xhr.addEventListener("load", () => {
       const result = args.parseResponse(xhr.status, xhr.responseText);
@@ -180,6 +206,12 @@ export const litterboxHost: ImageHost = {
   // 100MiB is generous + lets cic warn before initiating an upload
   // that's almost certainly user error.
   maxFileSizeBytes: 100 * 1024 * 1024,
+  // Litterbox does not advertise CORS preflight headers; attaching a
+  // progress listener triggers OPTIONS preflight and breaks every
+  // upload. Verified empirically 2026-05-16. Future hosts (catbox-
+  // permanent, 0x0.st) that DO advertise CORS preflight can flip this
+  // to true and get the real progress bar back.
+  supportsProgress: false,
   upload: (file, options, onProgress, signal) => {
     const ttl = options.ttl ?? litterboxHost.defaultTtl ?? "24h";
     const body = new FormData();
@@ -192,6 +224,7 @@ export const litterboxHost: ImageHost = {
       onProgress,
       signal,
       parseResponse: parseLitterboxResponse,
+      supportsProgress: litterboxHost.supportsProgress,
     });
   },
 };
