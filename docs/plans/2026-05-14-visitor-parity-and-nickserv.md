@@ -1,7 +1,24 @@
 # Visitor parity + NickServ-as-identity (cluster)
 
-**Status**: brainstorm — implementation NOT started.
-**Branch**: `cluster/visitor-parity-and-nickserv`.
+**Status**: **CLOSED 2026-05-15** — all production buckets landed on
+`origin/main`. Cluster CLOSE checkpoint at
+`docs/checkpoints/2026-05-15-cp32.md`.
+
+| Bucket | Status | Commit |
+|--------|--------|--------|
+| V1 — XOR FK migrations + `Grappa.Subject` helper | LANDED 2026-05-15 | `f51618a` (+ `61491fb` follow-up) |
+| V2 — query_windows visitor lift | LANDED 2026-05-15 | `d69a42d` |
+| F1 — typed window-state events to user-topic (flake fix) | LANDED 2026-05-15 | `d6b5d2e` |
+| V3 — push_subscriptions + Sender subject-shape lift | LANDED 2026-05-15 | `d773bed` |
+| V4 — user_settings + watchlist + read_cursor visitor lift | LANDED 2026-05-15 | `46fc720` |
+| V5 — Reaper cross-check + 5-table cascade test | LANDED 2026-05-15 | `6ef59a0` |
+| V6 — cic visitor-branch sweep | LANDED 2026-05-15 | `bf9c552` |
+| V7 — NickServ TTL semantics (anon 48h, identified ∞) | LANDED 2026-05-15 | `7f0f756` (+ `ec8a18f` Repo.checkout pin) |
+| V8 — visitor → registered-user promote | **DROPPED** at brainstorm | n/a |
+| V9 — visitor `/nick` rename — lift Q2(a) gate | LANDED 2026-05-15 | `2668fba` |
+
+**Branch**: `cluster/visitor-parity-and-nickserv` (worktree removed
+post-CLOSE).
 **Position**: post-`push-notifications` (CP32 cluster). Spec
 blessed by vjt 2026-05-14, refined 2026-05-15 (no V8 promote, no
 double-password — NickServ IS the identity backbone for IRC-bound
@@ -676,6 +693,64 @@ All resolved 2026-05-15:
 - `feedback_ux_e2e_mandatory` — every cic UX-touching change
   ships with Playwright e2e
 - `feedback_push_autonomy` — push autonomy granted
+
+## Cluster CLOSE retrospective (2026-05-15)
+
+10 commits + 1 docs commit on the worktree branch, ff-merged to
+`main`, all V-buckets shipped on the same day. V8 dropped at
+brainstorm — NickServ identification IS the permanent identity
+proof, no double-password promote needed; eliminated an entire
+data-migration code path before it was written. F1 inserted as a
+mid-cluster correction (typed window-state events were on per-channel
+topics → flake class; lifted to user-topic).
+
+The two-tier identity model lands as planned: anon visitor on a 48h
+sliding TTL whose data is co-terminus with the session
+(FK CASCADE wipes everything on Reaper sweep); NickServ-identified
+visitor (`password_encrypted IS NOT NULL`) on **infinite** TTL with
+`expires_at = NULL`; registered user as the orthogonal admin path
+via `mix grappa.create_user`. Three subject classes, ONE feature
+surface — every server-side branch on `{:user, _}` vs `{:visitor, _}`
+that previously refused the visitor branch now dispatches via
+`Grappa.Subject.t()`.
+
+V9's NICK-rename safety analysis came in simpler than the
+orchestrator's complex sync-wait + 422-on-433-numeric +
+`pending_nick_rename` correlation field design. vjt vetoed the
+complexity: user nick-rename has been fire-and-forget 202 since
+day one; visitor=user per the parity invariant; UNIQUE constraint
++ pre-check (`Visitors.nick_in_use?/3`) covers >99% of races; cic
+already listens to `own_nick_changed` broadcast (CP-15). The
+432/433 silent-leave-DB-unchanged shape is a pre-existing UX hole
+orthogonal to V9. Cleanly avoids a COLD-required defstruct field
++ ref correlation plumbing.
+
+### HOT-vs-COLD preflight gap (V9 incident)
+
+V9's deploy hit a real gap in `scripts/deploy.sh`. `Session.Server`
+gained a new `visitor_nick_persister` field — the AST oracle at
+`scripts/_extract_state_block.awk` would have caught it, BUT the
+deploy operator had already done `git merge --ff-only` locally
+before invoking `scripts/deploy.sh`. The deploy's `git pull --ff-only`
+returned "Already up to date", so the preflight diff base
+(`HEAD@{1}..HEAD`) was empty → the AST oracle saw nothing → false
+HOT classification → `Phoenix.CodeReloader` fired against a
+state-shape change.
+
+Live container survived the hot reload (no immediate crash) but
+`_build/prod` got corrupted per
+`feedback_hot_deploy_corrupts_build_prod`; subsequent `--force-cold`
+rebuild failed compile_env validation. Recovery:
+`rm -rf _build/prod && scripts/deploy.sh --force-cold`. ~30s
+downtime; visitors auto-respawned via Bootstrap.
+
+Lesson captured in
+`feedback_deploy_preflight_empty_diff_after_merge`. Until
+`scripts/deploy.sh` learns to compare against the actual pre-pull
+remote state (or persist a last-deployed-SHA marker), the operator
+must check `lib/grappa/hot_reload/long_lived_modules.ex` +
+migrations + `mix.lock` manually before `scripts/deploy.sh` post-
+local-merge and pass `--force-cold` if any changed.
 
 ## Authoritative refs
 
