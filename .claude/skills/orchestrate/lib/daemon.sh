@@ -11,7 +11,7 @@
 # Single-instance per pane: pid file at /tmp/orchestrate-daemon-<pane>.pid.
 # Stale pid is detected (kill -0) and replaced.
 #
-# Tick cadence: 20s (was 60s) — much better fast-reply detection.
+# Tick cadence: 5s (was 20s, was 60s) — aggressive on-change detection.
 #
 # Usage:
 #   daemon.sh start <PANE>   — fork detached daemon (returns immediately)
@@ -87,7 +87,7 @@ case "$cmd" in
         # tick may emit multiple lines — append all, drop SAME noise.
         "$tick" "$pane" 2>/dev/null | grep -v '^SAME ' >> "$log_file" || true
       fi
-      sleep 20
+      sleep 5
     done
     ;;
 

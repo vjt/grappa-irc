@@ -23,7 +23,7 @@ v1 used a single-shot wait-for-event chain: orchestrator armed one bg-bash, harn
 
 v2 separates concerns:
 
-- **`lib/daemon.sh start|stop|status|log <PANE>`** — long-running detached ticker (forked via `nohup … &` + `disown`; macOS has no `setsid`). Calls `wakeup-tick.sh` every **20s** (was 60s) and appends events to `/tmp/orchestrate-events-<pane>.log`. Single-instance per pane via pid file at `/tmp/orchestrate-daemon-<pane>.pid`. Survives orchestrator `/clear`, `/exit`, harness restarts. **The orchestrator can't break the chain by forgetting to re-arm anything.**
+- **`lib/daemon.sh start|stop|status|log <PANE>`** — long-running detached ticker (forked via `nohup … &` + `disown`; macOS has no `setsid`). Calls `wakeup-tick.sh` every **5s** (was 20s, was 60s) and appends events to `/tmp/orchestrate-events-<pane>.log`. Single-instance per pane via pid file at `/tmp/orchestrate-daemon-<pane>.pid`. Survives orchestrator `/clear`, `/exit`, harness restarts. **The orchestrator can't break the chain by forgetting to re-arm anything.**
 
 - **`lib/wakeup-tick.sh <PANE>`** — the one-shot pane sample. Reads pane via `tmux capture-pane`, classifies state, emits zero-or-more event lines. State persisted at `/tmp/orchestrate-state-<pane>.json` for transition diffs across ticks.
 
@@ -103,7 +103,7 @@ If `STALE` or `FRESH`, fall through to Step 2.
 
 3. If `STALE`, wipe stale files: `rm -f /tmp/orchestrate-state-<id>.json /tmp/orchestrate-cursor-<id> /tmp/orchestrate-events-<id>.log /tmp/orchestrate-daemon-<id>.pid`. (The leading `%` from the pane id is stripped in the filenames.)
 
-4. Start the daemon — it ticks every 20s and emits a `BOOT` event on first tick:
+4. Start the daemon — it ticks every 5s and emits a `BOOT` event on first tick:
    ```bash
    .claude/skills/orchestrate/lib/daemon.sh start <SIBLING_PANE_ID>
    ```
@@ -189,7 +189,7 @@ On IDLE event:
    - Reply contains literal `NO CLEAR` → send `go on with <next step> per plan.`
    - Reply contains literal `CLEAR` → run `/clear`, then send a short directive: `read /tmp/orchestrate-next.txt and execute it.` Sibling Reads + acts. No paste-buffer.
 
-   The 20s tick (was 60s in v1) catches fast NO-CLEAR / CLEAR replies reliably — you'll get the IDLE event within ~30s of the sibling answering.
+   The 5s tick (was 20s, was 60s in v1) catches fast NO-CLEAR / CLEAR replies near-instantly — you'll get the IDLE event within ~10s of the sibling answering.
 
 5. Always re-arm `wait-for-event.sh` before returning. (Fail-soft: even if you forget, the daemon keeps ticking; next call to `wait-for-event.sh` resumes from cursor with all queued events.)
 
