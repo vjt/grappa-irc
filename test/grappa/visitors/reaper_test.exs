@@ -13,7 +13,9 @@ defmodule Grappa.Visitors.ReaperTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.Visitors
+  import Grappa.AuthFixtures, only: [network_fixture: 1]
+
+  alias Grappa.{Push, QueryWindows, ReadCursor, UserSettings, Visitors}
   alias Grappa.Visitors.{Reaper, Visitor}
 
   defp expire(visitor) do
@@ -36,6 +38,45 @@ defmodule Grappa.Visitors.ReaperTest do
     test "returns {:ok, 0} when nothing to reap" do
       assert {:ok, 0} = Reaper.sweep()
     end
+
+    test "cascade-wipes all five visitor-owned tables on sweep" do
+      network = network_fixture(slug: "azzurra-reap-#{System.unique_integer([:positive])}")
+      {:ok, visitor} = Visitors.find_or_provision_anon("doomed", network.slug, nil)
+      subject = {:visitor, visitor.id}
+
+      {:ok, _} = QueryWindows.open(subject, network.id, "alice", "visitor:#{visitor.id}")
+
+      {:ok, _} =
+        Push.create(subject, %{
+          endpoint: "https://example.com/push/reap",
+          p256dh_key: "k",
+          auth_key: "a"
+        })
+
+      {:ok, _} = UserSettings.set_highlight_patterns(subject, ["foo"])
+
+      msg =
+        scrollback_message_fixture(visitor: visitor, network: network, channel: "#chan")
+
+      {:ok, _} = ReadCursor.set(subject, network.id, "#chan", msg.id)
+
+      assert count_for_visitor("messages", visitor.id) == 1
+      assert count_for_visitor("query_windows", visitor.id) == 1
+      assert count_for_visitor("push_subscriptions", visitor.id) == 1
+      assert count_for_visitor("user_settings", visitor.id) == 1
+      assert count_for_visitor("read_cursors", visitor.id) == 1
+
+      expire(visitor)
+
+      assert {:ok, 1} = Reaper.sweep()
+      refute Enum.any?(Visitors.list_active(), &(&1.id == visitor.id))
+
+      assert count_for_visitor("messages", visitor.id) == 0
+      assert count_for_visitor("query_windows", visitor.id) == 0
+      assert count_for_visitor("push_subscriptions", visitor.id) == 0
+      assert count_for_visitor("user_settings", visitor.id) == 0
+      assert count_for_visitor("read_cursors", visitor.id) == 0
+    end
   end
 
   describe "GenServer tick" do
@@ -55,5 +96,39 @@ defmodule Grappa.Visitors.ReaperTest do
 
       refute Repo.reload(dead)
     end
+  end
+
+  defp count_for_visitor(table, visitor_id) do
+    {:ok, %{rows: [[count]]}} =
+      Repo.query(
+        "SELECT COUNT(*) FROM #{table} WHERE visitor_id = ?",
+        [visitor_id]
+      )
+
+    count
+  end
+
+  defp scrollback_message_fixture(opts) do
+    visitor = Keyword.fetch!(opts, :visitor)
+    network = Keyword.fetch!(opts, :network)
+    channel = Keyword.fetch!(opts, :channel)
+
+    attrs = %{
+      visitor_id: visitor.id,
+      network_id: network.id,
+      channel: channel,
+      server_time: System.os_time(:millisecond),
+      kind: :privmsg,
+      sender: "tester",
+      body: "hi",
+      meta: %{}
+    }
+
+    {:ok, msg} =
+      %Grappa.Scrollback.Message{}
+      |> Grappa.Scrollback.Message.changeset(attrs)
+      |> Repo.insert()
+
+    msg
   end
 end

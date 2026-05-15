@@ -14,9 +14,19 @@ defmodule Grappa.Visitors.Reaper do
 
   Each tick calls `sweep/0`, which enumerates `Visitors.list_expired/0`
   and invokes `Visitors.delete/1` per row. The DB-level FK ON DELETE
-  CASCADE on `visitor_channels`, `messages`, and `accounts_sessions`
-  wipes the dependent rows in the same transaction. Per-row failures
-  log + continue — one bad row does not stop the sweep.
+  CASCADE on `visitor_channels`, `messages`, `query_windows`,
+  `push_subscriptions`, `user_settings`, and `read_cursors` (every
+  table that carries a `visitor_id` FK after the visitor-parity
+  cluster) wipes the dependent rows in the same transaction.
+  `accounts_sessions` also CASCADEs — the bearer token of an
+  expired visitor dies with the row. Per-row failures log + continue
+  — one bad row does not stop the sweep.
+
+  `Visitors.list_expired/0` carries an explicit `expires_at IS NOT
+  NULL` guard so V7 (NickServ-identified visitors persist forever
+  via `expires_at = NULL`) does not require a coordinated change
+  here. Reaper sees only rows that have OPTED IN to expiry by
+  setting a non-NULL timestamp.
 
   Sweeps that delete zero rows stay quiet (no log line); a non-zero
   sweep logs once at `:info` so operators can grep visitor lifecycle

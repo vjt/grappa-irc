@@ -188,11 +188,20 @@ defmodule Grappa.Visitors do
   @doc """
   All visitors with `expires_at <= now()`. Used by
   `Grappa.Visitors.Reaper` to enumerate rows due for deletion.
+
+  The `expires_at IS NOT NULL` guard is defensive: today's schema
+  declares `expires_at` as `null: false`, so the predicate is
+  redundant. V7 (NickServ-identified visitors persist forever)
+  flips the column to nullable and clears it on `commit_password`
+  to mark the row as never-expires; without this guard the Reaper
+  would sweep every identified visitor on the first tick post-V7.
+  Add the guard now so the V7 migration is a one-liner column-flip
+  rather than a coordinated guard + schema change that races.
   """
   @spec list_expired() :: [Visitor.t()]
   def list_expired do
     now = DateTime.utc_now()
-    query = from(v in Visitor, where: v.expires_at <= ^now)
+    query = from(v in Visitor, where: not is_nil(v.expires_at) and v.expires_at <= ^now)
     Repo.all(query)
   end
 
