@@ -526,8 +526,11 @@ defmodule GrappaWeb.GrappaChannelTest do
       refute_push("event", ^payload, 200)
     end
 
-    test "after-join snapshot: visitor socket receives no query_windows_list" do
-      # Visitor user_names start with "visitor:"
+    test "after-join snapshot: visitor socket receives query_windows_list (V2 visitor parity)" do
+      # V2 visitor parity (2026-05-15): visitor sockets get the same
+      # after_join query_windows_list snapshot as user sockets, so cic
+      # restores DM windows across reload regardless of subject kind.
+      # Pre-V2 the snapshot was visitor-skipped; V2 lifts the skip.
       visitor_name = "visitor:#{Ecto.UUID.generate()}"
       topic = Topic.user(visitor_name)
 
@@ -536,8 +539,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      # Visitors must NOT receive query_windows_list
-      refute_push("event", %{kind: "query_windows_list"}, 200)
+      assert_push("event", %{kind: "query_windows_list", windows: %{}}, 200)
     end
 
     test "after-join snapshot: authenticated user receives query_windows_list (empty when no windows)" do
@@ -1403,26 +1405,49 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_push("event", %{kind: "query_windows_list"})
     end
 
-    test "open_query_window: visitor socket returns visitor_not_allowed" do
-      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+    # V2 — visitor parity: visitors persist DM windows alongside users.
+    # Pre-V2 the channel handlers short-circuited `visitor_not_allowed`;
+    # V2 lifts the gate so visitor sockets get the same broadcast +
+    # persistence path as users. Per-subject XOR FK (V1) means rows
+    # land in `query_windows.visitor_id` and CASCADE on TTL expiry.
+    test "open_query_window: visitor socket persists window and broadcasts list" do
+      slug = "qw-visitor-net-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
 
       {:ok, _, visitor_socket} =
         visitor_name
         |> build_socket()
         |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{kind: "query_windows_list"})
 
       ref =
         push(visitor_socket, "open_query_window", %{
-          "network_id" => 1,
+          "network_id" => network.id,
           "target_nick" => "alice"
         })
 
-      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+      assert_reply(ref, :ok)
+      assert_push("event", %{kind: "query_windows_list", windows: windows})
+      nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      assert "alice" in nicks
+
+      # Belt-and-braces: row landed under visitor_id, NOT user_id.
+      stored = QueryWindows.list_for_subject({:visitor, visitor.id})
+      stored_nicks = stored |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      assert "alice" in stored_nicks
     end
 
-    test "close_query_window: visitor socket returns visitor_not_allowed" do
-      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+    test "close_query_window: visitor socket deletes the persisted window" do
+      slug = "qw-visitor-close-net-#{System.unique_integer([:positive])}"
+      {:ok, network} = Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug)
+
+      visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
 
       {:ok, _, visitor_socket} =
@@ -1430,13 +1455,30 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
+      assert_push("event", %{kind: "query_windows_list"})
+
+      # Pre-open via context (mirrors the user variant's setup pattern).
+      {:ok, _} =
+        QueryWindows.open({:visitor, visitor.id}, network.id, "carol", visitor_name)
+
+      assert_push("event", %{kind: "query_windows_list"})
+
       ref =
         push(visitor_socket, "close_query_window", %{
-          "network_id" => 1,
-          "target_nick" => "alice"
+          "network_id" => network.id,
+          "target_nick" => "carol"
         })
 
-      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+      assert_reply(ref, :ok)
+
+      windows = drain_for_query_windows_list(3)
+      nicks = windows |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      refute "carol" in nicks
+
+      # Storage check — row really gone, not just hidden.
+      stored = QueryWindows.list_for_subject({:visitor, visitor.id})
+      stored_nicks = stored |> Map.values() |> List.flatten() |> Enum.map(& &1.target_nick)
+      refute "carol" in stored_nicks
     end
   end
 

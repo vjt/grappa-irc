@@ -35,8 +35,8 @@ defmodule GrappaWeb.GrappaChannel do
   ### User-level topic (`grappa:user:{user}`)
 
   Pushes:
-  - `query_windows_list` — full current DM window list for the user.
-    Skipped for visitor sockets (`user_name` starts with `"visitor:"`).
+  - `query_windows_list` — full current DM window list for the subject
+    (user or visitor — V2 visitor parity, 2026-05-15).
   - One `topic_changed` per (network, channel) where the session has a
     cached topic.
   - One `channel_modes_changed` per (network, channel) where the session
@@ -105,12 +105,13 @@ defmodule GrappaWeb.GrappaChannel do
 
   - `"open_query_window"` — open a DM (query) window. Payload: `%{"network_id" => id,
     "target_nick" => nick}`. Upserts a `query_windows` row (idempotent via unique idx)
-    and broadcasts the updated `query_windows_list` on the user topic. Visitors rejected.
+    and broadcasts the updated `query_windows_list` on the user topic. Subject-scoped
+    per V2 (visitor and user sockets share the path).
 
   - `"close_query_window"` — close a DM (query) window. Payload: `%{"network_id" => id,
     "target_nick" => nick}`. Deletes the `query_windows` row (idempotent — no-op if
-    missing) and broadcasts the updated `query_windows_list` on the user topic. Visitors
-    rejected.
+    missing) and broadcasts the updated `query_windows_list` on the user topic.
+    Subject-scoped per V2.
 
   All ops verbs reject visitor sockets and return `{:error, %{reason: "visitor_not_allowed"}}`.
 
@@ -666,9 +667,10 @@ defmodule GrappaWeb.GrappaChannel do
   # Delegates to `QueryWindows.open/4` (idempotent via unique idx).
   # After the DB upsert, QueryWindows.open/4 broadcasts the updated
   # `query_windows_list` on Topic.user/1 — all connected tabs of this
-  # user receive the push and can update their window list.
-  # Visitors are rejected — visitor sessions skip query_windows
-  # persistence (spec §1: "Skipped for visitor sessions").
+  # subject (user OR visitor) receive the push and update their window
+  # list. Visitor parity (V2 cluster, 2026-05-15) — visitor sockets get
+  # the same path; row lands under `query_windows.visitor_id` per V1's
+  # XOR FK shape.
   def handle_in(
         "open_query_window",
         %{"network_id" => network_id, "target_nick" => target_nick},
@@ -678,13 +680,11 @@ defmodule GrappaWeb.GrappaChannel do
     user_name = socket.assigns.user_name
 
     with {:ok, _} <- validate_args(nick: target_nick),
-         {:ok, _} <- check_not_visitor(user_name),
-         {:ok, user} <- safe_get_user(user_name),
-         {:ok, _} <- QueryWindows.open({:user, user.id}, network_id, target_nick, user_name) do
+         {:ok, subject} <- resolve_subject(user_name),
+         {:ok, _} <- QueryWindows.open(subject, network_id, target_nick, user_name) do
       {:reply, :ok, socket}
     else
       {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
       {:error, _} -> {:reply, {:error, %{reason: "open_failed"}}, socket}
     end
@@ -695,8 +695,8 @@ defmodule GrappaWeb.GrappaChannel do
   # Payload: `%{"network_id" => integer, "target_nick" => string}`.
   # Delegates to `QueryWindows.close/4` (idempotent — returns :ok
   # whether or not the row existed). After the DB delete, broadcasts
-  # the updated `query_windows_list` on Topic.user/1.
-  # Visitors are rejected — they have no persisted query windows.
+  # the updated `query_windows_list` on Topic.user/1. Visitor parity
+  # per V2 — visitor sockets close visitor-FK rows.
   def handle_in(
         "close_query_window",
         %{"network_id" => network_id, "target_nick" => target_nick},
@@ -706,13 +706,11 @@ defmodule GrappaWeb.GrappaChannel do
     user_name = socket.assigns.user_name
 
     with {:ok, _} <- validate_args(nick: target_nick),
-         {:ok, _} <- check_not_visitor(user_name),
-         {:ok, user} <- safe_get_user(user_name) do
-      :ok = QueryWindows.close({:user, user.id}, network_id, target_nick, user_name)
+         {:ok, subject} <- resolve_subject(user_name) do
+      :ok = QueryWindows.close(subject, network_id, target_nick, user_name)
       {:reply, :ok, socket}
     else
       {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
       :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
     end
   end
@@ -829,16 +827,9 @@ defmodule GrappaWeb.GrappaChannel do
   defp push_user_snapshot(user_name, socket) do
     push_bundle_hash(socket)
 
-    if visitor?(user_name) do
-      :ok
-    else
-      case safe_get_user(user_name) do
-        {:ok, user} ->
-          push_query_windows_list(user, socket)
-
-        :error ->
-          :ok
-      end
+    case resolve_subject(user_name) do
+      {:ok, subject} -> push_query_windows_list(subject, socket)
+      :error -> :ok
     end
   end
 
@@ -882,17 +873,17 @@ defmodule GrappaWeb.GrappaChannel do
     end
   end
 
-  # Pushes query_windows_list for `user`. Wire-rendering AND envelope-
+  # Pushes query_windows_list for `subject`. Wire-rendering AND envelope-
   # construction delegated to `Grappa.QueryWindows.Wire` so the after_join
   # push and the per-mutation `broadcast_windows_list` (fired from
   # `QueryWindows.open/4` / `.close/4`) share one shape — and crucially
   # one Jason-encodable form. A struct-shaped payload crashes the channel
   # during fan-out (`%Window{}` doesn't derive Jason.Encoder), which in
   # turn loses any subsequent push on the same channel ref.
-  @spec push_query_windows_list(Accounts.User.t(), Phoenix.Socket.t()) :: :ok
-  defp push_query_windows_list(%Accounts.User{} = user, socket) do
+  @spec push_query_windows_list(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_query_windows_list(subject, socket) do
     payload =
-      {:user, user.id}
+      subject
       |> QueryWindows.list_for_subject()
       |> QueryWindows.Wire.render_grouped()
       |> QueryWindows.Wire.windows_list_payload()

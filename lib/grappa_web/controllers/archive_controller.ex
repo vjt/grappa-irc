@@ -11,12 +11,12 @@ defmodule GrappaWeb.ArchiveController do
   pseudo-channel out before grouping.
 
   Subject-dispatched: visitors share the controller (no separate
-  endpoint). Visitor sessions don't get query-window persistence (per
-  `Grappa.QueryWindows` moduledoc — visitor credentials are
-  ephemeral) so the active keyset for visitors is the
-  `Session.list_channels/2` snapshot only. The Scrollback query path
-  is identical: `subject_where/2` partitions on `visitor_id` for
-  `{:visitor, _}` subjects (per-subject iso mirror of the user path).
+  endpoint). Both users and visitors persist DM windows under the
+  XOR FK shape (V1 cluster), so the active keyset is symmetrical:
+  `Session.list_channels/2` snapshot ∪ `QueryWindows.list_for_subject/1`
+  for the network. The Scrollback query path is identical:
+  `subject_where/2` partitions on `visitor_id` for `{:visitor, _}`
+  subjects (per-subject iso mirror of the user path).
 
   Iso boundary: `Plugs.ResolveNetwork` collapses unknown-slug /
   not-your-network to 404 BEFORE this action runs. `:no_session` is
@@ -51,10 +51,8 @@ defmodule GrappaWeb.ArchiveController do
   end
 
   # Active keyset = currently-joined channels (live Session state) +
-  # currently-open query windows (persisted, user-only). Visitors don't
-  # get query-window persistence per `Grappa.QueryWindows` moduledoc, so
-  # their keyset omits that source — channels-only, which matches the
-  # only "live" surface a visitor session has.
+  # currently-open query windows (persisted, subject-scoped per V1's
+  # XOR FK shape — both users and visitors get a row).
   @spec build_active_keyset(
           {:user, User.t()} | {:visitor, Visitor.t()},
           Grappa.Scrollback.subject(),
@@ -75,11 +73,18 @@ defmodule GrappaWeb.ArchiveController do
   @spec open_query_targets({:user, User.t()} | {:visitor, Visitor.t()}, integer()) ::
           [String.t()]
   defp open_query_targets({:user, %User{id: user_id}}, network_id) do
-    {:user, user_id}
+    list_query_target_nicks({:user, user_id}, network_id)
+  end
+
+  defp open_query_targets({:visitor, %Visitor{id: visitor_id}}, network_id) do
+    list_query_target_nicks({:visitor, visitor_id}, network_id)
+  end
+
+  @spec list_query_target_nicks(Grappa.Subject.t(), integer()) :: [String.t()]
+  defp list_query_target_nicks(subject, network_id) do
+    subject
     |> QueryWindows.list_for_subject()
     |> Map.get(network_id, [])
     |> Enum.map(& &1.target_nick)
   end
-
-  defp open_query_targets({:visitor, _}, _), do: []
 end
