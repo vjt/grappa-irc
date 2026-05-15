@@ -5006,6 +5006,140 @@ limits, W-16 signing_salt rotation, M-cic-2 production strip of
 `__cic_*` debug globals.
 
 
+## 2026-05-15 — CP32 visitor-parity-and-NickServ cluster CLOSED
+
+10 commits across 9 production buckets shipped same-day on
+`cluster/visitor-parity-and-nickserv`, ff-merged to main as
+`f51618a..2668fba`. V8 DROPPED at brainstorm. Plan +
+per-bucket retrospective at
+`docs/plans/2026-05-14-visitor-parity-and-nickserv.md`. Cluster
+checkpoint at `docs/checkpoints/2026-05-15-cp32.md`.
+
+### The subject parity invariant
+
+Pre-cluster, every server-side feature surface that touched
+"who owns this row" branched on `{:user, _}` vs `{:visitor, _}`
+and refused the visitor branch (or accepted it via a parallel
+short-circuit code path). V1-V9 collapse those branches: every
+persistence-write codepath now builds its changeset via
+`Grappa.Subject.put_subject_id/2`, every read query goes through
+`Grappa.Subject.subject_where/3`, every controller picks subject
+from `Subject.from_assigns/1` rather than `safe_get_user/1`. Three
+subject-scoped tables (`query_windows`, `push_subscriptions`,
+`user_settings`) gained the XOR FK pattern that `read_cursors` had
+since CP29 — `(user_id IS NULL) <> (visitor_id IS NULL)` CHECK +
+two partial UNIQUE indexes per subject branch + ON DELETE CASCADE
+to both parents. Per V5's cascade test, deleting a visitor wipes
+all four owned tables (plus `messages` from the CP29 cluster) in
+one Reaper sweep — the database does the work.
+
+The invariant is now: "every server-side feature surface that
+branched on subject kind to refuse the visitor branch now accepts
+both and dispatches through `Grappa.Subject.t()`." Any per-subject
+behaviour difference that REMAINS post-cluster must be explicitly
+justified — today the only one is V7's TTL semantics (anon vs
+identified expiry).
+
+### Two-tier identity model
+
+| Subject                          | Auth proof                                              | Data lifetime |
+|----------------------------------|---------------------------------------------------------|---------------|
+| Anonymous visitor                | none (visitor row + bearer)                              | 48h sliding TTL — Reaper sweep + FK CASCADE wipes everything |
+| NickServ-identified visitor      | NickServ password verified vs upstream `+r` MODE        | **infinite** — `expires_at = NULL` |
+| Registered user (admin/operator) | local Argon2 password (`users.password_hash`)           | infinite (operator-only path via `mix grappa.create_user`) |
+
+V7 codifies the lifetime model. Anon visitors get `expires_at = now
++ 48h` on every touch; identified visitors get `expires_at = NULL`
+written at the `commit_password/2` transition (called from
+`Session.Server.apply_effects([{:visitor_r_observed, password} | _], _)`
+when upstream signals the `+r` mode). Subsequent `Visitors.touch/1`
+calls become no-ops for identified visitors (no reason to bump a
+NULL timestamp). The Reaper's sweep query carries
+`WHERE expires_at < now() AND expires_at IS NOT NULL` so identified
+visitors are skipped automatically.
+
+V7's `Visitors.Login.login/2` extension supports the returning-from-
+new-device path: visitor submits nick + NickServ password, server
+matches against `password_encrypted`, REUSES the existing visitor
+row (no new id), binds a fresh accounts_session to it. Mismatch
+returns `:invalid_credentials` (uniform with the user wrong-password
+shape, no enumeration).
+
+### V8 dropped — NickServ identification IS the permanent identity
+
+The pre-cluster spec carried a V8 "promote visitor → registered
+user with reparenting transaction" bucket. The 2026-05-15 spec
+refinement dropped it: NickServ identification with infinite TTL
+already provides everything a "registered user" tier would. The
+visitor row stays a `visitor_id` row forever; capability-equality
+with `users` is established by the V1 XOR FK migrations. No
+double-password UX problem, zero data-migration code, zero
+double-account-state classes. The "registered user" tier exists
+ORTHOGONALLY as the admin/operator account path (the bouncer admin,
+future read-only dashboard accounts) — not a visitor's promotion
+target.
+
+The bucket numbering keeps V8 reserved for the optional future
+"admin can create non-IRC user accounts" enhancement; today this is
+already the `mix grappa.create_user` path, so nothing new to ship.
+
+### V9 NICK rename safety analysis
+
+Pre-V9 the visitor branch at `nick_controller.ex:61` returned
+`403 forbidden`. V9 lifts the gate. Two lines of defense protect
+the `(nick, network_slug)` UNIQUE on `visitors`:
+
+1. Pre-check `Visitors.nick_in_use?(visitor_id, target_nick,
+   network_slug)` BEFORE the upstream NICK frame — catches >99% of
+   collision races at the controller boundary, returns 409
+   `nick_in_use`.
+2. UNIQUE constraint at the EventRouter persist site — second line
+   of defense via `Visitors.update_nick/2`'s
+   `unique_constraint(:nick, :network_slug)`. Logged + dropped on
+   collision per the no-silent-drops cluster's discipline.
+
+User subjects don't carry the persister callback — their nick lives
+in `Networks.Credential` (operator-driven, not session-driven).
+Visitor subjects route through an injected `visitor_nick_persister`
+function-ref (mirror of `visitor_committer` for `+r` MODE) — the
+same opaque indirection pattern that dodges the
+`Visitors → Session` boundary cycle.
+
+vjt vetoed the orchestrator's complex sync-wait + 422-on-433-numeric
++ `pending_nick_rename` correlation field design. User path is
+fire-and-forget 202 today; visitor=user per the parity invariant;
+432/433 silently leaves DB unchanged via natural EventRouter shape
+(no echo → no effect → no DB write); cic already listens to
+`own_nick_changed` (CP-15). The pre-existing UX hole around silent
+432/433 is orthogonal to V9 and stays open.
+
+### HOT-vs-COLD preflight gap surfaced
+
+V9's deploy hit a real `scripts/deploy.sh` gap.
+`Session.Server`'s `@type t :: %{...}` got a new
+`visitor_nick_persister` field — per
+`feedback_deploy_sh_preflight_field_addition_gap` the AST oracle
+SHOULD have caught it. But the deploy operator did `git merge --
+ff-only` BEFORE invoking `scripts/deploy.sh`. The deploy's
+`git pull --ff-only` returned "Already up to date", `HEAD@{1}` and
+`HEAD` were the same commit, the preflight diff was empty, the AST
+oracle saw nothing, classification was falsely HOT.
+
+`Phoenix.CodeReloader` accepted the reload (BEAM survived) but
+`_build/prod` got corrupted; a subsequent `--force-cold` rebuild
+failed `compile_env validation`. Recovery:
+`rm -rf _build/prod && scripts/deploy.sh --force-cold`. Captured
+in `feedback_deploy_preflight_empty_diff_after_merge` —
+`scripts/deploy.sh`'s preflight diff base is broken when the
+operator pre-merges locally. The CLAUDE.md "merge → deploy"
+canonical workflow IS the broken case. Until the script learns to
+diff against `origin/main@{1}..origin/main` (the actual pre-pull
+remote state) or persists a last-deployed-SHA marker, the operator
+must manually inspect `lib/grappa/hot_reload/long_lived_modules.ex`
++ migrations + `mix.lock` post-local-merge and pass `--force-cold`
+defensively.
+
+
 ---
 
 ## What's *not* in this document (on purpose)
