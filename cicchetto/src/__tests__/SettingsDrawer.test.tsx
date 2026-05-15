@@ -154,3 +154,56 @@ describe("SettingsDrawer notifications section", () => {
     });
   });
 });
+
+// V6 visitor-parity: the drawer does NOT read me()/getSubject() and is
+// subject-agnostic by construction. This describe block pins that
+// invariant — if a visitor-gated branch ever sneaks in (e.g. "hide push
+// toggle for visitors") the assertions below break loudly. Mirrors the
+// user-shape tests with a visitor subject seeded in localStorage to
+// match the auth.ts contract; renders + asserts the same surface.
+describe("SettingsDrawer (visitor subject)", () => {
+  beforeEach(() => {
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({
+        kind: "visitor",
+        id: "v1",
+        nick: "anon-vjt",
+        network_slug: "azzurra",
+      }),
+    );
+  });
+
+  it("renders the same notifications surface for visitor as for user", () => {
+    wrap(true);
+    expect(screen.getByTestId("push-master-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("pref-channel-all")).toBeInTheDocument();
+    expect(screen.getByTestId("pref-channel-mentions")).toBeInTheDocument();
+    expect(screen.getByTestId("pref-private-all")).toBeInTheDocument();
+    expect(screen.getByTestId("pref-channels-only")).toBeInTheDocument();
+    expect(screen.getByTestId("pref-nicks-only")).toBeInTheDocument();
+  });
+
+  it("loads notification prefs on mount for visitor (server returns 200, no 403 gate)", async () => {
+    const userSettings = await import("../lib/userSettings");
+    wrap(true);
+    await waitFor(() => {
+      expect(userSettings.getNotificationPrefs).toHaveBeenCalledWith("test-bearer");
+    });
+  });
+
+  it("clicking master toggle calls enablePush for visitor (no client-side hide)", async () => {
+    const push = await import("../lib/push");
+    wrap(true);
+    fireEvent.click(screen.getByTestId("push-master-toggle"));
+    await waitFor(() => {
+      expect(push.enablePush).toHaveBeenCalledWith("test-bearer");
+    });
+  });
+
+  it("renders theme + logout for visitor (same chrome as user)", () => {
+    wrap(true);
+    expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
+    expect(screen.getByText(/log out/i)).toBeInTheDocument();
+  });
+});
