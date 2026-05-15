@@ -85,9 +85,8 @@ export type PushSubscribeRequest = {
 
 /**
  * POSTs a fresh subscription to the server's registry. The
- * authenticated bearer token is required — visitors get 403, but
- * the master toggle is hidden in cic for visitor sessions, so a
- * 403 here represents a programming error in the caller.
+ * authenticated bearer token is required; both registered users and
+ * visitors are accepted (visitor-parity V3, 2026-05-15).
  */
 export async function postPushSubscription(
   token: string,

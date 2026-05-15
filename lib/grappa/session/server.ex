@@ -1994,19 +1994,17 @@ defmodule Grappa.Session.Server do
 
   # Push notifications cluster B4 (2026-05-14) — fire-and-forget
   # trigger eval after a successful Scrollback.persist_event/1 in the
-  # `:persist` apply_effects/2 arm.
+  # `:persist` apply_effects/2 arm. Subject-aware as of visitor-parity
+  # V3 (2026-05-15) — both `{:user, _}` and `{:visitor, _}` subjects
+  # dispatch through `Push.Triggers`.
   #
-  # Three short-circuits before delegating to `Push.Triggers`:
+  # Two short-circuits before delegating:
   #
-  #   1. Visitor sessions never push. Visitors are ephemeral and don't
-  #      install the PWA; a subscription tied to a visitor would dangle
-  #      past visitor reaping. The `Push.Subscription` schema enforces
-  #      this at write time too (no `belongs_to :visitor`).
-  #   2. Self-echoes never push. Outbound PRIVMSG / ACTION rows have
+  #   1. Self-echoes never push. Outbound PRIVMSG / ACTION rows have
   #      `sender == state.nick` (the per-network IRC nick reconciled at
   #      001). Pushing an OS notification for messages the operator
   #      typed themselves would be obviously wrong.
-  #   3. Kind gate is enforced inside `Triggers.evaluate_and_dispatch/2`
+  #   2. Kind gate is enforced inside `Triggers.evaluate_and_dispatch/2`
   #      — only `:privmsg` and `:action` proceed past it. Filtering
   #      here too would be belt-and-braces; let the canonical predicate
   #      live in one place.
@@ -2016,15 +2014,13 @@ defmodule Grappa.Session.Server do
   # path. No state mutation — Session.Server's struct shape is
   # untouched, keeping the deploy preflight in HOT mode.
   @spec maybe_dispatch_push(Scrollback.Message.t(), t()) :: :ok
-  defp maybe_dispatch_push(_, %{subject: {:visitor, _}}), do: :ok
-
   defp maybe_dispatch_push(%Scrollback.Message{sender: sender}, %{nick: own_nick})
        when sender == own_nick,
        do: :ok
 
-  defp maybe_dispatch_push(message, %{subject: {:user, user_id}} = state) do
+  defp maybe_dispatch_push(message, %{subject: subject} = state) do
     PushTriggers.evaluate_and_dispatch(message, %{
-      user_id: user_id,
+      subject: subject,
       network_slug: state.network_slug,
       own_nick: state.nick
     })

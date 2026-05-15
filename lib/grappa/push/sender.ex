@@ -1,38 +1,45 @@
 defmodule Grappa.Push.Sender do
   @moduledoc """
   Web Push delivery — sends VAPID-signed encrypted payloads to every
-  push subscription belonging to a user.
+  push subscription belonging to a subject.
 
   Push notifications cluster B2 (2026-05-14). Sits between the trigger
   hot path (B4 — `Grappa.Push.Triggers`) and the upstream
   `WebPushElixir` library, owning the fan-out, dead-endpoint cleanup,
   and telemetry emission.
 
+  ## Subject-scoped — V3 (2026-05-15)
+
+  Both registered users and visitors own push subscriptions; the
+  `send_to_subject/2` API takes a `Grappa.Subject.t()` tagged tuple
+  and fans out across every row matching that subject FK column.
+
   ## Why a thin wrapper instead of inlining `WebPushElixir`
 
   Three concerns the upstream lib doesn't cover and B4 callers MUST
   NOT have to repeat at every call site:
 
-    * **Fan-out across a user's devices** — one PushEvent per
+    * **Fan-out across a subject's devices** — one PushEvent per
       registered subscription, parallelized so a single dead vendor
       doesn't block delivery to the others.
     * **Dead-endpoint cleanup** — vendor 404 / 410 means the
       subscription is permanently invalid; the row MUST be deleted
       so the next fan-out skips it. Keeping zombie rows would
-      bloat the per-user list (B3 settings UI) and waste a vendor
+      bloat the per-subject list (B3 settings UI) and waste a vendor
       round-trip per push.
     * **Telemetry without operator-visible side-effects** — every
       delivery emits `start` + `stop` events so the Phase 5 PromEx
-      exporter can derive per-user delivery rate, success ratio, and
-      dead-endpoint pruning rate without parsing logs.
+      exporter can derive per-subject delivery rate, success ratio,
+      and dead-endpoint pruning rate without parsing logs.
 
   ## API
 
-    * `send_to_user/2` — fan-out to every subscription for a user;
-      always returns `:ok` (fire-and-forget at the call site; per-sub
-      results land in telemetry, not in the return value).
+    * `send_to_subject/2` — fan-out to every subscription for a
+      subject; always returns `:ok` (fire-and-forget at the call
+      site; per-sub results land in telemetry, not in the return
+      value).
     * `send_to_subscription/2` — single-row delivery; returns the
-      per-sub result so callers (currently only `send_to_user/2`'s
+      per-sub result so callers (currently only `send_to_subject/2`'s
       Task fan-out) can inspect it.
 
   ## Telemetry shape
@@ -41,12 +48,14 @@ defmodule Grappa.Push.Sender do
   (`Grappa.Admission.Telemetry`):
 
     * `[:grappa, :push, :send, :start]` — measurements
-      `%{count: n_subs}`, metadata `%{user_id: binary()}`. Emitted
-      once per `send_to_user/2` call, BEFORE fan-out begins.
+      `%{count: n_subs}`, metadata `%{subject: Grappa.Subject.t()}`.
+      Emitted once per `send_to_subject/2` call, BEFORE fan-out
+      begins.
     * `[:grappa, :push, :send, :stop]` — measurements
       `%{success: x, gone: y, error: z, duration_ms: ms}`,
-      metadata `%{user_id: binary(), count: n_subs}`. Emitted once
-      per `send_to_user/2` call AFTER fan-out completes.
+      metadata `%{subject: Grappa.Subject.t(), count: n_subs}`.
+      Emitted once per `send_to_subject/2` call AFTER fan-out
+      completes.
     * `[:grappa, :push, :delete_dead]` — measurements
       `%{count: n_deleted}`, metadata `%{endpoint: String.t()}`.
       Emitted from `send_to_subscription/2` whenever a 404/410
@@ -89,11 +98,11 @@ defmodule Grappa.Push.Sender do
 
   Lives inside the `Grappa.Push` context boundary (no top-level
   `use Boundary` annotation — same convention as `Push.Subscription`).
-  Reachable as `Grappa.Push.Sender.send_to_user/2` once the Push
+  Reachable as `Grappa.Push.Sender.send_to_subject/2` once the Push
   context exports it for B4's trigger hot path.
   """
 
-  alias Grappa.Push
+  alias Grappa.{Push, Subject}
   alias Grappa.Push.Subscription
 
   require Logger
@@ -134,7 +143,7 @@ defmodule Grappa.Push.Sender do
              | term()}
 
   @doc """
-  Fans out `payload` to every push subscription belonging to `user_id`.
+  Fans out `payload` to every push subscription belonging to `subject`.
 
   Always returns `:ok` — failure modes land in telemetry + Logger. The
   caller (B4 `Push.Triggers`) is fire-and-forget at the message hot
@@ -144,16 +153,16 @@ defmodule Grappa.Push.Sender do
 
   Concurrency cap of 4 + 10s timeout matches `Task.async_stream/3`
   defaults for fan-out workloads. Higher concurrency would not improve
-  latency much (most users have ≤3 devices); lower would serialize
+  latency much (most subjects have ≤3 devices); lower would serialize
   multi-device delivery unnecessarily.
 
   Empty subscription list short-circuits to `:ok` without emitting
   start/stop telemetry — emitting a zero-count send_event would just
-  generate noise in the per-user dashboard.
+  generate noise in the per-subject dashboard.
   """
-  @spec send_to_user(Ecto.UUID.t(), payload()) :: :ok
-  def send_to_user(user_id, payload) when is_binary(user_id) and is_map(payload) do
-    case list_subscriptions(user_id) do
+  @spec send_to_subject(Subject.t(), payload()) :: :ok
+  def send_to_subject({_, _} = subject, payload) when is_map(payload) do
+    case Push.list_for_subject(subject) do
       [] ->
         :ok
 
@@ -161,7 +170,7 @@ defmodule Grappa.Push.Sender do
         :telemetry.execute(
           [:grappa, :push, :send, :start],
           %{count: length(subs)},
-          %{user_id: user_id}
+          %{subject: subject}
         )
 
         started_at = System.monotonic_time(:millisecond)
@@ -185,7 +194,7 @@ defmodule Grappa.Push.Sender do
         :telemetry.execute(
           [:grappa, :push, :send, :stop],
           %{success: success, gone: gone, error: error, duration_ms: duration_ms},
-          %{user_id: user_id, count: length(subs)}
+          %{subject: subject, count: length(subs)}
         )
 
         :ok
@@ -307,10 +316,6 @@ defmodule Grappa.Push.Sender do
 
     e in [ArgumentError, MatchError, ErlangError] ->
       {:error, {:encrypt_error, Exception.message(e)}}
-  end
-
-  defp list_subscriptions(user_id) do
-    Push.list_for_subject({:user, user_id})
   end
 
   defp tally(results) do

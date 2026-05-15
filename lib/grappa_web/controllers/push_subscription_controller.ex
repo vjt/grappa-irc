@@ -1,7 +1,7 @@
 defmodule GrappaWeb.PushSubscriptionController do
   @moduledoc """
   REST surface for `Grappa.Push` subscriptions — push notifications
-  cluster B1 (2026-05-14).
+  cluster B1 (2026-05-14) + visitor-parity V3 (2026-05-15).
 
   Three endpoints, all behind `[:api, :authn]`:
 
@@ -17,33 +17,23 @@ defmodule GrappaWeb.PushSubscriptionController do
       unique_constraint).
 
     * `DELETE /push/subscriptions/:id` — 204 on success;
-      404 (uniform body) for cross-user OR missing IDs (probing
-      protection — one user cannot enumerate another's
+      404 (uniform body) for cross-subject OR missing IDs (probing
+      protection — one subject cannot enumerate another's
       subscription IDs).
 
     * `GET /push/subscriptions` — 200 with
       `%{subscriptions: [%{id, user_agent, created_at, last_used_at},
       ...]}`. Powers the cic settings drawer's per-device list (B3).
 
-  ## User-only
+  ## Subject-scoped — V3 (2026-05-15)
 
-  Push subscriptions are tied to PWA-installed sessions; visitors are
-  ephemeral and don't install the PWA. Visitors get `:forbidden`
-  (403) from `require_user/1` rather than `:unauthorized` (401) — the
-  bearer is fine, the verb isn't allowed for this subject. Mirrors
-  the visitor-gated branch in `NickController` (Task 30).
-
-  ### Body validation runs BEFORE the visitor gate on POST
-
-  By Phoenix dispatch convention (mirroring `NickController`), the
-  POST body's structural-shape match runs before subject branching.
-  A visitor sending a malformed body therefore gets `400 :bad_request`
-  rather than `403 :forbidden` — they confirm "endpoint exists but
-  body is bad," but cannot tell whether their subject would be
-  accepted. A visitor with a well-formed body DOES get 403. The
-  endpoint's existence is already discoverable from the static route
-  table (no probing leak there); the gating still keeps visitors
-  from creating rows.
+  Both registered users and visitors register push subscriptions
+  through this controller. The action body delegates to
+  `Grappa.Subject.from_assigns/1` for the bare-id tuple and hands it
+  straight to `Grappa.Push` context functions; the FK XOR invariant
+  is enforced at the schema layer. Anon visitors' subscriptions
+  CASCADE-delete on Reaper sweep; identified visitors keep them
+  indefinitely (NickServ identity proof = permanent subject).
 
   ## user_agent capture
 
@@ -64,12 +54,11 @@ defmodule GrappaWeb.PushSubscriptionController do
 
   use GrappaWeb, :controller
 
-  alias Grappa.Accounts.User
-  alias Grappa.Push
+  alias Grappa.{Push, Subject}
 
   @doc """
   `POST /push/subscriptions` — register a new push subscription for
-  the authenticated user.
+  the authenticated subject.
 
   Wire shape mirrors the W3C `PushSubscription.toJSON()` output
   (`{endpoint, keys: {p256dh, auth}}`) so the cic SW can pass its
@@ -77,7 +66,7 @@ defmodule GrappaWeb.PushSubscriptionController do
   (`expirationTime` is dropped at the boundary).
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :bad_request | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
   def create(conn, %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}})
       when is_binary(endpoint) and is_binary(p256dh) and is_binary(auth) do
     attrs = %{
@@ -87,8 +76,7 @@ defmodule GrappaWeb.PushSubscriptionController do
       user_agent: get_user_agent(conn)
     }
 
-    with {:ok, user} <- require_user(conn),
-         {:ok, sub} <- Push.create({:user, user.id}, attrs) do
+    with {:ok, sub} <- Push.create(Subject.from_assigns(conn.assigns), attrs) do
       conn
       |> put_status(:created)
       |> render(:show, subscription: sub)
@@ -98,41 +86,26 @@ defmodule GrappaWeb.PushSubscriptionController do
   def create(_, _), do: {:error, :bad_request}
 
   @doc """
-  `DELETE /push/subscriptions/:id` — remove a subscription. Cross-user
-  IDs return 404 (uniform body) so a probing user cannot enumerate
-  another user's subscription space.
+  `DELETE /push/subscriptions/:id` — remove a subscription. Cross-
+  subject IDs return 404 (uniform body) so a probing subject cannot
+  enumerate another subject's subscription space.
   """
   @spec delete(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :not_found | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :not_found | Ecto.Changeset.t()}
   def delete(conn, %{"id" => id}) when is_binary(id) do
-    with {:ok, user} <- require_user(conn),
-         {:ok, sub} <- Push.get_for_subject({:user, user.id}, id),
+    with {:ok, sub} <- Push.get_for_subject(Subject.from_assigns(conn.assigns), id),
          {:ok, _} <- Push.delete(sub) do
       send_resp(conn, :no_content, "")
     end
   end
 
   @doc """
-  `GET /push/subscriptions` — list the authenticated user's
+  `GET /push/subscriptions` — list the authenticated subject's
   subscriptions. Powers the cic settings drawer's per-device list.
   """
-  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :forbidden}
+  @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
-    with {:ok, user} <- require_user(conn) do
-      render(conn, :index, subscriptions: Push.list_for_subject({:user, user.id}))
-    end
-  end
-
-  # Visitor-gating boundary: push subscriptions are user-only by
-  # design (visitors are ephemeral). Mirrors the
-  # `{:user, _} | {:visitor, _}` dispatch in `NickController` /
-  # `MeController`.
-  @spec require_user(Plug.Conn.t()) :: {:ok, User.t()} | {:error, :forbidden}
-  defp require_user(conn) do
-    case conn.assigns[:current_subject] do
-      {:user, %User{} = user} -> {:ok, user}
-      _ -> {:error, :forbidden}
-    end
+    render(conn, :index, subscriptions: Push.list_for_subject(Subject.from_assigns(conn.assigns)))
   end
 
   @spec get_user_agent(Plug.Conn.t()) :: String.t() | nil

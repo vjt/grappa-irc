@@ -1,18 +1,19 @@
 defmodule GrappaWeb.PushSubscriptionControllerTest do
   @moduledoc """
-  REST surface for `Grappa.Push` — push notifications cluster B1.
+  REST surface for `Grappa.Push` — push notifications cluster B1 +
+  visitor-parity V3 (2026-05-15).
 
   Coverage:
     * 401 without bearer (handled by Plugs.Authn upstream — assertion
       mostly there to pin the contract).
-    * 403 visitor — visitors cannot subscribe (user-only verb).
-    * POST happy path: 201 + persisted row.
+    * POST happy path (user + visitor): 201 + persisted row.
     * POST validation: missing endpoint / missing keys / bad body shape → 400 / 422.
-    * POST duplicate (user_id, endpoint) → 422 (changeset error).
-    * GET happy path: returns user's subscriptions, scoped.
-    * GET visitor → 403.
-    * DELETE happy path: 204.
-    * DELETE cross-user → 404 (probing protection).
+    * POST duplicate (subject, endpoint) → 422 (changeset error).
+    * GET happy path: returns subject's subscriptions, scoped per
+      subject.
+    * GET visitor: returns the visitor's own subscriptions only.
+    * DELETE happy path: 204 (user + visitor).
+    * DELETE cross-subject → 404 (probing protection).
     * DELETE unknown ID → 404.
     * user_agent header is captured + persisted on POST.
   """
@@ -50,15 +51,20 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
-    test "403 for a visitor subject", %{conn: conn} do
-      {_, session} = visitor_and_session()
+    test "201 for a visitor subject — visitor-parity V3", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
 
       conn =
         conn
         |> put_bearer(session.id)
-        |> post("/push/subscriptions", valid_body())
+        |> put_req_header("user-agent", "Mozilla/5.0 visitor-test")
+        |> post("/push/subscriptions", valid_body(endpoint: "https://example.com/push/visitor"))
 
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+      assert %{"id" => id} = json_response(conn, 201)
+      [stored] = Push.list_for_subject({:visitor, visitor.id})
+      assert stored.id == id
+      assert stored.endpoint == "https://example.com/push/visitor"
+      assert stored.user_agent == "Mozilla/5.0 visitor-test"
     end
   end
 
@@ -137,10 +143,32 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       assert json_response(conn, 401)
     end
 
-    test "403 for visitors", %{conn: conn} do
-      {_, session} = visitor_and_session()
-      conn = conn |> put_bearer(session.id) |> get("/push/subscriptions")
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    test "scopes to the requesting visitor — V3", %{conn: conn} do
+      {visitor, vsession} = visitor_and_session()
+
+      {:ok, _} =
+        Push.create({:visitor, visitor.id}, %{
+          endpoint: "https://example.com/push/visitor-list",
+          p256dh_key: "k",
+          auth_key: "a",
+          user_agent: "ua-v"
+        })
+
+      # Sibling user with their own subscription — must NOT leak
+      {other_user, _} = user_and_session()
+
+      {:ok, _} =
+        Push.create({:user, other_user.id}, %{
+          endpoint: "https://example.com/push/sibling-user",
+          p256dh_key: "k",
+          auth_key: "a"
+        })
+
+      conn = conn |> put_bearer(vsession.id) |> get("/push/subscriptions")
+      assert %{"subscriptions" => [only]} = json_response(conn, 200)
+      assert only["user_agent"] == "ua-v"
+      [stored_visitor] = Push.list_for_subject({:visitor, visitor.id})
+      assert only["id"] == stored_visitor.id
     end
 
     test "returns the user's subscriptions newest-first", %{conn: conn} do
@@ -208,10 +236,35 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       assert json_response(conn, 401)
     end
 
-    test "403 for visitors", %{conn: conn} do
-      {_, session} = visitor_and_session()
-      conn = conn |> put_bearer(session.id) |> delete("/push/subscriptions/#{Ecto.UUID.generate()}")
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    test "204 for a visitor — V3", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
+
+      {:ok, sub} =
+        Push.create({:visitor, visitor.id}, %{
+          endpoint: "https://example.com/push/visitor-del",
+          p256dh_key: "k",
+          auth_key: "a"
+        })
+
+      conn = conn |> put_bearer(session.id) |> delete("/push/subscriptions/#{sub.id}")
+      assert response(conn, 204) == ""
+      assert Push.list_for_subject({:visitor, visitor.id}) == []
+    end
+
+    test "404 on cross-subject delete (visitor → user row) — V3", %{conn: conn} do
+      {alice, _} = user_and_session()
+      {_, vsession} = visitor_and_session()
+
+      {:ok, alice_sub} =
+        Push.create({:user, alice.id}, %{
+          endpoint: "https://example.com/push/cross-subject",
+          p256dh_key: "k",
+          auth_key: "a"
+        })
+
+      conn = conn |> put_bearer(vsession.id) |> delete("/push/subscriptions/#{alice_sub.id}")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+      assert [_] = Push.list_for_subject({:user, alice.id})
     end
 
     test "204 on success and the row is gone", %{conn: conn} do

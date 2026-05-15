@@ -26,6 +26,7 @@ defmodule GrappaWeb do
       Grappa.Scrollback,
       Grappa.Session,
       Grappa.SpawnOrchestrator,
+      Grappa.Subject,
       Grappa.UserSettings,
       Grappa.Visitors,
       Grappa.WSPresence,

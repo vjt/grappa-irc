@@ -851,11 +851,12 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :vjt: ping\r\n")
 
       uid = user.id
+      subject = {:user, uid}
 
-      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{user_id: ^uid}},
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}},
                      2_000
 
-      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -904,7 +905,8 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":alice!~a@host PRIVMSG vjt :hi there\r\n")
 
       uid = user.id
-      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+      subject = {:user, uid}
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

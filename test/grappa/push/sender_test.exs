@@ -18,14 +18,14 @@ defmodule Grappa.Push.SenderTest do
     * 503 vendor response → `{:error, {:http_error, 503}}` + Logger
       warning + telemetry tally lands in the `error` bucket.
     * Connection refused → `{:error, _}` per the no-silent-drops rule.
-    * `send_to_user/2` empty subscription list → `:ok` + NO start/stop
+    * `send_to_subject/2` empty subscription list → `:ok` + NO start/stop
       telemetry (zero-count events would just generate noise).
-    * `send_to_user/2` with N subscriptions emits `:start` (count=N)
+    * `send_to_subject/2` with N subscriptions emits `:start` (count=N)
       + `:stop` (success+gone+error tally) telemetry pair.
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Accounts, Push}
+  alias Grappa.{Accounts, Push, Visitors}
   alias Grappa.Push.Sender
 
   # Real P-256 client public key + 16-byte auth secret — NOT random
@@ -48,9 +48,15 @@ defmodule Grappa.Push.SenderTest do
     user
   end
 
-  defp subscription_fixture(user, endpoint) do
+  defp visitor_fixture do
+    nick = "sender-visitor-#{System.unique_integer([:positive])}"
+    {:ok, v} = Visitors.find_or_provision_anon(nick, "libera", "127.0.0.1")
+    v
+  end
+
+  defp subscription_fixture(subject, endpoint) do
     {:ok, sub} =
-      Push.create({:user, user.id}, %{
+      Push.create(subject, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,
@@ -90,7 +96,7 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      sub = subscription_fixture({:user, user.id}, endpoint)
       assert is_nil(sub.last_used_at)
 
       assert :ok = Sender.send_to_subscription(sub, @payload)
@@ -110,7 +116,7 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      sub = subscription_fixture({:user, user.id}, endpoint)
 
       assert {:error, :gone} = Sender.send_to_subscription(sub, @payload)
       assert is_nil(Repo.get(Grappa.Push.Subscription, sub.id))
@@ -124,7 +130,7 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      sub = subscription_fixture({:user, user.id}, endpoint)
 
       assert {:error, :gone} = Sender.send_to_subscription(sub, @payload)
     end
@@ -138,7 +144,7 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      sub = subscription_fixture({:user, user.id}, endpoint)
 
       assert {:error, {:http_error, 503}} = Sender.send_to_subscription(sub, @payload)
       assert %Grappa.Push.Subscription{} = Repo.get(Grappa.Push.Subscription, sub.id)
@@ -151,7 +157,7 @@ defmodule Grappa.Push.SenderTest do
       Bypass.down(bypass)
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      sub = subscription_fixture({:user, user.id}, endpoint)
 
       assert {:error, _} = Sender.send_to_subscription(sub, @payload)
       assert %Grappa.Push.Subscription{} = Repo.get(Grappa.Push.Subscription, sub.id)
@@ -180,7 +186,7 @@ defmodule Grappa.Push.SenderTest do
     end
   end
 
-  describe "send_to_user/2" do
+  describe "send_to_subject/2" do
     test "no subscriptions → :ok + NO start/stop telemetry" do
       attach_telemetry([
         [:grappa, :push, :send, :start],
@@ -188,7 +194,7 @@ defmodule Grappa.Push.SenderTest do
       ])
 
       user = user_fixture()
-      assert :ok = Sender.send_to_user(user.id, @payload)
+      assert :ok = Sender.send_to_subject({:user, user.id}, @payload)
 
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 50
       refute_receive {:telemetry, [:grappa, :push, :send, :stop], _, _}, 50
@@ -208,19 +214,42 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, "#{bypass_url}/wp/a")
-      _ = subscription_fixture(user, "#{bypass_url}/wp/b")
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, "#{bypass_url}/wp/a")
+      _ = subscription_fixture(subject, "#{bypass_url}/wp/b")
 
-      assert :ok = Sender.send_to_user(user.id, @payload)
+      assert :ok = Sender.send_to_subject(subject, @payload)
 
-      user_id = user.id
-
-      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 2}, %{user_id: ^user_id}}
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 2}, %{subject: ^subject}}
 
       assert_receive {:telemetry, [:grappa, :push, :send, :stop],
-                      %{success: 2, gone: 0, error: 0, duration_ms: duration_ms}, %{user_id: ^user_id, count: 2}}
+                      %{success: 2, gone: 0, error: 0, duration_ms: duration_ms}, %{subject: ^subject, count: 2}}
 
       assert is_integer(duration_ms) and duration_ms >= 0
+    end
+
+    test "fans out to a visitor subject's subscriptions — V3" do
+      bypass = Bypass.open()
+      bypass_url = "http://localhost:#{bypass.port}"
+
+      attach_telemetry([
+        [:grappa, :push, :send, :start],
+        [:grappa, :push, :send, :stop]
+      ])
+
+      Bypass.expect(bypass, "POST", "/wp/:id", fn conn ->
+        Plug.Conn.resp(conn, 201, "")
+      end)
+
+      visitor = visitor_fixture()
+      subject = {:visitor, visitor.id}
+      _ = subscription_fixture(subject, "#{bypass_url}/wp/v")
+
+      assert :ok = Sender.send_to_subject(subject, @payload)
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}}
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], %{success: 1}, %{subject: ^subject, count: 1}}
     end
 
     test "mixed success/410 fan-out tallies correctly in :stop event" do
@@ -238,10 +267,11 @@ defmodule Grappa.Push.SenderTest do
       end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, "#{bypass_url}/wp/ok")
-      _ = subscription_fixture(user, "#{bypass_url}/wp/gone")
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, "#{bypass_url}/wp/ok")
+      _ = subscription_fixture(subject, "#{bypass_url}/wp/gone")
 
-      assert :ok = Sender.send_to_user(user.id, @payload)
+      assert :ok = Sender.send_to_subject(subject, @payload)
 
       assert_receive {:telemetry, [:grappa, :push, :send, :stop], %{success: 1, gone: 1, error: 0}, _}
     end

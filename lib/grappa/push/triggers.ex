@@ -1,7 +1,8 @@
 defmodule Grappa.Push.Triggers do
   @moduledoc """
   Push notifications cluster B4 (2026-05-14) — trigger evaluation +
-  fan-out from the inbound PRIVMSG hot path.
+  fan-out from the inbound PRIVMSG hot path. Subject-aware as of
+  visitor-parity V3 (2026-05-15).
 
   ## Where this fits
 
@@ -39,17 +40,11 @@ defmodule Grappa.Push.Triggers do
 
   ## own_nick — per-network, NOT account name
 
-  The caller (Session.Server) holds the per-(user, network) IRC nick
+  The caller (Session.Server) holds the per-(subject, network) IRC nick
   in `state.nick`, reconciled at 001 RPL_WELCOME and updated on
   self-NICK rename. Triggers takes it as an explicit argument
-  rather than re-deriving from `User.name`, dodging the CP15 H3
-  account-name-vs-IRC-nick hazard cic-side.
-
-  ## Visitor sessions are skipped
-
-  Visitors are ephemeral and don't install the PWA. Session.Server
-  only invokes Triggers when `state.subject` is `{:user, _}`; the
-  `:visitor` arm is a no-op at the call site (not in this module).
+  rather than re-deriving from the subject's display name, dodging
+  the CP15 H3 account-name-vs-IRC-nick hazard cic-side.
 
   ## No silent drops
 
@@ -59,7 +54,7 @@ defmodule Grappa.Push.Triggers do
   `feedback_no_silent_drops_*`.
   """
 
-  alias Grappa.{Mentions, Push, UserSettings}
+  alias Grappa.{Mentions, Push, Subject, UserSettings}
   alias Grappa.Push.Payload
   alias Grappa.Scrollback.Message
 
@@ -69,7 +64,7 @@ defmodule Grappa.Push.Triggers do
   doesn't reach back into the GenServer state shape.
   """
   @type ctx :: %{
-          required(:user_id) => Ecto.UUID.t(),
+          required(:subject) => Subject.t(),
           required(:network_slug) => String.t(),
           required(:own_nick) => String.t()
         }
@@ -85,9 +80,9 @@ defmodule Grappa.Push.Triggers do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Evaluates trigger logic for `message` against `user_id`'s
+  Evaluates trigger logic for `message` against the subject's
   notification preferences and, on a match, fires the Web Push
-  fan-out via `Push.Sender.send_to_user/2`.
+  fan-out via `Push.Sender.send_to_subject/2`.
 
   Fire-and-forget — spawns an unlinked `Task` and returns `:ok`
   immediately. Per-message work (prefs lookup, mention regex,
@@ -102,8 +97,7 @@ defmodule Grappa.Push.Triggers do
   @spec evaluate_and_dispatch(Message.t(), ctx()) :: :ok
   def evaluate_and_dispatch(%Message{kind: kind} = message, ctx)
       when kind in [:privmsg, :action] and is_map(ctx) do
-    %{user_id: user_id, network_slug: network_slug, own_nick: own_nick} = ctx
-    subject = {:user, user_id}
+    %{subject: subject, network_slug: network_slug, own_nick: own_nick} = ctx
 
     {:ok, _} =
       Task.start(fn ->
@@ -112,7 +106,7 @@ defmodule Grappa.Push.Triggers do
 
         if should_notify?(message, own_nick, prefs, patterns) do
           payload = Payload.build(message, network_slug, own_nick)
-          Push.Sender.send_to_user(user_id, payload)
+          Push.Sender.send_to_subject(subject, payload)
         end
       end)
 

@@ -10,7 +10,7 @@ defmodule Grappa.Push.TriggersTest do
       all / channel whitelist / channel mention / kind gate).
     * `Triggers.evaluate_and_dispatch/2` — fire-and-forget dispatcher
       that spawns a Task, fetches prefs from the DB, and invokes
-      `Push.Sender.send_to_user/2`. Tested end-to-end via Bypass +
+      `Push.Sender.send_to_subject/2`. Tested end-to-end via Bypass +
       real `push_subscriptions` rows + `:telemetry` to observe the
       `[:grappa, :push, :send, :start | :stop]` events.
 
@@ -20,7 +20,7 @@ defmodule Grappa.Push.TriggersTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Accounts, Push, UserSettings}
+  alias Grappa.{Accounts, Push, UserSettings, Visitors}
   alias Grappa.Push.{Subscription, Triggers}
   alias Grappa.Scrollback.Message
 
@@ -204,9 +204,15 @@ defmodule Grappa.Push.TriggersTest do
     user
   end
 
-  defp subscription_fixture(user, endpoint) do
+  defp visitor_fixture do
+    nick = "trigger-visitor-#{System.unique_integer([:positive])}"
+    {:ok, v} = Visitors.find_or_provision_anon(nick, "libera", "127.0.0.1")
+    v
+  end
+
+  defp subscription_fixture(subject, endpoint) do
     {:ok, sub} =
-      Push.create({:user, user.id}, %{
+      Push.create(subject, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,
@@ -238,7 +244,7 @@ defmodule Grappa.Push.TriggersTest do
       {:ok, bypass: bypass, endpoint: "http://localhost:#{bypass.port}/wp"}
     end
 
-    test "matching PRIVMSG → Sender.send_to_user fires (telemetry observed)", %{
+    test "matching PRIVMSG → Sender.send_to_subject fires (telemetry observed)", %{
       bypass: bypass,
       endpoint: endpoint
     } do
@@ -247,7 +253,8 @@ defmodule Grappa.Push.TriggersTest do
       Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, endpoint)
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
 
       # Default prefs have channel_mentions: true, so a body mentioning
       # "vjt" on a channel triggers notify.
@@ -255,14 +262,41 @@ defmodule Grappa.Push.TriggersTest do
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
-                 user_id: user.id,
+                 subject: subject,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
 
-      uid = user.id
-      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{user_id: ^uid}}, 2_000
-      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}},
+                     2_000
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
+    end
+
+    test "VISITOR matching PRIVMSG → Sender fires for visitor subscription — V3", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :send, :stop]])
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      visitor = visitor_fixture()
+      subject = {:visitor, visitor.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}},
+                     2_000
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
     end
 
     test "non-matching PRIVMSG → no Sender call (no telemetry)", %{
@@ -276,14 +310,15 @@ defmodule Grappa.Push.TriggersTest do
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, endpoint)
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
 
       # No mention, no whitelist, _all flags default off for channel.
       m = msg(channel: "#sniffo", sender: "alice", body: "no mention here")
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
-                 user_id: user.id,
+                 subject: subject,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -299,13 +334,14 @@ defmodule Grappa.Push.TriggersTest do
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, endpoint)
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
 
       m = msg(kind: :join, channel: "#sniffo", sender: "alice", body: nil)
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
-                 user_id: user.id,
+                 subject: subject,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -313,11 +349,11 @@ defmodule Grappa.Push.TriggersTest do
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
     end
 
-    test "user with no subscriptions → match still safe (Sender no-op)", %{
+    test "subject with no subscriptions → match still safe (Sender no-op)", %{
       bypass: _bypass,
       endpoint: _endpoint
     } do
-      # Sender.send_to_user/2 short-circuits on empty subs list and
+      # Sender.send_to_subject/2 short-circuits on empty subs list and
       # emits no telemetry — verify the dispatcher tolerates that.
       attach_telemetry([[:grappa, :push, :send, :start]])
 
@@ -328,7 +364,7 @@ defmodule Grappa.Push.TriggersTest do
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
-                 user_id: user.id,
+                 subject: {:user, user.id},
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -344,11 +380,12 @@ defmodule Grappa.Push.TriggersTest do
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
 
       user = user_fixture()
-      _ = subscription_fixture(user, endpoint)
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
 
       # Override defaults: channel_mentions OFF
       {:ok, _} =
-        UserSettings.put_notification_prefs({:user, user.id}, %{
+        UserSettings.put_notification_prefs(subject, %{
           channel_messages_all: false,
           channel_messages_only: [],
           channel_mentions: false,
@@ -361,7 +398,7 @@ defmodule Grappa.Push.TriggersTest do
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
-                 user_id: user.id,
+                 subject: subject,
                  network_slug: "libera",
                  own_nick: "vjt"
                })
@@ -369,7 +406,7 @@ defmodule Grappa.Push.TriggersTest do
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
     end
 
-    test "Sender.send_to_user persists last_used_at on success", %{
+    test "Sender.send_to_subject persists last_used_at on success", %{
       bypass: bypass,
       endpoint: endpoint
     } do
@@ -377,20 +414,20 @@ defmodule Grappa.Push.TriggersTest do
       attach_telemetry([[:grappa, :push, :send, :stop]])
 
       user = user_fixture()
-      sub = subscription_fixture(user, endpoint)
+      subject = {:user, user.id}
+      sub = subscription_fixture(subject, endpoint)
       assert is_nil(sub.last_used_at)
 
       m = msg(channel: "vjt", sender: "alice", body: "ping")
 
       :ok =
         Triggers.evaluate_and_dispatch(m, %{
-          user_id: user.id,
+          subject: subject,
           network_slug: "libera",
           own_nick: "vjt"
         })
 
-      uid = user.id
-      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{user_id: ^uid}}, 2_000
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
 
       reloaded = Repo.get!(Subscription, sub.id)
       refute is_nil(reloaded.last_used_at)
