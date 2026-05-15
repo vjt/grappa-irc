@@ -13,6 +13,7 @@ import { isMobile } from "./lib/theme";
 import { isActiveChannelJoined, windowStateByChannel } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
+import PrivacyModal from "./PrivacyModal";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
 import Sidebar from "./Sidebar";
@@ -266,6 +267,7 @@ const Shell: Component = () => {
         <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
           <SocketHealthBanner />
           <BundleRefreshBanner />
+          <PrivacyModal />
           <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
             <Sidebar onSelect={() => setSidebarOpen(false)} />
           </aside>
@@ -387,6 +389,7 @@ const Shell: Component = () => {
       <div class="shell shell-mobile">
         <SocketHealthBanner />
         <BundleRefreshBanner />
+        <PrivacyModal />
         <Show when={membersOpen()}>
           <div
             class="shell-drawer-backdrop open"

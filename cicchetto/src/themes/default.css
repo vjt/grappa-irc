@@ -920,6 +920,142 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* Image upload — picker / camera buttons + TTL select + progress + modal.
+ * Images cluster I-2 (2026-05-15). */
+
+.compose-box-image-picker,
+.compose-box-camera-picker {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.compose-box-image-picker:hover,
+.compose-box-camera-picker:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Camera capture button is mobile-only. CSS @media (pointer: coarse)
+ * matches touch-primary devices; desktop with a mouse hides it. */
+.compose-box-camera-picker {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .compose-box-camera-picker {
+    display: inline-flex;
+  }
+}
+
+.compose-box-image-ttl {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0 0.25rem;
+}
+
+.compose-box-upload-progress,
+.compose-box-upload-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 1rem;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.compose-box-upload-error {
+  color: var(--mode-op);
+}
+
+.compose-box-upload-filename {
+  font-family: var(--font-mono);
+}
+
+.compose-box-upload-progress progress {
+  flex: 1;
+}
+
+.compose-box-upload-progress button,
+.compose-box-upload-error button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0 0.5rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+/* Privacy modal — full-viewport backdrop + centred dialog. */
+
+.image-upload-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.image-upload-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  max-width: 28rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+}
+
+.image-upload-modal h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.image-upload-modal p {
+  margin: 0 0 0.75rem;
+  line-height: var(--line-height);
+}
+
+.image-upload-modal-remember {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+  cursor: pointer;
+}
+
+.image-upload-modal-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.image-upload-modal-buttons button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.25rem 1rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+
+.image-upload-modal-buttons button.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
 /* MembersPane */
 
 .members-pane {

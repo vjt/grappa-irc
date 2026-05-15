@@ -1,6 +1,16 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createSignal, For, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
+import { activeHost } from "./lib/image-upload";
+import {
+  cancelUpload,
+  dismissUpload,
+  getChosenTtl,
+  retryUpload,
+  setChosenTtl,
+  triggerUpload,
+  uploadState,
+} from "./lib/imageUploadOrchestrator";
 import { networkBySlug } from "./lib/networks";
 import { windowStateByChannel } from "./lib/windowState";
 
@@ -27,6 +37,15 @@ import { windowStateByChannel } from "./lib/windowState";
 // Sidebar derivation rule so a parked network's selected channel can't
 // silently look ready-to-send. Operator can still type `/connect` to
 // unpark.
+//
+// Images cluster I-2 (2026-05-15): four trigger surfaces for image
+// upload — file picker (camera-icon button), mobile camera capture
+// (separate input with capture="environment", visible via @media
+// pointer:coarse), drag-drop (whole-form), clipboard paste (textarea).
+// All four converge on `triggerUpload()` from imageUploadOrchestrator;
+// the orchestrator handles privacy modal gating, MIME pre-check, TTL
+// dropdown wiring, progress state, auto-send. ComposeBox is the
+// trigger surface only — no upload logic lives here.
 
 export type Props = {
   networkSlug: string;
@@ -40,6 +59,8 @@ const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
+  let pickerInput: HTMLInputElement | undefined;
+  let cameraInput: HTMLInputElement | undefined;
   const greyed = (): boolean => {
     // Bucket F H4: only UserNetwork carries connection_state. Narrow on
     // network.kind before reading the field; visitor networks are
@@ -56,6 +77,75 @@ const ComposeBox: Component<Props> = (props) => {
     setDraft(key(), value);
     setError(null);
   };
+
+  // ---- Image upload trigger surfaces -------------------------------
+
+  const handleFile = (file: File): void => {
+    triggerUpload(key(), props.networkSlug, props.channelName, file);
+  };
+
+  const onPickerChange = (e: Event) => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) handleFile(file);
+    // Reset so picking the same file twice still fires `change`.
+    input.value = "";
+  };
+
+  const onPickerClick = () => {
+    pickerInput?.click();
+  };
+
+  const onCameraClick = () => {
+    cameraInput?.click();
+  };
+
+  const onDragOver = (e: DragEvent) => {
+    e.preventDefault();
+  };
+
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return;
+    handleFile(file);
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file?.type.startsWith("image/")) {
+        e.preventDefault();
+        handleFile(file);
+        return;
+      }
+    }
+  };
+
+  const onTtlChange = (e: Event) => {
+    const select = e.currentTarget as HTMLSelectElement;
+    setChosenTtl(select.value);
+  };
+
+  const onCancelUpload = () => {
+    cancelUpload(key());
+  };
+
+  const onRetryUpload = () => {
+    retryUpload(key());
+  };
+
+  const onDismissUpload = () => {
+    dismissUpload(key());
+  };
+
+  const ttlValue = (): string => getChosenTtl() ?? activeHost().defaultTtl ?? "";
+
+  // ---- Submit ------------------------------------------------------
 
   const doSubmit = async (): Promise<void> => {
     if (sending()) return;
@@ -107,11 +197,90 @@ const ComposeBox: Component<Props> = (props) => {
           e.preventDefault();
           void doSubmit();
         }}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
       >
+        <input
+          ref={pickerInput}
+          type="file"
+          accept={activeHost().acceptedMimeTypes.join(",")}
+          data-image-picker
+          hidden
+          onChange={onPickerChange}
+        />
+        <input
+          ref={cameraInput}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          data-camera-picker
+          hidden
+          onChange={onPickerChange}
+        />
+        <button
+          type="button"
+          class="compose-box-image-picker"
+          aria-label="upload image"
+          onClick={onPickerClick}
+          title="upload image"
+        >
+          {/* Camera icon — inline SVG, theme-agnostic. */}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="compose-box-camera-picker"
+          aria-label="take photo"
+          onClick={onCameraClick}
+          title="take photo"
+        >
+          {/* Mobile-only via CSS @media (pointer: coarse). */}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+        </button>
+        <Show when={activeHost().ttlOptions.length > 0}>
+          <select
+            class="compose-box-image-ttl"
+            data-image-ttl
+            value={ttlValue()}
+            onChange={onTtlChange}
+            title="image upload retention"
+          >
+            <For each={activeHost().ttlOptions}>
+              {(opt) => <option value={opt.value}>{opt.label}</option>}
+            </For>
+          </select>
+        </Show>
         <textarea
           value={getDraft(key())}
           onInput={onInput}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={`message ${props.channelName}`}
           rows={1}
           aria-label="compose message"
@@ -120,6 +289,33 @@ const ComposeBox: Component<Props> = (props) => {
           send
         </button>
       </form>
+      <Show when={uploadState(key())}>
+        {(st) => (
+          <Show
+            when={st().error}
+            fallback={
+              <div class="compose-box-upload-progress" role="progressbar">
+                <span class="compose-box-upload-filename">{st().filename}</span>
+                <progress value={st().loaded} max={st().total} />
+                <button type="button" onClick={onCancelUpload}>
+                  cancel
+                </button>
+              </div>
+            }
+          >
+            <div class="compose-box-upload-error" role="alert">
+              <span class="compose-box-upload-filename">{st().filename}</span>
+              <span class="compose-box-upload-error-msg">{st().error}</span>
+              <button type="button" onClick={onRetryUpload}>
+                retry
+              </button>
+              <button type="button" onClick={onDismissUpload}>
+                dismiss
+              </button>
+            </div>
+          </Show>
+        )}
+      </Show>
       <Show when={greyed()}>
         <p class="compose-box-not-joined muted">(not joined)</p>
       </Show>
