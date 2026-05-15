@@ -25,14 +25,27 @@ defmodule Grappa.Repo.Migrations.VisitorsExpiresAtNullable do
   The lighter, sqlite-documented path for "change column nullability
   without touching schema relationships" is the `PRAGMA writable_schema`
   hack: directly edit `sqlite_master` to remove `NOT NULL` from the
-  `expires_at` column definition, then `PRAGMA integrity_check` to
-  validate. The column constraint changes; FKs, indexes, and dependent
-  tables stay untouched. Documented at
+  `expires_at` column definition. Documented at
   https://www.sqlite.org/lang_altertable.html (section "Making Other
   Kinds Of Table Schema Changes" — "Step 4" alternative approach).
 
-  This migration MUST run with `@disable_ddl_transaction true` because
-  `PRAGMA writable_schema` cannot be toggled inside a transaction.
+  ## Pool / connection caveat
+
+  `PRAGMA writable_schema = ON` is connection-scoped. With Ecto's
+  default pool (size > 1) a `execute("PRAGMA ...")` followed by a
+  separate `execute("UPDATE ...")` may run on different pool
+  connections — the PRAGMA is set on connection A, the UPDATE runs
+  on connection B without it, and sqlite rejects with
+  `table sqlite_master may not be modified`.
+
+  Workaround: pass the PRAGMA + UPDATE + PRAGMA OFF + integrity_check
+  as a single multi-statement query via `repo().query!/1` so they
+  share one driver round-trip and one connection. `Exqlite` accepts
+  semicolon-separated statements in a single execute. Wrapped in
+  `repo().checkout/1` for belt-and-braces connection pinning.
+
+  `@disable_ddl_transaction true` because `PRAGMA writable_schema`
+  cannot toggle inside a transaction.
   """
   use Ecto.Migration
 
@@ -40,16 +53,18 @@ defmodule Grappa.Repo.Migrations.VisitorsExpiresAtNullable do
   @disable_migration_lock true
 
   def up do
-    execute("PRAGMA writable_schema = ON")
+    repo().checkout(fn ->
+      repo().query!("PRAGMA writable_schema = ON")
 
-    execute("""
-    UPDATE sqlite_master
-    SET sql = REPLACE(sql, '"expires_at" TEXT NOT NULL', '"expires_at" TEXT NULL')
-    WHERE type = 'table' AND name = 'visitors'
-    """)
+      repo().query!("""
+      UPDATE sqlite_master
+      SET sql = REPLACE(sql, '"expires_at" TEXT NOT NULL', '"expires_at" TEXT NULL')
+      WHERE type = 'table' AND name = 'visitors'
+      """)
 
-    execute("PRAGMA writable_schema = OFF")
-    execute("PRAGMA integrity_check")
+      repo().query!("PRAGMA writable_schema = OFF")
+      repo().query!("PRAGMA integrity_check")
+    end)
   end
 
   def down do
@@ -58,17 +73,21 @@ defmodule Grappa.Repo.Migrations.VisitorsExpiresAtNullable do
     # succeeds; the rollback DOES NOT preserve "never expires"
     # semantics — it materializes the synthetic infinity into a real
     # 1000-year window. Acceptable for a destructive rollback.
-    execute("UPDATE visitors SET expires_at = '9999-12-31 23:59:59.999999' WHERE expires_at IS NULL")
+    repo().checkout(fn ->
+      repo().query!(
+        "UPDATE visitors SET expires_at = '9999-12-31 23:59:59.999999' WHERE expires_at IS NULL"
+      )
 
-    execute("PRAGMA writable_schema = ON")
+      repo().query!("PRAGMA writable_schema = ON")
 
-    execute("""
-    UPDATE sqlite_master
-    SET sql = REPLACE(sql, '"expires_at" TEXT NULL', '"expires_at" TEXT NOT NULL')
-    WHERE type = 'table' AND name = 'visitors'
-    """)
+      repo().query!("""
+      UPDATE sqlite_master
+      SET sql = REPLACE(sql, '"expires_at" TEXT NULL', '"expires_at" TEXT NOT NULL')
+      WHERE type = 'table' AND name = 'visitors'
+      """)
 
-    execute("PRAGMA writable_schema = OFF")
-    execute("PRAGMA integrity_check")
+      repo().query!("PRAGMA writable_schema = OFF")
+      repo().query!("PRAGMA integrity_check")
+    end)
   end
 end
