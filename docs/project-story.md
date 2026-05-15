@@ -1878,3 +1878,113 @@ discipline → runtime-allowlist exhaustiveness, all in one cluster.
 The next cluster is push notifications. The bouncer is closer to
 public open than it was on Monday.
 
+## S46 — 2026-05-15 — Visitor parity, NickServ-as-identity, and one preflight gap
+
+This was supposed to be the push-notifications cluster. It became,
+mid-brainstorm, something larger. vjt's spec on 2026-05-14 walked
+the full visitor surface and named the rule out loud: visitors,
+NickServ-authed visitors, and registered users all get the EXACT
+same feature surface — only session lifetime differs. Every place
+in the server that branched on `{:user, _}` vs `{:visitor, _}` and
+refused the visitor branch was a parity violation, and the cluster's
+job was to close every one. Push notifications would happen INSIDE
+the cluster (V3) instead of as its own cluster.
+
+Nine production buckets later — V1 schema migrations, V2 query
+windows, F1 typed-event-topic flake fix slotted mid-cluster, V3
+push subscriptions + Sender, V4 user_settings + watchlist + read
+cursor, V5 Reaper cross-check, V6 cic visitor-branch sweep, V7
+NickServ TTL semantics, V9 visitor `/nick` rename — all shipped on
+the same day to `origin/main`. V8 (visitor → registered-user
+promote) got dropped at brainstorm before it cost a line of code.
+The 2026-05-15 spec refinement noticed the obvious: NickServ
+identification with infinite TTL IS the permanent identity proof.
+A double-password promote step would only invent UX problems to
+solve UX problems that didn't exist.
+
+The two-tier identity model is now: anon visitor on a 48h sliding
+TTL (data co-terminus with session — Reaper sweep + FK CASCADE
+wipes everything across five tables), NickServ-identified visitor
+on infinite TTL (`expires_at = NULL` written at the
+`commit_password/2` transition), registered user on the orthogonal
+admin path via `mix grappa.create_user`. Three subject classes,
+ONE feature surface. The XOR FK pattern that `read_cursors` had
+since CP29 (`(user_id IS NULL) <> (visitor_id IS NULL)` CHECK +
+two partial UNIQUE indexes per subject branch + ON DELETE CASCADE
+to both parents) extended cleanly to `query_windows`,
+`push_subscriptions`, `user_settings`. V5's cascade test asserts
+all five owned tables zero out for any `Visitors.delete/1` call.
+
+The `Grappa.Subject` context-boundary helper module is the
+mechanism. Every persistence-write codepath builds its changeset
+via `Subject.put_subject_id/2`; every read query goes through
+`Subject.subject_where/3`; every controller picks subject from
+`Subject.from_assigns/1`. The web-layer `GrappaWeb.Subject`
+already existed; the new non-web `Grappa.Subject` mirrors it for
+the context layer. Three files, twelve callers, zero new behavioral
+surface — pure refactor + invariant pin.
+
+V9 shipped simpler than the orchestrator brief proposed. The
+brief had a complex sync-wait + 422-on-433-numeric +
+`pending_nick_rename` correlation field design for the visitor
+NICK rename. vjt vetoed it. User nick-rename has been
+fire-and-forget 202 since day one; visitor=user per the parity
+invariant; UNIQUE constraint + pre-check
+(`Visitors.nick_in_use?/3`) covers >99% of races; cic already
+listens to `own_nick_changed` (CP-15). The 432/433 silent-leave-
+DB-unchanged shape is a pre-existing UX hole orthogonal to V9. The
+simpler design avoided a COLD-required defstruct field + ref
+correlation plumbing.
+
+Then the deploy.
+
+V9 was supposed to be a HOT deploy. `Session.Server`'s
+`@type t :: %{...}` got the new `visitor_nick_persister` field —
+per `feedback_deploy_sh_preflight_field_addition_gap` the
+`scripts/deploy.sh` AST oracle SHOULD have caught it and demanded
+COLD. Madonna porca, the AST oracle never ran. The deploy operator
+had done `git merge --ff-only` BEFORE invoking
+`scripts/deploy.sh`. The deploy's `git pull --ff-only` returned
+"Already up to date", so the preflight diff base
+(`HEAD@{1}..HEAD`) was empty. The AST oracle saw no diff to parse.
+False HOT classification. `Phoenix.CodeReloader` fired against a
+state-shape change.
+
+The live BEAM survived the hot reload (no immediate crash) but
+`_build/prod` got corrupted per
+`feedback_hot_deploy_corrupts_build_prod`. Subsequent
+`--force-cold` rebuild failed `compile_env validation`. Recovery
+was `rm -rf _build/prod && scripts/deploy.sh --force-cold` —
+clean rebuild + container recreate, ~30s downtime, visitors
+auto-respawned via Bootstrap.
+
+The lesson is the gap, not the recovery. The AST oracle is
+correct code. The CLAUDE.md "merge → deploy" canonical workflow
+IS the broken case for the preflight: `HEAD@{1}` snapshots the
+state BEFORE `git pull --ff-only`, but if the operator already
+pulled (or merged) locally, that's the same as HEAD. The fix
+candidate is comparing against `origin/main@{1}..origin/main` (the
+actual pre-pull remote state) or persisting a last-deployed-SHA
+marker in `runtime/.last-deploy-sha`. Until that ships, the
+operator must manually inspect `lib/grappa/hot_reload/long_lived_modules.ex`
++ migrations + `mix.lock` post-local-merge and pass `--force-cold`
+defensively. Captured in `feedback_deploy_preflight_empty_diff_after_merge`.
+
+**Law:** every safety check has an implicit assumption about WHEN
+it runs. `scripts/deploy.sh`'s AST oracle assumed the merge
+happens INSIDE the deploy. The CLAUDE.md workflow has the merge
+happen BEFORE. The two assumptions never collided until V9's
+specific shape (state-shape change + local-pre-merge habit + hot
+reload that doesn't immediately crash) lit the corner up. Defense
+in depth means: every safety check needs to also verify the
+preconditions for ITS OWN INPUT. Empty diffs are not a quiet
+"no changes" — they're a load-bearing signal that the diff base
+is wrong.
+
+Push notifications shipped INSIDE V3, the visitor surface unified
+across nine buckets, V8 didn't get built because it didn't need
+to exist. The bouncer's identity model is now the same model whether
+you came in via NickServ on Azzurra ten years ago or opened cic
+for the first time as an anonymous visitor today. The only
+difference is whether your data outlives your browser tab.
+
