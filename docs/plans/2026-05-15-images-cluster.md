@@ -1,7 +1,7 @@
 # Images cluster
 
-**Status**: brainstorm v2 (post-vjt-refinement 2026-05-15) —
-implementation NOT started. Awaiting bless to start I-CSP.
+**Status**: brainstorm v3 (vjt-blessed 2026-05-15, ready to start) —
+implementation NOT started. I-CSP cleared to begin.
 
 | Bucket | Status | Deploy | Notes |
 |--------|--------|--------|-------|
@@ -77,38 +77,124 @@ ours. ZERO server ceremony.
 ### A2. Pluggable host interface (`image-upload.ts`), litterbox = first impl
 
 Per vjt: "we DONT KNOW if we stay on litterbox thus BUILD INTERFACE
-to plug different image hosters tomorrow." The cic module is named
-`image-upload.ts` (NOT `litterbox.ts`). It exposes a generic
-contract; the litterbox-specific multipart shape lives behind it.
+to plug different image hosters tomorrow ... litterbox has a fucking
+api and other providers have different apis so ensure the fucking
+pluggable interface provides enough flexibility to swap image
+providers." The interface must accommodate REAL provider diversity:
+
+| Provider | Endpoint | Auth | Request shape | Response shape | TTL semantics |
+|----------|----------|------|---------------|----------------|---------------|
+| litterbox.catbox.moe | `/resources/internals/api.php` | none | multipart `reqtype=fileupload` + `time=1h\|12h\|24h\|72h` + `fileToUpload` | text body = URL | server-side TTL, host picks expiry |
+| catbox.moe (permanent) | `/user/api.php` | optional userhash | multipart `reqtype=fileupload` + `userhash=<token>` + `fileToUpload` | text body = URL | none (permanent) |
+| 0x0.st | `/` | none | multipart `file=<binary>` + optional `expires=<hours>` | text body = URL | client-requested TTL header |
+| imgur | `/3/upload` | bearer (`Authorization: Client-ID <id>`) | multipart or base64 JSON | JSON `{data:{link, deletehash, ...}}` | none |
+| custom self-hosted | varies | varies | varies | varies | varies |
+
+Generalizations the interface must encode:
+
+- **Endpoint URL** + **HTTP method** (always POST in practice).
+- **Headers** the host requires (`Authorization`, custom client-id,
+  etc.) — provider-supplied.
+- **Request body builder** — takes `(file, options)`, returns a
+  `FormData` (or `Blob` for hosts that want raw bytes). Provider
+  decides field names + extras.
+- **Response parser** — takes raw response text + status, returns
+  `{url} | {error}`. Litterbox returns text; imgur returns JSON.
+  Provider decides shape.
+- **TTL options** — provider-supplied list of `{value, label}` pairs
+  to populate the cic dropdown (litterbox: `1h/12h/24h/72h`;
+  imgur: `[]` — no TTL choice; 0x0.st: `1h..720h`).
+- **Default TTL** — provider-supplied; cic respects user override
+  via the dropdown if provider exposes choices; hides dropdown
+  entirely if `ttlOptions` is empty.
+- **Capabilities flags** — `supportsTtl`, `supportsDelete`,
+  `requiresAuth`, etc. — for cic UI gating (e.g. hide TTL dropdown
+  when `!supportsTtl`).
+- **Privacy posture** — host name + retention statement string for
+  the privacy modal (`name: "litterbox"`, `retentionStatement:
+  "Files are public for the next 24 hours."`; `name: "imgur"`,
+  `retentionStatement: "Files are public until you delete them."`).
+- **Progress** + **abort** mechanics — uniform via XHR + AbortSignal
+  (host doesn't customize this; cic owns the XHR loop).
 
 ```ts
 // cicchetto/src/lib/image-upload.ts
+
 export type UploadProgress = { loaded: number; total: number };
+
 export type UploadError =
   | { kind: "network" }
-  | { kind: "http"; status: number }
+  | { kind: "http"; status: number; body: string }
   | { kind: "abort" }
-  | { kind: "invalid_response"; body: string };
+  | { kind: "invalid_response"; body: string }
+  | { kind: "provider"; message: string }; // host-decoded error string
+
+export type TtlOption = { value: string; label: string };
+
+export type UploadOptions = {
+  ttl?: string;             // value from provider's ttlOptions
+  // future: signal preferred filename, content-type override, etc.
+};
 
 export interface ImageHost {
-  readonly name: string;             // "litterbox", future "0x0.st", etc.
-  readonly defaultTtlLabel: string;  // "24 hours"
+  readonly id: string;                       // "litterbox", "imgur", "0x0"
+  readonly displayName: string;              // "litterbox.catbox.moe"
+  readonly retentionStatement: string;       // privacy-modal copy fragment
+  readonly ttlOptions: ReadonlyArray<TtlOption>; // [] if no TTL choice
+  readonly defaultTtl: string | null;        // matches a ttlOptions value, or null
+  readonly maxFileSizeBytes: number | null;  // for client-side pre-check; null = unknown
+  readonly acceptedMimeTypes: ReadonlyArray<string>; // for <input accept="..."> + drop gate
+
+  /** Provider-specific request builder + dispatcher.
+   * Implementations should:
+   *   - build the request body (FormData) per provider contract
+   *   - set provider-required headers (auth, client-id, etc.)
+   *   - POST via XMLHttpRequest (cic pattern — needed for progress)
+   *   - parse response per provider contract
+   *   - resolve with the public URL string
+   *   - reject with UploadError
+   */
   upload(
     file: File,
+    options: UploadOptions,
     onProgress: (p: UploadProgress) => void,
     signal: AbortSignal,
-  ): Promise<string>;                // resolves with the public URL
+  ): Promise<string>;
 }
 
 export const litterboxHost: ImageHost = { /* impl */ };
 
-// active host — module-level for now; future: settings-drawer toggle
+// Active host — module-level for now. Future: settings-drawer
+// dropdown lets operator pick; persists per-browser in localStorage.
 export const activeHost = (): ImageHost => litterboxHost;
+
+// Registry — for the future drawer toggle to enumerate.
+export const availableHosts: ReadonlyArray<ImageHost> = [litterboxHost];
 ```
 
-Switching to a new host tomorrow: write a second `ImageHost` impl,
-swap `activeHost()`. Privacy-modal copy (which references the host
-name) reads from `activeHost().name`. Default TTL label too.
+Call site (in `ComposeBox.tsx` / orchestrator) is provider-agnostic:
+
+```ts
+const host = activeHost();
+const ttl = chosenTtl() ?? host.defaultTtl;  // dropdown value, falling back to default
+const url = await host.upload(file, { ttl }, onProgress, ctrl.signal);
+sendPrivmsg(`📸 ${url}`);
+```
+
+The cic dropdown reads `host.ttlOptions` — empty array → dropdown
+hidden entirely (imgur shape). MIME accept attr reads
+`host.acceptedMimeTypes.join(",")`. Drop gate compares
+`file.type` against `host.acceptedMimeTypes`. Privacy modal
+interpolates `host.displayName` + `host.retentionStatement`.
+
+Switching to a new host tomorrow: write a second `ImageHost` impl
+(its own request builder + response parser), add to `availableHosts`,
+swap `activeHost()`. Zero changes elsewhere — that's the test of
+whether the interface is right.
+
+I-1 ships this interface PLUS the litterbox impl PLUS a simple
+in-memory mock impl for tests. A second real impl is NOT in cluster
+scope, but the interface is designed so adding one is mechanical.
 
 ### A3. PRIVMSG body shape: `📸 <url>`
 
@@ -130,26 +216,54 @@ fucking link. that's it."
 ### A4. Default TTL = 24h
 
 Per vjt. (`project_image_upload` memory had 72h as my original
-default; vjt overrode to 24h.) Operator can override per upload via
-a small dropdown next to the file picker (litterbox supports `1h`,
-`12h`, `24h`, `72h`). Last-chosen TTL persists in `localStorage`.
+default; vjt overrode to 24h.) Litterbox's default TTL surfaces via
+the `ImageHost` interface as `litterboxHost.defaultTtl = "24h"`;
+operator can override per upload via the dropdown that lists
+`litterboxHost.ttlOptions = [{1h}, {12h}, {24h}, {72h}]`.
+Last-chosen TTL persists in `localStorage` keyed per host
+(`image-upload-ttl:litterbox`) so swapping providers later doesn't
+silently inherit the wrong default.
 
-### A5. Upload trigger surfaces — picker + drag-drop, NO paste in v1
+### A5. Upload trigger surfaces — picker + drag-drop + paste + mobile camera
 
-Per vjt: "YES drag and drop on desktop YES browse library from
-phone." Two trigger surfaces in v1:
+vjt 2026-05-15: "YES drag and drop on desktop YES browse library
+from phone ... clipboard paste sure why not ... we should allow to
+upload from camera on mobile as well." Four trigger surfaces in v1:
 
 1. **File picker button** in ComposeBox: `<input type="file"
-   accept="image/*" hidden>` + a small button that fires
-   `.click()`. Mobile-friendly (iOS Safari opens camera roll).
-2. **Drag-drop** on the ComposeBox container: `ondragover` /
-   `ondragleave` / `ondrop` handlers. Visual cue: dashed border on
-   drag-over.
+   accept={host.acceptedMimeTypes.join(",")} hidden>` + a small
+   camera-icon button that fires `.click()`. On desktop opens the
+   OS file picker; on mobile (iOS/Android) opens the photo library.
+2. **Mobile camera capture** — separate trigger or HTML attribute?
+   Two viable shapes:
+   - **Shape A (recommended):** add a SECOND button next to the
+     gallery-picker, visible only on touch/mobile (CSS
+     `@media (pointer: coarse)`), that uses `<input type="file"
+     accept="image/*" capture="environment" hidden>`. The
+     `capture="environment"` attribute tells iOS Safari + Android
+     Chrome to open the rear-camera capture UI directly (skipping
+     the gallery). Two distinct buttons = two distinct intents
+     ("pick from library" vs "take photo now") — clearer UX than
+     one button that does both depending on user choice in a
+     system sheet.
+   - **Shape B (alt):** single picker button without `capture`;
+     mobile OSes show a sheet with "Photo Library" + "Take Photo"
+     options natively. Simpler markup; relies on OS sheet quality
+     (iOS does this well, Android varies).
+   - **Default:** Shape A. Two buttons, two clear intents. Defer
+     to Q-CAMERA-UI if vjt prefers Shape B.
+3. **Drag-drop** on the ComposeBox container (desktop only —
+   irrelevant on touch): `ondragover` / `ondragleave` / `ondrop`
+   handlers. Visual cue: dashed border on drag-over.
+4. **Clipboard paste** on the textarea: `onpaste` intercepts
+   `e.clipboardData.items` looking for `kind === "file"` with type
+   in `host.acceptedMimeTypes`. Cmd-Shift-Ctrl-4 → paste workflow
+   on macOS, Win+Shift+S → paste on Windows, screenshot apps on
+   Linux. If a non-image paste happens (text), passes through
+   normally.
 
-Clipboard paste deferred — easy to add later if vjt wants it
-(see Q-PASTE).
-
-Both triggers feed into the same `ImageHost.upload()` call.
+All four triggers feed into the same `host.upload()` call. ONE
+upload code path; FOUR trigger surfaces.
 
 ### A6. First-upload privacy modal — operator-side, no server involvement
 
@@ -157,23 +271,36 @@ Per `feedback_no_localized_strings_server_side`: server stays out of
 cic copy. First upload per browser per `localStorage` key
 `image-upload-privacy-acknowledged`:
 
-> Files you upload here go to litterbox.catbox.moe — a public
-> temporary host. Anyone with the URL can view them for the next
-> 24 hours. Don't upload anything you wouldn't want a stranger to
-> see. [Cancel] [Continue] [☐ Don't show this again]
+> Files you upload here go to {host.displayName} —
+> {host.retentionStatement} Don't upload anything you wouldn't want
+> a stranger to see. [Cancel] [Continue] [☐ Don't show this again]
 
-Host name + TTL label come from `activeHost()` so the modal stays
-correct if vjt swaps the host later. No "Continue" without explicit
-click. "Don't show again" sets the localStorage key.
+For litterbox: `displayName: "litterbox.catbox.moe"`,
+`retentionStatement: "a public temporary host. Anyone with the URL
+can view files there for the next 24 hours."` Modal copy is
+parameterized so swapping host tomorrow doesn't require copy edits;
+each `ImageHost` impl supplies its own retention statement.
+
+Privacy ack is **per host** (key: `image-upload-privacy-acknowledged:litterbox`),
+not global — switching to a host with different privacy semantics
+re-prompts the user. No "Continue" without explicit click.
 
 ### A7. Inline progress UI in compose (not toast)
 
 While upload is in flight: a small row beneath the textarea shows
 filename + progress bar + cancel button. Multi-MB iPhone screenshots
 on cellular take 10-30s — non-optional UX. On completion: progress
-row dismissed, body inserted (or auto-sent — see Q-AUTOSEND).
-On error: progress row turns red with retry + dismiss buttons.
-Compose stays editable throughout.
+row dismissed, `📸 <url>` body **auto-sent immediately** as a normal
+PRIVMSG via the existing `compose.ts` `submit()` flow (vjt 2026-05-15:
+"after upload autosend yes"). On error: progress row turns red with
+retry + dismiss buttons. Compose stays editable throughout — operator
+can keep typing a separate message while upload runs.
+
+If operator wants to add caption alongside the image: send a
+follow-up text message. The 📸-prefix message is intentionally
+single-purpose; trying to bundle caption + image in one PRIVMSG
+adds UX state (queue the upload then send on Enter? cancel both on
+Esc?) that is not worth the complexity in v1.
 
 ### A8. CSP change is COLD — only `connect-src`, NOT `img-src`
 
@@ -190,15 +317,43 @@ I-CSP is its own COLD bucket, deployed standalone (`scripts/deploy.sh
 --force-cold`), BEFORE I-1 / I-2 ship to cic. Otherwise operator's
 first upload hits a silent CSP wall on the XHR.
 
-### A9. `accept="image/*"` + MIME gate on drag-drop
+### A9. `accept="image/*"` + MIME gate on drag-drop + paste
 
-Per `project_image_upload` cluster scope = images. File picker uses
-`accept="image/*"`; drag-drop also gates on
-`file.type.startsWith("image/")` and rejects (with inline error)
-non-image drops. Litterbox itself accepts arbitrary file types but
-generic file uploads is a separate ask with different ergonomics
-(no obvious shape for the PRIVMSG body — the photocamera emoji
-wouldn't fit). Defer.
+Per `project_image_upload` cluster scope = images. Each trigger
+respects the host's `acceptedMimeTypes`:
+- File picker `<input>` uses `accept={host.acceptedMimeTypes.join(",")}`.
+- Drag-drop `ondrop` checks `file.type` against
+  `host.acceptedMimeTypes`; non-match → inline error.
+- Camera `<input capture>` uses `accept="image/*"` (always — the
+  camera always produces an image).
+- Clipboard paste checks `e.clipboardData.items[i].type` against
+  `host.acceptedMimeTypes`; non-image paste passes through to
+  textarea normally.
+
+For litterbox: `acceptedMimeTypes: ["image/png", "image/jpeg",
+"image/gif", "image/webp", "image/apng"]`. Litterbox itself accepts
+arbitrary file types, but the cluster scope is "image upload" per
+`project_image_upload` — generic file uploads is a separate ask
+with different ergonomics (no obvious shape for the PRIVMSG body —
+the photocamera emoji wouldn't fit). Defer.
+
+### A10. Codify "IRC stays text-only" in CLAUDE.md
+
+Per vjt 2026-05-15: "yes porco dio codify that in claude.md, as
+that is already in readme.md." I-3 adds a CLAUDE.md rule under
+Engineering Standards — Code-shape rules:
+
+> **IRC stays text only.** No inline rendering of media types in
+> scrollback (images, videos, audio, link-unfurl previews). Media
+> URLs in PRIVMSG bodies are clickable links via the existing
+> `linkify` path; clicking opens the resource in a browser tab.
+> Do not propose in-scrollback thumbnails / autoplay / preview
+> cards / lightbox-on-arrival without an explicit cluster spec
+> lifting this rule. The image-upload cluster (2026-05-15) ships
+> a 📸-prefixed URL pattern that is text on the wire and a
+> clickable link in cic — that is the model.
+
+Lands in I-3 docs sweep alongside the README + DESIGN_NOTES update.
 
 ## CSP change — exact diff (I-CSP)
 
@@ -256,99 +411,151 @@ upload doesn't hit a silent CSP wall.
 
 **Failing test first:** `cicchetto/src/__tests__/image-upload.test.ts`:
 
-- `litterboxHost.upload(file, onProgress, signal)` POSTs multipart
-  with correct fields (`reqtype=fileupload`, `time=<ttl>`,
-  `fileToUpload=<binary>`) — assert via `XMLHttpRequest` mock.
-- Resolves with response body trimmed (the URL).
-- `onProgress` invoked at least once during upload (mock progress
-  event) with non-null `loaded` + `total`.
+Interface contract (host-agnostic — uses an in-memory mock impl that
+simulates progress/error/abort deterministically):
+- `mockHost.upload(file, opts, onProgress, signal)` invokes
+  `onProgress` at least once with `{loaded, total}` shape.
 - `signal.abort()` mid-upload → rejects with `{kind: "abort"}`.
 - Network error → rejects with `{kind: "network"}`.
-- HTTP 4xx → rejects with `{kind: "http", status: <n>}`.
-- HTTP 5xx → rejects with `{kind: "http", status: <n>}`.
-- Empty / non-URL response body → rejects with `{kind:
+- HTTP 4xx → rejects with `{kind: "http", status, body}`.
+- HTTP 5xx → rejects with `{kind: "http", status, body}`.
+- Empty / non-URL response → rejects with `{kind:
   "invalid_response", body}`.
-- TTL parameter wired correctly: each of `1h`, `12h`, `24h`, `72h`
-  produces the right multipart `time=` field.
-- `activeHost()` returns `litterboxHost` (default).
-- `activeHost().name` is `"litterbox"`, `defaultTtlLabel` is
-  `"24 hours"`.
+- Provider-decoded error string (e.g. imgur `{success: false,
+  data: {error: "..."}}`) → rejects with `{kind: "provider",
+  message}`.
+
+Litterbox-specific (mocks `XMLHttpRequest`, asserts wire shape):
+- `litterboxHost.upload(file, {ttl: "24h"}, ...)` POSTs to
+  `https://litterbox.catbox.moe/resources/internals/api.php` with
+  multipart fields `reqtype=fileupload`, `time=24h`,
+  `fileToUpload=<binary>`.
+- Each TTL value `1h`/`12h`/`24h`/`72h` produces matching `time=`
+  field.
+- Resolves with response body trimmed (the URL).
+- `litterboxHost.id === "litterbox"`.
+- `litterboxHost.displayName === "litterbox.catbox.moe"`.
+- `litterboxHost.retentionStatement` mentions "24 hours" and
+  "public" and "anyone with the URL" (assert substrings — exact
+  copy not pinned).
+- `litterboxHost.ttlOptions` has 4 entries with `value` ∈
+  `{1h,12h,24h,72h}`.
+- `litterboxHost.defaultTtl === "24h"`.
+- `litterboxHost.acceptedMimeTypes` is a non-empty array of
+  `image/*` types.
+- `availableHosts` includes `litterboxHost`.
+- `activeHost()` returns `litterboxHost` by default.
 
 **Production change:**
 
 1. New `cicchetto/src/lib/image-upload.ts` — `ImageHost` interface,
-   `UploadProgress` + `UploadError` types, `litterboxHost` impl,
-   `activeHost()` selector. Uses `XMLHttpRequest` (not `fetch` —
-   XHR has progress events, fetch doesn't natively across all our
-   browser targets).
-2. NO consumer changes in this bucket — interface only.
+   types (`UploadProgress`, `UploadError`, `TtlOption`,
+   `UploadOptions`), `litterboxHost` impl, `availableHosts` array,
+   `activeHost()` selector. Uses `XMLHttpRequest` (not `fetch`) —
+   needed for upload progress events across all browser targets.
+2. NO consumer changes in this bucket — interface only. I-2 wires
+   it up.
 
 **Exit criteria:** vitest green; `scripts/bun.sh run check` green
-(typecheck + lint); module is consumer-free until I-2 wires it up.
+(typecheck + lint); module is consumer-free until I-2 wires it up;
+litterbox + interface contract both covered; mock host impl shows
+how to write a second provider.
 
 **Deploy:** cic-bundle (`scripts/deploy-cic.sh`).
 
-### Bucket I-2 — ComposeBox upload UI + privacy modal + 📸-prefix
+### Bucket I-2 — ComposeBox upload UI + privacy modal + 📸-prefix auto-send
 
 **Failing test first:** `cicchetto/src/__tests__/ComposeBox.test.tsx`:
 
-- Click image-picker button → file picker opens (mock
+- Click camera-icon button → file picker opens (mock
   `<input>.click()`).
-- Select image file via mocked input change → `image-upload`
-  `activeHost().upload()` called with file + chosen TTL.
+- Select image file via mocked input change → `activeHost().upload()`
+  called with file + chosen TTL.
+- Click camera-capture button (mobile) → opens picker with
+  `capture="environment"` attribute set.
 - Drag image file onto compose container → same upload path.
 - Drag NON-image file (e.g. `.txt`) → rejected with inline error;
   no upload triggered.
+- Paste image from clipboard (mocked `ClipboardEvent` with
+  `items[0].kind === "file"` + `image/*` MIME) → same upload path;
+  textarea content NOT modified.
+- Paste text from clipboard → passes through to textarea normally;
+  no upload triggered.
 - During upload: progress row visible with filename + cancel
   button; compose stays editable.
-- On upload success: PRIVMSG body becomes `📸 <url>` and is sent
-  (or pre-filled — see Q-AUTOSEND; pin behavior to chosen default).
+- On upload success: PRIVMSG body `📸 <url>` is **auto-sent**
+  immediately via `compose.ts` `submit()` (per A7); progress row
+  dismissed.
+- Auto-send happens even if textarea has draft text (the draft
+  stays in the textarea unchanged; the image message is its own
+  separate PRIVMSG).
 - On upload error: progress row turns red with retry + dismiss;
   compose still editable.
-- First-upload (localStorage flag absent): privacy modal shown;
-  modal blocks upload until "Continue" clicked.
-- "Don't show again" + Continue → localStorage flag set; subsequent
-  uploads bypass modal.
+- First-upload (localStorage flag absent for current host id):
+  privacy modal shown; modal blocks upload until "Continue"
+  clicked.
+- "Don't show again" + Continue → localStorage flag set
+  (`image-upload-privacy-acknowledged:litterbox`); subsequent
+  uploads to same host bypass modal.
 - Subsequent uploads (flag present): modal NOT shown.
-- TTL dropdown defaults to 24h; selecting another TTL persists in
-  localStorage and affects next upload.
+- Per-host privacy ack: switching to a different `activeHost()`
+  re-shows modal (different localStorage key per host id).
+- Privacy-modal copy includes `activeHost().displayName` and
+  `activeHost().retentionStatement` (parameterized).
+- TTL dropdown defaults to `activeHost().defaultTtl`; selecting
+  another value persists in `localStorage` keyed per host id
+  (`image-upload-ttl:litterbox`); affects next upload.
+- TTL dropdown HIDDEN entirely when `host.ttlOptions.length === 0`
+  (test with mock host with no TTL options).
+- Camera-capture button hidden via CSS `@media (pointer: coarse)`
+  on desktop — assert button present in DOM but with
+  display-context test (or accept this is CSS-only and skip the
+  unit test, defer to Playwright).
 - Cancel mid-upload aborts XHR + dismisses progress row.
-- Privacy-modal copy includes `activeHost().name` and
-  `activeHost().defaultTtlLabel` (parameterized — host swap
-  won't require copy edits).
 - Playwright e2e (per `feedback_ux_e2e_mandatory`): scripted
   operator drags fixture image onto compose → privacy modal →
   Continue → upload → PRIVMSG sent with `📸 <url>` → assert
   message visible in scrollback with clickable link via existing
-  linkify rendering.
+  linkify rendering. Assert link click opens new tab (Playwright
+  page.expect_event for popup or just assert href + target=_blank).
 
 **Production change:**
 
 1. `cicchetto/src/ComposeBox.tsx` extensions:
-   - Image-picker button + hidden `<input type="file" accept="image/*">`.
-   - Drag-drop handlers on form container.
-   - Inline progress row beneath textarea (new `<Show>`).
-   - TTL dropdown next to picker button.
-   - On upload success: build body `📸 ${url}` and submit via
-     existing `compose.ts` `submit()` flow — single code path with
-     normal text messages.
-2. New tiny privacy-modal component (single-purpose, dismissable,
-   no external lib). Reads/writes localStorage
-   `image-upload-privacy-acknowledged`. Copy parameterized on
-   `activeHost()`.
-3. CSS for new bits — picker button, drag-over highlight (dashed
-   border), progress row, modal.
+   - Camera-icon picker button + hidden `<input type="file">` with
+     `accept` from `host.acceptedMimeTypes.join(",")`.
+   - Mobile camera-capture button + hidden `<input type="file"
+     accept="image/*" capture="environment">`. CSS-hidden on
+     desktop via `@media (pointer: coarse)`.
+   - Drag-drop handlers on form container (desktop only, but
+     handlers don't need to be conditionally bound — touch
+     devices won't fire dragenter).
+   - Textarea `onpaste` handler for clipboard image paste.
+   - Inline progress row beneath textarea (new `<Show>` reading
+     from upload-state signal).
+   - TTL dropdown next to picker — `<Show when={host.ttlOptions.length > 0}>`.
+   - On upload success: build body `📸 ${url}`, call existing
+     `compose.ts` `submit()` directly (bypassing the textarea —
+     auto-send path is independent of operator's draft text).
+2. Tiny privacy-modal component (single-purpose, dismissable, no
+   external lib). Reads/writes localStorage keyed per host id.
+   Copy interpolates `host.displayName` + `host.retentionStatement`.
+3. Camera-icon SVG (inline or asset — implementation taste).
+4. CSS for new bits — picker buttons, drag-over highlight (dashed
+   border), progress row, modal, mobile-button media query.
 
 **Exit criteria:** vitest green; Playwright e2e green; manual smoke
-on three browsers (desktop Chrome, desktop Safari, iOS Safari) with
-both trigger surfaces (picker + drop); 8MB file uploads cleanly with
-visible progress; cancel works mid-upload; first-upload modal
-appears + dismisses correctly; PRIVMSG body in scrollback renders
-the link as clickable (existing linkify path, regression-checked).
+on three browsers (desktop Chrome, desktop Safari, iOS Safari) AND
+one Android device with all four trigger surfaces (picker, camera,
+drop, paste); 8MB file uploads cleanly with visible progress;
+cancel works mid-upload; first-upload modal appears + dismisses
+correctly; PRIVMSG body in scrollback renders the link as clickable
+(existing linkify path, regression-checked); auto-send fires on
+upload success.
 
 **Deploy:** cic-bundle.
 
-### Bucket I-3 — README + DESIGN_NOTES + project-story sweep
+### Bucket I-3 — README + DESIGN_NOTES + project-story + CLAUDE.md sweep
 
 **Failing test first:** N/A (docs).
 
@@ -356,20 +563,21 @@ the link as clickable (existing linkify path, regression-checked).
 
 1. `README.md` — add a one-paragraph "Image upload" subsection in
    the cic feature list. Mention: pluggable host (litterbox first
-   impl), 24h default TTL, 📸-prefix wire shape, IRC-text-only
-   render contract.
+   impl), 24h default TTL, four trigger surfaces (picker / camera /
+   drag-drop / paste), 📸-prefix wire shape, IRC-text-only render
+   contract.
 2. `docs/DESIGN_NOTES.md` — chronological entry: cluster name,
-   date, A1-A9 summary, retro reference.
+   date, A1-A10 summary, retro reference.
 3. `docs/project-story.md` — episode (per CLAUDE.md "Project story
    lives on" rule).
-4. `CLAUDE.md` — audit: any RECURRING rule surfaced? Probable
-   answer: maybe ONE — "client-side only image rendering; never
-   inline thumbnails in scrollback unless explicitly opted in via
-   future cluster" — could pin this to prevent future-Claude from
-   re-litigating. Decide at write time.
+4. `CLAUDE.md` — add the "IRC stays text only" rule under
+   Engineering Standards / Code-shape rules per A10. vjt
+   2026-05-15: "yes porco dio codify that in claude.md, as that
+   is already in readme.md."
 
 **Exit criteria:** README diff reads cleanly; DESIGN_NOTES entry
-chronological + complete; project-story episode named + dated.
+chronological + complete; project-story episode named + dated;
+CLAUDE.md "IRC stays text only" rule landed.
 
 **Deploy:** none.
 
@@ -405,7 +613,7 @@ After I-CSP + I-1 + I-2 + I-3 green:
 11. Update `project_post_p4_1_arc` — mark cluster CLOSED, point at
     next.
 12. Write CP3X at `docs/checkpoints/2026-05-XX-cp3X.md`.
-13. DESIGN_NOTES entry — chronological log, A1-A9 summary +
+13. DESIGN_NOTES entry — chronological log, A1-A10 summary +
     lessons learned.
 14. README updated (lands in I-3, verify final).
 15. Story episode at `docs/project-story.md` (lands in I-3, verify
@@ -415,51 +623,19 @@ After I-CSP + I-1 + I-2 + I-3 green:
 17. Save memory: `project_image_cluster_closed`.
 18. Worktree cleanup: `git worktree remove .worktrees/images`.
 
-## Open questions for vjt
+## Open questions for vjt — RESOLVED
 
-### Q-AUTOSEND — auto-send `📸 <url>` or pre-fill compose?
+All resolved 2026-05-15:
 
-After upload completes, two options:
-- **Auto-send (recommended default):** message goes out immediately.
-  Matches vjt's "that's it" tone — minimal ceremony. Operator can
-  add commentary in a follow-up message if they want.
-- **Pre-fill compose:** body inserted at cursor (`📸 ${url} `
-  trailing space), operator hits Enter to send. Lets operator add
-  caption inline before sending.
-
-If vjt picks pre-fill, also need: what to do if textarea already
-has draft text? Append? Replace? Insert at cursor (probably
-"insert at cursor" is least surprising).
-
-### Q-PASTE — clipboard-paste handler now or later?
-
-vjt explicitly mentioned picker + drag-drop, did NOT mention paste.
-Easy to add: textarea `onpaste` handler intercepts
-`e.clipboardData.items[0].kind === "file"` with `image/*` MIME →
-upload via same path. macOS screenshot ergonomics
-(Cmd-Shift-Ctrl-4 → paste) are real but optional. Default: defer
-to v2; pin as "easy add."
-
-### Q-CLAUDE-MD — codify the no-inline-thumbnails contract?
-
-Should I-3 add a CLAUDE.md "Render contract" rule like:
-
-> **IRC remains text only.** No inline rendering of media types in
-> scrollback (images, videos, audio). Media URLs in PRIVMSG bodies
-> are clickable links via the existing `linkify` path; clicking
-> opens the resource in a browser tab. Do not propose
-> in-scrollback thumbnails / autoplay / preview cards without an
-> explicit cluster spec lifting this rule.
-
-Pro: pins the rule so future-Claude doesn't re-derive. Con:
-CLAUDE.md is for recurring rules — this might be a one-off.
-vjt's call.
-
-### Q-ICON — picker-button icon?
-
-A small camera / paperclip / plus icon? Use existing emoji `📷`
-for parity with the wire-shape `📸`? Plain text "Image"? Defer to
-implementation taste; not load-bearing.
+- **Q-AUTOSEND** ✅ — auto-send `📸 <url>` immediately on upload
+  success. No pre-fill, no draft-text interaction.
+- **Q-PASTE** ✅ — clipboard paste is in v1 (4th trigger surface).
+- **Q-CAMERA-UI** ✅ NEW — mobile camera capture as a separate
+  button next to the gallery picker (Shape A from A5), uses
+  `<input capture="environment">`. Folded into A5 + I-2.
+- **Q-CLAUDE-MD** ✅ — codify "IRC stays text only" rule per A10;
+  lands in I-3 docs sweep.
+- **Q-ICON** ✅ — camera icon for the picker button.
 
 ## Memories that ARE relevant
 
@@ -503,6 +679,50 @@ implementation taste; not load-bearing.
   predecessor brainstorm shape
 - `docs/DESIGN_NOTES.md` — chronological decision log
 
+## v2 → v3 diff (post-vjt-bless 2026-05-15)
+
+vjt blessed v2 with refinements that strengthen the pluggable
+interface and expand trigger surfaces. Changes:
+
+- **A2 strengthened**: `ImageHost` interface now encodes per-host
+  endpoint URL, headers, request-builder, response-parser,
+  `ttlOptions` array (empty → dropdown hidden), `defaultTtl`,
+  `acceptedMimeTypes`, `displayName`, `retentionStatement`,
+  `maxFileSizeBytes`. Real provider diversity (litterbox vs imgur
+  JSON vs 0x0.st header-based TTL vs imgur bearer auth) all fits.
+  vjt: "litterbox has a fucking api and other providers have
+  different apis so ensure the fucking pluggable interface
+  provides enough flexibility to swap image providers."
+- **A5 expanded**: 4 trigger surfaces (was 2). Added clipboard
+  paste + mobile camera capture (`<input capture="environment">`
+  as a separate button next to the gallery picker, visible only
+  via `@media (pointer: coarse)`). vjt: "we should allow to
+  upload from camera on mobile as well ... clipboard paste sure
+  why not."
+- **A7 pinned**: auto-send `📸 <url>` immediately on upload
+  success (was Q-AUTOSEND, vjt: "after upload autosend yes").
+- **A10 added**: codify "IRC stays text only" in CLAUDE.md per
+  vjt: "yes porco dio codify that in claude.md, as that is
+  already in readme.md."
+- **A6 refined**: privacy ack is per-host (different localStorage
+  key per `host.id`); switching to a host with different privacy
+  semantics re-prompts. Copy fully parameterized via
+  `host.displayName` + `host.retentionStatement`.
+- **TTL persistence keyed per host**: `image-upload-ttl:litterbox`
+  not just `image-upload-ttl` — swapping hosts later doesn't
+  silently inherit the wrong default.
+- **I-1 test surface expanded**: interface contract tested via
+  in-memory mock impl; litterbox impl tested separately. The mock
+  doubles as a "how to write a second provider" example.
+- **I-2 test surface expanded**: paste handler, camera button,
+  TTL-dropdown-hidden-when-empty, per-host privacy ack, auto-send.
+- **Camera icon** for the picker button (was Q-ICON, vjt:
+  "camera icon porco dio").
+
+Bucket count unchanged (5). Code surface modestly larger (4
+trigger surfaces, richer interface). Cluster spirit unchanged:
+"image upload feels native, IRC stays text-only."
+
 ## v1 → v2 diff (post-vjt-refinement 2026-05-15)
 
 vjt scoped the cluster significantly tighter than v1 proposed.
@@ -516,8 +736,6 @@ Removals:
   in new tab" IS the image viewer.
 - **Cut img-src CSP entry** — we don't render images, so the host
   doesn't need `img-src` allowlist.
-- **Cut clipboard-paste handler from v1 default** — vjt mentioned
-  picker + drag-drop only; pin paste as Q-PASTE deferred.
 - **Default TTL 72h → 24h** per vjt.
 - **Module name `litterbox.ts` → `image-upload.ts`** per vjt
   ("BUILD INTERFACE to plug different image hosters tomorrow") —
