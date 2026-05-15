@@ -5140,6 +5140,129 @@ must manually inspect `lib/grappa/hot_reload/long_lived_modules.ex`
 defensively.
 
 
+## 2026-05-15 — I cluster (image upload) CLOSED
+
+4 commits across 4 buckets shipped same-day on `cluster/images`,
+ff-merged to main. Plan + per-bucket retrospective at
+`docs/plans/2026-05-15-images-cluster.md`. Cluster checkpoint at
+`docs/checkpoints/2026-05-15-cp33.md`.
+
+### Bucket summary
+
+- **I-CSP** (`764486b`) — `infra/snippets/security-headers.conf`
+  CSP `connect-src` allowlist for `https://litterbox.catbox.moe`.
+  COLD-deployed because nginx config doesn't reload on the hot
+  path (per `feedback_hot_deploy_preflight` + the deploy.sh
+  nginx-class preflight gate added in CP31).
+- **I-1** (`8112f4f`) — pluggable `ImageHost` interface
+  (`cicchetto/src/lib/image-upload.ts`, 211 LOC) + litterbox
+  first impl. The interface shape (`upload(blob, opts) →
+  {url, expires_at}`) is designed against three hosters'
+  documented APIs: litterbox (TTL), 0x0.st (form-multipart),
+  catbox-permanent (auth header) — vjt's "we DONT KNOW if we
+  stay on litterbox thus BUILD INTERFACE" directive.
+- **I-2** (`8f1a76b`) — ComposeBox surface (`📸` button +
+  drag-drop on the textarea + clipboard paste + mobile camera
+  via `<input type=file capture=environment>` at ≤768px) +
+  `PrivacyModal` (per-host localStorage ack, gated on first
+  upload) + `imageUploadOrchestrator.ts` (240 LOC, async state
+  machine + auto-send on resolve). 28 + 22 + 7 + 17 vitest
+  units; 2 Playwright e2e via `scripts/integration.sh
+  --grep i2-`.
+- **I-3** (this commit) — docs sweep: README "Image upload"
+  subsection, this entry, project-story episode, CLAUDE.md
+  "IRC stays text only" rule (A10) under Engineering Standards
+  → Code-shape rules.
+
+### Key decisions
+
+- **Direct-to-litterbox (no grappa proxying).** The browser POSTs
+  the blob directly to `litterbox.catbox.moe`; the server never
+  sees the bytes. Saves bandwidth + sidesteps any "image upload
+  storage layer" obligation. CSP `connect-src` is the only server
+  surface that participates.
+- **📸-prefix wire shape.** PRIVMSG body is literally
+  `📸 https://litter.catbox.moe/abc.png`. No IRC tags, no
+  `client-only` namespace, no client-side detection magic. Any
+  IRCv3 listener client (Goguma, Quassel, mIRC) sees a normal
+  text PRIVMSG with a URL — no special handling required, no
+  silent-drop class on the listener side. vjt: "plain irc message
+  with just a photocamera emoji 📸 and the fucking link. that's
+  it."
+- **Pluggable `ImageHost` interface.** `cicchetto/src/lib/
+  image-upload.ts` exports `interface ImageHost` with
+  `upload(blob, opts)` + `name` + `default_ttl_seconds`. The
+  litterbox impl is the first concrete; the interface shape was
+  validated against imgur / 0x0.st / catbox-permanent docs
+  before locking. Per-host configuration carries the host's
+  human-readable name through to the `PrivacyModal` copy.
+- **Per-host localStorage namespacing.** Privacy ack key is
+  `image-upload-ack:<host-name>`. TTL preferences (litterbox-
+  specific 1h/12h/24h/72h knob) keyed identically. Adding a new
+  host doesn't migrate existing acks; visitor sees the modal once
+  per host as expected.
+- **CSP `connect-src` only, NOT `img-src`.** Cic doesn't render
+  the image inline — the URL becomes a clickable link via the
+  existing `linkify` path. `connect-src` covers the upload XHR;
+  `img-src` is irrelevant because no `<img>` tag renders the
+  uploaded URL.
+- **Four trigger surfaces.** 📸 compose button (desktop + mobile),
+  mobile camera capture (`<input type=file accept=image/*
+  capture=environment>` shown ≤768px next to the 📸 button),
+  drag-drop onto the compose textarea, clipboard paste. All four
+  funnel through the same `imageUploadOrchestrator` —
+  one orchestrator, one privacy modal, one auto-send.
+- **Auto-send on resolve.** When the upload succeeds, the
+  orchestrator constructs the `📸 <url>` body and calls
+  `compose.send` directly — the operator's draft text in the
+  textarea is preserved (it would be unrelated to the image
+  anyway). vjt: "fire-and-forget, the photo IS the message."
+
+### Lessons from the buckets
+
+**1. CSP empirical pin: response host ≠ request host (I-CSP)**
+
+The litterbox upload endpoint is `https://litterbox.catbox.moe/
+resources/internals/api.php`. The successful response carries
+the URL on `https://litter.catbox.moe/<random>.png` — note the
+DROPPED `box`. Both hosts must be in `connect-src` (the request
+to `litterbox.catbox.moe`, the redirect/response read from
+`litter.catbox.moe`). Captured empirically via curl during
+I-CSP verification — the docs don't mention the host split.
+
+**2. e2e selector strict-mode violation (I-2)**
+
+`page.getByRole("dialog")` matched both the new `PrivacyModal`
+AND the existing `SettingsDrawer` (which also carries
+`role=dialog`). Playwright's strict mode rejected the ambiguous
+locator. Fix: `page.getByRole("dialog", { name: /privacy/i })`
+disambiguates by accessible name. Lesson for future cic dialogs:
+always include an `aria-label` or visible `<h2>` so e2e selectors
+have a name to match against.
+
+**3. Pre-session uncommitted state can block the deploy chain**
+
+A pre-cluster `cicchetto-build` oneshot had wiped
+`runtime/cicchetto-dist/.gitkeep` while repopulating the dir with
+bundle artifacts. The deletion sat as an unstaged `D` for an
+unknown number of sessions until I-CSP's deploy chain hit `git
+pull --rebase` and refused to proceed. Recovery: restore from
+HEAD. Mitigation TBD — either `cicchetto-build` should preserve
+`.gitkeep`, or the dir should be `.gitignored` entirely with the
+`.gitkeep` removed from tracking. Captured but not actioned this
+cluster.
+
+### Trajectory
+
+Public-open trajectory advances one notch: image upload was the
+last shipped UX gap from the CP31 § Trajectory list. Remaining
+public-open blockers per CP31 + CP32: voice (separate
+`/voice/websocket`), mobile UI polish, M3 rate limits, W-16
+signing_salt rotation, M-cic-2 production strip of `__cic_*`
+debug globals, P-2 TLS verify-CA, cards UX renegotiation
+(low-priority).
+
+
 ---
 
 ## What's *not* in this document (on purpose)

@@ -1988,3 +1988,124 @@ you came in via NickServ on Azzurra ten years ago or opened cic
 for the first time as an anonymous visitor today. The only
 difference is whether your data outlives your browser tab.
 
+## S47 — 2026-05-15 — Plain text, one emoji, no thumbnails: the image upload that didn't betray IRC
+
+Twelve days earlier, on 2026-05-03, vjt had said it offhand —
+"image upload would be nice." It went on the post-cluster arc list
+under `project_image_upload` and waited. Same-day as the CP32
+visitor-parity cluster closed, the time came. Porco dio, three
+buckets in ninety minutes — that's the cluster.
+
+The brainstorm v1 was wrong. Claude proposed inline thumbnails in
+scrollback, a lightbox-on-click overlay, image previews on link
+hover. The full social-media playbook. vjt rejected it with one
+sentence: **"IRC REMAINS TEXT FUCKING ONLY."** Not a UX preference
+— a foundational invariant I had failed to extract from the
+existing codebase. ScrollbackPane renders text. linkify makes URLs
+clickable. That's the contract. Adding inline thumbnails would
+have required a new render pathway, image-loading state, viewport
+intersection observers, lazy-loading heuristics, lightbox
+component, keyboard navigation in the lightbox, escape-to-close,
+prev-next nav... a UX surface area that grows forever and never
+stops needing maintenance. None of which has anything to do with
+the actual user need: "I want to share a photo I just took."
+
+The brainstorm v2 cut it down. Just an upload mechanism. Just a
+URL pasted into the message body. Just a clickable link rendered
+by the existing linkify. The image is hosted somewhere else. The
+PRIVMSG body is `image: https://...`. Done.
+
+The brainstorm v3 went one notch further. vjt: **"plain irc
+message with just a photocamera emoji 📸 and the fucking link.
+that's it."** No `image:` prefix, no protocol-extension feel —
+literally a single emoji as the visual cue, then the URL. Anyone
+on Goguma or Quassel or mIRC sees a normal text PRIVMSG with a
+camera emoji and a URL. They click the URL. The image opens in
+their browser. Zero special handling on any client. Zero
+server-side parsing. Zero IRCv3 tags. The wire stays text-only.
+The web stays text-only. The model is the message.
+
+The other vjt directive that shaped the cluster:
+**"we DONT KNOW if we stay on litterbox thus BUILD INTERFACE to
+plug different image hosters tomorrow."** Hence I-1, the pluggable
+`ImageHost` interface. The interface shape (`upload(blob, opts) →
+{url, expires_at}` plus `name` plus `default_ttl_seconds`) was
+designed by reading the docs of three candidate hosters
+back-to-back: litterbox (TTL knob 1h/12h/24h/72h), 0x0.st
+(form-multipart no auth), catbox-permanent (auth header,
+account-bound). The interface fits all three. The litterbox impl
+is the first concrete; tomorrow's swap is a new file.
+
+Then the trigger surfaces. The compose box gets a 📸 button.
+That's the obvious one. But on mobile, the camera in your hand IS
+the upload source — late in the brainstorm vjt added: "we should
+allow to upload from camera on mobile as well." That's
+`<input type=file accept=image/* capture=environment>`, gated to
+`isMobile()` (≤768px), shown next to the 📸 button. And then,
+because operators expect it, drag-drop onto the compose textarea
+plus clipboard paste — both wired through the same orchestrator,
+both honoring the same per-host privacy modal, both auto-sending
+on resolve. Four trigger surfaces. One orchestrator. One privacy
+modal. One auto-send.
+
+The CSP gate was the surprise. The litterbox upload endpoint is
+`https://litterbox.catbox.moe/resources/internals/api.php`. The
+nginx CSP `connect-src` got `https://litterbox.catbox.moe` and
+the I-CSP commit shipped, COLD-deployed because nginx doesn't
+reload on the hot path. Then the e2e test hit the upload and
+failed at the response read. Madonna porca, the response URL is
+on `https://litter.catbox.moe/<random>.png` — note the dropped
+`box`. Two hosts. The request goes to one, the response URL is
+served from the other. Both must be in `connect-src`. Captured
+empirically via curl, undocumented anywhere, an empirical pin in
+the CSP.
+
+The other small bug was the e2e selector. Playwright strict mode
+rejected `page.getByRole("dialog")` because both the new
+`PrivacyModal` AND the existing `SettingsDrawer` carry
+`role=dialog`. Fix: `page.getByRole("dialog", { name: /privacy/i
+})`. Lesson for every future cic dialog: include an `aria-label`
+or visible `<h2>` so e2e selectors have a name. Cheap fix, easy
+to remember.
+
+The privacy modal itself is the kind of UI an IRC user shouldn't
+need to think about more than once. First upload to a new host:
+modal explains the host receives the image, lists the host's
+TTL, asks for ack. Subsequent uploads to that host: silent.
+localStorage key is `image-upload-ack:<host-name>`. Adding a new
+hoster doesn't migrate existing acks; visitor sees the modal
+once per host. Per-host namespacing falls out of the pluggable
+interface for free.
+
+I-3 is the docs sweep — README subsection, DESIGN_NOTES entry,
+this episode, and the CLAUDE.md rule itself: **"IRC stays text
+only."** A10 in the brainstorm. vjt explicit: "yes porco dio
+codify that in claude.md, as that is already in readme.md." That
+rule is the cluster's most important artifact. Future-Claude six
+months from now will propose inline thumbnails again unless the
+rule is in CLAUDE.md. The reason any feature ever proposes inline
+thumbnails is that every other chat client shows them. The
+discipline is remembering that grappa isn't every other chat
+client — it's an IRC bouncer with a PWA frontend, and the wire
+contract is text. The browser doesn't get to invent rendering
+that the wire doesn't carry. The whole point of the listener
+facade in Phase 6 is that a Goguma client and cic see the same
+data; if cic invented inline thumbnails, Goguma would diverge.
+
+**Law:** the spec is not the directions. The directions are the
+spec. The first brainstorm copied what other apps do; that's
+exactly the failure mode CLAUDE.md warns about under "Directions
+over code." Existing patterns in the wider chat-app ecosystem
+have nothing to do with this codebase's invariants. The IRC text-
+only rule was already in the README; I should have read the
+README before brainstorming. Three commits in ninety minutes
+because the v3 brainstorm finally honored the invariants the
+codebase had been carrying since Phase 0. The spec inherited a
+bug; the directions named it; vjt closed it; the rule went into
+CLAUDE.md so the next time it surfaces, the closed-set fence
+catches it before any code gets written.
+
+The bouncer is one feature closer to public open. The wire stays
+text. The model is the message.
+
+

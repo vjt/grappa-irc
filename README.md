@@ -387,6 +387,10 @@ Each network binding carries a `connection_state` enum:
 
 Transient errors (timeout, refused, DNS, max-backoff) keep the session in continuous reconnect with `:connected` — the bouncer's job is to keep trying. `:failed` is reserved for *terminal* failures where retry is futile. The `connection_state_reason` and `connection_state_changed_at` columns expose the cause + when the transition happened, surfaced in cicchetto's server-messages window.
 
+### Image upload (I cluster, 2026-05-15)
+
+Cicchetto can upload images to a third-party host and post the resulting URL as a regular IRC PRIVMSG. The wire stays text-only — the server, the IRC protocol, and any IRCv3 listener client all see a normal message; only cic renders the link as clickable. Pluggable `ImageHost` interface (`cicchetto/src/lib/image-upload.ts`) ships with a litterbox.catbox.moe implementation and is shaped to fit imgur / 0x0.st / catbox-permanent next. Default TTL is 24h (litterbox's `1h | 12h | 24h | 72h` knob, server-side expiry — no cic deletion). Four trigger surfaces: 📸 button in the compose box, mobile camera capture (`<input type=file accept=image/* capture=environment>` on ≤768px), drag-drop onto the compose area, and clipboard paste. Wire shape is `📸 https://litter.catbox.moe/abc.png` — single emoji prefix, no IRC tags, no client-side detection magic. First-upload-per-host shows a privacy-acknowledgement modal (per-host localStorage key); subsequent uploads are silent. Render contract: clickable links via the existing `linkify` path, no inline thumbnails, no lightbox — IRC stays text only (see CLAUDE.md Engineering Standards → Code-shape rules).
+
 ## Scope
 
 **In scope:**
@@ -479,6 +483,16 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **I — image upload** (closed 2026-05-15). 4 commits across 4
+  buckets shipped same-day on `cluster/images`. I-CSP nginx
+  `connect-src` allowlist for `litterbox.catbox.moe`. I-1 pluggable
+  `ImageHost` interface + litterbox first impl. I-2 ComposeBox
+  surface (📸 button + drag-drop + paste + mobile camera) +
+  per-host privacy modal + auto-send orchestrator. I-3 docs sweep
+  (this section + DESIGN_NOTES + project-story + CLAUDE.md
+  "IRC stays text only" rule per A10). The wire shape is a normal
+  PRIVMSG body `📸 https://litter.catbox.moe/abc.png` — IRCv3
+  listener clients see plain text; only cic linkifies.
 - **CP32 — visitor parity + NickServ-as-identity** (closed 2026-05-15).
   10 commits across 9 production buckets shipped same-day on
   `cluster/visitor-parity-and-nickserv`. Subject parity invariant:

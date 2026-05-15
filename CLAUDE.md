@@ -338,6 +338,15 @@ not the surrounding code.**
   (search-with-state, accumulate-until-threshold) where the accumulator
   carries computed state across iterations. For pure collect-or-bail,
   it's overkill.
+- **IRC stays text only.** No inline rendering of media types in
+  scrollback (images, videos, audio, link-unfurl previews). Media
+  URLs in PRIVMSG bodies are clickable links via the existing
+  `linkify` path; clicking opens the resource in a browser tab. Do
+  not propose in-scrollback thumbnails / autoplay / preview cards /
+  lightbox-on-arrival without an explicit cluster spec lifting this
+  rule. The image-upload cluster (2026-05-15) ships a 📸-prefixed
+  URL pattern that is text on the wire and a clickable link in
+  cic — that is the model.
 - **Bite-sized commits**: one logical change. Messages explain WHY.
 
 ### OTP patterns (Elixir-specific)
