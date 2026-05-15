@@ -349,16 +349,12 @@ describe("ComposeBox", () => {
       expect(clickSpy).toHaveBeenCalled();
     });
 
-    it("renders a separate mobile-camera button with capture=environment input", () => {
+    it("does not render a separate mobile-camera input — iOS Safari's picker exposes 'Take Photo' on the single image button", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      // CSS-hidden on desktop via @media (pointer: coarse), but the
-      // DOM is always present — assertion is on the input attributes.
       const input = document.querySelector(
         "input[type='file'][data-camera-picker]",
       ) as HTMLInputElement | null;
-      expect(input).not.toBeNull();
-      expect(input?.getAttribute("capture")).toBe("environment");
-      expect(input?.getAttribute("accept")).toMatch(/image\//);
+      expect(input).toBeNull();
     });
 
     it("selecting a file via the picker calls triggerUpload with file + slug + channel", async () => {

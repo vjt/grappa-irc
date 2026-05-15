@@ -920,11 +920,10 @@ body {
   border-top: 1px solid var(--border);
 }
 
-/* Image upload — picker / camera buttons + TTL select + progress + modal.
+/* Image upload — picker button + TTL select + progress + modal.
  * Images cluster I-2 (2026-05-15). */
 
-.compose-box-image-picker,
-.compose-box-camera-picker {
+.compose-box-image-picker {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--border);
@@ -934,22 +933,9 @@ body {
   cursor: pointer;
 }
 
-.compose-box-image-picker:hover,
-.compose-box-camera-picker:hover {
+.compose-box-image-picker:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-
-/* Camera capture button is mobile-only. CSS @media (pointer: coarse)
- * matches touch-primary devices; desktop with a mouse hides it. */
-.compose-box-camera-picker {
-  display: none;
-}
-
-@media (pointer: coarse) {
-  .compose-box-camera-picker {
-    display: inline-flex;
-  }
 }
 
 .compose-box-image-ttl {

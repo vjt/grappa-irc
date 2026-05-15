@@ -38,14 +38,15 @@ import { windowStateByChannel } from "./lib/windowState";
 // silently look ready-to-send. Operator can still type `/connect` to
 // unpark.
 //
-// Images cluster I-2 (2026-05-15): four trigger surfaces for image
-// upload — file picker (camera-icon button), mobile camera capture
-// (separate input with capture="environment", visible via @media
-// pointer:coarse), drag-drop (whole-form), clipboard paste (textarea).
-// All four converge on `triggerUpload()` from imageUploadOrchestrator;
-// the orchestrator handles privacy modal gating, MIME pre-check, TTL
-// dropdown wiring, progress state, auto-send. ComposeBox is the
-// trigger surface only — no upload logic lives here.
+// Images cluster I-2 (2026-05-15): three trigger surfaces for image
+// upload — file picker (camera-icon button; iOS Safari's native picker
+// already exposes "Take Photo" so a separate camera-capture button
+// would be redundant), drag-drop (whole-form), clipboard paste
+// (textarea). All converge on `triggerUpload()` from
+// imageUploadOrchestrator; the orchestrator handles privacy modal
+// gating, MIME pre-check, TTL dropdown wiring, progress state,
+// auto-send. ComposeBox is the trigger surface only — no upload
+// logic lives here.
 
 export type Props = {
   networkSlug: string;
@@ -60,7 +61,6 @@ const ComposeBox: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   let pickerInput: HTMLInputElement | undefined;
-  let cameraInput: HTMLInputElement | undefined;
   const greyed = (): boolean => {
     // Bucket F H4: only UserNetwork carries connection_state. Narrow on
     // network.kind before reading the field; visitor networks are
@@ -94,10 +94,6 @@ const ComposeBox: Component<Props> = (props) => {
 
   const onPickerClick = () => {
     pickerInput?.click();
-  };
-
-  const onCameraClick = () => {
-    cameraInput?.click();
   };
 
   const onDragOver = (e: DragEvent) => {
@@ -208,15 +204,6 @@ const ComposeBox: Component<Props> = (props) => {
           hidden
           onChange={onPickerChange}
         />
-        <input
-          ref={cameraInput}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          data-camera-picker
-          hidden
-          onChange={onPickerChange}
-        />
         <button
           type="button"
           class="compose-box-image-picker"
@@ -224,30 +211,10 @@ const ComposeBox: Component<Props> = (props) => {
           onClick={onPickerClick}
           title="upload image"
         >
-          {/* Camera icon — inline SVG, theme-agnostic. */}
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-            <circle cx="12" cy="13" r="4" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          class="compose-box-camera-picker"
-          aria-label="take photo"
-          onClick={onCameraClick}
-          title="take photo"
-        >
-          {/* Mobile-only via CSS @media (pointer: coarse). */}
+          {/* Camera icon — inline SVG, theme-agnostic. iOS Safari's
+           * native picker on this single button already exposes
+           * "Take Photo" / "Photo Library" — no separate
+           * capture=environment input needed. */}
           <svg
             width="16"
             height="16"
