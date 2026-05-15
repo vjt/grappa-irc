@@ -164,6 +164,7 @@ defmodule Grappa.Session.EventRouter do
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
           | {:visitor_r_observed, String.t()}
+          | {:visitor_nick_changed, String.t()}
           | {:topic_changed, String.t(), topic_entry()}
           | {:channel_modes_changed, String.t(), channel_mode_entry()}
           | {:channel_created, String.t(), DateTime.t()}
@@ -520,7 +521,7 @@ defmodule Grappa.Session.EventRouter do
         %{state | members: members, userhost_cache: userhost_cache}
       end
 
-    effects =
+    persist_effects =
       for ch <- channels do
         {_, eff} =
           build_persist(new_state, :nick_change, ch, old_nick, nil, %{new_nick: new_nick})
@@ -528,7 +529,22 @@ defmodule Grappa.Session.EventRouter do
         eff
       end
 
-    {:cont, new_state, effects}
+    # V9 (visitor-parity cluster, 2026-05-15): on a self-NICK echo
+    # for a visitor subject, emit the persist-side effect so
+    # `Session.Server.apply_effects/2` rotates `visitors.nick` via the
+    # injected `visitor_nick_persister` callback. Mirror of the
+    # `:visitor_r_observed` shape — the closure-injection avoids a
+    # static `Session → Visitors` Boundary alias that would close a
+    # cycle (Visitors deps Session via Login). User subjects don't
+    # carry a persister; their nick lives in `Networks.Credential`,
+    # which is operator-driven.
+    visitor_persist_effects =
+      case state.subject do
+        {:visitor, _} when old_nick == state.nick -> [{:visitor_nick_changed, new_nick}]
+        _ -> []
+      end
+
+    {:cont, new_state, persist_effects ++ visitor_persist_effects}
   end
 
   # Unsolicited TOPIC: a channel operator changed the topic mid-session.

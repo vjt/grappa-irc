@@ -86,6 +86,14 @@ defmodule Grappa.Visitors.SessionPlan do
       # path can reach commit_password/2 without a module reference
       # in the Session boundary.
       visitor_committer: &Grappa.Visitors.commit_password/2,
+      # V9 (visitor-parity cluster, 2026-05-15): mirror of
+      # `visitor_committer` for the upstream NICK self-echo. Server's
+      # `apply_effects/2` invokes this on `{:visitor_nick_changed, new}`
+      # to rotate `visitors.nick` after EventRouter confirms the
+      # rename was accepted (state.nick == old_nick path). Same opaque
+      # function-ref indirection — Visitors deps Session via Login,
+      # so a static alias would close a Boundary cycle.
+      visitor_nick_persister: &Grappa.Visitors.update_nick/2,
       # CP24 bucket E lifecycle/S1: visitor-side equivalent of the
       # user-side `Networks.SessionPlan.credential_failer` callback.
       # K-line / permanent-SASL on the visitor session calls this

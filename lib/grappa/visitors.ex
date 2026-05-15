@@ -340,6 +340,55 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
+  Visitor-side NICK rename pre-check (V9). Returns `true` if a
+  DIFFERENT visitor row already holds `target_nick` on
+  `network_slug`; the caller surfaces that as 409 nick_in_use BEFORE
+  sending NICK upstream. False if the slot is free, or if the only
+  occupant IS the visitor itself (idempotent rename to current nick).
+  """
+  @spec nick_in_use?(Ecto.UUID.t(), String.t(), String.t()) :: boolean()
+  def nick_in_use?(visitor_id, target_nick, network_slug)
+      when is_binary(visitor_id) and is_binary(target_nick) and is_binary(network_slug) do
+    case Repo.get_by(Visitor, nick: target_nick, network_slug: network_slug) do
+      nil -> false
+      %Visitor{id: ^visitor_id} -> false
+      %Visitor{} -> true
+    end
+  end
+
+  @doc """
+  Rotate `visitor.nick` after upstream confirmed the rename via NICK
+  self-echo (V9, visitor-parity cluster, 2026-05-15). Called from
+  `Grappa.Session.Server`'s `apply_effects/2` (private) on the
+  `{:visitor_nick_changed, new_nick}` effect emitted by EventRouter
+  when `state.subject == {:visitor, _}` and `old_nick == state.nick`.
+
+  The `(nick, network_slug)` UNIQUE constraint catches concurrent
+  collisions (two visitors racing for the same nick on the same
+  network) — the controller-boundary `nick_in_use?/3` pre-check is the
+  fast path; this function is the second line of defense for the
+  near-zero-probability race.
+
+  `{:error, :not_found}` on a reaped row (terminal — Reaper got the
+  row between `send_nick` and the upstream echo). Logged + dropped at
+  the call site.
+  """
+  @spec update_nick(Ecto.UUID.t(), String.t()) ::
+          {:ok, Visitor.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_nick(visitor_id, new_nick)
+      when is_binary(visitor_id) and is_binary(new_nick) do
+    case Repo.get(Visitor, visitor_id) do
+      nil ->
+        {:error, :not_found}
+
+      visitor ->
+        visitor
+        |> Visitor.nick_changeset(new_nick)
+        |> Repo.update()
+    end
+  end
+
+  @doc """
   Anon-only co-terminus delete (W11). If the visitor exists and
   `password_encrypted` is nil, delete the row — CASCADE wipes the
   associated accounts_sessions, visitor_channels, and messages in a

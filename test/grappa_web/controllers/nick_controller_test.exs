@@ -1,8 +1,12 @@
 defmodule GrappaWeb.NickControllerTest do
   @moduledoc """
-  REST surface for the `/nick <new>` slash command (P4-1). Smoke-tests:
+  REST surface for the `/nick <new>` slash command (P4-1, V9). Smoke-tests:
   happy path 202; iso boundary (cross-user 404); no-session 404;
-  bad_request guards.
+  bad_request guards. V9 (visitor-parity cluster, 2026-05-15) lifts
+  the visitor short-circuit — visitors now traverse the same path
+  as users, with a per-(nick, network_slug) UNIQUE pre-check that
+  surfaces as 409 nick_in_use when another visitor row already holds
+  the target nick on the same network.
 
   `async: false` because Session uses singleton supervisors + Registry;
   see `Grappa.Session.ServerTest` for the same rationale.
@@ -11,7 +15,8 @@ defmodule GrappaWeb.NickControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.IRCServer
+  alias Grappa.{IRCServer, Repo}
+  alias Grappa.Visitors.Visitor
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -104,11 +109,92 @@ defmodule GrappaWeb.NickControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
-    # Task 30 / Q2(a): visitor subjects are forbidden from changing nick.
-    # Row-immutable identity invariant per W2 + Mode-3 NickServ binding;
-    # uniform 403 across both anon and registered visitors.
-    test "visitor subject — 403 forbidden", %{conn: _conn} do
-      slug = "az-nick-vis-#{System.unique_integer([:positive])}"
+    # V9 (visitor-parity cluster, 2026-05-15): visitor subjects can now
+    # change nick. Q2(a) gate lifted — visitors traverse the same path
+    # as users, gated by the same `(nick, network_slug)` UNIQUE that
+    # backs anon-collision detection at login time.
+    test "visitor subject — 202 + nick line upstream + DB nick rotated on echo", %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port, nick: "v9-#{System.unique_integer([:positive])}")
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      new_nick = "v9new-#{System.unique_integer([:positive])}"
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/nick", %{"nick" => new_nick})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      {:ok, line} = IRCServer.wait_for_line(server, &(&1 == "NICK #{new_nick}\r\n"), 1_000)
+      assert line == "NICK #{new_nick}\r\n"
+
+      # Simulate upstream NICK self-echo. The Session.Server's EventRouter
+      # routes :nick on state.nick == old_nick, the visitor-side effect
+      # rotates `visitors.nick` via the injected `visitor_nick_persister`
+      # callback (mirror of `visitor_committer` for +r MODE).
+      :ok = IRCServer.feed(server, ":#{visitor.nick}!u@h NICK #{new_nick}\r\n")
+
+      # Wait for the EventRouter delegate path to land — the per-channel
+      # broadcast + DB write happen synchronously inside the Server's
+      # handle_info reduction. Polling keeps the test honest under
+      # mailbox latency.
+      assert_eventually(fn ->
+        case Repo.get(Visitor, visitor.id) do
+          %Visitor{nick: ^new_nick, id: id} when id == visitor.id -> true
+          _ -> false
+        end
+      end)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor subject — 409 nick_in_use when another visitor row holds the target nick on the same network",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      {visitor, network} = visitor_with_network(port, nick: "v9a-#{System.unique_integer([:positive])}")
+      session = visitor_session_fixture(visitor)
+
+      # Squat the target nick with ANOTHER visitor row on the same
+      # network. The pre-check at the controller boundary surfaces 409
+      # before the upstream NICK frame is sent.
+      target_nick = "v9b-#{System.unique_integer([:positive])}"
+      _ = visitor_fixture(nick: target_nick, network_slug: network.slug)
+
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+      # Snapshot lines after handshake: NICK + USER are emitted at
+      # connect-time. Asserting "no NEW NICK line" against a fresh
+      # snapshot is the right granularity — `wait_for_line/3` matches
+      # buffered lines too, so a follow-up wait would see the
+      # handshake NICK and pass the 409 test by accident.
+      pre_nick_count = nick_lines_count(server)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/nick", %{"nick" => target_nick})
+
+      assert json_response(conn, 409) == %{"error" => "nick_in_use"}
+
+      # Brief grace window for any in-flight send to land before counting.
+      Process.sleep(50)
+      assert nick_lines_count(server) == pre_nick_count
+
+      # DB unchanged.
+      assert %Visitor{nick: nick} = Repo.get(Visitor, visitor.id)
+      assert nick == visitor.nick
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor subject — 400 malformed_nick rejected at the boundary", %{conn: _conn} do
+      slug = "az-nick-vmalformed-#{System.unique_integer([:positive])}"
       {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
       {_, session} = visitor_and_session(network_slug: slug)
 
@@ -116,9 +202,35 @@ defmodule GrappaWeb.NickControllerTest do
         Phoenix.ConnTest.build_conn()
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/#{slug}/nick", %{"nick" => "newnick"})
+        |> post("/networks/#{slug}/nick", %{"nick" => "9bad"})
 
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+      assert json_response(conn, 400) == %{"error" => "malformed_nick"}
     end
+  end
+
+  defp assert_eventually(fun, timeout \\ 1_000, interval \\ 25) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    assert_eventually_loop(fun, deadline, interval)
+  end
+
+  defp assert_eventually_loop(fun, deadline, interval) do
+    if fun.() do
+      :ok
+    else
+      now = System.monotonic_time(:millisecond)
+
+      if now >= deadline do
+        flunk("assert_eventually: predicate never became true within budget")
+      else
+        Process.sleep(interval)
+        assert_eventually_loop(fun, deadline, interval)
+      end
+    end
+  end
+
+  defp nick_lines_count(server) do
+    server
+    |> IRCServer.sent_lines()
+    |> Enum.count(&String.starts_with?(&1, "NICK "))
   end
 end

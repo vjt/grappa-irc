@@ -117,6 +117,28 @@ defmodule Grappa.Visitors.Visitor do
     change(visitor, %{expires_at: new_expires_at})
   end
 
+  @doc """
+  Rotates `:nick` after upstream confirmed the rename via NICK self-echo
+  (V9, visitor-parity cluster, 2026-05-15). Validated against
+  `Identifier.valid_nick?/1` so a malformed value never lands on the
+  row even if the controller-boundary pre-check is bypassed in the
+  future. The `(nick, network_slug)` UNIQUE constraint surfaces a
+  concurrent-rename race as a changeset error, which `Visitors.update_nick/2`
+  logs and propagates — DB stays consistent under racing renames.
+
+  Schema-only changeset (mirror of `touch_changeset/2`). The IRC-side
+  rotation of `state.nick` lives in `Grappa.Session.EventRouter`'s
+  `:nick` handler; this changeset persists only the row mutation.
+  """
+  @spec nick_changeset(t(), String.t()) :: Ecto.Changeset.t()
+  def nick_changeset(%__MODULE__{} = visitor, new_nick) when is_binary(new_nick) do
+    visitor
+    |> cast(%{nick: new_nick}, [:nick])
+    |> validate_required([:nick])
+    |> validate_change(:nick, &validate_nick/2)
+    |> unique_constraint([:nick, :network_slug])
+  end
+
   defp validate_nick(field, value) when is_binary(value) do
     if Identifier.valid_nick?(value),
       do: [],

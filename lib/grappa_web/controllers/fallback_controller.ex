@@ -53,6 +53,7 @@ defmodule GrappaWeb.FallbackController do
            | :timeout
            | :internal
            | :invalid_message
+           | :nick_in_use
            | {:anon_collision, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
@@ -266,6 +267,19 @@ defmodule GrappaWeb.FallbackController do
     |> put_resp_header("retry-after", Integer.to_string(retry_after))
     |> put_status(:conflict)
     |> json(%{error: "anon_collision"})
+  end
+
+  # 409 nick_in_use: V9 (visitor-parity cluster) — visitor `/nick` rename
+  # collides with another visitor row on the same network. No
+  # Retry-After: the holder may keep the nick indefinitely (NickServ-
+  # identified visitors carry `expires_at = NULL`); the operator
+  # should pick a different target. Distinct atom from
+  # `{:anon_collision, _}` (login-time path) so cic can render
+  # context-appropriate copy.
+  def call(conn, {:error, :nick_in_use}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "nick_in_use"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

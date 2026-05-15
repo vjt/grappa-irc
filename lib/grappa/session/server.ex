@@ -146,6 +146,19 @@ defmodule Grappa.Session.Server do
              {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
 
   @typedoc """
+  V9 (visitor-parity cluster, 2026-05-15) — opaque callback the
+  visitor-side `SessionPlan` injects so `apply_effects/2` can rotate
+  `visitors.nick` after EventRouter observes the upstream NICK
+  self-echo. Same Boundary-cycle reasoning as `visitor_committer`:
+  Visitors deps Session via Login, so a static
+  `Session → Grappa.Visitors` alias would close the cycle. The
+  function shape mirrors `Grappa.Visitors.update_nick/2` exactly.
+  """
+  @type visitor_nick_persister ::
+          (Ecto.UUID.t(), String.t() ->
+             {:ok, struct()} | {:error, :not_found | Ecto.Changeset.t()})
+
+  @typedoc """
   Optional opaque callback injected by `Networks.SessionPlan.resolve/1`
   into every user-session plan. Called from `handle_terminal_failure/2`
   when a hard upstream error (k-line / permanent SASL) means the session
@@ -248,6 +261,7 @@ defmodule Grappa.Session.Server do
           optional(:notify_pid) => pid(),
           optional(:notify_ref) => reference(),
           optional(:visitor_committer) => visitor_committer(),
+          optional(:visitor_nick_persister) => visitor_nick_persister(),
           optional(:credential_failer) => credential_failer(),
           optional(:last_joined_persister) => last_joined_persister()
         }
@@ -300,6 +314,7 @@ defmodule Grappa.Session.Server do
           pending_auth_timer: reference() | nil,
           pending_password: String.t() | nil,
           visitor_committer: visitor_committer() | nil,
+          visitor_nick_persister: visitor_nick_persister() | nil,
           credential_failer: credential_failer() | nil,
           last_joined_persister: last_joined_persister() | nil,
           ghost_recovery: GhostRecovery.t() | nil,
@@ -465,6 +480,7 @@ defmodule Grappa.Session.Server do
       pending_auth_timer: nil,
       pending_password: pending_password_from_opts(opts),
       visitor_committer: Map.get(opts, :visitor_committer),
+      visitor_nick_persister: Map.get(opts, :visitor_nick_persister),
       credential_failer: Map.get(opts, :credential_failer),
       last_joined_persister: Map.get(opts, :last_joined_persister),
       ghost_recovery: nil,
@@ -2402,6 +2418,46 @@ defmodule Grappa.Session.Server do
     :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     apply_effects(rest, %{state | pending_auth: nil, pending_auth_timer: nil})
+  end
+
+  # V9 (visitor-parity cluster, 2026-05-15): EventRouter observed our
+  # own NICK self-echo (`old_nick == state.nick`) on a visitor session.
+  # Persist the new nick onto the visitors row via the injected
+  # `visitor_nick_persister` callback (mirror of `visitor_committer`).
+  # The `(nick, network_slug)` UNIQUE constraint catches the
+  # near-zero-probability concurrent-rename race; controller-boundary
+  # `Visitors.nick_in_use?/3` is the fast-path 409. User sessions
+  # don't carry a persister — their nick lives in `Networks.Credential`,
+  # which is operator-driven and rotated via the user-side path
+  # documented in `nick_controller.ex`.
+  defp apply_effects([{:visitor_nick_changed, new_nick} | rest], state) do
+    case {state.subject, state.visitor_nick_persister} do
+      {{:visitor, visitor_id}, persister} when is_function(persister, 2) ->
+        case persister.(visitor_id, new_nick) do
+          {:ok, _} ->
+            Logger.info("visitor NICK echoed → row rotated",
+              visitor_id: visitor_id,
+              new_nick: new_nick
+            )
+
+          {:error, reason} ->
+            Logger.error("visitor NICK echoed but row update failed",
+              visitor_id: visitor_id,
+              new_nick: new_nick,
+              reason: inspect(reason)
+            )
+        end
+
+      {{:visitor, visitor_id}, nil} ->
+        Logger.error("visitor NICK echoed but no persister in plan — drop",
+          visitor_id: visitor_id
+        )
+
+      {{:user, _}, _} ->
+        Logger.warning("visitor_nick_changed effect on user session — ignored")
+    end
+
+    apply_effects(rest, state)
   end
 
   # One-shot send + clear of the synchronous-login readiness signal
