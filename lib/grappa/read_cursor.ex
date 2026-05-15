@@ -188,12 +188,10 @@ defmodule Grappa.ReadCursor do
   from the subject — the broadcast topic is user-rooted (per CLAUDE.md
   "PubSub topic naming") and ReadCursor's API is subject-rooted
   (`{:user, uuid}` / `{:visitor, uuid}`), so the translation happens at
-  the call site where both are already in scope.
-
-  Visitor sessions don't have a stable user_name → no broadcast surface
-  for them; visitor cursors are still persisted but the cross-device
-  sync mechanism isn't applicable (visitor sessions are single-device
-  by construction).
+  the call site where both are already in scope. Visitor callers pass
+  `"visitor:" <> visitor.id` as the user-name segment — same shape
+  `UserSocket` uses for the visitor's user-rooted topic tree (V4
+  visitor-parity, 2026-05-15).
   """
   @spec broadcast_set(String.t(), String.t(), String.t(), integer()) ::
           :ok | {:error, term()}

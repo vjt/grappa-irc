@@ -718,9 +718,12 @@ defmodule GrappaWeb.GrappaChannel do
   # ---------------------------------------------------------------------------
   # C8 — /watch /highlight watchlist verbs
   #
-  # Three action heads (add / del / list) for managing the per-user highlight
-  # watchlist stored in `user_settings`. Visitors are rejected — ephemeral
-  # sessions have no persisted user_settings row. All heads reply with
+  # Three action heads (add / del / list) for managing the per-subject
+  # highlight watchlist stored in `user_settings`. Visitors lifted to
+  # first-class subjects (V4 visitor-parity, 2026-05-15) — the bare-id
+  # `Grappa.Subject.t()` tuple lives on the socket as
+  # `:current_subject` so each arm dispatches straight to
+  # `UserSettings.{get,set}_highlight_patterns/2`. All heads reply with
   # `{:ok, %{patterns: [...]}}` on success or `{:error, %{reason: ...}}` on
   # failure, matching the `away` handler's reply-shape convention.
   #
@@ -729,60 +732,30 @@ defmodule GrappaWeb.GrappaChannel do
   # back-from-away aggregation only.
   # ---------------------------------------------------------------------------
 
-  # /watch list  →  return current watchlist patterns for the user.
+  # /watch list  →  return current watchlist patterns for the subject.
   def handle_in("watchlist", %{"action" => "list"}, socket) do
-    user_name = socket.assigns.user_name
-
-    if visitor?(user_name) do
-      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-    else
-      case safe_get_user(user_name) do
-        {:ok, user} ->
-          patterns = UserSettings.get_highlight_patterns({:user, user.id})
-          {:reply, {:ok, %{patterns: patterns}}, socket}
-
-        :error ->
-          {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      end
-    end
+    subject = socket.assigns.current_subject
+    patterns = UserSettings.get_highlight_patterns(subject)
+    {:reply, {:ok, %{patterns: patterns}}, socket}
   end
 
   # /watch add <pattern>  →  add pattern to watchlist (idempotent — dup is no-op success).
   def handle_in("watchlist", %{"action" => "add", "pattern" => pattern}, socket)
       when is_binary(pattern) do
-    user_name = socket.assigns.user_name
-
-    if visitor?(user_name) do
-      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-    else
-      case safe_get_user(user_name) do
-        {:ok, user} -> watchlist_add_for_user(user.id, pattern, socket)
-        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      end
-    end
+    watchlist_add(socket.assigns.current_subject, pattern, socket)
   end
 
   # /watch del <pattern>  →  remove pattern from watchlist.
   # Returns {:error, :not_found} when the pattern is not in the list.
   def handle_in("watchlist", %{"action" => "del", "pattern" => pattern}, socket)
       when is_binary(pattern) do
-    user_name = socket.assigns.user_name
-
-    if visitor?(user_name) do
-      {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-    else
-      case safe_get_user(user_name) do
-        {:ok, user} -> watchlist_del_for_user(user.id, pattern, socket)
-        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      end
-    end
+    watchlist_del(socket.assigns.current_subject, pattern, socket)
   end
 
   # Watchlist add helper — extracted to keep handle_in nesting ≤ 2 levels.
-  @spec watchlist_add_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
+  @spec watchlist_add(Grappa.Subject.t(), String.t(), Phoenix.Socket.t()) ::
           {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
-  defp watchlist_add_for_user(user_id, pattern, socket) do
-    subject = {:user, user_id}
+  defp watchlist_add(subject, pattern, socket) do
     existing = UserSettings.get_highlight_patterns(subject)
     new_patterns = if pattern in existing, do: existing, else: [pattern | existing]
 
@@ -793,10 +766,9 @@ defmodule GrappaWeb.GrappaChannel do
   end
 
   # Watchlist del helper — extracted to keep handle_in nesting ≤ 2 levels.
-  @spec watchlist_del_for_user(String.t(), String.t(), Phoenix.Socket.t()) ::
+  @spec watchlist_del(Grappa.Subject.t(), String.t(), Phoenix.Socket.t()) ::
           {:reply, {:ok, map()} | {:error, map()}, Phoenix.Socket.t()}
-  defp watchlist_del_for_user(user_id, pattern, socket) do
-    subject = {:user, user_id}
+  defp watchlist_del(subject, pattern, socket) do
     existing = UserSettings.get_highlight_patterns(subject)
 
     if pattern in existing do

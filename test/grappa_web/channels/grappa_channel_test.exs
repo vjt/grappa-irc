@@ -49,8 +49,27 @@ defmodule GrappaWeb.GrappaChannelTest do
   alias Grappa.Visitors.SessionPlan, as: VisitorSessionPlan
   alias GrappaWeb.UserSocket
 
-  defp build_socket(user_name) do
-    socket(UserSocket, "user_socket:#{user_name}", %{user_name: user_name})
+  # Mirrors `UserSocket.connect/3`'s assigns surface — assigns
+  # `:user_name` AND `:current_subject` (V4: channel arms read the
+  # bare-id subject directly so visitor watchlist arms can lift
+  # without a per-arm visitor? branch). When `subject` is omitted,
+  # derives from `user_name`'s `"visitor:" <> uuid` prefix:
+  # everything-else is treated as a user. Tests that need a different
+  # subject (e.g. user_name from the route but subject from a fixture)
+  # pass `subject:` explicitly.
+  defp build_socket(user_name, opts \\ []) do
+    subject =
+      Keyword.get_lazy(opts, :subject, fn ->
+        case String.split(user_name, "visitor:", parts: 2) do
+          ["", visitor_id] -> {:visitor, visitor_id}
+          _ -> {:user, Ecto.UUID.generate()}
+        end
+      end)
+
+    socket(UserSocket, "user_socket:#{user_name}", %{
+      user_name: user_name,
+      current_subject: subject
+    })
   end
 
   # Drain up to `max_attempts` query_windows_list pushes and return the
@@ -1486,7 +1505,8 @@ defmodule GrappaWeb.GrappaChannelTest do
   # C8 — /watch /highlight channel handlers
   #
   # `watchlist` handle_in dispatches: add / del / list. Stores persist
-  # in UserSettings. Visitors rejected. Idempotent add / :not_found del.
+  # in UserSettings. Idempotent add / :not_found del. Visitors lifted
+  # to first-class subjects (V4 visitor-parity, 2026-05-15).
   # ---------------------------------------------------------------------------
 
   describe "watchlist — /watch /highlight verbs" do
@@ -1494,7 +1514,12 @@ defmodule GrappaWeb.GrappaChannelTest do
       user_name = "watch-#{System.unique_integer([:positive])}"
       user = user_fixture(name: user_name)
       topic = Topic.user(user_name)
-      {:ok, _, socket} = user_name |> build_socket() |> subscribe_and_join(topic, %{})
+
+      {:ok, _, socket} =
+        user_name
+        |> build_socket(subject: {:user, user.id})
+        |> subscribe_and_join(topic, %{})
+
       %{user: user, socket: socket, topic: topic}
     end
 
@@ -1529,13 +1554,24 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{reason: "not_found"})
     end
 
-    test "visitor socket returns visitor_not_allowed" do
-      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+    test "visitor socket can list/add/del watchlist patterns — visitor-parity V4" do
+      visitor = visitor_fixture()
+      visitor_name = "visitor:#{visitor.id}"
       topic = Topic.user(visitor_name)
-      {:ok, _, visitor_socket} = visitor_name |> build_socket() |> subscribe_and_join(topic, %{})
 
-      ref = push(visitor_socket, "watchlist", %{"action" => "list"})
-      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+      {:ok, _, visitor_socket} =
+        visitor_name
+        |> build_socket(subject: {:visitor, visitor.id})
+        |> subscribe_and_join(topic, %{})
+
+      ref_list = push(visitor_socket, "watchlist", %{"action" => "list"})
+      assert_reply(ref_list, :ok, %{patterns: []})
+
+      ref_add = push(visitor_socket, "watchlist", %{"action" => "add", "pattern" => "porcodio"})
+      assert_reply(ref_add, :ok, %{patterns: ["porcodio"]})
+
+      ref_del = push(visitor_socket, "watchlist", %{"action" => "del", "pattern" => "porcodio"})
+      assert_reply(ref_del, :ok, %{patterns: []})
     end
   end
 

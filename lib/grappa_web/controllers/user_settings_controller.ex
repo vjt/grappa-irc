@@ -1,14 +1,14 @@
 defmodule GrappaWeb.UserSettingsController do
   @moduledoc """
   REST surface for `Grappa.UserSettings` — push notifications cluster
-  B3 (2026-05-14).
+  B3 (2026-05-14) + visitor-parity V4 (2026-05-15).
 
   First exposed accessor: `notification_prefs`. Two endpoints, both
   behind `[:api, :authn]`:
 
     * `GET /me/settings/notification-prefs` — 200 with the full
       `notification_prefs()` map. Falls back to defaults when the
-      user has no row yet (`Grappa.UserSettings.default_notification_prefs/0`).
+      subject has no row yet (`Grappa.UserSettings.default_notification_prefs/0`).
 
     * `PUT /me/settings/notification-prefs` — body matches the
       `notification_prefs()` shape directly (5 booleans + 2 string
@@ -19,13 +19,18 @@ defmodule GrappaWeb.UserSettingsController do
       on validation failure (uniform changeset envelope per
       `FallbackController`).
 
-  ## User-only
+  ## Subject-scoped — V4 (2026-05-15)
 
-  Notification prefs are tied to PWA-installed PUSH-receiving
-  sessions. Visitors are ephemeral and don't install the PWA;
-  push subscriptions are user-only (B1 controller already returns
-  403 to visitors). The settings surface follows the same boundary
-  — visitors get `:forbidden` from `require_user/1` here.
+  Both registered users and visitors persist notification preferences
+  through this controller. The action body delegates to
+  `Grappa.Subject.from_assigns/1` for the bare-id tuple and hands it
+  straight to `Grappa.UserSettings` accessors; the FK XOR invariant
+  is enforced at the schema layer (per-subject partial unique
+  indexes). Anon visitors' settings CASCADE-delete on Reaper sweep;
+  identified visitors keep them indefinitely (NickServ identity proof
+  = permanent subject). V3 lifted the push-fan-out trigger reads to
+  the same subject shape — visitor mention notifications now fire
+  per the visitor's stored prefs.
 
   ## Why a dedicated controller (not an extension of MeController)
 
@@ -40,21 +45,18 @@ defmodule GrappaWeb.UserSettingsController do
 
   use GrappaWeb, :controller
 
-  alias Grappa.Accounts.User
-  alias Grappa.UserSettings
+  alias Grappa.{Subject, UserSettings}
 
   @doc """
   `GET /me/settings/notification-prefs` — return the authenticated
-  user's notification preferences. Falls back to library defaults
-  when the user has never persisted a value.
+  subject's notification preferences. Falls back to library defaults
+  when the subject has never persisted a value.
   """
-  @spec show_notification_prefs(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden}
+  @spec show_notification_prefs(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show_notification_prefs(conn, _) do
-    with {:ok, user} <- require_user(conn) do
-      prefs = UserSettings.get_notification_prefs({:user, user.id})
-      render(conn, :notification_prefs, prefs: prefs)
-    end
+    subject = Subject.from_assigns(conn.assigns)
+    prefs = UserSettings.get_notification_prefs(subject)
+    render(conn, :notification_prefs, prefs: prefs)
   end
 
   @doc """
@@ -68,22 +70,14 @@ defmodule GrappaWeb.UserSettingsController do
   `Map.get/3` fall-throughs).
   """
   @spec update_notification_prefs(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :forbidden | :bad_request | Ecto.Changeset.t()}
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
   def update_notification_prefs(conn, params) when map_size(params) > 0 do
-    with {:ok, user} <- require_user(conn),
-         {:ok, _} <- UserSettings.put_notification_prefs({:user, user.id}, params) do
-      render(conn, :notification_prefs, prefs: UserSettings.get_notification_prefs({:user, user.id}))
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, _} <- UserSettings.put_notification_prefs(subject, params) do
+      render(conn, :notification_prefs, prefs: UserSettings.get_notification_prefs(subject))
     end
   end
 
   def update_notification_prefs(_, _), do: {:error, :bad_request}
-
-  # User-only boundary — see moduledoc.
-  @spec require_user(Plug.Conn.t()) :: {:ok, User.t()} | {:error, :forbidden}
-  defp require_user(conn) do
-    case conn.assigns[:current_subject] do
-      {:user, %User{} = user} -> {:ok, user}
-      _ -> {:error, :forbidden}
-    end
-  end
 end

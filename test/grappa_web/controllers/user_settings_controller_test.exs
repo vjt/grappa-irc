@@ -8,13 +8,16 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     * `PUT /me/settings/notification-prefs` — validates + persists.
 
   Coverage:
-    * Auth gating: 401 without bearer, 403 for visitors (user-only verb).
+    * Auth gating: 401 without bearer; visitor returns 200 (V4 lift —
+      previously 403 user-only).
     * GET happy path: defaults shape when never persisted.
     * GET reflects last PUT.
     * PUT happy path: 200 + persisted, normalized whitelist.
     * PUT validation: no-trigger-enabled rejected with 422 + field_errors.
     * PUT body shapes: bare prefs map AND wrapped under `notification_prefs`.
     * PUT preserves other settings keys (highlight_patterns interop).
+    * Visitor parity (V4): GET + PUT both succeed; settings persist
+      against the `{:visitor, uuid}` subject.
   """
   use GrappaWeb.ConnCase, async: true
 
@@ -42,7 +45,7 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
-    test "403 for a visitor subject", %{conn: conn} do
+    test "200 for a visitor subject — visitor-parity V4", %{conn: conn} do
       {_, session} = visitor_and_session()
 
       conn =
@@ -50,7 +53,8 @@ defmodule GrappaWeb.UserSettingsControllerTest do
         |> put_bearer(session.id)
         |> get("/me/settings/notification-prefs")
 
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+      assert %{"notification_prefs" => prefs} = json_response(conn, 200)
+      assert prefs == default_prefs_wire()
     end
   end
 
@@ -97,15 +101,19 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
-    test "403 for a visitor subject", %{conn: conn} do
-      {_, session} = visitor_and_session()
+    test "200 + persisted for a visitor subject — visitor-parity V4", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
 
       conn =
         conn
         |> put_bearer(session.id)
-        |> put("/me/settings/notification-prefs", valid_prefs_wire())
+        |> put("/me/settings/notification-prefs", valid_prefs_wire(%{"channel_messages_only" => ["#vis"]}))
 
-      assert json_response(conn, 403) == %{"error" => "forbidden"}
+      assert %{"notification_prefs" => returned} = json_response(conn, 200)
+      assert returned["channel_messages_only"] == ["#vis"]
+
+      stored = UserSettings.get_notification_prefs({:visitor, visitor.id})
+      assert stored.channel_messages_only == ["#vis"]
     end
   end
 

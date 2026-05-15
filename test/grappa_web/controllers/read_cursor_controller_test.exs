@@ -201,5 +201,48 @@ defmodule GrappaWeb.ReadCursorControllerTest do
         payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
       }
     end
+
+    # V4 visitor-parity (2026-05-15): visitors get the same per-channel
+    # broadcast as users. Pre-V4 the visitor branch short-circuited to
+    # :ok with no fan-out (HIGH-20 rationale: visitors single-device).
+    # Same-NickServ-identity reuse + multi-tab visitor sessions make
+    # the no-fan-out a UX gap; lift restores parity. Topic uses
+    # `"visitor:" <> id` as the user_name — same convention as
+    # `Topic.user(socket.assigns.user_name)` in the user_socket lift.
+    test "visitor: emits read_cursor_set on visitor's per-channel topic — V4",
+         %{conn: %Plug.Conn{} = base_conn} do
+      port = 7502
+      {visitor, network} = visitor_with_network(port)
+      session = visitor_session_fixture(visitor)
+      visitor_user_name = "visitor:" <> visitor.id
+
+      {:ok, m} =
+        ScrollbackHelpers.insert(%{
+          visitor_id: visitor.id,
+          network_id: network.id,
+          channel: "#vis-cursor",
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "msg"
+        })
+
+      conn = put_bearer(base_conn, session.id)
+      topic = Topic.channel(visitor_user_name, network.slug, "#vis-cursor")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      _ =
+        post(conn, "/networks/#{network.slug}/channels/%23vis-cursor/read-cursor", %{
+          "message_id" => m.id
+        })
+
+      msg_id = m.id
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        topic: ^topic,
+        event: "event",
+        payload: %{kind: "read_cursor_set", last_read_message_id: ^msg_id}
+      }
+    end
   end
 end

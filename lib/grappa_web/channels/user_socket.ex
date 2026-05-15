@@ -33,7 +33,12 @@ defmodule GrappaWeb.UserSocket do
       counts as user-initiated traffic, same as Plugs.Authn for REST.
 
   Both branches assign `:current_session_id` (for future revocation
-  hooks) at the connect boundary.
+  hooks) at the connect boundary AND `:current_subject` — the bare-id
+  `Grappa.Subject.t()` tuple (`{:user, uuid}` or `{:visitor, uuid}`)
+  consumed directly by channel arms that hit subject-scoped contexts
+  (UserSettings, ReadCursor, QueryWindows, Push). Mirror of the
+  controller-side `Subject.from_assigns/1` lift — V4 visitor-parity
+  (2026-05-15).
 
   Any failure (missing param, malformed UUID, unknown row, revoked,
   expired user session, expired or vanished visitor) returns `:error`
@@ -119,7 +124,13 @@ defmodule GrappaWeb.UserSocket do
     # `Ecto.NoResultsError` here would be an invariant violation
     # worth crashing on.
     user = Accounts.get_user!(user_id)
-    {:ok, assign(socket, :user_name, user.name)}
+
+    socket =
+      socket
+      |> assign(:user_name, user.name)
+      |> assign(:current_subject, {:user, user.id})
+
+    {:ok, socket}
   end
 
   defp assign_subject(socket, %Session{user_id: nil, visitor_id: visitor_id})
@@ -131,6 +142,7 @@ defmodule GrappaWeb.UserSocket do
           |> assign(:user_name, "visitor:" <> visitor.id)
           |> assign(:current_visitor_id, visitor.id)
           |> assign(:current_visitor, visitor)
+          |> assign(:current_subject, {:visitor, visitor.id})
 
         {:ok, socket}
 
