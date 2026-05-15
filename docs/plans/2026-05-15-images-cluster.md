@@ -1,571 +1,381 @@
 # Images cluster
 
-**Status**: brainstorm — implementation NOT started. Awaiting vjt
-bless / refine / veto on the Q-block (especially **Q-DIRECT vs
-PROXIED**).
+**Status**: brainstorm v2 (post-vjt-refinement 2026-05-15) —
+implementation NOT started. Awaiting bless to start I-CSP.
 
 | Bucket | Status | Deploy | Notes |
 |--------|--------|--------|-------|
-| I-CSP — nginx CSP allowlist for litterbox + files.catbox.moe | brainstorm | **COLD** (nginx reload) | Lands first; pre-req for I-2/I-3/I-4 |
-| I-1 — linkify image-URL detection | brainstorm | cic-bundle | Extends `cicchetto/src/lib/linkify.ts` |
-| I-2 — inline thumbnail render in scrollback | brainstorm | cic-bundle | Builds on I-1 segment |
-| I-3 — lightbox overlay component | brainstorm | cic-bundle | Click-through from I-2 |
-| I-4 — upload UI + litterbox client in ComposeBox | brainstorm | cic-bundle | File picker + drag-drop + paste |
-| I-5 — docs sweep (README + DESIGN_NOTES + project-story) | brainstorm | none | In-step per `feedback_readme_currency` |
-| I-Z — cluster CLOSE (rebase + healthcheck + retrospective) | brainstorm | n/a | Mirror visitor-parity CLOSE shape |
+| I-CSP — nginx CSP `connect-src` allowlist for litterbox | brainstorm | **COLD** (nginx reload) | Lands first |
+| I-1 — pluggable image-host interface + litterbox impl | brainstorm | cic-bundle | `image-upload.ts` behind an interface; litterbox = first impl |
+| I-2 — ComposeBox upload UI (picker + drag-drop) + privacy modal + 📸-prefix insertion | brainstorm | cic-bundle | The whole user-facing surface |
+| I-3 — docs sweep (README + DESIGN_NOTES + project-story) | brainstorm | none | In-step per `feedback_readme_currency` |
+| I-Z — cluster CLOSE | brainstorm | n/a | Mirror visitor-parity CLOSE shape |
 
-**Branch**: `cluster/images` (worktree to be created from local main).
-**Position**: post-`visitor-parity-and-nickserv` (CP32 cluster). Spec
-seed: `project_image_upload` memory, vjt-confirmed 2026-05-03.
-**Origin evidence**: vjt verbal spec — operator picks file in cic,
-file goes to litterbox.catbox.moe, resulting URL pasted into compose,
-scrollback picks up image URLs and renders thumbnails with lightbox
-overlay. Default TTL 72h. Permanent catbox.moe deferred (file sharing
-is out of cluster scope).
+**Branch**: `cluster/images` (worktree from local main).
+**Position**: post-`visitor-parity-and-nickserv` (CP32). Spec seed:
+`project_image_upload` memory, vjt-confirmed 2026-05-03 + refined
+2026-05-15 (this doc v2).
+**Origin evidence**: vjt verbal spec — "IRC REMAINS TEXT FUCKING
+ONLY." Operator picks file in cic, file goes to litterbox.catbox.moe,
+URL is auto-sent (or pre-filled — see Q-AUTOSEND) into PRIVMSG
+prefixed with the photocamera emoji `📸`. NO clickable thumbnails,
+NO scrollback rendering changes, NO lightbox. The browser's
+native "click a link to a .png → open in new tab" IS the image
+viewer; zero ceremony beyond what already ships.
 
 ## Goal
 
-**Make image sharing in IRC feel native.** Picking a screenshot from
-your phone, dragging a PNG onto the desktop compose box, or pasting a
-clipboard image should result in a clickable thumbnail in scrollback
-within ~2 seconds — for both the sender AND any other cic operator on
-the channel — with a one-click lightbox for full-size viewing. Non-cic
-IRC clients see a plain URL in the message body and lose nothing.
+**Make uploading an image from cic feel native, while leaving IRC
+itself text-only.** The ONLY new render surface is in the compose
+box (file picker button + drag-drop landing). Once uploaded, the
+PRIVMSG body is `📸 https://litter.catbox.moe/abc.png` — plain text,
+indistinguishable from a hand-pasted URL. cic operators click the
+link, the browser opens the image in a new tab. Other IRC clients
+(irssi, weechat, the future Phase-6 listener facade) see the same
+text and the same clickable URL. No special handling anywhere
+downstream.
 
-**What we are NOT building.** No persistent image storage on the
-bouncer. No proxying of image bytes through grappa (default; flagged
-as alternative — see Q-DIRECT). No image-edit / annotate / crop /
-blur tools. No GIF auto-play toggle (browser default). No SVG inline
-rendering (security — see Q10). No catbox.moe permanent uploads in v1
-(deferred per `project_image_upload`).
+**What we are NOT building.**
+- NO inline thumbnails in scrollback. NO lightbox component. NO
+  changes to `cicchetto/src/ScrollbackPane.tsx`. NO changes to
+  `cicchetto/src/lib/linkify.ts` (it already linkifies any URL
+  including `.png` ones — that's the entire image-viewing surface
+  we need).
+- NO grappa-side proxying of images. The browser POSTs directly to
+  litterbox; the browser fetches directly from
+  `files.catbox.moe`/`litter.catbox.moe`. Grappa never touches image
+  bytes.
+- NO image-edit / annotate / crop / blur tools.
+- NO catbox.moe permanent uploads (file sharing is out of scope per
+  CLAUDE.md spirit; `project_image_upload` already pinned this).
+- NO clipboard-paste handler in v1 (Q-PASTE — easy to add later if
+  vjt wants it).
 
-**Subject parity.** Visitors and registered users get the SAME upload
-+ render surface. The visitor-parity cluster (CP32-V) made all
-subject-scoped features uniform; this cluster inherits that — no
+**Subject parity.** Visitors and registered users get the SAME
+upload surface. The CP32 visitor-parity invariant covers this — no
 `subject.kind === "user"` gate anywhere in the new code paths.
 
 ## Architecture decisions
 
-### A1. Direct-to-litterbox upload (proposed default; alt: proxied via grappa)
+### A1. Direct-to-host upload, no grappa proxying
 
-**Default: direct.** The cic browser POSTs multipart directly to
-`https://litterbox.catbox.moe/resources/internals/api.php`. Grappa is
-uninvolved — it sees only the resulting URL embedded in a PRIVMSG
-`body` like any other text. This is the simplest possible shape:
+Browser POSTs multipart directly to the image host. Grappa is
+uninvolved end-to-end:
 
 - Zero new server code.
-- Zero changes to `Plug.Parsers` config (today's JSON-only body
-  parser stays).
-- Zero changes to `lib/grappa_web/body_limit.ex` (HIGH-19 — its
-  4096-byte cap applies to PRIVMSG `body` text, which a
-  `https://files.catbox.moe/abc.png` URL fits within ten times over).
-- Zero changes to `infra/nginx.conf` `client_max_body_size` (default
+- Zero `Plug.Parsers` config changes.
+- Zero `lib/grappa_web/body_limit.ex` changes (HIGH-19's 4096-byte
+  PRIVMSG body cap fits a `📸 https://litter.catbox.moe/abc.png`
+  message ten times over).
+- Zero `infra/nginx.conf` `client_max_body_size` changes (default
   1MB stays; the upload doesn't touch nginx).
-- Operator's browser handles upload progress + cancel + retry via
-  standard `XMLHttpRequest` events.
 
-**Tradeoff:** no abuse control. Anyone with a bearer can spam
-litterbox with arbitrary files (rate-limit/abuse is the upstream
-service's problem, not grappa's). No ability to refuse uploads of
-certain content types or sizes server-side. No audit trail —
-`Session.Server` never knows an upload happened until the URL appears
-in PRIVMSG (at which point it's indistinguishable from a pasted URL).
+vjt's framing: "we do not ease spamming litterbox at all." The end
+user IS litterbox's user — abuse-control is litterbox's surface, not
+ours. ZERO server ceremony.
 
-**Alternative: proxied.** Browser POSTs multipart to a new grappa
-route (e.g. `POST /me/uploads`); grappa multipart-parses, optionally
-rate-limits / auth-gates / refuses oversize, then re-POSTs to
-litterbox upstream and returns the resulting URL. Adds:
+### A2. Pluggable host interface (`image-upload.ts`), litterbox = first impl
 
-- A new HOT-friendly `Plug.Parsers` config (today's chain only
-  handles JSON; multipart with a 16MB cap is a new parser entry).
-- `client_max_body_size 16m` on nginx for the new `/me/uploads` route
-  ONLY (loosening it globally is a footgun — keep the existing 1MB
-  default for everything else).
-- A new route-specific `BodyLimit`-style cap (HIGH-19's 4096-byte
-  field cap is for IRC PRIVMSG bodies; uploads need their own
-  constant `:upload_max_bytes` set somewhere around 16MB).
-- An HTTP client to litterbox. Verify `mix.exs` — `Req` is preferred
-  if present; otherwise `Finch`/`Mint`. Don't add a new HTTP-client
-  dep just for this.
-- Potentially a per-subject upload throttle (ETS counter, mirror
-  `Grappa.Session.Backoff`).
-- A new HOT-vs-COLD classifier triggers (Plug.Parsers config change
-  + nginx change BOTH require COLD per `feedback_hot_deploy_preflight`
-  HIGH-29).
-
-**Recommendation: ship direct first.** Per CLAUDE.md "Ask before
-building" — the abuse-control surface is YAGNI until abuse becomes
-real. `project_image_upload` memory's "litterbox covers chat lifetime"
-framing aligns: 72h TTL ON THE UPSTREAM SIDE is a natural rate-limit
-(an attacker spamming litterbox creates evidence on litterbox's logs,
-not ours). Defer proxied to a future hardening pass with a real abuse
-trigger.
-
-If vjt picks proxied: I-4 forks into I-4-S (server bucket — Plug.Parsers
-+ new controller + HTTP client + nginx + body-cap constant) PLUS I-4-C
-(client bucket — XHR target swap from litterbox to `/me/uploads`).
-All other buckets unchanged. The COLD classification flips for I-4
-from cic-bundle to full server cold deploy.
-
-### A2. Bare URL in PRIVMSG body — no `image:` prefix
-
-The uploaded URL travels as plain text inside a normal PRIVMSG. No
-magic prefix, no IRC tag, no out-of-band signaling. Rationale:
-
-- Non-cic IRC clients (irssi, weechat, mIRC, the Phase 6 IRCv3
-  listener facade) see a plain link they can click. Identical to
-  today's "user pasted an image URL by hand" experience — zero
-  special casing.
-- cic's image-detection regex (I-1) treats the URL identically
-  whether it came from upload or paste. ONE code path. Reuse the
-  verbs.
-- The `image:` prefix would force every other client to display
-  literal `image:https://...` text — visible noise + breaks
-  click-to-open.
-- Discoverability: if a non-cic operator wants to know "did you mean
-  to attach an image?" they see the URL and click it. Same affordance
-  as a Slack inline attachment.
-
-If vjt wants per-message metadata (attachment-type, original-filename,
-dimensions) later, that's a Phase-6 IRCv3 message-tag layer
-(`+grappa.attachment=image`) — additive, not breaking.
-
-### A3. Inline thumbnail in scrollback row + lightbox on click
-
-Per `feedback_card_vs_scrollback_ux`:
-- **Scrollback rows ARE scrollback rows** — an inline thumbnail is
-  row enrichment, fine. Pin: `max-width: 240px; max-height: 120px;
-  object-fit: contain;` so a wall of images doesn't blow scrollback
-  layout. Native `loading="lazy"` so off-screen thumbnails don't
-  fetch until scrolled into view.
-- **Cards = single-entity structured overlays** (whois, whowas,
-  lusers). The lightbox is one-click ephemera — card-like overlay,
-  fine. Esc-close + click-outside + focus-trap, NO heavy modal lib.
-- The line between "cards" and "lightbox" is intent: cards are
-  dispatched events from server, lightbox is direct cic UI state
-  from a click. Different lifecycle, different code paths, no
-  shared infrastructure.
-
-### A4. Image-suffix detection lives in linkify
-
-`cicchetto/src/lib/linkify.ts` already returns `LinkifySegment[]` with
-two arms: `text` and `url`. Add a third arm: `image-url`. Detection
-rule: any URL whose path component (post-strip of `?…` and `#…`) ends
-in a case-insensitive image suffix (allowlist below).
+Per vjt: "we DONT KNOW if we stay on litterbox thus BUILD INTERFACE
+to plug different image hosters tomorrow." The cic module is named
+`image-upload.ts` (NOT `litterbox.ts`). It exposes a generic
+contract; the litterbox-specific multipart shape lives behind it.
 
 ```ts
-export type LinkifySegment =
-  | { type: "text"; value: string }
-  | { type: "url"; value: string; href: string }
-  | { type: "image-url"; value: string; href: string };
+// cicchetto/src/lib/image-upload.ts
+export type UploadProgress = { loaded: number; total: number };
+export type UploadError =
+  | { kind: "network" }
+  | { kind: "http"; status: number }
+  | { kind: "abort" }
+  | { kind: "invalid_response"; body: string };
+
+export interface ImageHost {
+  readonly name: string;             // "litterbox", future "0x0.st", etc.
+  readonly defaultTtlLabel: string;  // "24 hours"
+  upload(
+    file: File,
+    onProgress: (p: UploadProgress) => void,
+    signal: AbortSignal,
+  ): Promise<string>;                // resolves with the public URL
+}
+
+export const litterboxHost: ImageHost = { /* impl */ };
+
+// active host — module-level for now; future: settings-drawer toggle
+export const activeHost = (): ImageHost => litterboxHost;
 ```
 
-`ScrollbackPane.tsx:217` `<For>` body grows a third arm — `image-url`
-renders `<img src={seg.href} loading="lazy" class="scrollback-image"
-onClick={openLightbox}/>` (or similar). The plain-`url` path is
-unchanged.
+Switching to a new host tomorrow: write a second `ImageHost` impl,
+swap `activeHost()`. Privacy-modal copy (which references the host
+name) reads from `activeHost().name`. Default TTL label too.
 
-**Suffix allowlist (case-insensitive):** `.png .jpg .jpeg .gif .webp
-.apng`. Explicitly excluded:
+### A3. PRIVMSG body shape: `📸 <url>`
 
-- `.svg` — SVG can carry inline `<script>` tags; even with `img-src`
-  CSP, browsers historically have had bypasses. Render as a plain
-  link, not a thumbnail. (Pin in linkify test:
-  `https://example.com/foo.svg` → `url` segment, NOT `image-url`.)
-- `.bmp .tiff .ico .heic` — uncommon in IRC + variable browser
-  support. Add later if requested.
-- Bare hosts (no path) like `https://files.catbox.moe/` — must end
-  in suffix.
+After successful upload, the PRIVMSG body is `📸 ` + URL. Single
+photocamera emoji prefix + space + URL. That's it. Per vjt:
+"plain irc message with just a photocamera emoji 📸 and the
+fucking link. that's it."
 
-Path-extraction rule: strip query string + fragment first, THEN test
-suffix.
-- `https://files.catbox.moe/abc.png` → image
-- `https://files.catbox.moe/abc.png?v=2` → image (suffix found in
-  path before `?`)
-- `https://files.catbox.moe/abc.png#anchor` → image
-- `https://example.com/foo?ext=.png` → NOT image (no `.png` in path)
+- Non-cic clients see `📸 https://litter.catbox.moe/abc.png` —
+  plain text + clickable URL. Modern IRC clients render the emoji;
+  ASCII-only clients see the codepoint glyph or `?` placeholder.
+  Either way the URL is right there to click.
+- cic users: `linkify.ts` already wraps the URL in `<a target="_blank">`
+  (`ScrollbackPane.tsx:217-220`). Click → browser opens image in
+  new tab. ZERO new render code.
+- Phase-6 IRCv3 listener facade: sees the same text. No special
+  handling needed.
 
-### A5. Litterbox host = the actual host the URL response uses
+### A4. Default TTL = 24h
 
-vjt-confirmed: upload POSTs to
-`https://litterbox.catbox.moe/resources/internals/api.php`. Response
-is plain-text URL. The orchestrator note suggests the response URL is
-`https://litter.catbox.moe/<random>.<ext>` per docs, but I have NOT
-verified empirically. **First task in I-CSP is to actually POST a
-test file** (curl from operator workstation, not from the cluster)
-and inspect the response URL to pin the exact host before writing the
-CSP allowlist. Possible candidates:
-- `files.catbox.moe`
-- `litter.catbox.moe`
-- Both — depending on TTL.
+Per vjt. (`project_image_upload` memory had 72h as my original
+default; vjt overrode to 24h.) Operator can override per upload via
+a small dropdown next to the file picker (litterbox supports `1h`,
+`12h`, `24h`, `72h`). Last-chosen TTL persists in `localStorage`.
 
-The CSP `img-src` entry MUST match what's actually returned, or all
-uploaded thumbnails 404 under CSP and the cluster ships broken. Pin
-the host empirically.
+### A5. Upload trigger surfaces — picker + drag-drop, NO paste in v1
+
+Per vjt: "YES drag and drop on desktop YES browse library from
+phone." Two trigger surfaces in v1:
+
+1. **File picker button** in ComposeBox: `<input type="file"
+   accept="image/*" hidden>` + a small button that fires
+   `.click()`. Mobile-friendly (iOS Safari opens camera roll).
+2. **Drag-drop** on the ComposeBox container: `ondragover` /
+   `ondragleave` / `ondrop` handlers. Visual cue: dashed border on
+   drag-over.
+
+Clipboard paste deferred — easy to add later if vjt wants it
+(see Q-PASTE).
+
+Both triggers feed into the same `ImageHost.upload()` call.
 
 ### A6. First-upload privacy modal — operator-side, no server involvement
 
-Per `feedback_no_localized_strings_server_side`: the server stays out
-of cic copy. Cic owns the privacy warning entirely. First time the
-operator triggers an upload (per browser per `localStorage` key
-`image-upload-privacy-acknowledged`), show:
+Per `feedback_no_localized_strings_server_side`: server stays out of
+cic copy. First upload per browser per `localStorage` key
+`image-upload-privacy-acknowledged`:
 
 > Files you upload here go to litterbox.catbox.moe — a public
-> temporary host. Anyone with the URL can view them for the next 72
-> hours. Don't upload anything you wouldn't want a stranger to see.
-> [Cancel] [Continue] [☐ Don't show this again]
+> temporary host. Anyone with the URL can view them for the next
+> 24 hours. Don't upload anything you wouldn't want a stranger to
+> see. [Cancel] [Continue] [☐ Don't show this again]
 
-No "Continue" without explicit click. "Don't show again" sets the
-localStorage key. No telemetry.
+Host name + TTL label come from `activeHost()` so the modal stays
+correct if vjt swaps the host later. No "Continue" without explicit
+click. "Don't show again" sets the localStorage key.
 
-### A7. Default TTL = 72h, operator can override per upload
+### A7. Inline progress UI in compose (not toast)
 
-`project_image_upload` lists litterbox TTLs `{1h, 12h, 24h, 72h}`.
-Default = 72h (longest convenience; covers chat lifetime per memory).
-Surfacing the picker in the upload UI is a small dropdown next to the
-file picker — defaults to the operator's last-chosen value (persist in
-`localStorage`). v1 ships with the picker visible; if vjt thinks it's
-clutter, fold to "always 72h" + advanced setting in SettingsDrawer.
+While upload is in flight: a small row beneath the textarea shows
+filename + progress bar + cancel button. Multi-MB iPhone screenshots
+on cellular take 10-30s — non-optional UX. On completion: progress
+row dismissed, body inserted (or auto-sent — see Q-AUTOSEND).
+On error: progress row turns red with retry + dismiss buttons.
+Compose stays editable throughout.
 
-### A8. Upload UI — file picker + drag-drop + paste, all three
-
-Each is a small separable code path; collectively they cover desktop
-screenshot ergonomics + mobile camera roll + drag-from-Finder
-workflows. v1 ships all three:
-
-1. **File picker button** in ComposeBox: `<input type="file"
-   accept="image/png,image/jpeg,image/gif,image/webp,image/apng"
-   hidden>` + a paperclip icon button that triggers `.click()`.
-   Mobile-friendly (iOS Safari opens camera roll).
-2. **Drag-drop** on the ComposeBox container: standard `ondragover` /
-   `ondrop` handlers. Visual feedback: dashed border on drag-over.
-3. **Paste from clipboard**: `ComposeBox` textarea `onpaste`
-   handler — if `e.clipboardData.items[0].kind === "file"` and type
-   starts with `image/`, intercept + upload (don't insert anything
-   into the textarea). Screenshot ergonomics on macOS
-   Cmd-Shift-Ctrl-4 → paste.
-
-All three feed into ONE `cicchetto/src/lib/litterbox.ts`
-`uploadFile(file: File, ttl: TTL): Promise<string>` function. ONE
-upload code path; three trigger surfaces.
-
-### A9. Inline progress UI in compose, NOT toast
-
-While upload is in flight: a row beneath the textarea shows filename
-+ progress bar + cancel button + filesize. Multi-MB iPhone screenshots
-(3-8MB) on flaky cellular take 10-30s — non-optional UX. On
-completion: progress row disappears, URL is inserted at the textarea
-cursor (operator can edit / add caption / send). On error: progress
-row turns red with retry + dismiss buttons. Compose stays editable
-throughout — operator can keep typing. NO toast, NO modal-block — the
-progress UI is contextual to the compose surface that triggered it.
-
-### A10. CSP changes are COLD — own bucket lands first
+### A8. CSP change is COLD — only `connect-src`, NOT `img-src`
 
 Per `feedback_hot_deploy_preflight` HIGH-29: hot path doesn't reload
-nginx. CSP allowlist drift = "new captcha provider won't take effect,
-cic widgets 404." The image cluster's analog: CSP allowlist for
-litterbox + files-host MUST land + reload nginx BEFORE the cic upload
-feature ships, or operator's first upload silently fails (CSP blocks
-the connect-src POST and the operator sees a generic "upload failed"
-with no obvious cause).
+nginx. Per vjt: "NO PROBLEM WITH COLD DEPLOY."
+
+**Only `connect-src` needs `https://litterbox.catbox.moe`** — for
+the multipart POST from cic. **`img-src` does NOT need an entry**
+because cic NEVER renders images; the user clicks a link, the
+browser opens the image URL in a new tab, which is its own document
+load completely outside our CSP.
 
 I-CSP is its own COLD bucket, deployed standalone (`scripts/deploy.sh
---force-cold`), BEFORE I-1/I-2/I-3/I-4 ship to cic. After I-CSP lands,
-all subsequent buckets are cic-bundle-only deploys via
-`scripts/deploy-cic.sh` — no further server touches.
+--force-cold`), BEFORE I-1 / I-2 ship to cic. Otherwise operator's
+first upload hits a silent CSP wall on the XHR.
 
-## CSP changes — exact diff (I-CSP)
+### A9. `accept="image/*"` + MIME gate on drag-drop
 
-`infra/snippets/security-headers.conf` line 61 — the single
-`add_header Content-Security-Policy` line. Two directives gain entries
-(assuming empirical verification of the response host pins it to
-`files.catbox.moe`; if it's `litter.catbox.moe`, swap accordingly):
+Per `project_image_upload` cluster scope = images. File picker uses
+`accept="image/*"`; drag-drop also gates on
+`file.type.startsWith("image/")` and rejects (with inline error)
+non-image drops. Litterbox itself accepts arbitrary file types but
+generic file uploads is a separate ask with different ergonomics
+(no obvious shape for the PRIVMSG body — the photocamera emoji
+wouldn't fit). Defer.
 
-- `connect-src` gains `https://litterbox.catbox.moe` — for the
-  multipart POST.
-- `img-src` gains `https://files.catbox.moe` (and `data:` stays for
-  the existing inline-SVG path).
+## CSP change — exact diff (I-CSP)
 
-Diff shape (illustrative, exact verification pending I-CSP empirical
-step):
+`infra/snippets/security-headers.conf` line 61 — single `add_header
+Content-Security-Policy` line. ONE directive gains ONE entry:
 
 ```
 - connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com;
 + connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com https://litterbox.catbox.moe;
-- img-src 'self' data:;
-+ img-src 'self' data: https://files.catbox.moe;
 ```
 
-Update the moduledoc comment block at the top of
-`security-headers.conf` to explain WHY the new entries (mirror the
-existing hcaptcha rationale shape — name the cluster + the verb that
-needs the entry).
-
-If both `files.catbox.moe` AND `litter.catbox.moe` show up in
-responses across TTL bands: list both. Don't wildcard `*.catbox.moe`
-— a separate `catbox.moe` permanent-uploads service is OUT of scope
-per cluster definition and would auto-allowlist itself if we
-wildcarded.
+`img-src` stays `'self' data:` — unchanged (we don't render image
+hosts). Update the moduledoc comment block at the top of
+`security-headers.conf` to document the new entry + cluster name +
+WHY (mirror existing hcaptcha rationale shape).
 
 ## Buckets
 
-### Bucket I-CSP — nginx CSP allowlist update
+### Bucket I-CSP — nginx CSP `connect-src` allowlist update
 
-**Failing test first:** there isn't one in the conventional sense —
-CSP is in the nginx config, not in code. The "test" is the empirical
-verification step:
+**Failing test first:** N/A in code (CSP lives in nginx config).
+Empirical verification step from operator workstation:
 
-1. From operator workstation: `curl -F "reqtype=fileupload" -F
-   "time=72h" -F "fileToUpload=@/tmp/test.png"
-   https://litterbox.catbox.moe/resources/internals/api.php` — note
-   the response URL host.
-2. Pin that host in the CSP allowlist diff.
-3. Manual smoke after deploy: operator's browser DevTools console
-   shows zero CSP violations when (a) cic loads (no regression) and
-   (b) cic POSTs a multipart to litterbox via fetch (after I-4 lands;
-   for I-CSP standalone, just verify no regressions).
+```sh
+curl -F "reqtype=fileupload" -F "time=24h" \
+     -F "fileToUpload=@/tmp/test.png" \
+     https://litterbox.catbox.moe/resources/internals/api.php
+```
+
+Note the response URL host. Pin in `image-upload.ts` impl (informs
+which host to NOT include in `img-src` — should be no-op since we
+don't render images; informs the privacy-modal "you can view the
+URL at <host>" copy though).
+
+Manual smoke after deploy: cic loads cleanly, DevTools console
+shows zero new CSP violations (no regression).
 
 **Production change:**
 
-1. Update `infra/snippets/security-headers.conf` line 61 — add
-   `https://litterbox.catbox.moe` to `connect-src`, add
-   `https://files.catbox.moe` (or empirically-verified host) to
-   `img-src`.
+1. `infra/snippets/security-headers.conf` line 61 — add
+   `https://litterbox.catbox.moe` to `connect-src`.
 2. Update the module-comment block at the top to document the new
-   entries + the cluster name + WHY.
+   entry + cluster name + why (mirror hcaptcha rationale shape).
 
 **Exit criteria:** CSP diff applied; nginx reloaded; existing cic
 functionality regression-tested (login, scrollback, captcha if
 configured); DevTools console shows zero new CSP violations on a
-fresh cic load.
+fresh cic load; `scripts/healthcheck.sh` returns ok.
 
-**Deploy:** **COLD** — `scripts/deploy.sh --force-cold` (per HIGH-29,
-hot path doesn't reload nginx). Standalone cluster of one bucket;
-lands BEFORE the cic-feature buckets so the CSP is in place when
-operators hit the upload button.
+**Deploy:** **COLD** — `scripts/deploy.sh --force-cold` (per
+HIGH-29). Standalone bucket; lands BEFORE I-1/I-2 so the first
+upload doesn't hit a silent CSP wall.
 
-### Bucket I-1 — linkify image-URL detection
+### Bucket I-1 — pluggable image-host interface + litterbox impl
 
-**Failing test first:** `cicchetto/src/__tests__/linkify.test.ts`
-adds:
+**Failing test first:** `cicchetto/src/__tests__/image-upload.test.ts`:
 
-- `linkify("see https://files.catbox.moe/abc.png here")` returns
-  three segments: text `"see "`, **image-url**
-  `https://files.catbox.moe/abc.png`, text `" here"`.
-- Suffix allowlist coverage: `.png .jpg .jpeg .gif .webp .apng` all
-  match (each as its own assertion).
-- `.svg` does NOT match — returns `url`, not `image-url`.
-- Query-string handling: `https://files.catbox.moe/abc.png?v=2`
-  returns `image-url` with `value` and `href` including the query
-  string.
-- Fragment handling: `https://files.catbox.moe/abc.png#section` same.
-- Negative — bare host: `https://files.catbox.moe/` returns `url`,
-  not `image-url`.
-- Negative — query-string-as-extension:
-  `https://example.com/foo?ext=.png` returns `url`, not `image-url`.
-- Sentence-boundary trailing-punct interaction: `look at
-  https://files.catbox.moe/abc.png.` — image-url is `…abc.png`,
-  trailing `.` is its own text segment (mirror existing trailing-punct
-  test pattern).
-- Coalesce: pre/post-image-url text segments still merge correctly
-  per existing logic.
+- `litterboxHost.upload(file, onProgress, signal)` POSTs multipart
+  with correct fields (`reqtype=fileupload`, `time=<ttl>`,
+  `fileToUpload=<binary>`) — assert via `XMLHttpRequest` mock.
+- Resolves with response body trimmed (the URL).
+- `onProgress` invoked at least once during upload (mock progress
+  event) with non-null `loaded` + `total`.
+- `signal.abort()` mid-upload → rejects with `{kind: "abort"}`.
+- Network error → rejects with `{kind: "network"}`.
+- HTTP 4xx → rejects with `{kind: "http", status: <n>}`.
+- HTTP 5xx → rejects with `{kind: "http", status: <n>}`.
+- Empty / non-URL response body → rejects with `{kind:
+  "invalid_response", body}`.
+- TTL parameter wired correctly: each of `1h`, `12h`, `24h`, `72h`
+  produces the right multipart `time=` field.
+- `activeHost()` returns `litterboxHost` (default).
+- `activeHost().name` is `"litterbox"`, `defaultTtlLabel` is
+  `"24 hours"`.
 
 **Production change:**
 
-1. `cicchetto/src/lib/linkify.ts` — extend `LinkifySegment`
-   discriminated union with `image-url`. Add helper
-   `isImageUrl(href: string): boolean` that strips `?…#…` and tests
-   against the suffix allowlist case-insensitively.
-2. In the `linkify()` loop where a `url` segment is currently pushed,
-   branch: if `isImageUrl(href)`, push `image-url` instead. Keep
-   `value` and `href` semantics identical so non-rendering consumers
-   don't care which arm fired.
+1. New `cicchetto/src/lib/image-upload.ts` — `ImageHost` interface,
+   `UploadProgress` + `UploadError` types, `litterboxHost` impl,
+   `activeHost()` selector. Uses `XMLHttpRequest` (not `fetch` —
+   XHR has progress events, fetch doesn't natively across all our
+   browser targets).
+2. NO consumer changes in this bucket — interface only.
 
-**Exit criteria:** vitest green;
-`feedback_wire_edge_runtime_allowlist_exhaustiveness` honored if any
-new switch/match on segment.type exists in the codebase (grep for
-`seg.type ===` and audit each call site to see if it now needs to
-handle `image-url`). All existing linkify tests still pass.
+**Exit criteria:** vitest green; `scripts/bun.sh run check` green
+(typecheck + lint); module is consumer-free until I-2 wires it up.
 
-**Deploy:** cic-bundle (`scripts/deploy-cic.sh`) — no server change.
+**Deploy:** cic-bundle (`scripts/deploy-cic.sh`).
 
-### Bucket I-2 — inline thumbnail render in scrollback
+### Bucket I-2 — ComposeBox upload UI + privacy modal + 📸-prefix
 
-**Failing test first:** `cicchetto/src/__tests__/ScrollbackPane.test.tsx`
-adds:
+**Failing test first:** `cicchetto/src/__tests__/ComposeBox.test.tsx`:
 
-- A message body containing a single
-  `https://files.catbox.moe/abc.png` renders an `<img>` tag with that
-  URL as `src` AND `loading="lazy"` AND a `scrollback-image` class.
-- A click on the `<img>` invokes the lightbox-open dispatcher (mock
-  the dispatcher; assert called with the image URL).
-- A message with mixed text + image-URL renders text spans + img
-  inline.
-- Existing URL rendering unchanged for non-image URLs.
-- Playwright e2e (per `feedback_ux_e2e_mandatory`): scripted operator
-  sends a PRIVMSG with a litterbox URL pointing at a fixture image
-  file served from the playwright test runner; assert thumbnail
-  visible in scrollback within 2s.
-
-**Production change:**
-
-1. `cicchetto/src/ScrollbackPane.tsx:215-226` — extend the `<For>`
-   body's segment-type switch to handle `image-url`. Render `<img
-   src={seg.href} loading="lazy" class="scrollback-image"
-   alt={seg.href} onClick={() => openLightbox(seg.href)}/>`.
-2. CSS: `.scrollback-image { max-width: 240px; max-height: 120px;
-   object-fit: contain; cursor: pointer; }` — pin somewhere
-   theme-agnostic (probably `cicchetto/src/themes/base.css` or
-   wherever scrollback-link styles live).
-3. Lightbox-open dispatcher: a tiny `cicchetto/src/lib/lightbox.ts`
-   exposing `openLightbox(href: string)` + a Solid signal
-   `lightboxImage()` that I-3 reads.
-
-**Exit criteria:** vitest green; Playwright e2e green; manual smoke:
-open a channel with several known image URLs in scrollback, verify
-thumbnails render, click → lightbox opens (after I-3 ships). Pre-I-3,
-the click is a no-op + console log placeholder.
-
-**Deploy:** cic-bundle.
-
-### Bucket I-3 — lightbox overlay component
-
-**Failing test first:** `cicchetto/src/__tests__/ImageOverlay.test.tsx`:
-
-- Render with `lightboxImage = "https://files.catbox.moe/abc.png"`,
-  assert overlay visible + img rendered with that src.
-- Render with `lightboxImage = null`, assert overlay NOT visible.
-- Click outside the img (on the backdrop) → `lightboxImage` set to
-  null, overlay closes.
-- Esc keypress → overlay closes.
-- Focus trap: when overlay open, Tab cycles focus inside overlay only
-  (assert via querying `document.activeElement` after Tab events).
-- Touch swipe close (defer to v2 if vitest can't simulate cleanly;
-  pin in spec rather than ship half-tested).
-- Playwright e2e: full click-thumbnail-then-Esc round-trip.
+- Click image-picker button → file picker opens (mock
+  `<input>.click()`).
+- Select image file via mocked input change → `image-upload`
+  `activeHost().upload()` called with file + chosen TTL.
+- Drag image file onto compose container → same upload path.
+- Drag NON-image file (e.g. `.txt`) → rejected with inline error;
+  no upload triggered.
+- During upload: progress row visible with filename + cancel
+  button; compose stays editable.
+- On upload success: PRIVMSG body becomes `📸 <url>` and is sent
+  (or pre-filled — see Q-AUTOSEND; pin behavior to chosen default).
+- On upload error: progress row turns red with retry + dismiss;
+  compose still editable.
+- First-upload (localStorage flag absent): privacy modal shown;
+  modal blocks upload until "Continue" clicked.
+- "Don't show again" + Continue → localStorage flag set; subsequent
+  uploads bypass modal.
+- Subsequent uploads (flag present): modal NOT shown.
+- TTL dropdown defaults to 24h; selecting another TTL persists in
+  localStorage and affects next upload.
+- Cancel mid-upload aborts XHR + dismisses progress row.
+- Privacy-modal copy includes `activeHost().name` and
+  `activeHost().defaultTtlLabel` (parameterized — host swap
+  won't require copy edits).
+- Playwright e2e (per `feedback_ux_e2e_mandatory`): scripted
+  operator drags fixture image onto compose → privacy modal →
+  Continue → upload → PRIVMSG sent with `📸 <url>` → assert
+  message visible in scrollback with clickable link via existing
+  linkify rendering.
 
 **Production change:**
 
-1. New component `cicchetto/src/ImageOverlay.tsx` (or wherever
-   components live — sibling to `WhoisCard.tsx`/`LusersCard.tsx`).
-2. Wire into `Shell.tsx` so the overlay renders at the root level
-   (above all other UI).
-3. Esc handler via global `document.addEventListener("keydown", …)`
-   scoped to overlay-mounted-only via `onCleanup`.
-4. Click-outside via overlay backdrop `onClick`; img element has
-   `onClick={(e) => e.stopPropagation()}` so clicking the img doesn't
-   close.
-5. Focus trap via `tabindex` + first/last sentinel pattern (or trap on
-   overlay container + redirect Tab manually). NO heavy a11y lib.
-6. CSS: full-viewport fixed overlay with semi-transparent backdrop;
-   img centered with `max-width: 95vw; max-height: 95vh; object-fit:
-   contain;`.
-
-**Exit criteria:** vitest green; Playwright e2e green (click thumbnail
-in scrollback → overlay opens → Esc → overlay closes); manual smoke
-on iPhone Safari (touch-outside close works; rotation handled).
-
-**Deploy:** cic-bundle.
-
-### Bucket I-4 — upload UI in ComposeBox + litterbox client
-
-**Failing test first:** `cicchetto/src/__tests__/ComposeBox.test.tsx`
-extends with:
-
-- Click paperclip button → file picker opens (mock `<input>.click()`).
-- Select file via mocked input change event →
-  `litterbox.uploadFile()` called with file + chosen TTL.
-- Drag-drop image file onto compose container → same upload path.
-- Paste image from clipboard (mocked `ClipboardEvent` with
-  `items[0].kind === "file"`) → same upload path.
-- During upload: progress row visible with filename + cancel button.
-- On upload success: URL inserted at textarea cursor; progress row
-  dismissed.
-- On upload error: progress row turns red + shows retry; compose
-  still editable.
-- First-upload: privacy modal shown; localStorage flag absent → modal
-  blocks upload until "Continue" clicked.
-- Subsequent uploads: privacy modal NOT shown (localStorage flag
-  present).
-- vitest for `cicchetto/src/lib/litterbox.ts`: mock
-  `XMLHttpRequest`, assert correct multipart shape, correct URL,
-  correct response parsing (plain-text URL), error handling (non-2xx,
-  network-error, abort).
-- Playwright e2e: full picker → upload → URL-in-compose → send →
-  thumbnail-in-scrollback round-trip with a real fixture file POSTed
-  to a Playwright-controlled mock litterbox endpoint (NOT real
-  litterbox in CI — flake risk).
-
-**Production change:**
-
-1. New `cicchetto/src/lib/litterbox.ts`:
-   - `export async function uploadFile(file: File, ttl: "1h" | "12h"
-     | "24h" | "72h", onProgress: (loaded: number, total: number) =>
-     void, signal: AbortSignal): Promise<string>`.
-   - Uses `XMLHttpRequest` (not `fetch`) — XHR has progress events,
-     fetch doesn't natively (yet, in browsers we target).
-   - POSTs `multipart/form-data` to
-     `https://litterbox.catbox.moe/resources/internals/api.php` with
-     `reqtype=fileupload`, `time=<ttl>`, `fileToUpload=<binary>`.
-   - Resolves with the response body trimmed (the URL).
-   - Rejects with typed error: `{kind: "network"} | {kind: "http",
-     status: number} | {kind: "abort"} | {kind: "invalid_response",
-     body: string}`.
-2. New `cicchetto/src/lib/imageUpload.ts` (orchestration above the
-   bare HTTP client):
-   - Tracks active upload per channel (Solid signal map).
-   - Privacy-modal gate (reads/writes localStorage
-     `image-upload-privacy-acknowledged`).
-   - On success: calls into `compose.ts` to insert text at cursor.
-3. `cicchetto/src/ComposeBox.tsx` extensions:
-   - Paperclip button + hidden `<input type="file">`.
-   - `ondragover` / `ondragleave` / `ondrop` handlers on the form
-     container.
-   - `onpaste` on the textarea.
-   - Inline progress row beneath textarea (new `<Show>` block reading
-     from `imageUpload.ts` signal).
-   - TTL dropdown (defaults to 72h, persisted in localStorage).
-4. New component or inline JSX for the privacy modal —
-   single-purpose, dismissable, no external lib.
-5. CSS for the new bits — paperclip button, drag-over highlight,
-   progress row, modal.
+1. `cicchetto/src/ComposeBox.tsx` extensions:
+   - Image-picker button + hidden `<input type="file" accept="image/*">`.
+   - Drag-drop handlers on form container.
+   - Inline progress row beneath textarea (new `<Show>`).
+   - TTL dropdown next to picker button.
+   - On upload success: build body `📸 ${url}` and submit via
+     existing `compose.ts` `submit()` flow — single code path with
+     normal text messages.
+2. New tiny privacy-modal component (single-purpose, dismissable,
+   no external lib). Reads/writes localStorage
+   `image-upload-privacy-acknowledged`. Copy parameterized on
+   `activeHost()`.
+3. CSS for new bits — picker button, drag-over highlight (dashed
+   border), progress row, modal.
 
 **Exit criteria:** vitest green; Playwright e2e green; manual smoke
 on three browsers (desktop Chrome, desktop Safari, iOS Safari) with
-all three trigger surfaces (picker, drag, paste); 8MB file uploads
-cleanly with visible progress; cancel works mid-upload; first-upload
-modal appears and dismisses correctly.
+both trigger surfaces (picker + drop); 8MB file uploads cleanly with
+visible progress; cancel works mid-upload; first-upload modal
+appears + dismisses correctly; PRIVMSG body in scrollback renders
+the link as clickable (existing linkify path, regression-checked).
 
 **Deploy:** cic-bundle.
 
-### Bucket I-5 — README + DESIGN_NOTES + project-story sweep
+### Bucket I-3 — README + DESIGN_NOTES + project-story sweep
 
 **Failing test first:** N/A (docs).
 
 **Production change:**
 
-1. `README.md` — add a one-paragraph "Image sharing" subsection under
-   the cic feature list. Mention litterbox dependency + 72h default
-   TTL + direct-upload architecture (no server proxy).
-2. `docs/DESIGN_NOTES.md` — chronological entry: cluster name, date,
-   key decisions A1-A10, cluster CLOSE retro reference.
+1. `README.md` — add a one-paragraph "Image upload" subsection in
+   the cic feature list. Mention: pluggable host (litterbox first
+   impl), 24h default TTL, 📸-prefix wire shape, IRC-text-only
+   render contract.
+2. `docs/DESIGN_NOTES.md` — chronological entry: cluster name,
+   date, A1-A9 summary, retro reference.
 3. `docs/project-story.md` — episode (per CLAUDE.md "Project story
-   lives on" rule). Tone matches existing episodes.
-4. `CLAUDE.md` — audit: does this cluster surface any RECURRING rule?
-   Probable answer: no (the rules it leverages — CSP-is-COLD, parity,
-   three-trigger-surfaces, etc. — already exist). If a new rule
-   emerges (e.g. "third-party-asset CSP entries get their own COLD
-   bucket") then add it; otherwise leave CLAUDE.md alone.
+   lives on" rule).
+4. `CLAUDE.md` — audit: any RECURRING rule surfaced? Probable
+   answer: maybe ONE — "client-side only image rendering; never
+   inline thumbnails in scrollback unless explicitly opted in via
+   future cluster" — could pin this to prevent future-Claude from
+   re-litigating. Decide at write time.
 
-**Exit criteria:** README diff reads cleanly; DESIGN_NOTES entry is
-chronological + complete; project-story episode is named + dated.
+**Exit criteria:** README diff reads cleanly; DESIGN_NOTES entry
+chronological + complete; project-story episode named + dated.
 
-**Deploy:** none (docs).
+**Deploy:** none.
 
 ### Bucket I-Z — cluster CLOSE
 
-After I-CSP + I-1 + I-2 + I-3 + I-4 + I-5 green:
+After I-CSP + I-1 + I-2 + I-3 green:
 
 1. `cd /Users/mbarnaba/code/grappa/.worktrees/images && git fetch
    origin main && git rebase origin/main`
@@ -575,193 +385,81 @@ After I-CSP + I-1 + I-2 + I-3 + I-4 + I-5 green:
    `scripts/dialyzer.sh`.
 4. Brief vjt with cluster summary (commit shas, what shipped per
    bucket, deviations).
-5. Merge: `cd /Users/mbarnaba/code/grappa && git checkout main && git
-   merge --ff-only cluster/images`.
+5. Merge: `cd /Users/mbarnaba/code/grappa && git checkout main &&
+   git merge --ff-only cluster/images`.
 6. Per-bucket deploy reminder: I-CSP shipped standalone earlier
-   (COLD); I-1/I-2/I-3/I-4 ship as cic bundles via
-   `scripts/deploy-cic.sh`. No additional server deploy needed.
-7. Healthcheck: `scripts/healthcheck.sh` (no server change post-I-CSP,
-   but verify nothing crept in).
-8. Browser smoke from anon visitor + identified visitor +
-   registered-user session: each tier picks an image, drags an image,
-   pastes an image; uploads succeed; thumbnails render in scrollback;
-   lightbox opens; Esc closes.
-9. CSP regression check: DevTools console shows zero CSP violations
-   on a normal cic session.
+   (COLD); I-1/I-2 ship as cic bundles via `scripts/deploy-cic.sh`.
+   Per `feedback_deploy_preflight_empty_diff_after_merge`: post-
+   local-merge the deploy preflight diff is empty → manually verify
+   nothing snuck in (`mix.lock`, long_lived_modules, migrations,
+   nginx.conf) before a final `--force-cold` if needed.
+7. Healthcheck: `scripts/healthcheck.sh`.
+8. Browser smoke from anon visitor + identified visitor + registered-
+   user session: each tier picks an image AND drags an image (8MB+
+   file); upload succeeds; `📸 <url>` lands in PRIVMSG; clicking
+   the URL opens image in new tab; cancel works mid-upload;
+   first-upload modal appears once.
+9. CSP regression check: DevTools console shows zero new CSP
+   violations on a normal cic session.
 10. Push origin/main per `feedback_push_autonomy`.
 11. Update `project_post_p4_1_arc` — mark cluster CLOSED, point at
     next.
 12. Write CP3X at `docs/checkpoints/2026-05-XX-cp3X.md`.
-13. DESIGN_NOTES entry — chronological log, A1-A10 summary + lessons
-    learned.
-14. README updated (lands in I-5, but verify final).
-15. Story episode at `docs/project-story.md` (lands in I-5, but
-    verify final).
-16. CLAUDE.md update — only if new recurring rule surfaced.
+13. DESIGN_NOTES entry — chronological log, A1-A9 summary +
+    lessons learned.
+14. README updated (lands in I-3, verify final).
+15. Story episode at `docs/project-story.md` (lands in I-3, verify
+    final).
+16. CLAUDE.md update — only if new recurring rule surfaced (likely
+    the no-inline-thumbnails contract).
 17. Save memory: `project_image_cluster_closed`.
 18. Worktree cleanup: `git worktree remove .worktrees/images`.
 
 ## Open questions for vjt
 
-### Q-DIRECT vs PROXIED upload (highest priority)
+### Q-AUTOSEND — auto-send `📸 <url>` or pre-fill compose?
 
-**Default proposed: direct-to-litterbox.** Browser POSTs multipart
-directly; grappa never sees the bytes. Simplest possible shape; zero
-server work; aligns with `project_image_upload` "litterbox covers
-chat lifetime" framing.
+After upload completes, two options:
+- **Auto-send (recommended default):** message goes out immediately.
+  Matches vjt's "that's it" tone — minimal ceremony. Operator can
+  add commentary in a follow-up message if they want.
+- **Pre-fill compose:** body inserted at cursor (`📸 ${url} `
+  trailing space), operator hits Enter to send. Lets operator add
+  caption inline before sending.
 
-**Alternative: proxied via grappa.** Requires Plug.Parsers config
-(multipart, 16MB), nginx `client_max_body_size 16m` on a new route,
-route-specific `BodyLimit`-style cap (HIGH-19 stays 4096 for IRC
-bodies; uploads need own constant), HTTP client to litterbox, optional
-rate-limit ETS table. Adds abuse-control surface + audit trail +
-ability to refuse content; costs a server bucket + COLD deploy.
+If vjt picks pre-fill, also need: what to do if textarea already
+has draft text? Append? Replace? Insert at cursor (probably
+"insert at cursor" is least surprising).
 
-**Recommendation:** ship direct first. Per CLAUDE.md "Ask before
-building" + "10x simpler approach": abuse-control is YAGNI until
-abuse is real. If vjt picks proxied, I-4 forks into I-4-S (server) +
-I-4-C (client); other buckets unchanged.
+### Q-PASTE — clipboard-paste handler now or later?
 
-### Q1 — Upload provider scope
+vjt explicitly mentioned picker + drag-drop, did NOT mention paste.
+Easy to add: textarea `onpaste` handler intercepts
+`e.clipboardData.items[0].kind === "file"` with `image/*` MIME →
+upload via same path. macOS screenshot ergonomics
+(Cmd-Shift-Ctrl-4 → paste) are real but optional. Default: defer
+to v2; pin as "easy add."
 
-**Default proposed:** litterbox-only (temporary, 72h max). Permanent
-catbox.moe is "file sharing" — out of cluster scope per CLAUDE.md
-spirit ("'add X' means add X, not X + Y + Z"). Veto if you want
-catbox permanent in v1; otherwise we deliver the smaller surface and
-add catbox later if real demand surfaces.
+### Q-CLAUDE-MD — codify the no-inline-thumbnails contract?
 
-### Q2 — Upload UI shape
+Should I-3 add a CLAUDE.md "Render contract" rule like:
 
-**Default proposed:** all three (file picker + drag-drop + paste).
-Each is a small separable code path; collectively they cover desktop
-screenshot ergonomics (paste), mobile camera roll (picker), and
-drag-from-Finder (drop). If any feels overkill, name it; vitest +
-Playwright cost is roughly linear so removal saves real test time.
+> **IRC remains text only.** No inline rendering of media types in
+> scrollback (images, videos, audio). Media URLs in PRIVMSG bodies
+> are clickable links via the existing `linkify` path; clicking
+> opens the resource in a browser tab. Do not propose
+> in-scrollback thumbnails / autoplay / preview cards without an
+> explicit cluster spec lifting this rule.
 
-### Q3 — Progress UI
+Pro: pins the rule so future-Claude doesn't re-derive. Con:
+CLAUDE.md is for recurring rules — this might be a one-off.
+vjt's call.
 
-**Default proposed:** inline-in-compose progress bar + cancel/retry
-button mandatory; no toast. Multi-MB iPhone screenshots on cellular
-make this non-optional. Compose stays editable throughout — operator
-can keep typing while upload runs.
+### Q-ICON — picker-button icon?
 
-### Q4 — URL form in PRIVMSG
-
-**Default proposed:** bare URL — no `image:` prefix, no IRC tag.
-Non-cic clients see a plain link they can click; cic detects via
-suffix in linkify. ONE code path. (See A2 rationale.)
-
-### Q5 — Overlay UX
-
-**Default proposed:** click-thumbnail-to-expand into lightbox. Esc +
-click-outside close. Focus trap. Per `feedback_card_vs_scrollback_ux`:
-thumbnails are scrollback-row enrichment (fine); lightbox is
-one-click ephemera (card-like, fine — different from server-dispatched
-cards). Pin: `max-width: 240px; max-height: 120px` thumbnails so a
-wall of images doesn't blow scrollback layout.
-
-### Q6 — Non-cic clients
-
-**Default proposed:** URL travels as text; Phase 6 IRCv3 listener
-facade sees it identically; no special handling needed. Pin in spec
-for future-Claude.
-
-### Q7 — HIGH-19 / nginx body-size wire-up
-
-**REFRAME:** the orchestrator's framing conflates HIGH-19 (per-field
-4096-byte cap on IRC bodies, COMPILE-time, in
-`lib/grappa_web/body_limit.ex`) with nginx's `client_max_body_size`
-(per-request HTTP body cap). They're different layers.
-
-- **If direct-to-litterbox (default):** neither needs to change. The
-  PRIVMSG body containing a `https://files.catbox.moe/abc.png` URL
-  fits within 4096 bytes ten times over; the litterbox upload doesn't
-  touch grappa or nginx.
-- **If proxied:** need a route-specific `client_max_body_size 16m`
-  AND a route-specific upload byte cap (HIGH-19's 4096 is wrong for
-  uploads — needs a new `:upload_max_bytes` constant, scoped to the
-  upload controller, NOT a global loosening).
-
-### Q8 — Litterbox failure UX
-
-**Default proposed:** inline error badge on the in-compose progress
-row + retry button + dismiss button. Compose stays editable. Error
-categories surfaced:
-- Network error: "Upload failed — network error. Retry?"
-- HTTP 4xx (bad file type, oversize): "Upload rejected — try a
-  different file."
-- HTTP 5xx (litterbox down): "Upload service unavailable. Retry?"
-- Abort: progress row dismissed silently (operator-initiated).
-
-No toast, no modal-block. Per CLAUDE.md "thin contexts" spirit, the
-error envelope is plain English in cic — no localized strings, no
-server involvement (server doesn't see the upload).
-
-### Q9 — Privacy / security
-
-**Default proposed:** first-upload modal per A6. Default TTL 72h per
-A7 (operator override visible in upload UI, persisted per-browser in
-localStorage). No server involvement. No per-network policy
-enforcement (visitor and registered-user uploads identical — parity
-invariant). If vjt wants admin-side "no uploads on this network"
-toggle, that's a Phase-6 concern (operator CLI flag), not v1.
-
-### Q10 — URL-pattern detection edge cases
-
-**Default proposed:** suffix allowlist `.png .jpg .jpeg .gif .webp
-.apng` (case-insensitive); strip `?…#…` before suffix test; SVG
-explicitly excluded (renders as plain link, not thumbnail) per
-script-injection risk; bare hosts (no path) don't match. (See A4
-detail.) Veto if the SVG exclusion feels excessive — the alternative
-is rendering SVG inline and trusting `img-src` CSP to neutralize
-embedded scripts (browser track record on this is mixed; recommend
-stay conservative).
-
-### Q-NEW — Image cache + memory pressure
-
-**Default proposed:** native `<img loading="lazy">` is enough at v1.
-Long-lived bouncer scrollback with hundreds of thumbnails — browsers
-GC off-screen images via standard heuristics. If scrollback feels
-sluggish in real use, revisit with intersection-observer-driven
-cleanup or virtualization (separate cluster). Pin a "if this gets
-sluggish, the lever to pull is X" line in DESIGN_NOTES so
-future-Claude doesn't re-derive.
-
-### Q-NEW — Cic offline + upload retry
-
-**Default proposed:** out of cluster scope. If cic loses connectivity
-mid-upload, the XHR aborts; operator sees the error and retries when
-back online. No queue, no background-sync. (Service Worker
-background-sync for uploads is a real feature but adds complexity
-disproportionate to the v1 surface — defer to a future hardening
-pass.)
-
-### Q-NEW — Animated GIF auto-play
-
-**Default proposed:** browser-default behavior (auto-play). No toggle
-in v1. If vjt wants a "click to play" gate (some operators find
-auto-play disruptive), that's a separate cic UX bucket — could fold
-into SettingsDrawer as an "image rendering" subsection later.
-
-### Q-NEW — Upload from non-image files
-
-**Default proposed:** v1 rejects non-image MIME types at the
-file-picker level (`accept="image/*"`). Drag-drop and paste also gate
-on `file.type.startsWith("image/")`. Litterbox itself supports any
-file type, but the cluster scope is "image sharing" per
-`project_image_upload` — generic file uploads is a separate ask (and
-would need different scrollback-row UX — a "file" affordance, not a
-thumbnail).
-
-### Q-NEW — CSP host: `files.catbox.moe` vs `litter.catbox.moe`
-
-**Pending empirical verification.** Orchestrator note suggests
-`litter.catbox.moe` per docs but I have NOT POSTed a test file to
-verify. First task in I-CSP is `curl -F …` from operator workstation
-to inspect the response URL host. Pin the exact host before writing
-the CSP allowlist diff. If both hosts show up across TTL bands, list
-both. Don't wildcard `*.catbox.moe` — would auto-allowlist the
-out-of-scope catbox-permanent surface.
+A small camera / paperclip / plus icon? Use existing emoji `📷`
+for parity with the wire-shape `📸`? Plain text "Image"? Defer to
+implementation taste; not load-bearing.
 
 ## Memories that ARE relevant
 
@@ -769,45 +467,66 @@ out-of-scope catbox-permanent surface.
 - [[project-post-p4-1-arc]] — current arc state; cluster goes here
 - [[feedback-readme-currency]] — README updates land in-step
 - [[feedback-cicchetto-browser-smoke]] + [[feedback-ux-e2e-mandatory]]
-  — Playwright e2e mandatory for every cic-touching bucket
-- [[feedback-card-vs-scrollback-ux]] — thumbnail-in-row vs
-  lightbox-overlay distinction (A3)
+  — Playwright e2e mandatory for cic-touching buckets
 - [[feedback-no-localized-strings-server-side]] — server stays out of
-  cic copy; privacy modal + error messages are cic-owned (A6, Q8)
-- [[feedback-hot-deploy-preflight]] — nginx + CSP changes are COLD;
-  I-CSP standalone bucket per HIGH-29 (A10)
+  cic copy; privacy modal + error messages cic-owned (A6, I-2)
+- [[feedback-hot-deploy-preflight]] — nginx + CSP = COLD; I-CSP
+  standalone bucket per HIGH-29 (A8)
 - [[feedback-deploy-preflight-empty-diff-after-merge]] — V9 lesson;
-  manual cold-check post-local-merge for I-CSP
+  manual cold-check post-local-merge for I-CSP + at I-Z
 - [[feedback-per-bucket-deploy]] — browser smoke at each bucket close
 - [[feedback-landed-claim-evidence]] — `check.sh` exit-0 tail in
   commit body
-- [[feedback-wire-edge-runtime-allowlist-exhaustiveness]] — auditing
-  existing `seg.type ===` switches when adding `image-url` arm (I-1)
 - [[feedback-push-autonomy]] — push autonomy granted at cluster CLOSE
-- [[project-visitor-parity-cluster-closed]] — predecessor cluster;
-  subject parity invariant covers visitor + user uploads identically
+- [[project-visitor-parity-cluster-closed]] — predecessor; subject
+  parity invariant covers visitor + user uploads identically
 
 ## Authoritative refs
 
 - `CLAUDE.md` — engineering standards; "Ask before building"; "10x
   simpler approach"; "Reuse the verbs, not the nouns"
-- `cicchetto/src/lib/linkify.ts` — extension point for I-1 (add
-  `image-url` segment arm)
-- `cicchetto/src/ScrollbackPane.tsx:215-226` — current linkify call
-  site; I-2 extends segment-type switch
-- `cicchetto/src/ComposeBox.tsx` — current compose surface; I-4 adds
-  picker/drop/paste handlers + progress row
-- `infra/snippets/security-headers.conf` — CSP allowlist; I-CSP edits
-  the single `add_header` line at line 61
-- `infra/nginx.conf` — body-size context; unchanged in default
-  direct-upload path
-- `lib/grappa_web/body_limit.ex` — HIGH-19 reality: per-field
-  4096-byte cap on IRC PRIVMSG body fields, COMPILE-time. Unchanged
-  for direct-upload; would need route-specific override for proxied
-  alternative
-- `scripts/deploy.sh` + `scripts/deploy-cic.sh` — deploy paths; I-CSP
-  uses former with `--force-cold`, all other buckets use latter
+- `cicchetto/src/lib/linkify.ts` — already linkifies any URL, no
+  changes needed
+- `cicchetto/src/ScrollbackPane.tsx:217` — current url-segment
+  render path; also unchanged
+- `cicchetto/src/ComposeBox.tsx` — extension point for I-2 (picker
+  button + drag-drop + progress + privacy modal)
+- `infra/snippets/security-headers.conf` line 61 — CSP allowlist;
+  I-CSP edits the single `add_header` line (`connect-src` only)
+- `infra/nginx.conf` — body-size context; unchanged (direct upload)
+- `lib/grappa_web/body_limit.ex` — HIGH-19 unchanged; PRIVMSG body
+  `📸 <url>` fits in 4096 bytes ten times over
+- `scripts/deploy.sh` + `scripts/deploy-cic.sh` — deploy paths;
+  I-CSP uses former with `--force-cold`, all other buckets use
+  latter
 - `docs/plans/2026-05-14-visitor-parity-and-nickserv.md` —
-  predecessor brainstorm shape (mirror this structure)
-- `docs/DESIGN_NOTES.md` — chronological decision log; cluster lands
-  an entry at CLOSE
+  predecessor brainstorm shape
+- `docs/DESIGN_NOTES.md` — chronological decision log
+
+## v1 → v2 diff (post-vjt-refinement 2026-05-15)
+
+vjt scoped the cluster significantly tighter than v1 proposed.
+Removals:
+
+- **Cut I-1 (linkify image-URL detection)** — IRC stays text-only;
+  no `image-url` segment arm; `linkify.ts` unchanged.
+- **Cut I-2 (inline thumbnail render)** — no `<img>` tags in
+  scrollback; `ScrollbackPane.tsx` unchanged.
+- **Cut I-3 (lightbox overlay component)** — browser's "open link
+  in new tab" IS the image viewer.
+- **Cut img-src CSP entry** — we don't render images, so the host
+  doesn't need `img-src` allowlist.
+- **Cut clipboard-paste handler from v1 default** — vjt mentioned
+  picker + drag-drop only; pin paste as Q-PASTE deferred.
+- **Default TTL 72h → 24h** per vjt.
+- **Module name `litterbox.ts` → `image-upload.ts`** per vjt
+  ("BUILD INTERFACE to plug different image hosters tomorrow") —
+  pluggable `ImageHost` interface, litterbox = first impl.
+
+Additions:
+
+- **`📸 <url>` PRIVMSG body shape** per vjt explicit spec.
+- **A2 pluggable host interface** (didn't exist in v1).
+
+Bucket count: 7 → 5. Code surface roughly halved. Cluster spirit:
+same — "image upload feels native, IRC stays text-only."
