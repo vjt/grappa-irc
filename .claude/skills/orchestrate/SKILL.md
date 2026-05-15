@@ -17,26 +17,54 @@ Earlier versions of this skill used `/compact <prompt-body>`. Switched to `/clea
 
 Tradeoff: no auto-summary safety net. The prompt body MUST be fully self-contained (file paths, commit SHAs, exact next-step). Tell the sibling that explicitly when asking for the prompt.
 
-## Architecture: bg-bash + per-event wakeup
+## Architecture (v2 — daemon + log + cursor-tail)
 
-The original design used a persistent polling loop launched via a per-line streaming long-running tool. This harness doesn't expose that surface — the deferred-tool list has `Task*`, `Cron*`, `ScheduleWakeup`, plus `Bash` (with `run_in_background: true` for fire-and-forget shells whose only notification is at completion).
+v1 used a single-shot wait-for-event chain: orchestrator armed one bg-bash, harness fired a notification when it exited, orchestrator re-armed. **This was brittle**: forgetting to re-arm = silent stall (happened twice in the visitor-parity cluster). 60s tick missed fast clear-ask replies. Permission prompts and design pickers all looked like "IDLE" so orchestrator tried to clear sibling mid-prompt.
 
-`Cron*` looked usable (1-min ticks) but cron-fired prompts in this harness fail upstream with HTTP 500 on most fires (direct user-typed prompts from the same session work fine — it's a cron-path-specific issue). `ScheduleWakeup` is gated to `/loop` dynamic mode only.
+v2 separates concerns:
 
-The viable shape exploits the per-completion notification of `Bash run_in_background: true`:
+- **`lib/daemon.sh start|stop|status|log <PANE>`** — long-running detached ticker (forked via `nohup … &` + `disown`; macOS has no `setsid`). Calls `wakeup-tick.sh` every **20s** (was 60s) and appends events to `/tmp/orchestrate-events-<pane>.log`. Single-instance per pane via pid file at `/tmp/orchestrate-daemon-<pane>.pid`. Survives orchestrator `/clear`, `/exit`, harness restarts. **The orchestrator can't break the chain by forgetting to re-arm anything.**
 
-- **`lib/wakeup-tick.sh <PANE>`** is the one-shot tick: captures the pane, computes the busy/idle state and ctx %, diffs against the previous tick's state stored in `/tmp/orchestrate-state-<pane>.json`, and prints exactly one event line:
-  - `BOOT state=<idle|busy> ctx=NN%` — first tick after STALE/FRESH state.
-  - `IDLE ctx=NN%` — busy → idle transition.
-  - `BUSY ctx=NN%` — idle → busy transition.
-  - `CTX-BUMP NN% state=<...>` — entered a new ≥10%-bucket at ≥30%.
-  - `HEARTBEAT state=<...> ctx=NN%` — no event in ≥1800s.
-  - `SAME state=<...> ctx=NN%` — no transition; orchestrator may ignore.
-  - `PANE-MISSING` — the tmux pane is gone.
+- **`lib/wakeup-tick.sh <PANE>`** — the one-shot pane sample. Reads pane via `tmux capture-pane`, classifies state, emits zero-or-more event lines. State persisted at `/tmp/orchestrate-state-<pane>.json` for transition diffs across ticks.
 
-- **`lib/wait-for-event.sh <PANE>`** loops `wakeup-tick.sh` every 60s internally, swallowing SAME events, and exits 0 on the first interesting event line. Run via `Bash run_in_background: true, timeout: 3600000` — the harness fires a task-completion notification when it exits, giving per-event wakeup with no polling on the orchestrator side.
+- **`lib/wait-for-event.sh <PANE>`** — cursor-tracking log tailer. Reads byte offset from `/tmp/orchestrate-cursor-<pane>`, waits until log size > cursor, dumps all new events to stdout, advances cursor, exits. Invoked via `Bash run_in_background: true` for the per-event wakeup notification. **Multiple events queued during a no-waiter window are emitted together** — no event is ever lost.
 
-The state file IS the durable handoff between wakeups and across orchestrator `/clear`s — there is no long-lived process, only the file.
+- **`lib/state.sh <PANE>`** — query current state without consuming events. Use when orchestrator wakes via user message and needs ground truth.
+
+- **`lib/resume-check.sh <PANE>`** — returns `FRESH | STALE age=Ns | RESUMING age=Ns daemon=running|stopped`.
+
+### Event vocabulary (v2 expanded)
+
+| Event | Meaning |
+|-------|---------|
+| `BOOT state=<idle\|busy\|prompt\|picker> ctx=NN%` | First tick after FRESH/STALE |
+| `IDLE ctx=NN%` | busy → idle (real idle, no prompt/picker pending) |
+| `BUSY ctx=NN%` | idle → busy |
+| `PROMPT-PENDING ctx=NN%` | Sibling on a permission/dialog prompt (`Do you want to proceed?` + `1. Yes`) — **DON'T act** |
+| `PROMPT-CLEARED ctx=NN%` | User clicked through the prompt — sibling unblocked |
+| `PICKER ctx=NN%` | Sibling popped a design-Q picker (`↑/↓ to navigate`, `Tab/Arrow keys`) — **HALT, ping vjt** |
+| `PICKER-CLEARED ctx=NN%` | Picker resolved |
+| `USER-TYPED ctx=NN%` | vjt typed in pane directly (md5-deduped) — **observe only** |
+| `CTX-BUMP NN% state=<...>` | Entered new ≥10%-bucket at ≥30% |
+| `CTX-CRITICAL NN% state=<...>` | Entered ≥80% — last-chance clear before auto-compact |
+| `STALL state=<...> ctx=NN% duration=Ns` | Same state ≥300s, possible deadlock — investigate |
+| `HEARTBEAT state=<...> ctx=NN%` | No event in ≥600s (was 1800) — keepalive |
+| `PANE-MISSING` | tmux pane gone (2 consecutive misses) — daemon exits |
+
+`SAME` events are swallowed by the daemon, never written to log.
+
+### State file fields
+
+`/tmp/orchestrate-state-<pane>.json` (key=value, not real JSON):
+
+- `state` — `idle | busy | prompt | picker`
+- `ctx` — `NN` or `TBD`
+- `bucket` — `NN` (10s)
+- `prompt_active` — `0|1`
+- `picker_active` — `0|1`
+- `last_user_typed_hash` — md5 of last `❯ <text>` line (USER-TYPED dedup)
+- `last_emit` — unix ts of last emitted event
+- `last_state_change` — unix ts of last state transition (STALL gate)
 
 ## Setup
 
@@ -44,16 +72,22 @@ The state file IS the durable handoff between wakeups and across orchestrator `/
 
 ```bash
 .claude/skills/orchestrate/lib/resume-check.sh <SIBLING_PANE_ID>
-# → "RESUMING age=NNs"   (state file exists, last_emit < 600s ago)
-# → "STALE   age=NNs"    (state file exists but ≥600s old — treat as fresh)
-# → "FRESH"              (no state file → first invocation)
+# → "RESUMING age=NNs daemon=running"   (state file fresh + daemon up — pick up live)
+# → "RESUMING age=NNs daemon=stopped"   (state file fresh but daemon died — restart needed)
+# → "STALE   age=NNs"                    (state file ≥600s old — treat as fresh)
+# → "FRESH"                              (no state file → first invocation)
 ```
 
-If `RESUMING`:
-- **Do not** wipe the state file.
+If `RESUMING daemon=running`:
+- **Do not** wipe the state file or stop the daemon.
 - **Do not** clear or interrupt the sibling pane.
 - Re-read the active plan + active checkpoint so you know what "as planned" means.
-- Schedule the next tick (Step 2.4) and wait — the next wake will pick up the in-flight session.
+- Query current sibling state: `lib/state.sh <PANE>`.
+- Arm `wait-for-event.sh` (Step 2.4) and resume the decision tree.
+
+If `RESUMING daemon=stopped`:
+- Restart daemon: `lib/daemon.sh start <PANE>`. Cursor + state file preserved.
+- Re-arm `wait-for-event.sh`.
 
 If `STALE` or `FRESH`, fall through to Step 2.
 
@@ -67,15 +101,15 @@ If `STALE` or `FRESH`, fall through to Step 2.
 
 2. Read the active plan: invoke `/start` to get the workflow context, then read the relevant `docs/plans/*.md` so you know the sub-task order. Read `docs/checkpoints/*.md` with `status: active` for current state.
 
-3. If `STALE`, wipe the old state file: `rm -f /tmp/orchestrate-state-<id>.json`. (The leading `%` from the pane id is stripped in the filename.)
+3. If `STALE`, wipe stale files: `rm -f /tmp/orchestrate-state-<id>.json /tmp/orchestrate-cursor-<id> /tmp/orchestrate-events-<id>.log /tmp/orchestrate-daemon-<id>.pid`. (The leading `%` from the pane id is stripped in the filenames.)
 
-4. Fire the first tick — it emits `BOOT` and seeds the state file:
+4. Start the daemon — it ticks every 20s and emits a `BOOT` event on first tick:
    ```bash
-   .claude/skills/orchestrate/lib/wakeup-tick.sh <SIBLING_PANE_ID>
+   .claude/skills/orchestrate/lib/daemon.sh start <SIBLING_PANE_ID>
    ```
-   Read the emitted event line and apply the decision tree below.
+   Wait ~3s, then verify: `.claude/skills/orchestrate/lib/daemon.sh status <SIBLING_PANE_ID>` should report `last_event: BOOT state=...`.
 
-5. Arm the next-event wait:
+5. Arm the next-event consumer:
    ```
    Bash(
      command: "/Users/mbarnaba/code/grappa/.claude/skills/orchestrate/lib/wait-for-event.sh <SIBLING_PANE_ID>",
@@ -85,29 +119,46 @@ If `STALE` or `FRESH`, fall through to Step 2.
    )
    ```
 
-   When the script exits (on first non-SAME event), the harness fires a task-completion notification. Read the task output via `TaskOutput` (block: false) to get the event line, apply the decision tree, then re-arm another `wait-for-event.sh` in the background. One arm = one event = one wakeup.
+   When the script exits (on the next event delivered by the daemon), the harness fires a task-completion notification. Read the task output via `TaskOutput` (block: false), apply the decision tree, then re-arm another `wait-for-event.sh` in the background. **One arm = one batch of events**: if the daemon queued multiple events while no waiter was armed (orchestrator was clearing, busy with user, crashed and restarted), they're all dumped in one shot — handle each one.
 
-### Busy detector (in `lib/wakeup-tick.sh`)
+   **Forgetting to re-arm is no longer fatal**: the daemon keeps ticking + appending. Next `wait-for-event.sh` call resumes from the cursor with all queued events.
 
-A line in the last 15 must carry `… (` (the spinner shape: ellipsis + space + open-paren that introduces the parenthesized status — `(NNs · ...)` once the timer arms, `(thinking)` / `(almost done ...)` in the pre-timer phase) — OR an explicit `Press up to edit` / `esc to interrupt` prompt. Bare `…` is NOT enough: truncated task descriptions (`tok…`, `… +N completed`, `… +N pending`) used to produce false-busy events for ~30 minutes during CP10 S6.
+### Detector internals (in `lib/wakeup-tick.sh`)
 
-Idle debounce: a single idle read after a busy read can be a transient tool-call gap. The tick script re-captures after 5s and only classifies as IDLE if still idle on the second read.
+**Busy detector**: a line in the last 30 (was 15 in v1 — permission modals push the spinner offscreen) must carry `… (` (the spinner shape: ellipsis + space + open-paren that introduces the parenthesized status — `(NNs · ...)` once the timer arms, `(thinking)` / `(almost done ...)` in the pre-timer phase) — OR an explicit `Press up to edit` / `esc to interrupt` prompt. Bare `…` is NOT enough: truncated task descriptions (`tok…`, `… +N completed`, `… +N pending`) used to produce false-busy events for ~30 minutes during CP10 S6.
+
+**Prompt detector**: `Do you want to proceed?` AND a `1. Yes` numbered list. Emits `PROMPT-PENDING` instead of `IDLE` so the orchestrator doesn't try to clear sibling mid-prompt. (v1 lesson: visitor-parity cluster wasted ~10 turns trying to clear sibling that was waiting on a CDP `cp` permission click.)
+
+**Picker detector**: `↑/↓ to navigate` OR `Tab/Arrow keys to navigate` OR `Enter to select` (the design-Q multi-choice modal Claude Code pops). Emits `PICKER` — orchestrator MUST halt + ping vjt.
+
+**USER-TYPED detector**: hashes the last `❯ <text>` line; if it changes vs prior tick (md5), emits `USER-TYPED` so orchestrator knows vjt typed in pane directly. Observe-only — don't intervene.
+
+**ctx parse**: tries `🧠 NN%`, falls back to `TBD` (post-`/clear` empty). v1 emitted `ctx=%` (broken parse) when status line wrapped offscreen; v2 always returns a valid value.
+
+**Idle debounce**: a single idle read after a busy read can be a transient tool-call gap (between Read/Bash result rendering and the next spinner line). The tick re-captures after 5s and only classifies as idle/prompt/picker/busy on the second read.
 
 ## Decision tree per event
 
-When a tick prints an event line, branch on it:
+A `wait-for-event.sh` exit may emit MULTIPLE event lines (events queued during a no-waiter window). Process each in turn:
 
 | Event | Action |
 |-------|--------|
-| `BOOT state=idle` | Capture pane (`tail -50`), orient on what just landed, then schedule next tick |
-| `BOOT state=busy` | Sibling is mid-work; schedule next tick, no intervention |
+| `BOOT state=idle` | Capture pane (`tail -50`), orient on what just landed, then re-arm |
+| `BOOT state=busy` | Sibling mid-work; re-arm, no intervention |
+| `BOOT state=prompt` | Sibling on a permission prompt — **halt + ping** |
+| `BOOT state=picker` | Sibling on a design-Q picker — **halt + ping** |
 | `IDLE ctx=NN%` | Run the IDLE decision tree below |
-| `BUSY ctx=NN%` | Sibling started new work; schedule next tick |
-| `CTX-BUMP NN%` at ≥30% | Proactively suggest clear-cycle (don't wait for IDLE). At ≥30% the next chunk of work likely won't fit before auto-compact; clear NOW so the sibling re-enters with a clean slate for the next bucket rather than mid-work. |
-| `HEARTBEAT state=busy` | Long-running task. Capture pane to confirm legit progress; schedule next tick |
-| `HEARTBEAT state=idle` | Sibling stuck waiting for input? Capture and decide |
-| `SAME state=*` | No-op, just reschedule |
-| `PANE-MISSING` | Halt + ping user. Don't reschedule |
+| `BUSY ctx=NN%` | Sibling started new work; re-arm |
+| `PROMPT-PENDING ctx=NN%` | Sibling needs vjt's permission click — **halt + ping**. Do NOT send keys, do NOT clear, do NOT investigate the prompt content (it's typically a `cp` script approval — vjt clicks 1 or 2). Wait for `PROMPT-CLEARED`. |
+| `PROMPT-CLEARED ctx=NN%` | Sibling unblocked, re-arm |
+| `PICKER ctx=NN%` | Sibling popped a design-Q multi-choice — **halt + ping vjt with the choice options**. Capture pane, identify the question + choices, present them concisely. Optionally include your recommended pick + 1-line reasoning, but the call is vjt's. |
+| `PICKER-CLEARED ctx=NN%` | vjt picked, sibling processing — re-arm |
+| `USER-TYPED ctx=NN%` | vjt typed in pane directly. Capture, note what they said, re-arm. **Do not respond on vjt's behalf** — sibling will. |
+| `CTX-BUMP NN%` at ≥30% | Proactively suggest clear-cycle (don't wait for IDLE). At ≥30% the next chunk of work likely won't fit before auto-compact. |
+| `CTX-CRITICAL NN%` at ≥80% | **Aggressive clear posture** — ask sibling to flush + clear at next safe checkpoint, even mid-bucket if needed. Auto-compact lurks. |
+| `STALL state=<...> duration=Ns` | Same state ≥300s — possible deadlock. Capture pane, read what's actually pending, decide: forgotten permission prompt? infinite loop? sibling waiting on user? Don't act blindly — investigate first. |
+| `HEARTBEAT state=<...>` | Long quiet period (≥600s no event). Capture pane to confirm legit progress vs invisible deadlock; re-arm |
+| `PANE-MISSING` | Halt + ping user. Daemon has exited — manual restart needed. |
 
 On IDLE event:
 
@@ -117,10 +168,11 @@ On IDLE event:
    | Pane state | Action |
    |------------|--------|
    | Step landed cleanly + offers next step from plan order | Ask clear |
-   | Session asks design question (X vs Y, which approach?) | **Halt + ping user** |
+   | Sibling already self-issued `CLEAR` + staged `/tmp/orchestrate-next.txt` | Skip the ask, go straight to clear-and-dispatch |
+   | Session asks design question (X vs Y, which approach?) | **Halt + ping user** (note: should have been caught by `PICKER` event; if a free-form ask shows up post-IDLE the picker detector missed it — investigate) |
    | Plan deviation (sub-task skipped or reordered without OK) | **Halt + ping user** |
    | Codebase review gate fires (per CLAUDE.md threshold) | **Halt + ping user** |
-   | Background agents still running (e.g. parallel review agents) | False idle — ignore, reschedule |
+   | Background agents still running (e.g. parallel review agents — `general-purpose` / `Plan` row visible) | False idle — ignore, re-arm |
    | User typed in pane directly | Watching only — don't intervene |
 
    Live deploys / pushes / shared-infra writes default to halt; if the user has explicitly authorized autopilot for the run, treat them as plan-aligned and let sibling proceed.
@@ -132,11 +184,13 @@ On IDLE event:
 
    **Why file handoff, not pane scrape:** the prompt body is large + can be many KB. Going through tmux scrollback (sibling prints body → orchestrator captures → reconstructs from line-wrap → loads into paste-buffer → pastes back) is fragile (line-wrap concat ambiguity, ANSI artifacts, `<system-reminder>` bleed) and bloats both sessions' context. File handoff: sibling Writes once, orchestrator instructs sibling to Read it post-clear. Zero paste-buffer, zero scraping.
 
-4. On reply (next IDLE event — the 60s tick may MISS the busy window for fast replies, see Pitfalls):
+4. On reply:
    - Reply contains literal `NO CLEAR` → send `go on with <next step> per plan.`
    - Reply contains literal `CLEAR` → run `/clear`, then send a short directive: `read /tmp/orchestrate-next.txt and execute it.` Sibling Reads + acts. No paste-buffer.
 
-5. Always re-arm the next tick before returning.
+   The 20s tick (was 60s in v1) catches fast NO-CLEAR / CLEAR replies reliably — you'll get the IDLE event within ~30s of the sibling answering.
+
+5. Always re-arm `wait-for-event.sh` before returning. (Fail-soft: even if you forget, the daemon keeps ticking; next call to `wait-for-event.sh` resumes from cursor with all queued events.)
 
 ## Sending text to the sibling pane
 
@@ -193,26 +247,32 @@ After user direction:
 
 ## Resume after /clear (orchestrator side)
 
-The state file at `/tmp/orchestrate-state-<pane>.json` survives orchestrator `/clear`. The user clears the orchestrator session freely to save tokens. On `/orchestrate` invocation post-`/clear`:
+The daemon at `/tmp/orchestrate-daemon-<pane>.pid` runs independently of the orchestrator's Claude session. State + cursor + event log persist in `/tmp`. The user clears the orchestrator session freely to save tokens. On `/orchestrate` invocation post-`/clear`:
 
-1. Run `lib/resume-check.sh <PANE_ID>`. If `RESUMING`, you're picking up a live session.
+1. Run `lib/resume-check.sh <PANE_ID>`. Branch on output:
+   - `RESUMING daemon=running` → daemon kept ticking. Skip to step 4.
+   - `RESUMING daemon=stopped` → state file fresh but daemon died. Restart: `lib/daemon.sh start <PANE>`. Cursor preserved.
+   - `STALE` → daemon is gone or never ran. Treat as fresh: Setup Step 2.
+   - `FRESH` → first invocation: Setup Step 2.
 2. Re-read the active plan + active CP so you have the "as planned" frame again.
-3. Capture the current pane state once: `tmux capture-pane -t <PANE_ID> -p | tail -30` — orient yourself on which sub-task is in flight or just landed.
-4. Re-arm the ScheduleWakeup tick (it's not durable across `/clear` — only the state file is).
-5. Wait for the next tick to fire.
+3. Query current state: `lib/state.sh <PANE>` — gives you ground truth (state, ctx, last_state_change age, etc.) without consuming events.
+4. Capture pane once for orientation: `tmux capture-pane -t <PANE_ID> -p | tail -40`.
+5. Arm `wait-for-event.sh`. **Any events queued during the no-orchestrator window will all be dumped on first call** (cursor-tracked). Process each in order.
 
-If the ScheduleWakeup chain was broken (orchestrator `/exit`'d, harness restarted), the state file may show `RESUMING` but no tick is scheduled — re-arming in step 4 covers this. If `STALE`, treat as fresh (Step 2 of Setup).
+The daemon-survives-clear design eliminates the v1 silent-stall failure mode: if the orchestrator forgets to re-arm `wait-for-event.sh`, events still accumulate; next call picks them up.
 
-## Pitfalls (learned in S29 of CP07 + CP08/CP09 Phase 2/3 + CP10 S6)
+## Pitfalls (learned in S29 of CP07 + CP08/CP09 Phase 2/3 + CP10 S6 + visitor-parity cluster v2 rewrite)
 
 - **Don't interrupt the session mid-generation.** If the sibling is still writing the prompt body and you ask another question, you destroy the prompt. Wait for full IDLE.
 - **Spinner words vary wildly.** Cooked, Crunched, Sautéed, Churned, Baked, Cogitated, Worked, Whipped, Brewing, Stewed, Boondoggling, Mulling, Quantumizing, Forging, Spinning, Befuddling, Undulating, Zigzagging, Proofing, Osmosing, Transfiguring, Crystallizing, Reticulating, Billowing, Calculating, Discombobulating, Imagining, Hullaballooing, Pouncing, Channeling, Spelunking, Thundering, Smooshing — don't match words; match the spinner shape `… (` paired with parenthesized status.
 - **Bare `…` is NOT a busy signal.** Truncated task descriptions (`tok…`, `M3, H11, M2, M12 — already organic…`), task-list compaction (`… +N completed`, `… +N pending`), and sibling-printed punctuation all carry `…` while the session is fully idle. The fixed regex requires `… (` (ellipsis + space + open-paren) on the same line. The earlier "match `…` ellipsis, not specific words" rule (CP08-era) was too loose — fixed CP10 S6 after a stalled sibling reported BUSY for ~30 min while truly idle.
+- **Permission prompts and design pickers are NOT idle states.** v1 conflated them with IDLE → orchestrator would try to clear sibling mid-prompt or send keys to dismiss the modal. v2 detects them as `PROMPT-PENDING` / `PICKER` events with their own halt semantics. If you ever add a new modal class to Claude Code (multi-step wizard, inline diff confirm, etc.), extend `wakeup-tick.sh` to detect it.
 - **`paste again to expand` is just a hint**, not an error. (Legacy paste-buffer path only — file handoff avoids the warning entirely.)
 - **`/clear` confirmed by `🧠 TBD` in status line** (fresh conversation, no tokens). After the sibling Reads the prompt file and starts working, ctx jumps to a small % (e.g. 5–10%), confirming turn 1 landed in a clean session. If you still see the pre-clear ctx %, `/clear` didn't fire — re-run the sequence.
-- **60s tick can MISS fast NO-CLEAR / CLEAR replies.** When sibling answers in <60s the busy→idle transition completes inside one tick window; no IDLE event fires because `prev_state` was never updated to `busy`. After sending a clear-ask, peek the pane proactively after ~2 min instead of waiting for events.
-- **Background agents leave the spinner gone but work continues.** If pane shows `N local agents` or task list with `◻`/`◼` items, it's a false idle even if no spinner is up. Don't propose clear, wait. With the new busy detector this is mostly handled (no spurious BUSY) but the IDLE event after the agents finish IS the right signal — just don't act if you see active agent rows.
+- **Background agents leave the spinner gone but work continues.** If pane shows `N local agents` or task list with `◻`/`◼` items, it's a false idle even if no spinner is up. Don't propose clear, wait. With the v2 busy detector this is mostly handled (no spurious BUSY) but the IDLE event after the agents finish IS the right signal — just don't act if you see active agent rows.
 - **Halt at human-required steps** even on autopilot. iPhone/device tests, explicit user-tagged tasks (`◼ HALT for ...`), real-credential operations the user hasn't pre-authorized.
 - **Self-contained prompt files only.** With `/compact` an auto-summary covers gaps. With `/clear`, the prompt body in `/tmp/orchestrate-next.txt` is the ENTIRE context the sibling has after wipe. Sibling MUST bake in: every sub-task SHA so far, file paths, exact first action, all carried-forward state from any "deferred to next sub-task" notes. Tell sibling that explicitly when asking for the file.
-- **ScheduleWakeup chains break on `/exit`.** The state file persists but the wake-up timer is in-session-only. After a hard restart, re-arm ScheduleWakeup or the orchestrator will go silent forever. Resume-check returning `RESUMING` does NOT mean a tick is queued — only that the state file is fresh.
-- **State files survive everything.** A stale `/tmp/orchestrate-state-<pane>.json` from yesterday's session will trigger `RESUMING` if you re-orchestrate within 10 min of the last_emit. The 600s freshness window in resume-check.sh is conservative; if you suspect false-resume, `rm -f /tmp/orchestrate-state-<pane>.json` and start fresh.
+- **Daemon survives orchestrator restarts but NOT host reboots.** State + log + pid file in `/tmp` — fine across `/clear` + `/exit` + harness restart. If the box reboots, `/tmp` may be wiped (depends on OS); resume-check returns FRESH and you start over. Not a bug, just a constraint.
+- **Sibling can stash YOUR working-tree changes during its own deploy.** Visitor-parity V9 cluster: orchestrator was rewriting `lib/orchestrate/*` while sibling was prepping V9 deploy from a clean tree; sibling correctly stashed orchestrator's changes as `orchestrator-infra-pre-v9-deploy`. Untracked new files were lost (default `git stash` skips untracked — use `-u` if you care). Fix: stage + commit infra changes onto a separate branch BEFORE letting sibling deploy, OR pause infra work during sibling's deploy windows.
+- **Stale task IDs surface back as notifications.** The harness sometimes re-fires completion events for old `task-id`s. Don't treat them as new events — verify the cursor advanced before processing. v2 cursor-tracking makes this safe (re-reading the same byte range yields nothing).
+- **Recurring same-triplet flake = real regression**, not flake (per `feedback_recurring_e2e_not_flake`). The visitor-parity cluster failed CI on the SAME 2 specs (network-circuit-ets-leak + push-server-fires-30s) for 6+ buckets in a row. Each bucket "documented as pre-existing flake and proceeded" — this is exactly the retry-mask pattern the rule warns against. Halt + investigate after the SECOND consecutive recurrence, not the sixth.
