@@ -44,6 +44,9 @@ vi.mock("../lib/queryWindows", () => ({
 
 vi.mock("../lib/windowState", () => ({
   setPending: vi.fn(),
+  setJoined: vi.fn(),
+  setFailed: vi.fn(),
+  setKicked: vi.fn(),
 }));
 
 vi.mock("../lib/awayStatus", () => ({
@@ -213,6 +216,128 @@ describe("userTopic", () => {
       const ws = await import("../lib/windowState");
       channelMock.fireEvent({ kind: "channels_changed" });
       expect(ws.setPending).not.toHaveBeenCalled();
+    });
+  });
+
+  // F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+  // terminal events on user-topic. Server-side
+  // `Session.Server.broadcast_window_state/2` moved the broadcast off
+  // the per-channel topic to close the subscribe-then-broadcast race
+  // documented at `cp15-b6-pending-to-failed-invite-only.spec.ts` flake.
+  // userTopic.ts dispatcher routes to the same `setJoined/setFailed/
+  // setKicked` setters subscribe.ts uses for the cold-WS-reconnect
+  // snapshot path; both paths are last-write-wins idempotent.
+  describe("F1 window-state terminal events on user-topic", () => {
+    it("calls setJoined with channelKey on `joined` payload", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "joined",
+        network: "freenode",
+        channel: "#italia",
+        state: "joined",
+      });
+      expect(ws.setJoined).toHaveBeenCalledWith(channelKey("freenode", "#italia"));
+    });
+
+    it("calls setFailed with channelKey + reason + numeric on `join_failed` payload", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#secret",
+        state: "failed",
+        reason: "Cannot join channel (+i)",
+        numeric: 473,
+      });
+      expect(ws.setFailed).toHaveBeenCalledWith(
+        channelKey("freenode", "#secret"),
+        "Cannot join channel (+i)",
+        473,
+      );
+    });
+
+    it("calls setFailed with null reason when payload reason is null", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#secret",
+        state: "failed",
+        reason: null,
+        numeric: 471,
+      });
+      expect(ws.setFailed).toHaveBeenCalledWith(channelKey("freenode", "#secret"), null, 471);
+    });
+
+    it("calls setKicked with channelKey + by + reason on `kicked` payload", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "kicked",
+        network: "freenode",
+        channel: "#italia",
+        state: "kicked",
+        by: "alice",
+        reason: "behave",
+      });
+      expect(ws.setKicked).toHaveBeenCalledWith(
+        channelKey("freenode", "#italia"),
+        "alice",
+        "behave",
+      );
+    });
+
+    it("calls setKicked with null reason when payload reason is null", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "kicked",
+        network: "freenode",
+        channel: "#italia",
+        state: "kicked",
+        by: "alice",
+        reason: null,
+      });
+      expect(ws.setKicked).toHaveBeenCalledWith(channelKey("freenode", "#italia"), "alice", null);
+    });
+
+    it("drops `joined` payload missing channel (narrowUserEvent rejects)", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({
+        kind: "joined",
+        network: "freenode",
+        state: "joined",
+      });
+      expect(ws.setJoined).not.toHaveBeenCalled();
+    });
+
+    it("drops `join_failed` payload with non-number numeric (narrowUserEvent rejects)", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({
+        kind: "join_failed",
+        network: "freenode",
+        channel: "#secret",
+        state: "failed",
+        reason: "x",
+        numeric: "473",
+      });
+      expect(ws.setFailed).not.toHaveBeenCalled();
+    });
+
+    it("drops `kicked` payload with wrong state literal (narrowUserEvent rejects)", async () => {
+      const ws = await import("../lib/windowState");
+      channelMock.fireEvent({
+        kind: "kicked",
+        network: "freenode",
+        channel: "#italia",
+        state: "joined",
+        by: "alice",
+        reason: null,
+      });
+      expect(ws.setKicked).not.toHaveBeenCalled();
     });
   });
 

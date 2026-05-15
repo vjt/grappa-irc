@@ -2097,14 +2097,14 @@ defmodule Grappa.Session.Server do
   # CP15 B1 + cluster #6: own-nick JOIN echo received → window
   # transitions to :joined. Delegates state mutation to
   # `WindowState.set_joined/2` (which clears any prior :failed /
-  # :kicked metadata — see that fn's doc) and broadcasts on the
-  # per-channel topic so cic flips render state without polling.
+  # :kicked metadata — see that fn's doc) and broadcasts the typed
+  # `joined` event on `Topic.user/1` so cic's userTopic.ts dispatcher
+  # flips render state without polling. F1 (2026-05-15) moved the
+  # broadcast off the per-channel topic to close the
+  # subscribe-then-broadcast race documented at
+  # `broadcast_window_state/2`.
   defp apply_effects([{:joined, channel} | rest], state) do
-    :ok =
-      Grappa.PubSub.broadcast_event(
-        Topic.channel(state.subject_label, state.network_slug, channel),
-        SessionWire.joined(state.network_slug, channel)
-      )
+    broadcast_window_state(state, SessionWire.joined(state.network_slug, channel))
 
     # In-flight-JOIN tracker stays here — it's not part of WindowState
     # (different lifetime: TTL-swept, not state-driven). Stripped on
@@ -2176,11 +2176,10 @@ defmodule Grappa.Session.Server do
         )
     end
 
-    :ok =
-      Grappa.PubSub.broadcast_event(
-        Topic.channel(state.subject_label, state.network_slug, channel),
-        SessionWire.join_failed(state.network_slug, channel, reason, numeric)
-      )
+    broadcast_window_state(
+      state,
+      SessionWire.join_failed(state.network_slug, channel, reason, numeric)
+    )
 
     state = %{
       state
@@ -2213,11 +2212,10 @@ defmodule Grappa.Session.Server do
   #      kick reason banner without parsing the scrollback row. The
   #      :persist :kick row alongside is the audit trail.
   defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
-    :ok =
-      Grappa.PubSub.broadcast_event(
-        Topic.channel(state.subject_label, state.network_slug, channel),
-        SessionWire.kicked(state.network_slug, channel, by, reason)
-      )
+    broadcast_window_state(
+      state,
+      SessionWire.kicked(state.network_slug, channel, by, reason)
+    )
 
     state = %{
       state
@@ -2485,6 +2483,61 @@ defmodule Grappa.Session.Server do
             window_state: WindowState.set_pending(state.window_state, channel)
         }
     end
+  end
+
+  # F1 (visitor-parity-and-nickserv cluster, 2026-05-15): emit the
+  # typed window-state terminal events (`joined`, `join_failed`,
+  # `kicked`) on `Topic.user/1` (NOT the per-channel topic). Closes
+  # a structural Phoenix.PubSub no-replay race documented at
+  # `cp15-b6-pending-to-failed-invite-only.spec.ts` flake on
+  # 2026-05-15.
+  #
+  # ## The race (cp15-b6-pending → failed shape, pre-F1)
+  #
+  #   1. cic POST /join → server.send_join (call) →
+  #      `record_in_flight_join/2` broadcasts `window_pending` on
+  #      `Topic.user/1`. Cic IS subscribed to user-topic at boot →
+  #      `setPending(channelKey)` runs.
+  #   2. Cic's `subscribe.ts:533` createEffect on
+  #      `windowStateByChannel` fires → `joinChannel(...)` opens an
+  #      ASYNC phx.join roundtrip on the per-channel topic.
+  #   3. Upstream IRC immediately replies 473. EventRouter emits
+  #      `{:join_failed, ch, reason, 473}`. Pre-F1 `apply_effects`
+  #      broadcast the typed `join_failed` payload on the per-channel
+  #      topic — the SAME topic cic was mid-handshake on. Phoenix
+  #      PubSub is no-replay; the broadcast lands before the cic-side
+  #      `phx.on("event", ...)` registration.
+  #   4. Cic's phx.join completes → handler installed → too late.
+  #      `setFailed` never runs. State stays at `:pending`. Sidebar
+  #      doesn't show `.sidebar-window-greyed`. Cold-start CI has
+  #      higher first-handshake latency → race is wider → flake.
+  #
+  # The persisted notice scrollback row is recovered via the
+  # `applyJoinReply` HTTP refresh path (subscribe.ts:502-509), so
+  # the failure body appears in the channel — but the typed
+  # state-machine event has no equivalent backfill, hence the
+  # `pending → terminal` transition never lands client-side.
+  #
+  # ## The fix
+  #
+  # Symmetric with how `window_pending` already uses user-topic for
+  # the inverse (origination) edge per CP17 design. The user-topic
+  # is joined at cic boot via `userTopic.ts` createRoot effect, so
+  # delivery cannot race a subscribe — guaranteed delivery.
+  # `userTopic.ts` dispatcher fans out to the same
+  # `setJoined/setFailed/setKicked` setters cic already uses for the
+  # cold-reconnect snapshot path (per-socket `push/3` from
+  # `push_window_state_if_known/4`, NOT a broadcast — survives F1).
+  # Per-channel topic remains the carrier for messages, topic, modes,
+  # members, read_cursor — events that are ALWAYS post-join-handshake
+  # by definition.
+  @spec broadcast_window_state(t(), map()) :: :ok
+  defp broadcast_window_state(state, payload) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        payload
+      )
   end
 
   # mIRC sort: ops (@) → voiced (+) → plain (no prefix). Within tier,

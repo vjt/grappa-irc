@@ -1316,8 +1316,11 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+      # terminal events broadcast on Topic.user/1 (NOT per-channel) to
+      # close the subscribe-then-broadcast race. See
+      # `Session.Server.broadcast_window_state/2`.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1373,8 +1376,8 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 — joined event on user-topic; per-channel kept for presence row.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1647,13 +1650,14 @@ defmodule Grappa.Session.ServerTest do
       # End-to-end CP15 B2: cic-initiated JOIN → in_flight_joins insert →
       # upstream 473 → EventRouter emits {:join_failed, ...} → Server
       # apply_effects arm persists :notice + flips window state + broadcasts
-      # the typed event on the per-channel topic. All three concerns must
-      # land in one cycle for cic to render the failure correctly.
+      # the typed `join_failed` event on Topic.user/1 (F1, 2026-05-15) and
+      # the persisted notice row as a `kind: "message"` event on the
+      # per-channel topic. Subscribe to BOTH topics so we can assert each
+      # path lands in one cycle for cic to render the failure correctly.
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
-      topic = Topic.channel(user.name, network.slug, "#sniffo")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1717,12 +1721,11 @@ defmodule Grappa.Session.ServerTest do
       # No-match: the failure numeric arrives without an in-flight tracker
       # (server-emitted, or post-TTL-sweep). EventRouter must NOT emit
       # :join_failed; the existing NumericRouter $server route persists
-      # it as a server-window notice. The per-channel topic stays silent.
+      # it as a server-window notice. The user-topic stays silent (F1).
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
-      topic = Topic.channel(user.name, network.slug, "#sniffo")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1887,8 +1890,10 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+      # terminal events on Topic.user/1 (NOT per-channel) per
+      # Session.Server.broadcast_window_state/2.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1928,8 +1933,10 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+      # terminal events on Topic.user/1 (NOT per-channel) per
+      # Session.Server.broadcast_window_state/2.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -1984,8 +1991,10 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+      # terminal events on Topic.user/1 (NOT per-channel) per
+      # Session.Server.broadcast_window_state/2.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 
@@ -2022,8 +2031,10 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#test"]})
 
-      topic = Topic.channel(user.name, network.slug, "#test")
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+      # F1 (visitor-parity-and-nickserv 2026-05-15) — typed window-state
+      # terminal events on Topic.user/1 (NOT per-channel) per
+      # Session.Server.broadcast_window_state/2.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
 

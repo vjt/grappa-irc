@@ -307,6 +307,16 @@ createRoot(() => {
         // polling. setJoined clears any prior failure/kicked metadata
         // for the key so a successful re-join doesn't carry stale
         // by/reason/numeric in the maps.
+        //
+        // F1 (visitor-parity-and-nickserv 2026-05-15) — live broadcast
+        // edge moved to `Topic.user/1` to close the
+        // subscribe-then-broadcast race. The per-channel arms below
+        // remain the dispatch path for the cold-WS-reconnect snapshot
+        // (`push_window_state_if_known/4` pushes via `push(socket,
+        // "event", payload)` directly on this channel's socket — no
+        // broadcast). Both paths flow through the same setters; both
+        // are last-write-wins idempotent so user-topic + per-channel-
+        // snapshot dual-arrival on cold reconnect is safe.
         case "joined":
           setJoined(key);
           return;

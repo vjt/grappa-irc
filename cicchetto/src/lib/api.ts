@@ -621,6 +621,35 @@ export type WireUserEvent =
       channel: string;
       peer: string;
     }
+  // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
+  // window-state terminal events dual-broadcast on `Topic.user/1`
+  // alongside the per-channel topic. Server-side
+  // `Session.Server.broadcast_window_state_dual/3` closes the
+  // subscribe-then-broadcast race where a fast `pending → terminal`
+  // transition fires the per-channel broadcast BEFORE cic's phx.join
+  // handler is registered (Phoenix PubSub no-replay). User-topic is
+  // joined at cic boot so it cannot race a subscribe — guaranteed
+  // delivery. Same wire shape as the per-channel arms above; cic's
+  // `userTopic.ts` dispatch routes them to the same
+  // `setJoined/setFailed/setKicked` setters which are last-write-wins
+  // idempotent.
+  | { kind: "joined"; network: string; channel: string; state: "joined" }
+  | {
+      kind: "join_failed";
+      network: string;
+      channel: string;
+      state: "failed";
+      reason: string | null;
+      numeric: number;
+    }
+  | {
+      kind: "kicked";
+      network: string;
+      channel: string;
+      state: "kicked";
+      by: string | null;
+      reason: string | null;
+    }
   | { kind: "bundle_hash"; hash: string };
 
 // Exhaustiveness assertion for discriminated-union switches. If the

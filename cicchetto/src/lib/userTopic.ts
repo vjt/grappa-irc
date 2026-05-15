@@ -19,7 +19,7 @@ import { selectedChannel, setSelectedChannel } from "./selection";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhowasBundle } from "./whowasCard";
-import { setPending } from "./windowState";
+import { setFailed, setJoined, setKicked, setPending } from "./windowState";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -342,6 +342,50 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         logoff_time: r.logoff_time as string | null,
         not_found: r.not_found,
       };
+    case "joined":
+      // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
+      // window-state terminal events dual-broadcast on user-topic by
+      // `Session.Server.broadcast_window_state_dual/3` to close the
+      // subscribe-then-broadcast race. Same wire shape as
+      // `narrowChannelEvent`'s `joined` arm; dispatcher routes to the
+      // same `setJoined` setter (last-write-wins idempotent).
+      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "joined")
+        return null;
+      return { kind: "joined", network: r.network, channel: r.channel, state: "joined" };
+    case "join_failed":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        r.state !== "failed" ||
+        (r.reason !== null && typeof r.reason !== "string") ||
+        typeof r.numeric !== "number"
+      )
+        return null;
+      return {
+        kind: "join_failed",
+        network: r.network,
+        channel: r.channel,
+        state: "failed",
+        reason: r.reason as string | null,
+        numeric: r.numeric,
+      };
+    case "kicked":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        r.state !== "kicked" ||
+        (r.by !== null && typeof r.by !== "string") ||
+        (r.reason !== null && typeof r.reason !== "string")
+      )
+        return null;
+      return {
+        kind: "kicked",
+        network: r.network,
+        channel: r.channel,
+        state: "kicked",
+        by: r.by as string | null,
+        reason: r.reason as string | null,
+      };
     default:
       return null;
   }
@@ -528,6 +572,29 @@ createRoot(() => {
           // event. No focus change — server-window auto-yank would
           // be antisocial.
           appendInviteAck(payload.network, payload.channel, payload.peer);
+          return;
+
+        case "joined":
+          // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
+          // window-state terminal events ALSO arrive on user-topic as a
+          // safety net for the subscribe-then-broadcast race documented
+          // at `Session.Server.broadcast_window_state_dual/3`. Same
+          // setter the per-channel arm at `subscribe.ts` calls;
+          // last-write-wins idempotent so dual-delivery (per-channel
+          // arrives a tick later than user-topic) is safe.
+          setJoined(channelKey(payload.network, payload.channel));
+          return;
+
+        case "join_failed":
+          // F1 — see `joined` arm above. Same shape + setter as
+          // `subscribe.ts:313` per-channel arm.
+          setFailed(channelKey(payload.network, payload.channel), payload.reason, payload.numeric);
+          return;
+
+        case "kicked":
+          // F1 — see `joined` arm above. Same shape + setter as
+          // `subscribe.ts` per-channel kicked arm.
+          setKicked(channelKey(payload.network, payload.channel), payload.by, payload.reason);
           return;
 
         default:
