@@ -142,6 +142,21 @@ services:
         # same surface as vjt.
         mix grappa.create_user --name admin-vjt --password test-password-not-secret
         mix run -e 'user = Grappa.Repo.get_by!(Grappa.Accounts.User, name: "admin-vjt"); {:ok, _} = Grappa.Accounts.update_admin_flags(user, %{is_admin: true})'
+        # M-cluster M-8 — visitor mint endpoint (`POST /auth/login`
+        # with `{identifier: nick}`) requires the configured
+        # `:visitor_network` slug (`config/config.exs`: "azzurra") to
+        # exist as a Networks.Network row PLUS at least one Server row
+        # so the visitor session can spawn an upstream IRC connection.
+        # `:visitor_network` is `compile_env!` (not runtime), so
+        # changing it per-environment isn't an option. Seed an
+        # "azzurra" network pointing at the same bahamut-test leaf via
+        # `Networks.find_or_create_network/1` (idempotent) + a server
+        # row via the existing `add_server` mix task. No credential
+        # bind here — visitor minting provisions its own anon visitor
+        # rows at request time; the credential table stays
+        # bind_network-scoped to user accounts.
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_sessions: 100})'
+        mix grappa.add_server --network azzurra --server bahamut-test:6667
     networks:
       grappa-e2e: {}
 
