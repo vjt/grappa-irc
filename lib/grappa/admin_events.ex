@@ -48,12 +48,13 @@ defmodule Grappa.AdminEvents do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Grappa.PubSub],
+    deps: [Grappa.Admission, Grappa.Networks, Grappa.PubSub],
     exports: [Wire]
 
   use GenServer
 
   alias Grappa.AdminEvents.Wire
+  alias Grappa.{Admission, Networks}
   alias Grappa.PubSub, as: GrappaPubSub
   alias Grappa.PubSub.Topic
 
@@ -64,7 +65,9 @@ defmodule Grappa.AdminEvents do
   @telemetry_events [
     [:grappa, :admission, :circuit, :open],
     [:grappa, :admission, :circuit, :close],
-    [:grappa, :admission, :capacity, :reject]
+    [:grappa, :admission, :capacity, :reject],
+    [:grappa, :session, :lifecycle, :spawned],
+    [:grappa, :session, :lifecycle, :terminated]
   ]
 
   defstruct buffer: []
@@ -133,6 +136,42 @@ defmodule Grappa.AdminEvents do
   end
 
   @impl GenServer
+  def handle_cast(
+        {:telemetry, [:grappa, :session, :lifecycle, lifecycle], _, metadata},
+        state
+      )
+      when lifecycle in [:spawned, :terminated] do
+    # Lifecycle events synthesize a `:cap_counts_changed` event by
+    # consulting `Admission.live_counts_for_network/1` (post-transition
+    # truth) + `Networks.get_network/1` (cap denominators) HERE in the
+    # sink — Session.Server.init/1's no-DB-read contract (cluster 2 A2
+    # cycle inversion) forbids the emitter from doing those lookups.
+    #
+    # On `:terminated` the Registry has NOT yet purged the dying pid (its
+    # monitor fires after `terminate/2` returns), so the raw Registry
+    # count includes self. Subtract one from the subject_kind that just
+    # exited to surface the true post-transition projection.
+    #
+    # S7 of U-5 review: defensive guard on subject_kind at the sink
+    # boundary. `Session.Server.emit_lifecycle/2` already constrains
+    # to `:user | :visitor`, but a future subject variant would crash
+    # the singleton GenServer and wipe the audit ring. Validate here
+    # too.
+    %{network_id: nid, subject_kind: sk} = metadata
+
+    if is_integer(nid) and sk in [:user, :visitor] do
+      :ok = broadcast_lifecycle(lifecycle, nid, sk)
+    else
+      Logger.warning("admin_events: dropped lifecycle event with unknown shape",
+        kind: lifecycle,
+        subject_kind: inspect(sk),
+        network_id: inspect(nid)
+      )
+    end
+
+    {:noreply, state}
+  end
+
   def handle_cast({:telemetry, event_name, measurements, metadata}, state) do
     case Wire.from_telemetry(event_name, measurements, metadata) do
       :skip -> {:noreply, state}
@@ -156,6 +195,61 @@ defmodule Grappa.AdminEvents do
   end
 
   ## ----- Internals ----------------------------------------------------
+
+  # Synthesize + broadcast (NOT buffer) a `:cap_counts_changed` event
+  # for the given lifecycle transition. State is intentionally not a
+  # parameter — this path never mutates the audit ring (S6 of U-5
+  # review).
+  #
+  # S2 of U-5 review: when `Networks.get_network/1` returns nil the
+  # network row was deleted between the lifecycle event firing and
+  # this lookup. Broadcasting `network_slug: nil, caps: nil` would
+  # lie about the operative caps (cic renders `∞` which is wrong —
+  # the cap was N>0 when the session ran). Skip the broadcast
+  # entirely; the ghost network's rows are gone from the next
+  # `/admin/networks` fetch anyway.
+  @spec broadcast_lifecycle(:spawned | :terminated, integer(), :user | :visitor) :: :ok
+  defp broadcast_lifecycle(lifecycle, network_id, subject_kind) do
+    case Networks.get_network(network_id) do
+      nil ->
+        :ok
+
+      net ->
+        raw = Admission.live_counts_for_network(network_id)
+        counts = if lifecycle == :terminated, do: drop_self(raw, subject_kind), else: raw
+
+        event =
+          Wire.cap_counts_changed(
+            network_id,
+            net.slug,
+            counts,
+            net.max_concurrent_visitor_sessions,
+            net.max_concurrent_user_sessions
+          )
+
+        broadcast_only(event)
+    end
+  end
+
+  defp drop_self(%{visitors: v} = m, :visitor), do: %{m | visitors: max(v - 1, 0)}
+  defp drop_self(%{users: u} = m, :user), do: %{m | users: max(u - 1, 0)}
+
+  @spec broadcast_only(Wire.event()) :: :ok
+  defp broadcast_only(event) do
+    case GrappaPubSub.broadcast_event(Topic.admin_events(), event) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("admin_events broadcast failed",
+          topic: Topic.admin_events(),
+          kind: event.kind,
+          reason: inspect(reason)
+        )
+
+        :ok
+    end
+  end
 
   @spec broadcast_and_buffer(Wire.event(), t()) :: t()
   defp broadcast_and_buffer(event, state) do

@@ -758,6 +758,16 @@ export type WireAdminEvent =
       actor_user_id: string | null;
       actor_user_name: string | null;
       at: string;
+    }
+  | {
+      kind: "cap_counts_changed";
+      network_id: number;
+      network_slug: string | null;
+      visitors: number;
+      users: number;
+      max_concurrent_visitor_sessions: number | null;
+      max_concurrent_user_sessions: number | null;
+      at: string;
     };
 
 export type AdminSnapshotPayload = { events: WireAdminEvent[] };

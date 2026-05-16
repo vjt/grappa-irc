@@ -1,6 +1,7 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import InlineConfirmButton from "./InlineConfirmButton";
+import { liveCountsByNetworkId } from "./lib/adminEvents";
 import {
   type AdminNetwork,
   type AdminNetworkCapsPatch,
@@ -89,6 +90,32 @@ function reapKey(): string {
 
 function resetKey(slug: string): string {
   return `reset:${slug}`;
+}
+
+function renderCap(cap: number | null): string {
+  return cap === null ? "∞" : String(cap);
+}
+
+type LiveCountsView = { visitors: number; users: number };
+
+// U-5: overlay live :cap_counts_changed counts on top of the
+// server-fetched cold-state baseline. Cold state comes from
+// `GET /admin/networks` (`net.live_counts.{visitors,users}`); live
+// updates flow through the adminEvents `liveCountsByNetworkId`
+// signal each time the server emits a :cap_counts_changed broadcast
+// (one per session lifecycle transition).
+//
+// S3 of U-5 review: caps are NEVER read from the live overlay.
+// The PATCH /admin/networks/:id response (refetch) is the cap
+// authority; live broadcast caps could lag behind a cap edit if
+// the network has zero session-lifecycle churn between PATCH +
+// next broadcast. Keep caps cold-only; overlay counts only.
+function effectiveLive(net: AdminNetwork): LiveCountsView {
+  const overlay = liveCountsByNetworkId()[net.id];
+  if (overlay !== undefined) {
+    return { visitors: overlay.visitors, users: overlay.users };
+  }
+  return { visitors: net.live_counts.visitors, users: net.live_counts.users };
 }
 
 const AdminNetworksTab: Component = () => {
@@ -261,7 +288,9 @@ const AdminNetworksTab: Component = () => {
           <thead>
             <tr>
               <th>slug</th>
+              <th>visitors (live/cap)</th>
               <th>max visitor sessions</th>
+              <th>users (live/cap)</th>
               <th>max user sessions</th>
               <th>max per client</th>
               <th>circuit</th>
@@ -275,6 +304,14 @@ const AdminNetworksTab: Component = () => {
               {(net) => (
                 <tr class="admin-networks-row" data-testid={`admin-network-row-${net.slug}`}>
                   <td>{net.slug}</td>
+                  <td
+                    data-testid={`admin-network-live-visitors-${net.slug}`}
+                    title={`${effectiveLive(net).visitors} live visitor sessions of ${renderCap(
+                      net.max_concurrent_visitor_sessions,
+                    )} cap`}
+                  >
+                    {effectiveLive(net).visitors}/{renderCap(net.max_concurrent_visitor_sessions)}
+                  </td>
                   <td>
                     <CapInput
                       slug={net.slug}
@@ -282,6 +319,14 @@ const AdminNetworksTab: Component = () => {
                       value={edits[net.slug]?.max_concurrent_visitor_sessions ?? ""}
                       onInput={(v) => onEditCap(net.slug, "max_concurrent_visitor_sessions", v)}
                     />
+                  </td>
+                  <td
+                    data-testid={`admin-network-live-users-${net.slug}`}
+                    title={`${effectiveLive(net).users} live user sessions of ${renderCap(
+                      net.max_concurrent_user_sessions,
+                    )} cap`}
+                  >
+                    {effectiveLive(net).users}/{renderCap(net.max_concurrent_user_sessions)}
                   </td>
                   <td>
                     <CapInput

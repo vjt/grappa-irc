@@ -538,6 +538,8 @@ defmodule Grappa.Session.Server do
         )
     end
 
+    emit_lifecycle(:spawned, state)
+
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
   end
 
@@ -644,6 +646,8 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
+    emit_lifecycle(:terminated, state)
+
     case state.client do
       nil ->
         :ok
@@ -674,7 +678,51 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  def terminate(_, _), do: :ok
+  def terminate(_, state) do
+    emit_lifecycle(:terminated, state)
+    :ok
+  end
+
+  # U-5: lifecycle telemetry → AdminEvents synthesizes :cap_counts_changed.
+  # Fires on EVERY init/1 success and EVERY terminate/2 invocation
+  # (graceful shutdown, link-death from Client crash, supervisor stop).
+  # Metadata-only emit — no DB read here (Server's no-DB contract per
+  # cluster 2 A2). The AdminEvents handle_cast consults Admission +
+  # Networks in its own process.
+  #
+  # `state` may be the initial map built in init/1 or any later mutated
+  # variant; we touch only `subject` + `network_id` which are immutable
+  # for the lifetime of this GenServer.
+  #
+  # ## Known stall window (S1 of U-5 review)
+  #
+  # `:spawned` fires near the END of init/1 (just before the
+  # `{:continue, _}` return) — so if init/1 raises BEFORE the emit
+  # (e.g. inside the Phoenix.PubSub.subscribe at line ~535), no
+  # telemetry fires and the counter stays accurate. If init/1 raises
+  # AFTER the emit but BEFORE handle_continue completes,
+  # `:spawned` was broadcast but `terminate/2` does NOT run (OTP
+  # contract: terminate only fires after init/1 returns successfully).
+  # Result: the live counter latches +1 until the next genuine
+  # lifecycle event on that network rebases it. The Networks tab
+  # `onMount` refetch of `GET /admin/networks` re-baselines from the
+  # Registry-canonical projection, so the staleness heals on the
+  # next admin pane open. Accepted trade-off: emitting from a
+  # `handle_continue(:emit_spawned, ...)` instead would close the
+  # window but add a mailbox round-trip per spawn for a narrow case.
+  @spec emit_lifecycle(:spawned | :terminated, %{
+          :subject => Grappa.Session.subject(),
+          :network_id => integer(),
+          optional(any()) => any()
+        }) :: :ok
+  defp emit_lifecycle(lifecycle, %{subject: {kind, _}, network_id: nid})
+       when lifecycle in [:spawned, :terminated] and kind in [:user, :visitor] and is_integer(nid) do
+    :telemetry.execute(
+      [:grappa, :session, :lifecycle, lifecycle],
+      %{},
+      %{network_id: nid, subject_kind: kind}
+    )
+  end
 
   # Persist-then-send is intentional Phase 1. Rationale: if the persist
   # fails (validation), we surface the changeset error to the caller

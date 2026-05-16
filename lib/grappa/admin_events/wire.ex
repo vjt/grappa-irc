@@ -55,6 +55,7 @@ defmodule Grappa.AdminEvents.Wire do
           | :session_terminated
           | :network_caps_updated
           | :circuit_reset
+          | :cap_counts_changed
 
   @type circuit_open_event :: %{
           kind: :circuit_open,
@@ -150,6 +151,17 @@ defmodule Grappa.AdminEvents.Wire do
           at: String.t()
         }
 
+  @type cap_counts_changed_event :: %{
+          kind: :cap_counts_changed,
+          network_id: integer(),
+          network_slug: String.t() | nil,
+          visitors: non_neg_integer(),
+          users: non_neg_integer(),
+          max_concurrent_visitor_sessions: integer() | nil,
+          max_concurrent_user_sessions: integer() | nil,
+          at: String.t()
+        }
+
   @type event ::
           circuit_open_event()
           | circuit_close_event()
@@ -161,6 +173,7 @@ defmodule Grappa.AdminEvents.Wire do
           | session_terminated_event()
           | network_caps_updated_event()
           | circuit_reset_event()
+          | cap_counts_changed_event()
 
   ## ----- Constructors --------------------------------------------------
   ##
@@ -419,6 +432,88 @@ defmodule Grappa.AdminEvents.Wire do
       at: now()
     }
   end
+
+  @doc """
+  Derived live-counts event emitted by the AdminEvents sink on
+  `[:grappa, :session, :lifecycle, :spawned | :terminated]`.
+
+  Unlike `:session_terminated` (operator-attributed, fires only on
+  explicit terminate verbs from admin controllers), this event fires
+  on EVERY lifecycle transition — boot-time spawn, crash-respawn,
+  graceful shutdown, link-death — and carries the projection
+  `Admission.live_counts_for_network/1` would compute right after the
+  transition. No actor attribution: this is the anonymous counts
+  surface the Networks tab subscribes to.
+
+  The `visitors`/`users` field shape mirrors
+  `Admission.live_counts_for_network/1`'s return map so cic can read
+  one shape across the live broadcast AND the cold-state
+  `GET /admin/networks` `live_counts` projection (S8 of U-5 review:
+  one wire shape per logical field, no rename adapters).
+
+  Caps echoed on every event so the cic Networks tab doesn't need a
+  parallel `GET /admin/networks` round-trip to re-render the
+  denominator after a `PATCH /networks/:id` lands — the next
+  cap_counts_changed carries the new cap directly.
+  """
+  @spec cap_counts_changed(
+          integer(),
+          String.t() | nil,
+          %{visitors: non_neg_integer(), users: non_neg_integer()},
+          integer() | nil,
+          integer() | nil
+        ) :: cap_counts_changed_event()
+  def cap_counts_changed(
+        network_id,
+        network_slug,
+        %{visitors: v, users: u} = counts,
+        max_visitor_sessions,
+        max_user_sessions
+      ) do
+    :ok =
+      validate_cap_counts_args(
+        network_id,
+        network_slug,
+        counts,
+        max_visitor_sessions,
+        max_user_sessions
+      )
+
+    %{
+      kind: :cap_counts_changed,
+      network_id: network_id,
+      network_slug: network_slug,
+      visitors: v,
+      users: u,
+      max_concurrent_visitor_sessions: max_visitor_sessions,
+      max_concurrent_user_sessions: max_user_sessions,
+      at: now()
+    }
+  end
+
+  # Split out to keep `cap_counts_changed/5` below Credo's cyclomatic
+  # gate. Two helpers (one per arg cluster) per `validate_caps_args/5`
+  # pattern; both raise FunctionClauseError on shape violation.
+  defp validate_cap_counts_args(
+         network_id,
+         network_slug,
+         %{visitors: v, users: u},
+         max_visitor_sessions,
+         max_user_sessions
+       )
+       when is_integer(network_id) and (is_binary(network_slug) or is_nil(network_slug)) do
+    :ok = validate_cap_count_pair(v, u)
+    :ok = validate_cap_max_pair(max_visitor_sessions, max_user_sessions)
+    :ok
+  end
+
+  defp validate_cap_count_pair(v, u)
+       when is_integer(v) and v >= 0 and is_integer(u) and u >= 0,
+       do: :ok
+
+  defp validate_cap_max_pair(max_v, max_u)
+       when (is_integer(max_v) or is_nil(max_v)) and (is_integer(max_u) or is_nil(max_u)),
+       do: :ok
 
   ## ----- Telemetry adapter ---------------------------------------------
 

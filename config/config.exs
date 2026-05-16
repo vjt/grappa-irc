@@ -253,7 +253,17 @@ config :logger, :console,
     # broadcast. Surfaces silent-drop class per CLAUDE.md "Log honesty"
     # when AdminEvents fails to fan out to admin sockets.
     :topic,
-    :kind
+    :kind,
+    # U-5 admin live cap counters (S7 defense-in-depth): the sink-side
+    # boundary guard in `Grappa.AdminEvents.handle_cast/2` on the
+    # `[:grappa, :session, :lifecycle, _]` clause logs the dropped
+    # event's `:subject_kind` (atom inspect — `:user | :visitor` is
+    # expected; anything else is a future-shape drop worth investigating)
+    # and `:network_id` (integer inspect). Drop is intentionally loud
+    # per CLAUDE.md "Don't bake silent fallbacks" — operator log search
+    # surfaces unknown shapes before they become production bugs.
+    :subject_kind,
+    :network_id
   ]
 
 import_config "#{config_env()}.exs"

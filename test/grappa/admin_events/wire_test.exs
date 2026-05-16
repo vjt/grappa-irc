@@ -164,6 +164,39 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
+  describe "cap_counts_changed/5" do
+    test "renders the typed wire shape" do
+      event = Wire.cap_counts_changed(7, "azzurra", %{visitors: 2, users: 1}, 3, 3)
+
+      assert event.kind == :cap_counts_changed
+      assert event.network_id == 7
+      assert event.network_slug == "azzurra"
+      assert event.visitors == 2
+      assert event.users == 1
+      assert event.max_concurrent_visitor_sessions == 3
+      assert event.max_concurrent_user_sessions == 3
+      assert is_binary(event.at)
+    end
+
+    test "accepts nil caps (unlimited)" do
+      event = Wire.cap_counts_changed(7, "azzurra", %{visitors: 0, users: 0}, nil, nil)
+
+      assert event.max_concurrent_visitor_sessions == nil
+      assert event.max_concurrent_user_sessions == nil
+    end
+
+    test "accepts nil network_slug for deleted-network race" do
+      event = Wire.cap_counts_changed(7, nil, %{visitors: 0, users: 0}, nil, nil)
+      assert event.network_slug == nil
+    end
+
+    test "rejects negative counts" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.cap_counts_changed(7, "azzurra", %{visitors: -1, users: 0}, nil, nil)
+      end
+    end
+  end
+
   describe "from_telemetry/3" do
     test "translates :circuit, :open" do
       event =

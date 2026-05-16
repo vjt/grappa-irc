@@ -23,16 +23,50 @@ import { joinAdminEvents } from "./socket";
 //
 // Ring cap matches the server (200); operators reopening the admin
 // pane see the same buffer the server holds.
+//
+// ## U-5: cap_counts_changed live projection
+//
+// `:cap_counts_changed` events are NOT folded into the events ring
+// (the ring is an audit log; per-session lifecycle churn would
+// saturate the 200-cap in minutes on a busy network). Instead they
+// update a separate `liveCountsByNetworkId` signal keyed on
+// `network_id` carrying the latest `{visitor_count, user_count,
+// max_concurrent_visitor_sessions, max_concurrent_user_sessions}`.
+// AdminNetworksTab subscribes to this signal and overlays it on the
+// server-fetched rows (initial fetch + post-mutation refetch still
+// provides the cold-state baseline; lifecycle updates flow live).
 
 const CAP = 200;
 
 const [events, setEvents] = createSignal<WireAdminEvent[]>([]);
 export const adminEvents = events;
 
+export type LiveCounts = {
+  visitors: number;
+  users: number;
+  max_concurrent_visitor_sessions: number | null;
+  max_concurrent_user_sessions: number | null;
+};
+
+const [liveCounts, setLiveCounts] = createSignal<Record<number, LiveCounts>>({});
+export const liveCountsByNetworkId = liveCounts;
+
 let installed: Channel | null = null;
 
 function cap(list: WireAdminEvent[]): WireAdminEvent[] {
   return list.length > CAP ? list.slice(0, CAP) : list;
+}
+
+function recordCapCounts(ev: Extract<WireAdminEvent, { kind: "cap_counts_changed" }>): void {
+  setLiveCounts((prev) => ({
+    ...prev,
+    [ev.network_id]: {
+      visitors: ev.visitors,
+      users: ev.users,
+      max_concurrent_visitor_sessions: ev.max_concurrent_visitor_sessions,
+      max_concurrent_user_sessions: ev.max_concurrent_user_sessions,
+    },
+  }));
 }
 
 // Dispatch typed event into the store. Switch is exhaustive on
@@ -53,6 +87,10 @@ function ingest(ev: WireAdminEvent): void {
     case "circuit_reset":
       setEvents((prev) => cap([ev, ...prev]));
       return;
+    case "cap_counts_changed":
+      // Routed to the live-counts projection, NOT the events ring.
+      recordCapCounts(ev);
+      return;
     default:
       assertNever(ev);
   }
@@ -64,6 +102,10 @@ export function installAdminEvents(channel: Channel): void {
 
   channel.on("snapshot", (payload: AdminSnapshotPayload) => {
     if (installed !== channel) return;
+    // Snapshot is the cold-WS replay of the audit ring. Server-side
+    // omits `cap_counts_changed` from the buffer (live projection
+    // surface; would saturate the 200-cap), so the snapshot only
+    // contains ring-eligible kinds.
     setEvents(cap(payload.events));
   });
 
@@ -79,6 +121,7 @@ export function uninstallAdminEvents(): void {
     installed = null;
   }
   setEvents([]);
+  setLiveCounts({});
 }
 
 // Production wrapper: join + install in one call so AdminPane.onMount

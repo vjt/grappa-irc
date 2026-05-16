@@ -13,13 +13,17 @@ defmodule Grappa.AdminEventsTest do
 
   alias Grappa.{AdminEvents, Repo}
   alias Grappa.AdminEvents.Wire
+  alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
+  alias Grappa.Session.Server, as: SessionServer
 
   @telemetry_handler_id "grappa-admin-events"
   @telemetry_events [
     [:grappa, :admission, :circuit, :open],
     [:grappa, :admission, :circuit, :close],
-    [:grappa, :admission, :capacity, :reject]
+    [:grappa, :admission, :capacity, :reject],
+    [:grappa, :session, :lifecycle, :spawned],
+    [:grappa, :session, :lifecycle, :terminated]
   ]
 
   setup do
@@ -136,5 +140,139 @@ defmodule Grappa.AdminEventsTest do
                      },
                      500
     end
+  end
+
+  describe "session-lifecycle adapter (U-5)" do
+    setup do
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), Process.whereis(AdminEvents))
+
+      {:ok, net} =
+        Repo.insert(%Network{
+          slug: "u5-net-#{System.unique_integer([:positive])}",
+          max_concurrent_visitor_sessions: 3,
+          max_concurrent_user_sessions: 5,
+          inserted_at: DateTime.utc_now(),
+          updated_at: DateTime.utc_now()
+        })
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+      %{network: net}
+    end
+
+    test ":spawned synthesizes :cap_counts_changed with post-transition counts + caps",
+         %{network: net} do
+      # Two live visitor sessions + one live user session on this network.
+      register_fake_session({:visitor, "v1"}, net.id)
+      register_fake_session({:visitor, "v2"}, net.id)
+      register_fake_session({:user, "u1"}, net.id)
+
+      :telemetry.execute(
+        [:grappa, :session, :lifecycle, :spawned],
+        %{},
+        %{network_id: net.id, subject_kind: :visitor}
+      )
+
+      # Pin network_id: the admin_events topic is shared across the suite,
+      # and a Session.Server elsewhere terminating mid-test would bleed
+      # into this mailbox via the same broadcast. Pinning isolates this
+      # test's network row from sibling-suite noise.
+      net_id = net.id
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{
+                         kind: :cap_counts_changed,
+                         network_id: ^net_id,
+                         network_slug: slug,
+                         visitors: 2,
+                         users: 1,
+                         max_concurrent_visitor_sessions: 3,
+                         max_concurrent_user_sessions: 5
+                       }
+                     },
+                     500
+
+      assert slug == net.slug
+    end
+
+    test ":terminated subtracts self from its subject_kind bucket",
+         %{network: net} do
+      # The dying pid is still registered when terminate fires.
+      register_fake_session({:visitor, "v1"}, net.id)
+      register_fake_session({:user, "u1"}, net.id)
+
+      # Simulate user session terminating: Registry still reports 1 user,
+      # but the wire MUST surface 0 users (subtract self).
+      :telemetry.execute(
+        [:grappa, :session, :lifecycle, :terminated],
+        %{},
+        %{network_id: net.id, subject_kind: :user}
+      )
+
+      net_id = net.id
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{
+                         kind: :cap_counts_changed,
+                         network_id: ^net_id,
+                         visitors: 1,
+                         users: 0
+                       }
+                     },
+                     500
+    end
+
+    test "skips broadcast entirely when network row was deleted between lifecycle + lookup (S2 of U-5 review)" do
+      ghost_id = 9_999_999
+      register_fake_session({:visitor, "v1"}, ghost_id)
+
+      :telemetry.execute(
+        [:grappa, :session, :lifecycle, :spawned],
+        %{},
+        %{network_id: ghost_id, subject_kind: :visitor}
+      )
+
+      # Phantom event would lie about caps (collapse to nil/∞). The
+      # admission row is gone; the next /admin/networks fetch drops the
+      # row entirely. No broadcast is the honest signal.
+      #
+      # Pin ghost_id so unrelated suite-wide lifecycle events on other
+      # networks don't trip the refute.
+      refute_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :cap_counts_changed, network_id: ^ghost_id}
+                     },
+                     200
+    end
+
+    test "broadcasts but does NOT enter the snapshot ring buffer", %{network: net} do
+      register_fake_session({:visitor, "v1"}, net.id)
+
+      :telemetry.execute(
+        [:grappa, :session, :lifecycle, :spawned],
+        %{},
+        %{network_id: net.id, subject_kind: :visitor}
+      )
+
+      net_id = net.id
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :cap_counts_changed, network_id: ^net_id}
+                     },
+                     500
+
+      # Drain mailbox via call. cap_counts_changed is broadcast-only —
+      # the audit ring would saturate on session lifecycle churn; cic
+      # consumes the live projection via a separate signal.
+      _ = AdminEvents.snapshot()
+      assert [] = AdminEvents.snapshot()
+    end
+  end
+
+  # Register a fake-session key under the current test pid for
+  # Admission.live_counts_for_network/1 to observe; auto-unregister
+  # on test exit so sibling tests see a clean registry.
+  defp register_fake_session(subject, network_id) do
+    key = SessionServer.registry_key(subject, network_id)
+    {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
+    on_exit(fn -> _ = Registry.unregister(Grappa.SessionRegistry, key) end)
   end
 end

@@ -58,6 +58,15 @@ function renderEvent(ev: WireAdminEvent): string {
       return `${ev.network_slug} caps: visitorSessions=${capLabel(ev.max_concurrent_visitor_sessions)}, userSessions=${capLabel(ev.max_concurrent_user_sessions)}, perClient=${capLabel(ev.max_per_client)}${actorSuffix(ev.actor_user_name)}`;
     case "circuit_reset":
       return `circuit RESET for ${networkLabel(ev.network_slug, ev.network_id)}${actorSuffix(ev.actor_user_name)}`;
+    case "cap_counts_changed":
+      // Server-side broadcasts this kind but DOES NOT buffer it in the
+      // audit ring (live-projection surface consumed by AdminNetworksTab
+      // via the liveCountsByNetworkId signal). The tsc-exhaustive arm
+      // exists so adding new kinds to WireAdminEvent stays loud per
+      // `feedback_no_silent_drops_closed`; the human-readable label
+      // covers the future case where this kind is ever surfaced in
+      // the Events tab (e.g. debug snapshot rerun).
+      return `${networkLabel(ev.network_slug, ev.network_id)} live: visitors=${ev.visitors}/${capLabel(ev.max_concurrent_visitor_sessions)}, users=${ev.users}/${capLabel(ev.max_concurrent_user_sessions)}`;
     default:
       return assertNever(ev);
   }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import type { Channel } from "phoenix";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdminNetwork } from "../lib/api";
+import type { AdminNetwork, WireAdminEvent } from "../lib/api";
 
 vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
@@ -17,7 +18,12 @@ vi.mock("../lib/api", async () => {
   };
 });
 
+vi.mock("../lib/socket", () => ({
+  joinAdminEvents: vi.fn(),
+}));
+
 import AdminNetworksTab from "../AdminNetworksTab";
+import { installAdminEvents, uninstallAdminEvents } from "../lib/adminEvents";
 
 // M-cluster M-10 — Networks tab unit suite. Mirror of
 // AdminVisitorsTab.test.tsx / AdminSessionsTab.test.tsx structure.
@@ -93,7 +99,25 @@ const UNLIMITED: AdminNetwork = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  uninstallAdminEvents();
 });
+
+// Fake channel that captures handlers; used to inject cap_counts_changed
+// events into the adminEvents store from inside the unit test.
+function makeFakeAdminChannel(): {
+  channel: Channel;
+  fireEvent: (event: WireAdminEvent) => void;
+} {
+  let eventCb: ((p: WireAdminEvent) => void) | null = null;
+  const channel = {
+    on: (name: string, cb: unknown) => {
+      if (name === "event") eventCb = cb as (p: WireAdminEvent) => void;
+      return 0;
+    },
+    leave: () => ({ receive: () => ({ receive: () => undefined }) }),
+  } as unknown as Channel;
+  return { channel, fireEvent: (e) => eventCb?.(e) };
+}
 
 describe("AdminNetworksTab", () => {
   it("renders one row per network after onMount fetch", async () => {
@@ -418,6 +442,69 @@ describe("AdminNetworksTab", () => {
         `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
       ) as HTMLInputElement;
       expect(post.value).toBe("100");
+    });
+  });
+
+  describe("live cap counters (U-5)", () => {
+    it("renders cold-state live counts from net.live_counts (no broadcast yet)", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([
+        { ...BAHAMUT, live_counts: { visitors: 2, users: 1 } },
+      ]);
+
+      render(() => <AdminNetworksTab />);
+
+      const cell = await screen.findByTestId(`admin-network-live-visitors-${BAHAMUT.slug}`);
+      expect(cell.textContent).toBe("2/100");
+      const usersCell = screen.getByTestId(`admin-network-live-users-${BAHAMUT.slug}`);
+      expect(usersCell.textContent).toBe("1/3");
+    });
+
+    it("renders ∞ when the cap is null (unlimited)", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([
+        { ...UNLIMITED, live_counts: { visitors: 7, users: 4 } },
+      ]);
+
+      render(() => <AdminNetworksTab />);
+
+      const cell = await screen.findByTestId(`admin-network-live-visitors-${UNLIMITED.slug}`);
+      expect(cell.textContent).toBe("7/∞");
+    });
+
+    it("overlays live :cap_counts_changed broadcasts (server > cold state)", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([
+        { ...BAHAMUT, live_counts: { visitors: 0, users: 0 } },
+      ]);
+
+      render(() => <AdminNetworksTab />);
+
+      // Cold state first.
+      let cell = await screen.findByTestId(`admin-network-live-visitors-${BAHAMUT.slug}`);
+      expect(cell.textContent).toBe("0/100");
+
+      // Install fake channel, fire broadcast.
+      const fake = makeFakeAdminChannel();
+      installAdminEvents(fake.channel);
+
+      fake.fireEvent({
+        kind: "cap_counts_changed",
+        network_id: BAHAMUT.id,
+        network_slug: BAHAMUT.slug,
+        visitors: 3,
+        users: 2,
+        max_concurrent_visitor_sessions: 100,
+        max_concurrent_user_sessions: 3,
+        at: "2026-05-17T12:00:00Z",
+      } as WireAdminEvent);
+
+      await waitFor(() => {
+        cell = screen.getByTestId(`admin-network-live-visitors-${BAHAMUT.slug}`);
+        expect(cell.textContent).toBe("3/100");
+      });
+      const usersCell = screen.getByTestId(`admin-network-live-users-${BAHAMUT.slug}`);
+      expect(usersCell.textContent).toBe("2/3");
     });
   });
 });
