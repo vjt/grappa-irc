@@ -102,22 +102,75 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   Boundary + ExUnit + StreamData + Mox + Bypass + ExMachina +
   excoveralls + observer_cli + recon.
 
-### How to run scripts — THE ONLY WAY
+### Operator dispatcher — `bin/grappa`
 
-**Always use relative paths from the repo root** (`/srv/grappa` for main,
-or the worktree dir like `~/code/IRC/grappa-task2/`). Never `cd /srv/grappa &&`,
-never absolute `/srv/grappa/scripts/foo.sh`. The scripts are worktree-aware:
-they detect the worktree, cd to the MAIN repo for docker compose (so the
-project name + image + named volumes — deps, _build, hex, mix, PLT — are
-shared across all worktrees) and bind-mount the worktree's source files
-(lib, test, config, priv/repo, mix.exs, etc.) on top via `-v` overrides.
-The live container always has main's source mounted; from a worktree,
-`scripts/*` always uses oneshot runs so the worktree code wins. Anything
-not overridden (priv/plts cache, runtime/sqlite db) comes from the
-main repo so PLT cache and operator state stay single-source.
+`bin/grappa` is the host-side operator interface. One verb per task,
+boot-time mix tasks + live-state remsh verbs co-located under one
+banner. Always invoke from the repo root (or any worktree dir) — the
+dispatcher cd's to the main repo for docker compose and forwards
+worktree volumes via oneshot bindings (same machinery as
+`scripts/*.sh`).
 
 ```
-scripts/mix.sh <task>        # mix task in container
+bin/grappa help                  # list verbs grouped by category
+bin/grappa help <verb>           # per-verb help
+
+# Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
+bin/grappa create-user --name <user> --password <pw>
+bin/grappa bind-network --user <user> --network <slug> --nick <nick> --auth <method>
+bin/grappa add-server --network <slug> --host <host> --port <port> [--tls]
+bin/grappa remove-server --network <slug> --host <host> --port <port>
+bin/grappa set-network-caps --network <slug> --max <n>
+bin/grappa unbind-network --user <user> --network <slug>
+bin/grappa update-network-credential ...
+bin/grappa seed-scrollback ...
+bin/grappa gen-encryption-key
+bin/grappa gen-vapid
+
+# Live-state verbs (--rpc-eval against the live BEAM via T-2 dist shell):
+bin/grappa delete-visitor <uuid>     # sync terminate + Repo.delete; frees cap slot
+bin/grappa reap-visitors             # force-run Visitors.Reaper.sweep (otherwise 60s tick)
+bin/grappa list-sessions             # tab-separated: subject, network_id, pid, mailbox, memory
+bin/grappa list-credentials          # tab-separated: user, network, nick, state (ALL states)
+bin/grappa list-visitors             # tab-separated: id, nick, network, expires_at, identified
+
+# Live-state attach:
+bin/grappa remote-shell              # iex --remsh against live BEAM
+bin/grappa remote-shell --batch -e <expr>   # one-shot --rpc-eval
+
+# Debug:
+bin/grappa open-db [sqlite3 args...] # interactive sqlite3 (RW; auto-detects MIX_ENV)
+bin/grappa shell                     # bash inside the live container
+```
+
+The Elixir entry points for live-state verbs live in
+`lib/grappa/operator.ex` (`Grappa.Operator.delete_visitor!/1`,
+`list_*_text!/0`, etc.) — one feature, one code path: the bash
+dispatcher is thin, the logic + text formatting is testable Elixir
+that survives a schema field rename.
+
+### Developer scripts — `scripts/*.sh`
+
+Sibling layer to `bin/grappa` for inner-loop development: gates,
+container plumbing, ad-hoc shells. `bin/grappa` doesn't try to absorb
+these — they're a different audience (developer iterating inside a
+worktree vs. operator running against the live container).
+
+**Always use relative paths from the repo root** (`/srv/grappa` for
+main, or the worktree dir like `~/code/IRC/grappa-task2/`). Never
+`cd /srv/grappa &&`, never absolute `/srv/grappa/scripts/foo.sh`. The
+scripts are worktree-aware: they detect the worktree, cd to the MAIN
+repo for docker compose (so the project name + image + named volumes —
+deps, _build, hex, mix, PLT — are shared across all worktrees) and
+bind-mount the worktree's source files (lib, test, config, priv/repo,
+mix.exs, etc.) on top via `-v` overrides. The live container always
+has main's source mounted; from a worktree, `scripts/*` always uses
+oneshot runs so the worktree code wins. Anything not overridden
+(priv/plts cache, runtime/sqlite db) comes from the main repo so PLT
+cache and operator state stay single-source.
+
+```
+scripts/mix.sh <task>        # mix task in container (--env=dev|prod|test override)
 scripts/iex.sh               # IEx shell in container
 scripts/test.sh              # mix test --warnings-as-errors
 scripts/credo.sh             # mix credo --strict
@@ -125,8 +178,9 @@ scripts/dialyzer.sh          # mix dialyzer
 scripts/format.sh            # mix format
 scripts/format.sh --check    # mix format --check-formatted (CI mode)
 scripts/check.sh             # full mix ci.check (every gate)
+scripts/bats.sh              # bats suite for bin/grappa
 scripts/integration.sh       # full e2e suite (testnet + grappa + nginx + Playwright)
-scripts/db.sh                # sqlite3 against runtime/grappa_dev.db
+scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
 scripts/monitor.sh           # docker compose logs -f
 scripts/observer.sh          # observer_cli runtime introspection
@@ -135,7 +189,7 @@ scripts/deploy.sh --force-hot   # bypass preflight, hot-deploy unconditionally
 scripts/deploy.sh --force-cold  # skip preflight, cold-deploy (rebuild + recreate)
 scripts/deploy-cic.sh        # cic bundle deploy: vite build + broadcast bundle_hash for refresh banner
 scripts/register-dns.sh      # operator: register host in local DNS
-scripts/shell.sh             # bash inside container (debug only)
+scripts/shell.sh             # bash inside container (debug only — bin/grappa shell preferred)
 ```
 
 ### Hot vs cold deploy — when each path triggers
@@ -348,6 +402,18 @@ not the surrounding code.**
   URL pattern that is text on the wire and a clickable link in
   cic — that is the model.
 - **Bite-sized commits**: one logical change. Messages explain WHY.
+- **Log honesty**: when a fast path skips work, the log message must
+  describe the state it OBSERVED, not the absence of work. The pre-T-4
+  `bootstrap: no credentials bound — running web-only` lied when N
+  credentials existed but all were `:parked` (T32) or `:failed` (kline)
+  — `list_credentials_for_all_users/0` filters `:connected`-only, so an
+  all-parked DB returned `[]` to Bootstrap. Operator chased "DB is
+  empty" instead of "vjt disconnected this network." Post-T-4 the line
+  reads `0 credentials in :connected state (N parked, M failed) —
+  running web-only`. The general rule: fast paths state what they
+  observed, not what they did. If your fast path is "skip because input
+  was empty," check WHY it was empty before logging the skip — the
+  empty input is often a different bug surfacing at the wrong layer.
 
 ### OTP patterns (Elixir-specific)
 

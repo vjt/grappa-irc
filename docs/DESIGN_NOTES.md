@@ -5265,6 +5265,97 @@ debug globals, P-2 TLS verify-CA, cards UX renegotiation
 
 ---
 
+## 2026-05-16 — T cluster (task harness) CLOSED
+
+Three-cluster arc per `docs/plans/2026-05-16-tmu-cluster-arc.md`:
+T (task harness) → M (admin console) → U (cap honesty). T-cluster
+closed first.
+
+### Why
+
+Captured live during the 2026-05-16 stale-visitor incident: vjt
+couldn't connect because every cap slot on azzurra was held by
+debug visitors that nobody had a clean way to delete. Adjacent
+findings: `scripts/mix.sh` hardcoded `MIX_ENV=dev` (prod-DB tasks
+unreachable without a manual env-var dance); no way to attach to
+the LIVE BEAM (`bin/start.sh` lacked sname + cookie so `iex --remsh`
+was unavailable); `scripts/db.sh` against prod was readonly, forcing
+operators to bypass the helper to delete rows; mix-task
+discoverability was poor (9 `grappa.*` tasks scattered with no
+top-level help). Cluster goal: "should be fucking simple to run an
+admin task" (vjt).
+
+### What shipped
+
+| Bucket | Commit | Notes |
+|--------|--------|-------|
+| T-1 | `ab59d3e` | `bin/grappa` host-side dispatcher + MIX_ENV refactor + bats suite |
+| T-2 | `3fcb269` + `82096a1` | Erlang dist on the live BEAM + `remote-shell --batch -e <expr>` via `--rpc-eval` |
+| T-3 precursor | `72b91c9` | `AdmissionStateHelpers.reset_session_supervisor/0` (raises on leak) — closed B5 ETS-leak review action |
+| T-3 | `427c22d` | `Grappa.Operator` + 5 live-state verbs (delete-visitor, reap-visitors, list-*) via `--rpc-eval` |
+| T-4 | (this commit) | Docs sweep + `Credentials.count_by_state/0` + Bootstrap honest log |
+
+### Decisions
+
+| ID | Decision | Why |
+|----|----------|-----|
+| T-A1 | `bin/grappa` is host-side, not container-side | Operator already has the repo; no chicken-and-egg "how do I get into the container to run bin/grappa" problem |
+| T-A2 | Hybrid: boot-time verbs → mix tasks; live-state verbs → `--rpc-eval` against the live BEAM | Live-state mutations need to terminate Session.Server synchronously to free the registry cap slot; a fresh BEAM (mix-task path) can't see the live tree |
+| T-A3 | Keep `scripts/mix.sh` name; drop the `MIX_ENV=dev` hardcode; auto-detect from container env with `--env=` override | vjt 2026-05-16: "mix rename makes sense if mix is used only in dev. if we can use mix in prod as well no" |
+| T-A4 | `kebab-case` on CLI, `snake_case` for underlying mix tasks; per-verb help via heredoc | Unix convention + Elixir convention; mapping table inside `bin/grappa` |
+| T-A5 | Bats for `bin/grappa` dispatch + ExUnit for underlying helpers | Bats stubs `docker compose` via PATH override so tests don't need a live container |
+| T-A6 | Bootstrap honest log → `Credentials.count_by_state/0` new helper | Pre-T-4 "no credentials bound" lied when N creds existed but all were `:parked` — masked the real "user disconnected" state |
+| T-A7 | DESCOPED (phantom bug) | Brainstorm claim "Login doesn't set expires_at, prod has NULL rows" was false: `Visitors.find_or_provision_anon/3` already sets `expires_at = now + 48h`; schema validates "must be in future"; prod DB has 0 NULL rows (verified via `scripts/db.sh`). V7 migration made the column nullable specifically for IDENTIFIED visitors. Per CLAUDE.md "Challenge the spec" |
+
+### Reviewer-caught bugs (T-3 pre-commit)
+
+1. **`Credentials.list_credentials_for_all_users/0` silent-filter**:
+   filters `connection_state == :connected`. `bin/grappa
+   list-credentials` claimed "every bound credential" but parked +
+   failed rows were invisible — exactly the rows an operator
+   triaging a stuck network needs. Fix: new
+   `Credentials.list_all_credentials/0` drops the filter. Verified
+   live post-deploy: vjt's `grappa@azzurra` cred shows
+   `state=parked reason=user-disconnect`.
+
+2. **Registry match spec too loose**: pattern `{{:"$1", :"$2",
+   :"$3"}, ...}` matched any 3-tuple key — runtime-crashes if a
+   future non-session registration ever appears. Fix: pin `:session`
+   literal in the head (mirror of
+   `auth_controller.ex:236`'s `stop_all_user_sessions` pattern).
+
+3. **`delete_visitor!` success line lied on concurrent-reaper race**:
+   when `Visitors.delete/1` returned `{:error, :not_found}` (Reaper
+   raced), the code printed "deleted visitor X" claiming a delete
+   the sibling did. Fix: distinct "already deleted (concurrent
+   reaper or operator)" line.
+
+### Lessons captured
+
+- **Phantom-bug descope discipline**: when a spec claims a bug
+  exists, verify against current code AND current DB state before
+  building the fix. T-A7's "backfill helper for NULL expires_at"
+  would have touched ZERO rows; the brainstorm inherited a stale
+  observation. Lesson now codified in CLAUDE.md "Directions over
+  code" + "Challenge the spec" rules (already there; T-3 was the
+  validation that they fire correctly).
+- **NetworkCircuit ETS leak closed** (B5 codebase-review action):
+  per-test-file `clear_registry_for/1` helpers silently exhausted
+  their 500ms budget under CI load, leaving zombie Session.Servers
+  registered against `network_id`s that sqlite recycled into the
+  next test's fresh row. Fix:
+  `AdmissionStateHelpers.reset_session_supervisor/0` terminates
+  every SessionSupervisor child + raises on Registry-converge
+  timeout. Loud > silent.
+- **Log honesty as a code-shape rule**: T-A6 added a new CLAUDE.md
+  rule under "Code-shape rules" — fast paths state what they
+  observed, not what they did. The pre-T-4 Bootstrap line is the
+  archetypal anti-pattern; codifying so future skip-and-log
+  shortcuts have a doc to violate.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

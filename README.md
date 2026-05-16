@@ -41,15 +41,31 @@ polish, public docs all pending).
 
 grappa runs as a single container against a sqlite DB. There is no
 config file — every `(user, network)` binding lives in the DB and is
-read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
+read by `Grappa.Bootstrap` at boot. The operator interface is
+`bin/grappa`:
 
-* **Mix tasks** invoked through `scripts/mix.sh`. The container runs
-  `mix phx.server` in every environment (dev = prod = CI, single
-  image), so mix tasks work against the live DB the same way they
-  work against the dev DB — same fn, same validation contract.
-* **Live IEx** via `scripts/iex.sh` for one-off mutations that need
-  to run inside the running supervision tree (Repo, Vault, Registry
-  all up).
+```sh
+bin/grappa help                       # list every verb (boot-time + live-state + debug)
+bin/grappa help <verb>                # per-verb help
+bin/grappa create-user --name vjt --password ...   # mix-task verb (boot-time)
+bin/grappa list-visitors              # live-state verb (--rpc-eval against the live BEAM)
+bin/grappa delete-visitor <uuid>      # sync terminate Session.Server + Repo.delete
+bin/grappa remote-shell               # iex --remsh into the live BEAM
+```
+
+The dispatcher routes each verb to the right transport: **boot-time
+verbs** (`create-user`, `bind-network`, `add-server`, etc.) run as
+mix tasks inside the container; **live-state verbs**
+(`delete-visitor`, `reap-visitors`, `list-*`) attach to the live
+BEAM via Erlang distribution (`elixir --rpc-eval grappa@grappa
+"Grappa.Operator.<verb>(...)"`) so they introspect or mutate the
+actual supervised state — no second BEAM, no port-4000 collision.
+See `lib/grappa/operator.ex` for the Elixir entry points; the bash
+dispatcher is a thin shell.
+
+For inner-loop development (gates, tests, ad-hoc shells), the
+sibling `scripts/*.sh` family is the developer surface — see
+CLAUDE.md "Developer scripts — `scripts/*.sh`".
 
 ### First deploy
 
@@ -58,14 +74,14 @@ read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
    git clone https://github.com/vjt/grappa-irc /srv/grappa && cd /srv/grappa
    ```
 
-2. **Generate the three required secrets**. The first `scripts/mix.sh`
+2. **Generate the three required secrets**. The first `bin/grappa`
    call builds the image (~5–10 min, one-time); subsequent calls
    reuse it. Paste each output into `.env`:
    ```sh
    cp .env.example .env
+   bin/grappa gen-encryption-key   # → GRAPPA_ENCRYPTION_KEY
    scripts/mix.sh phx.gen.secret              # → SECRET_KEY_BASE
    scripts/mix.sh phx.gen.secret 32           # → SECRET_SIGNING_SALT
-   scripts/mix.sh grappa.gen_encryption_key   # → GRAPPA_ENCRYPTION_KEY
    ```
    `GRAPPA_ENCRYPTION_KEY` encrypts upstream credentials at rest via
    Cloak AES-GCM. **Back it up separately — losing it means losing
@@ -79,6 +95,10 @@ read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
    stays up; on a fresh DB, Bootstrap logs `bootstrap: no credentials
    bound — running web-only` and Phoenix answers `/healthz`. No IRC
    sessions are spawned until you bind a network (next section).
+   When N credentials exist but all are `:parked` or `:failed`, the
+   log honestly reports the state breakdown (`0 credentials in
+   :connected state (N parked, M failed) — running web-only`) so
+   operators don't chase "DB is empty" for a stuck network.
 
    On subsequent deploys `scripts/deploy.sh` auto-detects whether the
    diff is hot-safe (`Phoenix.CodeReloader` swap of running modules,
@@ -97,30 +117,27 @@ read by `Grappa.Bootstrap` at boot. The operator surface is uniform:
 
 ```sh
 # 1. Create the user account (REST + WS bearer-token identity).
-scripts/mix.sh grappa.create_user --name vjt --password "correct horse battery staple"
+bin/grappa create-user --name vjt --password "correct horse battery staple"
 
 # 2. Bind a network. auth_method picks the upstream auth method:
 #    auto | sasl | server_pass | nickserv_identify | none
-scripts/mix.sh grappa.add_server --network azzurra --host irc.azzurra.chat --port 6697 --tls
-scripts/mix.sh grappa.bind_network --user vjt --network azzurra \
+bin/grappa add-server --network azzurra --host irc.azzurra.chat --port 6697 --tls
+bin/grappa bind-network --user vjt --network azzurra \
   --nick vjt --password 'NICKSERV_PASS' --auth nickserv_identify \
   --autojoin '#italia,#hacking'
 
-# 3. Live-spawn the session via IEx so Bootstrap doesn't have to
-#    re-enumerate (no container restart needed). Or just re-run
-#    scripts/deploy.sh — the cold-deploy path force-recreates and
-#    Bootstrap picks up the new binding.
-scripts/iex.sh
-iex> Grappa.SpawnOrchestrator.spawn_session(
-       Grappa.Accounts.get_user_by_name!("vjt"),
-       Grappa.Networks.get_network_by_slug!("azzurra"))
+# 3. Re-run scripts/deploy.sh — the cold-deploy path force-recreates
+#    the container and Bootstrap picks up the new binding on boot.
+#    For a no-downtime alternative, attach via `bin/grappa remote-shell`
+#    and call the spawn orchestrator directly with the resolved
+#    SessionPlan (lib/grappa/spawn_orchestrator.ex documents the
+#    contract — Bootstrap is the canonical caller).
 ```
 
-The mix tasks under `lib/mix/tasks/grappa.*.ex` (`add_server`,
-`bind_network`, `create_user`, `gen_encryption_key`, `remove_server`,
-`unbind_network`, `update_network_credential`, `set_network_caps`)
-work against any DB the container can reach — dev or prod. Each prints
-`--help`-style usage when invoked without args.
+`bin/grappa help` enumerates every verb (10 boot-time + 5 live-state +
+remote-shell + debug). Each verb prints `--help`-style usage via
+`bin/grappa help <verb>`. Run against any DB the container can reach —
+dev or prod, same dispatcher.
 
 ## Why this exists
 

@@ -169,7 +169,7 @@ defmodule Grappa.BootstrapTest do
   end
 
   describe "run/0 with no credentials bound" do
-    test "returns :ok, logs warning, no sessions started" do
+    test "returns :ok, logs honest 'no credentials bound' warning when DB is empty" do
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
@@ -177,6 +177,41 @@ defmodule Grappa.BootstrapTest do
 
       assert log =~ "no credentials bound"
       assert log =~ "running web-only"
+    end
+
+    test "T-4 honest log: surfaces parked + failed counts when zero are :connected" do
+      # Pre-T-4, this scenario silently logged "no credentials bound"
+      # because list_credentials_for_all_users/0 filters :connected-only.
+      # Operator saw "DB is empty" lie + chased the wrong root cause.
+      # Post-T-4, count_by_state/0 surfaces the truth.
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+
+      net_parked = bind_db(vjt, "park-#{System.unique_integer([:positive])}", port)
+      net_failed = bind_db(vjt, "fail-#{System.unique_integer([:positive])}", port)
+
+      {:ok, _} =
+        vjt
+        |> Credentials.get_credential!(net_parked)
+        |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "test")
+        |> Grappa.Repo.update()
+
+      {:ok, _} =
+        vjt
+        |> Credentials.get_credential!(net_failed)
+        |> Ecto.Changeset.change(connection_state: :failed, connection_state_reason: "test")
+        |> Grappa.Repo.update()
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+
+      assert log =~ "0 credentials in :connected state"
+      assert log =~ "1 parked"
+      assert log =~ "1 failed"
+      assert log =~ "bin/grappa list-credentials"
+      refute log =~ "no credentials bound"
     end
   end
 

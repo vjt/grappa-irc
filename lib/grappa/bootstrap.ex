@@ -197,7 +197,7 @@ defmodule Grappa.Bootstrap do
     user_stats =
       case credentials do
         [] ->
-          Logger.warning("bootstrap: no credentials bound — running web-only")
+          log_web_only_warning()
           %Result{}
 
         credentials ->
@@ -207,6 +207,30 @@ defmodule Grappa.Bootstrap do
     visitor_stats = spawn_visitors(visitors)
 
     {:ok, sum_results(user_stats, visitor_stats)}
+  end
+
+  # T-4 log-honesty: when the spawn loop runs against zero rows we MUST
+  # distinguish "DB is empty (no operator binding yet)" from "rows exist
+  # but every one is non-`:connected`" (every cred parked via T32, every
+  # cred failed via k-line, etc.). Pre-T-4 the bare "no credentials
+  # bound — running web-only" line lied in the parked / failed cases
+  # and hid the configuration vjt's session-start incident chased to its
+  # root cause. `Credentials.count_by_state/0` materializes the
+  # state-by-state row count via one GROUP BY query so the operator sees
+  # the truth: total rows + per-state breakdown.
+  defp log_web_only_warning do
+    counts = Credentials.count_by_state()
+    total = counts |> Map.values() |> Enum.sum()
+
+    if total == 0 do
+      Logger.warning("bootstrap: no credentials bound — running web-only")
+    else
+      Logger.warning(
+        "bootstrap: 0 credentials in :connected state " <>
+          "(#{counts.parked} parked, #{counts.failed} failed) — running web-only. " <>
+          "Inspect with `bin/grappa list-credentials`."
+      )
+    end
   end
 
   @spec sum_results(Result.t(), Result.t()) :: Result.t()

@@ -324,6 +324,35 @@ defmodule Grappa.Networks.Credentials do
     Repo.all(query)
   end
 
+  @doc """
+  Returns a map of `connection_state` → row count across every credential
+  in the DB. Used by `Grappa.Bootstrap.run/0` to surface honest startup
+  logs when zero credentials are `:connected` (e.g. all parked after
+  T32 disconnect) — the pre-T-4 "no credentials bound — running
+  web-only" message lied when N rows existed but all were parked or
+  failed (per `feedback_no_silent_drops_closed` log-honesty class).
+
+  Every value in `Credential.connection_states/0` is represented in the
+  result, defaulting to 0 when no row carries that state — operator
+  dashboards can pattern-match without `Map.get(_, _, 0)` defensive
+  reads. A single SQL `GROUP BY connection_state` round-trip backs the
+  count; the per-state zero-fill happens in Elixir.
+  """
+  @spec count_by_state() :: %{Credential.connection_state() => non_neg_integer()}
+  def count_by_state do
+    query =
+      from(c in Credential,
+        group_by: c.connection_state,
+        select: {c.connection_state, count()}
+      )
+
+    counts = query |> Repo.all() |> Map.new()
+
+    Map.new(Credential.connection_states(), fn state ->
+      {state, Map.get(counts, state, 0)}
+    end)
+  end
+
   # Returns the user_ids that currently have a credential on the network.
   # Sole consumer is `unbind_credential/2`'s cascade gate (does any
   # other user still bind this network?). Private — Boundary doesn't

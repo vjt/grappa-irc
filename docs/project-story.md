@@ -2109,3 +2109,129 @@ The bouncer is one feature closer to public open. The wire stays
 text. The model is the message.
 
 
+
+## S48 — 2026-05-16 — The task harness: one verb per task, and the phantom bug we didn't ship
+
+The 2026-05-16 session opened on a stale-visitor incident. vjt
+couldn't connect to azzurra because every cap slot was held by
+debug visitors that nobody had a clean way to delete. The
+diagnostic surface was a maze: `scripts/mix.sh` hardcoded
+`MIX_ENV=dev`, so prod-DB tasks were unreachable without a
+manual env-var dance. `scripts/db.sh` against prod was readonly,
+so deleting rows required bypassing the helper entirely with raw
+`docker exec sqlite3 -rw`. There was no way to attach to the
+LIVE BEAM (`bin/start.sh` lacked sname + cookie, so `iex --remsh`
+was unavailable). Mix-task discoverability was poor — 9
+`grappa.*` tasks scattered with no top-level help. vjt's
+strategic prompt: "should be fucking simple to run a mix task.
+We can also have a bin/grappa utility if needed inside the
+container."
+
+T cluster shipped that utility. T-1 landed `bin/grappa` as the
+host-side dispatcher — one verb per task, kebab-case CLI,
+banner-grouped help, bats coverage. T-2 wired Erlang distribution
+on the live BEAM (sname `grappa`, cookie from `RELEASE_COOKIE`)
+plus `bin/grappa remote-shell` for interactive `iex --remsh` AND
+`bin/grappa remote-shell --batch -e <expr>` for one-shot
+`elixir --rpc-eval` evaluation. Important nuance from T-2 fix
+(commit `82096a1`): `iex --remsh -e <expr>` evaluates in the
+CLIENT node before attaching, which means `Process.list()`
+returns 60-ish vergine procs instead of the live tree's 140+.
+`--rpc-eval` evaluates on the REMOTE node and prints the result.
+The distinction matters; the wrong form silently lies about
+remote state. T-3 layered the operator-facing verbs on top:
+`Grappa.Operator.delete_visitor!/1` synchronously terminates the
+visitor's Session.Server BEFORE deleting the row, freeing the
+SessionRegistry cap slot in the same call. Three `list_*_text!`
+verbs print tab-separated tables for `grep | awk | cut`
+pipelines. The bash dispatcher is a thin shell; the Elixir lives
+in `lib/grappa/operator.ex` so a schema field rename can't
+silently break a stringly-typed rpc-eval expression.
+
+The biggest discipline lesson came mid-T-3 from descoping T-A7.
+The brainstorm document claimed visitors had `expires_at: NULL`
+in prod and that Reaper was failing to touch NULL rows. The
+proposed fix was a `:grappa, :visitors, ttl_default: 86_400`
+config knob plus a boot-time backfill helper. I verified before
+building: `scripts/db.sh "SELECT COUNT(*), SUM(CASE WHEN
+expires_at IS NULL THEN 1 ELSE 0 END) FROM visitors"` returned
+`2|0`. Two visitors, zero NULL. Read the schema: `create_changeset`
+REQUIRES `:expires_at` AND validates "must be in the future" — an
+insert with NULL would FAIL changeset validation. Read the V7
+migration: the column was made nullable specifically for
+NickServ-IDENTIFIED visitors via `commit_password/2`, which
+writes NULL = never-expires. Reaper's `not is_nil(v.expires_at)`
+guard exists for that reason. The "backfill" would touch zero
+rows; the "TTL knob" would only shorten the existing 48h to 24h
+(silent regression). The brainstorm had inherited a stale
+observation from an even earlier session. Per CLAUDE.md's
+"Challenge the spec" rule — and per the project_image_cluster's
+S47 lesson "the spec is not the directions" — I flagged the
+finding back. vjt: "descope then porco dio." Three deliverables
+not shipped; the ones that DID ship are smaller and tighter.
+
+The pre-cluster work caught a separate flake: T-2 fix CI was red
+on a known `NetworkCircuit ETS leak` from prior-container
+residue. `Grappa.BootstrapTest:468` failed intermittently with
+`spawned: 0, skipped: 3` because per-test-file
+`clear_registry_for/1` helpers silently exhausted their 500ms
+budget under CI load. The fix went into `Grappa.AdmissionStateHelpers`
+as `reset_session_supervisor/0` — terminates every
+SessionSupervisor child synchronously, raises if the Registry
+doesn't converge within 5s. Loud > silent. That closed the
+deferred B5 codebase-review action that had been sitting in
+memory for 11 sessions.
+
+The reviewer agent caught three real Priority-1 bugs in T-3
+before the commit landed. The biggest:
+`Credentials.list_credentials_for_all_users/0` filters
+`connection_state == :connected`. The verb that `bin/grappa
+list-credentials` was wiring to claimed "every bound credential"
+in its docstring, but parked + failed rows were invisible —
+exactly the rows an operator triaging a stuck network needs to
+see. Fix: a new `Credentials.list_all_credentials/0` drops the
+filter. Verified live post-cold-deploy: `bin/grappa
+list-credentials` against prod shows vjt's `grappa@azzurra` cred
+as `state=parked reason=user-disconnect`. Without the reviewer
+fix that row would have been silently hidden. The reviewer also
+caught a too-loose Registry match spec (`{:"$1", :"$2", :"$3"}`
+matched any 3-tuple key, would have runtime-crashed on a future
+non-session registration) and a misleading success line on the
+concurrent-reaper race. Three independent reviewer findings, all
+genuine; the agent is earning its keep.
+
+T-4 closed the cluster with documentation: README operator
+quickstart now leads with `bin/grappa help` instead of `scripts/
+mix.sh` invocations; CLAUDE.md "How to run scripts" was rewritten
+to lead with the operator dispatcher and demote `scripts/*.sh`
+to "developer scripts"; the new `Credentials.count_by_state/0`
+backs an honest Bootstrap log (`0 credentials in :connected
+state (N parked, M failed) — running web-only` instead of the
+pre-T-4 "no credentials bound" lie). A new CLAUDE.md
+"Log honesty" rule under Code-shape rules codifies the general
+principle: fast paths state what they observed, not what they
+did.
+
+**Law:** the spec is not the directions; verify state before
+building the fix. The T-A7 descope was three commits not shipped
+because the bug didn't exist. Building the wrong thing because
+"the brainstorm said so" is the failure mode CLAUDE.md "Directions
+over code" warns about. Specs inherit observations; codebases
+evolve; before writing the fix, read the current code AND the
+current state. T cluster ships smaller because of it; the bouncer
+gets the verbs that close real gaps and skips the ones that close
+imaginary ones.
+
+Two clusters left in the T+M+U arc. M is admin console — `users.is_admin`
+single-bit migration, `/admin/*` pipeline, cic drawer entry, eight
+controller endpoints, real-time `grappa:admin:events` topic. U is
+cap honesty — split visitor cap from user cap, stop swallowing
+spawn errors at the controller boundary, allow device disconnect-
+then-reconnect-with-different-identity, login probe timeout split.
+The arc is a single thread: T gave us the verbs to triage live
+state, M gives us the console to manipulate it, U makes the cap
+errors honest enough that an operator can read what's going on.
+The verbs are how you find what's broken; the console is how you
+fix it; the cap honesty is how you stop confusing the operator
+about why their session won't spawn. Three clusters, one
+operator-experience thread.
