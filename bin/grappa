@@ -75,6 +75,13 @@ verb_remote_shell() {
     # T-A2 / T-2: live-BEAM attach via Erlang distribution. Cookie is
     # sourced INSIDE the container's `sh -c` (no host needs to know it);
     # admin sname uses $$ for per-invocation uniqueness.
+    #
+    # Interactive uses `iex --remsh` (REPL attaches to the live node).
+    # Batch uses `elixir --rpc-eval`: `iex --remsh -e "<expr>"` evaluates
+    # the expression in the CLIENT node before attaching, defeating the
+    # operator's intent (Process.list() returns 60-ish vergine procs
+    # rather than the live tree's 140+). `--rpc-eval` evaluates on the
+    # REMOTE node and prints the result, no shell attached.
     case "${1:-}" in
         --batch)
             shift
@@ -85,7 +92,7 @@ verb_remote_shell() {
             fi
             local expr=$2
             exec docker compose "${COMPOSE_ARGS[@]}" exec -T grappa sh -c \
-                'exec iex --sname "admin-$$" --cookie "$RELEASE_COOKIE" --remsh grappa@grappa -e "$1"' \
+                'exec elixir --sname "admin-$$" --cookie "$RELEASE_COOKIE" --rpc-eval grappa@grappa "$1"' \
                 -- "$expr"
             ;;
         "")
@@ -182,13 +189,20 @@ EOF
 
 verb_help_remote_shell() { cat <<'EOF'
 remote-shell [--batch -e <expr>]
-    Attach to the live BEAM via `iex --remsh`.
+    Attach to the live BEAM via Erlang distribution.
 
-    Interactive (default):
+    Interactive (default — `iex --remsh`):
         bin/grappa remote-shell
 
-    Batch (eval one expression and exit):
+    Batch (`elixir --rpc-eval`; eval one expression on the REMOTE
+    node and exit):
         bin/grappa remote-shell --batch -e 'Process.list() |> length()'
+
+    Note: `iex --remsh -e <expr>` evaluates in the CLIENT node
+    BEFORE attaching the shell, which defeats `Process.list()` /
+    `:sys.get_state(...)` / etc. — the point of remote-shell is to
+    introspect the LIVE supervisor tree. `--rpc-eval` runs on the
+    remote and prints the result.
 
     Distribution is internal to the container's network namespace —
     no host port is exposed. RELEASE_COOKIE is sourced from the

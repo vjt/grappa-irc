@@ -194,13 +194,16 @@ EOF
     ! grep -qE 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
 }
 
-@test "remote-shell --batch -e <expr> invokes docker exec -T with -e <expr>" {
+@test "remote-shell --batch -e <expr> invokes docker exec -T with --rpc-eval" {
     run "$BIN_GRAPPA" remote-shell --batch -e 'Process.list() |> length()'
     [ "$status" -eq 0 ]
     grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
-    grep -q -- '-e' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
     grep -q 'Process.list' "$ARGV_LOG"
     grep -q -- 'grappa@grappa' "$ARGV_LOG"
+    # Batch uses --rpc-eval (eval on REMOTE), NOT --remsh (which would
+    # eval on the client node before attaching the shell).
+    ! grep -q -- '--remsh' "$ARGV_LOG"
 }
 
 @test "remote-shell --batch without -e exits 64 with usage" {
