@@ -54,6 +54,7 @@ defmodule GrappaWeb.Admin.SessionsController do
 
   alias Grappa.{LiveIntrospection, Operator, Session}
   alias Grappa.LiveIntrospection.AdminWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Enumerate every live `Session.Server` registered in the registry.
@@ -76,7 +77,13 @@ defmodule GrappaWeb.Admin.SessionsController do
           | {:error, :bad_request | :not_found | :cannot_disconnect_self}
   def disconnect(conn, %{"id" => id}) do
     with {:ok, {subject, network_id}} <- parse_session_id(id),
-         :ok <- Operator.disconnect_session(subject, network_id, actor_user_id(conn)) do
+         :ok <-
+           Operator.disconnect_session(
+             subject,
+             network_id,
+             actor_user_id(conn),
+             AuthPlug.actor_from_conn(conn)
+           ) do
       send_resp(conn, :no_content, "")
     end
   end
@@ -88,7 +95,13 @@ defmodule GrappaWeb.Admin.SessionsController do
           Plug.Conn.t() | {:error, :bad_request | :cannot_disconnect_self}
   def delete(conn, %{"id" => id}) do
     with {:ok, {subject, network_id}} <- parse_session_id(id),
-         :ok <- Operator.terminate_session(subject, network_id, actor_user_id(conn)) do
+         :ok <-
+           Operator.terminate_session(
+             subject,
+             network_id,
+             actor_user_id(conn),
+             AuthPlug.actor_from_conn(conn)
+           ) do
       send_resp(conn, :no_content, "")
     end
   end
@@ -100,6 +113,7 @@ defmodule GrappaWeb.Admin.SessionsController do
   # signal: silently returning `nil` would let a future
   # `:admin_authn` regression pass `nil` as `actor_user_id` and
   # disable the self-disconnect protection without anyone noticing.
+  @spec actor_user_id(Plug.Conn.t()) :: String.t()
   defp actor_user_id(conn) do
     case conn.assigns.current_subject do
       {:user, %{id: id}} -> id

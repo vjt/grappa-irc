@@ -35,10 +35,12 @@ defmodule GrappaWeb.Admin.NetworksController do
   """
   use GrappaWeb, :controller
 
+  alias Grappa.{AdminEvents, Networks}
+  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Admission.NetworkCircuit.AdminWire, as: CircuitWire
-  alias Grappa.Networks
   alias Grappa.Networks.AdminWire, as: NetworkWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Enumerate every networks row + project its live circuit state.
@@ -74,6 +76,8 @@ defmodule GrappaWeb.Admin.NetworksController do
       now_ms = System.monotonic_time(:millisecond)
       circuit_entry = find_circuit_entry(updated.id)
 
+      :ok = emit_network_caps_updated(updated, conn)
+
       body =
         updated
         |> NetworkWire.network_to_admin_json()
@@ -81,6 +85,26 @@ defmodule GrappaWeb.Admin.NetworksController do
 
       json(conn, body)
     end
+  end
+
+  # M-11: emit `:network_caps_updated` admin event with operator
+  # attribution after a successful caps update. Actor extraction
+  # delegated to `GrappaWeb.Admin.AuthPlug.actor_from_conn/1` —
+  # single source for the admin-attribution shape across every
+  # `/admin/*` controller.
+  defp emit_network_caps_updated(network, conn) do
+    {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+    AdminEvents.record(
+      AdminEventsWire.network_caps_updated(
+        network.id,
+        network.slug,
+        network.max_concurrent_sessions,
+        network.max_per_client,
+        actor_id,
+        actor_name
+      )
+    )
   end
 
   defp find_circuit_entry(network_id) do

@@ -663,6 +663,101 @@ export type WireUserEvent =
     }
   | { kind: "bundle_hash"; hash: string };
 
+// M-11 — Admin events stream. Discriminated union mirrors
+// `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits
+// structured data only (atoms-as-strings, integers, ISO timestamps,
+// typed enums); cic owns every localized string (renderer lives in
+// `AdminEventsTab.tsx` `renderEvent`). Adding a new kind here that
+// isn't dispatched in `adminEvents.ts` trips `tsc` via `assertNever`
+// — same closed-union enforcement pattern as `WireUserEvent`.
+//
+// Lives outside `WireUserEvent` because the admin events ride on a
+// distinct topic (`grappa:admin:events`) with its own authz gate
+// (`is_admin: true`); folding onto WireUserEvent would tie the admin
+// stream to the per-user routing.
+export type WireAdminEvent =
+  | {
+      kind: "circuit_open";
+      network_id: number;
+      network_slug: string | null;
+      threshold: number;
+      cooldown_ms: number;
+      at: string;
+    }
+  | {
+      kind: "circuit_close";
+      network_id: number;
+      network_slug: string | null;
+      reason: "success" | "cooldown_expired";
+      at: string;
+    }
+  | {
+      kind: "capacity_reject";
+      flow: "user" | "visitor";
+      error: string;
+      network_id: number;
+      network_slug: string | null;
+      client_id: string | null;
+      at: string;
+    }
+  | {
+      kind: "visitor_deleted";
+      visitor_id: string;
+      visitor_nick: string | null;
+      network_slug: string | null;
+      actor_user_id: string | null;
+      actor_user_name: string | null;
+      at: string;
+    }
+  | {
+      kind: "visitor_reaped";
+      visitor_id: string;
+      visitor_nick: string | null;
+      network_slug: string | null;
+      at: string;
+    }
+  | { kind: "reaper_swept"; count: number; at: string }
+  | {
+      kind: "session_disconnected";
+      subject_kind: "user" | "visitor";
+      subject_id: string;
+      network_id: number;
+      network_slug: string | null;
+      actor_user_id: string | null;
+      actor_user_name: string | null;
+      at: string;
+    }
+  | {
+      kind: "session_terminated";
+      subject_kind: "user" | "visitor";
+      subject_id: string;
+      network_id: number;
+      network_slug: string | null;
+      actor_user_id: string | null;
+      actor_user_name: string | null;
+      at: string;
+    }
+  | {
+      kind: "network_caps_updated";
+      network_id: number;
+      network_slug: string;
+      max_concurrent_sessions: number | null;
+      max_per_client: number | null;
+      actor_user_id: string | null;
+      actor_user_name: string | null;
+      at: string;
+    }
+  | {
+      kind: "circuit_reset";
+      network_id: number;
+      network_slug: string | null;
+      actor_user_id: string | null;
+      actor_user_name: string | null;
+      at: string;
+    };
+
+export type AdminSnapshotPayload = { events: WireAdminEvent[] };
+
 // Exhaustiveness assertion for discriminated-union switches. If the
 // switch handles every arm, the parameter type narrows to `never` at
 // the default branch and `tsc` accepts the call. If a new arm is

@@ -18,6 +18,13 @@ defmodule Grappa.PubSub.Topic do
       — per-(user, network, channel) fan-out (the only shape currently
       broadcast on; network and user shapes are reserved for upcoming
       MOTD / NOTICE / connection-state events)
+    * `grappa:admin:events` — admin-events fan-out (M-cluster M-11).
+      Authz is `is_admin: true` gated at `GrappaWeb.AdminChannel`, NOT
+      per-user. Single topic for the whole admin operator console.
+      Lives outside the user-rooted shape because the audience is
+      admin operators, not the per-user subject; folding onto
+      `grappa:user:*` would force a phantom user_name segment whose
+      authz check would never match.
     * `grappa:ws_presence:{user_name}` — server-internal bridge from
       the WS edge (`Grappa.WSPresence`) to per-`(user, network)`
       `Grappa.Session.Server` processes for auto-away timing. Distinct
@@ -40,6 +47,7 @@ defmodule Grappa.PubSub.Topic do
           {:user, String.t()}
           | {:network, String.t(), String.t()}
           | {:channel, String.t(), String.t(), String.t()}
+          | :admin_events
 
   @doc "Builds the per-user fan-out topic."
   @spec user(String.t()) :: t()
@@ -65,6 +73,18 @@ defmodule Grappa.PubSub.Topic do
       user_name <>
       "/network:" <> network_slug <> "/channel:" <> channel_name
   end
+
+  @doc """
+  Builds the admin-events fan-out topic (M-cluster M-11).
+
+  Single fixed topic — admin operator console consumes one
+  unified event stream. Authz is `is_admin: true` gated at
+  `GrappaWeb.AdminChannel`'s join callback (NOT at the per-user
+  shape the other topics use); the topic itself carries no
+  user identifier.
+  """
+  @spec admin_events() :: t()
+  def admin_events, do: "grappa:admin:events"
 
   @doc """
   Builds the WSPresence bridge topic.
@@ -96,6 +116,8 @@ defmodule Grappa.PubSub.Topic do
   Phase 1 `grappa:network:...` shape, unknown prefix).
   """
   @spec parse(String.t()) :: {:ok, parsed()} | :error
+  def parse("grappa:admin:events"), do: {:ok, :admin_events}
+
   def parse("grappa:user:" <> rest) when rest != "" do
     case String.split(rest, "/", parts: 3) do
       [name] ->
@@ -125,10 +147,16 @@ defmodule Grappa.PubSub.Topic do
   end
 
   @doc """
-  Returns the user_name embedded in any of the three documented topic
+  Returns the user_name embedded in any of the three user-rooted topic
   shapes. Used by `GrappaWeb.GrappaChannel` on join for the cross-user
-  authz check — every Grappa topic is rooted in a user, so a single
-  predicate covers all shapes.
+  authz check — every user-rooted topic carries the user, so a single
+  predicate covers `:user | :network | :channel`.
+
+  Does NOT accept `:admin_events` (M-cluster M-11): admin topic carries
+  no user identifier and the FunctionClauseError on a stray call is the
+  intended fail-loud signal. Admin authz lives at
+  `GrappaWeb.AdminChannel`'s `join/3` callback (is_admin gate), never
+  reaches `user_of/1`.
   """
   @spec user_of(parsed()) :: String.t()
   def user_of({:user, name}), do: name

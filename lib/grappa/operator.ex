@@ -56,6 +56,7 @@ defmodule Grappa.Operator do
     top_level?: true,
     deps: [
       Grappa.Admission,
+      Grappa.AdminEvents,
       Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Session,
@@ -63,6 +64,8 @@ defmodule Grappa.Operator do
       Grappa.Visitors.Reaper
     ]
 
+  alias Grappa.AdminEvents
+  alias Grappa.AdminEvents.Wire, as: AdminWire
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.{LiveIntrospection, Networks, Session, Visitors}
   alias Grappa.LiveIntrospection.SessionEntry
@@ -73,6 +76,13 @@ defmodule Grappa.Operator do
 
   @disconnect_reason "disconnected by admin"
   @terminate_reason "terminated by admin"
+
+  @typedoc """
+  Optional admin actor attribution for M-11 admin-event emission.
+  `nil` for system / `bin/grappa` invocations; `{user_id, user_name}`
+  for admin REST surfaces (controllers thread `conn.assigns.current_subject`).
+  """
+  @type actor :: nil | {String.t(), String.t()}
 
   @doc """
   Synchronously terminate the visitor's `Session.Server` (if any) and
@@ -91,7 +101,7 @@ defmodule Grappa.Operator do
   """
   @spec delete_visitor!(Ecto.UUID.t()) :: :ok | no_return()
   def delete_visitor!(id) when is_binary(id) do
-    case delete_visitor(id) do
+    case delete_visitor(id, nil) do
       :ok ->
         :ok
 
@@ -113,9 +123,18 @@ defmodule Grappa.Operator do
   The HTTP path captures the return shape for FallbackController; the
   bin/grappa path captures stdout for operator UX. One feature, one
   code path, every door.
+
+  `actor` (M-11) is `nil` for `bin/grappa` invocations + the
+  3-arity HTTP wrapper without admin attribution; `{user_id,
+  user_name}` for admin REST callers. Threaded into the
+  `:visitor_deleted` admin event so the operator console shows
+  who triggered the delete.
   """
   @spec delete_visitor(Ecto.UUID.t()) :: :ok | {:error, :not_found}
-  def delete_visitor(id) when is_binary(id) do
+  def delete_visitor(id) when is_binary(id), do: delete_visitor(id, nil)
+
+  @spec delete_visitor(Ecto.UUID.t(), actor()) :: :ok | {:error, :not_found}
+  def delete_visitor(id, actor) when is_binary(id) do
     case Visitors.get(id) do
       nil ->
         {:error, :not_found}
@@ -123,8 +142,15 @@ defmodule Grappa.Operator do
       visitor ->
         :ok = stop_visitor_session(visitor)
         :ok = log_delete_outcome(id, visitor, Visitors.delete(id))
+        :ok = emit_visitor_deleted(visitor, actor)
         :ok
     end
+  end
+
+  @spec emit_visitor_deleted(Visitor.t(), actor()) :: :ok
+  defp emit_visitor_deleted(%Visitor{} = v, actor) do
+    {actor_id, actor_name} = unpack_actor(actor)
+    AdminEvents.record(AdminWire.visitor_deleted(v.id, v.nick, v.network_slug, actor_id, actor_name))
   end
 
   defp stop_visitor_session(%Visitor{id: id, network_slug: slug}) do
@@ -178,8 +204,32 @@ defmodule Grappa.Operator do
   One feature, one code path, every door.
   """
   @spec reap_visitors() :: {:ok, non_neg_integer()}
-  def reap_visitors do
-    Grappa.Visitors.Reaper.sweep()
+  def reap_visitors, do: reap_visitors(nil)
+
+  @doc """
+  M-11 admin-event aware variant. Emits the `:reaper_swept` summary
+  unconditionally (even on count=0) — operator clicked the button,
+  the events tab should confirm. Scheduled-tick path
+  (`Reaper.handle_info(:tick, ...)`) suppresses count=0 to avoid
+  flooding the ring buffer. Per-row `:visitor_reaped` events fire
+  inside `Reaper.sweep/0` regardless of trigger source.
+  """
+  @spec reap_visitors(actor()) :: {:ok, non_neg_integer()}
+  def reap_visitors(actor) do
+    {:ok, n} = Grappa.Visitors.Reaper.sweep()
+    {actor_id, actor_name} = unpack_actor(actor)
+
+    # actor_id/name not yet threaded into reaper_swept wire shape (the
+    # event is :reaper_swept count, not :reaper_swept actor) — but the
+    # un-suppressed emit on count=0 IS the operator-attribution
+    # signal: scheduled ticks suppress, so any count=0 row in the
+    # events tab provably came from a manual reap click. Future
+    # cluster may extend the wire shape with actor; today the
+    # presence-of-event-on-count-zero is the audit signal.
+    _ = {actor_id, actor_name}
+    :ok = AdminEvents.record(AdminWire.reaper_swept(n))
+
+    {:ok, n}
   end
 
   @doc """
@@ -196,18 +246,33 @@ defmodule Grappa.Operator do
   """
   @spec reset_circuit(integer()) ::
           {:ok, NetworkCircuit.entry() | nil} | {:error, :not_found}
-  def reset_circuit(network_id) when is_integer(network_id) do
+  def reset_circuit(network_id), do: reset_circuit(network_id, nil)
+
+  @doc """
+  M-11 admin-event aware variant. Emits a synthetic `:circuit_reset`
+  event with actor attribution. The telemetry-side `:circuit, :close,
+  reason: :operator_reset` is intentionally `:skip`-ed in
+  `Wire.from_telemetry/3` so this synthetic emit is the single
+  source for the operator-reset surface.
+  """
+  @spec reset_circuit(integer(), actor()) ::
+          {:ok, NetworkCircuit.entry() | nil} | {:error, :not_found}
+  def reset_circuit(network_id, actor) when is_integer(network_id) do
     case Networks.get_network(network_id) do
       nil ->
         {:error, :not_found}
 
-      _ ->
+      network ->
         :ok = NetworkCircuit.reset(network_id)
         # Drain the cast through the NetworkCircuit mailbox so the
         # post-reset ETS snapshot reflects the operator verb.
         _ = :sys.get_state(NetworkCircuit)
 
         post = Enum.find(NetworkCircuit.entries(), &match?({^network_id, _, _, _, _}, &1))
+
+        {actor_id, actor_name} = unpack_actor(actor)
+        :ok = AdminEvents.record(AdminWire.circuit_reset(network_id, network.slug, actor_id, actor_name))
+
         {:ok, post}
     end
   end
@@ -248,25 +313,62 @@ defmodule Grappa.Operator do
   """
   @spec disconnect_session(Session.subject(), integer(), Ecto.UUID.t() | nil) ::
           :ok | {:error, :not_found | :cannot_disconnect_self}
-  def disconnect_session({:user, user_id} = subject, network_id, actor_user_id)
+  def disconnect_session(subject, network_id, actor_user_id) do
+    disconnect_session(subject, network_id, actor_user_id, nil)
+  end
+
+  @doc """
+  M-11 admin-event aware variant. `actor` is `nil` for `bin/grappa`
+  rpc-eval invocations (no Plug.Conn in scope); `{user_id,
+  user_name}` for admin REST callers.
+  """
+  @spec disconnect_session(Session.subject(), integer(), Ecto.UUID.t() | nil, actor()) ::
+          :ok | {:error, :not_found | :cannot_disconnect_self}
+  def disconnect_session({:user, user_id} = subject, network_id, actor_user_id, actor)
       when is_binary(user_id) and is_integer(network_id) and
              (is_binary(actor_user_id) or is_nil(actor_user_id)) do
-    if not is_nil(actor_user_id) and user_id == actor_user_id do
-      {:error, :cannot_disconnect_self}
-    else
-      disconnect_user_session(subject, network_id, actor_user_id)
+    # MED-4 (M-11 review): credential lookup BEFORE the self-protect
+    # check so a bogus (admin_uuid, missing_network_id) request gets
+    # 404 instead of leaking "network exists" via 422 vs 404 differ-
+    # entiation. dispatch_user_session returns `{:error, :not_found}`
+    # when no credential row matches the (user_id, network_id) pair.
+    with {:ok, %{connection_state: _}} <- Credentials.get_credential_by_ids(user_id, network_id),
+         :ok <- guard_not_self(user_id, actor_user_id),
+         :ok <- disconnect_user_session(subject, network_id, actor_user_id) do
+      :ok = emit_session_disconnected(:user, user_id, network_id, actor)
+      :ok
     end
   end
 
-  def disconnect_session({:visitor, _} = subject, network_id, actor_user_id)
-      when is_integer(network_id) and (is_binary(actor_user_id) or is_nil(actor_user_id)) do
+  def disconnect_session({:visitor, visitor_id} = subject, network_id, actor_user_id, actor)
+      when is_binary(visitor_id) and is_integer(network_id) and
+             (is_binary(actor_user_id) or is_nil(actor_user_id)) do
     Logger.debug(
       "visitor disconnect collapsed to terminate " <>
         "(subject=#{inspect(subject)} network_id=#{network_id})"
     )
 
-    terminate_session(subject, network_id, actor_user_id)
+    # Visitor disconnect collapses to terminate (no `:parked` state).
+    # Emit `:session_disconnected` ONLY when there's actually a live
+    # pid to disconnect from — without this gate, an operator
+    # clicking Disconnect on a visitor whose Session.Server already
+    # exited (deleted-row race, prior terminate) gets a fabricated
+    # event saying "the visitor was just disconnected" when nothing
+    # happened. terminate_session/4 still fires its own
+    # `:session_terminated` regardless — `Session.stop_session` is
+    # idempotent and the wire shape there means "the row stopped
+    # being a live pid," which is true post-call either way.
+    if Session.whereis(subject, network_id) do
+      :ok = emit_session_disconnected(:visitor, visitor_id, network_id, actor)
+    end
+
+    terminate_session(subject, network_id, actor_user_id, actor)
   end
+
+  defp guard_not_self(user_id, user_id) when is_binary(user_id),
+    do: {:error, :cannot_disconnect_self}
+
+  defp guard_not_self(_, _), do: :ok
 
   defp disconnect_user_session({:user, user_id} = subject, network_id, actor_user_id) do
     case Credentials.get_credential_by_ids(user_id, network_id) do
@@ -316,11 +418,21 @@ defmodule Grappa.Operator do
   """
   @spec terminate_session(Session.subject(), integer(), Ecto.UUID.t() | nil) ::
           :ok | {:error, :cannot_disconnect_self}
-  def terminate_session({:user, user_id}, _, actor_user_id)
+  def terminate_session(subject, network_id, actor_user_id) do
+    terminate_session(subject, network_id, actor_user_id, nil)
+  end
+
+  @doc """
+  M-11 admin-event aware variant. Emits `:session_terminated` after
+  the synchronous stop_session.
+  """
+  @spec terminate_session(Session.subject(), integer(), Ecto.UUID.t() | nil, actor()) ::
+          :ok | {:error, :cannot_disconnect_self}
+  def terminate_session({:user, user_id}, _, actor_user_id, _)
       when is_binary(user_id) and is_binary(actor_user_id) and user_id == actor_user_id,
       do: {:error, :cannot_disconnect_self}
 
-  def terminate_session(subject, network_id, actor_user_id)
+  def terminate_session(subject, network_id, actor_user_id, actor)
       when is_integer(network_id) and (is_binary(actor_user_id) or is_nil(actor_user_id)) do
     _ = best_effort_quit(subject, network_id)
     :ok = Session.stop_session(subject, network_id)
@@ -331,6 +443,8 @@ defmodule Grappa.Operator do
         "actor_user_id=#{inspect(actor_user_id)})"
     )
 
+    {subject_kind, subject_id} = subject
+    :ok = emit_session_terminated(subject_kind, subject_id, network_id, actor)
     :ok
   end
 
@@ -455,4 +569,52 @@ defmodule Grappa.Operator do
 
   defp format_datetime(nil), do: ""
   defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  ## M-11 admin-event helpers --------------------------------------------
+
+  @spec unpack_actor(actor()) :: {String.t() | nil, String.t() | nil}
+  defp unpack_actor(nil), do: {nil, nil}
+  defp unpack_actor({id, name}) when is_binary(id) and is_binary(name), do: {id, name}
+
+  @spec emit_session_disconnected(:user | :visitor, String.t(), integer(), actor()) :: :ok
+  defp emit_session_disconnected(subject_kind, subject_id, network_id, actor) do
+    {actor_id, actor_name} = unpack_actor(actor)
+    slug = lookup_network_slug(network_id)
+
+    AdminEvents.record(
+      AdminWire.session_disconnected(
+        subject_kind,
+        subject_id,
+        network_id,
+        slug,
+        actor_id,
+        actor_name
+      )
+    )
+  end
+
+  @spec emit_session_terminated(:user | :visitor, String.t(), integer(), actor()) :: :ok
+  defp emit_session_terminated(subject_kind, subject_id, network_id, actor) do
+    {actor_id, actor_name} = unpack_actor(actor)
+    slug = lookup_network_slug(network_id)
+
+    AdminEvents.record(
+      AdminWire.session_terminated(
+        subject_kind,
+        subject_id,
+        network_id,
+        slug,
+        actor_id,
+        actor_name
+      )
+    )
+  end
+
+  @spec lookup_network_slug(integer()) :: String.t() | nil
+  defp lookup_network_slug(network_id) do
+    case Networks.get_network(network_id) do
+      nil -> nil
+      net -> net.slug
+    end
+  end
 end

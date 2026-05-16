@@ -85,6 +85,7 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.Backoff,
     Grappa.WSPresence,
     Grappa.Admission.NetworkCircuit,
+    Grappa.AdminEvents,
     Grappa.Session.Server,
     Grappa.IRC.Client,
     Grappa.IRC.AuthFSM,
@@ -111,6 +112,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           Grappa.Session.Backoff
           | Grappa.WSPresence
           | Grappa.Admission.NetworkCircuit
+          | Grappa.AdminEvents
           | Grappa.Session.Server
           | Grappa.IRC.Client
           | Grappa.IRC.AuthFSM

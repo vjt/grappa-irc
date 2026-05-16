@@ -28,6 +28,7 @@ defmodule GrappaWeb.Admin.VisitorsController do
 
   alias Grappa.{Operator, Visitors}
   alias Grappa.Visitors.AdminWire
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   List every visitor row joined to its live `Session.Server`
@@ -51,7 +52,7 @@ defmodule GrappaWeb.Admin.VisitorsController do
   """
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
   def delete(conn, %{"id" => id}) when is_binary(id) do
-    with :ok <- Operator.delete_visitor(id) do
+    with :ok <- Operator.delete_visitor(id, AuthPlug.actor_from_conn(conn)) do
       send_resp(conn, :no_content, "")
     end
   end

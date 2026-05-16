@@ -41,11 +41,12 @@ defmodule Grappa.Visitors.Reaper do
   application's deps (see `lib/grappa/application.ex`).
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Visitors]
+  use Boundary, top_level?: true, deps: [Grappa.AdminEvents, Grappa.Visitors]
 
   use GenServer
 
-  alias Grappa.Visitors
+  alias Grappa.{AdminEvents, Visitors}
+  alias Grappa.AdminEvents.Wire, as: AdminWire
 
   require Logger
 
@@ -74,20 +75,27 @@ defmodule Grappa.Visitors.Reaper do
   def sweep do
     expired = Visitors.list_expired()
 
-    Enum.each(expired, fn v ->
-      case Visitors.delete(v.id) do
-        :ok ->
-          :ok
+    deleted =
+      Enum.reduce(expired, 0, fn v, acc ->
+        case Visitors.delete(v.id) do
+          :ok ->
+            # M-11: per-row reap event for the admin events stream.
+            # Emitted ONLY on successful delete — a failed delete logs
+            # but doesn't fire a misleading "reaped" signal.
+            :ok = AdminEvents.record(AdminWire.visitor_reaped(v.id, v.nick, v.network_slug))
+            acc + 1
 
-        {:error, reason} ->
-          Logger.error("reaper delete failed",
-            visitor_id: v.id,
-            error: inspect(reason)
-          )
-      end
-    end)
+          {:error, reason} ->
+            Logger.error("reaper delete failed",
+              visitor_id: v.id,
+              error: inspect(reason)
+            )
 
-    {:ok, length(expired)}
+            acc
+        end
+      end)
+
+    {:ok, deleted}
   end
 
   @impl GenServer
@@ -101,9 +109,20 @@ defmodule Grappa.Visitors.Reaper do
   def handle_info(:tick, state) do
     {:ok, n} = sweep()
 
+    # M-11: scheduled-tick :reaper_swept summary — actor is nil
+    # because the scheduler is "the system", not an operator.
+    # Suppressed on count=0 to avoid flooding the admin events
+    # ring buffer (200-cap) with 1440 idle ticks/day. Operator-
+    # triggered sweeps emit unconditionally via Operator.reap_visitors/1
+    # because operators care that "I clicked the button and
+    # something happened, even if nothing was expired."
     case n do
-      0 -> :ok
-      _ -> Logger.info("reaper swept expired visitors", affected: n)
+      0 ->
+        :ok
+
+      _ ->
+        Logger.info("reaper swept expired visitors", affected: n)
+        :ok = AdminEvents.record(AdminWire.reaper_swept(n))
     end
 
     schedule_tick(state.interval_ms)

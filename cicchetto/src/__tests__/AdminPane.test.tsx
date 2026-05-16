@@ -1,11 +1,11 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
 
-// M-cluster M-8 / M-9b / M-10 — AdminPane mounts AdminVisitorsTab +
-// AdminSessionsTab + AdminNetworksTab inside their respective
-// tabpanels. Mock all three so this suite stays focused on the OUTER
-// PANE contract (header + close + tab nav + active-tab switching).
-// Tab components have their own dedicated suites.
+// M-cluster M-8 / M-9b / M-10 / M-11 — AdminPane mounts Visitors +
+// Sessions + Networks + Events tabs inside their respective
+// tabpanels. Mock all four so this suite stays focused on the OUTER
+// PANE contract (header + close + tab nav + active-tab switching +
+// admin-events subscription lifecycle).
 vi.mock("../AdminVisitorsTab", () => ({
   default: () => <div data-testid="admin-visitors-tab-mock">visitors-tab</div>,
 }));
@@ -18,15 +18,27 @@ vi.mock("../AdminNetworksTab", () => ({
   default: () => <div data-testid="admin-networks-tab-mock">networks-tab</div>,
 }));
 
+vi.mock("../AdminEventsTab", () => ({
+  default: () => <div data-testid="admin-events-tab-mock">events-tab</div>,
+}));
+
+// Mock the adminEvents subscription lifecycle. AdminPane calls these
+// at mount/unmount; the actual channel join is exercised by the
+// Playwright e2e + AdminEventsTab unit suite, not here.
+const startSub = vi.fn();
+const uninstall = vi.fn();
+vi.mock("../lib/adminEvents", () => ({
+  startAdminEventsSubscription: () => startSub(),
+  uninstallAdminEvents: () => uninstall(),
+  adminEvents: () => [],
+}));
+
 import AdminPane from "../AdminPane";
 
-// M-cluster M-7 / M-8 / M-9b / M-10 — admin console pane. Per
-// `feedback_e2e_user_class_parity_matrix`: AdminPane itself is
+// M-cluster M-7 / M-8 / M-9b / M-10 / M-11 — admin console pane.
+// Per `feedback_e2e_user_class_parity_matrix`: AdminPane itself is
 // subject-agnostic; the admin-only gate lives at SettingsDrawer +
 // Shell.tsx (which only mount this when `me.is_admin === true`).
-// Tests here cover the skeleton contract: header renders, close
-// button fires, tab nav present, default Visitors tab mounts,
-// switching to Sessions / Networks tab swaps panels.
 
 describe("AdminPane", () => {
   it("renders the 'admin console' header", () => {
@@ -34,21 +46,22 @@ describe("AdminPane", () => {
     expect(screen.getByRole("heading", { name: /admin console/i })).toBeInTheDocument();
   });
 
-  it("renders all three tabs with Visitors as the default-active tab", () => {
+  it("renders all four tabs with Visitors as the default-active tab", () => {
     render(() => <AdminPane onClose={vi.fn()} />);
     const visitorsTab = screen.getByTestId("admin-tab-visitors");
     const sessionsTab = screen.getByTestId("admin-tab-sessions");
     const networksTab = screen.getByTestId("admin-tab-networks");
+    const eventsTab = screen.getByTestId("admin-tab-events");
     // textContent assertion per `feedback_css_block_button_wraps_inline_prefix`.
     expect(visitorsTab.textContent).toContain("Visitors");
     expect(sessionsTab.textContent).toContain("Sessions");
     expect(networksTab.textContent).toContain("Networks");
+    expect(eventsTab.textContent).toContain("Events");
     expect(visitorsTab.getAttribute("aria-selected")).toBe("true");
     expect(sessionsTab.getAttribute("aria-selected")).toBe("false");
     expect(networksTab.getAttribute("aria-selected")).toBe("false");
-    expect(visitorsTab.getAttribute("role")).toBe("tab");
-    expect(sessionsTab.getAttribute("role")).toBe("tab");
-    expect(networksTab.getAttribute("role")).toBe("tab");
+    expect(eventsTab.getAttribute("aria-selected")).toBe("false");
+    expect(eventsTab.getAttribute("role")).toBe("tab");
   });
 
   it("mounts AdminVisitorsTab inside the active tabpanel by default", () => {
@@ -56,6 +69,7 @@ describe("AdminPane", () => {
     expect(screen.getByTestId("admin-visitors-tab-mock")).toBeInTheDocument();
     expect(screen.queryByTestId("admin-sessions-tab-mock")).toBeNull();
     expect(screen.queryByTestId("admin-networks-tab-mock")).toBeNull();
+    expect(screen.queryByTestId("admin-events-tab-mock")).toBeNull();
   });
 
   it("clicking the Sessions tab swaps the active panel + flips aria-selected", () => {
@@ -64,6 +78,7 @@ describe("AdminPane", () => {
     expect(screen.getByTestId("admin-sessions-tab-mock")).toBeInTheDocument();
     expect(screen.queryByTestId("admin-visitors-tab-mock")).toBeNull();
     expect(screen.queryByTestId("admin-networks-tab-mock")).toBeNull();
+    expect(screen.queryByTestId("admin-events-tab-mock")).toBeNull();
     expect(screen.getByTestId("admin-tab-sessions").getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("admin-tab-visitors").getAttribute("aria-selected")).toBe("false");
   });
@@ -72,11 +87,18 @@ describe("AdminPane", () => {
     render(() => <AdminPane onClose={vi.fn()} />);
     fireEvent.click(screen.getByTestId("admin-tab-networks"));
     expect(screen.getByTestId("admin-networks-tab-mock")).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-events-tab-mock")).toBeNull();
+    expect(screen.getByTestId("admin-tab-networks").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("clicking the Events tab swaps the active panel + flips aria-selected", () => {
+    render(() => <AdminPane onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("admin-tab-events"));
+    expect(screen.getByTestId("admin-events-tab-mock")).toBeInTheDocument();
     expect(screen.queryByTestId("admin-visitors-tab-mock")).toBeNull();
     expect(screen.queryByTestId("admin-sessions-tab-mock")).toBeNull();
-    expect(screen.getByTestId("admin-tab-networks").getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByTestId("admin-tab-visitors").getAttribute("aria-selected")).toBe("false");
-    expect(screen.getByTestId("admin-tab-sessions").getAttribute("aria-selected")).toBe("false");
+    expect(screen.queryByTestId("admin-networks-tab-mock")).toBeNull();
+    expect(screen.getByTestId("admin-tab-events").getAttribute("aria-selected")).toBe("true");
   });
 
   it("clicking back to Visitors after Sessions returns the original panel", () => {
@@ -97,5 +119,15 @@ describe("AdminPane", () => {
   it("close button carries an a11y label", () => {
     render(() => <AdminPane onClose={vi.fn()} />);
     expect(screen.getByLabelText(/close admin console/i)).toBeInTheDocument();
+  });
+
+  it("starts admin-events subscription on mount, tears down on unmount (M-11)", () => {
+    startSub.mockClear();
+    uninstall.mockClear();
+    const { unmount } = render(() => <AdminPane onClose={vi.fn()} />);
+    expect(startSub).toHaveBeenCalledTimes(1);
+    expect(uninstall).toHaveBeenCalledTimes(0);
+    unmount();
+    expect(uninstall).toHaveBeenCalledTimes(1);
   });
 });

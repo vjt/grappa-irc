@@ -1,16 +1,18 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import AdminEventsTab from "./AdminEventsTab";
 import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
+import { startAdminEventsSubscription, uninstallAdminEvents } from "./lib/adminEvents";
 
 // M-7 — Admin console pane. Replaces the channel content in
 // Shell.tsx when an admin operator clicks "admin console" in
 // SettingsDrawer. Outer pane = header + close + tab nav + active
 // tab body.
 //
-// M-8 added Visitors; M-9b added Sessions; M-10 adds Networks.
-// M-11 (Events) will append its own `<button role="tab">` + tabpanel
-// + gate via the `currentTab` signal.
+// M-8 added Visitors; M-9b added Sessions; M-10 added Networks;
+// M-11 adds Events (real-time stream of admin-relevant events
+// fan-out on `grappa:admin:events`).
 //
 // Mount lifecycle: a `<Show when={adminOpen() && isAdmin()}>` in
 // Shell.tsx drives mount/unmount. Shell auto-closes the pane the
@@ -18,6 +20,11 @@ import AdminVisitorsTab from "./AdminVisitorsTab";
 // policy at Shell.tsx's createEffect. The tab components issue admin
 // REST fetches which the `:admin_authn` plug 403s any request from a
 // now-non-admin user, so the demote race is server-side-safe.
+//
+// M-11 subscription lifecycle lives HERE (not in `AdminEventsTab`)
+// so the ring buffer accumulates while the operator browses
+// Visitors / Sessions / Networks tabs. AdminPane mount = admin
+// console opened; AdminPane unmount = closed → cleanup detaches.
 //
 // Per-class parity matrix (`feedback_e2e_user_class_parity_matrix`):
 // admin-gated, EXEMPT. The Playwright spec at m7-admin-gate covers
@@ -28,12 +35,20 @@ export type Props = {
   onClose: () => void;
 };
 
-type TabKey = "visitors" | "sessions" | "networks";
+type TabKey = "visitors" | "sessions" | "networks" | "events";
 
 const AdminPane: Component<Props> = (props) => {
   const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
 
   const isActive = (k: TabKey): boolean => currentTab() === k;
+
+  onMount(() => {
+    startAdminEventsSubscription();
+  });
+
+  onCleanup(() => {
+    uninstallAdminEvents();
+  });
 
   return (
     <section class="admin-pane" data-testid="admin-pane">
@@ -91,6 +106,18 @@ const AdminPane: Component<Props> = (props) => {
         >
           Networks
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("events")}
+          aria-controls="admin-tab-events"
+          id="admin-tab-events-handle"
+          data-testid="admin-tab-events"
+          onClick={() => setCurrentTab("events")}
+        >
+          Events
+        </button>
       </div>
       <Show when={isActive("visitors")}>
         <div
@@ -120,6 +147,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminNetworksTab />
+        </div>
+      </Show>
+      <Show when={isActive("events")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-events"
+          aria-labelledby="admin-tab-events-handle"
+          class="admin-tab-panel"
+        >
+          <AdminEventsTab />
         </div>
       </Show>
     </section>

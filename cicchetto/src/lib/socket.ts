@@ -144,6 +144,25 @@ export function joinChannel(
   return ch;
 }
 
+// M-11 — join the admin-events channel (`grappa:admin:events`).
+// Authz is `is_admin: true` server-side; non-admin sockets get
+// `{:error, %{reason: "forbidden"}}` and the .receive("error")
+// arm fires. AdminPane.tsx gates the join on `me.is_admin`, so
+// the forbidden branch is a defense-in-depth fallback rather
+// than the expected path.
+export function joinAdminEvents(): Channel {
+  const topic = "grappa:admin:events";
+  const ch = getSocket().channel(topic);
+  ch.join()
+    .receive("error", (err: unknown) => {
+      console.error("[grappa] admin-events join failed", topic, err);
+    })
+    .receive("timeout", () => {
+      console.error("[grappa] admin-events join timed out", topic);
+    });
+  return ch;
+}
+
 // S3.3 — pagehide immediate-away hint.
 //
 // Pushes `client_closing` over the active user-level channel so the

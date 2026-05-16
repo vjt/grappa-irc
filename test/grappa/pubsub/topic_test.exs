@@ -63,6 +63,12 @@ defmodule Grappa.PubSub.TopicTest do
     end
   end
 
+  describe "admin_events/0" do
+    test "builds the admin-events fan-out topic" do
+      assert Topic.admin_events() == "grappa:admin:events"
+    end
+  end
+
   describe "ws_presence/1" do
     test "builds the WSPresence bridge topic" do
       assert Topic.ws_presence("vjt") == "grappa:ws_presence:vjt"
@@ -94,6 +100,10 @@ defmodule Grappa.PubSub.TopicTest do
     test "parses a per-user-network-channel topic" do
       assert Topic.parse("grappa:user:vjt/network:azzurra/channel:#sniffo") ==
                {:ok, {:channel, "vjt", "azzurra", "#sniffo"}}
+    end
+
+    test "parses the admin-events topic" do
+      assert Topic.parse("grappa:admin:events") == {:ok, :admin_events}
     end
 
     test "rejects empty user" do
@@ -155,6 +165,10 @@ defmodule Grappa.PubSub.TopicTest do
 
     test "true for valid per-user-network-channel topic" do
       assert Topic.valid?("grappa:user:vjt/network:azzurra/channel:#sniffo")
+    end
+
+    test "true for valid admin-events topic" do
+      assert Topic.valid?("grappa:admin:events")
     end
 
     test "false for malformed topic" do

@@ -49,4 +49,20 @@ defmodule GrappaWeb.Admin.AuthPlug do
     |> FallbackController.call({:error, :forbidden})
     |> halt()
   end
+
+  @doc """
+  Extract `{user_id, user_name}` from an admin-gated `conn`. Single
+  source of truth for the M-11 admin-event actor attribution helper
+  that every controller under `scope "/admin"` previously redefined.
+
+  Mandatory invariant: `:admin_authn` upstream guarantees
+  `current_subject == {:user, %User{is_admin: true}}`, so the bare
+  match is the intentional fail-loud signal if a future pipeline
+  regression drops the shape.
+  """
+  @spec actor_from_conn(Plug.Conn.t()) :: {String.t(), String.t()}
+  def actor_from_conn(conn) do
+    {:user, %User{id: id, name: name}} = conn.assigns.current_subject
+    {id, name}
+  end
 end

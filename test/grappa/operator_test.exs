@@ -362,10 +362,17 @@ defmodule Grappa.OperatorTest do
     end
 
     test "returns {:error, :cannot_disconnect_self} for self-target user" do
-      actor_id = Ecto.UUID.generate()
+      # MED-4 (M-11 review): credential must exist for the self-check to
+      # fire — otherwise the function correctly returns :not_found
+      # before reaching the self-protect branch (so 422 vs 404 doesn't
+      # leak "this network has a row" to an unauthorized caller).
+      {_, port} = start_irc_server()
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(vjt, network, %{nick: "vjt"})
 
       assert {:error, :cannot_disconnect_self} =
-               Operator.disconnect_session({:user, actor_id}, 1, actor_id)
+               Operator.disconnect_session({:user, vjt.id}, network.id, vjt.id)
     end
 
     test "actor_user_id == nil disables the self-check (operator override path)" do

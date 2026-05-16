@@ -13,6 +13,7 @@ defmodule GrappaWeb do
     deps: [
       Grappa.Accounts,
       Grappa.Admission,
+      Grappa.AdminEvents,
       Grappa.Auth.IdentifierClassifier,
       Grappa.Cic.Bundle,
       Grappa.Cic.Wire,

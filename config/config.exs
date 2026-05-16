@@ -228,7 +228,14 @@ config :logger, :console,
     # B6.1 Logger-allowlist sync rule.
     :endpoint,
     :status,
-    :count
+    :count,
+    # M-11 admin-events: `:topic` is the PubSub topic that failed (string,
+    # e.g. `"grappa:admin:events"`); `:kind` is the typed event-kind atom
+    # (`:visitor_deleted`, `:circuit_reset`, etc.) that was about to be
+    # broadcast. Surfaces silent-drop class per CLAUDE.md "Log honesty"
+    # when AdminEvents fails to fan out to admin sockets.
+    :topic,
+    :kind
   ]
 
 import_config "#{config_env()}.exs"

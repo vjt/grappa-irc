@@ -53,6 +53,7 @@ defmodule GrappaWeb.UserSocket do
   alias Grappa.Visitors.Visitor
 
   channel "grappa:user:*", GrappaWeb.GrappaChannel
+  channel "grappa:admin:events", GrappaWeb.AdminChannel
 
   @impl Phoenix.Socket
   def connect(%{"token" => token}, socket, _) when is_binary(token) do
@@ -129,6 +130,14 @@ defmodule GrappaWeb.UserSocket do
       socket
       |> assign(:user_name, user.name)
       |> assign(:current_subject, {:user, user.id})
+      # M-11: surface the `is_admin` bit at the socket boundary so
+      # `GrappaWeb.AdminChannel.authorize/1` can gate on it without
+      # widening `current_subject` away from the bare-id tuple
+      # contract (V4 visitor-parity: `Grappa.Subject.t()` is
+      # `{:user, uuid} | {:visitor, uuid}`, NOT `{:user, %User{}}`).
+      # Reading the bit here keeps the WS authz a constant-time
+      # assigns check — no per-join Repo lookup.
+      |> assign(:is_admin, user.is_admin)
 
     {:ok, socket}
   end
@@ -143,6 +152,11 @@ defmodule GrappaWeb.UserSocket do
           |> assign(:current_visitor_id, visitor.id)
           |> assign(:current_visitor, visitor)
           |> assign(:current_subject, {:visitor, visitor.id})
+          # M-11: visitors are NEVER admins by construction
+          # (`is_admin` lives on `User` only); set the assign
+          # explicitly so AdminChannel can pattern-match on a
+          # single shape across both subject kinds.
+          |> assign(:is_admin, false)
 
         {:ok, socket}
 

@@ -33,6 +33,7 @@ defmodule GrappaWeb.Admin.CircuitController do
 
   alias Grappa.Admission.NetworkCircuit.AdminWire, as: CircuitWire
   alias Grappa.Operator
+  alias GrappaWeb.Admin.AuthPlug
 
   @doc """
   Reset the circuit for `network_id`. Synchronous: the reset cast
@@ -43,7 +44,7 @@ defmodule GrappaWeb.Admin.CircuitController do
           Plug.Conn.t() | {:error, :not_found | :bad_request}
   def reset(conn, %{"network_id" => raw}) when is_binary(raw) do
     with {:ok, network_id} <- parse_int(raw),
-         {:ok, entry} <- Operator.reset_circuit(network_id) do
+         {:ok, entry} <- Operator.reset_circuit(network_id, AuthPlug.actor_from_conn(conn)) do
       now_ms = System.monotonic_time(:millisecond)
       json(conn, %{network_id: network_id, circuit_state: CircuitWire.entry_to_admin_json(entry, now_ms)})
     end

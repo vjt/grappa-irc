@@ -5,6 +5,7 @@ defmodule Grappa.Application do
     top_level?: true,
     deps: [
       Grappa.Admission,
+      Grappa.AdminEvents,
       Grappa.Bootstrap,
       Grappa.PubSub,
       Grappa.Repo,
@@ -76,6 +77,26 @@ defmodule Grappa.Application do
         # admission check. NetworkCircuit funnels writes through its
         # GenServer; the named table is created in init/1.
         Grappa.Admission.NetworkCircuit,
+        # AdminEvents (M-cluster M-11): singleton GenServer that
+        # attaches :telemetry handlers in init/1 + holds the admin-
+        # events ring buffer. Must boot AFTER NetworkCircuit (which
+        # emits the events we subscribe to) so the first transition
+        # doesn't fire into a non-existent handler; AND BEFORE
+        # SessionSupervisor so any session crash-loop that trips a
+        # circuit on startup already has a handler attached.
+        # Restart: :permanent (infrastructure).
+        #
+        # `attach_telemetry: false` in test env: the global handler
+        # routes admission telemetry from EVERY async test to the
+        # AdminEvents pid, which then calls `Networks.get_network/1`
+        # via Wire.lookup_slug/1 → the sandbox connection is owned
+        # by the EMITTING test's pid, not AdminEvents' pid, so the
+        # lookup crashes with "could not lookup Ecto repo". Per-test
+        # opt-in via `Process.whereis(AdminEvents) |>
+        # Ecto.Adapters.SQL.Sandbox.allow(...)` keeps the
+        # AdminEvents-targeting tests honest without bleeding into
+        # unrelated suites.
+        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?()},
         # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
         # default (3 restarts in 5s) is GLOBAL across all children; one
         # upstream network-wide outage causing several Session.Server
@@ -131,6 +152,17 @@ defmodule Grappa.Application do
       []
     end
   end
+
+  # M-11 telemetry-attach gating. False in test env (set in
+  # `config/test.exs`) so AdminEvents doesn't capture admission
+  # telemetry from every async test pid (which would crash on the
+  # sandbox-ownership lookup mismatch). AdminEvents-targeting tests
+  # still invoke `record/1` directly and bypass the telemetry path
+  # entirely; tests that EXERCISE the telemetry adapter use the
+  # `:sys.replace_state` + `Ecto.Adapters.SQL.Sandbox.allow/3`
+  # pattern in `test/grappa/admin_events_test.exs`.
+  @spec attach_admin_telemetry?() :: boolean()
+  defp attach_admin_telemetry?, do: Application.get_env(:grappa, :attach_admin_telemetry, true)
 
   @impl Application
   def config_change(changed, _, removed) do

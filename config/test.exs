@@ -64,6 +64,16 @@ config :ex_unit, max_cases: 1
 # don't want the application start to autoload bound credentials and
 # try to connect to real upstream IRC servers during `mix test`.
 config :grappa, :start_bootstrap, false
+
+# M-11 — AdminEvents telemetry attach disabled in test env. The global
+# `:telemetry.attach_many/4` handler routes every admission event from
+# every async test pid to the AdminEvents singleton; the singleton's
+# `Wire.lookup_slug/1` Repo call then crashes because the sandbox
+# connection is owned by the EMITTING test, not AdminEvents. Tests
+# that exercise the telemetry adapter explicitly start the handler
+# via `Process.whereis(AdminEvents) |> Ecto.Adapters.SQL.Sandbox.allow/3`
+# (see `test/grappa/admin_events_test.exs`).
+config :grappa, :attach_admin_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 

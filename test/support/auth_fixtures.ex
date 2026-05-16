@@ -32,11 +32,13 @@ defmodule Grappa.AuthFixtures do
   @spec user_fixture(keyword()) :: User.t()
   def user_fixture(attrs \\ []) do
     name = Keyword.get(attrs, :name, "vjt-#{System.unique_integer([:positive])}")
+    is_admin = Keyword.get(attrs, :is_admin, false)
 
     {:ok, user} =
       Repo.insert(%User{
         name: name,
-        password_hash: "x"
+        password_hash: "x",
+        is_admin: is_admin
       })
 
     user
