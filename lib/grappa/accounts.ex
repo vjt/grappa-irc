@@ -5,7 +5,8 @@ defmodule Grappa.Accounts do
   Public surface:
 
     * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`,
-      `get_user_by_name!/1`, `update_admin_flags/2`
+      `get_user/1`, `get_user_by_name!/1`, `list_all_users/0`,
+      `update_admin_flags/2`
     * sessions: `create_session/4`, `authenticate/1`, `revoke_session/1`
 
   Both `User` and `Session` schemas are exported so downstream callers
@@ -58,7 +59,7 @@ defmodule Grappa.Accounts do
     # struct-shape access Boundary couldn't gate anyway — is
     # intentional.
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [User, Session, Wire]
+    exports: [User, Session, Wire, AdminWire]
 
   import Ecto.Query
 
@@ -124,6 +125,28 @@ defmodule Grappa.Accounts do
   """
   @spec get_user!(Ecto.UUID.t()) :: User.t()
   def get_user!(id), do: Repo.get!(User, id)
+
+  @doc """
+  Typed-nil sibling of `get_user!/1` for HTTP / programmatic callers
+  (M-cluster M-6 `PATCH /admin/users/:id`,
+  `PATCH /admin/credentials/:user_id/:network_id`). Returns `nil`
+  when the id doesn't exist; callers translate to `{:error, :not_found}`
+  at their boundary.
+  """
+  @spec get_user(Ecto.UUID.t()) :: User.t() | nil
+  def get_user(id) when is_binary(id), do: Repo.get(User, id)
+
+  @doc """
+  Every user row, ordered by `name` ascending. Operator-facing —
+  the M-6 admin console (`GET /admin/users`) materializes the full
+  table. Users are operator-curated (low cardinality); full
+  materialization is fine.
+  """
+  @spec list_all_users() :: [User.t()]
+  def list_all_users do
+    query = from(u in User, order_by: [asc: u.name])
+    Repo.all(query)
+  end
 
   @doc """
   Fetches a user by `name`. Raises `Ecto.NoResultsError` on miss.

@@ -5382,6 +5382,48 @@ admin task" (vjt).
 
 ---
 
+## 2026-05-16 — M-6 admin users + credentials (M cluster bucket)
+
+- Two more operator-facing endpoints land:
+  `GET/PATCH /admin/users` (toggle `is_admin`) and
+  `GET/PATCH /admin/credentials` (operator-editable fields
+  EXCLUDING password rotation). The combined-shape pattern from MD2
+  continues: DB intent + live BEAM state in one payload —
+  `live_session_count` per user (count across networks),
+  `live_state` per credential (single SessionEntry per binding).
+- Wire-shape allowlist defense is CRITICAL for credentials:
+  `Credential.password_encrypted` carries the Cloak-DECRYPTED
+  plaintext IRC password after `Repo` load (the field name
+  describes on-disk shape, not in-memory shape). The new
+  `Networks.Credentials.AdminWire` projects per-key with
+  `:password`/`:password_encrypted` deliberately omitted; the
+  controller test asserts the response body never contains either
+  key (defense-in-depth alongside the pure unit test).
+- Boundary discipline kept the controller-side composition pattern
+  from M-5: Accounts stays `[Repo]`-only deps; Networks gains a
+  typespec-only `LiveIntrospection` dep for the AdminWire
+  `SessionEntry` alias; `GrappaWeb → Repo` stays FORBIDDEN — the
+  `:network` preload moved INSIDE `Credentials.update_credential/3`
+  on success, so the controller can render the post-PATCH wire
+  shape without an illegal Repo dep.
+- `Operator` was NOT extended for M-6. Pure DB writes have no live
+  BEAM side effect to coordinate; controllers call contexts
+  directly. `Operator` stays reserved for `delete_visitor`,
+  `reset_circuit`, `reap_visitors` — verbs that mutate live state.
+- Whitelist enforcement remained loud (400 on extra body key, not
+  silent ignore) at both PATCH endpoints, mirroring M-5's
+  `NetworksController.caps_attrs/1` precedent. Adding `password`
+  to a user PATCH body OR `password_encrypted` to a credential
+  PATCH body collapses to 400 BEFORE the controller touches the
+  context — defense-in-depth against future spec drift.
+- Auth-method change without fresh password surfaces as 422 via the
+  existing `Credential.changeset/2` rule. The controller doesn't
+  add a custom guard; operators wanting the SASL swap with password
+  rotation go through `bin/grappa update-network-credential` which
+  bypasses the HTTP whitelist for password handling.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

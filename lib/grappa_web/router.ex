@@ -112,6 +112,12 @@ defmodule GrappaWeb.Router do
     patch "/networks/:slug", NetworksController, :update
     post "/reaper/run", ReaperController, :run
     post "/circuit/:network_id/reset", CircuitController, :reset
+
+    # M-cluster M-6 (operator console users + credentials panes):
+    get "/users", UsersController, :index
+    patch "/users/:id", UsersController, :update
+    get "/credentials", CredentialsController, :index
+    patch "/credentials/:user_id/:network_id", CredentialsController, :update
   end
 
   scope "/auth", GrappaWeb do

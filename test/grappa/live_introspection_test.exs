@@ -78,4 +78,53 @@ defmodule Grappa.LiveIntrospectionTest do
       assert entry.alive == true
     end
   end
+
+  describe "count_sessions_by_user/0 (M-6 admin console)" do
+    test "returns empty map when registry holds no user sessions" do
+      assert LiveIntrospection.count_sessions_by_user() == %{}
+    end
+
+    test "counts registered user sessions grouped by user_id, drops visitor rows" do
+      # Register dummy pids directly under the user-session registry
+      # key shape. We don't need real Session.Servers — the match-spec
+      # only inspects the registration key.
+      user_a = Ecto.UUID.generate()
+      user_b = Ecto.UUID.generate()
+      visitor_x = Ecto.UUID.generate()
+
+      keys = [
+        {:session, {:user, user_a}, 1},
+        {:session, {:user, user_a}, 2},
+        {:session, {:user, user_b}, 1},
+        {:session, {:visitor, visitor_x}, 1}
+      ]
+
+      parent = self()
+
+      registrants =
+        for key <- keys do
+          {:ok, pid} =
+            Task.start_link(fn ->
+              {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
+              send(parent, {:registered, self()})
+              Process.sleep(:infinity)
+            end)
+
+          assert_receive {:registered, ^pid}, 500
+          pid
+        end
+
+      on_exit(fn ->
+        Enum.each(registrants, fn pid ->
+          if Process.alive?(pid), do: Process.exit(pid, :kill)
+        end)
+      end)
+
+      counts = LiveIntrospection.count_sessions_by_user()
+
+      assert Map.get(counts, user_a) == 2
+      assert Map.get(counts, user_b) == 1
+      refute Map.has_key?(counts, visitor_x)
+    end
+  end
 end

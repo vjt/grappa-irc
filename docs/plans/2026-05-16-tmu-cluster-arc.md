@@ -864,19 +864,75 @@ Documented in every controller test moduledoc per M-3/M-4 precedent.
 **Deploy**: COLD per `feedback_hot_deploy_silent_noop_prod` — new
 routes + new controllers + new modules.
 
-### M-6 — GET/PATCH /admin/users + GET/PATCH /admin/credentials
+### M-6 — GET/PATCH /admin/users + GET/PATCH /admin/credentials — LANDED 2026-05-16
 
-**Failing test first**:
-- PATCH /admin/users/:id toggles is_admin.
-- PATCH /admin/credentials/:user_id/:network_id edits autojoin /
-  nick / sasl_user (NOT password — separate endpoint).
-- Password reset is a SEPARATE endpoint that emits a one-time link
-  or temp password (defer to a future cluster — flag in this
-  bucket's exit but don't ship).
+**Shipped**:
+- `GET /admin/users` — combined `Accounts.list_all_users/0` + per-user
+  `live_session_count` from `LiveIntrospection.count_sessions_by_user/0`
+  (one Registry scan + Enum.frequencies). Per-row: id, name, is_admin,
+  inserted_at, updated_at, live_session_count. NEVER includes
+  password_hash or virtual password.
+- `PATCH /admin/users/:id` — whitelist `is_admin` ONLY. Extra keys
+  (`name`, `password`, etc.) → 400 bad_request (loud, not silent
+  ignore). 404 unknown id; 422 changeset failure.
+- `GET /admin/credentials` — combined
+  `Credentials.list_all_credentials/0` (`:network` preloaded) +
+  per-row `LiveIntrospection.lookup_session({:user, user_id}, network_id)`
+  → `live_state: nil | %{...}` flat-nested per visitor admin precedent.
+  Per-row: user_id, network_id, network_slug, nick, realname,
+  sasl_user, auth_method, auth_command_template, autojoin_channels,
+  last_joined_channels, connection_state*, timestamps, live_state.
+  CRITICAL: NEVER includes `password_encrypted` (Cloak-decrypted
+  plaintext post-load) or virtual `password`. Defense-in-depth
+  controller test asserts response body never contains password*
+  keys.
+- `PATCH /admin/credentials/:user_id/:network_id` — whitelist
+  `autojoin_channels`, `nick`, `sasl_user`, `realname`, `auth_method`.
+  EXCLUDES `password` + `password_encrypted` (400 on attempt).
+  Auth-method change without fresh password surfaces as 422 via
+  existing changeset rule. Path params validated: UUID via
+  `Ecto.UUID.cast/1` → 400 on malformed; integer via `Integer.parse/1`
+  → 400 on non-integer. 404 on unknown user / network / binding.
 
-**Production change**: Controllers + helpers + wire shapes.
+**New helpers**:
+- `Accounts.list_all_users/0` (ordered by name ASC) +
+  `Accounts.get_user/1` (typed-nil sibling of `get_user!/1`).
+- `LiveIntrospection.count_sessions_by_user/0` — Registry scan with
+  match-spec pinning `{:user, "$1"}` shape; visitor sessions silently
+  dropped (M-6 is user-only).
+- `Credentials.update_credential/3` — typed sibling of
+  `update_credential!/3`, returns `{:ok, Credential.t()}` with
+  `:network` preloaded (so the HTTP controller can render the
+  wire shape without a `Repo` dep at the GrappaWeb boundary).
 
-**Deploy**: HOT.
+**New modules**:
+- `Grappa.Accounts.AdminWire` — operator user wire.
+- `Grappa.Networks.Credentials.AdminWire` — operator credential wire
+  with `live_state` nesting per `Visitors.AdminWire` precedent.
+
+**Boundary discipline**: composition happens at the GrappaWeb
+controllers (UsersController + CredentialsController) — not in
+Accounts or Networks contexts — so Accounts keeps its lean
+`[Repo]` deps and the new `Networks → LiveIntrospection` edge is
+typespec-only (alias for `SessionEntry.t/0` shape on the wire).
+`GrappaWeb → Repo` stays absent (preload moved INSIDE `Credentials.update_credential/3`).
+
+**Operator typed-siblings**: NONE added to `Operator`. M-6 verbs are
+pure DB writes — no live BEAM state to coordinate. Controllers call
+`Accounts.update_admin_flags/2` + `Credentials.update_credential/3`
+directly. `Operator` stays reserved for verbs that mutate live state
++ DB (`delete_visitor`, `reset_circuit`).
+
+**Three-class parity matrix**: EXEMPT (admin-gated, operator-facing).
+Documented in both controller test moduledocs per M-3/M-4/M-5
+precedent.
+
+**Deploy**: COLD per `feedback_hot_deploy_silent_noop_prod` — new
+routes + new controllers + new wire modules.
+
+**Deferred (future cluster)**: password reset endpoint, user rename
+endpoint, `auth_command_template` editability, per-user-per-network
+admin drill-down detail (M-8/9/10 may cover via cic side).
 
 ### M-7 — cic admin drawer entry + admin pane skeleton + me.is_admin gate
 

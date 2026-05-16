@@ -137,4 +137,35 @@ defmodule Grappa.AccountsTest do
       end
     end
   end
+
+  describe "get_user/1 (M-6 typed sibling)" do
+    test "returns the user by id" do
+      {:ok, user} = Accounts.create_user(%{name: "vjt-gu-1", password: @password})
+      assert %User{id: id} = Accounts.get_user(user.id)
+      assert id == user.id
+    end
+
+    test "returns nil on miss" do
+      assert Accounts.get_user(Ecto.UUID.generate()) == nil
+    end
+  end
+
+  describe "list_all_users/0 (M-6 admin console)" do
+    test "returns every users row ordered by name ascending" do
+      # Insert in reverse-name order to prove the ordering isn't
+      # accidental — pre-existing rows from other tests may interleave,
+      # so assert relative order on our planted trio.
+      {:ok, z} = Accounts.create_user(%{name: "z-lau-#{System.unique_integer([:positive])}", password: @password})
+      {:ok, a} = Accounts.create_user(%{name: "a-lau-#{System.unique_integer([:positive])}", password: @password})
+      {:ok, m} = Accounts.create_user(%{name: "m-lau-#{System.unique_integer([:positive])}", password: @password})
+
+      names = Enum.map(Accounts.list_all_users(), & &1.name)
+
+      idx_a = Enum.find_index(names, &(&1 == a.name))
+      idx_m = Enum.find_index(names, &(&1 == m.name))
+      idx_z = Enum.find_index(names, &(&1 == z.name))
+      assert idx_a < idx_m
+      assert idx_m < idx_z
+    end
+  end
 end

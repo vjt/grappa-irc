@@ -461,6 +461,43 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "update_credential/3 (M-6 typed sibling)" do
+    setup do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "old-nick",
+          password: "old-pw",
+          auth_method: :auto,
+          autojoin_channels: ["#old"]
+        })
+
+      %{user: user, network: net}
+    end
+
+    test "returns {:ok, cred} on valid attrs", %{user: user, network: net} do
+      assert {:ok, cred} = Credentials.update_credential(user, net, %{nick: "renamed"})
+      assert cred.nick == "renamed"
+    end
+
+    test "returns {:error, %Ecto.Changeset{}} on invalid attrs", %{user: user, network: net} do
+      assert {:error, %Ecto.Changeset{}} =
+               Credentials.update_credential(user, net, %{auth_method: :sasl})
+    end
+
+    test "returns {:error, :not_found} when the binding doesn't exist" do
+      # HTTP-path sibling — operator gets a typed 404, not a stack
+      # trace. Distinct from the bang variant which is bin/grappa-only.
+      orphan_user = user_fixture()
+      orphan_net = network_fixture()
+
+      assert Credentials.update_credential(orphan_user, orphan_net, %{nick: "x"}) ==
+               {:error, :not_found}
+    end
+  end
+
   describe "list_credentials_for_user/1" do
     test "returns every binding for a user with networks preloaded" do
       user = user_fixture()

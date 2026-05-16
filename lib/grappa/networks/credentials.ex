@@ -84,6 +84,36 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  Typed-error sibling of `update_credential!/3` for HTTP /
+  programmatic callers (M-cluster M-6
+  `PATCH /admin/credentials/:user_id/:network_id`). Returns
+  `{:error, :not_found}` when the `(user, network)` binding doesn't
+  exist instead of raising. Otherwise identical validation pipeline.
+
+  The bang variant stays for `mix grappa.update_network_credential`
+  where typo-loudness matters.
+  """
+  @spec update_credential(User.t(), Network.t(), map()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_credential(%User{} = user, %Network{} = network, attrs) when is_map(attrs) do
+    case get_credential(user, network) do
+      {:ok, cred} ->
+        case cred |> Credential.changeset(attrs) |> Repo.update() do
+          # Preload :network so HTTP callers (M-6 admin endpoint) can
+          # render the operator wire shape (which carries
+          # network_slug) without a Repo dep at the GrappaWeb
+          # boundary. Cost: one extra row fetch on success; cheap
+          # next to the changeset round-trip.
+          {:ok, updated} -> {:ok, Repo.preload(updated, :network)}
+          {:error, _} = err -> err
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Removes `channel_name` from `autojoin_channels` on the `(user, network)`
   credential. Called by `DELETE /networks/:slug/channels/:channel_id` so
   that the next `GET /channels` response omits the closed channel entirely

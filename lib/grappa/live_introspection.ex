@@ -18,6 +18,9 @@ defmodule Grappa.LiveIntrospection do
     * `lookup_session/2` — single-pid variant. Used by the visitor
       admin endpoint to attach live state per visitor row without
       scanning the whole registry.
+    * `count_sessions_by_user/0` — per-user `Session.Server` count
+      across networks. M-cluster M-6 `GET /admin/users` consumes the
+      count for per-row `live_session_count` projection.
 
   ## joined_channels timeout shape
 
@@ -78,6 +81,25 @@ defmodule Grappa.LiveIntrospection do
       [{pid, _}] -> build_entry(subject, network_id, pid)
       [] -> nil
     end
+  end
+
+  @doc """
+  Count of live `Session.Server`s registered under `{:user, user_id}`
+  shape, grouped by user_id. M-cluster M-6 `GET /admin/users` uses
+  the count to project per-user `live_session_count` without scanning
+  the registry per user row.
+
+  ONE registry scan + `Enum.frequencies/1`; visitor sessions are
+  silently dropped (M-6's combined-shape is per-user only). Empty
+  registry → `%{}`.
+  """
+  @spec count_sessions_by_user() :: %{Ecto.UUID.t() => non_neg_integer()}
+  def count_sessions_by_user do
+    Grappa.SessionRegistry
+    |> Registry.select([
+      {{{:session, {:user, :"$1"}, :_}, :_, :_}, [], [:"$1"]}
+    ])
+    |> Enum.frequencies()
   end
 
   defp build_entry(subject, network_id, pid) do
