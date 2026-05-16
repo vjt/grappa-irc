@@ -291,6 +291,15 @@ defmodule Grappa.Visitors do
   def get!(visitor_id) when is_binary(visitor_id), do: Repo.get!(Visitor, visitor_id)
 
   @doc """
+  Fetch a visitor by id, typed-error sibling of `get!/1`. Used by
+  callers that need a non-raising lookup (e.g. controllers that map
+  `nil` → 404 via `FallbackController`). Returns `nil` on miss so the
+  caller pattern-matches symmetrically with `Repo.get/2`.
+  """
+  @spec get(Ecto.UUID.t()) :: Visitor.t() | nil
+  def get(visitor_id) when is_binary(visitor_id), do: Repo.get(Visitor, visitor_id)
+
+  @doc """
   Bulk-delete every visitor row pinned to `network_slug`. Returns
   `{:ok, count}` with the deleted-row count. Operator path —
   surfaces through `mix grappa.reap_visitors --network=<slug>` to

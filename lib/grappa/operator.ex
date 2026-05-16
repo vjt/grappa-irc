@@ -77,40 +77,70 @@ defmodule Grappa.Operator do
   """
   @spec delete_visitor!(Ecto.UUID.t()) :: :ok | no_return()
   def delete_visitor!(id) when is_binary(id) do
-    visitor =
-      try do
-        Visitors.get!(id)
-      rescue
-        e in Ecto.NoResultsError ->
-          IO.puts(:stderr, "visitor #{id} not found")
-          reraise e, __STACKTRACE__
-      end
+    case delete_visitor(id) do
+      :ok ->
+        :ok
 
-    case Networks.get_network_by_slug(visitor.network_slug) do
+      {:error, :not_found} ->
+        IO.puts(:stderr, "visitor #{id} not found")
+        raise Ecto.NoResultsError, queryable: Visitor
+    end
+  end
+
+  @doc """
+  Typed-error sibling of `delete_visitor!/1` for HTTP / programmatic
+  callers (M-cluster M-3 admin endpoint `DELETE /admin/visitors/:id`).
+  Same orchestration — Session.stop_session BEFORE Visitors.delete so
+  the cap slot frees synchronously — but returns
+  `{:error, :not_found}` on unknown id instead of raising.
+
+  Side-effect parity with `delete_visitor!/1`: prints the same
+  human-readable lines (deleted / orphaned-network / concurrent-reaper).
+  The HTTP path captures the return shape for FallbackController; the
+  bin/grappa path captures stdout for operator UX. One feature, one
+  code path, every door.
+  """
+  @spec delete_visitor(Ecto.UUID.t()) :: :ok | {:error, :not_found}
+  def delete_visitor(id) when is_binary(id) do
+    case Visitors.get(id) do
+      nil ->
+        {:error, :not_found}
+
+      visitor ->
+        :ok = stop_visitor_session(visitor)
+        :ok = log_delete_outcome(id, visitor, Visitors.delete(id))
+        :ok
+    end
+  end
+
+  defp stop_visitor_session(%Visitor{id: id, network_slug: slug}) do
+    case Networks.get_network_by_slug(slug) do
       {:ok, network} ->
         :ok = Session.stop_session({:visitor, id}, network.id)
 
       {:error, :not_found} ->
-        # Visitor row pinned to a network that no longer exists.
-        # The DB delete still works (CASCADE wipes dependents);
-        # there's no live session to terminate because spawn requires
-        # the network row to resolve. Surface via stderr so the
-        # operator knows the row was orphaned.
-        IO.puts(:stderr, "network #{visitor.network_slug} not found, no session to stop")
+        # Visitor row pinned to a network that no longer exists. The DB
+        # delete still works (CASCADE wipes dependents); there's no
+        # live session to terminate because spawn requires the network
+        # row to resolve. Surface via stderr so the operator knows the
+        # row was orphaned.
+        IO.puts(:stderr, "network #{slug} not found, no session to stop")
     end
 
-    case Visitors.delete(id) do
-      :ok ->
-        IO.puts("deleted visitor #{id} (#{visitor.nick}@#{visitor.network_slug})")
+    :ok
+  end
 
-      # Reaper / concurrent operator raced; the post-condition we
-      # promised (row gone) is reached but a sibling did the work.
-      # Honest log so the operator dashboard distinguishes "I freed
-      # the slot" from "someone else already had".
-      {:error, :not_found} ->
-        IO.puts("visitor #{id} already deleted (concurrent reaper or operator)")
-    end
+  defp log_delete_outcome(id, visitor, :ok) do
+    IO.puts("deleted visitor #{id} (#{visitor.nick}@#{visitor.network_slug})")
+    :ok
+  end
 
+  # Reaper / concurrent operator raced; the post-condition we promised
+  # (row gone) is reached but a sibling did the work. Honest log so the
+  # operator dashboard distinguishes "I freed the slot" from "someone
+  # else already had".
+  defp log_delete_outcome(id, _, {:error, :not_found}) do
+    IO.puts("visitor #{id} already deleted (concurrent reaper or operator)")
     :ok
   end
 

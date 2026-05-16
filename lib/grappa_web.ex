@@ -19,6 +19,7 @@ defmodule GrappaWeb do
       Grappa.ClientId,
       Grappa.IRC,
       Grappa.Networks,
+      Grappa.Operator,
       Grappa.PubSub,
       Grappa.Push,
       Grappa.QueryWindows,
