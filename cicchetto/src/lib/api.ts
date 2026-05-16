@@ -34,6 +34,9 @@ export type AdmissionError =
   | { error: "too_many_sessions" }
   | { error: "network_busy" }
   | { error: "network_unreachable"; retry_after?: number }
+  | { error: "connect_timeout" }
+  | { error: "welcome_timeout" }
+  | { error: "probe_timeout" }
   | { error: "captcha_required"; site_key: string; provider: "turnstile" | "hcaptcha" | "disabled" }
   | { error: "captcha_failed" }
   | { error: "service_degraded" };

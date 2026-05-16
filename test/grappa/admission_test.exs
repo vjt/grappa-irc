@@ -6,10 +6,11 @@ defmodule Grappa.AdmissionTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Admission, AdmissionStateHelpers, Repo}
+  alias Grappa.{Admission, AdmissionStateHelpers, Repo, SessionRegistry}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
   alias Grappa.Admission.{Config, NetworkCircuit}
   alias Grappa.Networks.Network
+  alias Grappa.Session.Server, as: SessionServer
 
   setup do
     AdmissionStateHelpers.reset_network_circuit()
@@ -56,15 +57,13 @@ defmodule Grappa.AdmissionTest do
       assert :ok = Admission.check_capacity(input)
     end
 
-    test "exceeded → :network_cap_exceeded", %{network: net} do
-      # Task 4 changeset rejects max_concurrent_visitor_sessions: 0 (validate_number
-      # greater_than: 0). Use cap=1 + register one fake live-session entry
-      # in SessionRegistry so Registry.count_select returns 1, tripping the
-      # cap. The fake key MUST go through `Server.registry_key/2` so the
-      # match-spec in `count_live_sessions/1` actually matches — registering
-      # a hand-rolled tuple bypasses the production registrar and makes the
-      # test pass while encoding the bug. Registry entry is auto-removed
-      # when the test pid exits.
+    test "visitor cap exceeded by visitor session → :visitor_cap_exceeded",
+         %{network: net} do
+      # U-2: subject-aware split. Visitor flow consults
+      # max_concurrent_visitor_sessions; the registry counts live
+      # visitor sessions only. Hand-registered key MUST go through
+      # `Server.registry_key/2` + correct subject shape so the
+      # production match-spec actually matches.
       {:ok, net} =
         net
         |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
@@ -72,8 +71,8 @@ defmodule Grappa.AdmissionTest do
 
       {:ok, _} =
         Registry.register(
-          Grappa.SessionRegistry,
-          Grappa.Session.Server.registry_key({:visitor, "fake-vid"}, net.id),
+          SessionRegistry,
+          SessionServer.registry_key({:visitor, "fake-vid"}, net.id),
           nil
         )
 
@@ -83,31 +82,99 @@ defmodule Grappa.AdmissionTest do
         flow: :login_fresh
       }
 
-      assert {:error, :network_cap_exceeded} = Admission.check_capacity(input)
+      assert {:error, :visitor_cap_exceeded} = Admission.check_capacity(input)
     end
 
-    test "U-1 scope: max_concurrent_user_sessions is NOT read by admission yet",
+    test "user cap exceeded by user session → :user_cap_exceeded",
          %{network: net} do
-      # MED-2 boundary lock: U-1 schema adds the column but admission
-      # logic continues to read max_concurrent_visitor_sessions only.
-      # A configuration that sets user_sessions=0 (which would lock out
-      # all user logins under U-2) MUST still admit successfully under
-      # U-1 — proves the logic split has not regressed into U-1's scope.
-      # When U-2 lands, this test gets DELETED (intentional canary, not
-      # a permanent shape) and the matching `it_does_read` test takes
-      # its place.
+      # U-2: user flow consults max_concurrent_user_sessions; only
+      # `{:user, _}` registry entries count toward it.
+      {:ok, net} =
+        net
+        |> Network.changeset(%{max_concurrent_user_sessions: 1})
+        |> Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          SessionRegistry,
+          SessionServer.registry_key({:user, "fake-uid"}, net.id),
+          nil
+        )
+
+      input = %{
+        network_id: net.id,
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        flow: :patch_network_connect
+      }
+
+      assert {:error, :user_cap_exceeded} = Admission.check_capacity(input)
+    end
+
+    test "visitor cap full does NOT block user flow", %{network: net} do
+      # U-2: caps are independent per subject_kind. A visitor cap
+      # exhausted by visitor sessions must not reject a user-flow
+      # admission check.
       {:ok, net} =
         net
         |> Network.changeset(%{
-          max_concurrent_visitor_sessions: 100,
-          max_concurrent_user_sessions: 0
+          max_concurrent_visitor_sessions: 1,
+          max_concurrent_user_sessions: 5
         })
         |> Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          SessionRegistry,
+          SessionServer.registry_key({:visitor, "fake-vid"}, net.id),
+          nil
+        )
+
+      input = %{
+        network_id: net.id,
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        flow: :patch_network_connect
+      }
+
+      assert :ok = Admission.check_capacity(input)
+    end
+
+    test "user cap full does NOT block visitor flow", %{network: net} do
+      # U-2: mirror — user cap exhausted does not reject a visitor.
+      {:ok, net} =
+        net
+        |> Network.changeset(%{
+          max_concurrent_visitor_sessions: 5,
+          max_concurrent_user_sessions: 1
+        })
+        |> Repo.update()
+
+      {:ok, _} =
+        Registry.register(
+          SessionRegistry,
+          SessionServer.registry_key({:user, "fake-uid"}, net.id),
+          nil
+        )
 
       input = %{
         network_id: net.id,
         client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
         flow: :login_fresh
+      }
+
+      assert :ok = Admission.check_capacity(input)
+    end
+
+    test "user cap nil = uncapped (matches visitor nil semantics)",
+         %{network: net} do
+      {:ok, net} =
+        net
+        |> Network.changeset(%{max_concurrent_user_sessions: nil})
+        |> Repo.update()
+
+      input = %{
+        network_id: net.id,
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        flow: :patch_network_connect
       }
 
       assert :ok = Admission.check_capacity(input)
@@ -264,8 +331,8 @@ defmodule Grappa.AdmissionTest do
 
       {:ok, _} =
         Registry.register(
-          Grappa.SessionRegistry,
-          Grappa.Session.Server.registry_key({:visitor, "fake-vid"}, capped_net.id),
+          SessionRegistry,
+          SessionServer.registry_key({:visitor, "fake-vid"}, capped_net.id),
           nil
         )
 
@@ -275,14 +342,14 @@ defmodule Grappa.AdmissionTest do
         flow: :login_fresh
       }
 
-      assert {:error, :network_cap_exceeded} = Admission.check_capacity(input)
+      assert {:error, :visitor_cap_exceeded} = Admission.check_capacity(input)
 
       net_id = capped_net.id
 
       assert_receive {:telemetry, [:grappa, :admission, :capacity, :reject], %{},
                       %{
                         flow: :login_fresh,
-                        error: :network_cap_exceeded,
+                        error: :visitor_cap_exceeded,
                         network_id: ^net_id,
                         client_id: "11111111-2222-4333-8444-555555555555"
                       }},

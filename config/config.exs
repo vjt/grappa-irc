@@ -53,9 +53,15 @@ config :grappa, :session_backoff,
 #   * captcha_site_key — provider's public site key (env var in prod;
 #     Task 13.A). Read at request time by FallbackController so a
 #     runtime.exs change picks up at boot without a recompile.
-#   * login_probe_timeout_ms — Visitors.Login probe-connect budget.
-#     3s default leaves nginx 30s upstream timeout plenty of slack.
-#     Was hard-coded 8s pre-T31; Plan 2 wires this in.
+#   * login_probe_timeout_ms — Visitors.Login outer wait_for_ready
+#     budget (U-2 UD7: was the single budget pre-U-2; now the OUTER
+#     guard for the assertion path — must be >= connect + welcome +
+#     slop or the inner timeouts can't fire before the outer one wins).
+#   * login_connect_timeout_ms — inner TCP/TLS-connect budget (3s).
+#     Fail-fast on a leaf that can't even establish a socket.
+#   * login_welcome_timeout_ms — inner NICK/USER → 001 RPL_WELCOME
+#     budget (30s). Accommodates Bahamut rDNS / ident-lookup blocking
+#     (5-20s observed) + cluster-propagation latency.
 #   * network_circuit_threshold / window_ms / cooldown_ms — see
 #     Grappa.Admission.NetworkCircuit moduledoc.
 config :grappa, :admission,
@@ -63,7 +69,9 @@ config :grappa, :admission,
   captcha_provider: Grappa.Admission.Captcha.Disabled,
   captcha_secret: nil,
   captcha_site_key: nil,
-  login_probe_timeout_ms: 3_000,
+  login_connect_timeout_ms: 3_000,
+  login_welcome_timeout_ms: 30_000,
+  login_probe_timeout_ms: 35_000,
   network_circuit_threshold: 5,
   network_circuit_window_ms: 60_000,
   network_circuit_cooldown_ms: 5 * 60_000
@@ -127,11 +135,21 @@ config :logger, :console,
     # cap-tripped or already-running idempotent NO-OP), or failed
     # (M-life-4 tri-counter — see Grappa.Bootstrap moduledoc).
     # `:visitors` is the parallel count for the visitor-respawn pass.
+    # U-2 honest-log split (`feedback_log_honesty`): the legacy
+    # `:spawned` + `:failed` + `:skipped` triplet expands into a
+    # five-bucket honest set so the operator dashboard separates
+    # idempotent restart (`already_running`) from capacity-policy
+    # rejection (`capacity_rejected`) from upstream failure
+    # (`network_failed`) from config-shape failure (`plan_failed`).
     :credentials,
     :visitors,
     :spawned,
     :skipped,
     :failed,
+    :already_running,
+    :capacity_rejected,
+    :network_failed,
+    :plan_failed,
     # Per-IRC-event context: who/what an event refers to (KICK target,
     # NICK_CHANGE new-nick, MODE arg, etc. — mirrors the Meta.@known_keys
     # allowlist so the same shape that hits the DB also hits the log line.

@@ -224,9 +224,12 @@ defmodule GrappaWeb.NetworksController do
 
   # Call the orchestrator with the cred's network_id + computed plan
   # + capacity inputs. Returns the orchestrator's typed error atom
-  # verbatim (`:network_cap_exceeded` / `:client_cap_exceeded` /
-  # `{:network_circuit_open, _}` / etc.) so FallbackController's
-  # existing T31 clauses pick up the 503/429 mapping unchanged.
+  # verbatim (`:user_cap_exceeded` / `:client_cap_exceeded` /
+  # `{:network_circuit_open, _}` / `{:start_failed, _}` / etc.) so
+  # FallbackController's existing T31 clauses pick up the 503/429
+  # mapping unchanged. U-2: this surface is always a user-flow
+  # (`:patch_network_connect`), so the cap atom is always
+  # `:user_cap_exceeded`, never `:visitor_cap_exceeded`.
   @spec orchestrate_spawn(Plug.Conn.t(), User.t(), Credential.t(), Session.start_opts()) ::
           {:ok, pid()} | {:error, term()}
   defp orchestrate_spawn(conn, %User{id: user_id} = user, credential, plan) do

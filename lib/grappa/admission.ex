@@ -65,7 +65,8 @@ defmodule Grappa.Admission do
 
   @type capacity_error ::
           :client_cap_exceeded
-          | :network_cap_exceeded
+          | :visitor_cap_exceeded
+          | :user_cap_exceeded
           | {:network_circuit_open, non_neg_integer()}
 
   @type error :: capacity_error() | Captcha.error()
@@ -88,10 +89,12 @@ defmodule Grappa.Admission do
   @spec check_capacity(capacity_input()) :: :ok | {:error, capacity_error()}
   def check_capacity(%{network_id: network_id, flow: flow, client_id: client_id} = input)
       when is_integer(network_id) do
+    subject_kind = subject_kind_for_flow(flow)
+
     result =
       with :ok <- check_circuit(network_id),
-           :ok <- check_network_total(network_id),
-           :ok <- check_client_cap(input) do
+           :ok <- check_network_total(network_id, subject_kind),
+           :ok <- check_client_cap(input, subject_kind) do
         :ok
       end
 
@@ -104,6 +107,16 @@ defmodule Grappa.Admission do
         {:error, error}
     end
   end
+
+  # Flow → subject_kind dispatch. U-2 (UD1): the typed `flow` field
+  # already encodes whether the spawn originates from a visitor- or
+  # user-bearing surface; subject_kind is derived rather than passed
+  # alongside to keep the capacity_input shape stable for callers.
+  defp subject_kind_for_flow(:login_fresh), do: :visitor
+  defp subject_kind_for_flow(:login_existing), do: :visitor
+  defp subject_kind_for_flow(:bootstrap_visitor), do: :visitor
+  defp subject_kind_for_flow(:bootstrap_user), do: :user
+  defp subject_kind_for_flow(:patch_network_connect), do: :user
 
   defp check_circuit(network_id) do
     case NetworkCircuit.check(network_id) do
@@ -119,44 +132,66 @@ defmodule Grappa.Admission do
     end
   end
 
-  defp check_network_total(network_id) do
-    # U-1: reads `max_concurrent_visitor_sessions` only — the renamed
-    # successor to the pre-U-1 single `max_concurrent_sessions` column.
-    # Subject-aware split (visitor cap + separate user cap, evaluated
-    # per `flow`'s subject_kind) lands in U-2; the schema split lives
-    # in U-1 with logic unchanged so the migration ships independently.
+  # U-2 (UD1): subject-aware total cap. The visitor and user caps are
+  # operator-tunable per-network knobs that count DIFFERENT live-session
+  # populations against DIFFERENT operator-set limits — a network full
+  # of anonymous visitors must still admit a registered user, and vice
+  # versa. Each clause reads the column matching its subject_kind and
+  # filters the SessionRegistry match-spec head to that subject's
+  # tagged-tuple shape.
+  defp check_network_total(network_id, :visitor) do
     case Repo.get(Network, network_id) do
       %Network{max_concurrent_visitor_sessions: nil} ->
         :ok
 
       %Network{max_concurrent_visitor_sessions: cap} ->
-        live = count_live_sessions(network_id)
-        if live >= cap, do: {:error, :network_cap_exceeded}, else: :ok
+        live = count_live_sessions(network_id, :visitor)
+        if live >= cap, do: {:error, :visitor_cap_exceeded}, else: :ok
 
       nil ->
         :ok
     end
   end
 
-  defp count_live_sessions(network_id) do
+  defp check_network_total(network_id, :user) do
+    case Repo.get(Network, network_id) do
+      %Network{max_concurrent_user_sessions: nil} ->
+        :ok
+
+      %Network{max_concurrent_user_sessions: cap} ->
+        live = count_live_sessions(network_id, :user)
+        if live >= cap, do: {:error, :user_cap_exceeded}, else: :ok
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp count_live_sessions(network_id, subject_kind) do
     # Registry keys are `{:session, subject, network_id}` per
-    # `Grappa.Session.Server.registry_key/2`. Match-spec head literally
-    # interpolates network_id at construction time — `:_` matches any
-    # subject; the integer matches itself. `count_match/3` won't work
-    # here: its `key` arg is matched as a plain Erlang term (`:_` is a
-    # literal atom inside a tuple, not a wildcard).
+    # `Grappa.Session.Server.registry_key/2`. Subject is a 2-tuple
+    # `{:visitor, uuid}` or `{:user, uuid}`. Match-spec head literally
+    # interpolates network_id + the subject tag at construction time
+    # so only sessions of the matching subject_kind on this network
+    # count. `:_` matches any uuid inside the subject tuple.
+    subject_tag =
+      case subject_kind do
+        :visitor -> :visitor
+        :user -> :user
+      end
+
     Registry.count_select(Grappa.SessionRegistry, [
-      {{{:session, :_, network_id}, :_, :_}, [], [true]}
+      {{{:session, {subject_tag, :_}, network_id}, :_, :_}, [], [true]}
     ])
   end
 
   # Bootstrap flows have nil client — skip client-cap check.
-  defp check_client_cap(%{client_id: nil}), do: :ok
+  defp check_client_cap(%{client_id: nil}, _), do: :ok
 
-  defp check_client_cap(%{client_id: client_id, network_id: network_id})
+  defp check_client_cap(%{client_id: client_id, network_id: network_id}, subject_kind)
        when is_binary(client_id) do
     cap = effective_max_per_client(network_id)
-    count = count_subjects_for_client_on_network(client_id, network_id)
+    count = count_subjects_for_client_on_network(client_id, network_id, subject_kind)
     if count >= cap, do: {:error, :client_cap_exceeded}, else: :ok
   end
 
@@ -172,13 +207,13 @@ defmodule Grappa.Admission do
   # accounts_sessions where client_id matches AND the subject is bound
   # to the given network_id (visitor.network_slug = network's slug, OR
   # user has a Credential for network_id). Only non-revoked sessions
-  # count.
-  defp count_subjects_for_client_on_network(client_id, network_id) do
+  # count. U-2 (UD5.B): subject-aware — a device that switches identity
+  # (visitor → user, or vice versa) counts independently against
+  # client_cap per subject_kind. The same client_id holding a visitor
+  # session must not block a user login on that device, and the inverse.
+  defp count_subjects_for_client_on_network(client_id, network_id, :visitor) do
     %Network{slug: slug} = Repo.get!(Network, network_id)
 
-    # sqlite3 doesn't support `DISTINCT ON` (which Ecto's `distinct:
-    # <field>` clause generates). Use `count(field, :distinct)` in the
-    # select to get COUNT(DISTINCT field) — works in sqlite + portable.
     visitor_count_q =
       from(s in AccountSession,
         join: v in Visitor,
@@ -190,6 +225,10 @@ defmodule Grappa.Admission do
         select: count(s.visitor_id, :distinct)
       )
 
+    Repo.one(visitor_count_q)
+  end
+
+  defp count_subjects_for_client_on_network(client_id, network_id, :user) do
     user_count_q =
       from(s in AccountSession,
         join: c in Credential,
@@ -200,7 +239,7 @@ defmodule Grappa.Admission do
         select: count(s.user_id, :distinct)
       )
 
-    Repo.one(visitor_count_q) + Repo.one(user_count_q)
+    Repo.one(user_count_q)
   end
 
   @doc """

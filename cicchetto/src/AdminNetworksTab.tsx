@@ -280,9 +280,7 @@ const AdminNetworksTab: Component = () => {
                       slug={net.slug}
                       field="max_concurrent_visitor_sessions"
                       value={edits[net.slug]?.max_concurrent_visitor_sessions ?? ""}
-                      onInput={(v) =>
-                        onEditCap(net.slug, "max_concurrent_visitor_sessions", v)
-                      }
+                      onInput={(v) => onEditCap(net.slug, "max_concurrent_visitor_sessions", v)}
                     />
                   </td>
                   <td>
@@ -290,9 +288,7 @@ const AdminNetworksTab: Component = () => {
                       slug={net.slug}
                       field="max_concurrent_user_sessions"
                       value={edits[net.slug]?.max_concurrent_user_sessions ?? ""}
-                      onInput={(v) =>
-                        onEditCap(net.slug, "max_concurrent_user_sessions", v)
-                      }
+                      onInput={(v) => onEditCap(net.slug, "max_concurrent_user_sessions", v)}
                     />
                   </td>
                   <td>

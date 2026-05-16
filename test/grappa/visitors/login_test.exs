@@ -111,11 +111,17 @@ defmodule Grappa.Visitors.LoginTest do
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
 
-    test "no 001 within budget → {:error, :timeout}, session torn down + anon row purged" do
+    test "no 001 within budget → {:error, :welcome_timeout}, session torn down + anon row purged" do
       {_, port} = start_server()
       {_, _} = setup_visitor_network(port)
 
-      assert {:error, :timeout} = Login.login(login_input(), login_timeout_ms: 200)
+      # U-2 (UD7): timeout split into :connect_timeout (TCP/TLS) +
+      # :welcome_timeout (post-NICK/USER 001) + :probe_timeout (outer
+      # guard). Connect succeeds against the IRCServer fake; the fake
+      # never feeds 001, so the inner welcome budget elapses first.
+      assert {:error, :welcome_timeout} =
+               Login.login(login_input(), login_welcome_timeout_ms: 200)
+
       assert is_nil(Repo.get_by(Visitor, nick: "vjt", network_slug: "azzurra"))
     end
 
@@ -282,14 +288,10 @@ defmodule Grappa.Visitors.LoginTest do
       assert result == {:error, :client_cap_exceeded}
     end
 
-    test "network_cap_exceeded → {:error, :network_cap_exceeded}", %{network: net} do
-      # Task 4 changeset rejects max_concurrent_visitor_sessions: 0.
-      # Use cap=1 + register one fake live-session entry in SessionRegistry
-      # so Registry.count_select returns 1, tripping the cap. The fake key
-      # MUST go through `Server.registry_key/2` so the match-spec in
-      # `count_live_sessions/1` actually matches — registering a hand-rolled
-      # tuple bypasses the production registrar and makes the test pass
-      # while encoding the bug.
+    test "visitor_cap_exceeded → {:error, :visitor_cap_exceeded}", %{network: net} do
+      # U-2: visitor flow consults max_concurrent_visitor_sessions and
+      # returns the visitor-typed atom (was :network_cap_exceeded under
+      # the pre-split shared shape).
       {:ok, capped_net} =
         net
         |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
@@ -316,7 +318,7 @@ defmodule Grappa.Visitors.LoginTest do
           []
         )
 
-      assert result == {:error, :network_cap_exceeded}
+      assert result == {:error, :visitor_cap_exceeded}
     end
 
     test "network_circuit_open → {:error, {:network_circuit_open, retry_after}}",

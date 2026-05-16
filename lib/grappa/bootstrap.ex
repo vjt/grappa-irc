@@ -35,8 +35,8 @@ defmodule Grappa.Bootstrap do
   SessionSupervisor) is up and the bouncer continues running with zero
   sessions, ready for the operator to bind the first credential and
   reboot. Per-session Bootstrap-time errors (no enabled server, missing
-  user) increment the `failed` counter and continue with the next
-  session; one bad row does not block the others.
+  user) increment one of the typed failure counters and continue with
+  the next session; one bad row does not block the others.
 
   ## Hard-fail config invariants — refuse to boot on misconfig
 
@@ -70,31 +70,35 @@ defmodule Grappa.Bootstrap do
   legitimately transient or per-row (cap exceeded, upstream connect
   refused) and cannot be ruled out at boot.
 
-  Three counters, three operationally-distinct conditions
-  (post-M-life-4):
+  Five counters (U-2 honest-log split per `feedback_log_honesty`),
+  five operationally-distinct conditions:
 
-    * `spawned` — `Session.start_session/3` returned `{:ok, pid}`.
+    * `spawned` — `SpawnOrchestrator.spawn/4` returned `{:ok, :spawned, pid}`.
       Bootstrap actually brought up a fresh session for this row.
-    * `skipped` — Bootstrap did nothing because nothing was needed
-      OR nothing was permitted:
-        - `{:error, {:already_started, pid}}` — the session is already
-          alive under the same `{:via, Registry, ...}` key. Idempotent
-          no-op on Bootstrap restart (`:transient` policy: every
-          previously-spawned row is still up under the same key).
-        - `{:error, :network_cap_exceeded}` — `Admission.check_capacity/1`
-          tripped the per-network total cap. Operator policy decision,
-          not a fault. (T31 Plan 2 Task 4.)
-    * `failed` — real errors: `{:error, _}` from `SessionPlan.resolve/1`
-      (`:no_server`, `:user_not_found`) OR a hard Session-init failure
-      (`{:missing_password, _}` from `IRC.Client.init/1`'s validation
-      path, propagating up via the linked Client crash inside
-      `Session.handle_continue/2`'s `Client.start_link/1`).
+    * `already_running` — `{:ok, :already_started, pid}`. The session is
+      already alive under the same `{:via, Registry, ...}` key.
+      Idempotent NO-OP on Bootstrap restart (`:transient` policy: every
+      previously-spawned row is still up). Distinct from spawning so the
+      operator dashboard can tell a fresh boot from a Bootstrap restart.
+    * `capacity_rejected` — any `Admission.capacity_error()`
+      (`:visitor_cap_exceeded`, `:user_cap_exceeded`,
+      `:client_cap_exceeded`, `{:network_circuit_open, _}`) tripped the
+      admission gate. Operator policy decision, not a fault — sized the
+      cap correctly or accept the policy. (T31 Plan 2 Task 4 +
+      U-2 typed-error split.)
+    * `network_failed` — `{:error, {:start_failed, _}}` from the
+      SpawnOrchestrator. Hard Session-init failure (e.g. upstream
+      connect refused at `init/1` validation, missing-password CRASH).
+    * `plan_failed` — `SessionPlan.resolve/1` returned an `{:error, _}`
+      (`:no_server`, `:user_not_found`). Config-shape error per row,
+      reported before admission/spawn.
 
   Operator dashboard semantics fall out cleanly: `spawned > 0` ⇒
-  fresh start brought up new sessions; `skipped > 0` on a fresh boot
-  ⇒ cap policy is tripping (size it correctly or accept the policy);
-  `skipped > 0` on a Bootstrap restart ⇒ everything is already alive
-  (idempotent no-op — the expected case); `failed > 0` ⇒ investigate.
+  fresh start brought up new sessions; `capacity_rejected > 0` on a
+  fresh boot ⇒ cap policy is tripping (size it correctly or accept
+  the policy); `already_running > 0` on a Bootstrap restart ⇒
+  everything is already alive (idempotent no-op — the expected
+  case); `network_failed > 0` or `plan_failed > 0` ⇒ investigate.
 
   ## Backoff reset on bootstrap (M-life-5)
 
@@ -149,18 +153,25 @@ defmodule Grappa.Bootstrap do
 
   defmodule Result do
     @moduledoc """
-    Tri-counter accumulator + return value for `Grappa.Bootstrap.run/0`.
+    Five-counter accumulator + return value for `Grappa.Bootstrap.run/0`.
 
     See parent moduledoc's "Failure modes" section for the semantic
-    distinction between `spawned`, `skipped`, and `failed`.
+    distinction between `spawned`, `already_running`,
+    `capacity_rejected`, `network_failed`, and `plan_failed`.
     """
 
-    defstruct spawned: 0, failed: 0, skipped: 0
+    defstruct spawned: 0,
+              already_running: 0,
+              capacity_rejected: 0,
+              network_failed: 0,
+              plan_failed: 0
 
     @type t :: %__MODULE__{
             spawned: non_neg_integer(),
-            failed: non_neg_integer(),
-            skipped: non_neg_integer()
+            already_running: non_neg_integer(),
+            capacity_rejected: non_neg_integer(),
+            network_failed: non_neg_integer(),
+            plan_failed: non_neg_integer()
           }
   end
 
@@ -237,8 +248,10 @@ defmodule Grappa.Bootstrap do
   defp sum_results(%Result{} = a, %Result{} = b) do
     %Result{
       spawned: a.spawned + b.spawned,
-      failed: a.failed + b.failed,
-      skipped: a.skipped + b.skipped
+      already_running: a.already_running + b.already_running,
+      capacity_rejected: a.capacity_rejected + b.capacity_rejected,
+      network_failed: a.network_failed + b.network_failed,
+      plan_failed: a.plan_failed + b.plan_failed
     }
   end
 
@@ -249,8 +262,10 @@ defmodule Grappa.Bootstrap do
     Logger.info("bootstrap done",
       credentials: length(credentials),
       spawned: stats.spawned,
-      failed: stats.failed,
-      skipped: stats.skipped
+      already_running: stats.already_running,
+      capacity_rejected: stats.capacity_rejected,
+      network_failed: stats.network_failed,
+      plan_failed: stats.plan_failed
     )
 
     stats
@@ -275,8 +290,8 @@ defmodule Grappa.Bootstrap do
         spawn_with_admission({:user, user_id}, network_id, plan, capacity_input, log_keys, acc)
 
       {:error, reason} ->
-        Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
-        %{acc | failed: acc.failed + 1}
+        Logger.error("session plan failed", [error: inspect(reason)] ++ log_keys)
+        %{acc | plan_failed: acc.plan_failed + 1}
     end
   end
 
@@ -287,8 +302,10 @@ defmodule Grappa.Bootstrap do
     Logger.info("bootstrap visitors done",
       visitors: length(visitors),
       spawned: stats.spawned,
-      failed: stats.failed,
-      skipped: stats.skipped
+      already_running: stats.already_running,
+      capacity_rejected: stats.capacity_rejected,
+      network_failed: stats.network_failed,
+      plan_failed: stats.plan_failed
     )
 
     stats
@@ -319,30 +336,30 @@ defmodule Grappa.Bootstrap do
 
           {:error, reason} ->
             Logger.error(
-              "visitor session start failed",
+              "visitor session plan failed",
               visitor_id: visitor_id,
               network: slug,
               error: inspect(reason)
             )
 
-            %{acc | failed: acc.failed + 1}
+            %{acc | plan_failed: acc.plan_failed + 1}
         end
 
       {:error, reason} ->
         Logger.error(
-          "visitor session start failed",
+          "visitor session plan failed",
           visitor_id: visitor_id,
           network: slug,
           error: inspect(reason)
         )
 
-        %{acc | failed: acc.failed + 1}
+        %{acc | plan_failed: acc.plan_failed + 1}
     end
   end
 
   # Wrapper over `Grappa.SpawnOrchestrator.spawn/4` that buckets the
-  # unified outcome shape into Bootstrap's tri-counter (`:spawned` /
-  # `:skipped` / `:failed`) per M-life-4 + emits the structured
+  # unified outcome shape into Bootstrap's 5-counter struct (U-2 honest
+  # log per `feedback_log_honesty`) + emits the structured
   # subject-keyed log line the operator dashboard reads. The
   # orchestrator owns the dance (admission → Backoff.reset → spawn);
   # this helper owns ONLY the local concerns (counter accumulator +
@@ -363,41 +380,54 @@ defmodule Grappa.Bootstrap do
         %{acc | spawned: acc.spawned + 1}
 
       {:ok, :already_started, _} ->
-        # F3 (S29) + M-life-4: Bootstrap is `restart: :transient`. On
-        # the (single) restart every previously-spawned session is
+        # F3 (S29) + U-2 honest log: Bootstrap is `restart: :transient`.
+        # On the (single) restart every previously-spawned session is
         # still alive under the same `{:via, Registry, ...}` key, so
         # the orchestrator surfaces `{:already_started, _}` as
-        # `{:ok, :already_started, _}`. Idempotent NO-OP, NOT a
-        # fresh start: Bootstrap did nothing because the session was
-        # already up. Routed to `:skipped` so `:spawned` accurately
-        # reflects "Bootstrap brought this up just now."
+        # `{:ok, :already_started, _}`. Idempotent NO-OP, NOT a fresh
+        # start: Bootstrap did nothing because the session was already
+        # up. U-2: this used to share the `:skipped` bucket with
+        # capacity rejections — now distinct so the dashboard can tell
+        # "expected idempotent restart" from "capacity policy tripped."
         Logger.debug("session already started", log_keys)
-        %{acc | skipped: acc.skipped + 1}
+        %{acc | already_running: acc.already_running + 1}
 
-      {:error, :network_cap_exceeded} ->
-        # T31 Plan 2 Task 4 — per-network total cap tripped. Best-effort
-        # per the moduledoc's failure-modes contract: skip the row + warn,
-        # no queue or retry shape. Operator sizes the cap correctly is
-        # the right pressure. M-life-4: routed to `:skipped` (policy),
-        # not `:failed` (faults).
-        Logger.warning("session skipped — network cap exceeded", log_keys)
-        %{acc | skipped: acc.skipped + 1}
+      {:error, cap_err} when cap_err in [:visitor_cap_exceeded, :user_cap_exceeded, :client_cap_exceeded] ->
+        # T31 Plan 2 Task 4 + U-2: per-network/per-client cap tripped.
+        # Best-effort per the moduledoc's failure-modes contract: skip
+        # the row + warn, no queue or retry shape. Operator sizes the
+        # cap correctly is the right pressure. Both visitor and user
+        # caps + client cap collapse here — the dashboard distinguishes
+        # via the per-row Logger line's :error key, not the summary
+        # counter (which collapses capacity-policy events into one
+        # actionable bucket).
+        Logger.warning(
+          "session skipped — capacity rejected",
+          [error: cap_err] ++ log_keys
+        )
+
+        %{acc | capacity_rejected: acc.capacity_rejected + 1}
+
+      {:error, {:network_circuit_open, _} = circuit_err} ->
+        # U-2: circuit-open is a capacity-class rejection (operator-
+        # controlled cooldown after repeated upstream failures). Counts
+        # against capacity_rejected, not network_failed: the bouncer
+        # CHOSE not to attempt the spawn, the upstream wasn't asked.
+        Logger.warning(
+          "session skipped — circuit open",
+          [error: inspect(circuit_err)] ++ log_keys
+        )
+
+        %{acc | capacity_rejected: acc.capacity_rejected + 1}
 
       {:error, {:start_failed, reason}} ->
         # Session.start_session/3 returned a non-already_started error
-        # (init refused — upstream connect failure, etc.). Surface as
-        # `:failed` so the dashboard distinguishes from policy skips.
+        # (init refused — upstream connect failure, etc.). Distinct
+        # bucket so the dashboard tells "the network is unreachable or
+        # config is bad" apart from "capacity policy tripped" — only
+        # network_failed should page on-call.
         Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
-        %{acc | failed: acc.failed + 1}
-
-      {:error, reason} ->
-        # Other Admission errors (e.g. circuit-open, client_cap_exceeded
-        # — the latter unreachable today since Bootstrap passes
-        # `client_id: nil`, kept symmetrical for completeness) are
-        # operationally closer to a real fault — surface as failed so
-        # the dashboard cap-vs-fault distinction stays clean.
-        Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
-        %{acc | failed: acc.failed + 1}
+        %{acc | network_failed: acc.network_failed + 1}
     end
   end
 

@@ -51,15 +51,21 @@ defmodule Grappa.SpawnOrchestratorTest do
     {:ok, base_network} = Networks.find_or_create_network(%{slug: slug})
     {:ok, _} = Servers.add_server(base_network, %{host: "127.0.0.1", port: port, tls: false})
 
+    cap_attrs =
+      opts
+      |> Map.take([:max_concurrent_visitor_sessions, :max_concurrent_user_sessions])
+      |> Enum.reject(&match?({_, nil}, &1))
+      |> Map.new()
+
     network =
-      case opts[:max_concurrent_visitor_sessions] do
-        nil ->
+      case map_size(cap_attrs) do
+        0 ->
           base_network
 
-        cap ->
+        _ ->
           {:ok, capped} =
             base_network
-            |> Networks.Network.changeset(%{max_concurrent_visitor_sessions: cap})
+            |> Networks.Network.changeset(cap_attrs)
             |> Repo.update()
 
           capped
@@ -195,13 +201,13 @@ defmodule Grappa.SpawnOrchestratorTest do
   end
 
   describe "spawn/4 admission rejection" do
-    test "network_cap_exceeded — returns {:error, :network_cap_exceeded}, no session spawned" do
+    test "user_cap_exceeded — returns {:error, :user_cap_exceeded}, no session spawned" do
       vjt_a = user_fixture(name: "capa-#{System.unique_integer([:positive])}")
       vjt_b = user_fixture(name: "capb-#{System.unique_integer([:positive])}")
       {_, port} = start_server()
       slug = "cap-#{System.unique_integer([:positive])}"
 
-      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_visitor_sessions: 1})
+      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_user_sessions: 1})
 
       {:ok, cred_b} =
         Credentials.bind_credential(vjt_b, network, %{
@@ -220,7 +226,8 @@ defmodule Grappa.SpawnOrchestratorTest do
       assert {:ok, :spawned, _} =
                SpawnOrchestrator.spawn({:user, vjt_a.id}, network.id, plan_a, cap_in)
 
-      assert {:error, :network_cap_exceeded} =
+      # U-2: user-flow consults max_concurrent_user_sessions.
+      assert {:error, :user_cap_exceeded} =
                SpawnOrchestrator.spawn({:user, vjt_b.id}, network.id, plan_b, cap_in)
 
       assert Session.whereis({:user, vjt_b.id}, network.id) == nil
@@ -266,7 +273,7 @@ defmodule Grappa.SpawnOrchestratorTest do
       {_, port} = start_server()
       slug = "boreject-#{System.unique_integer([:positive])}"
 
-      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_visitor_sessions: 1})
+      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_user_sessions: 1})
 
       {:ok, cred_b} =
         Credentials.bind_credential(vjt_b, network, %{
@@ -293,7 +300,8 @@ defmodule Grappa.SpawnOrchestratorTest do
       _ = sync_backoff()
       assert Backoff.failure_count(subject_b, network.id) == 1
 
-      assert {:error, :network_cap_exceeded} =
+      # U-2: user-flow cap atom.
+      assert {:error, :user_cap_exceeded} =
                SpawnOrchestrator.spawn(subject_b, network.id, plan_b, cap_in)
 
       _ = sync_backoff()

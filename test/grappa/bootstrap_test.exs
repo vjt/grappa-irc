@@ -12,7 +12,8 @@ defmodule Grappa.BootstrapTest do
   Operator door for binding a `(user, network)`: `mix grappa.create_user`
   + `mix grappa.bind_network --auth ...`. Bootstrap re-enumerates
   credentials on every boot via `Credentials.list_credentials_for_all_users/0`.
-  Three counters: `spawned` + `skipped` + `failed` (M-life-4) — the FK
+  Five counters (U-2 honest-log split): `spawned` + `already_running` +
+  `capacity_rejected` + `network_failed` + `plan_failed` — the FK
   from `network_credentials.user_id` to `users.id` makes a "user not in
   DB" scenario unrepresentable.
 
@@ -25,8 +26,9 @@ defmodule Grappa.BootstrapTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Session, Visitors}
-  alias Grappa.Networks.{Credentials, Servers}
+  alias Grappa.{AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Repo, Session, Visitors}
+  alias Grappa.Bootstrap.Result
+  alias Grappa.Networks.{Credentials, Network, Servers}
 
   # NetworkCircuit + Backoff are ETS-backed application singletons that
   # outlive the Ecto sandbox AND the container's `mix test` boundary
@@ -143,13 +145,13 @@ defmodule Grappa.BootstrapTest do
       on_exit(fn -> stop_session(vjt.id, net_a.id) end)
       on_exit(fn -> stop_session(vjt.id, net_b.id) end)
 
-      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+      assert {:ok, %Result{}} = Bootstrap.run()
 
       assert is_pid(Session.whereis({:user, vjt.id}, net_a.id))
       assert is_pid(Session.whereis({:user, vjt.id}, net_b.id))
     end
 
-    test "logs structured summary line with spawned/skipped/failed counts" do
+    test "logs structured summary line with 5-bucket honest counts" do
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {_, port} = start_server()
       net = bind_db(vjt, "summary-#{System.unique_integer([:positive])}", port)
@@ -161,10 +163,46 @@ defmodule Grappa.BootstrapTest do
 
       log = capture_log(fn -> Bootstrap.run() end)
 
+      # U-2 (feedback_log_honesty): retire the overloaded `skipped` +
+      # `failed` buckets in favor of 5 honest, separable buckets so the
+      # operator dashboard can tell capacity policy from upstream-fault
+      # from idempotent restart.
       assert log =~ "bootstrap done"
       assert log =~ "spawned=1"
-      assert log =~ "skipped=0"
-      assert log =~ "failed=0"
+      assert log =~ "already_running=0"
+      assert log =~ "capacity_rejected=0"
+      assert log =~ "network_failed=0"
+      assert log =~ "plan_failed=0"
+    end
+
+    test "U-2 honest log: distinguishes capacity_rejected from network_failed in summary" do
+      # U-2 (feedback_log_honesty): pre-U-2 every admission error EXCEPT
+      # :network_cap_exceeded fell into the "session start failed"
+      # catch-all + the `:failed` counter; same for circuit-open, which
+      # is an upstream-degradation policy decision, not a row-level
+      # fault. Post-U-2 the summary line carries explicit
+      # `capacity_rejected=N` so operator dashboards distinguish
+      # "this row didn't run because capacity policy tripped" from
+      # "this row tried to connect and the upstream refused."
+      vjt = user_fixture(name: "uhl-#{System.unique_integer([:positive])}")
+      {_, port} = start_server()
+      net = bind_db(vjt, "uhl-#{System.unique_integer([:positive])}", port)
+
+      {:ok, _} =
+        net
+        |> Network.changeset(%{max_concurrent_user_sessions: 0})
+        |> Repo.update()
+
+      on_exit(fn -> stop_session(vjt.id, net.id) end)
+
+      Logger.put_module_level(Grappa.Bootstrap, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
+
+      log = capture_log(fn -> Bootstrap.run() end)
+
+      assert log =~ "bootstrap done"
+      assert log =~ "capacity_rejected=1"
+      assert log =~ "network_failed=0"
     end
   end
 
@@ -173,7 +211,7 @@ defmodule Grappa.BootstrapTest do
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
       assert log =~ "no credentials bound"
       assert log =~ "running web-only"
@@ -194,18 +232,18 @@ defmodule Grappa.BootstrapTest do
         vjt
         |> Credentials.get_credential!(net_parked)
         |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "test")
-        |> Grappa.Repo.update()
+        |> Repo.update()
 
       {:ok, _} =
         vjt
         |> Credentials.get_credential!(net_failed)
         |> Ecto.Changeset.change(connection_state: :failed, connection_state_reason: "test")
-        |> Grappa.Repo.update()
+        |> Repo.update()
 
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
       assert log =~ "0 credentials in :connected state"
       assert log =~ "1 parked"
@@ -216,17 +254,19 @@ defmodule Grappa.BootstrapTest do
   end
 
   describe "run/0 idempotency on Bootstrap restart" do
-    test "second run finds existing sessions and counts them as skipped, not failed" do
-      # F3 (S29 carryover) + M-life-4: Bootstrap is `restart: :transient`.
-      # On the one allowed restart every previously-spawned session is
-      # still alive under the same Registry key, so
-      # `Session.start_session/3` returns
+    test "second run finds existing sessions and counts them as already_running, not failed" do
+      # F3 (S29 carryover) + M-life-4 + U-2 (feedback_log_honesty):
+      # Bootstrap is `restart: :transient`. On the one allowed restart
+      # every previously-spawned session is still alive under the same
+      # Registry key, so `Session.start_session/3` returns
       # `{:error, {:already_started, pid}}`. Pre-fix this fell into the
       # catch-all `{:error, reason}` branch and bumped the `failed`
       # counter — operator on call would chase a non-issue every time
-      # Bootstrap restarted. Post-M-life-4: routed to `:skipped`
-      # (idempotent NO-OP — the session is already up; Bootstrap did
-      # not bring this up *now*, so `:spawned` would lie too).
+      # Bootstrap restarted. Post-M-life-4: routed to the `:skipped`
+      # counter. Post-U-2: `:skipped` retired in favor of the 5-bucket
+      # honest split; idempotent restarts now land in `:already_running`
+      # (distinct from `:capacity_rejected` which is the policy-tripped
+      # bucket the legacy `:skipped` also collapsed into).
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {_, port} = start_server()
       net = bind_db(vjt, "idem-#{System.unique_integer([:positive])}", port)
@@ -236,18 +276,36 @@ defmodule Grappa.BootstrapTest do
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-      assert {:ok, %Bootstrap.Result{spawned: 1, skipped: 0, failed: 0}} = Bootstrap.run()
+      assert {:ok,
+              %Result{
+                spawned: 1,
+                already_running: 0,
+                capacity_rejected: 0,
+                network_failed: 0,
+                plan_failed: 0
+              }} =
+               Bootstrap.run()
+
       pid_after_first = Session.whereis({:user, vjt.id}, net.id)
       assert is_pid(pid_after_first)
 
       log =
         capture_log(fn ->
-          assert {:ok, %Bootstrap.Result{spawned: 0, skipped: 1, failed: 0}} = Bootstrap.run()
+          assert {:ok,
+                  %Result{
+                    spawned: 0,
+                    already_running: 1,
+                    capacity_rejected: 0,
+                    network_failed: 0,
+                    plan_failed: 0
+                  }} = Bootstrap.run()
         end)
 
       assert log =~ "spawned=0"
-      assert log =~ "skipped=1"
-      assert log =~ "failed=0"
+      assert log =~ "already_running=1"
+      assert log =~ "capacity_rejected=0"
+      assert log =~ "network_failed=0"
+      assert log =~ "plan_failed=0"
       assert Session.whereis({:user, vjt.id}, net.id) == pid_after_first
     end
   end
@@ -284,11 +342,13 @@ defmodule Grappa.BootstrapTest do
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
       assert log =~ "spawned=2"
-      assert log =~ "skipped=0"
-      assert log =~ "failed=0"
+      assert log =~ "already_running=0"
+      assert log =~ "capacity_rejected=0"
+      assert log =~ "network_failed=0"
+      assert log =~ "plan_failed=0"
       assert is_pid(Session.whereis({:user, vjt.id}, ok_net.id))
     end
   end
@@ -303,13 +363,15 @@ defmodule Grappa.BootstrapTest do
       Logger.put_module_level(Grappa.Bootstrap, :info)
       on_exit(fn -> Logger.delete_module_level(Grappa.Bootstrap) end)
 
-      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
       assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
       assert log =~ "bootstrap visitors done"
       assert log =~ "spawned=1"
-      assert log =~ "skipped=0"
-      assert log =~ "failed=0"
+      assert log =~ "already_running=0"
+      assert log =~ "capacity_rejected=0"
+      assert log =~ "network_failed=0"
+      assert log =~ "plan_failed=0"
     end
 
     test "registered visitor (password set) respawns alongside anon visitors" do
@@ -319,7 +381,7 @@ defmodule Grappa.BootstrapTest do
 
       on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
 
-      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+      assert {:ok, %Result{}} = Bootstrap.run()
 
       assert is_pid(Session.whereis({:visitor, visitor.id}, network.id))
     end
@@ -328,7 +390,7 @@ defmodule Grappa.BootstrapTest do
       past = DateTime.add(DateTime.utc_now(), -1, :hour)
       visitor = visitor_fixture(expires_at: past)
 
-      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+      assert {:ok, %Result{}} = Bootstrap.run()
 
       # No session row should exist for an expired visitor regardless
       # of which network they were pinned to. Match against the
@@ -368,7 +430,7 @@ defmodule Grappa.BootstrapTest do
       {visitor, network} = visitor_with_network(port)
       on_exit(fn -> stop_visitor_session(visitor.id, network.id) end)
 
-      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+      assert {:ok, %Result{}} = Bootstrap.run()
     end
   end
 
@@ -427,7 +489,7 @@ defmodule Grappa.BootstrapTest do
       {:ok, _} =
         server
         |> Ecto.Changeset.change(enabled: false)
-        |> Grappa.Repo.update()
+        |> Repo.update()
 
       {:ok, _} =
         Credentials.bind_credential(vjt, network, %{
@@ -447,7 +509,7 @@ defmodule Grappa.BootstrapTest do
       net = bind_db(vjt, "ok-#{System.unique_integer([:positive])}", port)
       on_exit(fn -> stop_session(vjt.id, net.id) end)
 
-      assert {:ok, %Bootstrap.Result{}} = Bootstrap.run()
+      assert {:ok, %Result{}} = Bootstrap.run()
     end
   end
 
@@ -471,8 +533,8 @@ defmodule Grappa.BootstrapTest do
 
       {:ok, network} =
         fresh_network
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_visitor_sessions: 1})
-        |> Grappa.Repo.update()
+        |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
+        |> Repo.update()
 
       for n <- 1..3 do
         visitor_fixture(network_slug: slug, nick: "v#{n}#{System.unique_integer([:positive])}")
@@ -487,7 +549,7 @@ defmodule Grappa.BootstrapTest do
       # (so the cap calculation starts from `live = 0` for this id).
       :ok = clear_registry_for(network.id)
 
-      log = capture_log(fn -> assert {:ok, %Bootstrap.Result{}} = Bootstrap.run() end)
+      log = capture_log(fn -> assert {:ok, %Result{}} = Bootstrap.run() end)
 
       on_exit(fn -> clear_registry_for(network.id) end)
 
@@ -497,19 +559,20 @@ defmodule Grappa.BootstrapTest do
         ])
 
       assert length(started_rows) == 1
-      assert log =~ "skipped — network cap"
+      assert log =~ "skipped — capacity rejected"
     end
 
-    test "result reports skipped count for cap-rejected sessions, not failed" do
-      # M-life-4: cap-rejected rows are policy decisions, NOT failures.
-      # Bootstrap returns `{:ok, %Result{spawned: N, failed: 0, skipped: K}}`
+    test "result reports capacity_rejected count for cap-rejected sessions, not network_failed" do
+      # M-life-4 + U-2 (feedback_log_honesty): cap-rejected rows are
+      # policy decisions, NOT faults. Bootstrap returns
+      # `{:ok, %Result{spawned: N, capacity_rejected: K, network_failed: 0, ...}}`
       # so an operator dashboard distinguishes "real start error"
-      # (`failed > 0` — investigate) from "cap policy tripped"
-      # (`skipped > 0` — operator chose this; size cap correctly or it's
-      # working as intended). Already-running sessions on a Bootstrap
-      # restart also flow into `:skipped` (idempotent no-op, nothing to
-      # do), not `:spawned` (Bootstrap did NOT bring this up — it was
-      # already alive).
+      # (`network_failed > 0` — investigate) from "cap policy tripped"
+      # (`capacity_rejected > 0` — operator chose this; size cap
+      # correctly or it's working as intended). Pre-U-2 both shared the
+      # `:skipped` bucket alongside `:already_running` (idempotent
+      # no-op); the honest 5-bucket split separates all three so the
+      # operator dashboard surfaces the right action per condition.
       {_, port} = start_server()
       slug = "tri-#{System.unique_integer([:positive])}"
       {:ok, fresh_network} = Networks.find_or_create_network(%{slug: slug})
@@ -523,8 +586,8 @@ defmodule Grappa.BootstrapTest do
 
       {:ok, network} =
         fresh_network
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_visitor_sessions: 2})
-        |> Grappa.Repo.update()
+        |> Network.changeset(%{max_concurrent_visitor_sessions: 2})
+        |> Repo.update()
 
       for n <- 1..3 do
         visitor_fixture(network_slug: slug, nick: "v#{n}#{System.unique_integer([:positive])}")
@@ -536,7 +599,15 @@ defmodule Grappa.BootstrapTest do
       :ok = clear_registry_for(network.id)
       on_exit(fn -> clear_registry_for(network.id) end)
 
-      assert {:ok, %Bootstrap.Result{spawned: 2, failed: 0, skipped: 1}} = Bootstrap.run()
+      assert {:ok,
+              %Result{
+                spawned: 2,
+                capacity_rejected: 1,
+                already_running: 0,
+                network_failed: 0,
+                plan_failed: 0
+              }} =
+               Bootstrap.run()
     end
   end
 end

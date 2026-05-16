@@ -92,6 +92,21 @@ function friendlyMessage(err: ApiError): string {
         ? `We can't reach the network right now. Retry in ${retry} seconds.`
         : "We can't reach the network right now.";
     }
+    // U-2 (UD7): three typed timeout phases, mapped per-phase to actionable
+    // operator copy. `connect_timeout` = TCP/TLS handshake didn't complete
+    // within the inner budget (3s default) — likely transient routing
+    // hiccup, retry fast. `welcome_timeout` = handshake succeeded but the
+    // upstream's NICK/USER → 001 RPL_WELCOME chain stalled (Bahamut rDNS
+    // is the canonical wild-world case) — upstream is slow/overloaded,
+    // wait longer. `probe_timeout` = the outer budget tripped before the
+    // inner ones; that's a server-side budget-arithmetic bug, not a
+    // user-actionable failure.
+    case "connect_timeout":
+      return "Couldn't reach the network — handshake didn't complete. Retry in a few seconds.";
+    case "welcome_timeout":
+      return "The network is responding slowly. Wait a minute and try again.";
+    case "probe_timeout":
+      return "Login service had an internal timeout. Please try again — if it persists, contact your operator.";
     case "service_degraded":
       // Server-side captcha-verification outage (provider 4xx/5xx,
       // transport error, timeout — see

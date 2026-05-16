@@ -50,7 +50,9 @@ defmodule GrappaWeb.FallbackController do
            | :password_required
            | :password_mismatch
            | :upstream_unreachable
-           | :timeout
+           | :connect_timeout
+           | :welcome_timeout
+           | :probe_timeout
            | :internal
            | :invalid_message
            | :nick_in_use
@@ -162,13 +164,26 @@ defmodule GrappaWeb.FallbackController do
   # The `:network_circuit_open` clause matches ONLY the tuple shape;
   # `Admission.check_circuit/1` always emits the tuple, so a bare-atom
   # clause would be dead code that misleads future readers.
+  #
+  # U-2 (UD3): per-network total cap is split into typed visitor / user
+  # errors so admin dashboards + telemetry can tell capacity-bucket
+  # apart. Both wire to the SAME `network_busy` 503 envelope — the cic
+  # banner copy stays unified ("this network is at capacity") because
+  # the operator-knob distinction is internal: visitor cap full does
+  # NOT imply user cap full, and vice versa.
   def call(conn, {:error, :client_cap_exceeded}) do
     conn
     |> put_status(:too_many_requests)
     |> json(%{error: "too_many_sessions"})
   end
 
-  def call(conn, {:error, :network_cap_exceeded}) do
+  def call(conn, {:error, :visitor_cap_exceeded}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "network_busy"})
+  end
+
+  def call(conn, {:error, :user_cap_exceeded}) do
     conn
     |> put_status(:service_unavailable)
     |> json(%{error: "network_busy"})
@@ -234,10 +249,31 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "upstream_unreachable"})
   end
 
-  def call(conn, {:error, :timeout}) do
+  # U-2 (UD7): three-way split replaces pre-U-2 single `:timeout`.
+  # Each carries distinct operator semantics + distinct Retry-After
+  # hints — fast `:connect_timeout` retries are cheap, post-handshake
+  # `:welcome_timeout` retries should back off further because the
+  # upstream is likely overloaded or rDNS-blocked, and `:probe_timeout`
+  # is an assertion path (outer guard fired before inner budgets — a
+  # programming error in the budget arithmetic).
+  def call(conn, {:error, :connect_timeout}) do
     conn
-    |> put_status(:gateway_timeout)
-    |> json(%{error: "timeout"})
+    |> put_resp_header("retry-after", "30")
+    |> put_status(:service_unavailable)
+    |> json(%{error: "connect_timeout"})
+  end
+
+  def call(conn, {:error, :welcome_timeout}) do
+    conn
+    |> put_resp_header("retry-after", "60")
+    |> put_status(:service_unavailable)
+    |> json(%{error: "welcome_timeout"})
+  end
+
+  def call(conn, {:error, :probe_timeout}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "probe_timeout"})
   end
 
   def call(conn, {:error, :internal}) do

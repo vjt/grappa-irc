@@ -32,11 +32,41 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert Jason.decode!(conn.resp_body) == %{"error" => "too_many_sessions"}
     end
 
-    test "{:error, :network_cap_exceeded} → 503 network_busy" do
-      conn = FallbackController.call(build_conn_for_call(), {:error, :network_cap_exceeded})
+    test "{:error, :visitor_cap_exceeded} → 503 network_busy" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :visitor_cap_exceeded})
 
       assert conn.status == 503
       assert Jason.decode!(conn.resp_body) == %{"error" => "network_busy"}
+    end
+
+    test "{:error, :user_cap_exceeded} → 503 network_busy" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :user_cap_exceeded})
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"error" => "network_busy"}
+    end
+
+    test "{:error, :connect_timeout} → 503 connect_timeout + Retry-After 30" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :connect_timeout})
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"error" => "connect_timeout"}
+      assert Plug.Conn.get_resp_header(conn, "retry-after") == ["30"]
+    end
+
+    test "{:error, :welcome_timeout} → 503 welcome_timeout + Retry-After 60" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :welcome_timeout})
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"error" => "welcome_timeout"}
+      assert Plug.Conn.get_resp_header(conn, "retry-after") == ["60"]
+    end
+
+    test "{:error, :probe_timeout} → 500 probe_timeout (programmer assertion)" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :probe_timeout})
+
+      assert conn.status == 500
+      assert Jason.decode!(conn.resp_body) == %{"error" => "probe_timeout"}
     end
 
     test "{:error, {:network_circuit_open, retry_after}} → 503 network_unreachable + Retry-After" do
@@ -125,13 +155,6 @@ defmodule GrappaWeb.FallbackControllerTest do
 
       assert conn.status == 502
       assert Jason.decode!(conn.resp_body) == %{"error" => "upstream_unreachable"}
-    end
-
-    test "{:error, :timeout} → 504 timeout" do
-      conn = FallbackController.call(build_conn_for_call(), {:error, :timeout})
-
-      assert conn.status == 504
-      assert Jason.decode!(conn.resp_body) == %{"error" => "timeout"}
     end
 
     test "{:error, :internal} → 500 internal" do

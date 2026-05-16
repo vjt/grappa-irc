@@ -83,7 +83,9 @@ defmodule GrappaWeb.AuthController do
              | :password_mismatch
              | :invalid_credentials
              | :upstream_unreachable
-             | :timeout
+             | :connect_timeout
+             | :welcome_timeout
+             | :probe_timeout
              | :internal
              | {:anon_collision, non_neg_integer()}
              | Grappa.Admission.error()}
@@ -318,8 +320,11 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(_, _, :client_cap_exceeded),
     do: {:error, :client_cap_exceeded}
 
-  defp visitor_error_response(_, _, :network_cap_exceeded),
-    do: {:error, :network_cap_exceeded}
+  defp visitor_error_response(_, _, :visitor_cap_exceeded),
+    do: {:error, :visitor_cap_exceeded}
+
+  defp visitor_error_response(_, _, :user_cap_exceeded),
+    do: {:error, :user_cap_exceeded}
 
   defp visitor_error_response(_, _, {:network_circuit_open, _} = err),
     do: {:error, err}
@@ -339,8 +344,14 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(_, _, :upstream_unreachable),
     do: {:error, :upstream_unreachable}
 
-  defp visitor_error_response(_, _, :timeout),
-    do: {:error, :timeout}
+  defp visitor_error_response(_, _, :connect_timeout),
+    do: {:error, :connect_timeout}
+
+  defp visitor_error_response(_, _, :welcome_timeout),
+    do: {:error, :welcome_timeout}
+
+  defp visitor_error_response(_, _, :probe_timeout),
+    do: {:error, :probe_timeout}
 
   defp visitor_error_response(_, _, _),
     do: {:error, :internal}

@@ -365,11 +365,12 @@ defmodule GrappaWeb.AuthControllerTest do
     end
   end
 
-  # NOTE: 504 timeout is exercised in `test/grappa/visitors/login_test.exs`
-  # against `Visitors.Login.login/2` directly with a compressed
-  # `:login_timeout_ms` opt — the controller-level roundtrip would burn
-  # the full 8s production budget per run. 500 :no_server /
-  # :network_unconfigured ditto.
+  # NOTE: 503 connect_timeout / welcome_timeout are exercised in
+  # `test/grappa/visitors/login_test.exs` against `Visitors.Login.login/2`
+  # directly with compressed `:login_connect_timeout_ms` /
+  # `:login_welcome_timeout_ms` opts — the controller-level roundtrip
+  # would burn the full 35s production probe budget per run. 500
+  # :no_server / :network_unconfigured ditto.
 
   describe "DELETE /auth/logout" do
     test "with valid Bearer revokes session and returns 204", %{conn: conn} do

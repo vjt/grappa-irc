@@ -52,10 +52,16 @@ defmodule Grappa.Visitors.Login do
          wrong token: `:anon_collision`. The original holder must
          wait for natural expiration (W9) to free the nick.
 
-  Synchronous probe budget configured via `:login_probe_timeout_ms`
-  (default 3s) so nginx 504 never bites — meaningful error reaches
-  client in <5s. Test paths can shrink it via the `:login_timeout_ms`
-  opt to keep the timeout branch cheap to exercise.
+  Synchronous probe budget split (U-2 UD7): the pre-U-2 single
+  `:login_probe_timeout_ms` (3s) covered the entire flow and exhausted
+  before Bahamut's rDNS lookup could complete in the wild. Post-U-2
+  three configurable budgets — `:login_connect_timeout_ms` (3s default,
+  TCP/TLS phase), `:login_welcome_timeout_ms` (30s default, NICK/USER
+  → 001 phase), `:login_probe_timeout_ms` (35s default, outer guard) —
+  produce typed errors `:connect_timeout` / `:welcome_timeout` /
+  `:probe_timeout` so the cic banner + Retry-After hints differ per
+  failure mode. Test paths shrink each via `:login_connect_timeout_ms`
+  / `:login_welcome_timeout_ms` opts.
   """
 
   alias Grappa.{Accounts, Networks, Repo, Session, Visitors}
@@ -71,7 +77,33 @@ defmodule Grappa.Visitors.Login do
   # the first request. Mirrors auth_controller.ex:58, endpoint.ex:33,
   # admission.ex:73.
   @visitor_network Application.compile_env!(:grappa, :visitor_network)
-  @login_timeout_ms Application.compile_env(:grappa, [:admission, :login_probe_timeout_ms], 3_000)
+
+  # U-2 (UD7): split single `:login_probe_timeout_ms` budget into two
+  # inner timeouts (connect / welcome) + one outer guard. Pre-U-2 a 3s
+  # budget covered the ENTIRE login flow from TCP `connect` through TLS
+  # handshake through NICK/USER through `RPL_WELCOME` (001) — the 3s
+  # exhausted before 001 arrived under Bahamut rDNS-blocking (5-20s
+  # observed). Inner budgets surface distinct typed errors:
+  # `:connect_timeout` (TCP/TLS phase, 3s), `:welcome_timeout`
+  # (NICK/USER → 001 phase, 30s). Outer `:probe_timeout` is an
+  # assertion catchall — it should never fire when the inner budgets
+  # are honored and the receives are wired correctly; if it does, the
+  # budget arithmetic is wrong.
+  @login_connect_timeout_ms Application.compile_env(
+                              :grappa,
+                              [:admission, :login_connect_timeout_ms],
+                              3_000
+                            )
+  @login_welcome_timeout_ms Application.compile_env(
+                              :grappa,
+                              [:admission, :login_welcome_timeout_ms],
+                              30_000
+                            )
+  @login_probe_timeout_ms Application.compile_env(
+                            :grappa,
+                            [:admission, :login_probe_timeout_ms],
+                            35_000
+                          )
 
   @type input :: %{
           required(:nick) => String.t(),
@@ -88,13 +120,16 @@ defmodule Grappa.Visitors.Login do
   @type login_error ::
           :malformed_nick
           | :client_cap_exceeded
-          | :network_cap_exceeded
+          | :visitor_cap_exceeded
+          | :user_cap_exceeded
           | {:network_circuit_open, non_neg_integer()}
           | :captcha_required
           | :captcha_failed
           | :captcha_provider_unavailable
           | :upstream_unreachable
-          | :timeout
+          | :connect_timeout
+          | :welcome_timeout
+          | :probe_timeout
           | :no_server
           | :network_unconfigured
           | :password_required
@@ -105,8 +140,9 @@ defmodule Grappa.Visitors.Login do
   Run the synchronous login flow against the configured visitor
   network. `input` carries the request fields (`nick`, `password`,
   `ip`, `user_agent`, `token`, `captcha_token`, `client_id`). `opts`
-  accepts `:login_timeout_ms` for tests that need to shrink the probe
-  budget — production callers pass `[]`.
+  accepts `:login_connect_timeout_ms` + `:login_welcome_timeout_ms`
+  for tests that need to shrink the probe budgets — production callers
+  pass `[]`.
 
   Returns `{:ok, %{visitor, token}}` on success or
   `{:error, login_error()}` with the failure reason.
@@ -118,13 +154,17 @@ defmodule Grappa.Visitors.Login do
         opts
       )
       when is_list(opts) do
-    timeout = Keyword.get(opts, :login_timeout_ms, @login_timeout_ms)
+    timeouts = %{
+      connect_ms: Keyword.get(opts, :login_connect_timeout_ms, @login_connect_timeout_ms),
+      welcome_ms: Keyword.get(opts, :login_welcome_timeout_ms, @login_welcome_timeout_ms),
+      probe_ms: Keyword.get(opts, :login_probe_timeout_ms, @login_probe_timeout_ms)
+    }
 
     with :ok <- validate_nick(input.nick),
          {:ok, network} <- visitor_network() do
       input.nick
       |> lookup_visitor(network.slug)
-      |> dispatch(input, network, timeout)
+      |> dispatch(input, network, timeouts)
     end
   end
 
@@ -147,7 +187,7 @@ defmodule Grappa.Visitors.Login do
   end
 
   # Case 1 — provision new anon
-  defp dispatch(nil, input, network, timeout) do
+  defp dispatch(nil, input, network, timeouts) do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
@@ -158,7 +198,7 @@ defmodule Grappa.Visitors.Login do
          :ok <- Grappa.Admission.verify_captcha(input.captcha_token, input.ip),
          {:ok, visitor} <-
            Visitors.find_or_provision_anon(input.nick, network.slug, input.ip) do
-      case continue_case_1(visitor, network, input, timeout) do
+      case continue_case_1(visitor, network, input, timeouts) do
         {:ok, _} = ok ->
           :ok = NetworkCircuit.record_success(network.id)
           ok
@@ -176,7 +216,7 @@ defmodule Grappa.Visitors.Login do
   end
 
   # Case 2 — registered, password gate
-  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeout)
+  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeouts)
        when is_binary(pwd) do
     capacity_input = %{
       network_id: network.id,
@@ -186,7 +226,7 @@ defmodule Grappa.Visitors.Login do
 
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
          :ok <- check_password(input.password, pwd) do
-      preempt_and_respawn(visitor, network, input, timeout)
+      preempt_and_respawn(visitor, network, input, timeouts)
     end
   end
 
@@ -204,8 +244,8 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  defp continue_case_1(visitor, network, input, timeout) do
-    with {:ok, _} <- spawn_and_await(visitor, network, timeout) do
+  defp continue_case_1(visitor, network, input, timeouts) do
+    with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do
       issue_token(visitor, input)
     end
   end
@@ -230,13 +270,13 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  defp preempt_and_respawn(visitor, network, input, timeout) do
+  defp preempt_and_respawn(visitor, network, input, timeouts) do
     :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
     :ok = Visitors.purge_if_anon(visitor.id)
     :ok = Session.stop_session({:visitor, visitor.id}, network.id)
     :ok = Backoff.reset({:visitor, visitor.id}, network.id)
 
-    with {:ok, _} <- spawn_and_await(visitor, network, timeout) do
+    with {:ok, _} <- spawn_and_await(visitor, network, timeouts) do
       :ok = NetworkCircuit.record_success(network.id)
       send_post_login_identify(visitor, network, input.password)
       issue_token(visitor, input)
@@ -286,7 +326,7 @@ defmodule Grappa.Visitors.Login do
     issue_token(visitor, input)
   end
 
-  defp spawn_and_await(visitor, network, timeout) do
+  defp spawn_and_await(visitor, network, timeouts) do
     case SessionPlan.resolve(visitor) do
       {:ok, plan} ->
         ref = make_ref()
@@ -294,7 +334,7 @@ defmodule Grappa.Visitors.Login do
 
         case Session.start_session({:visitor, visitor.id}, network.id, plan_with_notify) do
           {:ok, pid} ->
-            wait_for_ready(visitor.id, network.id, pid, ref, timeout)
+            wait_for_ready(visitor.id, network.id, pid, ref, timeouts)
 
           {:error, {:already_started, pid}} ->
             {:ok, pid}
@@ -308,17 +348,43 @@ defmodule Grappa.Visitors.Login do
     end
   end
 
-  defp wait_for_ready(visitor_id, network_id, pid, ref, timeout) do
-    # Monitor the spawned Session.Server so an upstream connect failure
-    # (Client crashes with `{:connect_failed, _}` post-init's
-    # handle_continue, link kills the Session) surfaces as
-    # `:upstream_unreachable` instead of dragging out the full 8s
-    # timeout. Without this, the `:transient` policy would also flap
-    # on restarts until the SessionSupervisor's max_restarts budget
-    # exhausts (cluster-cascading bad). On any DOWN we tear the
-    # session down explicitly so the restart loop stops.
+  # U-2 (UD7): two-phase nested receive. Phase 1 awaits the
+  # `{:session_phase, ref, :connected}` signal that `Session.Server`
+  # re-fires when `IRC.Client` reports TCP/TLS handshake success
+  # (`:irc_connected`). Phase 2 awaits `{:session_ready, ref}` at 001
+  # RPL_WELCOME. Each phase carries an independent timeout budget +
+  # surfaces a distinct typed error. `:DOWN` short-circuits both
+  # phases as `:upstream_unreachable` (the spawned Session.Server
+  # crashed before it could complete the phase). On any timeout we
+  # tear the session down explicitly so the `:transient` restart loop
+  # stops (cluster-cascading bad otherwise — pre-fix would have
+  # rapidly restarted against the same broken upstream).
+  defp wait_for_ready(visitor_id, network_id, pid, ref, timeouts) do
     monitor_ref = Process.monitor(pid)
 
+    case wait_for_connected(pid, ref, monitor_ref, timeouts.connect_ms) do
+      :ok ->
+        wait_for_welcomed(visitor_id, network_id, pid, ref, monitor_ref, timeouts.welcome_ms)
+
+      {:error, reason} ->
+        tear_down(visitor_id, network_id, monitor_ref, reason)
+    end
+  end
+
+  defp wait_for_connected(pid, ref, monitor_ref, timeout) do
+    receive do
+      {:session_phase, ^ref, :connected} ->
+        :ok
+
+      {:DOWN, ^monitor_ref, :process, ^pid, _} ->
+        {:error, {:down, :upstream_unreachable}}
+    after
+      timeout ->
+        {:error, :connect_timeout}
+    end
+  end
+
+  defp wait_for_welcomed(visitor_id, network_id, pid, ref, monitor_ref, timeout) do
     receive do
       {:session_ready, ^ref} ->
         Process.demonitor(monitor_ref, [:flush])
@@ -329,9 +395,17 @@ defmodule Grappa.Visitors.Login do
         {:error, :upstream_unreachable}
     after
       timeout ->
-        Process.demonitor(monitor_ref, [:flush])
-        Session.stop_session({:visitor, visitor_id}, network_id)
-        {:error, :timeout}
+        tear_down(visitor_id, network_id, monitor_ref, :welcome_timeout)
+    end
+  end
+
+  defp tear_down(visitor_id, network_id, monitor_ref, reason) do
+    Process.demonitor(monitor_ref, [:flush])
+    Session.stop_session({:visitor, visitor_id}, network_id)
+
+    case reason do
+      {:down, :upstream_unreachable} -> {:error, :upstream_unreachable}
+      atom when is_atom(atom) -> {:error, atom}
     end
   end
 

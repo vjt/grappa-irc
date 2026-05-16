@@ -127,7 +127,12 @@ config :grappa, :admission,
   network_circuit_threshold: 3,
   network_circuit_window_ms: 100,
   network_circuit_cooldown_ms: 50,
-  login_probe_timeout_ms: 100
+  # U-2 (UD7): default test budgets shrunk to keep timeout-path tests
+  # snappy. Test-specific overrides ride the new `:login_*_timeout_ms`
+  # opts on `Login.login/2`.
+  login_connect_timeout_ms: 100,
+  login_welcome_timeout_ms: 100,
+  login_probe_timeout_ms: 500
 
 # Cloak vault key — non-secret, test-only. Distinct from dev so a key
 # leak in one env doesn't decrypt the other env's data. The test sqlite

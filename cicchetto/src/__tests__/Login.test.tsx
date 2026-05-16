@@ -152,6 +152,42 @@ describe("Login", () => {
     });
   });
 
+  // U-2 (UD7): per-phase timeout copy. Three typed atoms come over the
+  // wire from FallbackController; cic owns the human-readable copy per
+  // feedback_no_localized_strings_server_side.
+  it("renders connect_timeout copy on 503", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "connect_timeout"));
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/handshake didn't complete/i);
+    });
+  });
+
+  it("renders welcome_timeout copy on 503", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "welcome_timeout"));
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/responding slowly/i);
+    });
+  });
+
+  it("renders probe_timeout copy on 500", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(500, "probe_timeout"));
+    renderLogin();
+    fireEvent.input(screen.getByLabelText(/nick or email/i), { target: { value: "alice" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /log in/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/internal timeout/i);
+    });
+  });
+
   it("falls through to the raw ApiError message for unrelated codes (S47)", async () => {
     // S47 strict-equality regression: an unrelated code that contains
     // the substring "invalid_credentials" must NOT be mapped to the

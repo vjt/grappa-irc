@@ -570,6 +570,13 @@ defmodule Grappa.IRC.Client do
     case do_connect(host, opts.port, opts.tls) do
       {:ok, socket} ->
         connected = %{state | socket: socket}
+        # U-2 (UD7): announce the post-connect / post-TLS / pre-handshake
+        # boundary upward so `Session.Server` can re-fire it as the
+        # `:connected` phase signal toward `Visitors.Login.wait_for_ready/5`.
+        # Lets Login distinguish a TCP-blackhole connect timeout from a
+        # rDNS-blocked welcome timeout — different upstream pathologies
+        # with different Retry-After hints at the HTTP edge.
+        send(state.dispatch_to, :irc_connected)
         {fsm, sends} = AuthFSM.initial_handshake(state.fsm)
         Enum.each(sends, &(:ok = transport_send(connected, &1)))
         {:noreply, %{connected | fsm: fsm}}

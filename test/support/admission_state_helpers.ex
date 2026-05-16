@@ -18,18 +18,18 @@ defmodule Grappa.AdmissionStateHelpers do
   auto-increment rowids per fresh sandbox transaction, so the next
   test's freshly-created network gets the same id as a prior test's
   leftover row → intermittent `{:network_circuit_open, _}` /
-  `:network_cap_exceeded` rejections whose surface line/file does
-  not predict the offending pair.
+  `:visitor_cap_exceeded` / `:user_cap_exceeded` rejections whose
+  surface line/file does not predict the offending pair.
 
   Bootstrap-cap test failure mode (T-2-fix CI red on commit 82096a1,
   2026-05-16): a prior test's Session.Server still registered under
   the same `network_id` as the cap test's fresh row → Admission's
-  `count_live_sessions(network_id)` returned >= cap → all spawn
-  attempts skipped → `{spawned: 0, skipped: 3}` instead of `{2, 0, 1}`.
-  Per-test-file `clear_registry_for(network_id)` polling helpers
-  silently exhausted their 500ms budget under CI load (returned `:ok`
-  with zombies still present). Loud raise + setup-time global reset
-  is the durable fix.
+  `count_live_sessions(network_id, _)` returned >= cap → all spawn
+  attempts skipped → `{spawned: 0, capacity_rejected: 3}` instead of
+  the intended `{spawned: 2, capacity_rejected: 1}`. Per-test-file
+  `clear_registry_for(network_id)` polling helpers silently exhausted
+  their 500ms budget under CI load (returned `:ok` with zombies still
+  present). Loud raise + setup-time global reset is the durable fix.
 
   ## Usage
 

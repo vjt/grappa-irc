@@ -1195,6 +1195,21 @@ defmodule Grappa.Session.Server do
     do_start_client(client_opts, state)
   end
 
+  # U-2 (UD7): IRC.Client signals `:irc_connected` when TCP/TLS handshake
+  # succeeded and NICK/USER were sent — the "connect phase" boundary.
+  # Re-fire it as `{:session_phase, ref, :connected}` toward `notify_pid`
+  # so `Visitors.Login.wait_for_ready/5` can distinguish a TCP-blackhole
+  # `:connect_timeout` from a rDNS-blocked `:welcome_timeout`. Does NOT
+  # clear the notify slot — that happens at 001 via `maybe_fire_notify/1`
+  # (the `:welcomed` phase + outer `:session_ready` contract).
+  def handle_info(:irc_connected, %{notify_pid: pid, notify_ref: ref} = state)
+      when is_pid(pid) and is_reference(ref) do
+    send(pid, {:session_phase, ref, :connected})
+    {:noreply, state}
+  end
+
+  def handle_info(:irc_connected, state), do: {:noreply, state}
+
   # S3.2 — WS reconnect: a new browser tab opened for this user. Cancel
   # any pending auto-away debounce timer and (if currently :away_auto)
   # unset auto-away. Explicit away is left untouched — reconnecting a tab

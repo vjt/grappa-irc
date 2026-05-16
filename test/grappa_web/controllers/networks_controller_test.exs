@@ -343,8 +343,9 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       # Saturate the network: cap=0 means every spawn attempt rejects
       # at admission. No live session needed — `Admission.check_network_total/1`
-      # short-circuits on cap==0.
-      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_visitor_sessions: 0})
+      # short-circuits on cap==0. U-2 split: a user-flow PATCH consults
+      # `max_concurrent_user_sessions`; the visitor cap is independent.
+      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_user_sessions: 0})
 
       conn =
         conn
@@ -476,23 +477,27 @@ defmodule GrappaWeb.NetworksControllerTest do
     |> Repo.update!()
   end
 
-  # U-0 helper — drive the per-network circuit to `:open` by recording
-  # @threshold failures. Direct ETS-backed helper invocation avoids
-  # coupling to the exact threshold value (config-driven; see
-  # `NetworkCircuit.@threshold`).
-  #
-  # `record_failure/1` is a `GenServer.cast/2` — the test must flush
-  # the mailbox with a sync `:sys.get_state/1` before reading the
-  # circuit state, or the next PATCH races the cast and sees `:closed`.
+  # U-0 helper — drive the per-network circuit to `:open` by directly
+  # writing the ETS row with a far-future `cooled_at_ms`. We bypass
+  # `NetworkCircuit.record_failure/1` because the test config sets
+  # cooldown_ms to 50ms (snappy unit tests) and the controller test
+  # suite under full-check.sh load can easily eat that window between
+  # `:sys.get_state` flush and the PATCH HTTP call — exposing a
+  # load-flake where the circuit auto-closes via `cooldown_expire`
+  # before admission re-checks it. Pinning `cooled_at_ms` to
+  # +1 hour makes the open state load-independent for the duration
+  # of the test (cleared by AdmissionStateHelpers.reset_network_circuit
+  # in the next test's setup).
   defp open_circuit(network_id) do
+    now = System.monotonic_time(:millisecond)
+    one_hour_ms = 60 * 60 * 1_000
     threshold = NetworkCircuit.threshold()
 
-    Enum.each(1..threshold, fn _ ->
-      :ok = NetworkCircuit.record_failure(network_id)
-    end)
+    :ets.insert(
+      :admission_network_circuit_state,
+      {network_id, threshold, now, :open, now + one_hour_ms}
+    )
 
-    # Flush the cast mailbox synchronously.
-    _ = :sys.get_state(NetworkCircuit)
     :ok
   end
 end
