@@ -823,28 +823,46 @@ Playwright e2e (per `feedback_ux_e2e_mandatory`):
 
 **Deploy**: HOT.
 
-### M-5 — GET/PATCH /admin/networks (caps editable; reaper trigger; circuit reset)
+### M-5 — GET/PATCH /admin/networks (caps editable; reaper trigger; circuit reset) — LANDED 2026-05-16
 
-**Failing test first**:
-- PATCH updates `max_concurrent_visitor_sessions` (already named
-  this way post-U-1, but M-5 lands BEFORE U cluster — see Order
-  note below) → cap takes effect on next spawn.
-- Reaper trigger returns 202 + count of swept rows.
-- Circuit reset clears ETS state.
+**Shipped**:
+- `GET /admin/networks` — Networks.list_all/0 + NetworkCircuit.entries/0
+  composed at the controller (Networks→Admission cycle avoided per the
+  AdminWire moduledoc). Per-row shape includes caps + nested
+  `circuit_state: %{state, failure_count, retry_after_seconds, ...} | nil`.
+- `PATCH /admin/networks/:slug` — whitelist body (`max_concurrent_sessions`,
+  `max_per_client`); extra keys → 400 bad_request; `nil` clears the cap
+  (unlimited); negative → 422 via Ecto changeset.
+- `POST /admin/reaper/run` — 202 + `{swept_count, swept_at}`. Routes
+  through new `Operator.reap_visitors/0` typed sibling (no IO) sharing
+  Reaper.sweep with `bin/grappa reap-visitors`.
+- `POST /admin/circuit/:network_id/reset` — 200 + `{network_id, circuit_state: nil}`.
+  Routes through new `Operator.reset_circuit/1` which verifies the
+  network row exists first → `{:error, :not_found}` on unknown id.
 
-**Order note**: M-5 ships with the CURRENT
-`max_concurrent_sessions` field; U-1 renames to
-`max_concurrent_visitor_sessions` + adds
-`max_concurrent_user_sessions`. The console field labels update at
-U-3 (when cic gains both fields). Until then console shows single
-"max sessions" field.
+**Naming clarifications vs spec**:
+- Spec text said `Networks.update_caps/2`; existing function is
+  `update_network_caps/2` — kept the existing name (CLAUDE.md
+  "Directions over code" — flag don't rename).
+- Spec said `Reaper.run_now/0`; existing function is
+  `Visitors.Reaper.sweep/0` — same disposition.
+- `NetworkCircuit.reset/1` was new (additive) + emits telemetry
+  `circuit_close` reason `:operator_reset` unconditionally (audit-honest
+  vs `record_success/1` which suppresses on non-transition). Reason
+  atom set widened in `Telemetry.circuit_close/2`'s @spec + runtime
+  guard.
 
-**Production change**:
-1. `Networks.update_caps/2`, `Networks.list_all/0`.
-2. `Reaper.run_now/0`, `NetworkCircuit.reset/1` admin-callable.
-3. Controller wire shapes.
+**Order note**: M-5 ships with the CURRENT `max_concurrent_sessions`
+field; U-1 renames to `max_concurrent_visitor_sessions` + adds
+`max_concurrent_user_sessions`. The console field labels update at U-3
+(when cic gains both fields). Until then console shows single "max
+sessions" field.
 
-**Deploy**: HOT.
+**Three-class parity matrix**: EXEMPT (admin-gated, operator-facing).
+Documented in every controller test moduledoc per M-3/M-4 precedent.
+
+**Deploy**: COLD per `feedback_hot_deploy_silent_noop_prod` — new
+routes + new controllers + new modules.
 
 ### M-6 — GET/PATCH /admin/users + GET/PATCH /admin/credentials
 

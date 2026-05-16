@@ -5356,6 +5356,32 @@ admin task" (vjt).
 
 ---
 
+## 2026-05-16 — M-5 admin networks + reaper + circuit (M cluster bucket)
+
+- `GET /admin/networks` ships combined DB-row + live circuit ETS
+  projection at one endpoint per MD2. Composition happens at the
+  GrappaWeb boundary (the only place that deps both Networks +
+  Admission) — `Networks → Admission` would form a cycle with the
+  existing `Admission → Networks` edge.
+- `NetworkCircuit.reset/1` added (additive, single cast). Distinct
+  from `record_success/1`: the operator verb emits
+  `[:grappa, :admission, :circuit, :close]` reason `:operator_reset`
+  UNCONDITIONALLY — even when prior state was no-row or sub-threshold
+  `:closed`. Operator intent is "I asked, you did it"; the audit
+  signal fires on every invocation. `record_success/1` keeps its
+  open→closed-only filter so PromEx transition metrics aren't skewed
+  by sub-threshold clears. Telemetry reason atom set widened
+  `[:success, :cooldown_expired] → +:operator_reset` in
+  `Admission.Telemetry.circuit_close/2`'s @spec + guard.
+- `Operator.reap_visitors/0` + `Operator.reset_circuit/1` typed
+  siblings (no IO) added so HTTP controllers render counts/state into
+  JSON. `reap_visitors!/0` keeps stdout for `bin/grappa`; one feature,
+  one code path, every door.
+- PATCH whitelist for caps: `max_concurrent_sessions`, `max_per_client`
+  only; extra body keys → 400 `bad_request`. `nil` clears the cap.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

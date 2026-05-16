@@ -101,6 +101,51 @@ defmodule Grappa.OperatorTest do
     end
   end
 
+  describe "reap_visitors/0 (M-5 typed sibling, no IO)" do
+    test "returns {:ok, count} without printing" do
+      expired_at = DateTime.add(DateTime.utc_now(), -1, :hour)
+      slug = "reap-typed-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug, expires_at: expired_at)
+
+      output =
+        capture_io(fn ->
+          assert {:ok, n} = Operator.reap_visitors()
+          assert n >= 1
+        end)
+
+      assert output == ""
+      assert Repo.get(Visitor, visitor.id) == nil
+    end
+  end
+
+  describe "reset_circuit/1 (M-5)" do
+    alias Grappa.Admission.NetworkCircuit
+
+    test "clears an open circuit and returns {:ok, nil} (entry gone)" do
+      slug = "circuit-#{System.unique_integer([:positive])}"
+      {:ok, network} = Grappa.Networks.find_or_create_network(%{slug: slug})
+
+      AdmissionStateHelpers.reset_network_circuit()
+
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(network.id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+      assert {:error, :open, _} = NetworkCircuit.check(network.id)
+
+      assert {:ok, nil} = Operator.reset_circuit(network.id)
+      assert NetworkCircuit.check(network.id) == :ok
+    end
+
+    test "returns {:error, :not_found} on unknown network id" do
+      # Pick an id that surely doesn't exist (sqlite autoincrement seq).
+      bogus = 999_999_999
+      assert Operator.reset_circuit(bogus) == {:error, :not_found}
+    end
+  end
+
   describe "list_visitors_text!/0" do
     test "prints header + one tab-separated row per active visitor" do
       slug = "list-#{System.unique_integer([:positive])}"

@@ -50,7 +50,17 @@ defmodule Grappa.Networks do
       Grappa.Vault,
       Grappa.Wire.Time
     ],
-    exports: [Network, NoServerError, Server, Credential, Credentials, Servers, SessionPlan, Wire]
+    exports: [
+      AdminWire,
+      Credential,
+      Credentials,
+      Network,
+      NoServerError,
+      Server,
+      Servers,
+      SessionPlan,
+      Wire
+    ]
 
   import Ecto.Query, only: [from: 2]
 
@@ -202,6 +212,15 @@ defmodule Grappa.Networks do
   def get_network!(id) when is_integer(id), do: Repo.get!(Network, id)
 
   @doc """
+  Typed-error sibling of `get_network!/1` for HTTP / programmatic
+  callers (M-cluster M-5 `POST /admin/circuit/:network_id/reset`).
+  Returns `nil` when the id doesn't exist; callers translate to
+  `{:error, :not_found}` at their boundary.
+  """
+  @spec get_network(integer()) :: Network.t() | nil
+  def get_network(id) when is_integer(id), do: Repo.get(Network, id)
+
+  @doc """
   Returns `%{slug => id}` for every networks row. Operator surface
   (M-cluster M-4) needs to resolve N visitor `network_slug`s to
   integer FKs for live-registry lookups; one DB roundtrip beats N
@@ -215,6 +234,28 @@ defmodule Grappa.Networks do
     query
     |> Repo.all()
     |> Map.new()
+  end
+
+  @doc """
+  Every network row, ordered by `slug` ascending. Operator-facing —
+  the M-5 admin console (`GET /admin/networks`) materializes the
+  full table. Networks are operator-curated infra (low cardinality),
+  so the full materialization is fine.
+
+  Note: the M-5 controller composes this with
+  `Grappa.Admission.NetworkCircuit.entries/0` directly rather than
+  taking a `Networks.list_all_with_circuit_state/0` route. Reason: a
+  `Networks → Admission` boundary edge would form a cycle
+  (`Admission` already deps `Networks` for cap reads at
+  `check_capacity/1`). Composition at the controller keeps the
+  contexts cycle-free and matches the M-4 precedent
+  (`VisitorsController.index/2` composes `Visitors.list_all/0` with
+  `LiveIntrospection` lookups itself).
+  """
+  @spec list_all() :: [Network.t()]
+  def list_all do
+    query = from(n in Network, order_by: [asc: n.slug])
+    Repo.all(query)
   end
 
   @doc """

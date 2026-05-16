@@ -14,6 +14,11 @@ defmodule Grappa.Operator do
       `SessionRegistry` cap slot in the same call.
     * `reap_visitors!/0` — force `Grappa.Visitors.Reaper` sweep on demand
       instead of waiting up to 60s for the next tick.
+    * `reap_visitors/0` (typed sibling) + `reset_circuit/1` —
+      M-cluster M-5 HTTP-facing verbs (operator admin console).
+      Same orchestration as the bang-variants where they exist; no
+      stdout side-effect so the controller can render the result
+      into the JSON response.
     * `list_visitors_text!/0`, `list_credentials_text!/0`,
       `list_sessions_text!/0` — print tab-separated operator tables
       (header + rows) for grep / awk pipelines.
@@ -50,6 +55,7 @@ defmodule Grappa.Operator do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.Admission,
       Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Session,
@@ -57,6 +63,7 @@ defmodule Grappa.Operator do
       Grappa.Visitors.Reaper
     ]
 
+  alias Grappa.Admission.NetworkCircuit
   alias Grappa.{LiveIntrospection, Networks, Session, Visitors}
   alias Grappa.LiveIntrospection.SessionEntry
   alias Grappa.Networks.Credentials
@@ -156,6 +163,48 @@ defmodule Grappa.Operator do
     {:ok, n} = Grappa.Visitors.Reaper.sweep()
     IO.puts("reaped #{n} expired visitor(s)")
     :ok
+  end
+
+  @doc """
+  Typed-error sibling of `reap_visitors!/0` for HTTP / programmatic
+  callers (M-cluster M-5 `POST /admin/reaper/run`). Same delegation
+  to `Visitors.Reaper.sweep/0`; returns the swept count instead of
+  printing it so the HTTP path can render it into the JSON response.
+  One feature, one code path, every door.
+  """
+  @spec reap_visitors() :: {:ok, non_neg_integer()}
+  def reap_visitors do
+    Grappa.Visitors.Reaper.sweep()
+  end
+
+  @doc """
+  Operator-driven clear of the per-network admission circuit-breaker
+  (M-cluster M-5 `POST /admin/circuit/:network_id/reset`). Verifies
+  the network row exists first so an unknown id surfaces as
+  `{:error, :not_found}` instead of a silent ETS delete on a stale
+  FK.
+
+  Returns the post-reset ETS snapshot (`nil` after a successful
+  reset — the row is gone). Synchronous: the cast is followed by a
+  `:sys.get_state/1` mailbox drain so the caller observes the
+  cleared state.
+  """
+  @spec reset_circuit(integer()) ::
+          {:ok, NetworkCircuit.entry() | nil} | {:error, :not_found}
+  def reset_circuit(network_id) when is_integer(network_id) do
+    case Networks.get_network(network_id) do
+      nil ->
+        {:error, :not_found}
+
+      _ ->
+        :ok = NetworkCircuit.reset(network_id)
+        # Drain the cast through the NetworkCircuit mailbox so the
+        # post-reset ETS snapshot reflects the operator verb.
+        _ = :sys.get_state(NetworkCircuit)
+
+        post = Enum.find(NetworkCircuit.entries(), &match?({^network_id, _, _, _, _}, &1))
+        {:ok, post}
+    end
   end
 
   @doc """

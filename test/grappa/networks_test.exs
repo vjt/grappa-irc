@@ -820,6 +820,25 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "list_all/0 (M-5 admin console)" do
+    test "returns every networks row ordered by slug ascending" do
+      # Insert in reverse-slug order to prove the ordering isn't accidental.
+      net_z = network_fixture("z-#{System.unique_integer([:positive])}")
+      net_a = network_fixture("a-#{System.unique_integer([:positive])}")
+      net_m = network_fixture("m-#{System.unique_integer([:positive])}")
+
+      slugs = Enum.map(Networks.list_all(), & &1.slug)
+
+      # All three present, in ascending slug order. Other tests may also
+      # have planted rows; assert relative order rather than exact set.
+      idx_a = Enum.find_index(slugs, &(&1 == net_a.slug))
+      idx_m = Enum.find_index(slugs, &(&1 == net_m.slug))
+      idx_z = Enum.find_index(slugs, &(&1 == net_z.slug))
+      assert idx_a < idx_m
+      assert idx_m < idx_z
+    end
+  end
+
   describe "update_network_caps/2" do
     test "sets both max_concurrent_sessions and max_per_client" do
       net = network_fixture()

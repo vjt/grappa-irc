@@ -83,7 +83,12 @@ defmodule Grappa.Admission.NetworkCircuit do
   @window_ms Application.compile_env(:grappa, [:admission, :network_circuit_window_ms], 60_000)
   @cooldown_ms Application.compile_env(:grappa, [:admission, :network_circuit_cooldown_ms], 300_000)
 
-  @typep entry :: {integer(), non_neg_integer(), integer(), :closed | :open, integer()}
+  @typedoc """
+  Per-network circuit-breaker ETS row. Public so
+  `Grappa.Admission.NetworkCircuit.AdminWire` (M-cluster M-5) can
+  spec its projection input across the boundary.
+  """
+  @type entry :: {integer(), non_neg_integer(), integer(), :closed | :open, integer()}
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -103,7 +108,12 @@ defmodule Grappa.Admission.NetworkCircuit do
   @spec cooldown_ms() :: unquote(@cooldown_ms)
   def cooldown_ms, do: @cooldown_ms
 
-  @doc false
+  @doc """
+  Full table snapshot. Operator-debug + admin-console projection
+  (M-cluster M-5 `GET /admin/networks` composes the per-row
+  `circuit_state:` from this). Reads the named ETS table directly;
+  no GenServer roundtrip.
+  """
   @spec entries() :: [entry()]
   def entries do
     :ets.tab2list(@table)
@@ -181,6 +191,23 @@ defmodule Grappa.Admission.NetworkCircuit do
     GenServer.cast(__MODULE__, {:success, network_id})
   end
 
+  @doc """
+  Operator-driven clear of `network_id`'s circuit state (M-cluster
+  M-5). Deletes any ETS row + emits
+  `[:grappa, :admission, :circuit, :close]` with reason
+  `:operator_reset` regardless of prior state.
+
+  Distinct from `record_success/1` which deliberately suppresses
+  telemetry when the prior state was sub-threshold `:closed` (no real
+  transition). The operator verb is "I asked, you did it" — every
+  invocation fires telemetry for audit, so the operator dashboard
+  shows the reset even when the circuit happened to be already-clean.
+  """
+  @spec reset(integer()) :: :ok
+  def reset(network_id) when is_integer(network_id) do
+    GenServer.cast(__MODULE__, {:reset, network_id})
+  end
+
   ## GenServer
 
   @impl GenServer
@@ -245,6 +272,17 @@ defmodule Grappa.Admission.NetworkCircuit do
       Telemetry.circuit_close(network_id, :success)
     end
 
+    {:noreply, state}
+  end
+
+  def handle_cast({:reset, network_id}, state) do
+    # Operator-driven clear (M-5). Unconditional ETS delete +
+    # telemetry. Distinct from {:success, _} which guards on the
+    # prior :open state to avoid spurious :close events; operator
+    # intent is "I asked, you did it" — emit every time so the
+    # operator dashboard reflects the explicit verb.
+    :ets.delete(@table, network_id)
+    Telemetry.circuit_close(network_id, :operator_reset)
     {:noreply, state}
   end
 

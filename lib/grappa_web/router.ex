@@ -106,6 +106,12 @@ defmodule GrappaWeb.Router do
     get "/visitors", VisitorsController, :index
     delete "/visitors/:id", VisitorsController, :delete
     get "/sessions", SessionsController, :index
+
+    # M-cluster M-5 (operator console networks pane):
+    get "/networks", NetworksController, :index
+    patch "/networks/:slug", NetworksController, :update
+    post "/reaper/run", ReaperController, :run
+    post "/circuit/:network_id/reset", CircuitController, :reset
   end
 
   scope "/auth", GrappaWeb do

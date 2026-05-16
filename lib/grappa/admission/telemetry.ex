@@ -11,7 +11,7 @@ defmodule Grappa.Admission.Telemetry do
 
     * `[:grappa, :admission, :circuit, :close]`
       measurements: `%{}`
-      metadata: `%{network_id: integer(), reason: :success | :cooldown_expired}`
+      metadata: `%{network_id: integer(), reason: :success | :cooldown_expired | :operator_reset}`
       Emitted once per open→closed transition in `NetworkCircuit`.
       `:success` — cleared by `record_success/1`.
       `:cooldown_expired` — detected by `check/1` and routed as a
@@ -20,6 +20,11 @@ defmodule Grappa.Admission.Telemetry do
       observation token: the handler match-pins it against the current
       ETS row, so a re-open between observation and cast handling
       cleanly no-ops without emitting a bogus :close (H6).
+      `:operator_reset` — emitted by `reset/1` regardless of prior
+      state (open, sub-threshold :closed, or no entry). M-cluster M-5
+      operator-driven clear: intent is "I asked, you did it" so every
+      reset fires telemetry for operator audit (vs. record_success/1
+      which suppresses on a non-transition).
 
     * `[:grappa, :admission, :capacity, :reject]`
       measurements: `%{}`
@@ -49,15 +54,16 @@ defmodule Grappa.Admission.Telemetry do
     )
   end
 
-  @spec circuit_close(integer(), :success | :cooldown_expired) :: :ok
+  @spec circuit_close(integer(), :success | :cooldown_expired | :operator_reset) :: :ok
   @doc """
   Emits `[:grappa, :admission, :circuit, :close]` on the open→closed
   circuit-breaker transition. `reason` is `:success` (cleared by a
-  successful session handshake) or `:cooldown_expired` (the
-  observation-token cooldown passed without a new open).
+  successful session handshake), `:cooldown_expired` (the
+  observation-token cooldown passed without a new open), or
+  `:operator_reset` (M-5 operator-driven clear via `reset/1`).
   """
   def circuit_close(network_id, reason)
-      when is_integer(network_id) and reason in [:success, :cooldown_expired] do
+      when is_integer(network_id) and reason in [:success, :cooldown_expired, :operator_reset] do
     :telemetry.execute(
       [:grappa, :admission, :circuit, :close],
       %{},

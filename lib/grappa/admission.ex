@@ -40,7 +40,7 @@ defmodule Grappa.Admission do
     # Visitors ↔ Admission cycle (Login calls check_capacity). Same
     # pattern as Grappa.Accounts's dirty_xref on Visitors.Visitor.
     dirty_xrefs: [Grappa.Visitors.Visitor],
-    exports: [Captcha, Config, NetworkCircuit, Telemetry]
+    exports: [Captcha, Config, NetworkCircuit, NetworkCircuit.AdminWire, Telemetry]
 
   import Ecto.Query
 

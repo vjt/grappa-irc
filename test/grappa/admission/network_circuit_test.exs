@@ -353,4 +353,64 @@ defmodule Grappa.Admission.NetworkCircuitTest do
       refute_receive {:telemetry, [:grappa, :admission, :circuit, :close], _, _}, 100
     end
   end
+
+  describe "reset/1 (M-5 operator-driven clear)" do
+    test "clears open circuit + emits :close with reason :operator_reset" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 3001
+
+      # Open the circuit.
+      for _ <- 1..NetworkCircuit.threshold() do
+        :ok = NetworkCircuit.record_failure(net_id)
+      end
+
+      _ = :sys.get_state(NetworkCircuit)
+      assert {:error, :open, _} = NetworkCircuit.check(net_id)
+
+      # Operator-driven reset clears the entry + emits :operator_reset.
+      :ok = NetworkCircuit.reset(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert :ets.lookup(:admission_network_circuit_state, net_id) == []
+      assert NetworkCircuit.check(net_id) == :ok
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :operator_reset}},
+                     500
+    end
+
+    test "clears sub-threshold :closed entry + emits :operator_reset" do
+      # Distinct from record_success/1 which deliberately suppresses
+      # telemetry on a :closed entry (no transition). Operator intent
+      # is "I asked, you did it" — emit every time for audit honesty.
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 3002
+
+      :ok = NetworkCircuit.record_failure(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      :ok = NetworkCircuit.reset(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert :ets.lookup(:admission_network_circuit_state, net_id) == []
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :operator_reset}},
+                     500
+    end
+
+    test "no-op when no entry exists + still emits :operator_reset" do
+      attach_circuit_event([:grappa, :admission, :circuit, :close])
+      net_id = 3003
+
+      :ok = NetworkCircuit.reset(net_id)
+      _ = :sys.get_state(NetworkCircuit)
+
+      assert :ets.lookup(:admission_network_circuit_state, net_id) == []
+
+      assert_receive {:telemetry, [:grappa, :admission, :circuit, :close], %{},
+                      %{network_id: ^net_id, reason: :operator_reset}},
+                     500
+    end
+  end
 end
