@@ -377,15 +377,18 @@ documented in help output.
 
 ### T-2 — Erlang distribution on the live BEAM + `bin/grappa remote-shell`
 
-**Failing test first**: integration test
-`test/integration/remote_shell_test.exs` (new file under
-`test/integration/`):
-- Spawn grappa container with `--sname grappa --setcookie testcookie`
-  flags. Assert `:net_adm.ping(:grappa@<short>)` from a sibling node
-  returns `:pong`.
-- `bin/grappa remote-shell --batch -e ':erlang.system_info(:otp_release)'`
-  returns a numeric OTP version.
-- Wrong cookie → connection refused (assert specific exit code).
+**Failing test first**: bats shape assertions in
+`test/bin/grappa_test.bats` cover the docker-compose-exec invocation
+shape (interactive vs `--batch -e <expr>`, sname/cookie literal
+passthrough, `--remsh grappa@grappa` target). The originally-spec'd
+`test/integration/remote_shell_test.exs` was DEFERRED at T-2 impl
+time (2026-05-16): both realistic shapes (spawn sibling sname'd BEAM
+as a port from the test, OR mutate the ExUnit node's own sname/cookie
+globally) test "iex --remsh works upstream" rather than "T-2's
+wiring works", which is plumbing — bash dispatcher correctness IS
+the unit under test. Bats covers shape; T-Z's manual smoke
+(`bin/grappa remote-shell --batch -e 'Process.list() |> length'`)
+covers liveness end-to-end.
 
 **Production change**:
 1. `bin/start.sh` adds `--sname grappa --setcookie ${RELEASE_COOKIE}`

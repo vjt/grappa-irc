@@ -52,6 +52,35 @@ if config_env() == :prod do
       Generate one with: scripts/mix.sh phx.gen.secret
       """
 
+  # T-2: enforce a real RELEASE_COOKIE in prod. The cookie itself is
+  # consumed by the BEAM at boot via `-setcookie` (bin/start.sh) — Elixir
+  # never reads it. This block exists to enroll RELEASE_COOKIE in the
+  # runtime.exs registry (per the comment block at top of file: every
+  # System.get_env in compose.yaml MUST appear here) AND to HARD-CRASH
+  # the boot when an operator deploys prod without rotating off the dev
+  # sentinel. Symptom of a missing check: prod boots happily with a
+  # cookie any contributor can find in compose.yaml — same-host operator
+  # gate is broken.
+  case String.trim(System.get_env("RELEASE_COOKIE") || "") do
+    "" ->
+      raise """
+      environment variable RELEASE_COOKIE is missing.
+      Generate a real value with: openssl rand -hex 32
+      Then set it in .env (or host shell) before scripts/deploy.sh.
+      """
+
+    "grappa-dev-cookie-do-not-use-in-prod" ->
+      raise """
+      RELEASE_COOKIE is set to the compose.yaml dev sentinel.
+      Generate a real value for prod with: openssl rand -hex 32
+      Then set it in .env (or host shell) before scripts/deploy.sh.
+      """
+
+    # Operator-rotated value — proceed.
+    _ ->
+      :ok
+  end
+
   # Note: SECRET_SIGNING_SALT is read at COMPILE time via config.exs
   # (Plug.Session's @session_options module-attribute is compile-time;
   # `Application.compile_env!/2` validates compile == runtime so the

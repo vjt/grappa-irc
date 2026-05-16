@@ -71,7 +71,34 @@ verb_reap_visitors()     { stub_not_implemented reap-visitors T-3; }
 verb_list_sessions()     { stub_not_implemented list-sessions T-2/T-3; }
 verb_list_credentials()  { stub_not_implemented list-credentials T-3; }
 verb_list_visitors()     { stub_not_implemented list-visitors T-3; }
-verb_remote_shell()      { stub_not_implemented remote-shell T-2; }
+verb_remote_shell() {
+    # T-A2 / T-2: live-BEAM attach via Erlang distribution. Cookie is
+    # sourced INSIDE the container's `sh -c` (no host needs to know it);
+    # admin sname uses $$ for per-invocation uniqueness.
+    case "${1:-}" in
+        --batch)
+            shift
+            if [ "${1:-}" != "-e" ] || [ -z "${2:-}" ]; then
+                printf 'remote-shell --batch requires `-e <expr>`.\n' >&2
+                printf 'Usage: bin/grappa remote-shell --batch -e <expr>\n' >&2
+                exit 64
+            fi
+            local expr=$2
+            exec docker compose "${COMPOSE_ARGS[@]}" exec -T grappa sh -c \
+                'exec iex --sname "admin-$$" --cookie "$RELEASE_COOKIE" --remsh grappa@grappa -e "$1"' \
+                -- "$expr"
+            ;;
+        "")
+            exec docker compose "${COMPOSE_ARGS[@]}" exec grappa sh -c \
+                'exec iex --sname "admin-$$" --cookie "$RELEASE_COOKIE" --remsh grappa@grappa'
+            ;;
+        *)
+            printf 'remote-shell: unknown arg %q\n' "$1" >&2
+            printf 'Usage: bin/grappa remote-shell [--batch -e <expr>]\n' >&2
+            exit 64
+            ;;
+    esac
+}
 
 # Debug verbs — direct docker compose exec.
 
@@ -155,11 +182,23 @@ EOF
 
 verb_help_remote_shell() { cat <<'EOF'
 remote-shell [--batch -e <expr>]
-    Attach to the live BEAM via `iex --remsh`. Interactive by default;
-    --batch evaluates a one-liner and exits.
+    Attach to the live BEAM via `iex --remsh`.
 
-    STUB in T-1. Erlang distribution (sname + cookie on bin/start.sh) +
-    the operator-side remsh path land in T-2.
+    Interactive (default):
+        bin/grappa remote-shell
+
+    Batch (eval one expression and exit):
+        bin/grappa remote-shell --batch -e 'Process.list() |> length()'
+
+    Distribution is internal to the container's network namespace —
+    no host port is exposed. RELEASE_COOKIE is sourced from the
+    container's environment (see compose.yaml + .env.example) and
+    gates `iex --remsh` access. Anyone with `docker exec` privilege
+    on the host can already read the cookie via `printenv`, AND any
+    container attached to the `grappa_internal` bridge with Erlang
+    installed could connect if it knew the cookie. The cookie is a
+    same-host operator gate (sname-collision-prevention + "you
+    meant to do this") rather than a network boundary.
 EOF
 }
 
@@ -208,13 +247,15 @@ Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
     gen-encryption-key           generate a Cloak.Vault key
     gen-vapid                    generate a VAPID keypair (push)
 
-Live-state verbs (T-1 STUBS — land in T-2 + T-3):
+Live-state verbs (T-1 STUBS — land in T-3):
     delete-visitor <uuid>        terminate + delete a visitor (T-3)
     reap-visitors                force-run the visitor reaper (T-3)
-    list-sessions                inspect the live session registry (T-2/T-3)
+    list-sessions                inspect the live session registry (T-3)
     list-credentials             list cred bindings + state (T-3)
     list-visitors                list visitor rows (T-3)
-    remote-shell                 iex --remsh against the live BEAM (T-2)
+
+Live-state attach:
+    remote-shell [--batch -e]    iex --remsh against the live BEAM
 
 Debug verbs:
     open-db [args]               interactive sqlite3 against active env (RW)

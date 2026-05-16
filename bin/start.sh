@@ -37,9 +37,18 @@ set -e
 : "${GRAPPA_MAX_USERS:=100}"
 : "${GRAPPA_DIRTY_SCHEDULERS:=$(nproc)}"
 
+# T-2: Erlang distribution for `bin/grappa remote-shell` operator
+# attach. RELEASE_COOKIE is required (no default here — compose.yaml
+# pins a dev sentinel; prod must override via .env or host shell).
+# Distribution port is internal to the container's network namespace;
+# nothing is published to the host. The cookie gates same-host
+# operator-to-BEAM connections — it is NOT a network boundary,
+# because anyone with `docker exec` privilege can `printenv` it.
+: "${RELEASE_COOKIE:?RELEASE_COOKIE is required (set in compose.yaml or host env)}"
+
 GRAPPA_MAX_PORTS=$((GRAPPA_MAX_USERS * 400))
 GRAPPA_MAX_PROCS=$((GRAPPA_MAX_USERS * 100))
 
-export ELIXIR_ERL_OPTIONS="+Q ${GRAPPA_MAX_PORTS} +P ${GRAPPA_MAX_PROCS} +SDcpu ${GRAPPA_DIRTY_SCHEDULERS} +SDio ${GRAPPA_DIRTY_SCHEDULERS}"
+export ELIXIR_ERL_OPTIONS="+Q ${GRAPPA_MAX_PORTS} +P ${GRAPPA_MAX_PROCS} +SDcpu ${GRAPPA_DIRTY_SCHEDULERS} +SDio ${GRAPPA_DIRTY_SCHEDULERS} -sname grappa -setcookie ${RELEASE_COOKIE}"
 
 exec mix phx.server

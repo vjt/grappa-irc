@@ -96,10 +96,18 @@ EOF
 
 # --- per-verb help --------------------------------------------------------
 
-@test "help <stub-verb> prints inline T-2/T-3 pointer" {
+@test "help <stub-verb> prints inline T-3 pointer" {
     run "$BIN_GRAPPA" help delete-visitor
     [ "$status" -eq 0 ]
     [[ "$output" == *"T-3"* ]]
+}
+
+@test "help remote-shell shows real usage (not the T-1 stub)" {
+    run "$BIN_GRAPPA" help remote-shell
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--batch"* ]]
+    [[ "$output" == *"-e"* ]]
+    [[ "$output" != *"STUB"* ]]
 }
 
 @test "help <boot-verb> delegates to scripts/mix.sh help grappa.<task>" {
@@ -169,10 +177,46 @@ EOF
     [[ "$output" == *"T-3"* ]]
 }
 
-@test "remote-shell stub exits 64 mentions T-2" {
+@test "remote-shell with no args invokes docker exec grappa iex --remsh grappa@grappa" {
     run "$BIN_GRAPPA" remote-shell
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec grappa sh' "$ARGV_LOG"
+    # printf %q escapes the inner sh -c quotes; assert the load-bearing
+    # tokens individually rather than reconstructing the escaped form.
+    grep -q 'iex' "$ARGV_LOG"
+    grep -q -- '--sname' "$ARGV_LOG"
+    grep -q -- 'admin-' "$ARGV_LOG"
+    grep -q -- '--cookie' "$ARGV_LOG"
+    grep -q 'RELEASE_COOKIE' "$ARGV_LOG"
+    grep -q -- '--remsh' "$ARGV_LOG"
+    grep -q -- 'grappa@grappa' "$ARGV_LOG"
+    # Interactive mode — NO -T flag in the docker exec.
+    ! grep -qE 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+}
+
+@test "remote-shell --batch -e <expr> invokes docker exec -T with -e <expr>" {
+    run "$BIN_GRAPPA" remote-shell --batch -e 'Process.list() |> length()'
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '-e' "$ARGV_LOG"
+    grep -q 'Process.list' "$ARGV_LOG"
+    grep -q -- 'grappa@grappa' "$ARGV_LOG"
+}
+
+@test "remote-shell --batch without -e exits 64 with usage" {
+    run "$BIN_GRAPPA" remote-shell --batch
     [ "$status" -eq 64 ]
-    [[ "$output" == *"T-2"* ]]
+    [[ "$output" == *"--batch"* ]]
+    [[ "$output" == *"-e"* ]]
+}
+
+@test "remote-shell shape includes --sname admin- and --cookie literal RELEASE_COOKIE" {
+    run "$BIN_GRAPPA" remote-shell
+    [ "$status" -eq 0 ]
+    # The cookie value is expanded INSIDE the container's sh -c, so the
+    # host-side argv contains the LITERAL string "$RELEASE_COOKIE".
+    grep -q -- 'admin-' "$ARGV_LOG"
+    grep -q -- '\$RELEASE_COOKIE' "$ARGV_LOG"
 }
 
 @test "list-sessions stub exits 64" {
