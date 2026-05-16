@@ -69,6 +69,11 @@ defmodule Grappa.Operator do
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
 
+  require Logger
+
+  @disconnect_reason "disconnected by admin"
+  @terminate_reason "terminated by admin"
+
   @doc """
   Synchronously terminate the visitor's `Session.Server` (if any) and
   delete the DB row. CASCADE wipes `visitor_channels`, `messages`,
@@ -204,6 +209,142 @@ defmodule Grappa.Operator do
 
         post = Enum.find(NetworkCircuit.entries(), &match?({^network_id, _, _, _, _}, &1))
         {:ok, post}
+    end
+  end
+
+  @doc """
+  M-cluster M-9a: T32 disconnect a live session by `(subject, network_id)`.
+
+  ## Branches
+
+    * `{:user, _} == subject` AND `actor_user_id` matches → reject
+      `{:error, :cannot_disconnect_self}`. Server-side gate so an
+      operator hitting the URL via curl can't lock themselves out
+      either. Visitor subjects never collide with `actor_user_id`
+      (admin is always a user), so the check is skipped there.
+    * `{:user, user_id}` with a credential row in `:connected` → delegate
+      to `Networks.disconnect/2` (sends QUIT upstream, stops the
+      Session.Server, transitions `connection_state` to `:parked`,
+      broadcasts state change).
+    * `{:user, user_id}` with a credential in `:parked | :failed` →
+      `:ok` (post-condition met; `Logger.info` records the no-op).
+      Operator boundary absorbs `:not_connected` here so the
+      controller can stay uniform on 204.
+    * `{:user, user_id}` with no credential row → `{:error, :not_found}`.
+    * `{:visitor, visitor_id}` → collapse to `terminate_session/3`
+      semantics. Visitors carry no `connection_state` to park; the
+      uniform-surface choice is "Disconnect == Terminate" for
+      visitor pids so cic doesn't grow a subject-discriminated
+      parallel state machine.
+
+  `actor_user_id == nil` disables the self-check — reserved for
+  future `bin/grappa disconnect-session` operator overrides where
+  the rpc-eval path runs as root.
+
+  Logger context: `subject`, `network_id`, and `actor_user_id` are
+  inlined into the message body (NOT passed as metadata) to keep the
+  global allowlist tight — same pattern as `Session.stop_session/2`'s
+  budget-exhaustion line (see `session.ex:230-238`).
+  """
+  @spec disconnect_session(Session.subject(), integer(), Ecto.UUID.t() | nil) ::
+          :ok | {:error, :not_found | :cannot_disconnect_self}
+  def disconnect_session({:user, user_id} = subject, network_id, actor_user_id)
+      when is_binary(user_id) and is_integer(network_id) and
+             (is_binary(actor_user_id) or is_nil(actor_user_id)) do
+    if not is_nil(actor_user_id) and user_id == actor_user_id do
+      {:error, :cannot_disconnect_self}
+    else
+      disconnect_user_session(subject, network_id, actor_user_id)
+    end
+  end
+
+  def disconnect_session({:visitor, _} = subject, network_id, actor_user_id)
+      when is_integer(network_id) and (is_binary(actor_user_id) or is_nil(actor_user_id)) do
+    Logger.debug(
+      "visitor disconnect collapsed to terminate " <>
+        "(subject=#{inspect(subject)} network_id=#{network_id})"
+    )
+
+    terminate_session(subject, network_id, actor_user_id)
+  end
+
+  defp disconnect_user_session({:user, user_id} = subject, network_id, actor_user_id) do
+    case Credentials.get_credential_by_ids(user_id, network_id) do
+      {:ok, %{connection_state: :connected} = cred} ->
+        # Networks.disconnect/2 guarantees {:ok, _} on :connected input
+        # (lib/grappa/networks.ex:369-386 only short-circuits on parked/
+        # failed); the bare match crashes loudly if a future refactor
+        # changes the shape — preferable to a defensive case that hides
+        # the contract (CLAUDE.md "Dialyzer warnings are design signals").
+        {:ok, _} = Networks.disconnect(cred, @disconnect_reason)
+
+        Logger.info(
+          "admin disconnected user session " <>
+            "(subject=#{inspect(subject)} network_id=#{network_id} " <>
+            "actor_user_id=#{inspect(actor_user_id)})"
+        )
+
+        :ok
+
+      {:ok, %{connection_state: state}} when state in [:parked, :failed] ->
+        Logger.info(
+          "admin disconnect on credential already not connected " <>
+            "(subject=#{inspect(subject)} network_id=#{network_id} " <>
+            "state=#{state} actor_user_id=#{inspect(actor_user_id)})"
+        )
+
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  M-cluster M-9a: synchronously stop the live `Session.Server` for
+  `(subject, network_id)`. Does NOT touch the DB row — for user
+  credentials, `connection_state` stays at its current value;
+  for visitor rows, the row remains (use
+  `delete_visitor/1` for the row-delete variant).
+
+  Idempotent: returns `:ok` whether or not a pid is registered for
+  the key (the post-condition — "no live pid" — is met either way).
+
+  Self-protection same as `disconnect_session/3`: 422
+  `{:error, :cannot_disconnect_self}` when `actor_user_id` matches
+  a user subject. Visitor subjects bypass the check.
+  """
+  @spec terminate_session(Session.subject(), integer(), Ecto.UUID.t() | nil) ::
+          :ok | {:error, :cannot_disconnect_self}
+  def terminate_session({:user, user_id}, _, actor_user_id)
+      when is_binary(user_id) and is_binary(actor_user_id) and user_id == actor_user_id,
+      do: {:error, :cannot_disconnect_self}
+
+  def terminate_session(subject, network_id, actor_user_id)
+      when is_integer(network_id) and (is_binary(actor_user_id) or is_nil(actor_user_id)) do
+    _ = best_effort_quit(subject, network_id)
+    :ok = Session.stop_session(subject, network_id)
+
+    Logger.info(
+      "admin terminated session " <>
+        "(subject=#{inspect(subject)} network_id=#{network_id} " <>
+        "actor_user_id=#{inspect(actor_user_id)})"
+    )
+
+    :ok
+  end
+
+  # `@terminate_reason` is a literal module attribute with no CR/LF/NUL,
+  # so `Session.send_quit/3` will never return `:invalid_line` — we don't
+  # plug for it. If a future hand swaps the reason to bytes that fail
+  # `Identifier.safe_line_token?/1`, the bare match crashes loudly and
+  # the operator sees "fix the reason constant" rather than a silent
+  # swallow. The `:no_session` branch IS reachable (no live pid is the
+  # happy case for a hard terminate).
+  defp best_effort_quit(subject, network_id) do
+    case Session.send_quit(subject, network_id, @terminate_reason) do
+      :ok -> :ok
+      {:error, :no_session} -> :ok
     end
   end
 

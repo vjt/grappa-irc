@@ -5566,6 +5566,146 @@ admin task" (vjt).
 
 ---
 
+## 2026-05-16 — M-9a admin sessions mutation endpoints (M cluster bucket)
+
+Two server-only endpoints land the operator-side primitives for the
+admin pane's Sessions tab (M-9b will consume from cic). M-9 in the plan
+called for a single bucket; per `feedback_per_bucket_deploy` we split
+into M-9a (server: HOT) + M-9b (cic bundle deploy) so reviewer scope
+stays sharp and deploy classes don't fight each other.
+
+### Endpoints
+
+- `POST /admin/sessions/:id/disconnect` — T32 park for user sessions
+  (`Networks.disconnect/2` orchestration: QUIT upstream + stop pid +
+  transition `connection_state` to `:parked` + broadcast). For visitor
+  sessions, collapses to the same orchestration as terminate (visitors
+  carry no `connection_state` to park; uniform-surface choice).
+- `DELETE /admin/sessions/:id` — synchronously stops the Session.Server
+  pid without touching the DB row. Distinct from
+  `DELETE /admin/visitors/:id` which deletes the visitor row outright.
+
+### `:id` URL shape
+
+Composite string `"<subject_kind>:<subject_id>:<network_id>"` — e.g.
+`"user:b8...:3"`. Cic already has all three fields from the M-4 wire
+shape; constructing the URL is a simple join. Pid in URL is rejected
+per the `Grappa.LiveIntrospection.AdminWire` pid_inspect contract (pid
+is human-display only; cic must NEVER round-trip it). A minted opaque
+id would be a parallel-state structure with lifecycle housekeeping —
+exactly what CLAUDE.md "Don't duplicate state that already exists —
+derive it" forbids.
+
+Parse rules: exactly two `:` delimiters → three non-empty segments;
+kind ∈ {user, visitor}; UUID via `Ecto.UUID.cast/1`; network_id is a
+positive integer (no trailing chars). Any deviation → 400 bad_request
+(distinct from 404 "parse OK but no matching row").
+
+### Visitor disconnect semantics — collapses to terminate
+
+T32 `Networks.disconnect/2` is hard-coded to user credentials
+(`{:user, _}` subject, transitions `connection_state`). Visitors have
+no credential row to park. Options considered:
+
+- **A (PICKED)**: Disconnect on a visitor ≡ terminate semantics. Stop
+  the pid; visitor row stays. Cic shows both buttons regardless of
+  subject_kind; no subject-discriminated client-side state machine.
+- **B (rejected)**: 422 `:not_supported_for_visitor`. Forces cic to
+  discriminate UI by subject; violates "uniform admin surface" intent
+  and grows a parallel state machine in the client.
+- **C (rejected)**: New `visitor.is_alive` schema field. Out of scope;
+  KISS; visitor TTL + reaper already handle lifecycle.
+
+### Idempotency: post-condition over introspection
+
+Both verbs return success when the post-condition is reached,
+regardless of who reached it.
+
+- `DELETE` on an already-gone pid → 204 (the post-condition "no live
+  pid" is met). `Session.stop_session/2` is already idempotent.
+- `POST disconnect` on a credential already `:parked` / `:failed` →
+  204 (the post-condition "not connected" is met). The Operator
+  boundary absorbs `:not_connected` from `Networks.disconnect/2`
+  rather than letting it bubble up as a 400; the controller can stay
+  uniform and admin UI doesn't have to interpret the prior state.
+- `POST disconnect` on a user with NO credential row → 404. This is
+  genuinely unknown — the URL referenced a key with neither a DB row
+  nor a live registry entry.
+
+The pre-existing `:not_connected` FallbackController clause (used by
+`/connect` PATCH) remains untouched; M-9a just doesn't reach it.
+
+### Self-disconnect protection — 422 at the Operator boundary
+
+If an admin POSTs disconnect / DELETE on their own user session, the
+Operator verb returns `{:error, :cannot_disconnect_self}` → 422
+`{"error": "cannot_disconnect_self"}`. The cic surface can grey the
+button, but server is the gate (CLAUDE.md "fix root causes, not
+examples" — curl bypasses cic).
+
+422 (unprocessable entity), not 403: the request is well-formed AND
+the admin has authz; the action is semantically rejected. The
+Operator verbs take an explicit `actor_user_id` parameter (no
+process-dict, no Plug.Conn reach-in); `nil` disables the check —
+reserved for a future `bin/grappa disconnect-session` operator
+override where the rpc-eval path runs as root.
+
+Visitor subjects bypass the self-check unconditionally — admins are
+users, so a user `actor_user_id` never collides with a
+`{:visitor, _}` subject's UUID in practice; the check is skipped
+structurally on the pattern match.
+
+### Logger.info instead of IO.puts
+
+The pre-existing `Operator.delete_visitor/1` typed sibling prints
+human-readable lines via `IO.puts/1` (a holdover from its bang-variant
+text-formatter pattern). The HTTP visitor controller captures the
+stdout via `with_io` just to silence it in tests.
+
+M-9a's new verbs route through `Logger.info/1` with structured context
+inlined into the message body (not as Logger metadata — `:subject`,
+`:network_id`, `:actor_user_id` would require expanding the global
+Logger metadata allowlist for context that only this verb produces;
+same pattern as `Session.stop_session/2`'s budget-exhaustion line at
+`session.ex:230-238`).
+
+Stdout is the wrong door for HTTP-driven mutations — Logger.info lands
+in the container stdout with timestamp + level prefix, doesn't pollute
+the test path, and remains appropriate for the future `bin/grappa`
+rpc-eval path. A hygiene bucket can later migrate `delete_visitor/1`'s
+stdout to match — out of scope for M-9a.
+
+### Tests
+
+- `test/grappa/operator_test.exs` — 11 new cases across two describe
+  blocks (`terminate_session/3` + `disconnect_session/3`). Covers:
+  pid-stop + DB invariants (credential preserved for terminate;
+  `:parked` transition for disconnect); idempotency (no pid; already
+  `:parked` / `:failed`); not_found (no credential); visitor collapse
+  (pid gone, row preserved); self-protection (user only; visitor
+  bypass; `nil` actor disables).
+- `test/grappa_web/controllers/admin/sessions_controller_test.exs` —
+  14 new cases across four describe blocks (POST + DELETE auth gate +
+  admin happy path + 422 self-protection + 400 malformed URL).
+  `async: false`; mirrors `visitors_controller_test.exs`'s shape.
+
+Three-class parity matrix EXEMPT (admin-gated; visitor + non-admin
+collapse to 403 via the `:admin_authn` pipeline upstream — covered by
+`MeControllerTest`'s 403 cases).
+
+Gate evidence: `scripts/check.sh` exit 0; `8 doctests, 29 properties,
+1985 tests, 0 failures`; bats 23/23 ok.
+
+### Deploy class — HOT
+
+Per CLAUDE.md `### Hot vs cold deploy` preflight: no `mix.exs` /
+`mix.lock` / `application.ex` / migrations / Dockerfile / nginx
+changes; no long-lived GenServer state-shape changes (`Operator` is
+stateless; controllers are stateless; `Networks` + `Credentials`
+context functions are stateless). Pure lib/ + test/ + docs.
+
+`scripts/deploy.sh` auto-detects HOT.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

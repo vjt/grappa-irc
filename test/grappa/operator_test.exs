@@ -17,6 +17,7 @@ defmodule Grappa.OperatorTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{AdmissionStateHelpers, Operator, Session}
+  alias Grappa.Networks.Credential
   alias Grappa.Visitors.Visitor
 
   setup do
@@ -230,6 +231,152 @@ defmodule Grappa.OperatorTest do
       lines = String.split(output, "\n", trim: true)
       assert length(lines) == 1
       assert hd(lines) =~ "subject_kind"
+    end
+  end
+
+  describe "terminate_session/3 (M-9a)" do
+    test "stops the visitor pid and leaves the visitor row" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      assert :ok = Operator.terminate_session({:visitor, visitor.id}, network.id, nil)
+
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+      assert Repo.get(Visitor, visitor.id) != nil
+    end
+
+    test "stops the user pid and leaves the credential row (state still :connected)" do
+      {_, port} = start_irc_server()
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(vjt, network, %{nick: "vjt"})
+      pid = start_session_for(vjt, network)
+      ref = Process.monitor(pid)
+
+      assert :ok = Operator.terminate_session({:user, vjt.id}, network.id, nil)
+
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:user, vjt.id}, network.id) == nil
+      reloaded = Repo.get_by(Credential, user_id: vjt.id, network_id: network.id)
+      assert reloaded.connection_state == :connected
+    end
+
+    test "is idempotent: no pid registered returns :ok" do
+      assert :ok =
+               Operator.terminate_session(
+                 {:visitor, Ecto.UUID.generate()},
+                 999_999_999,
+                 nil
+               )
+    end
+
+    test "returns {:error, :cannot_disconnect_self} when actor_user_id matches user subject" do
+      actor_id = Ecto.UUID.generate()
+
+      assert {:error, :cannot_disconnect_self} =
+               Operator.terminate_session({:user, actor_id}, 1, actor_id)
+    end
+
+    test "skips self-check for visitor subjects even when ids match" do
+      # actor_user_id is a user UUID; the visitor UUID never collides
+      # with it in practice — but the contract is "visitor subjects
+      # bypass the self-check regardless." Pass the same UUID through
+      # both slots; the {:visitor, _} pattern wins.
+      same_uuid = Ecto.UUID.generate()
+      assert :ok = Operator.terminate_session({:visitor, same_uuid}, 1, same_uuid)
+    end
+  end
+
+  describe "disconnect_session/3 (M-9a)" do
+    test "user :connected → :parked + pid gone" do
+      {_, port} = start_irc_server()
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: port)
+      _ = credential_fixture(vjt, network, %{nick: "vjt"})
+      pid = start_session_for(vjt, network)
+      ref = Process.monitor(pid)
+
+      assert :ok = Operator.disconnect_session({:user, vjt.id}, network.id, nil)
+
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:user, vjt.id}, network.id) == nil
+      reloaded = Repo.get_by(Credential, user_id: vjt.id, network_id: network.id)
+      assert reloaded.connection_state == :parked
+    end
+
+    test "user :parked → :ok (idempotent, no DB change)" do
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: 1)
+      cred = credential_fixture(vjt, network, %{nick: "vjt"})
+
+      {:ok, _} =
+        cred
+        |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "test")
+        |> Repo.update()
+
+      assert :ok = Operator.disconnect_session({:user, vjt.id}, network.id, nil)
+
+      reloaded = Repo.get_by(Credential, user_id: vjt.id, network_id: network.id)
+      assert reloaded.connection_state == :parked
+    end
+
+    test "user :failed → :ok (idempotent)" do
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {network, _} = network_with_server(port: 1)
+      cred = credential_fixture(vjt, network, %{nick: "vjt"})
+
+      {:ok, _} =
+        cred
+        |> Ecto.Changeset.change(connection_state: :failed, connection_state_reason: "k-line")
+        |> Repo.update()
+
+      assert :ok = Operator.disconnect_session({:user, vjt.id}, network.id, nil)
+
+      reloaded = Repo.get_by(Credential, user_id: vjt.id, network_id: network.id)
+      assert reloaded.connection_state == :failed
+    end
+
+    test "user with no credential row → {:error, :not_found}" do
+      assert {:error, :not_found} =
+               Operator.disconnect_session(
+                 {:user, Ecto.UUID.generate()},
+                 999_999_999,
+                 nil
+               )
+    end
+
+    test "visitor collapses to terminate (pid gone, row preserved)" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      assert :ok = Operator.disconnect_session({:visitor, visitor.id}, network.id, nil)
+
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+      assert Repo.get(Visitor, visitor.id) != nil
+    end
+
+    test "returns {:error, :cannot_disconnect_self} for self-target user" do
+      actor_id = Ecto.UUID.generate()
+
+      assert {:error, :cannot_disconnect_self} =
+               Operator.disconnect_session({:user, actor_id}, 1, actor_id)
+    end
+
+    test "actor_user_id == nil disables the self-check (operator override path)" do
+      # User has no credential row, so the disconnect would fall through to
+      # :not_found if the self-check were skipped — that's what we want
+      # to assert: self-check is bypassed when actor_user_id is nil even
+      # if a same-uuid actor would otherwise match.
+      user_id = Ecto.UUID.generate()
+
+      assert {:error, :not_found} =
+               Operator.disconnect_session({:user, user_id}, 999_999_999, nil)
     end
   end
 end

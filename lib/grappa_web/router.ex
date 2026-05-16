@@ -106,6 +106,8 @@ defmodule GrappaWeb.Router do
     get "/visitors", VisitorsController, :index
     delete "/visitors/:id", VisitorsController, :delete
     get "/sessions", SessionsController, :index
+    post "/sessions/:id/disconnect", SessionsController, :disconnect
+    delete "/sessions/:id", SessionsController, :delete
 
     # M-cluster M-5 (operator console networks pane):
     get "/networks", NetworksController, :index

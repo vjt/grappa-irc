@@ -54,6 +54,7 @@ defmodule GrappaWeb.FallbackController do
            | :internal
            | :invalid_message
            | :nick_in_use
+           | :cannot_disconnect_self
            | {:anon_collision, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
@@ -280,6 +281,17 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "nick_in_use"})
+  end
+
+  # M-cluster M-9a: admin attempted to disconnect / terminate their own
+  # live session via `POST /admin/sessions/:id/disconnect` or
+  # `DELETE /admin/sessions/:id`. Operator boundary rejects rather than
+  # letting the admin lock themselves out — 422 because the request is
+  # well-formed AND authorized, just semantically invalid.
+  def call(conn, {:error, :cannot_disconnect_self}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "cannot_disconnect_self"})
   end
 
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do

@@ -206,6 +206,27 @@ defmodule Grappa.Networks.Credentials do
     end
   end
 
+  @doc """
+  Id-based sibling of `get_credential/2` for callers that already hold
+  the raw `(user_id, network_id)` pair without a preloaded
+  `%User{}` + `%Network{}`. M-cluster M-9a's admin Operator verbs
+  (`disconnect_session/3`) parse them out of the URL composite id and
+  don't need the structs.
+
+  Returns `{:error, :not_found}` on miss (no row, OR either FK
+  references a deleted row — the join is implicit in the unique
+  index lookup).
+  """
+  @spec get_credential_by_ids(Ecto.UUID.t(), pos_integer()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  def get_credential_by_ids(user_id, network_id)
+      when is_binary(user_id) and is_integer(network_id) do
+    case Repo.one(credential_query(user_id, network_id)) do
+      %Credential{} = c -> {:ok, c}
+      nil -> {:error, :not_found}
+    end
+  end
+
   defp credential_query(user_id, network_id) do
     from(c in Credential,
       where: c.user_id == ^user_id and c.network_id == ^network_id

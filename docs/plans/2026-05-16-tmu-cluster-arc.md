@@ -961,6 +961,27 @@ AdminPane.
 
 ### M-9 — cic admin pane: Sessions view + actions
 
+**SPLIT into M-9a (server, LANDED 2026-05-16) + M-9b (cic, NEXT)** —
+per `feedback_per_bucket_deploy` the original single-bucket plan
+collapsed two deploy classes (HOT lib/ change + cic bundle deploy)
+into one commit; splitting keeps reviewer scope sharp and lets each
+half deploy with its own preflight class.
+
+#### M-9a (LANDED) — server precursor
+
+`POST /admin/sessions/:id/disconnect` (T32 park for user, collapse to
+terminate for visitor) + `DELETE /admin/sessions/:id` (stop pid; row
+preserved) + `Grappa.Operator.disconnect_session/3` +
+`terminate_session/3` typed verbs (ready for future `bin/grappa`
+dispatch — one feature, one code path, every door). `:id` is the
+composite `"<subject_kind>:<subject_id>:<network_id>"` string.
+
+422 `cannot_disconnect_self` server-side guard prevents an admin
+from locking themselves out via curl. See DESIGN_NOTES `2026-05-16
+— M-9a admin sessions mutation endpoints` for full design + tradeoffs.
+
+#### M-9b (NEXT) — cic Sessions tab + per-row actions
+
 **Failing test first**: vitest + Playwright:
 - List shows live session per (subject, network) with
   `live_state.alive` badge.
