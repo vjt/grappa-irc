@@ -660,6 +660,16 @@ defmodule Grappa.Session.Server do
           :exit, {:shutdown, _} -> :ok
           :exit, {:noproc, _} -> :ok
           :exit, {:timeout, _} -> :ok
+          # IRC.Client.send/2 raises FunctionClauseError when its
+          # `:gen_tcp.send/2` call hits a `nil` socket — the connect
+          # path crashed (:econnrefused, :tcp_closed in transit, etc.)
+          # before `state.socket` was assigned. The exit reason wraps
+          # the raise plus `{GenServer, :call, [...]}` context.
+          # Without this clause, terminate/2 propagates the raise and
+          # the supervisor's terminate cascade blocks for 5s per dead
+          # session — test isolation falls over under load.
+          :exit, {{%FunctionClauseError{}, _}, _} -> :ok
+          :exit, {%FunctionClauseError{}, _} -> :ok
         end
     end
   end
