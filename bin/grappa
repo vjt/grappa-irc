@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# bin/grappa — host-side operator dispatcher.
+#
+# One verb per task. Run from any worktree of the grappa repo:
+#
+#   bin/grappa help                     list verbs
+#   bin/grappa help <verb>              per-verb help
+#   bin/grappa <verb> [args]            dispatch
+#
+# The container IS the runtime — boot-time verbs delegate to mix tasks
+# inside the container (via scripts/mix.sh, which auto-detects MIX_ENV).
+# Live-state verbs (delete-visitor, reap-visitors, list-*, remote-shell)
+# are stubs in T-1; T-2 lands `iex --remsh` infrastructure, T-3 ships
+# the live-state implementations.
+#
+# Verb name policy: kebab-case on the command line, snake_case for the
+# underlying mix task (grappa.create_user, etc.). Mapping is the
+# `case` statement in dispatch() below.
+
+set -euo pipefail
+
+. "$(dirname "$0")/../scripts/_lib.sh"
+
+# Test seam: bats overrides SCRIPTS_DIR to point at a tmpdir with
+# fake scripts/mix.sh. Production calls inherit the real scripts/.
+SCRIPTS_DIR="${SCRIPTS_DIR:-$SRC_ROOT/scripts}"
+
+# --- helpers --------------------------------------------------------------
+
+mix_task() {
+    # Auto-detect MIX_ENV from the live container; scripts/mix.sh handles
+    # the override flag if the operator wants explicit env. Boot-time
+    # verbs typically run against the container the operator is deploying
+    # against, so auto-detect is the right default.
+    exec "$SCRIPTS_DIR/mix.sh" "$@"
+}
+
+stub_not_implemented() {
+    local verb=$1
+    shift
+    printf '%s: not yet implemented in T-1 (planned: %s).\n' "$verb" "$*" >&2
+    printf 'See docs/plans/2026-05-16-tmu-cluster-arc.md cluster T.\n' >&2
+    exit 64
+}
+
+die_unknown_verb() {
+    printf 'bin/grappa: unknown verb %q\n' "$1" >&2
+    printf 'Run `bin/grappa help` for the full verb table.\n' >&2
+    exit 64
+}
+
+# --- per-verb implementations --------------------------------------------
+
+# Boot-time verbs — thin delegates to existing mix tasks.
+
+verb_create_user()                { mix_task grappa.create_user "$@"; }
+verb_bind_network()               { mix_task grappa.bind_network "$@"; }
+verb_add_server()                 { mix_task grappa.add_server "$@"; }
+verb_set_network_caps()           { mix_task grappa.set_network_caps "$@"; }
+verb_unbind_network()             { mix_task grappa.unbind_network "$@"; }
+verb_update_network_credential()  { mix_task grappa.update_network_credential "$@"; }
+verb_seed_scrollback()            { mix_task grappa.seed_scrollback "$@"; }
+verb_gen_encryption_key()         { mix_task grappa.gen_encryption_key "$@"; }
+verb_gen_vapid()                  { mix_task grappa.gen_vapid "$@"; }
+verb_remove_server()              { mix_task grappa.remove_server "$@"; }
+
+# Live-state verb stubs — T-2 (remsh) + T-3 (visitors) implement.
+
+verb_delete_visitor()    { stub_not_implemented delete-visitor T-3; }
+verb_reap_visitors()     { stub_not_implemented reap-visitors T-3; }
+verb_list_sessions()     { stub_not_implemented list-sessions T-2/T-3; }
+verb_list_credentials()  { stub_not_implemented list-credentials T-3; }
+verb_list_visitors()     { stub_not_implemented list-visitors T-3; }
+verb_remote_shell()      { stub_not_implemented remote-shell T-2; }
+
+# Debug verbs — direct docker compose exec.
+
+verb_open_db() {
+    # WARNING: opens RW. scripts/db.sh is the ambient-safe RO alternative
+    # for casual prod queries. Auto-detects active env's DB file via the
+    # shared _lib.sh probe (single source of truth with scripts/mix.sh).
+    local env db
+    env="$(detect_mix_env)"
+    env="${env:-dev}"
+    db="/app/runtime/grappa_${env}.db"
+    exec docker compose "${COMPOSE_ARGS[@]}" exec grappa sqlite3 "$db" "$@"
+}
+
+verb_shell() {
+    exec docker compose "${COMPOSE_ARGS[@]}" exec grappa bash
+}
+
+# --- per-verb help -------------------------------------------------------
+#
+# Boot verbs delegate to `mix help grappa.<task>` (mix's built-in reads
+# @shortdoc/@moduledoc). Stubs + debug verbs have inline heredocs.
+
+help_boot_verb() {
+    local task=$1
+    exec "$SCRIPTS_DIR/mix.sh" --env=dev help "$task"
+}
+
+verb_help_create_user()                { help_boot_verb grappa.create_user; }
+verb_help_bind_network()               { help_boot_verb grappa.bind_network; }
+verb_help_add_server()                 { help_boot_verb grappa.add_server; }
+verb_help_set_network_caps()           { help_boot_verb grappa.set_network_caps; }
+verb_help_unbind_network()             { help_boot_verb grappa.unbind_network; }
+verb_help_update_network_credential()  { help_boot_verb grappa.update_network_credential; }
+verb_help_seed_scrollback()            { help_boot_verb grappa.seed_scrollback; }
+verb_help_gen_encryption_key()         { help_boot_verb grappa.gen_encryption_key; }
+verb_help_gen_vapid()                  { help_boot_verb grappa.gen_vapid; }
+verb_help_remove_server()              { help_boot_verb grappa.remove_server; }
+
+verb_help_delete_visitor() { cat <<'EOF'
+delete-visitor <uuid>
+    Synchronously terminate a visitor's live Session.Server and delete
+    the DB row, freeing the registry slot in the same call.
+
+    STUB in T-1. Implementation lands in T-3 via `iex --remsh` against
+    the live BEAM (see T-2 for the dist-shell infrastructure).
+EOF
+}
+
+verb_help_reap_visitors() { cat <<'EOF'
+reap-visitors
+    Force-trigger the Visitors.Reaper sweep (otherwise runs every 60s).
+
+    STUB in T-1. Implementation lands in T-3.
+EOF
+}
+
+verb_help_list_sessions() { cat <<'EOF'
+list-sessions
+    Pretty-print live Session.Server inventory from the registry.
+
+    STUB in T-1. Implementation lands in T-2/T-3.
+EOF
+}
+
+verb_help_list_credentials() { cat <<'EOF'
+list-credentials
+    List per-(user, network) credential bindings + connection state.
+
+    STUB in T-1. Implementation lands in T-3.
+EOF
+}
+
+verb_help_list_visitors() { cat <<'EOF'
+list-visitors
+    List visitor rows: id, nick, network, expires_at, inserted_at.
+
+    STUB in T-1. Implementation lands in T-3.
+EOF
+}
+
+verb_help_remote_shell() { cat <<'EOF'
+remote-shell [--batch -e <expr>]
+    Attach to the live BEAM via `iex --remsh`. Interactive by default;
+    --batch evaluates a one-liner and exits.
+
+    STUB in T-1. Erlang distribution (sname + cookie on bin/start.sh) +
+    the operator-side remsh path land in T-2.
+EOF
+}
+
+verb_help_open_db() { cat <<'EOF'
+open-db [sqlite3 args...]
+    Open an interactive sqlite3 shell against the active env's DB
+    inside the container. Detects MIX_ENV from the running container.
+
+    WARNING: RW. Use scripts/db.sh for ambient-safe RO access.
+EOF
+}
+
+verb_help_shell() { cat <<'EOF'
+shell
+    Drop into a bash shell inside the running grappa container.
+    Requires the container to be up.
+EOF
+}
+
+verb_help_help() { cat <<'EOF'
+help [verb]
+    With no arg, print the verb table grouped by category.
+    With a verb, print that verb's help text.
+EOF
+}
+
+# --- top-level help banner -----------------------------------------------
+
+help_top() {
+    cat <<'EOF'
+bin/grappa — host-side operator dispatcher
+
+Usage:
+    bin/grappa <verb> [args...]
+    bin/grappa help [verb]
+
+Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
+    create-user                  create a Grappa user account
+    bind-network                 bind a (user, network) credential
+    add-server                   add a server entry to a network
+    remove-server                remove a server entry from a network
+    set-network-caps             set per-network session caps
+    unbind-network               remove a (user, network) credential
+    update-network-credential    edit autojoin / nick / SASL fields
+    seed-scrollback              seed dev scrollback
+    gen-encryption-key           generate a Cloak.Vault key
+    gen-vapid                    generate a VAPID keypair (push)
+
+Live-state verbs (T-1 STUBS — land in T-2 + T-3):
+    delete-visitor <uuid>        terminate + delete a visitor (T-3)
+    reap-visitors                force-run the visitor reaper (T-3)
+    list-sessions                inspect the live session registry (T-2/T-3)
+    list-credentials             list cred bindings + state (T-3)
+    list-visitors                list visitor rows (T-3)
+    remote-shell                 iex --remsh against the live BEAM (T-2)
+
+Debug verbs:
+    open-db [args]               interactive sqlite3 against active env (RW)
+    shell                        bash inside the grappa container
+
+Meta:
+    help [verb]                  this banner / per-verb help
+
+EOF
+}
+
+# --- dispatch ------------------------------------------------------------
+
+dispatch_help() {
+    if [ $# -eq 0 ]; then
+        help_top
+        exit 0
+    fi
+    local verb=$1
+    case "$verb" in
+        create-user)                verb_help_create_user;;
+        bind-network)               verb_help_bind_network;;
+        add-server)                 verb_help_add_server;;
+        set-network-caps)           verb_help_set_network_caps;;
+        unbind-network)             verb_help_unbind_network;;
+        update-network-credential)  verb_help_update_network_credential;;
+        seed-scrollback)            verb_help_seed_scrollback;;
+        gen-encryption-key)         verb_help_gen_encryption_key;;
+        gen-vapid)                  verb_help_gen_vapid;;
+        remove-server)              verb_help_remove_server;;
+        delete-visitor)             verb_help_delete_visitor;;
+        reap-visitors)              verb_help_reap_visitors;;
+        list-sessions)              verb_help_list_sessions;;
+        list-credentials)           verb_help_list_credentials;;
+        list-visitors)              verb_help_list_visitors;;
+        remote-shell)               verb_help_remote_shell;;
+        open-db)                    verb_help_open_db;;
+        shell)                      verb_help_shell;;
+        help)                       verb_help_help;;
+        *)                          die_unknown_verb "$verb";;
+    esac
+}
+
+dispatch() {
+    if [ $# -eq 0 ]; then
+        help_top
+        exit 0
+    fi
+    local verb=$1
+    shift
+    case "$verb" in
+        help)                       dispatch_help "$@";;
+        create-user)                verb_create_user "$@";;
+        bind-network)               verb_bind_network "$@";;
+        add-server)                 verb_add_server "$@";;
+        set-network-caps)           verb_set_network_caps "$@";;
+        unbind-network)             verb_unbind_network "$@";;
+        update-network-credential)  verb_update_network_credential "$@";;
+        seed-scrollback)            verb_seed_scrollback "$@";;
+        gen-encryption-key)         verb_gen_encryption_key "$@";;
+        gen-vapid)                  verb_gen_vapid "$@";;
+        remove-server)              verb_remove_server "$@";;
+        delete-visitor)             verb_delete_visitor "$@";;
+        reap-visitors)              verb_reap_visitors "$@";;
+        list-sessions)              verb_list_sessions "$@";;
+        list-credentials)           verb_list_credentials "$@";;
+        list-visitors)              verb_list_visitors "$@";;
+        remote-shell)               verb_remote_shell "$@";;
+        open-db)                    verb_open_db "$@";;
+        shell)                      verb_shell "$@";;
+        *)                          die_unknown_verb "$verb";;
+    esac
+}
+
+dispatch "$@"

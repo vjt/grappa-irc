@@ -23,6 +23,8 @@ jobs:
       MIX_ENV: test
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup BEAM
         uses: erlef/setup-beam@v1
@@ -70,6 +72,9 @@ jobs:
       - name: Tests with coverage
         run: mix coveralls.json --warnings-as-errors
 
+      - name: Bats (bin/grappa dispatcher)
+        run: vendor/bats-core/bin/bats test/bin/
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: always()
@@ -84,6 +89,8 @@ jobs:
       MIX_ENV: dev
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup BEAM
         uses: erlef/setup-beam@v1

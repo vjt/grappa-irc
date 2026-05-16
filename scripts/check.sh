@@ -14,10 +14,17 @@
 #   - mix dialyzer
 #   - mix docs (build check)
 #
+# Plus the bats suite for host-side bash dispatchers (bin/grappa) — runs
+# on the host (no container).
+#
+# Pins MIX_ENV=dev via scripts/mix.sh because ci.check runs credo +
+# sobelow + doctor + ex_doc, all `only: [:dev, :test]` deps.
+#
 # Exit non-zero if any gate fails. Same gates as CI workflow, run identically.
 
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
 
-in_container_or_oneshot mix ci.check
+"$SRC_ROOT/scripts/mix.sh" --env=dev ci.check
+"$SRC_ROOT/scripts/bats.sh"

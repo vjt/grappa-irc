@@ -129,6 +129,14 @@ e2e_export_uid() {
     fi
 }
 
+# Probe the running grappa container for its MIX_ENV. Empty string when
+# no container is up. Used by scripts/mix.sh (auto-detect default) and
+# bin/grappa open-db (active env's DB file). Single source of truth so
+# the two callers can't drift.
+detect_mix_env() {
+    docker compose "${COMPOSE_ARGS[@]}" exec -T grappa printenv MIX_ENV 2>/dev/null | tr -d '\r' || true
+}
+
 in_container() {
     if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
         die "in_container called from a worktree — the live container has main's source mounted, not the worktree's. Use in_oneshot or in_container_or_oneshot."
@@ -164,13 +172,13 @@ in_oneshot() {
 # source mounted, not the worktree's, so exec there would run the wrong
 # code.
 #
-# MIX_ENV is forced to `dev` for the exec because the live container
-# typically runs MIX_ENV=prod (deploy.sh sets it). Dev-only deps (credo,
-# dialyxir, sobelow, mix_audit, doctor, ex_doc, mix_test_watch) live
-# behind `only: [:dev, :test]` in mix.exs and aren't loaded under prod.
-# Forcing dev keeps the operator workflow (`scripts/credo.sh`,
-# `scripts/check.sh`, etc.) working against a prod-mode container
-# without a separate "is this a mix task" probe at the call site.
+# MIX_ENV is NOT injected here; the caller is responsible. `scripts/mix.sh`
+# is the policy layer (auto-detects MIX_ENV from the running container,
+# `--env=<env>` for explicit override). Dev-deps sibling scripts
+# (credo.sh, dialyzer.sh, format.sh, etc.) route through `scripts/mix.sh
+# --env=dev` because dev-only deps (credo, dialyxir, sobelow, mix_audit,
+# doctor, ex_doc) live behind `only: [:dev, :test]` in mix.exs and aren't
+# compiled into prod images.
 #
 # Post-CP23 the unified image always has `mix` (single-stage, no release
 # binary), so the legacy mix-probe defensive branch is gone — any
@@ -181,7 +189,6 @@ in_container_or_oneshot() {
         cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q grappa 2>/dev/null || true)"
         if [ -n "$cid" ]; then
             docker compose "${COMPOSE_ARGS[@]}" exec -T \
-                -e MIX_ENV=dev \
                 -e HOME=/app \
                 -e XDG_CACHE_HOME=/app/.cache \
                 -e XDG_DATA_HOME=/app/.local/share \

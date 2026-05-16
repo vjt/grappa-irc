@@ -1,3 +1,7 @@
 [submodule "cicchetto/e2e/infra"]
 	path = cicchetto/e2e/infra
 	url = git@github.com:vjt/azzurra-testnet.git
+[submodule "vendor/bats-core"]
+	path = vendor/bats-core
+	url = https://github.com/bats-core/bats-core.git
+	branch = master
