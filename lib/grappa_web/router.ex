@@ -103,7 +103,9 @@ defmodule GrappaWeb.Router do
     pipe_through [:api, :authn, :admin_authn]
 
     get "/me", MeController, :index
+    get "/visitors", VisitorsController, :index
     delete "/visitors/:id", VisitorsController, :delete
+    get "/sessions", SessionsController, :index
   end
 
   scope "/auth", GrappaWeb do

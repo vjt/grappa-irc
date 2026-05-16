@@ -18,6 +18,12 @@ defmodule GrappaWeb.Admin.MeController do
 
   alias Grappa.Accounts.Wire
 
+  @doc """
+  Echo the authenticated admin user. The plug pipeline guarantees
+  the subject shape is `{:user, %User{is_admin: true}}`; the
+  controller body unwraps and renders via the canonical
+  `Grappa.Accounts.Wire.user_to_json/1` shape.
+  """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(%{assigns: %{current_subject: {:user, user}}} = conn, _) do
     json(conn, Wire.user_to_json(user))

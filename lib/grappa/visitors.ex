@@ -54,11 +54,12 @@ defmodule Grappa.Visitors do
       Grappa.Admission,
       Grappa.Auth.IdentifierClassifier,
       Grappa.IRC,
+      Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Repo,
       Grappa.Session
     ],
-    exports: [Login, SessionPlan, Visitor, VisitorChannel, Wire]
+    exports: [AdminWire, Login, SessionPlan, Visitor, VisitorChannel, Wire]
 
   import Ecto.Query
 
@@ -199,6 +200,64 @@ defmodule Grappa.Visitors do
     now = DateTime.utc_now()
     query = from(v in Visitor, where: is_nil(v.expires_at) or v.expires_at > ^now)
     Repo.all(query)
+  end
+
+  @doc """
+  Every visitor row, regardless of expiry state, ordered by
+  `inserted_at` ascending. Operator-facing — the M-4 admin console
+  needs the not-yet-reaped expired sliver too, to answer "why is
+  this visitor not being reaped?" `list_active/0` is the
+  Bootstrap-respawn filter; `list_all/0` is the admin view.
+  """
+  @spec list_all() :: [Visitor.t()]
+  def list_all do
+    query = from(v in Visitor, order_by: [asc: v.inserted_at, asc: v.id])
+    Repo.all(query)
+  end
+
+  @doc """
+  Every visitor row joined to its live `Grappa.Session.Server`
+  introspection, or `nil` when no pid is registered for
+  `{:visitor, v.id} × network.id`. The `nil` IS the U-0 honesty
+  signal — admin console renders it prominently so the operator
+  sees "DB intent exists, BEAM doesn't" rather than a quietly
+  empty row.
+
+  One DB roundtrip for the visitor list + one for the
+  `slug → network_id` index; N registry lookups (one per
+  visitor) at O(1) each. Each lookup also fetches
+  `joined_channels` via a `GenServer.call` with a 250ms-per-pid
+  timeout — worst-case latency is `O(N × 250ms)` when every
+  pid is stuck, gracefully degraded to `live_state` with
+  `joined_channels: nil` + `introspection_degraded: [:joined_channels]`.
+  Orphan visitors (network_slug not in `networks`) get `nil` live
+  state with no live-lookup attempted.
+
+  ## Wire shape note
+
+  Returns a flat `{visitor, live_state}` tuple — the visitor row's
+  fields are NOT wrapped under a `db_state` key (cf. MD2 example
+  in `docs/plans/2026-05-16-tmu-cluster-arc.md`). The flatter
+  shape was chosen for simpler cic rendering; the visitor schema
+  IS the DB intent, no additional wrapper needed.
+  """
+  @spec list_all_with_live_state() ::
+          [{Visitor.t(), Grappa.LiveIntrospection.SessionEntry.t() | nil}]
+  def list_all_with_live_state do
+    index = Grappa.Networks.network_id_by_slug_index()
+
+    for v <- list_all() do
+      live =
+        case Map.fetch(index, v.network_slug) do
+          {:ok, network_id} ->
+            Grappa.LiveIntrospection.lookup_session({:visitor, v.id}, network_id)
+
+          :error ->
+            nil
+        end
+
+      {v, live}
+    end
   end
 
   @doc """

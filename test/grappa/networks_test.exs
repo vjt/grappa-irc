@@ -808,6 +808,18 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  describe "network_id_by_slug_index/0 (M-4 admin console)" do
+    test "returns %{slug => id} for every networks row" do
+      net_a = network_fixture("idx-a-#{System.unique_integer([:positive])}")
+      net_b = network_fixture("idx-b-#{System.unique_integer([:positive])}")
+
+      index = Networks.network_id_by_slug_index()
+
+      assert Map.get(index, net_a.slug) == net_a.id
+      assert Map.get(index, net_b.slug) == net_b.id
+    end
+  end
+
   describe "update_network_caps/2" do
     test "sets both max_concurrent_sessions and max_per_client" do
       net = network_fixture()

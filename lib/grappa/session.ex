@@ -562,6 +562,24 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Variant of `list_channels/2` accepting an explicit per-call
+  receive `timeout_ms`. Returns `{:error, :timeout}` instead of
+  exiting when the target Session.Server's mailbox is too deep to
+  respond within budget — the operator surface
+  (`Grappa.LiveIntrospection`) needs an honest signal for stuck
+  pids rather than the default 5s exit cascade.
+
+  `:infinity` is allowed (delegates to the underlying GenServer.call).
+  """
+  @spec list_channels(subject(), integer(), timeout()) ::
+          {:ok, [String.t()]} | {:error, :no_session | :timeout}
+  def list_channels(subject, network_id, timeout_ms)
+      when is_subject(subject) and is_integer(network_id) and
+             (is_integer(timeout_ms) or timeout_ms == :infinity) do
+    call_session(subject, network_id, {:list_channels}, timeout_ms)
+  end
+
+  @doc """
   Returns the live IRC nick for the session at `(subject, network_id)`.
 
   The live nick may differ from the credential's configured nick after
@@ -983,6 +1001,20 @@ defmodule Grappa.Session do
     case whereis(subject, network_id) do
       nil -> {:error, :no_session}
       pid -> GenServer.call(pid, request)
+    end
+  end
+
+  defp call_session(subject, network_id, request, timeout_ms) do
+    case whereis(subject, network_id) do
+      nil ->
+        {:error, :no_session}
+
+      pid ->
+        try do
+          GenServer.call(pid, request, timeout_ms)
+        catch
+          :exit, {:timeout, _} -> {:error, :timeout}
+        end
     end
   end
 

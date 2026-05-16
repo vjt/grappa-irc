@@ -50,13 +50,15 @@ defmodule Grappa.Operator do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Session,
       Grappa.Visitors,
       Grappa.Visitors.Reaper
     ]
 
-  alias Grappa.{Networks, Session, Visitors}
+  alias Grappa.{LiveIntrospection, Networks, Session, Visitors}
+  alias Grappa.LiveIntrospection.SessionEntry
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.Visitor
 
@@ -220,32 +222,28 @@ defmodule Grappa.Operator do
   subject_kind, subject_id, network_id, pid, alive, mailbox_len,
   memory_kb. The introspection columns surface mailbox bloat / leaks —
   the #1 thing operators chase on a stuck session.
+
+  Pre-M-4 this verb owned the `Registry.select` + `Process.info`
+  projection inline; the M-4 admin console needed the same data as
+  JSON, so the projection moved into `Grappa.LiveIntrospection`. The
+  text formatter is the second door — one feature, one code path
+  (CLAUDE.md "every door").
   """
   @spec list_sessions_text!() :: :ok
   def list_sessions_text! do
     IO.puts(Enum.join(session_columns(), "\t"))
 
-    # Match spec pins the literal `:session` tag (mirror of
-    # `auth_controller.ex:236`'s `stop_all_user_sessions`): if a future
-    # registration with a different key shape lands in
-    # `Grappa.SessionRegistry`, this verb silently skips it rather than
-    # crashing mid-output on a destructure mismatch.
-    Grappa.SessionRegistry
-    |> Registry.select([{{{:session, :"$1", :"$2"}, :"$3", :_}, [], [{{:"$1", :"$2", :"$3"}}]}])
-    |> Enum.each(fn {{subject_kind, subject_id}, network_id, pid} ->
-      info = Process.info(pid, [:message_queue_len, :memory]) || []
-      alive = Process.alive?(pid)
-      mailbox = Keyword.get(info, :message_queue_len, 0)
-      memory_kb = div(Keyword.get(info, :memory, 0), 1024)
+    Enum.each(LiveIntrospection.list_sessions(), fn %SessionEntry{} = entry ->
+      {subject_kind, subject_id} = entry.subject
 
       row = [
         Atom.to_string(subject_kind),
         subject_id,
-        Integer.to_string(network_id),
-        inspect(pid),
-        to_string(alive),
-        Integer.to_string(mailbox),
-        Integer.to_string(memory_kb)
+        Integer.to_string(entry.network_id),
+        inspect(entry.pid),
+        to_string(entry.alive),
+        Integer.to_string(entry.mailbox_len),
+        Integer.to_string(div(entry.memory_bytes, 1024))
       ]
 
       IO.puts(Enum.join(row, "\t"))

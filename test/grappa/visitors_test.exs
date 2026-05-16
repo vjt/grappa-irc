@@ -160,6 +160,45 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
+  describe "list_all/0 (M-4 admin console)" do
+    test "returns active + expired visitors ordered by inserted_at asc" do
+      {:ok, alive} = Visitors.find_or_provision_anon("alive", @network, "1.2.3.4")
+      {:ok, dead} = Visitors.find_or_provision_anon("dead", @network, "1.2.3.4")
+
+      query = from(x in Visitor, where: x.id == ^dead.id)
+      Repo.update_all(query, set: [expires_at: DateTime.add(DateTime.utc_now(), -1, :hour)])
+
+      ids = Enum.map(Visitors.list_all(), & &1.id)
+      assert alive.id in ids
+      assert dead.id in ids
+    end
+  end
+
+  describe "list_all_with_live_state/0 (M-4 admin console)" do
+    # async: false guard at the module level keeps the registry scan deterministic.
+    test "returns {visitor, nil} for visitor with no live session" do
+      {:ok, v} = Visitors.find_or_provision_anon("solo", @network, "1.2.3.4")
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: @network})
+
+      results = Visitors.list_all_with_live_state()
+
+      assert {%Visitor{} = found, nil} =
+               Enum.find(results, fn {row, _} -> row.id == v.id end)
+
+      assert found.id == v.id
+    end
+
+    test "returns {visitor, nil} when network_slug has no networks row (orphan)" do
+      orphan_slug = "orphan-#{System.unique_integer([:positive])}"
+      v = Grappa.AuthFixtures.visitor_fixture(network_slug: orphan_slug, nick: "orph")
+
+      results = Visitors.list_all_with_live_state()
+
+      assert {%Visitor{}, nil} =
+               Enum.find(results, fn {row, _} -> row.id == v.id end)
+    end
+  end
+
   describe "delete/1" do
     test "removes visitor row + CASCADE wipes accounts_sessions" do
       {:ok, v} = Visitors.find_or_provision_anon("vjt", @network, "1.2.3.4")

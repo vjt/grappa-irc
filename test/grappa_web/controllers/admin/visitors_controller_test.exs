@@ -118,4 +118,87 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
       assert json_response(conn, 404) == %{"error" => "not_found"}
     end
   end
+
+  describe "GET /admin/visitors — auth gate (M-4)" do
+    test "no bearer returns 401 (Authn upstream)", %{conn: conn} do
+      conn = get(conn, "/admin/visitors")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "visitor subject returns 403", %{conn: conn} do
+      {_, session} = visitor_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/visitors")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "non-admin user returns 403", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/visitors")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+  end
+
+  describe "GET /admin/visitors — admin user (M-4)" do
+    test "200 + body has visitors array including live visitor with live_state.alive", %{conn: conn} do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      assert Process.alive?(pid)
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/visitors")
+
+      body = json_response(conn, 200)
+      assert is_list(body["visitors"])
+
+      row = Enum.find(body["visitors"], &(&1["id"] == visitor.id))
+      assert row != nil
+      assert row["nick"] == visitor.nick
+      assert row["network_slug"] == network.slug
+      assert is_map(row["live_state"])
+      assert row["live_state"]["alive"] == true
+    end
+
+    test "200 + live_state: null for visitor row with no Session.Server (U-0 honesty signal)", %{
+      conn: conn
+    } do
+      visitor =
+        visitor_fixture(
+          network_slug: "azzurra-#{System.unique_integer([:positive])}",
+          nick: "ghost-#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: visitor.network_slug})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/visitors")
+
+      body = json_response(conn, 200)
+      row = Enum.find(body["visitors"], &(&1["id"] == visitor.id))
+
+      assert row != nil
+      assert row["live_state"] == nil
+      refute Map.has_key?(row, "password_encrypted")
+    end
+  end
 end

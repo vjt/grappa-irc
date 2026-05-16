@@ -52,6 +52,8 @@ defmodule Grappa.Networks do
     ],
     exports: [Network, NoServerError, Server, Credential, Credentials, Servers, SessionPlan, Wire]
 
+  import Ecto.Query, only: [from: 2]
+
   alias Grappa.{Accounts, Repo, Session}
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credential, Network, Wire}
@@ -198,6 +200,22 @@ defmodule Grappa.Networks do
   """
   @spec get_network!(integer()) :: Network.t()
   def get_network!(id) when is_integer(id), do: Repo.get!(Network, id)
+
+  @doc """
+  Returns `%{slug => id}` for every networks row. Operator surface
+  (M-cluster M-4) needs to resolve N visitor `network_slug`s to
+  integer FKs for live-registry lookups; one DB roundtrip beats N
+  per-slug fetches. Tiny tables — networks is operator-curated,
+  not user-driven, so the full materialization is fine.
+  """
+  @spec network_id_by_slug_index() :: %{String.t() => integer()}
+  def network_id_by_slug_index do
+    query = from(n in Network, select: {n.slug, n.id})
+
+    query
+    |> Repo.all()
+    |> Map.new()
+  end
 
   @doc """
   Updates the admission caps (`max_concurrent_sessions`,
