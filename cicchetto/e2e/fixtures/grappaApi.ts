@@ -47,6 +47,76 @@ export async function login(identifier: string, password: string): Promise<Login
   return (await response.json()) as LoginResult;
 }
 
+// M-cluster M-8 — mint a fresh anon visitor for tests that need a
+// throwaway visitor row to operate on (e.g. the admin Visitors tab
+// delete-action spec). Same `POST /auth/login` endpoint as user
+// login; the identifier shape is the visitor branch when it
+// doesn't match an `email@host` shape — see
+// `lib/grappa_web/controllers/auth_controller.ex` login/2 +
+// visitor_login/4. captcha gate is disabled in the e2e harness
+// (compose.yaml `GRAPPA_CAPTCHA_PROVIDER: disabled`) so no
+// captcha_token is required.
+//
+// Returns the visitor's `id` (matches the AdminWire row id used
+// by the Visitors tab's per-row testid).
+export type MintedVisitor = {
+  id: string;
+  nick: string;
+  network_slug: string;
+  token: string;
+};
+
+export async function mintVisitor(nick: string): Promise<MintedVisitor> {
+  const response = await fetch(`${GRAPPA_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ identifier: nick }),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `grappaApi.mintVisitor: ${nick} → ${response.status} ${await response.text()}`,
+    );
+  }
+  const body = (await response.json()) as {
+    token: string;
+    subject: { kind: "visitor"; id: string; nick: string; network_slug: string };
+  };
+  if (body.subject.kind !== "visitor") {
+    throw new Error(`grappaApi.mintVisitor: expected visitor subject, got ${body.subject.kind}`);
+  }
+  return {
+    id: body.subject.id,
+    nick: body.subject.nick,
+    network_slug: body.subject.network_slug,
+    token: body.token,
+  };
+}
+
+// M-cluster M-8 — operator-side delete via admin bearer. Mirrors
+// `Grappa.Operator.delete_visitor/1`. Used by e2e tests that mint
+// a visitor and need teardown cleanup on early-assertion-failure
+// paths (so the e2e harness doesn't accumulate orphan visitor
+// rows across failed runs — `Visitors.Reaper` only sweeps on
+// expiry, not on test exit).
+//
+// Idempotent: 404 (visitor already deleted by the test under
+// assertion) is treated as success.
+export async function adminDeleteVisitor(
+  adminToken: string,
+  visitorId: string,
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/admin/visitors/${encodeURIComponent(visitorId)}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(
+      `grappaApi.adminDeleteVisitor: ${visitorId} → ${res.status} ${await res.text()}`,
+    );
+  }
+}
+
 // Poll GET /networks/:network_slug/channels/:channel/messages for a
 // row matching {sender, body}. Channel id in the URL is the channel
 // NAME (`#bofh`) — grappa's REST surface keys channels by slug-shape,

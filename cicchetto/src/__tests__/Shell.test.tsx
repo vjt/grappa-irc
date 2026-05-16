@@ -149,6 +149,15 @@ vi.mock("../lib/readCursor", () => ({
   clearReadCursors: vi.fn(),
 }));
 
+// M-cluster M-8 — AdminPane now transitively imports AdminVisitorsTab
+// which fires `adminListVisitors` onMount. Mock the inner tab so the
+// Shell-level admin-pane lifecycle tests (M-7) don't need to know
+// about admin REST surfaces. AdminVisitorsTab has its own dedicated
+// vitest + Playwright suite.
+vi.mock("../AdminVisitorsTab", () => ({
+  default: () => <div data-testid="admin-visitors-tab-mock">visitors-tab</div>,
+}));
+
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>

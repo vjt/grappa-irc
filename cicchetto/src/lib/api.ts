@@ -766,6 +766,55 @@ export async function me(token: string): Promise<MeResponse> {
   return (await res.json()) as MeResponse;
 }
 
+// M-cluster M-8 — admin Visitors tab wire types + fetch wrappers.
+// Mirror of `Grappa.Visitors.AdminWire.t()`
+// (lib/grappa/visitors/admin_wire.ex). `live_state === null` is the
+// U-0 honesty signal: DB intent says active, BEAM has no pid for
+// `{:visitor, id} × network.id`. The Visitors tab surfaces it
+// prominently per `feedback_no_silent_drops_closed`.
+//
+// `introspection_degraded` is `string[]` — server emits the
+// `SessionEntry.degraded_field` atoms which JSON-encode as strings.
+// M-8 doesn't render individual values (those land in M-9 Sessions
+// tab's per-row detail surface); a non-empty array implies the live
+// state values may be stale.
+export type AdminVisitorLiveState = {
+  alive: boolean;
+  pid_inspect: string;
+  mailbox_len: number;
+  memory_bytes: number;
+  joined_channels: string[] | null;
+  introspection_degraded: string[];
+};
+
+export type AdminVisitor = {
+  id: string;
+  nick: string;
+  network_slug: string;
+  expires_at: string | null;
+  identified: boolean;
+  ip: string | null;
+  inserted_at: string;
+  live_state: AdminVisitorLiveState | null;
+};
+
+export type AdminVisitorsResponse = { visitors: AdminVisitor[] };
+
+export async function adminListVisitors(token: string): Promise<AdminVisitor[]> {
+  const res = await fetch("/admin/visitors", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminVisitorsResponse;
+  return body.visitors;
+}
+
+export async function adminDeleteVisitor(token: string, id: string): Promise<void> {
+  const res = await fetch(`/admin/visitors/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
 export async function logout(token: string): Promise<void> {
   const res = await fetch("/auth/logout", {
     method: "DELETE",

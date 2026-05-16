@@ -1,16 +1,22 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+// M-cluster M-8 — AdminPane mounts AdminVisitorsTab inside the
+// admin-tab-visitors tabpanel. Mock the tab component so this
+// suite stays focused on the OUTER PANE contract (header + close
+// + tab nav). AdminVisitorsTab has its own dedicated suite.
+vi.mock("../AdminVisitorsTab", () => ({
+  default: () => <div data-testid="admin-visitors-tab-mock">visitors-tab</div>,
+}));
+
 import AdminPane from "../AdminPane";
 
-// M-cluster M-7 — admin console pane skeleton. Per
+// M-cluster M-7 / M-8 — admin console pane. Per
 // `feedback_e2e_user_class_parity_matrix`: AdminPane itself is
 // subject-agnostic; the admin-only gate lives at SettingsDrawer +
 // Shell.tsx (which only mount this when `me.is_admin === true`).
 // Tests here cover the skeleton contract: header renders, close
-// button fires, the M-8/9/10/11 stub is visible so an admin operator
-// who clicks into the pane sees a coherent surface instead of a
-// blank one. Tab markup ships in subsequent buckets.
+// button fires, tab nav present, default Visitors tab mounts.
 
 describe("AdminPane", () => {
   it("renders the 'admin console' header", () => {
@@ -18,12 +24,21 @@ describe("AdminPane", () => {
     expect(screen.getByRole("heading", { name: /admin console/i })).toBeInTheDocument();
   });
 
-  it("renders the M-8/9/10/11 placeholder so the pane is never blank", () => {
+  it("renders the tab nav with Visitors as the default-active tab", () => {
     render(() => <AdminPane onClose={vi.fn()} />);
-    // textContent guard per
-    // `feedback_css_block_button_wraps_inline_prefix` — assert the
-    // visible-to-operator copy directly, not just the wrapper.
-    expect(screen.getByText(/tabs land in M-8/i)).toBeInTheDocument();
+    const tab = screen.getByTestId("admin-tab-visitors");
+    // textContent assertion per
+    // `feedback_css_block_button_wraps_inline_prefix` — pseudo-element
+    // sigils / inline prefixes can clip the visible label even when
+    // the button itself is present.
+    expect(tab.textContent).toContain("Visitors");
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(tab.getAttribute("role")).toBe("tab");
+  });
+
+  it("mounts AdminVisitorsTab inside the active tabpanel", () => {
+    render(() => <AdminPane onClose={vi.fn()} />);
+    expect(screen.getByTestId("admin-visitors-tab-mock")).toBeInTheDocument();
   });
 
   it("close button fires onClose", () => {

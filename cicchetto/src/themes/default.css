@@ -1254,6 +1254,130 @@ body {
   font-size: 0.85rem;
 }
 
+/* M-cluster M-8 — admin tab nav + Visitors tab. M-9/M-10/M-11
+   append more `<button role="tab">` siblings + their own tabpanels;
+   the active-tab styling uses [aria-selected="true"] so future
+   tab-switching only needs the attribute flip. */
+
+.admin-tab-nav {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+
+.admin-tab {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.admin-tab[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.admin-tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.admin-visitors-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.admin-visitors-header {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-refresh-btn {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.admin-refresh-btn[aria-busy="true"] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.admin-error {
+  color: #c00;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.admin-visitors-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.admin-visitors-table th,
+.admin-visitors-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-visitors-table th {
+  color: var(--muted);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.live-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.2rem;
+  font-size: 0.75rem;
+}
+
+.live-badge.alive {
+  color: #0a0;
+}
+
+.live-badge.none {
+  color: #c00;
+  border: 1px solid #c00;
+}
+
+.live-badge.dead {
+  color: #c80;
+  border: 1px solid #c80;
+}
+
+.delete-btn {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.delete-btn.confirming {
+  color: #c00;
+  border-color: #c00;
+}
+
 /* SettingsDrawer notifications section (B3) */
 
 .settings-drawer .notifications-fieldset hr {

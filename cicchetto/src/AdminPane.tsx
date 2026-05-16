@@ -1,24 +1,32 @@
 import type { Component } from "solid-js";
+import AdminVisitorsTab from "./AdminVisitorsTab";
 
-// M-7 — Admin console SKELETON. Replaces the channel content in
+// M-7 — Admin console pane. Replaces the channel content in
 // Shell.tsx when an admin operator clicks "admin console" in
-// SettingsDrawer. Tabs (Visitors / Sessions / Networks / Credentials /
-// Events / Reaper) land in M-8 / M-9 / M-10 / M-11 — this is strictly
-// the outer pane with a header + a close action + an explicit "tabs
-// land in M-8..M-11" stub so the operator sees a coherent surface
-// instead of a blank pane.
+// SettingsDrawer. Outer pane = header + close + tab nav + active
+// tab body.
+//
+// M-8 adds the FIRST tab (Visitors). M-9 (Sessions) / M-10
+// (Networks + Credentials) / M-11 (Events) each append their own
+// `<button role="tab">` + `<tabpanel>` siblings here and gate the
+// active tab via a `currentTab` signal. M-8 ships only one tab so
+// the markup is intentionally minimal — a single `aria-selected`
+// tab in a tablist is valid ARIA without a tab-switching state
+// machine yet.
 //
 // Mount lifecycle: a `<Show when={adminOpen() && isAdmin()}>` in
-// Shell.tsx drives mount/unmount. Shell also runs a createEffect that
-// auto-closes the pane the moment `me.is_admin` flips to false — see
-// the demote-mid-session policy in the M-7 plan. M-7 does NOT issue
-// any admin REST fetches; pure presentational.
+// Shell.tsx drives mount/unmount. Shell auto-closes the pane the
+// instant `me.is_admin` flips to false — see the demote-mid-session
+// policy at Shell.tsx's createEffect. M-8 issues admin REST fetches
+// (GET/DELETE /admin/visitors) inside AdminVisitorsTab; the
+// `:admin_authn` plug 403s any request from a now-non-admin user
+// so the demote race is server-side-safe.
 //
 // Per-class parity matrix (`feedback_e2e_user_class_parity_matrix`):
 // admin-gated, EXEMPT from the visitor / non-admin / admin loop's
-// positive assertion. The Playwright spec still loops the three
-// classes to assert the OPPOSITE polarity (non-admin + visitor see
-// no drawer entry → no pane).
+// positive assertion. The Playwright spec at m7-admin-gate covers
+// reachability; per-tab specs cover only the admin case since
+// non-admin can't reach the AdminPane at all.
 
 export type Props = {
   onClose: () => void;
@@ -39,10 +47,32 @@ const AdminPane: Component<Props> = (props) => {
           ×
         </button>
       </header>
-      <p class="admin-pane-placeholder">
-        tabs land in M-8 (visitors), M-9 (sessions), M-10 (networks + credentials), and M-11
-        (events).
-      </p>
+      {/* `<div role="tablist">` not `<nav>` — biome a11y rule
+          `noNoninteractiveElementToInteractiveRole` flags `<nav>`
+          with `role="tablist"` because `<nav>` is a landmark
+          element, not a tab container. The WAI-ARIA APG canonical
+          tablist container IS a `div`. */}
+      <div class="admin-tab-nav" role="tablist" aria-label="admin tabs">
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected="true"
+          aria-controls="admin-tab-visitors"
+          id="admin-tab-visitors-handle"
+          data-testid="admin-tab-visitors"
+        >
+          Visitors
+        </button>
+      </div>
+      <div
+        role="tabpanel"
+        id="admin-tab-visitors"
+        aria-labelledby="admin-tab-visitors-handle"
+        class="admin-tab-panel"
+      >
+        <AdminVisitorsTab />
+      </div>
     </section>
   );
 };

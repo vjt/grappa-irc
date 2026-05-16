@@ -5500,6 +5500,72 @@ admin task" (vjt).
 
 ---
 
+## 2026-05-16 — M-8 cic admin pane: Visitors tab + delete action
+
+- Second cic-side bucket of the M cluster. M-8 fills the M-7
+  AdminPane skeleton with the FIRST admin tab (Visitors list +
+  per-row inline-confirm DELETE). No new server endpoints —
+  M-3 + M-4 already provide GET + DELETE `/admin/visitors`.
+- **Tab nav shape**: a `<div role="tablist">` (NOT `<nav>` — biome's
+  `noNoninteractiveElementToInteractiveRole` rule rejects
+  `<nav role="tablist">` because `<nav>` is a landmark element,
+  not a tab container; the WAI-ARIA APG canonical tablist
+  container is in fact a `div`). M-8 ships ONE tab; M-9 / M-10 /
+  M-11 each append their own `<button role="tab">` siblings + a
+  `currentTab()` signal driving `aria-selected`. The minimal
+  markup is intentional — disabled placeholder tabs are friction
+  without value and lock the tab order before it's earned.
+- **Inline-confirm state machine** per MD4 ("NO modals; button
+  text 'Delete' → on click → 'Confirm delete?' → on second click
+  → fire"): single signal `confirmingId: string | null`. Sticky
+  (no timeout, no cancel button, no global click reset). Switching
+  rows mid-confirm re-arms the new row. Refresh DOES reset
+  `confirmingId` (MED-2 reviewer fix) to maintain the "armed row
+  exists in `visitors()`" invariant that M-11's live-events
+  refit will depend on.
+- **Splice over refetch on successful delete**: 204 → in-memory
+  `visitors().filter(x => x.id !== deletedId)`. Keeps scroll
+  position + avoids the visible flash a full refetch would cause.
+  Loses concurrent-admin-delete state until the operator clicks
+  refresh; M-11's `grappa:admin:events` topic ships the live-
+  refit. Per design Q3 the trade-off is the right shape for M-8.
+- **U-0 honesty signal**: `live_state === null` (DB intent says
+  active, BEAM has no pid for `{:visitor, id} × network.id`)
+  renders as a visible red badge "BEAM has no pid". Per
+  `feedback_no_silent_drops_closed`: the orphan condition was
+  the entire motivation behind M-3/M-4 ("the unblock verb"); the
+  operator MUST see the divergence at a glance. M-9 will surface
+  `introspection_degraded` per-field for a richer detail view;
+  M-8 keeps the per-row rendering minimal.
+- **Visitor mint helper for e2e** (`cicchetto/e2e/fixtures/grappaApi.ts`
+  `mintVisitor`): POSTs `/auth/login {identifier: nick}`. The
+  e2e harness has `GRAPPA_CAPTCHA_PROVIDER: disabled` so no
+  captcha_token is required. Identifier-shape classification at
+  `auth_controller.ex login/2` routes plain nicks (no `@host`)
+  through `visitor_login/4`. The new `adminDeleteVisitor` e2e
+  helper provides idempotent teardown so failed-assertion paths
+  don't leak visitor rows.
+- **Test boundary**: 9 vitest cases (row render, U-0 badge,
+  alive badge, inline-confirm 4-state machine, refresh, empty
+  state, error-banner-with-retry-hint per MED-3). Playwright
+  e2e: single admin case (admin-gated EXEMPT per
+  `feedback_e2e_user_class_parity_matrix` — non-admin + visitor
+  can't reach the AdminPane; M-7's spec already pins the
+  reachability gate at the drawer entry layer).
+- **CSS posture**: dropped `var(--mode-deop, #c00)` (HIGH-1
+  reviewer fix) — the token wasn't defined in either theme;
+  fallback always won; future grep for the token returned zero.
+  Inlined the hex literal until an `--error` token earns its
+  keep by appearing at a second site (today's `.admin-error` +
+  hardcoded `#c00`/`#c33` at three other sites — extraction
+  belongs in a later sweep, not M-8).
+- **Known gap for M-11**: no live updates. Refresh button is the
+  only re-fetch surface. Acceptable per design Q4. M-11 wires
+  `grappa:admin:events` PubSub topic for end-to-end live updates
+  (concurrent admin deletes, visitor reaps, new visitor mints).
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
