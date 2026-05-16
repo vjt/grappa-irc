@@ -456,6 +456,75 @@ defmodule GrappaWeb.AuthControllerTest do
       assert is_nil(Repo.get(Visitor, visitor.id))
     end
 
+    test "UD5.A: visitor logout is synchronous — :DOWN arrives BEFORE 204 returns",
+         %{conn: conn} do
+      # The prior visitor-logout tests assert `whereis = nil` post-204 which
+      # IS sync proof, but the post-condition window is loose: a quick GC pause
+      # between the receive of :DOWN and the lookup hides any future regression
+      # that converts `Session.stop_session/2` from a `receive {:DOWN}` to a
+      # fire-and-forget cast.
+      #
+      # This test pins the sync contract directly via OTP monitor semantics:
+      #
+      #   1. We `Process.monitor(pid)` BEFORE the DELETE. By the BEAM monitor
+      #      contract, when `pid` exits ALL registered monitors get a `:DOWN`
+      #      message enqueued ATOMICALLY with the process exit — the test-
+      #      process monitor is on that list because we registered it
+      #      pre-DELETE.
+      #   2. `AuthController.logout/2` calls `Session.stop_session/2` which
+      #      itself blocks on `receive {:DOWN}` (its own monitor) before
+      #      returning — so by the time the controller's `send_resp(:no_content)`
+      #      runs, the session pid is already dead AND every monitor has
+      #      received its :DOWN.
+      #   3. Therefore, by the time `response(conn, 204)` returns in this
+      #      test process, OUR :DOWN is already in OUR mailbox.
+      #
+      # The load-bearing piece is the controller's INTERNAL synchronous
+      # `Session.stop_session/2`. A future refactor that drops that internal
+      # `receive {:DOWN}` (e.g. because "the test monitors anyway") would
+      # race the response, and `assert_received` (no wait) catches it —
+      # whereas `assert_receive 100` would mask the regression by giving the
+      # scheduler 100ms of slop to deliver our :DOWN AFTER the 204 came
+      # back. Keep `assert_received` (no timeout) for that reason.
+      {server, port} = start_server()
+      {network, _} = setup_visitor_network(port)
+
+      task =
+        Task.async(fn ->
+          Visitors.Login.login(
+            %{
+              nick: "vjt",
+              password: nil,
+              ip: "1.2.3.4",
+              user_agent: "ua",
+              token: nil,
+              captcha_token: nil,
+              client_id: nil
+            },
+            []
+          )
+        end)
+
+      :ok = await_handshake(server)
+      feed_001(server, "vjt")
+
+      {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
+
+      pid = Grappa.Session.whereis({:visitor, visitor.id}, network.id)
+      assert is_pid(pid)
+
+      # Monitor BEFORE the DELETE so we cannot miss the :DOWN.
+      ref = Process.monitor(pid)
+
+      conn
+      |> put_bearer(token)
+      |> delete("/auth/logout")
+      |> response(204)
+
+      # Zero-tolerance: the :DOWN MUST already be in our mailbox.
+      assert_received {:DOWN, ^ref, :process, ^pid, _reason}
+    end
+
     test "visitor logout (registered) kills Session.Server but keeps visitor row",
          %{conn: conn} do
       {server, port} = start_server()

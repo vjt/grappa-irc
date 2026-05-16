@@ -168,14 +168,8 @@ function friendlyKnown(err: ApiError, code: KnownApiErrorCode): string {
       // msg" summary so the user sees WHICH field is wrong and
       // WHY without parsing wire tokens; falls back to a generic
       // copy when the shape is degraded.
-      const fieldErrors = err.info.field_errors as
-        | Record<string, string[]>
-        | undefined;
-      if (
-        fieldErrors !== undefined &&
-        fieldErrors !== null &&
-        typeof fieldErrors === "object"
-      ) {
+      const fieldErrors = err.info.field_errors as Record<string, string[]> | undefined;
+      if (fieldErrors !== undefined && fieldErrors !== null && typeof fieldErrors === "object") {
         const parts: string[] = [];
         for (const [field, msgs] of Object.entries(fieldErrors)) {
           if (Array.isArray(msgs) && msgs.length > 0) {
