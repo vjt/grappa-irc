@@ -1,6 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import { logout, token } from "./lib/auth";
+import { user } from "./lib/networks";
 import {
   disablePush,
   type EnablePushResult,
@@ -17,7 +18,8 @@ import {
 } from "./lib/userSettings";
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
-// per-trigger prefs + device list) + logout.
+// per-trigger prefs + device list) + optional "admin console" entry
+// (gated on me.is_admin === true, M-cluster M-7) + logout.
 //
 // open prop drives the .open class; the drawer stays mounted across
 // open/close so onMount-loaded state (devices + prefs) doesn't refetch
@@ -26,7 +28,24 @@ import {
 export type Props = {
   open: boolean;
   onClose: () => void;
+  // M-7 — fires when the operator clicks the "admin console" entry.
+  // Shell.tsx handles closing the drawer + opening the AdminPane.
+  // Required even though only admin renderings invoke it — both
+  // SettingsDrawer call sites in Shell (desktop + mobile) pass the
+  // same `setAdminOpen(true)` handler.
+  onOpenAdmin: () => void;
 };
+
+// M-cluster M-7 — admin predicate. Single source of truth for the
+// drawer entry visibility gate, mirror-shape of the same predicate in
+// `Shell.tsx` (which uses it for the AdminPane mount gate +
+// demote-auto-close effect). Narrows `MeResponse` to the user arm so
+// the `is_admin` field is reachable; visitor + null both collapse to
+// false.
+function isAdmin(): boolean {
+  const u = user();
+  return u?.kind === "user" && u.is_admin === true;
+}
 
 const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
@@ -343,6 +362,20 @@ const SettingsDrawer: Component<Props> = (props) => {
             </ul>
           </Show>
         </fieldset>
+
+        <Show when={isAdmin()}>
+          <button
+            type="button"
+            class="admin-console-entry"
+            onClick={() => {
+              props.onClose();
+              props.onOpenAdmin();
+            }}
+            data-testid="admin-console-entry"
+          >
+            admin console
+          </button>
+        </Show>
 
         <button
           type="button"

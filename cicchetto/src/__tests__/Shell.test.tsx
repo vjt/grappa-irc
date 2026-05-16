@@ -23,6 +23,16 @@ const selectionState = vi.hoisted(() => {
 // Mutable isMobile ref so individual tests can flip to mobile mode.
 const mobileState = vi.hoisted(() => ({ value: false }));
 
+// M-cluster M-7 — mutable me holder. Default is a non-admin user so
+// the existing pre-M-7 tests pass unchanged (no admin entry rendered,
+// no admin pane mounted). M-7 tests below flip is_admin to true.
+const userHolder = vi.hoisted(() => ({
+  current: { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" } as
+    | { kind: "user"; id: string; name: string; is_admin: boolean; inserted_at: string }
+    | { kind: "visitor"; id: string; nick: string; network_slug: string; expires_at: string }
+    | null,
+}));
+
 vi.mock("@solidjs/router", () => ({
   useNavigate: () => vi.fn(),
 }));
@@ -35,7 +45,7 @@ vi.mock("../lib/networks", () => ({
       { name: "#b", joined: true, source: "autojoin" },
     ],
   }),
-  user: () => ({ id: "u1", name: "vjt", inserted_at: "x" }),
+  user: () => userHolder.current,
   networkBySlug: () => undefined,
 }));
 
@@ -196,6 +206,8 @@ beforeEach(() => {
   mobileState.value = false;
   mockWindowIsJoined.mockReturnValue(true);
   windowStateMap.current = {};
+  // M-7 default — non-admin user. M-7 tests below opt in via mutation.
+  userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
 });
 
 describe("Shell — three-pane integration", () => {
@@ -510,5 +522,51 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
     });
     expect(container.querySelector(".compose-box")).toBeInTheDocument();
+  });
+});
+
+// M-cluster M-7 — admin pane lifecycle on Shell. The drawer entry +
+// pane content live in SettingsDrawer.test.tsx + AdminPane.test.tsx
+// respectively; these tests pin the Shell-level wiring: pane mounts
+// when admin clicks the drawer entry, replaces channel content,
+// auto-unmounts on demote.
+describe("Shell — M-7 admin pane lifecycle", () => {
+  it("does NOT render the admin pane for a non-admin user even after settings open", () => {
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    const { container } = render(() => <Shell />);
+    expect(container.querySelector(".admin-pane")).toBeNull();
+    // Drawer entry hidden for non-admin (gated in SettingsDrawer).
+    expect(container.querySelector(".admin-console-entry")).toBeNull();
+  });
+
+  it("admin user can open the admin pane via the drawer entry; channel pane unmounts", async () => {
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    const { container } = render(() => <Shell />);
+    // Pre-click — channel content visible, no admin pane.
+    expect(container.querySelector(".admin-pane")).toBeNull();
+    expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
+    // Open settings overlay → click admin console entry.
+    fireEvent.click(screen.getByLabelText(/open settings/i));
+    const entry = await screen.findByTestId("admin-console-entry");
+    fireEvent.click(entry);
+    await waitFor(() => {
+      expect(container.querySelector(".admin-pane")).toBeInTheDocument();
+    });
+    // Channel content must yield — admin pane replaces the main pane.
+    expect(container.querySelector(".scrollback-pane")).toBeNull();
+  });
+
+  it("clicking admin pane close button returns to channel content", async () => {
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
+    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    const { container } = render(() => <Shell />);
+    fireEvent.click(screen.getByLabelText(/open settings/i));
+    fireEvent.click(await screen.findByTestId("admin-console-entry"));
+    await waitFor(() => expect(container.querySelector(".admin-pane")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("admin-pane-close"));
+    await waitFor(() => expect(container.querySelector(".admin-pane")).toBeNull());
+    expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
   });
 });

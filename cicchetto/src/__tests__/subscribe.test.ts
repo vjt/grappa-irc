@@ -174,7 +174,13 @@ const seedStubs = async () => {
     { name: "#grappa", joined: true, source: "autojoin" },
     { name: "#cicchetto", joined: true, source: "autojoin" },
   ]);
-  vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "alice", inserted_at: "x" });
+  vi.mocked(api.me).mockResolvedValue({
+    kind: "user",
+    id: "u1",
+    name: "alice",
+    is_admin: false,
+    inserted_at: "x",
+  });
   vi.mocked(api.listMessages).mockResolvedValue([]);
   vi.mocked(api.sendMessage).mockResolvedValue({
     id: 999,
@@ -842,6 +848,7 @@ describe("subscribe — WS join effect", () => {
         kind: "user",
         id: "u2",
         name: "bob",
+        is_admin: false,
         inserted_at: "x",
       });
       // Bob's credential row carries its own per-network IRC nick. The
@@ -933,6 +940,7 @@ describe("subscribe — WS join effect", () => {
         kind: "user",
         id: "u2",
         name: "bob",
+        is_admin: false,
         inserted_at: "x",
       });
       // Bob's per-network IRC nick (cic H3 follow-on for the rotation
@@ -1165,6 +1173,7 @@ describe("subscribe — C4.1 DM auto-open on incoming PRIVMSG", () => {
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1302,6 +1311,7 @@ describe("subscribe — query-window WS subscribe (DM live-WS gap)", () => {
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1507,6 +1517,7 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1786,6 +1797,7 @@ describe("subscribe — query-window loop skips own-nick topic (Bug A root cause
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1899,6 +1911,7 @@ describe("subscribe — nick-clash regression (user.name === targetNick, IRC nic
       kind: "user",
       id: "u1",
       name: "vjt",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1997,6 +2010,7 @@ describe("subscribe — BUG4: self-JOIN auto-focus", () => {
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -2089,6 +2103,7 @@ describe("subscribe — BUG5a: self-PART window dismiss", () => {
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -2186,6 +2201,7 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -2735,7 +2751,13 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       listChannels: vi.fn().mockResolvedValue([]),
       listMessages: vi.fn().mockResolvedValue([]),
       sendMessage: vi.fn(),
-      me: vi.fn().mockResolvedValue({ kind: "user", id: "u1", name: "alice", inserted_at: "x" }),
+      me: vi.fn().mockResolvedValue({
+        kind: "user",
+        id: "u1",
+        name: "alice",
+        is_admin: false,
+        inserted_at: "x",
+      }),
       login: vi.fn(),
       logout: vi.fn(),
       setOn401Handler: vi.fn(),

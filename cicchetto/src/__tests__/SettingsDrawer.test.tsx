@@ -15,6 +15,20 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
 }));
 
+// M-cluster M-7 — admin gate. SettingsDrawer reads `user()` from
+// `lib/networks` to gate the "admin console" entry off
+// `me.kind === "user" && me.is_admin === true`. Mock returns a
+// mutable holder so individual tests can flip subject + admin flag.
+const meHolder = vi.hoisted(() => ({
+  current: null as
+    | { kind: "user"; id: string; name: string; is_admin: boolean; inserted_at: string }
+    | { kind: "visitor"; id: string; nick: string; network_slug: string; expires_at: string }
+    | null,
+}));
+vi.mock("../lib/networks", () => ({
+  user: () => meHolder.current,
+}));
+
 vi.mock("../lib/push", () => ({
   enablePush: vi.fn().mockResolvedValue({ status: "enabled", subscriptionId: "sub-1" }),
   disablePush: vi.fn().mockResolvedValue(true),
@@ -35,11 +49,14 @@ vi.mock("../lib/userSettings", async () => {
 
 import SettingsDrawer from "../SettingsDrawer";
 
-const wrap = (open: boolean, onClose = vi.fn()) =>
-  render(() => <SettingsDrawer open={open} onClose={onClose} />);
+const wrap = (open: boolean, onClose = vi.fn(), onOpenAdmin = vi.fn()) =>
+  render(() => <SettingsDrawer open={open} onClose={onClose} onOpenAdmin={onOpenAdmin} />);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no subject loaded yet — covers the pre-login / loading
+  // state where me() returns null. Admin entry MUST be hidden.
+  meHolder.current = null;
 });
 
 describe("SettingsDrawer", () => {
@@ -205,5 +222,85 @@ describe("SettingsDrawer (visitor subject)", () => {
     wrap(true);
     expect(screen.getByLabelText(/auto/i)).toBeInTheDocument();
     expect(screen.getByText(/log out/i)).toBeInTheDocument();
+  });
+});
+
+// M-cluster M-7 — admin console entry gate. Per
+// `feedback_e2e_user_class_parity_matrix`: the admin entry is
+// admin-gated EXEMPT (only one of the three subject classes sees it).
+// The vitest covers visibility polarity; the Playwright e2e covers
+// end-to-end login → drawer-open → entry-visibility per subject class.
+describe("SettingsDrawer (M-7 admin console entry)", () => {
+  it("hides admin entry when subject is non-admin user", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "x",
+    };
+    wrap(true);
+    expect(screen.queryByTestId("admin-console-entry")).toBeNull();
+    expect(screen.queryByText(/admin console/i)).toBeNull();
+  });
+
+  it("hides admin entry when subject is a visitor", () => {
+    meHolder.current = {
+      kind: "visitor",
+      id: "v1",
+      nick: "anon-vjt",
+      network_slug: "azzurra",
+      expires_at: "2026-05-17T00:00:00Z",
+    };
+    wrap(true);
+    expect(screen.queryByTestId("admin-console-entry")).toBeNull();
+  });
+
+  it("hides admin entry when subject is not yet loaded (me() === null)", () => {
+    meHolder.current = null;
+    wrap(true);
+    expect(screen.queryByTestId("admin-console-entry")).toBeNull();
+  });
+
+  it("shows admin entry when user is admin", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      is_admin: true,
+      inserted_at: "x",
+    };
+    wrap(true);
+    const entry = screen.getByTestId("admin-console-entry");
+    expect(entry).toBeInTheDocument();
+    // textContent guard per
+    // `feedback_css_block_button_wraps_inline_prefix` — pseudo-element
+    // sigils / inline prefixes can clip the visible label even when
+    // the button itself is present.
+    expect(entry.textContent).toContain("admin console");
+  });
+
+  it("clicking admin entry fires onClose THEN onOpenAdmin (drawer dismiss → pane mount handoff)", () => {
+    meHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      is_admin: true,
+      inserted_at: "x",
+    };
+    const onClose = vi.fn();
+    const onOpenAdmin = vi.fn();
+    wrap(true, onClose, onOpenAdmin);
+    fireEvent.click(screen.getByTestId("admin-console-entry"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onOpenAdmin).toHaveBeenCalledTimes(1);
+    // Order matters — drawer dismisses BEFORE pane mounts so the two
+    // overlays don't briefly co-exist. Assert call-order via mock
+    // invocation ordinals.
+    const closeOrder = onClose.mock.invocationCallOrder[0];
+    const openOrder = onOpenAdmin.mock.invocationCallOrder[0];
+    expect(closeOrder !== undefined && openOrder !== undefined && closeOrder < openOrder).toBe(
+      true,
+    );
   });
 });

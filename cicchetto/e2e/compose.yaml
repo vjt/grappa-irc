@@ -133,6 +133,15 @@ services:
           --auth none --autojoin '#bofh'
         mix grappa.seed_scrollback --user vjt --network bahamut-test \
           --channel '#bofh' --count 200 --sender seed-bot
+        # M-cluster M-7 — second seeded user with is_admin=true so the
+        # admin-gate Playwright spec can compare admin vs non-admin
+        # vs visitor visibility. No --admin flag on create_user (M-7
+        # is cic-only — server-task change is out of scope); promote
+        # via Accounts.update_admin_flags/2 from a mix run. The bind
+        # is the same network so the admin can log in and have the
+        # same surface as vjt.
+        mix grappa.create_user --name admin-vjt --password test-password-not-secret
+        mix run -e 'user = Grappa.Repo.get_by!(Grappa.Accounts.User, name: "admin-vjt"); {:ok, _} = Grappa.Accounts.update_admin_flags(user, %{is_admin: true})'
     networks:
       grappa-e2e: {}
 

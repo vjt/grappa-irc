@@ -128,6 +128,7 @@ const seedStubs = async () => {
     kind: "user",
     id: "u1",
     name: "alice",
+    is_admin: false,
     inserted_at: "x",
   });
   vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -272,6 +273,7 @@ describe("focus-rule — incoming traffic never changes selectedChannel", () => 
       kind: "user",
       id: "u1",
       name: "alice",
+      is_admin: false,
       inserted_at: "x",
     });
     vi.mocked(api.listMessages).mockResolvedValue([]);

@@ -1190,6 +1190,70 @@ body {
   cursor: pointer;
 }
 
+/* M-cluster M-7 — admin console entry button. Shares logout's visual
+   shape (border + monospace), distinct color (accent over mode-op) so
+   operators perceive it as a privileged action. `.logout`'s
+   `margin-top: auto` keeps logout at the bottom; admin sits just
+   above it via the flex flow with a small gap on top so the two
+   buttons don't visually merge into one. */
+.settings-drawer button.admin-console-entry {
+  margin-top: 0.5rem;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+/* M-cluster M-7 — admin pane. Replaces channel content in the main
+   pane (Shell.tsx) when adminOpen() === true. Full-height,
+   full-width within `.shell-main`. M-8/M-9/M-10/M-11 will add tabs
+   inside — for M-7 it's a header + close + a one-line stub. */
+.admin-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  padding: 1rem;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.admin-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.admin-pane-header h1 {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  margin: 0;
+  color: var(--accent);
+}
+
+.admin-pane-close {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  width: 2rem;
+  height: 2rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.admin-pane-placeholder {
+  font-family: var(--font-mono);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 /* SettingsDrawer notifications section (B3) */
 
 .settings-drawer .notifications-fieldset hr {

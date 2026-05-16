@@ -92,6 +92,17 @@ export type MeResponse =
       kind: "user";
       id: string;
       name: string;
+      // M-cluster M-7 — admin gate. Server emits this on every user
+      // /me via `MeJSON.show/1` → `Accounts.Wire.user_to_json/1`
+      // (lib/grappa_web/controllers/me_json.ex:41). Required: every
+      // User row carries the boolean (default false at schema). Cic
+      // gates the SettingsDrawer "admin console" entry off this bit;
+      // see Shell.tsx adminOpen lifecycle for the demote-mid-session
+      // refetch policy. Disjoint from `WhoisBundle.is_admin` (peer's
+      // IRC privileges from upstream WHOIS) — different domain, same
+      // field name, kept structurally separate via discriminated
+      // unions on different types.
+      is_admin: boolean;
       inserted_at: string;
       read_cursors?: ReadCursorsEnvelope;
     }

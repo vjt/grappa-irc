@@ -1,4 +1,5 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import AdminPane from "./AdminPane";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
@@ -49,6 +50,37 @@ const Shell: Component = () => {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  // M-cluster M-7 — admin pane lifecycle. True replaces the channel /
+  // mentions branch in the main pane with `<AdminPane>`. Auto-closes
+  // when `me.is_admin` flips to false (demote-mid-session) via the
+  // createEffect below. M-7 has no admin REST fetches; pure
+  // presentational gate.
+  const [adminOpen, setAdminOpen] = createSignal(false);
+
+  // Reactive admin predicate — single source of truth for both the
+  // drawer entry gate and the demote-auto-close effect. Narrows the
+  // `MeResponse` discriminated union so the user-only `is_admin` field
+  // is reachable.
+  const isAdmin = (): boolean => {
+    const u = user();
+    return u?.kind === "user" && u.is_admin === true;
+  };
+
+  // M-7 demote-mid-session: when `me.is_admin` flips to false (another
+  // admin demotes this operator, OR the bearer rotates to a non-admin
+  // user), close the admin pane on the next tick. The drawer entry
+  // hides automatically via the same `isAdmin()` predicate.
+  //
+  // Correctness depends on `user()` (createResource accessor in
+  // lib/networks.ts) keeping the prior value across refetches rather
+  // than transiently returning `undefined` — which would close the
+  // pane mid-admin-operation. createResource's `previous` semantics
+  // hold this invariant today. If anyone refactors to plain
+  // `createSignal<MeResponse | null>` with explicit `setUser(null)`
+  // on bearer rotation, add a loading-gate before this effect.
+  createEffect(() => {
+    if (!isAdmin()) setAdminOpen(false);
+  });
 
   // Per-network own IRC nick — derived via `ownNickForNetwork(net, me)`
   // so the mention-highlight in MentionsWindow sees the IRC nick the
@@ -285,80 +317,87 @@ const Shell: Component = () => {
 
           <section class="shell-main">
             <Show
-              when={selectedChannel()}
+              when={adminOpen()}
               fallback={
-                <>
-                  <header class="shell-empty-toolbar">
-                    <button
-                      type="button"
-                      class="topic-bar-hamburger"
-                      aria-label="open channel sidebar"
-                      onClick={() => setSidebarOpen((v) => !v)}
-                    >
-                      ☰
-                    </button>
-                    <span class="shell-empty-toolbar-spacer" />
-                    <button
-                      type="button"
-                      class="topic-bar-settings"
-                      aria-label="open settings"
-                      onClick={() => setSettingsOpen(true)}
-                    >
-                      ⚙
-                    </button>
-                  </header>
-                  <p class="muted">select a channel to view scrollback</p>
-                </>
+                <Show
+                  when={selectedChannel()}
+                  fallback={
+                    <>
+                      <header class="shell-empty-toolbar">
+                        <button
+                          type="button"
+                          class="topic-bar-hamburger"
+                          aria-label="open channel sidebar"
+                          onClick={() => setSidebarOpen((v) => !v)}
+                        >
+                          ☰
+                        </button>
+                        <span class="shell-empty-toolbar-spacer" />
+                        <button
+                          type="button"
+                          class="topic-bar-settings"
+                          aria-label="open settings"
+                          onClick={() => setSettingsOpen(true)}
+                        >
+                          ⚙
+                        </button>
+                      </header>
+                      <p class="muted">select a channel to view scrollback</p>
+                    </>
+                  }
+                >
+                  {(sel) => (
+                    <>
+                      <Show when={sel().kind === "channel"}>
+                        <TopicBar
+                          networkSlug={sel().networkSlug}
+                          channelName={sel().channelName}
+                          onToggleSidebar={() => setSidebarOpen((v) => !v)}
+                          onToggleMembers={() => setMembersOpen((v) => !v)}
+                          onOpenSettings={() => setSettingsOpen(true)}
+                        />
+                      </Show>
+                      <Show
+                        when={sel().kind === "mentions"}
+                        fallback={
+                          <>
+                            <ScrollbackPane
+                              networkSlug={sel().networkSlug}
+                              channelName={sel().channelName}
+                              kind={sel().kind}
+                            />
+                            {/* CP13 S9: ComposeBox renders on $server too —
+                                slash-only is enforced inside compose.ts so plain
+                                text gets rejected with a friendly error. */}
+                            <ComposeBox
+                              networkSlug={sel().networkSlug}
+                              channelName={sel().channelName}
+                            />
+                          </>
+                        }
+                      >
+                        {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
+                            onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
+                        <MentionsWindow
+                          bundle={
+                            mentionsBundleBySlug()[sel().networkSlug] ?? {
+                              network_slug: sel().networkSlug,
+                              away_started_at: "",
+                              away_ended_at: "",
+                              away_reason: null,
+                              messages: [],
+                            }
+                          }
+                          ownNick={ownNickForSlug(sel().networkSlug)}
+                          onMentionClicked={handleMentionClicked}
+                        />
+                      </Show>
+                    </>
+                  )}
+                </Show>
               }
             >
-              {(sel) => (
-                <>
-                  <Show when={sel().kind === "channel"}>
-                    <TopicBar
-                      networkSlug={sel().networkSlug}
-                      channelName={sel().channelName}
-                      onToggleSidebar={() => setSidebarOpen((v) => !v)}
-                      onToggleMembers={() => setMembersOpen((v) => !v)}
-                      onOpenSettings={() => setSettingsOpen(true)}
-                    />
-                  </Show>
-                  <Show
-                    when={sel().kind === "mentions"}
-                    fallback={
-                      <>
-                        <ScrollbackPane
-                          networkSlug={sel().networkSlug}
-                          channelName={sel().channelName}
-                          kind={sel().kind}
-                        />
-                        {/* CP13 S9: ComposeBox renders on $server too —
-                            slash-only is enforced inside compose.ts so plain
-                            text gets rejected with a friendly error. */}
-                        <ComposeBox
-                          networkSlug={sel().networkSlug}
-                          channelName={sel().channelName}
-                        />
-                      </>
-                    }
-                  >
-                    {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
-                        onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
-                    <MentionsWindow
-                      bundle={
-                        mentionsBundleBySlug()[sel().networkSlug] ?? {
-                          network_slug: sel().networkSlug,
-                          away_started_at: "",
-                          away_ended_at: "",
-                          away_reason: null,
-                          messages: [],
-                        }
-                      }
-                      ownNick={ownNickForSlug(sel().networkSlug)}
-                      onMentionClicked={handleMentionClicked}
-                    />
-                  </Show>
-                </>
-              )}
+              <AdminPane onClose={() => setAdminOpen(false)} />
             </Show>
           </section>
 
@@ -370,7 +409,11 @@ const Shell: Component = () => {
             </Show>
           </aside>
 
-          <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+          <SettingsDrawer
+            open={settingsOpen()}
+            onClose={() => setSettingsOpen(false)}
+            onOpenAdmin={() => setAdminOpen(true)}
+          />
         </div>
       }
     >
@@ -400,71 +443,81 @@ const Shell: Component = () => {
 
         <section class="shell-main">
           <Show
-            when={selectedChannel()}
+            when={adminOpen()}
             fallback={
-              <>
-                <header class="shell-empty-toolbar">
-                  <span class="shell-empty-toolbar-spacer" />
-                  <button
-                    type="button"
-                    class="topic-bar-settings"
-                    aria-label="open settings"
-                    onClick={() => setSettingsOpen(true)}
-                  >
-                    ⚙
-                  </button>
-                </header>
-                <p class="muted">select a channel below</p>
-              </>
-            }
-          >
-            {(sel) => (
-              <>
-                <Show when={sel().kind === "channel"}>
-                  {/* C6.3: on mobile, TopicBar is given onToggleSidebar as no-op
-                      (channel sidebar doesn't exist on mobile) and onToggleMembers
-                      as the single hamburger. TopicBar hides the sidebar hamburger
-                      on mobile via isMobile() gating inside TopicBar itself. */}
-                  <TopicBar
-                    networkSlug={sel().networkSlug}
-                    channelName={sel().channelName}
-                    onToggleSidebar={() => undefined}
-                    onToggleMembers={() => setMembersOpen((v) => !v)}
-                    onOpenSettings={() => setSettingsOpen(true)}
-                  />
-                </Show>
-                <Show
-                  when={sel().kind === "mentions"}
-                  fallback={
-                    <>
-                      <ScrollbackPane
+              <Show
+                when={selectedChannel()}
+                fallback={
+                  <>
+                    <header class="shell-empty-toolbar">
+                      <span class="shell-empty-toolbar-spacer" />
+                      <button
+                        type="button"
+                        class="topic-bar-settings"
+                        aria-label="open settings"
+                        onClick={() => setSettingsOpen(true)}
+                      >
+                        ⚙
+                      </button>
+                    </header>
+                    <p class="muted">select a channel below</p>
+                  </>
+                }
+              >
+                {(sel) => (
+                  <>
+                    <Show when={sel().kind === "channel"}>
+                      {/* C6.3: on mobile, TopicBar is given onToggleSidebar as no-op
+                          (channel sidebar doesn't exist on mobile) and onToggleMembers
+                          as the single hamburger. TopicBar hides the sidebar hamburger
+                          on mobile via isMobile() gating inside TopicBar itself. */}
+                      <TopicBar
                         networkSlug={sel().networkSlug}
                         channelName={sel().channelName}
-                        kind={sel().kind}
+                        onToggleSidebar={() => undefined}
+                        onToggleMembers={() => setMembersOpen((v) => !v)}
+                        onOpenSettings={() => setSettingsOpen(true)}
                       />
-                      {/* CP13 S9: ComposeBox renders on $server too —
-                          slash-only is enforced inside compose.ts so plain
-                          text gets rejected with a friendly error. */}
-                      <ComposeBox networkSlug={sel().networkSlug} channelName={sel().channelName} />
-                    </>
-                  }
-                >
-                  <MentionsWindow
-                    bundle={
-                      mentionsBundleBySlug()[sel().networkSlug] ?? {
-                        network_slug: sel().networkSlug,
-                        away_started_at: "",
-                        away_ended_at: "",
-                        away_reason: null,
-                        messages: [],
+                    </Show>
+                    <Show
+                      when={sel().kind === "mentions"}
+                      fallback={
+                        <>
+                          <ScrollbackPane
+                            networkSlug={sel().networkSlug}
+                            channelName={sel().channelName}
+                            kind={sel().kind}
+                          />
+                          {/* CP13 S9: ComposeBox renders on $server too —
+                              slash-only is enforced inside compose.ts so plain
+                              text gets rejected with a friendly error. */}
+                          <ComposeBox
+                            networkSlug={sel().networkSlug}
+                            channelName={sel().channelName}
+                          />
+                        </>
                       }
-                    }
-                    ownNick={ownNickForSlug(sel().networkSlug)}
-                    onMentionClicked={handleMentionClicked}
-                  />
-                </Show>
-              </>
-            )}
+                    >
+                      <MentionsWindow
+                        bundle={
+                          mentionsBundleBySlug()[sel().networkSlug] ?? {
+                            network_slug: sel().networkSlug,
+                            away_started_at: "",
+                            away_ended_at: "",
+                            away_reason: null,
+                            messages: [],
+                          }
+                        }
+                        ownNick={ownNickForSlug(sel().networkSlug)}
+                        onMentionClicked={handleMentionClicked}
+                      />
+                    </Show>
+                  </>
+                )}
+              </Show>
+            }
+          >
+            <AdminPane onClose={() => setAdminOpen(false)} />
           </Show>
         </section>
 
@@ -478,7 +531,11 @@ const Shell: Component = () => {
           </Show>
         </aside>
 
-        <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
+        <SettingsDrawer
+          open={settingsOpen()}
+          onClose={() => setSettingsOpen(false)}
+          onOpenAdmin={() => setAdminOpen(true)}
+        />
       </div>
     </Show>
   );

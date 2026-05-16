@@ -70,7 +70,13 @@ const seedStubs = async () => {
     { name: "#grappa", joined: true, source: "autojoin" },
     { name: "#cicchetto", joined: true, source: "autojoin" },
   ]);
-  vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "alice", inserted_at: "x" });
+  vi.mocked(api.me).mockResolvedValue({
+    kind: "user",
+    id: "u1",
+    name: "alice",
+    is_admin: false,
+    inserted_at: "x",
+  });
   vi.mocked(api.listMessages).mockResolvedValue([]);
 };
 
@@ -126,7 +132,13 @@ describe("networks resources", () => {
       },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([]);
-    vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      is_admin: false,
+      inserted_at: "x",
+    });
     vi.mocked(api.listMessages).mockResolvedValue([]);
     const networks = await import("../lib/networks");
     // Wait for the resource to resolve.
@@ -162,7 +174,13 @@ describe("networks resources", () => {
       },
     ]);
     vi.mocked(api.listChannels).mockResolvedValue([]);
-    vi.mocked(api.me).mockResolvedValue({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" });
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      is_admin: false,
+      inserted_at: "x",
+    });
     vi.mocked(api.listMessages).mockResolvedValue([]);
     const networks = await import("../lib/networks");
     await vi.waitFor(() => expect(networks.networks()?.length).toBe(1));
@@ -208,6 +226,7 @@ describe("networks resources", () => {
         kind: "user",
         id: "u1",
         name: "vjt",
+        is_admin: false,
         inserted_at: "x",
       });
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -237,6 +256,7 @@ describe("networks resources", () => {
         kind: "user",
         id: "u1",
         name: "vjt",
+        is_admin: false,
         inserted_at: "x",
       });
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -272,6 +292,7 @@ describe("networks resources", () => {
         kind: "user",
         id: "u1",
         name: "vjt",
+        is_admin: false,
         inserted_at: "x",
       });
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -304,6 +325,7 @@ describe("networks resources", () => {
         kind: "user",
         id: "u1",
         name: "vjt",
+        is_admin: false,
         inserted_at: "x",
       });
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -335,6 +357,7 @@ describe("networks resources", () => {
         kind: "user",
         id: "u1",
         name: "vjt",
+        is_admin: false,
         inserted_at: "x",
       });
       vi.mocked(api.listMessages).mockResolvedValue([]);

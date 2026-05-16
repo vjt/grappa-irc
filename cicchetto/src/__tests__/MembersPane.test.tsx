@@ -32,7 +32,13 @@ vi.mock("../lib/networks", () => {
   const networks = vi.fn(() => [
     { id: 1, slug: "freenode", nick: "vjt", inserted_at: "x", updated_at: "y" },
   ]);
-  const user = vi.fn(() => ({ kind: "user", id: "u1", name: "vjt", inserted_at: "x" }));
+  const user = vi.fn(() => ({
+    kind: "user",
+    id: "u1",
+    name: "vjt",
+    is_admin: false,
+    inserted_at: "x",
+  }));
   const networkBySlug = (slug: string) => networks()?.find((n) => n.slug === slug);
   return { networks, user, networkBySlug };
 });

@@ -5424,6 +5424,82 @@ admin task" (vjt).
 
 ---
 
+## 2026-05-16 — M-7 cic admin drawer entry + admin pane skeleton
+
+- First cic-side bucket of the M cluster. Server-side `/me` has
+  emitted `is_admin: boolean` for every user-shape envelope since
+  M-1; M-7 widens cic's `MeResponse` type to REQUIRE the field
+  (not optional) so the codebase enforces the contract uniformly.
+  Per `feedback_no_silent_drops_closed` discipline: a typed boolean
+  is the only acceptable shape; a missing/undefined arm would be a
+  silent gate failure at runtime.
+- Drawer entry placement: inside `SettingsDrawer.tsx` above the
+  existing logout button, gated by a single `isAdmin()` predicate
+  (`me.kind === "user" && me.is_admin === true`). The same
+  predicate gates the `<AdminPane>` mount in `Shell.tsx` and feeds
+  the demote-auto-close `createEffect`. Single shape, two call
+  sites — easy to grep, no parallel state machine.
+- Admin pane mount mechanism: a `createSignal<boolean>(false)` on
+  Shell (`adminOpen`) replaces the channel-fallback branch with
+  `<AdminPane>` when true. Symmetric with the existing
+  `sidebarOpen` / `membersOpen` / `settingsOpen` signals — no
+  hash-routing, no `useLocation()` fanout, no parallel mount
+  surface. Both desktop AND mobile Shell branches mount the same
+  AdminPane shape.
+- Demote-mid-session: `createEffect` reads `isAdmin()` reactively
+  and calls `setAdminOpen(false)` the instant the user resource
+  resolves to a non-admin state. Correctness depends on
+  `lib/networks.ts`'s `createResource` accessor keeping the prior
+  value during refetches (so a mid-fetch `user()` returning
+  `undefined` doesn't transiently close the pane mid-interaction).
+  Comment at Shell.tsx flags the invariant for future refactors.
+- Three-class parity matrix per
+  `feedback_e2e_user_class_parity_matrix`: admin-gated EXEMPT.
+  The Playwright spec covers admin + non-admin user classes; the
+  visitor class is covered by the vitest at SettingsDrawer.test
+  (visitor subject in localStorage → entry hidden). Visitor mint
+  via the captcha gate inside the e2e harness is out of scope for
+  M-7 (the cost would be a separate captcha-disabled mint helper;
+  per CLAUDE.md "Don't overengineer" the vitest pin is sufficient
+  alongside the production e2e for the two seeded classes).
+- M-7 ships NO actual admin tabs — strictly the outer pane +
+  "tabs land in M-8/M-9/M-10/M-11" placeholder copy. M-8 (Visitors
+  view), M-9 (Sessions view), M-10 (Networks + Credentials view),
+  M-11 (Events topic) own their own tab markup; pre-emptive tab
+  scaffolding would commit M-7 to a tab-bar shape before knowing
+  which axis serves the operator best.
+- Test-fixture sweep: extending `MeResponse.is_admin` to required
+  forced every `vi.mocked(api.me).mockResolvedValue({ kind: "user",
+  ... })` site to add `is_admin: false`. 15+ fixture sites swept
+  uniformly via perl + biome `check:fix`. Per CLAUDE.md "Total
+  consistency or nothing" — the required-not-optional choice is
+  load-bearing, otherwise half the tests would assume admin-gated
+  branches don't exist and the other half would explicitly opt
+  out, creating two patterns.
+- E2e seeder: second user `admin-vjt` (no network bind — the
+  admin gate is orthogonal to IRC presence) created via the
+  existing `mix grappa.create_user` task + inline `mix run -e
+  'Grappa.Accounts.update_admin_flags(user, %{is_admin: true})'`
+  for the admin flag flip. No `--admin` flag added to the mix task
+  — M-7 is cic-only; server-side mix-task surface change waits for
+  a bucket that touches Operator + bin/grappa.
+- Deploy class: cic bundle deploy via `scripts/deploy-cic.sh` (NOT
+  `scripts/deploy.sh`). Per `feedback_hot_reload_bypasses_cic_bundle`:
+  the cic bundle is a separate artifact; the BundleRefreshBanner
+  auto-prompts connected clients on hash mismatch so vjt sees the
+  refresh CTA on the prod tab the moment the new bundle lands.
+- Known gap for M-11: the demote-auto-close effect is unit-tested
+  only via the steady-state branches (non-admin sees no pane,
+  admin opens via drawer, close button returns). The mid-session
+  is_admin flip from true → false is not exercised in vitest
+  because the test mock's `user()` is a plain accessor, not a
+  Solid resource — the createEffect won't re-fire without
+  signal-driven reactivity. Real demote behavior lands in the
+  Playwright surface when M-11 wires up the `grappa:admin:events`
+  topic and the admin operator can demote themselves end-to-end.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
