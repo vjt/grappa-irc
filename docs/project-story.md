@@ -2235,3 +2235,90 @@ The verbs are how you find what's broken; the console is how you
 fix it; the cap honesty is how you stop confusing the operator
 about why their session won't spawn. Three clusters, one
 operator-experience thread.
+
+## S49 — 2026-05-16 — The admin console: twelve buckets, one bypass-class bug caught at the gate
+
+T cluster had given us the verbs — `bin/grappa list-sessions`,
+`bin/grappa delete-visitor`, `bin/grappa reap-visitors`. They
+work. They are also, plainly, a CLI: you ssh in, you remember the
+verb name, you remember the argument shape, you read the
+tab-separated output, you eyeball the row you want, you run the
+mutation, you eyeball the result. For the operator who lives in
+the terminal that is a complete loop. For the operator who has
+a browser open already and just wants to see what the bouncer is
+doing, it is a context switch they will pay every time.
+
+The M cluster set out to close that gap: a browser-side admin
+pane in cicchetto, paired with the same verbs as the CLI, gated
+on a fresh `users.is_admin` bit. Twelve buckets. M-1 added the
+column + helpers. M-2 wired the `:admin_authn` pipeline + the
+first read endpoint. M-3 shipped the first mutation (visitor
+delete) as a deliberate forcing function — every shape decision
+the controller cluster needed to ratify (subject-shape branching,
+422 vs 404 vs 403, idempotency posture) had to be resolved
+before any read endpoint locked the shape in. M-4..M-6 filled
+out the read + mutate REST surface. M-7..M-11 built the four-tab
+cic pane (Visitors / Sessions / Networks / Events) one tab at a
+time. M-12 is this docs sweep.
+
+The architectural inflection that surprised us was the Events
+tab. The first three tabs were poll-on-refresh — fetch the
+resource, render, click refresh. The Events tab couldn't be: an
+operator watching a session crash-loop needs the timestamps in
+real time, not a tab they remember to F5. That meant a dedicated
+Phoenix Channel, which meant authz semantics had to be settled
+at the channel boundary, not per-controller. The first M-11 draft
+gated authz in `handle_in/3` — non-admin sockets could still
+`join/3` the `grappa:admin:events` topic; they just wouldn't be
+able to send (and the channel never received user-originated
+sends anyway). The reviewer flagged it as CRIT-1: the join-vs-
+handle distinction is the difference between "could observe
+events" and "couldn't bypass anything." We moved the gate to
+`join/3`, where it should have been from the start. The fix was
+twelve lines; the lesson is that WS authz lives at the boundary,
+not per-message.
+
+Three other shape decisions paid for themselves. **Composite-id
+URLs for `/admin/sessions/:id`** — sessions are
+per-`(subject, network)`, no natural single PK; making
+`id = "kind:uuid:network_slug"` kept the routing table identical
+to the registry shape rather than building a parallel mirror.
+**Two-tier identity flows through the same endpoints** — visitor
+disconnect collapses to terminate (visitors have no parked
+state) inside the controller, not at the URL level. The browser
+calls the same endpoint regardless. **DB state and live state
+are surfaced as separate columns** with `null` when the live pid
+is gone — `AdminSessionsTab` shows you both, and divergence
+between them is information, not a bug to paper over. That last
+one is now a CLAUDE.md rule under Code-shape: the U-0 honesty
+signal.
+
+The InlineConfirmButton story is the reused-verbs-not-nouns rule
+in miniature. M-8's visitor delete needed inline confirmation —
+modal felt heavy for a per-row action. We wrote it once. M-9b's
+session disconnect needed the same shape; we lifted to a shared
+component. M-10's Reset Circuit + Force Reap were the third and
+fourth callsites without modification: the boundary held. The
+component does not know what action it is confirming; it only
+knows the confirmation flow. That is the shape that survives.
+
+The cost was real. Eleven buckets shipped across about four days
+of focused work, plus a docs sweep. CI integration tests have a
+pre-existing m10-cap-editor failure ("Cannot type text into
+input\[type=number\]" + a 30s timeout cascade) that pre-dates
+M-9a; treating it as M-cluster-broken would have stalled three
+otherwise-clean buckets. We carried it as a known followup and
+shipped past it.
+
+The discipline win, in retrospect, was per-bucket reviewer
+loops. The Plan agent drafted each bucket; code-search verified
+anchors; `/code-review:loop` ran on the diff before commit. The
+overhead was not zero. But CRIT-1 on M-11 would have been an
+admin-bypass-class vulnerability in production — the kind of bug
+you find weeks later from a Sentry alert that just barely makes
+sense, after non-admin sockets have been quietly subscribed to
+admin events the whole time. Twelve lines of fix at review beats
+twelve hours of post-incident forensics. The verbs let us triage
+live state; the console lets us manipulate it; the reviewer
+loop is what keeps the console from being the next vulnerability
+class.

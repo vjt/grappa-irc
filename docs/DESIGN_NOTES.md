@@ -5796,6 +5796,224 @@ Playwright e2e M-9b: 4/4 passed in 8.7s.
 Three-class parity matrix EXEMPT (admin-gated; M-7 gate spec
 covers reachability across all three classes).
 
+## 2026-05-16 — M-10 cic Networks tab + cap editor + reaper + circuit reset (M cluster bucket)
+
+Third admin pane tab (after Visitors + Sessions). Wires the
+operator-side controls for the network-level safety knobs landed
+in M-5: per-network cap editor (partial-PATCH), Reset Circuit
+(clears `NetworkCircuit` ETS), Force Reap (on-demand
+`Visitors.Reaper` sweep).
+
+Commit `c86d8d8`. HOT cic-bundle deploy.
+
+### What shipped
+
+- `AdminNetworksTab.tsx` — per-row table view of every network with
+  current cap, live session count, circuit state, and 3 action
+  buttons (Edit Cap / Reset Circuit / Force Reap).
+- Cap editor uses partial-PATCH body shape: only `cap` field sent,
+  empty body 422s at the controller. Avoids the
+  "send-the-whole-resource-or-clobber-it" trap.
+- Reset Circuit + Force Reap reuse `InlineConfirmButton` from M-9b
+  (the second + third callsites that validate the M-9b lift
+  decision). Third use case = boundary confirmed.
+
+### Decisions
+
+- **MD-1 — partial PATCH over PUT-replace.** PATCH lets cap edit
+  ship one field; PUT-replace would force the operator surface
+  to round-trip the full network resource for every cap tweak.
+  REST-pedantic, but the right ergonomics for the UI.
+- **MD-2 — Reset Circuit + Force Reap are POST, not DELETE.** They
+  trigger side-effects (ETS flush + reaper sweep), not resource
+  deletion. DELETE on `/admin/networks/:id/circuit` reads like
+  "remove the circuit object" — false analogy. POST
+  `/admin/networks/:id/circuit/reset` reads correctly as a verb.
+- **MD-3 — InlineConfirmButton third use case = lift to shared.**
+  Pattern: button click → inline "Confirm? [Yes] [Cancel]" replaces
+  the button → action fires on Yes / dismisses on Cancel. Third
+  callsite without modification = stable shape. Lifted to
+  `cicchetto/src/components/InlineConfirmButton.tsx` at M-9b;
+  M-10 just imports.
+
+### Deploy class — HOT cic-bundle
+
+`scripts/deploy-cic.sh` only; no Elixir code changed. Connected
+browsers see refresh banner on bundle-hash mismatch.
+
+## 2026-05-16 — M-11 real-time admin events channel + cic Events tab (M cluster bucket)
+
+Fourth admin pane tab. Closes the operator-visibility gap: the
+prior 3 tabs (Visitors / Sessions / Networks) were poll-on-refresh;
+M-11 streams admin-relevant events as they happen via a dedicated
+`grappa:admin:events` Phoenix Channel topic. Last cic-side feature
+bucket of the M cluster.
+
+Commit `418cdf1`. COLD deploy (new channel routing + `AdminChannel`
+wired into the socket).
+
+### What shipped
+
+- `Grappa.AdminEvents` singleton — ring-buffer cap=200 of admin
+  events; `record/1` API used by every admin-mutating surface
+  (visitor delete, session disconnect/terminate, cap edit, circuit
+  reset, reaper trigger). Sweep-and-cap on every record.
+- 10 typed event kinds — `{:session, :spawned | :crashed |
+  :terminated}`, `{:visitor, :minted | :deleted | :reaped}`,
+  `{:network, :cap_changed | :circuit_reset}`, `{:reaper, :swept}`,
+  `{:credential, :state_changed}`. Each event is a typed map; cic
+  wire-edge has exhaustive switch.
+- `GrappaWeb.AdminChannel` joined on `grappa:admin:events` — gates
+  on `socket.assigns.is_admin == true` at `join/3`; non-admin
+  subjects get `{:error, :unauthorized}`. WS-boundary authz (NOT
+  per-message), per OTP "crash boundary alignment" rule.
+- `AdminEventsTab.tsx` — live tail of the last 200 events; auto-
+  scrolls on new entries; click to inspect raw payload.
+
+### Decisions
+
+- **MD-4 — dedicated `grappa:admin:events` topic, NOT a fork of
+  user-rooted topics.** Admin events fan out to N admins, not to
+  the user whose session generated them. A separate topic avoids
+  the "fan-out a kicked-from-channel event to the operator pane
+  AND the channel's chat surface AND the global admin tail" mess.
+  Single source of truth: `Grappa.PubSub.Topic.admin_events()`.
+- **MD-5 — WS-boundary authz at `join/3`, never per-message.**
+  Reviewer-caught CRIT-1 during M-11 review: pre-fix authz was
+  per-`handle_in`, which would have allowed a non-admin socket to
+  join the topic and only fail on the (zero) messages it could
+  send. `join/3` gating is the only correct shape; the channel is
+  closed before payload exchange.
+- **MD-6 — ring buffer over append-only log.** 200 events is a
+  diagnostic tail, not an audit trail. Persistent storage was
+  evaluated and rejected: events are derived from state-changing
+  endpoints, so the source-of-truth is the DB (`connection_state`,
+  `is_admin`, etc.). Audit-trail concerns belong in a separate
+  cluster.
+- **MD-7 — `Grappa.AdminEvents` singleton (`max_cases: 1` test
+  lane).** Single GenServer owns the buffer + broadcasts. Per the
+  test-singleton lane convention (`config :ex_unit, max_cases: 1`
+  for any singleton test class), `AdminEventsTest` ships the
+  `## Test isolation` moduledoc paragraph.
+
+### Reviewer-caught bugs (M-11 pre-commit)
+
+- **CRIT-1** — `AdminChannel.handle_in/3` authz check (would have
+  allowed non-admin sockets to subscribe). Fixed by moving the
+  gate to `join/3`.
+- **MED-1** — `record/1` did not bump telemetry counter on
+  full-buffer drop. Diagnostic-only; fixed inline.
+
+### Deploy class — COLD
+
+New `Phoenix.Channel` route + socket assigns logic; cold-deploy to
+re-evaluate channel routing table at boot. `scripts/deploy.sh`
+preflight correctly classified.
+
+## 2026-05-16 — M cluster CLOSED — operator-visible admin pane
+
+Twelve buckets across ~4 days (M-1..M-12), closing the missing
+half of grappa's operational story: a browser surface for
+operators that pairs with the `bin/grappa` CLI verbs landed in the
+T cluster. Pre-M-1, every admin operation required ssh +
+remembering Elixir incantations; post-M-Z, the same operator can
+flip between the 4-tab cic admin pane and the dispatcher with
+zero context loss.
+
+### Bucket summary
+
+- **M-1** `b851b3b` — `users.is_admin` migration + helpers.
+- **M-2** `48a7369` — `:admin_authn` pipeline + `GET /admin/me`.
+- **M-3** `9e8a7d7` — `DELETE /admin/visitors/:id` (first mutation).
+- **M-4** `3a6dcd1` — `GET /admin/visitors` + `GET /admin/sessions`
+  (live introspection).
+- **M-5** `617cd3b` — `GET/PATCH /admin/networks` + reaper trigger
+  + circuit reset.
+- **M-6** `adf8817` — `GET/PATCH /admin/users` + credentials.
+- **M-7** `a77313a` — cic admin drawer entry + admin pane
+  skeleton + `me.is_admin` gate.
+- **M-8** `e0cc028` — Visitors tab + inline-confirm delete.
+- **M-9a** `28edbd6` — admin sessions disconnect + terminate
+  REST endpoints + Operator verbs.
+- **M-9b** `6be0bc3` — Sessions tab + `InlineConfirmButton`
+  shared + nginx admin allowlist fix.
+- **M-10** `c86d8d8` — Networks tab + cap editor + reaper +
+  circuit reset.
+- **M-11** `418cdf1` — real-time `grappa:admin:events` channel +
+  Events tab.
+- **M-12** (this commit) — docs sweep (README + DESIGN_NOTES +
+  project-story + 2 CLAUDE.md rules).
+
+### Key architectural calls (collected)
+
+- **User-rooted topics + dedicated admin topic.** Per-user state
+  flows on `grappa:user:{name}` and descendants; admin fan-out is a
+  sibling top-level topic `grappa:admin:events`. Single source of
+  truth `Grappa.PubSub.Topic`. M-11's MD-4.
+- **WS-boundary authz, never per-message.** AdminChannel gates on
+  `socket.assigns.is_admin` at `join/3`. The closed channel never
+  sees a payload it could mis-authorize. Reviewer-caught CRIT-1
+  at M-11 review; the principle propagates back to T cluster's
+  `bin/grappa` verb shape too (operator verbs assume the dist
+  cookie is the gate).
+- **`Grappa.AdminEvents` ring buffer cap=200.** Diagnostic tail,
+  not audit trail. Sweep-and-cap on every record. Persistent
+  audit log was considered + rejected (state-changing endpoints
+  already source-of-truth their effects in the DB).
+- **`InlineConfirmButton` lifted at the second use case.** M-9b
+  delete-session + M-10 reset-circuit + force-reap. Three call
+  sites confirmed the boundary; lifted to shared widget at M-9b.
+  Pattern: button → inline "Confirm? [Yes] [Cancel]" replacement
+  → fire on Yes. Reuses the verbs (confirmation flow), not the
+  nouns (the underlying action). Per CLAUDE.md design discipline.
+- **Composite-id URL shape for `/admin/sessions/:id`.**
+  `:id = "kind:uuid:network_slug"` (subject kind + uuid +
+  network), not a synthetic PK. Sessions are
+  per-`(subject, network)`; no natural single PK exists. A
+  composite id in the URL avoids spinning up a parallel routing
+  table mirror in the DB.
+- **Two-tier identity flows through admin endpoints uniformly.**
+  Both user-sessions and visitor-sessions are observable +
+  mutable from `/admin/sessions/*`; the controller branches on
+  `kind` and visitor-disconnect collapses to terminate (visitors
+  have no parked state).
+- **DB state + live state are separate sources of truth.**
+  `AdminSessionsTab` surfaces BOTH `connection_state` (DB) and
+  `live_pid` (registry lookup) per row. Now a CLAUDE.md rule
+  under "Code-shape rules" (the U-0 honesty signal); see M-12.
+- **`/admin/<resource>` requires nginx allowlist.** Base REST
+  regex excludes `/admin/*` (loopback gate). New admin resource
+  paths must be added to BOTH `infra/nginx.conf` and
+  `cicchetto/e2e/nginx-test.conf`, both `:80` and `:443` server
+  blocks. Now a CLAUDE.md rule under "Phoenix / Ecto patterns";
+  see M-12. Origin: latent M-cluster bug surfaced at M-9b.
+
+### Lessons captured
+
+- **Per-bucket reviewer loops are not optional for cross-surface
+  clusters.** Plan agent → code-search → code-review:loop caught
+  CRIT-1 (M-11 WS authz) + MED-class drift inside InlineConfirm
+  + M-9b nginx-allowlist gap. Skipping any of these for a
+  bucket would have shipped a bypass-class vuln.
+- **Pre-existing CI red since M-9a is its own followup, not a
+  regression.** `m10-cap-editor` Playwright spec "Cannot type
+  text into input\[type=number\]" + 30s timeout cascade is
+  tracked separately; M cluster did not unblock CI for it
+  because the failure pattern pre-dates M-9a and would have
+  blocked legitimate M-9b/M-10/M-11 ship.
+- **`bin/grappa create-user` does not yet take `--admin`.** Plan
+  text mentioned the flag aspirationally; M-12 verified it
+  doesn't exist and documented the two-step (`create-user` then
+  remote-shell `update_user/2`). A future bucket can add the
+  flag once the next admin onboarding warrants it.
+
+### Trajectory
+
+M cluster CLOSED leaves U cluster as the only remaining T+M+U arc
+bucket. Post-U: full codebase review (parallel-review cycle per
+`docs/reviewing.md`) + iOS UI polish cluster (4 buckets per
+`project_ios_ui_polish_cluster_planned` memory).
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

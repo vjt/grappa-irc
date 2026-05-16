@@ -414,6 +414,20 @@ not the surrounding code.**
   observed, not what they did. If your fast path is "skip because input
   was empty," check WHY it was empty before logging the skip — the
   empty input is often a different bug surfacing at the wrong layer.
+- **DB state and live state are separate sources of truth.** Every
+  admin resource listing MUST combine both, and `live_state: null` is
+  the U-0 honesty signal that something diverged — don't paper over
+  with computed-from-DB fields.
+  `Grappa.Networks.Credential.connection_state` is the DB-canonical
+  state; `Grappa.Session.whereis/2` is the live-pid truth. They can
+  disagree: a `:connected` credential whose `Session.Server` crashed
+  mid-restart; a `:parked` credential whose pid is in respawn backoff;
+  a row marked `:disconnected` whose process is in `terminate/2`.
+  `AdminSessionsTab` surfaces BOTH columns and shows an explicit
+  `null` when the live pid is gone — diagnostic value beats false
+  uniformity. When adding a new admin listing, return both
+  projections; never compute one from the other to "tidy up" the
+  response shape (origin: M-9b 2026-05-16; the U-0 cluster-wide rule).
 
 ### OTP patterns (Elixir-specific)
 
@@ -488,6 +502,20 @@ not the surrounding code.**
   (channels, messages, networks). State changes broadcast over
   Channels via `Phoenix.PubSub.broadcast/3`. Don't poll REST for
   updates from a connected client.
+- **Admin endpoints go through the `:admin_authn` pipeline.** When
+  adding a `/admin/<resource>` route under
+  `scope "/admin", GrappaWeb.Admin`, mount it on
+  `pipe_through [:api, :authn, :admin_authn]`. The `:admin_authn` plug
+  (`GrappaWeb.Admin.AuthPlug`) requires
+  `current_subject = {:user, %User{is_admin: true}}` and 403s every
+  other subject shape — don't bypass it with per-controller checks or
+  skip-the-plug shortcuts. Distinct from the loopback `:admin`
+  pipeline (which gates `/admin/reload` + `/admin/cic-bundle-changed`
+  on `Plugs.LoopbackOnly`); same URL prefix, separate scopes. The
+  nginx allowlist (`infra/nginx.conf` + e2e
+  `cicchetto/e2e/nginx-test.conf`) must list the new resource — both
+  the `:80` and `:443` server blocks — or the route 404s at the proxy
+  before reaching Phoenix (origin: M-9b 2026-05-16).
 
 ### Charset / wire-format rule
 

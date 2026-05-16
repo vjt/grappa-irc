@@ -139,6 +139,47 @@ remote-shell + debug). Each verb prints `--help`-style usage via
 `bin/grappa help <verb>`. Run against any DB the container can reach —
 dev or prod, same dispatcher.
 
+### Admin console (cicchetto)
+
+Operators who want a browser surface for fleet introspection +
+unblocking get a 4-tab pane in cicchetto, gated on `User.is_admin`:
+
+- **Visitors** — list visitor sessions; inline-confirm delete to free
+  cap slots (M-8, commit `e0cc028`).
+- **Sessions** — every live `Session.Server` (user + visitor) with DB
+  `connection_state` and live pid columns side-by-side; per-row
+  Disconnect (park) + Terminate (M-9a/M-9b, commits `28edbd6` /
+  `6be0bc3`).
+- **Networks** — per-network cap editor (partial-PATCH), Reset Circuit
+  (clears `NetworkCircuit` ETS), Force Reap (runs `Visitors.Reaper`
+  sweep on-demand) (M-10, commit `c86d8d8`).
+- **Events** — real-time admin-event tail (200-entry ring buffer; 10
+  typed event kinds: session lifecycle, cap changes, circuit trips,
+  visitor mints/deletes) streamed over the `grappa:admin:events`
+  Phoenix Channel topic (M-11, commit `418cdf1`).
+
+There is no `--admin` flag on `grappa create-user` yet — bootstrap the
+first admin via the two-step path (then any admin can promote others
+from the Users tab in a future bucket):
+
+```sh
+# 1. Create the user account as usual:
+bin/grappa create-user --name vjt --password "correct horse battery staple"
+
+# 2. Promote to admin via remote-shell:
+bin/grappa remote-shell --batch -e '
+  user = Grappa.Repo.get_by!(Grappa.Accounts.User, name: "vjt")
+  {:ok, _} = Grappa.Accounts.update_user(user, %{is_admin: true})
+'
+```
+
+The Settings drawer in cicchetto shows an "Admin" entry only when the
+session's bearer-token resolves to `is_admin: true`. Non-admin
+sessions never see the pane and `/admin/*` REST endpoints 403 at the
+`:admin_authn` plug. nginx's `infra/nginx.conf` allowlist also
+gatekeeps the `/admin/*` path to admin-mounted routes (loopback
+`/admin/reload` stays unreachable from the public surface).
+
 ## Why this exists
 
 There are good IRC bouncers already. [soju](https://soju.im/) + [gamja](https://sr.ht/~emersion/gamja/) is the closest shape: a persistent Go bouncer + JS web client, both maintained by emersion, both excellent.
