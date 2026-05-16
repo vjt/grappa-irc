@@ -4,10 +4,12 @@ defmodule GrappaWeb.MeJSON do
   `MeResponse` mirroring `GrappaWeb.AuthJSON.subject_wire` plus a
   per-kind timestamp:
 
-    * user    → `{kind: "user", id, name, inserted_at, read_cursors}` —
-      delegates to `Grappa.Accounts.Wire.user_to_json/1` so the
-      `:password_hash` / virtual `:password` allowlist lives in one
-      place.
+    * user    → `{kind: "user", id, name, is_admin, inserted_at,
+      read_cursors}` — delegates to `Grappa.Accounts.Wire.user_to_json/1`
+      so the `:password_hash` / virtual `:password` allowlist lives in
+      one place. `is_admin` (M-cluster M-1) lands here so cic can gate
+      the admin-drawer entry off the `me` envelope without a second
+      round-trip to `GET /admin/me`.
     * visitor → `{kind: "visitor", id, nick, network_slug, expires_at,
       read_cursors}` — delegates to `Grappa.Visitors.Wire.visitor_to_json/1`
       so the `:password_encrypted` allowlist lives in one place. See
@@ -36,6 +38,7 @@ defmodule GrappaWeb.MeJSON do
             kind: String.t(),
             id: Ecto.UUID.t(),
             name: String.t(),
+            is_admin: boolean(),
             inserted_at: DateTime.t(),
             read_cursors: read_cursors()
           }

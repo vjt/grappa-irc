@@ -31,6 +31,9 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["id"] == user.id
       assert body["name"] == user.name
       assert is_binary(body["inserted_at"])
+      # M-cluster M-2: SSoT addition to user wire — admin gating reads
+      # off the /me envelope. Default user is non-admin.
+      assert body["is_admin"] == false
       # CP29 R-3: read_cursors envelope. Empty for a fresh subject.
       assert body["read_cursors"] == %{}
       refute Map.has_key?(body, "password_hash")
@@ -97,6 +100,10 @@ defmodule GrappaWeb.MeControllerTest do
       refute Map.has_key?(body, "name")
       refute Map.has_key?(body, "inserted_at")
       refute Map.has_key?(body, "password_encrypted")
+      # M-cluster M-2: visitors NEVER carry is_admin (the bit lives on
+      # User schema only). The discriminated-union shape pins the
+      # absence so a future wire drift surfaces here.
+      refute Map.has_key?(body, "is_admin")
     end
 
     test "with revoked visitor Bearer returns 401", %{conn: conn} do

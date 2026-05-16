@@ -17,8 +17,12 @@ defmodule Grappa.Accounts.Wire do
 
   Two output shapes today:
 
-    * `user_to_json/1` — full profile shape `{id, name, inserted_at}`.
-      Used by `GrappaWeb.MeJSON.show/1` for `GET /me`.
+    * `user_to_json/1` — full profile shape `{id, name, is_admin,
+      inserted_at}`. Used by `GrappaWeb.MeJSON.show/1` for `GET /me`
+      AND by `GrappaWeb.Admin.MeController.index/2` for `GET /admin/me`
+      (M-cluster M-2). The `is_admin` bit lands on every user-shape
+      response so cic can gate admin-drawer rendering off the `me`
+      envelope without a second round-trip.
     * `user_to_credential_json/1` — minimal credential-exchange shape
       `{id, name}`. Used by `GrappaWeb.AuthJSON.login/1` for the
       `POST /auth/login` response, where `inserted_at` would be
@@ -38,6 +42,7 @@ defmodule Grappa.Accounts.Wire do
   @type user_json :: %{
           id: Ecto.UUID.t(),
           name: String.t(),
+          is_admin: boolean(),
           inserted_at: DateTime.t()
         }
 
@@ -48,12 +53,12 @@ defmodule Grappa.Accounts.Wire do
 
   @doc """
   Renders a `User` row to its full public JSON shape —
-  `{id, name, inserted_at}`. Excludes `:password_hash` and the
-  virtual `:password`; both must NEVER appear on the wire.
+  `{id, name, is_admin, inserted_at}`. Excludes `:password_hash` and
+  the virtual `:password`; both must NEVER appear on the wire.
   """
   @spec user_to_json(User.t()) :: user_json()
   def user_to_json(%User{} = user) do
-    %{id: user.id, name: user.name, inserted_at: user.inserted_at}
+    %{id: user.id, name: user.name, is_admin: user.is_admin, inserted_at: user.inserted_at}
   end
 
   @doc """

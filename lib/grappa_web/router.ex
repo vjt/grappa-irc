@@ -1,6 +1,6 @@
 defmodule GrappaWeb.Router do
   @moduledoc """
-  Top-level router. Three pipelines:
+  Top-level router. Pipelines:
 
     * `:api`     — JSON content negotiation + `X-Grappa-Client-Id`
       extraction (`GrappaWeb.Plugs.ClientId` populates
@@ -13,17 +13,28 @@ defmodule GrappaWeb.Router do
       `:current_session_id` on success and halts with a uniform 401
       JSON body on any failure mode (no header, malformed token,
       unknown / revoked / expired session).
+    * `:admin`   — loopback-only gate. Used by `POST /admin/reload`
+      and `POST /admin/cic-bundle-changed`; see `Plugs.LoopbackOnly`.
+    * `:admin_authn` — operator-console gate (M cluster). Mounted
+      downstream of `:authn`; rejects every subject shape except
+      `{:user, %User{is_admin: true}}` with a uniform 403. See
+      `GrappaWeb.Admin.AuthPlug`.
 
   Scopes:
 
     * `/healthz` — outside both pipelines so it answers under any
       condition (load balancers, `curl --fail`, etc.).
     * `/auth/login` — `:api` only. Credentials in, token out.
-    * Everything else (logout, `/me`, networks/channels/messages) —
+    * Resource routes (logout, `/me`, networks/channels/messages) —
       `:api` + `:authn`. Resource routes were unprotected through
       Phase 1; gating them here is the load-bearing change of
       Sub-task 2c. The plug halts the conn before the controller
       sees it, so existing controller logic is untouched.
+    * `/admin/*` — split across two scopes: the loopback scope
+      (`:admin`) for hot-reload + cic-bundle hooks, and the operator
+      console scope (`:api + :authn + :admin_authn`) for the M
+      cluster's admin surface. Routes don't collide (`/reload` +
+      `/cic-bundle-changed` vs `/me` and the rest).
 
   WebSocket mount (`socket "/socket", GrappaWeb.UserSocket`) lands in
   the Endpoint, not here. Channels do their own auth in
@@ -59,6 +70,17 @@ defmodule GrappaWeb.Router do
     plug GrappaWeb.Plugs.LoopbackOnly
   end
 
+  # Admin AUTHN pipeline — operator-surface gate. Mounted downstream of
+  # `:authn` so `current_subject` is already assigned; rejects every
+  # subject shape except `{:user, %User{is_admin: true}}` with a uniform
+  # 403. Distinct from `:admin` (loopback-only) because the operator
+  # console (M cluster) reaches over the public surface — the
+  # `is_admin` bit replaces the loopback gate as the authorization
+  # signal. M-cluster M-2.
+  pipeline :admin_authn do
+    plug GrappaWeb.Admin.AuthPlug
+  end
+
   scope "/", GrappaWeb do
     pipe_through []
 
@@ -70,6 +92,17 @@ defmodule GrappaWeb.Router do
 
     post "/reload", AdminController, :reload
     post "/cic-bundle-changed", AdminController, :cic_bundle_changed
+  end
+
+  # Operator-console admin surface (M cluster). Distinct from the
+  # loopback `/admin/reload` scope above: this stack is `:api + :authn +
+  # :admin_authn`, so it's reachable over the public surface AND gated
+  # on `current_subject = {:user, %User{is_admin: true}}`. Controllers
+  # live under `GrappaWeb.Admin.*` namespace.
+  scope "/admin", GrappaWeb.Admin do
+    pipe_through [:api, :authn, :admin_authn]
+
+    get "/me", MeController, :index
   end
 
   scope "/auth", GrappaWeb do
