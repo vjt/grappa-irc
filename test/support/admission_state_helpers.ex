@@ -1,27 +1,35 @@
 defmodule Grappa.AdmissionStateHelpers do
   @moduledoc """
-  Cross-test reset helpers for the application-singleton ETS tables that
-  Cluster T31's admission gate relies on.
+  Cross-test reset helpers for the application-singleton ETS tables AND
+  `Grappa.SessionSupervisor` Registry that Cluster T31's admission gate
+  reads from.
 
-  ## Why this exists (no-silent-drops B6.8 HIGH-12)
+  ## Why this exists (no-silent-drops B6.8 HIGH-12 + T-3 prelude)
 
-  `Grappa.Admission.NetworkCircuit` + `Grappa.Session.Backoff` are
-  application-supervised singletons backed by named ETS tables. Their
-  state survives `Ecto.Adapters.SQL.Sandbox` checkout/checkin AND
-  `mix test` boundary across container runs (the table is reborn on
-  supervisor restart but a stale-from-prior-run row in the live BEAM
-  shares its `network_id` with whatever sqlite auto-increment serves
-  the next test, producing intermittent `{:network_circuit_open, _}`
-  rejections in `BootstrapTest` + `SpawnOrchestratorTest` whose
-  surface line/file does not predict the offending pair.
+  Three application-wide singletons survive `Ecto.Adapters.SQL.Sandbox`
+  checkout/checkin AND `mix test` boundary across container runs:
 
-  Five test modules previously inlined the same `for {key, _, _, _, _}
-  <- NetworkCircuit.entries(), do: :ets.delete(...)` block. This module
-  promotes the cleanup to a reusable verb so adding the equivalent
-  block to `BootstrapTest` + `SpawnOrchestratorTest` (the missing
-  callers documented in `project_network_circuit_ets_leak`) is a
-  one-liner — and the next time the table grows a column the cleanup
-  follows the schema instead of needing five surgical edits.
+    * `Grappa.Admission.NetworkCircuit` — ETS table `:admission_network_circuit_state`
+    * `Grappa.Session.Backoff` — ETS table `:session_backoff_state`
+    * `Grappa.SessionSupervisor` + `Grappa.SessionRegistry` — DynamicSupervisor
+      children, indexed by `{:session, subject, network_id}`
+
+  All three carry rows keyed by `network_id`. sqlite recycles
+  auto-increment rowids per fresh sandbox transaction, so the next
+  test's freshly-created network gets the same id as a prior test's
+  leftover row → intermittent `{:network_circuit_open, _}` /
+  `:network_cap_exceeded` rejections whose surface line/file does
+  not predict the offending pair.
+
+  Bootstrap-cap test failure mode (T-2-fix CI red on commit 82096a1,
+  2026-05-16): a prior test's Session.Server still registered under
+  the same `network_id` as the cap test's fresh row → Admission's
+  `count_live_sessions(network_id)` returned >= cap → all spawn
+  attempts skipped → `{spawned: 0, skipped: 3}` instead of `{2, 0, 1}`.
+  Per-test-file `clear_registry_for(network_id)` polling helpers
+  silently exhausted their 500ms budget under CI load (returned `:ok`
+  with zombies still present). Loud raise + setup-time global reset
+  is the durable fix.
 
   ## Usage
 
@@ -47,18 +55,24 @@ defmodule Grappa.AdmissionStateHelpers do
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Session.Backoff
 
+  @reset_registry_attempts 200
+  @reset_registry_poll_ms 25
+
   @doc """
-  Clear every per-`network_id` row from the `NetworkCircuit` ETS table
-  AND every per-`(subject, network_id)` row from the `Backoff` ETS
-  table. Idempotent; safe to call from `setup` even when the tables
-  hold no entries. The named tables themselves are NOT torn down —
-  they're owned by the application-supervised GenServers and would
-  crash the suite if removed under their owners.
+  Clear every per-`network_id` row from the `NetworkCircuit` ETS table,
+  every per-`(subject, network_id)` row from the `Backoff` ETS table,
+  AND terminate every `Grappa.Session.Server` registered under
+  `Grappa.SessionSupervisor`. Waits until `Grappa.SessionRegistry`
+  observes the cleanup; raises on timeout (loud — silent zombie
+  registry rows have already caused intermittent CI failures).
+  Idempotent; safe to call from `setup` even when the tables/registry
+  hold no entries.
   """
   @spec reset_all() :: :ok
   def reset_all do
     reset_network_circuit()
     reset_backoff()
+    reset_session_supervisor()
     :ok
   end
 
@@ -88,5 +102,53 @@ defmodule Grappa.AdmissionStateHelpers do
     end
 
     :ok
+  end
+
+  @doc """
+  Terminate every `Grappa.Session.Server` currently under
+  `Grappa.SessionSupervisor` (DynamicSupervisor). Blocks until
+  `Grappa.SessionRegistry` observes the cleanup; raises on timeout
+  (loud — silent leak is what made `BootstrapTest:468` intermittent
+  under CI load; see `project_network_circuit_ets_leak`).
+
+  Idempotent: returns `:ok` immediately when the supervisor has no
+  children.
+  """
+  @spec reset_session_supervisor() :: :ok
+  def reset_session_supervisor do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(Grappa.SessionSupervisor),
+        is_pid(pid) do
+      ref = Process.monitor(pid)
+      _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _} -> :ok
+      after
+        2_000 ->
+          Process.demonitor(ref, [:flush])
+
+          raise "AdmissionStateHelpers.reset_session_supervisor: " <>
+                  "Session.Server #{inspect(pid)} did not terminate within 2s"
+      end
+    end
+
+    wait_until_registry_clear!(@reset_registry_attempts)
+  end
+
+  defp wait_until_registry_clear!(0) do
+    count = Registry.count(Grappa.SessionRegistry)
+
+    raise "AdmissionStateHelpers.reset_session_supervisor: " <>
+            "Grappa.SessionRegistry still has #{count} entries after " <>
+            "#{@reset_registry_attempts * @reset_registry_poll_ms}ms"
+  end
+
+  defp wait_until_registry_clear!(attempts) do
+    if Registry.count(Grappa.SessionRegistry) == 0 do
+      :ok
+    else
+      Process.sleep(@reset_registry_poll_ms)
+      wait_until_registry_clear!(attempts - 1)
+    end
   end
 end
