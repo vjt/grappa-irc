@@ -35,6 +35,10 @@ mkdir -p runtime/cicchetto-dist
 
 echo "Building cicchetto dist..."
 docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
+# Vite's `emptyOutDir` wipes .gitkeep on every build (the tracked
+# placeholder is bait for fresh-clone Docker auto-mkdir-as-root —
+# see .gitignore L44-46). Restore it so `git status` stays clean.
+touch runtime/cicchetto-dist/.gitkeep
 
 echo "Notifying grappa of new bundle hash..."
 # Container `curl` against loopback inside the grappa pod —

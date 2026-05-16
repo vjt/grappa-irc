@@ -261,6 +261,10 @@ docker compose "${COMPOSE_ARGS[@]}" --profile prod build grappa
 mkdir -p runtime/cicchetto-dist
 echo "Building cicchetto dist..."
 docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
+# Vite's `emptyOutDir` wipes .gitkeep on every build (the tracked
+# placeholder is bait for fresh-clone Docker auto-mkdir-as-root —
+# see .gitignore L44-46). Restore it so `git status` stays clean.
+touch runtime/cicchetto-dist/.gitkeep
 
 # Sync host deps/ to mix.lock. The bind-mount `./:/app` shadows the
 # image-baked deps with whatever's on the host; previous deploys
