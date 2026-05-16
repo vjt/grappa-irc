@@ -1,4 +1,5 @@
 import { type Component, createSignal, Show } from "solid-js";
+import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
 
@@ -7,18 +8,16 @@ import AdminVisitorsTab from "./AdminVisitorsTab";
 // SettingsDrawer. Outer pane = header + close + tab nav + active
 // tab body.
 //
-// M-8 added the Visitors tab; M-9b adds Sessions. M-10 (Networks)
-// + M-11 (Events) will each append their own `<button role="tab">`
-// + tabpanel here and gate the active tab via the `currentTab`
-// signal introduced here.
+// M-8 added Visitors; M-9b added Sessions; M-10 adds Networks.
+// M-11 (Events) will append its own `<button role="tab">` + tabpanel
+// + gate via the `currentTab` signal.
 //
 // Mount lifecycle: a `<Show when={adminOpen() && isAdmin()}>` in
 // Shell.tsx drives mount/unmount. Shell auto-closes the pane the
 // instant `me.is_admin` flips to false — see the demote-mid-session
 // policy at Shell.tsx's createEffect. The tab components issue admin
-// REST fetches (GET/DELETE /admin/visitors, GET/POST/DELETE
-// /admin/sessions) which the `:admin_authn` plug 403s any request
-// from a now-non-admin user so the demote race is server-side-safe.
+// REST fetches which the `:admin_authn` plug 403s any request from a
+// now-non-admin user, so the demote race is server-side-safe.
 //
 // Per-class parity matrix (`feedback_e2e_user_class_parity_matrix`):
 // admin-gated, EXEMPT. The Playwright spec at m7-admin-gate covers
@@ -29,7 +28,7 @@ export type Props = {
   onClose: () => void;
 };
 
-type TabKey = "visitors" | "sessions";
+type TabKey = "visitors" | "sessions" | "networks";
 
 const AdminPane: Component<Props> = (props) => {
   const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
@@ -80,6 +79,18 @@ const AdminPane: Component<Props> = (props) => {
         >
           Sessions
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("networks")}
+          aria-controls="admin-tab-networks"
+          id="admin-tab-networks-handle"
+          data-testid="admin-tab-networks"
+          onClick={() => setCurrentTab("networks")}
+        >
+          Networks
+        </button>
       </div>
       <Show when={isActive("visitors")}>
         <div
@@ -99,6 +110,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminSessionsTab />
+        </div>
+      </Show>
+      <Show when={isActive("networks")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-networks"
+          aria-labelledby="admin-tab-networks-handle"
+          class="admin-tab-panel"
+        >
+          <AdminNetworksTab />
         </div>
       </Show>
     </section>

@@ -879,6 +879,122 @@ export async function adminTerminateSession(token: string, id: string): Promise<
   if (!res.ok) throw await readError(res);
 }
 
+// M-cluster M-10 — admin Networks tab wire types + fetch wrappers.
+// Mirror of `Grappa.Networks.AdminWire.t()` composed with the nested
+// `circuit_state` from `Grappa.Admission.NetworkCircuit.AdminWire.t()`
+// (controller composition in `lib/grappa_web/controllers/admin/networks_controller.ex`).
+//
+// Three-valued cap contract per `Networks.update_network_caps/2`:
+//   * `null` — explicit "unlimited" (operator-cleared)
+//   * `0`    — degenerate lock-down ("allow none")
+//   * `N>0`  — the cap itself
+// Cic surfaces null/empty-input as "—" and parses an empty input
+// field back to `null` on PATCH so the operator can clear a cap.
+//
+// `circuit_state: null` = no ETS row for the network (no admission
+// failures observed). Distinct from a populated `circuit_state` with
+// `state: "closed"` (had failures, sub-threshold). Per
+// `feedback_no_localized_strings_server_side`: state + counts are
+// typed; cic owns rendering ("never tripped" / "OPEN, retry in 12s" / etc).
+//
+// `state` is a typed string-literal union per CLAUDE.md "Atoms or
+// `@type t :: literal | literal` — never untyped strings". Server-side
+// `NetworkCircuit` emits only `:open | :closed` today; a future
+// `:half_open` would be a deliberate edit here + a new arm in the
+// renderer.
+export type AdminCircuitStateKind = "open" | "closed";
+
+export type AdminCircuitState = {
+  state: AdminCircuitStateKind;
+  failure_count: number;
+  window_start_ms: number;
+  cooled_at_ms: number;
+  retry_after_seconds: number;
+};
+
+export type AdminNetwork = {
+  id: number;
+  slug: string;
+  max_concurrent_sessions: number | null;
+  max_per_client: number | null;
+  inserted_at: string;
+  updated_at: string;
+  circuit_state: AdminCircuitState | null;
+};
+
+export type AdminNetworksResponse = { networks: AdminNetwork[] };
+
+// PATCH body is keys-optional per `Networks.update_network_caps/2`'s
+// `%{optional(:max_concurrent_sessions) => ..., optional(:max_per_client) => ...}`
+// contract: unsupplied keys keep their current value. Cic MUST only
+// include keys whose value actually changed vs the server-echoed row
+// — sending both keys on every edit creates a lost-update race
+// (operator A's Save would silently roll back operator B's
+// concurrently-saved change to the OTHER cap). CRIT-1 of M-10 review.
+export type AdminNetworkCapsPatch = {
+  max_concurrent_sessions?: number | null;
+  max_per_client?: number | null;
+};
+
+export async function adminListNetworks(token: string): Promise<AdminNetwork[]> {
+  const res = await fetch("/admin/networks", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminNetworksResponse;
+  return body.networks;
+}
+
+export async function adminPatchNetworkCaps(
+  token: string,
+  slug: string,
+  body: AdminNetworkCapsPatch,
+): Promise<AdminNetwork> {
+  const res = await fetch(`/admin/networks/${encodeURIComponent(slug)}`, {
+    method: "PATCH",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminNetwork;
+}
+
+// 202 Accepted envelope: `{swept_count: number, swept_at: ISO8601}`.
+// Cic surfaces `swept_count` in a transient success line; nothing else
+// in the wire shape drives UI state today.
+export type AdminReaperRunResponse = {
+  swept_count: number;
+  swept_at: string;
+};
+
+export async function adminRunReaper(token: string): Promise<AdminReaperRunResponse> {
+  const res = await fetch("/admin/reaper/run", {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminReaperRunResponse;
+}
+
+// POST /admin/circuit/:network_id/reset returns
+// `{network_id, circuit_state: null}` (reset always leaves no ETS row).
+// `network_id` echoes the path param for symmetry; cic uses the post-
+// reset `circuit_state` to update the row directly.
+export type AdminCircuitResetResponse = {
+  network_id: number;
+  circuit_state: AdminCircuitState | null;
+};
+
+export async function adminResetCircuit(
+  token: string,
+  networkId: number,
+): Promise<AdminCircuitResetResponse> {
+  const res = await fetch(`/admin/circuit/${networkId}/reset`, {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminCircuitResetResponse;
+}
+
 export async function logout(token: string): Promise<void> {
   const res = await fetch("/auth/logout", {
     method: "DELETE",

@@ -1452,6 +1452,136 @@ body {
   font-size: 0.75rem;
 }
 
+/* M-cluster M-10 — admin Networks tab. Same base shape as Visitors
+   + Sessions tabs (header row + table + per-row actions). Adds the
+   per-row cap editor + Save button + Reset Circuit button + tab-
+   level Force Reap. Cap editor is an inline number input; Save is
+   a plain button (only enabled when dirty + valid). Reset Circuit
+   + Force Reap reuse the shared InlineConfirmButton. */
+
+.admin-networks-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.admin-networks-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-networks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.admin-networks-table th,
+.admin-networks-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.admin-networks-table th {
+  color: var(--muted);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.admin-networks-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.cap-editor-input {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  padding: 0.15rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  width: 6rem;
+}
+
+.cap-editor-input.invalid {
+  border-color: #c00;
+  color: #c00;
+}
+
+.admin-network-save-btn {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.admin-network-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.reset-circuit-btn.confirming {
+  color: #c80;
+  border-color: #c80;
+}
+
+.force-reap-btn.confirming {
+  color: #c80;
+  border-color: #c80;
+}
+
+.circuit-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.2rem;
+  font-size: 0.75rem;
+}
+
+.circuit-badge.none {
+  color: var(--muted);
+}
+
+.circuit-badge.open {
+  color: #c00;
+  border: 1px solid #c00;
+}
+
+.circuit-badge.closed {
+  color: #c80;
+  border: 1px solid #c80;
+}
+
+.admin-success {
+  color: #0a0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* Visually-hidden screen-reader-only label. Used in the Networks
+   actions column header so SRs announce "actions" instead of "blank
+   column header" (M-10 review NIT-21). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* SettingsDrawer notifications section (B3) */
 
 .settings-drawer .notifications-fieldset hr {
