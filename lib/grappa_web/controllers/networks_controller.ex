@@ -177,47 +177,37 @@ defmodule GrappaWeb.NetworksController do
   end
 
   defp apply_transition(conn, user, credential, :connected, _) do
-    with {:ok, updated_cred} <- Networks.connect(credential) do
-      spawn_session_after_connect(conn, user, updated_cred)
+    # U-0 stop-swallow fix (2026-05-16): spawn FIRST against the
+    # parked credential, THEN commit the DB transition to `:connected`
+    # only on spawn success. Pre-U-0, `Networks.connect/1` committed
+    # first and `spawn_session_after_connect/3` swallowed every error
+    # — cap-saturated PATCH /connect returned 200 OK with row at
+    # `:connected` while no Session.Server was running, and subsequent
+    # `POST /messages` 404'd silently. Per CLAUDE.md "REST is for
+    # resources" + the no-silent-drops cluster lesson, the failure
+    # must surface honestly at the REST boundary.
+    #
+    # **Concurrent-PATCH safety**: two simultaneous PATCH /connect on
+    # the same parked credential are benign. SpawnOrchestrator.spawn/4
+    # dedupes via `:already_started` (second request gets the live
+    # pid, no second Session.Server); `Networks.connect/1` short-
+    # circuits on `:connected` (second request's DB write is a no-op +
+    # idempotent broadcast). No orphan process, no DB drift. Cic
+    # tolerates the duplicate broadcast since `connection_state_changed`
+    # is idempotent at the wire-edge.
+    with {:ok, plan} <- resolve_plan(credential, user),
+         {:ok, _} <- orchestrate_spawn(conn, user, credential, plan),
+         {:ok, updated_cred} <- Networks.connect(credential) do
       {:ok, updated_cred}
     end
   end
 
-  # Wrapper over `Grappa.SpawnOrchestrator.spawn/4` for the REST
-  # surface. Per the S1.2 boundary note: `Networks.connect/1` does
-  # DB + broadcast only; the admission + backoff-reset + start_session
-  # orchestration lives via the orchestrator (which deps both
-  # `Admission` and `Session` from its own top-level boundary, so
-  # `Networks` doesn't need to dep `Admission` — that would close
-  # the cycle Networks → Admission → Networks).
-  #
-  # If admission rejects, the DB row is already `:connected` (user intent
-  # persisted). Bootstrap or the next operator `/connect` will retry.
-  # We log the rejection but still return `:ok` to the caller — the
-  # transition succeeded from the credential perspective.
-  @spec spawn_session_after_connect(Plug.Conn.t(), User.t(), Credential.t()) :: :ok
-  defp spawn_session_after_connect(conn, %User{id: user_id} = user, credential) do
-    network_id = credential.network_id
-    client_id = conn.assigns[:current_client_id]
-
-    capacity_input = %{
-      network_id: network_id,
-      client_id: client_id,
-      flow: :patch_network_connect
-    }
-
-    with {:ok, plan} <- plan_or_warn(credential, user),
-         {:ok, _} <-
-           orchestrate_or_warn({:user, user_id}, network_id, plan, capacity_input, user) do
-      :ok
-    else
-      {:error, _} -> :ok
-    end
-  end
-
-  @spec plan_or_warn(Credential.t(), User.t()) ::
+  # Resolve a `SessionPlan` from the credential. Returns a typed error
+  # (`:resolve_failed`) on plan-resolution failure so the controller
+  # can surface it via FallbackController rather than swallowing.
+  @spec resolve_plan(Credential.t(), User.t()) ::
           {:ok, Session.start_opts()} | {:error, :resolve_failed}
-  defp plan_or_warn(credential, user) do
+  defp resolve_plan(credential, user) do
     case SessionPlan.resolve(credential) do
       {:ok, _} = ok ->
         ok
@@ -232,25 +222,34 @@ defmodule GrappaWeb.NetworksController do
     end
   end
 
-  @spec orchestrate_or_warn(
-          Session.subject(),
-          integer(),
-          Session.start_opts(),
-          Grappa.Admission.capacity_input(),
-          User.t()
-        ) :: {:ok, pid()} | {:error, :spawn_rejected}
-  defp orchestrate_or_warn(subject, network_id, plan, capacity_input, user) do
-    case Grappa.SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+  # Call the orchestrator with the cred's network_id + computed plan
+  # + capacity inputs. Returns the orchestrator's typed error atom
+  # verbatim (`:network_cap_exceeded` / `:client_cap_exceeded` /
+  # `{:network_circuit_open, _}` / etc.) so FallbackController's
+  # existing T31 clauses pick up the 503/429 mapping unchanged.
+  @spec orchestrate_spawn(Plug.Conn.t(), User.t(), Credential.t(), Session.start_opts()) ::
+          {:ok, pid()} | {:error, term()}
+  defp orchestrate_spawn(conn, %User{id: user_id} = user, credential, plan) do
+    network_id = credential.network_id
+    client_id = conn.assigns[:current_client_id]
+
+    capacity_input = %{
+      network_id: network_id,
+      client_id: client_id,
+      flow: :patch_network_connect
+    }
+
+    case Grappa.SpawnOrchestrator.spawn({:user, user_id}, network_id, plan, capacity_input) do
       {:ok, _, pid} ->
         {:ok, pid}
 
-      {:error, reason} ->
+      {:error, reason} = err ->
         Logger.warning("PATCH /connect: session spawn rejected",
           user: user.id,
           error: inspect(reason)
         )
 
-        {:error, :spawn_rejected}
+        err
     end
   end
 end

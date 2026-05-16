@@ -32,8 +32,20 @@ defmodule GrappaWeb.NetworksControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Networks, Repo}
+  alias Grappa.Admission.NetworkCircuit
+  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo}
   alias Grappa.Networks.Credential
+
+  # U-0 — admission state must start known-empty between tests.
+  # The U-0 cap-exceeded + circuit-open tests deliberately drive the
+  # admission ETS tables into reject-mode; without a per-test reset
+  # the subsequent test sees leaked state (CircuitOpen 1 on a fresh
+  # network row, registry-leaked Session.Servers from the happy
+  # path). Same `reset_all/0` pattern as admin/sessions_controller_test.exs.
+  setup do
+    AdmissionStateHelpers.reset_all()
+    :ok
+  end
 
   describe "GET /networks — user subject" do
     test "with valid Bearer returns 200 + list of bound networks", %{conn: conn} do
@@ -304,6 +316,101 @@ defmodule GrappaWeb.NetworksControllerTest do
       # Tear down the spawned session (it was connected to the fake IRC server)
       :ok = Grappa.Session.stop_session({:user, vjt.id}, network.id)
     end
+
+    # U cluster U-0 — stop-swallow fix. Pre-U-0, `apply_transition(:connected)`
+    # called `Networks.connect/1` (committing DB → `:connected`) BEFORE
+    # `spawn_session_after_connect/3` ran, and the latter swallowed every
+    # spawn error and returned `:ok`. Net effect: a cap-saturated PATCH /connect
+    # returned 200 OK with `connection_state: "connected"` while no
+    # Session.Server was running — subsequent `POST /messages` 404'd
+    # with no signal to the operator.
+    #
+    # Post-U-0: spawn FIRST against the parked credential; on rejection,
+    # DB stays at PREVIOUS state and the typed error reaches
+    # FallbackController. Per CLAUDE.md "Phoenix Channels = the event
+    # push surface" / "REST is for resources" — the failure to
+    # transition surfaces honestly at the REST boundary.
+    test "503 + DB stays parked when network cap exceeded (U-0 stop-swallow)",
+         %{conn: conn} do
+      vjt = user_fixture(name: "vjt-u0-netcap-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-u0-netcap-#{u()}"
+      {:ok, irc_server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
+      port = IRCServer.port(irc_server)
+      {network, _} = network_with_server(port: port, slug: slug)
+      cred = credential_fixture(vjt, network)
+      seed_state(cred, :parked, "user-parked")
+
+      # Saturate the network: cap=0 means every spawn attempt rejects
+      # at admission. No live session needed — `Admission.check_network_total/1`
+      # short-circuits on cap==0.
+      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_sessions: 0})
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      # Per existing FallbackController mapping (T31): :network_cap_exceeded
+      # → 503 `network_busy`. U-2 unifies status codes across the typed
+      # error family; U-0 just propagates whatever atom comes out of
+      # SpawnOrchestrator.
+      assert json_response(conn, 503)["error"] == "network_busy"
+
+      # DB MUST stay at :parked (NOT silently transition to :connected).
+      # This is the heart of U-0: pre-fix the row was already :connected
+      # by the time spawn rejected; post-fix the spawn runs first.
+      updated = Repo.get_by!(Credential, user_id: vjt.id, network_id: network.id)
+      assert updated.connection_state == :parked
+      assert updated.connection_state_reason == "user-parked"
+    end
+
+    test "503 + DB stays parked when network circuit open (U-0 stop-swallow)",
+         %{conn: conn} do
+      vjt = user_fixture(name: "vjt-u0-circuit-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-u0-circuit-#{u()}"
+      # No real IRC server needed — circuit-open rejects before any
+      # network I/O. Port 9_999 is the canonical never-listened sentinel
+      # used elsewhere in this file for "won't reach" coverage.
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      cred = credential_fixture(vjt, network)
+      seed_state(cred, :parked, "user-parked")
+
+      # Force the circuit OPEN by recording threshold-many failures.
+      # Threshold + cooldown live in `Grappa.Admission.NetworkCircuit`
+      # config; we drive the helper directly rather than coupling to
+      # the exact numbers.
+      :ok = open_circuit(network.id)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      # `{:network_circuit_open, retry_after}` → 503 `network_unreachable`
+      # with Retry-After header (T31 FallbackController clause).
+      assert json_response(conn, 503)["error"] == "network_unreachable"
+      assert [_] = Plug.Conn.get_resp_header(conn, "retry-after")
+
+      updated = Repo.get_by!(Credential, user_id: vjt.id, network_id: network.id)
+      assert updated.connection_state == :parked
+
+      # Reset circuit so other tests aren't affected.
+      :ok = NetworkCircuit.reset(network.id)
+    end
+
+    # NOTE: A reachability test for FallbackController's
+    # `{:start_failed, _}` clause was attempted here but removed:
+    # `Session.Server.init/1` is non-blocking by design (TCP connect
+    # runs in `handle_continue`), so `DynamicSupervisor.start_child/2`
+    # returns `{:ok, pid}` immediately and the `{:start_failed, _}`
+    # path requires a synchronous init/1 error that the current
+    # Session.Server cannot produce. The FC clause is a safety net
+    # against a future init/1 change, not a reachable production path.
+    # If a future bucket adds a sync probe to init/1, add the test then.
   end
 
   describe "PATCH /networks/:network_id — failed transition (server-set only)" do
@@ -367,5 +474,25 @@ defmodule GrappaWeb.NetworksControllerTest do
       connection_state_changed_at: now
     })
     |> Repo.update!()
+  end
+
+  # U-0 helper — drive the per-network circuit to `:open` by recording
+  # @threshold failures. Direct ETS-backed helper invocation avoids
+  # coupling to the exact threshold value (config-driven; see
+  # `NetworkCircuit.@threshold`).
+  #
+  # `record_failure/1` is a `GenServer.cast/2` — the test must flush
+  # the mailbox with a sync `:sys.get_state/1` before reading the
+  # circuit state, or the next PATCH races the cast and sees `:closed`.
+  defp open_circuit(network_id) do
+    threshold = NetworkCircuit.threshold()
+
+    Enum.each(1..threshold, fn _ ->
+      :ok = NetworkCircuit.record_failure(network_id)
+    end)
+
+    # Flush the cast mailbox synchronously.
+    _ = :sys.get_state(NetworkCircuit)
+    :ok
   end
 end

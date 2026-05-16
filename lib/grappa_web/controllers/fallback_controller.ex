@@ -246,6 +246,37 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "internal"})
   end
 
+  # U-0 — `PATCH /networks/:id { connection_state: "connected" }` returns
+  # `:resolve_failed` when the cred's `SessionPlan.resolve/1` cannot
+  # construct a plan (e.g. no servers bound on this network — a
+  # config-time misbinding by the operator). 500-class because the
+  # cause is server-state misconfiguration, not user input — operator
+  # must fix the network's server bindings via `bin/grappa add-server`.
+  def call(conn, {:error, :resolve_failed}) do
+    conn
+    |> put_status(:internal_server_error)
+    |> json(%{error: "session_plan_resolve_failed"})
+  end
+
+  # U-0 — `Grappa.SpawnOrchestrator.spawn/4` wraps every non-admission
+  # `DynamicSupervisor.start_child/2` failure as `{:start_failed,
+  # term()}`. In the current codebase this is a SAFETY NET, not a
+  # reachable production path: `Session.Server.init/1` is non-blocking
+  # by design (TCP connect happens in `handle_continue`), so
+  # `start_child` returns `{:ok, pid}` immediately and upstream
+  # connect failures surface as runtime crash-loop, NOT as a wrapped
+  # `:start_failed` at the controller. The clause exists so a future
+  # change to a synchronous `init/1` probe doesn't silently 500 with
+  # no JSON body. Mapped to 502 because the wrapped reason is almost
+  # always upstream-side; the wrapped term is logged at the
+  # orchestrator and NOT echoed over the wire (could leak transport-
+  # layer details).
+  def call(conn, {:error, {:start_failed, _}}) do
+    conn
+    |> put_status(:bad_gateway)
+    |> json(%{error: "upstream_unreachable"})
+  end
+
   # `Grappa.ReadCursor.set/4` returns this when the `message_id` exists
   # but doesn't belong to (subject, network, channel) — request shape
   # was valid; the data referenced a different scope. 422 is the right
