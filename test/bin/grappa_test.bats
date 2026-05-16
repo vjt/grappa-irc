@@ -96,10 +96,12 @@ EOF
 
 # --- per-verb help --------------------------------------------------------
 
-@test "help <stub-verb> prints inline T-3 pointer" {
+@test "help delete-visitor shows real usage (uuid arg + Operator entry point)" {
     run "$BIN_GRAPPA" help delete-visitor
     [ "$status" -eq 0 ]
-    [[ "$output" == *"T-3"* ]]
+    [[ "$output" == *"uuid"* ]]
+    [[ "$output" != *"STUB"* ]]
+    [[ "$output" != *"land in T-3"* ]]
 }
 
 @test "help remote-shell shows real usage (not the T-1 stub)" {
@@ -162,19 +164,34 @@ EOF
     grep -q 'mix.sh grappa.set_network_caps --network azzurra --max 5' "$ARGV_LOG"
 }
 
-# --- stub verbs (T-1 placeholders) ---------------------------------------
+# --- live-state verbs (T-3 — wired through --rpc-eval) ------------------
 
-@test "delete-visitor stub exits 64 mentions T-3" {
-    run "$BIN_GRAPPA" delete-visitor abc-uuid
-    [ "$status" -eq 64 ]
-    [[ "$output" == *"T-3"* ]]
-    [[ "$output" == *"not yet implemented"* ]]
+@test "delete-visitor invokes docker exec -T grappa with --rpc-eval calling Operator.delete_visitor!" {
+    run "$BIN_GRAPPA" delete-visitor abc-uuid-1234
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q -- 'grappa@grappa' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.delete_visitor' "$ARGV_LOG"
+    grep -q 'abc-uuid-1234' "$ARGV_LOG"
+    # --rpc-eval (NOT --remsh which would eval on client) — same shape
+    # as remote-shell --batch per T-2.
+    ! grep -q -- '--remsh' "$ARGV_LOG"
 }
 
-@test "reap-visitors stub exits 64 mentions T-3" {
-    run "$BIN_GRAPPA" reap-visitors
+@test "delete-visitor with no args exits 64 with usage" {
+    run "$BIN_GRAPPA" delete-visitor
     [ "$status" -eq 64 ]
-    [[ "$output" == *"T-3"* ]]
+    [[ "$output" == *"delete-visitor"* ]]
+    [[ "$output" == *"uuid"* ]]
+}
+
+@test "reap-visitors invokes docker exec -T grappa with --rpc-eval calling Operator.reap_visitors!" {
+    run "$BIN_GRAPPA" reap-visitors
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.reap_visitors' "$ARGV_LOG"
 }
 
 @test "remote-shell with no args invokes docker exec grappa iex --remsh grappa@grappa" {
@@ -222,20 +239,26 @@ EOF
     grep -q -- '\$RELEASE_COOKIE' "$ARGV_LOG"
 }
 
-@test "list-sessions stub exits 64" {
+@test "list-sessions invokes docker exec -T grappa with --rpc-eval calling Operator.list_sessions_text!" {
     run "$BIN_GRAPPA" list-sessions
-    [ "$status" -eq 64 ]
-    [[ "$output" == *"not yet implemented"* ]]
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.list_sessions_text' "$ARGV_LOG"
 }
 
-@test "list-credentials stub exits 64" {
+@test "list-credentials invokes docker exec -T grappa with --rpc-eval calling Operator.list_credentials_text!" {
     run "$BIN_GRAPPA" list-credentials
-    [ "$status" -eq 64 ]
-    [[ "$output" == *"not yet implemented"* ]]
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.list_credentials_text' "$ARGV_LOG"
 }
 
-@test "list-visitors stub exits 64" {
+@test "list-visitors invokes docker exec -T grappa with --rpc-eval calling Operator.list_visitors_text!" {
     run "$BIN_GRAPPA" list-visitors
-    [ "$status" -eq 64 ]
-    [[ "$output" == *"not yet implemented"* ]]
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.list_visitors_text' "$ARGV_LOG"
 }

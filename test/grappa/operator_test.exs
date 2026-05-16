@@ -1,0 +1,190 @@
+defmodule Grappa.OperatorTest do
+  @moduledoc """
+  Tests for `Grappa.Operator` — the host-side operator-verb entry point
+  invoked from `bin/grappa` via `iex --rpc-eval` against the live BEAM.
+
+  ## Test isolation
+
+  `async: false` because every test goes through `Grappa.SessionSupervisor`
+  and `Grappa.SessionRegistry` — singleton DynamicSupervisor + Registry
+  shared across the suite. The `AdmissionStateHelpers.reset_all()` in
+  setup terminates any leftover Session.Servers from prior tests so
+  list_sessions_text!/0 starts from a known-empty registry.
+  """
+  use Grappa.DataCase, async: false
+
+  import ExUnit.CaptureIO
+  import Grappa.AuthFixtures
+
+  alias Grappa.{AdmissionStateHelpers, Operator, Session}
+  alias Grappa.Visitors.Visitor
+
+  setup do
+    AdmissionStateHelpers.reset_all()
+    :ok
+  end
+
+  defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
+
+  defp start_irc_server do
+    {:ok, server} = Grappa.IRCServer.start_link(passthrough_handler())
+    {server, Grappa.IRCServer.port(server)}
+  end
+
+  describe "delete_visitor!/1" do
+    test "synchronously terminates the visitor's Session.Server and deletes the row" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      ref = Process.monitor(pid)
+
+      assert Process.alive?(pid)
+      assert Session.whereis({:visitor, visitor.id}, network.id) == pid
+
+      capture_io(fn -> assert :ok = Operator.delete_visitor!(visitor.id) end)
+
+      # Process is dead BEFORE delete_visitor!/1 returned.
+      assert_received {:DOWN, ^ref, :process, ^pid, _}
+      assert Session.whereis({:visitor, visitor.id}, network.id) == nil
+      assert Repo.get(Visitor, visitor.id) == nil
+    end
+
+    test "is idempotent: visitor exists but no live Session.Server" do
+      visitor = visitor_fixture(network_slug: "azzurra-#{System.unique_integer([:positive])}")
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: visitor.network_slug})
+
+      output = capture_io(fn -> assert :ok = Operator.delete_visitor!(visitor.id) end)
+
+      assert output =~ "deleted visitor #{visitor.id}"
+      assert Repo.get(Visitor, visitor.id) == nil
+    end
+
+    test "surfaces orphan-network slug on stderr but still deletes the row" do
+      # Visitor row pinned to a slug with no `networks` row — happens when
+      # the operator drops a network from the DB between visitor creation
+      # and recovery. The DB delete still works (no FK, just a string);
+      # there's no live session to terminate. Operator sees the stderr
+      # signal so they know the row was orphaned.
+      visitor = visitor_fixture(network_slug: "orphan-#{System.unique_integer([:positive])}")
+
+      stderr =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert :ok = Operator.delete_visitor!(visitor.id) end)
+        end)
+
+      assert stderr =~ "network #{visitor.network_slug} not found"
+      assert Repo.get(Visitor, visitor.id) == nil
+    end
+
+    test "re-raises Ecto.NoResultsError on unknown id (operator clarity)" do
+      bogus_id = Ecto.UUID.generate()
+
+      assert capture_io(:stderr, fn ->
+               assert_raise Ecto.NoResultsError, fn ->
+                 Operator.delete_visitor!(bogus_id)
+               end
+             end) =~ "visitor #{bogus_id} not found"
+    end
+  end
+
+  describe "reap_visitors!/0" do
+    test "deletes expired rows via Reaper.sweep and reports count" do
+      expired_at = DateTime.add(DateTime.utc_now(), -1, :hour)
+      slug = "reap-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug, expires_at: expired_at)
+
+      output = capture_io(fn -> assert :ok = Operator.reap_visitors!() end)
+
+      assert output =~ "reaped"
+      assert Repo.get(Visitor, visitor.id) == nil
+    end
+  end
+
+  describe "list_visitors_text!/0" do
+    test "prints header + one tab-separated row per active visitor" do
+      slug = "list-#{System.unique_integer([:positive])}"
+      {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
+      visitor = visitor_fixture(network_slug: slug, nick: "alpha")
+
+      output = capture_io(fn -> assert :ok = Operator.list_visitors_text!() end)
+
+      lines = String.split(output, "\n", trim: true)
+      [header | rows] = lines
+      assert header =~ "id"
+      assert header =~ "nick"
+      assert header =~ "network_slug"
+      assert header =~ "expires_at"
+
+      assert Enum.any?(rows, fn row ->
+               row =~ visitor.id and row =~ "alpha" and row =~ slug
+             end)
+    end
+  end
+
+  describe "list_credentials_text!/0" do
+    test "prints header + one row per bound credential, including parked + failed states" do
+      {_, port} = start_irc_server()
+      vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      slug = "cred-#{System.unique_integer([:positive])}"
+      {network, _} = network_with_server(port: port, slug: slug)
+      cred = credential_fixture(vjt, network, %{nick: "vjt"})
+
+      # Demote to :parked so we can verify the verb shows non-:connected
+      # rows (Bootstrap's list_credentials_for_all_users/0 would hide
+      # this — list_credentials_text! goes through list_all_credentials/0).
+      {:ok, _} =
+        cred
+        |> Ecto.Changeset.change(connection_state: :parked, connection_state_reason: "test-parked")
+        |> Repo.update()
+
+      output = capture_io(fn -> assert :ok = Operator.list_credentials_text!() end)
+
+      lines = String.split(output, "\n", trim: true)
+      [header | rows] = lines
+      assert header =~ "user_id"
+      assert header =~ "network_slug"
+      assert header =~ "nick"
+      assert header =~ "state"
+
+      assert Enum.any?(rows, fn row ->
+               row =~ vjt.id and row =~ slug and row =~ "vjt" and
+                 row =~ "parked" and row =~ "test-parked"
+             end)
+    end
+  end
+
+  describe "list_sessions_text!/0" do
+    test "prints header + one row per live Session.Server with introspection" do
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      output = capture_io(fn -> assert :ok = Operator.list_sessions_text!() end)
+
+      lines = String.split(output, "\n", trim: true)
+      [header | rows] = lines
+      assert header =~ "subject_kind"
+      assert header =~ "subject_id"
+      assert header =~ "network_id"
+      assert header =~ "pid"
+      assert header =~ "alive"
+      assert header =~ "mailbox_len"
+      assert header =~ "memory_kb"
+
+      assert Enum.any?(rows, fn row ->
+               row =~ "visitor" and row =~ visitor.id and
+                 row =~ inspect(pid) and row =~ "true"
+             end)
+    end
+
+    test "prints just the header when no sessions are registered" do
+      output = capture_io(fn -> assert :ok = Operator.list_sessions_text!() end)
+      lines = String.split(output, "\n", trim: true)
+      assert length(lines) == 1
+      assert hd(lines) =~ "subject_kind"
+    end
+  end
+end

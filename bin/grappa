@@ -7,11 +7,15 @@
 #   bin/grappa help <verb>              per-verb help
 #   bin/grappa <verb> [args]            dispatch
 #
-# The container IS the runtime — boot-time verbs delegate to mix tasks
-# inside the container (via scripts/mix.sh, which auto-detects MIX_ENV).
-# Live-state verbs (delete-visitor, reap-visitors, list-*, remote-shell)
-# are stubs in T-1; T-2 lands `iex --remsh` infrastructure, T-3 ships
-# the live-state implementations.
+# The container IS the runtime. Boot-time verbs (create-user,
+# bind-network, etc.) delegate to mix tasks inside the container via
+# scripts/mix.sh (which auto-detects MIX_ENV). Live-state verbs
+# (delete-visitor, reap-visitors, list-*) and remote-shell attach to
+# the live BEAM via Erlang distribution: `elixir --rpc-eval grappa@grappa`
+# evaluates a `Grappa.Operator.<verb>(...)` expression on the running
+# node (per T-2). Operator-side bookkeeping lives in lib/grappa/operator.ex
+# so the bash dispatcher stays a thin shell — one feature, one code
+# path, every door.
 #
 # Verb name policy: kebab-case on the command line, snake_case for the
 # underlying mix task (grappa.create_user, etc.). Mapping is the
@@ -35,12 +39,17 @@ mix_task() {
     exec "$SCRIPTS_DIR/mix.sh" "$@"
 }
 
-stub_not_implemented() {
-    local verb=$1
-    shift
-    printf '%s: not yet implemented in T-1 (planned: %s).\n' "$verb" "$*" >&2
-    printf 'See docs/plans/2026-05-16-tmu-cluster-arc.md cluster T.\n' >&2
-    exit 64
+# Run a Grappa.Operator expression on the live BEAM via Erlang dist.
+# Same shape as `remote-shell --batch -e <expr>` — mirror T-2 exactly so
+# the operator-verb surface and the introspection surface share one
+# transport. The expression is evaluated on the REMOTE node (`--rpc-eval`),
+# NOT on the client (`--remsh -e` would evaluate client-side, defeating
+# the point of attaching to the live tree).
+rpc_eval() {
+    local expr=$1
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T grappa sh -c \
+        'exec elixir --sname "admin-$$" --cookie "$RELEASE_COOKIE" --rpc-eval grappa@grappa "$1"' \
+        -- "$expr"
 }
 
 die_unknown_verb() {
@@ -64,13 +73,36 @@ verb_gen_encryption_key()         { mix_task grappa.gen_encryption_key "$@"; }
 verb_gen_vapid()                  { mix_task grappa.gen_vapid "$@"; }
 verb_remove_server()              { mix_task grappa.remove_server "$@"; }
 
-# Live-state verb stubs — T-2 (remsh) + T-3 (visitors) implement.
+# Live-state verbs — evaluate Grappa.Operator entry points on the live
+# BEAM via --rpc-eval. Output is whatever Operator's IO.puts emits;
+# --rpc-eval also echoes the expression's return value (typically `:ok`)
+# after the puts output. Same precedent as remote-shell --batch.
 
-verb_delete_visitor()    { stub_not_implemented delete-visitor T-3; }
-verb_reap_visitors()     { stub_not_implemented reap-visitors T-3; }
-verb_list_sessions()     { stub_not_implemented list-sessions T-2/T-3; }
-verb_list_credentials()  { stub_not_implemented list-credentials T-3; }
-verb_list_visitors()     { stub_not_implemented list-visitors T-3; }
+verb_delete_visitor() {
+    if [ $# -ne 1 ]; then
+        printf 'Usage: bin/grappa delete-visitor <uuid>\n' >&2
+        exit 64
+    fi
+    local id=$1
+    rpc_eval "Grappa.Operator.delete_visitor!(\"$id\")"
+}
+
+verb_reap_visitors() {
+    rpc_eval "Grappa.Operator.reap_visitors!()"
+}
+
+verb_list_sessions() {
+    rpc_eval "Grappa.Operator.list_sessions_text!()"
+}
+
+verb_list_credentials() {
+    rpc_eval "Grappa.Operator.list_credentials_text!()"
+}
+
+verb_list_visitors() {
+    rpc_eval "Grappa.Operator.list_visitors_text!()"
+}
+
 verb_remote_shell() {
     # T-A2 / T-2: live-BEAM attach via Erlang distribution. Cookie is
     # sourced INSIDE the container's `sh -c` (no host needs to know it);
@@ -90,10 +122,7 @@ verb_remote_shell() {
                 printf 'Usage: bin/grappa remote-shell --batch -e <expr>\n' >&2
                 exit 64
             fi
-            local expr=$2
-            exec docker compose "${COMPOSE_ARGS[@]}" exec -T grappa sh -c \
-                'exec elixir --sname "admin-$$" --cookie "$RELEASE_COOKIE" --rpc-eval grappa@grappa "$1"' \
-                -- "$expr"
+            rpc_eval "$2"
             ;;
         "")
             exec docker compose "${COMPOSE_ARGS[@]}" exec grappa sh -c \
@@ -127,7 +156,7 @@ verb_shell() {
 # --- per-verb help -------------------------------------------------------
 #
 # Boot verbs delegate to `mix help grappa.<task>` (mix's built-in reads
-# @shortdoc/@moduledoc). Stubs + debug verbs have inline heredocs.
+# @shortdoc/@moduledoc). Live-state + debug verbs have inline heredocs.
 
 help_boot_verb() {
     local task=$1
@@ -147,43 +176,45 @@ verb_help_remove_server()              { help_boot_verb grappa.remove_server; }
 
 verb_help_delete_visitor() { cat <<'EOF'
 delete-visitor <uuid>
-    Synchronously terminate a visitor's live Session.Server and delete
-    the DB row, freeing the registry slot in the same call.
+    Synchronously terminate the visitor's Session.Server and delete
+    the DB row, freeing the SessionRegistry cap slot in the same call.
+    CASCADE wipes visitor_channels, messages, accounts_sessions,
+    query_windows, push_subscriptions, user_settings, read_cursors.
 
-    STUB in T-1. Implementation lands in T-3 via `iex --remsh` against
-    the live BEAM (see T-2 for the dist-shell infrastructure).
+    Unknown uuid: raises Ecto.NoResultsError; bin/grappa exits non-zero.
 EOF
 }
 
 verb_help_reap_visitors() { cat <<'EOF'
 reap-visitors
-    Force-trigger the Visitors.Reaper sweep (otherwise runs every 60s).
-
-    STUB in T-1. Implementation lands in T-3.
+    Force-run Grappa.Visitors.Reaper.sweep/0 on demand. The scheduled
+    tick runs every 60s; this verb is the operator-on-demand variant.
 EOF
 }
 
 verb_help_list_sessions() { cat <<'EOF'
 list-sessions
-    Pretty-print live Session.Server inventory from the registry.
-
-    STUB in T-1. Implementation lands in T-2/T-3.
+    Print every live Session.Server in Grappa.SessionRegistry as a
+    tab-separated table. Columns:
+        subject_kind  subject_id  network_id  pid  alive  mailbox_len  memory_kb
+    The mailbox_len + memory_kb columns surface bloat / leaks on a
+    stuck session.
 EOF
 }
 
 verb_help_list_credentials() { cat <<'EOF'
 list-credentials
-    List per-(user, network) credential bindings + connection state.
-
-    STUB in T-1. Implementation lands in T-3.
+    Print every bound (user, network) credential as a tab-separated
+    table. Columns:
+        user_id  network_slug  nick  state  connection_state_reason
 EOF
 }
 
 verb_help_list_visitors() { cat <<'EOF'
 list-visitors
-    List visitor rows: id, nick, network, expires_at, inserted_at.
-
-    STUB in T-1. Implementation lands in T-3.
+    Print every active visitor as a tab-separated table. Columns:
+        id  nick  network_slug  expires_at  identified  inserted_at
+    Active = identified (never expires) OR anon with expires_at > now.
 EOF
 }
 
@@ -261,12 +292,12 @@ Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
     gen-encryption-key           generate a Cloak.Vault key
     gen-vapid                    generate a VAPID keypair (push)
 
-Live-state verbs (T-1 STUBS — land in T-3):
-    delete-visitor <uuid>        terminate + delete a visitor (T-3)
-    reap-visitors                force-run the visitor reaper (T-3)
-    list-sessions                inspect the live session registry (T-3)
-    list-credentials             list cred bindings + state (T-3)
-    list-visitors                list visitor rows (T-3)
+Live-state verbs (--rpc-eval against the live BEAM):
+    delete-visitor <uuid>        terminate + delete a visitor (sync)
+    reap-visitors                force-run the visitor reaper
+    list-sessions                inspect the live session registry
+    list-credentials             list cred bindings + state
+    list-visitors                list active visitor rows
 
 Live-state attach:
     remote-shell [--batch -e]    iex --remsh against the live BEAM

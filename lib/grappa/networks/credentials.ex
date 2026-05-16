@@ -303,6 +303,27 @@ defmodule Grappa.Networks.Credentials do
     Repo.all(query)
   end
 
+  @doc """
+  Returns every credential regardless of `connection_state`, with
+  `:network` preloaded. Counterpart to `list_credentials_for_all_users/0`
+  for surfaces that need to show parked + failed rows alongside
+  connected ones — `bin/grappa list-credentials` (T-3) needs ALL
+  states for operator triage of a stuck network.
+
+  Same ordering as `list_credentials_for_all_users/0` so the two
+  outputs are diff-friendly.
+  """
+  @spec list_all_credentials() :: [Credential.t()]
+  def list_all_credentials do
+    query =
+      from(c in Credential,
+        order_by: [asc: c.inserted_at, asc: c.user_id, asc: c.network_id],
+        preload: [network: :servers]
+      )
+
+    Repo.all(query)
+  end
+
   # Returns the user_ids that currently have a credential on the network.
   # Sole consumer is `unbind_credential/2`'s cascade gate (does any
   # other user still bind this network?). Private — Boundary doesn't

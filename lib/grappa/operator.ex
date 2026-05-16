@@ -1,0 +1,240 @@
+defmodule Grappa.Operator do
+  @moduledoc """
+  Host-side operator verbs invoked via `bin/grappa` against the live BEAM.
+
+  Each public function is the target of a `bin/grappa <verb>` dispatch
+  through `iex --rpc-eval grappa@grappa "Grappa.Operator.<verb>(...)"`
+  (T-2's Erlang-dist + `--rpc-eval` shape). The bash wrapper is a thin
+  shell; the operator-facing logic + text formatting live here so that
+  one feature = one code path, every door (CLAUDE.md "One feature, one
+  code path, every door"):
+
+    * `delete_visitor!/1` — synchronously terminate the visitor's
+      `Session.Server` BEFORE deleting the DB row. Frees the
+      `SessionRegistry` cap slot in the same call.
+    * `reap_visitors!/0` — force `Grappa.Visitors.Reaper` sweep on demand
+      instead of waiting up to 60s for the next tick.
+    * `list_visitors_text!/0`, `list_credentials_text!/0`,
+      `list_sessions_text!/0` — print tab-separated operator tables
+      (header + rows) for grep / awk pipelines.
+
+  ## Why a dedicated module, not per-context helpers
+
+  Operator UX is a NEW domain — not a property of `Visitors`, `Networks`,
+  or `Session` (CLAUDE.md "Reuse the verbs, not the nouns"). Co-locating
+  the verbs keeps the rpc-eval surface auditable: any new `bin/grappa`
+  verb that touches live state lands here, with the same Boundary deps
+  + the same test file.
+
+  ## Output
+
+  Functions print to stdout via `IO.puts/1` then return `:ok`. The
+  `:ok` is echoed by `--rpc-eval`'s built-in `inspect/1` of the
+  evaluated expression result — same precedent as the T-2 remote-shell
+  `--batch` examples.
+
+  Errors propagate as exceptions (e.g. `Ecto.NoResultsError` on unknown
+  visitor id) so `bin/grappa` exits non-zero on operator misuse. The
+  Operator boundary deliberately does NOT wrap errors in
+  `{:ok, _} | {:error, _}` tuples — `bin/grappa` is interactive; a
+  crash + stderr line is the right operator UX (clarity over silence).
+
+  ## Boundary
+
+  Deps cover the three lib/ contexts whose live state the verbs read or
+  mutate. The `Reaper` module sits in its own top-level boundary
+  (`Grappa.Visitors.Reaper`) so it shows up explicitly in the dep list.
+  `Registry` is Erlang stdlib — no boundary entry needed.
+  """
+
+  use Boundary,
+    top_level?: true,
+    deps: [
+      Grappa.Networks,
+      Grappa.Session,
+      Grappa.Visitors,
+      Grappa.Visitors.Reaper
+    ]
+
+  alias Grappa.{Networks, Session, Visitors}
+  alias Grappa.Networks.Credentials
+  alias Grappa.Visitors.Visitor
+
+  @doc """
+  Synchronously terminate the visitor's `Session.Server` (if any) and
+  delete the DB row. CASCADE wipes `visitor_channels`, `messages`,
+  `accounts_sessions`, `query_windows`, `push_subscriptions`,
+  `user_settings`, `read_cursors` in the same transaction (V CP32
+  visitor-parity invariant).
+
+  Synchronous: `Session.stop_session/2` waits for the `:DOWN` AND the
+  registry-unregister before returning, so the cap slot is free by the
+  time `delete_visitor!/1` returns. Operator dashboards reading
+  `Admission.check_capacity/1` see the slot back immediately.
+
+  Unknown id: raises `Ecto.NoResultsError` after a stderr line.
+  Operator clarity > silence; `bin/grappa` exits non-zero.
+  """
+  @spec delete_visitor!(Ecto.UUID.t()) :: :ok | no_return()
+  def delete_visitor!(id) when is_binary(id) do
+    visitor =
+      try do
+        Visitors.get!(id)
+      rescue
+        e in Ecto.NoResultsError ->
+          IO.puts(:stderr, "visitor #{id} not found")
+          reraise e, __STACKTRACE__
+      end
+
+    case Networks.get_network_by_slug(visitor.network_slug) do
+      {:ok, network} ->
+        :ok = Session.stop_session({:visitor, id}, network.id)
+
+      {:error, :not_found} ->
+        # Visitor row pinned to a network that no longer exists.
+        # The DB delete still works (CASCADE wipes dependents);
+        # there's no live session to terminate because spawn requires
+        # the network row to resolve. Surface via stderr so the
+        # operator knows the row was orphaned.
+        IO.puts(:stderr, "network #{visitor.network_slug} not found, no session to stop")
+    end
+
+    case Visitors.delete(id) do
+      :ok ->
+        IO.puts("deleted visitor #{id} (#{visitor.nick}@#{visitor.network_slug})")
+
+      # Reaper / concurrent operator raced; the post-condition we
+      # promised (row gone) is reached but a sibling did the work.
+      # Honest log so the operator dashboard distinguishes "I freed
+      # the slot" from "someone else already had".
+      {:error, :not_found} ->
+        IO.puts("visitor #{id} already deleted (concurrent reaper or operator)")
+    end
+
+    :ok
+  end
+
+  @doc """
+  Force-run `Grappa.Visitors.Reaper.sweep/0` on demand. Returns `:ok`
+  after printing the swept count. The Reaper runs its scheduled tick
+  every 60s; this verb is the operator-on-demand variant.
+  """
+  @spec reap_visitors!() :: :ok
+  def reap_visitors! do
+    {:ok, n} = Grappa.Visitors.Reaper.sweep()
+    IO.puts("reaped #{n} expired visitor(s)")
+    :ok
+  end
+
+  @doc """
+  Print active visitors (anon TTL not yet elapsed + identified
+  never-expires rows) as a tab-separated table: header + one row per
+  visitor. Columns: id, nick, network_slug, expires_at, identified,
+  inserted_at.
+  """
+  @spec list_visitors_text!() :: :ok
+  def list_visitors_text! do
+    IO.puts(Enum.join(visitor_columns(), "\t"))
+
+    Enum.each(Visitors.list_active(), fn %Visitor{} = v ->
+      identified = if is_nil(v.expires_at), do: "true", else: "false"
+
+      row = [
+        v.id,
+        v.nick,
+        v.network_slug,
+        format_datetime(v.expires_at),
+        identified,
+        format_datetime(v.inserted_at)
+      ]
+
+      IO.puts(Enum.join(row, "\t"))
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Print every bound `(user, network)` credential as a tab-separated
+  table: header + one row per binding regardless of `connection_state`.
+  Columns: user_id, network_slug, nick, state, connection_state_reason.
+
+  Operator triage of a stuck network needs ALL credential states
+  (`:connected`, `:parked`, `:failed`) — not just `:connected`. Uses
+  `Credentials.list_all_credentials/0`, which drops the
+  `:connected`-only filter that `list_credentials_for_all_users/0`
+  applies for Bootstrap's spawn loop.
+  """
+  @spec list_credentials_text!() :: :ok
+  def list_credentials_text! do
+    IO.puts(Enum.join(credential_columns(), "\t"))
+
+    Enum.each(Credentials.list_all_credentials(), fn cred ->
+      row = [
+        cred.user_id,
+        cred.network.slug,
+        cred.nick,
+        Atom.to_string(cred.connection_state),
+        cred.connection_state_reason || ""
+      ]
+
+      IO.puts(Enum.join(row, "\t"))
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Print every live `Session.Server` registered in `Grappa.SessionRegistry`
+  as a tab-separated table: header + one row per process. Columns:
+  subject_kind, subject_id, network_id, pid, alive, mailbox_len,
+  memory_kb. The introspection columns surface mailbox bloat / leaks —
+  the #1 thing operators chase on a stuck session.
+  """
+  @spec list_sessions_text!() :: :ok
+  def list_sessions_text! do
+    IO.puts(Enum.join(session_columns(), "\t"))
+
+    # Match spec pins the literal `:session` tag (mirror of
+    # `auth_controller.ex:236`'s `stop_all_user_sessions`): if a future
+    # registration with a different key shape lands in
+    # `Grappa.SessionRegistry`, this verb silently skips it rather than
+    # crashing mid-output on a destructure mismatch.
+    Grappa.SessionRegistry
+    |> Registry.select([{{{:session, :"$1", :"$2"}, :"$3", :_}, [], [{{:"$1", :"$2", :"$3"}}]}])
+    |> Enum.each(fn {{subject_kind, subject_id}, network_id, pid} ->
+      info = Process.info(pid, [:message_queue_len, :memory]) || []
+      alive = Process.alive?(pid)
+      mailbox = Keyword.get(info, :message_queue_len, 0)
+      memory_kb = div(Keyword.get(info, :memory, 0), 1024)
+
+      row = [
+        Atom.to_string(subject_kind),
+        subject_id,
+        Integer.to_string(network_id),
+        inspect(pid),
+        to_string(alive),
+        Integer.to_string(mailbox),
+        Integer.to_string(memory_kb)
+      ]
+
+      IO.puts(Enum.join(row, "\t"))
+    end)
+
+    :ok
+  end
+
+  ## Column headers
+
+  defp visitor_columns,
+    do: ["id", "nick", "network_slug", "expires_at", "identified", "inserted_at"]
+
+  defp credential_columns,
+    do: ["user_id", "network_slug", "nick", "state", "connection_state_reason"]
+
+  defp session_columns,
+    do: ["subject_kind", "subject_id", "network_id", "pid", "alive", "mailbox_len", "memory_kb"]
+
+  defp format_datetime(nil), do: ""
+  defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+end
