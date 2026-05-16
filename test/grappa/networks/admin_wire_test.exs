@@ -17,7 +17,8 @@ defmodule Grappa.Networks.AdminWireTest do
       net = %Network{
         id: 42,
         slug: "azzurra",
-        max_concurrent_sessions: 10,
+        max_concurrent_visitor_sessions: 10,
+        max_concurrent_user_sessions: 5,
         max_per_client: 2,
         inserted_at: now,
         updated_at: now
@@ -26,7 +27,8 @@ defmodule Grappa.Networks.AdminWireTest do
       assert %{
                id: 42,
                slug: "azzurra",
-               max_concurrent_sessions: 10,
+               max_concurrent_visitor_sessions: 10,
+               max_concurrent_user_sessions: 5,
                max_per_client: 2,
                inserted_at: ^now,
                updated_at: ^now
@@ -35,10 +37,22 @@ defmodule Grappa.Networks.AdminWireTest do
 
     test "nil caps round-trip as nil (operator-cleared = unlimited)" do
       now = DateTime.utc_now()
-      net = %Network{id: 1, slug: "n", inserted_at: now, updated_at: now}
+      # max_concurrent_user_sessions: nil explicit — the schema
+      # default is 3, but the test exercises the operator-cleared
+      # branch where the column was explicitly set to NULL.
+      net = %Network{
+        id: 1,
+        slug: "n",
+        max_concurrent_user_sessions: nil,
+        inserted_at: now,
+        updated_at: now
+      }
 
-      assert %{max_concurrent_sessions: nil, max_per_client: nil} =
-               AdminWire.network_to_admin_json(net)
+      assert %{
+               max_concurrent_visitor_sessions: nil,
+               max_concurrent_user_sessions: nil,
+               max_per_client: nil
+             } = AdminWire.network_to_admin_json(net)
     end
   end
 end

@@ -23,11 +23,11 @@ defmodule GrappaWeb.Admin.NetworksController do
   ## PATCH /admin/networks/:slug — edit caps
 
   Updates the operator-tunable admission caps
-  (`max_concurrent_sessions`, `max_per_client`). Three-valued
-  contract per `Networks.update_network_caps/2`: `nil` clears the
-  cap (unlimited), `0` is degenerate lock-down, `N>0` is the cap
-  itself. Negative integers fail validation at the changeset
-  boundary.
+  (`max_concurrent_visitor_sessions`, `max_concurrent_user_sessions`,
+  `max_per_client`). Three-valued contract per
+  `Networks.update_network_caps/2`: `nil` clears the cap (unlimited),
+  `0` is degenerate lock-down, `N>0` is the cap itself. Negative
+  integers fail validation at the changeset boundary.
 
   Returns `200 OK` with the updated row in the same shape as a
   single GET row. `404 not_found` on unknown slug;
@@ -99,7 +99,8 @@ defmodule GrappaWeb.Admin.NetworksController do
       AdminEventsWire.network_caps_updated(
         network.id,
         network.slug,
-        network.max_concurrent_sessions,
+        network.max_concurrent_visitor_sessions,
+        network.max_concurrent_user_sessions,
         network.max_per_client,
         actor_id,
         actor_name
@@ -117,14 +118,20 @@ defmodule GrappaWeb.Admin.NetworksController do
     end)
   end
 
-  # Whitelist the two caps; everything else collapses to bad_request.
-  # `update_network_caps/2` cares only about `:max_concurrent_sessions`
+  # Whitelist the three caps; everything else collapses to bad_request.
+  # `update_network_caps/2` cares only about
+  # `:max_concurrent_visitor_sessions`, `:max_concurrent_user_sessions`,
   # and `:max_per_client` keys; an empty map is a no-op update (valid).
   # Null is a meaningful "clear the cap" value; the changeset rejects
   # negative integers and non-integers, so the FallbackController
   # validation_failed clause carries the field error to the operator.
   defp caps_attrs(params) do
-    allowed = ["max_concurrent_sessions", "max_per_client"]
+    allowed = [
+      "max_concurrent_visitor_sessions",
+      "max_concurrent_user_sessions",
+      "max_per_client"
+    ]
+
     keys = Map.keys(params) -- ["slug"]
     extra = keys -- allowed
 

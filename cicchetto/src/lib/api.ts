@@ -741,7 +741,8 @@ export type WireAdminEvent =
       kind: "network_caps_updated";
       network_id: number;
       network_slug: string;
-      max_concurrent_sessions: number | null;
+      max_concurrent_visitor_sessions: number | null;
+      max_concurrent_user_sessions: number | null;
       max_per_client: number | null;
       actor_user_id: string | null;
       actor_user_name: string | null;
@@ -1010,7 +1011,8 @@ export type AdminCircuitState = {
 export type AdminNetwork = {
   id: number;
   slug: string;
-  max_concurrent_sessions: number | null;
+  max_concurrent_visitor_sessions: number | null;
+  max_concurrent_user_sessions: number | null;
   max_per_client: number | null;
   inserted_at: string;
   updated_at: string;
@@ -1020,14 +1022,17 @@ export type AdminNetwork = {
 export type AdminNetworksResponse = { networks: AdminNetwork[] };
 
 // PATCH body is keys-optional per `Networks.update_network_caps/2`'s
-// `%{optional(:max_concurrent_sessions) => ..., optional(:max_per_client) => ...}`
-// contract: unsupplied keys keep their current value. Cic MUST only
-// include keys whose value actually changed vs the server-echoed row
-// — sending both keys on every edit creates a lost-update race
-// (operator A's Save would silently roll back operator B's
-// concurrently-saved change to the OTHER cap). CRIT-1 of M-10 review.
+// `%{optional(:max_concurrent_visitor_sessions) => ...,
+// optional(:max_concurrent_user_sessions) => ...,
+// optional(:max_per_client) => ...}` contract: unsupplied keys keep
+// their current value. Cic MUST only include keys whose value
+// actually changed vs the server-echoed row — sending all keys on
+// every edit creates a lost-update race (operator A's Save would
+// silently roll back operator B's concurrently-saved change to the
+// OTHER cap). CRIT-1 of M-10 review.
 export type AdminNetworkCapsPatch = {
-  max_concurrent_sessions?: number | null;
+  max_concurrent_visitor_sessions?: number | null;
+  max_concurrent_user_sessions?: number | null;
   max_per_client?: number | null;
 };
 

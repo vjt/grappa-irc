@@ -169,7 +169,7 @@ services:
         # bind here — visitor minting provisions its own anon visitor
         # rows at request time; the credential table stays
         # bind_network-scoped to user accounts.
-        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_sessions: 100})'
+        mix run -e '{:ok, _net} = Grappa.Networks.find_or_create_network(%{slug: "azzurra", max_concurrent_visitor_sessions: 100})'
         mix grappa.add_server --network azzurra --server bahamut-test:6667
     networks:
       grappa-e2e: {}

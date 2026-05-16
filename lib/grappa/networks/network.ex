@@ -31,7 +31,8 @@ defmodule Grappa.Networks.Network do
   @type t :: %__MODULE__{
           id: integer() | nil,
           slug: String.t() | nil,
-          max_concurrent_sessions: non_neg_integer() | nil,
+          max_concurrent_visitor_sessions: non_neg_integer() | nil,
+          max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_client: non_neg_integer() | nil,
           servers: [Server.t()] | Ecto.Association.NotLoaded.t(),
           credentials: [Credential.t()] | Ecto.Association.NotLoaded.t(),
@@ -41,7 +42,15 @@ defmodule Grappa.Networks.Network do
 
   schema "networks" do
     field :slug, :string
-    field :max_concurrent_sessions, :integer
+    # U-1 split: visitor + user caps independently. Visitor cap inherits
+    # the historic `max_concurrent_sessions` value via migration rename;
+    # user cap defaults to 3 at both the DB level (column DEFAULT 3) and
+    # the schema level (so `Repo.insert/2` returns a struct matching the
+    # DB row, not a nil-divergence). NULL on either column means
+    # "unlimited" — three-valued contract unchanged from the pre-U-1
+    # single column.
+    field :max_concurrent_visitor_sessions, :integer
+    field :max_concurrent_user_sessions, :integer, default: 3
     field :max_per_client, :integer
 
     has_many :servers, Server
@@ -65,10 +74,16 @@ defmodule Grappa.Networks.Network do
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(network, attrs) do
     network
-    |> cast(attrs, [:slug, :max_concurrent_sessions, :max_per_client])
+    |> cast(attrs, [
+      :slug,
+      :max_concurrent_visitor_sessions,
+      :max_concurrent_user_sessions,
+      :max_per_client
+    ])
     |> validate_required([:slug])
     |> validate_change(:slug, &validate_slug/2)
-    |> validate_change(:max_concurrent_sessions, &validate_non_negative_or_nil/2)
+    |> validate_change(:max_concurrent_visitor_sessions, &validate_non_negative_or_nil/2)
+    |> validate_change(:max_concurrent_user_sessions, &validate_non_negative_or_nil/2)
     |> validate_change(:max_per_client, &validate_non_negative_or_nil/2)
     |> unique_constraint(:slug)
   end

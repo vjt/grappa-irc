@@ -133,7 +133,8 @@ defmodule Grappa.AdminEvents.Wire do
           kind: :network_caps_updated,
           network_id: integer(),
           network_slug: String.t(),
-          max_concurrent_sessions: integer() | nil,
+          max_concurrent_visitor_sessions: integer() | nil,
+          max_concurrent_user_sessions: integer() | nil,
           max_per_client: integer() | nil,
           actor_user_id: String.t() | nil,
           actor_user_name: String.t() | nil,
@@ -335,25 +336,36 @@ defmodule Grappa.AdminEvents.Wire do
           String.t(),
           integer() | nil,
           integer() | nil,
+          integer() | nil,
           String.t() | nil,
           String.t() | nil
         ) :: network_caps_updated_event()
   def network_caps_updated(
         network_id,
         network_slug,
-        max_concurrent_sessions,
+        max_concurrent_visitor_sessions,
+        max_concurrent_user_sessions,
         max_per_client,
         actor_user_id,
         actor_user_name
       ) do
-    :ok = validate_caps_args(network_id, network_slug, max_concurrent_sessions, max_per_client)
+    :ok =
+      validate_caps_args(
+        network_id,
+        network_slug,
+        max_concurrent_visitor_sessions,
+        max_concurrent_user_sessions,
+        max_per_client
+      )
+
     :ok = validate_actor(actor_user_id, actor_user_name)
 
     %{
       kind: :network_caps_updated,
       network_id: network_id,
       network_slug: network_slug,
-      max_concurrent_sessions: max_concurrent_sessions,
+      max_concurrent_visitor_sessions: max_concurrent_visitor_sessions,
+      max_concurrent_user_sessions: max_concurrent_user_sessions,
       max_per_client: max_per_client,
       actor_user_id: actor_user_id,
       actor_user_name: actor_user_name,
@@ -361,14 +373,23 @@ defmodule Grappa.AdminEvents.Wire do
     }
   end
 
-  # Split out to keep `network_caps_updated/6` below Credo's
-  # cyclomatic-complexity gate. The 6-arg signature has too many
+  # Split out to keep `network_caps_updated/7` below Credo's
+  # cyclomatic-complexity gate. The 7-arg signature has too many
   # `when` clauses to fit a single head — splitting into two arg-
   # group validators keeps each below the gate while preserving the
   # fail-loud invariant.
-  defp validate_caps_args(network_id, network_slug, max_concurrent_sessions, max_per_client)
+  defp validate_caps_args(
+         network_id,
+         network_slug,
+         max_concurrent_visitor_sessions,
+         max_concurrent_user_sessions,
+         max_per_client
+       )
        when is_integer(network_id) and is_binary(network_slug) and network_slug != "" and
-              (is_integer(max_concurrent_sessions) or is_nil(max_concurrent_sessions)) and
+              (is_integer(max_concurrent_visitor_sessions) or
+                 is_nil(max_concurrent_visitor_sessions)) and
+              (is_integer(max_concurrent_user_sessions) or
+                 is_nil(max_concurrent_user_sessions)) and
               (is_integer(max_per_client) or is_nil(max_per_client)),
        do: :ok
 

@@ -120,11 +120,16 @@ defmodule Grappa.Admission do
   end
 
   defp check_network_total(network_id) do
+    # U-1: reads `max_concurrent_visitor_sessions` only — the renamed
+    # successor to the pre-U-1 single `max_concurrent_sessions` column.
+    # Subject-aware split (visitor cap + separate user cap, evaluated
+    # per `flow`'s subject_kind) lands in U-2; the schema split lives
+    # in U-1 with logic unchanged so the migration ships independently.
     case Repo.get(Network, network_id) do
-      %Network{max_concurrent_sessions: nil} ->
+      %Network{max_concurrent_visitor_sessions: nil} ->
         :ok
 
-      %Network{max_concurrent_sessions: cap} ->
+      %Network{max_concurrent_visitor_sessions: cap} ->
         live = count_live_sessions(network_id)
         if live >= cap, do: {:error, :network_cap_exceeded}, else: :ok
 

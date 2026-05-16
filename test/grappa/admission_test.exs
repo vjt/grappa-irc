@@ -6,9 +6,10 @@ defmodule Grappa.AdmissionTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Admission, AdmissionStateHelpers}
+  alias Grappa.{Admission, AdmissionStateHelpers, Repo}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
   alias Grappa.Admission.{Config, NetworkCircuit}
+  alias Grappa.Networks.Network
 
   setup do
     AdmissionStateHelpers.reset_network_circuit()
@@ -56,7 +57,7 @@ defmodule Grappa.AdmissionTest do
     end
 
     test "exceeded → :network_cap_exceeded", %{network: net} do
-      # Task 4 changeset rejects max_concurrent_sessions: 0 (validate_number
+      # Task 4 changeset rejects max_concurrent_visitor_sessions: 0 (validate_number
       # greater_than: 0). Use cap=1 + register one fake live-session entry
       # in SessionRegistry so Registry.count_select returns 1, tripping the
       # cap. The fake key MUST go through `Server.registry_key/2` so the
@@ -66,8 +67,8 @@ defmodule Grappa.AdmissionTest do
       # when the test pid exits.
       {:ok, net} =
         net
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
-        |> Grappa.Repo.update()
+        |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
+        |> Repo.update()
 
       {:ok, _} =
         Registry.register(
@@ -83,6 +84,33 @@ defmodule Grappa.AdmissionTest do
       }
 
       assert {:error, :network_cap_exceeded} = Admission.check_capacity(input)
+    end
+
+    test "U-1 scope: max_concurrent_user_sessions is NOT read by admission yet",
+         %{network: net} do
+      # MED-2 boundary lock: U-1 schema adds the column but admission
+      # logic continues to read max_concurrent_visitor_sessions only.
+      # A configuration that sets user_sessions=0 (which would lock out
+      # all user logins under U-2) MUST still admit successfully under
+      # U-1 — proves the logic split has not regressed into U-1's scope.
+      # When U-2 lands, this test gets DELETED (intentional canary, not
+      # a permanent shape) and the matching `it_does_read` test takes
+      # its place.
+      {:ok, net} =
+        net
+        |> Network.changeset(%{
+          max_concurrent_visitor_sessions: 100,
+          max_concurrent_user_sessions: 0
+        })
+        |> Repo.update()
+
+      input = %{
+        network_id: net.id,
+        client_id: "44c2ab8a-cb38-4960-b92a-a7aefb190386",
+        flow: :login_fresh
+      }
+
+      assert :ok = Admission.check_capacity(input)
     end
   end
 
@@ -231,8 +259,8 @@ defmodule Grappa.AdmissionTest do
 
       {:ok, capped_net} =
         net
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
-        |> Grappa.Repo.update()
+        |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
+        |> Repo.update()
 
       {:ok, _} =
         Registry.register(

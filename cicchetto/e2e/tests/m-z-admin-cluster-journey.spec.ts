@@ -69,7 +69,7 @@ async function openAdminPane(page: import("@playwright/test").Page): Promise<voi
 }
 
 // PATCH /admin/networks/:slug — partial body shape per M-10. Only
-// max_concurrent_sessions is sent; max_per_client unchanged.
+// max_concurrent_visitor_sessions is sent; max_per_client unchanged.
 async function patchNetworkCap(adminToken: string, slug: string, cap: number): Promise<void> {
   const url = `${GRAPPA_BASE_URL}/admin/networks/${encodeURIComponent(slug)}`;
   const res = await fetch(url, {
@@ -78,7 +78,7 @@ async function patchNetworkCap(adminToken: string, slug: string, cap: number): P
       authorization: `Bearer ${adminToken}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ max_concurrent_sessions: cap }),
+    body: JSON.stringify({ max_concurrent_visitor_sessions: cap }),
   });
   if (!res.ok) {
     throw new Error(`patchNetworkCap: ${slug}=${cap} → ${res.status} ${await res.text()}`);

@@ -25,7 +25,13 @@ defmodule Grappa.SpawnOrchestrator do
     * `Grappa.Networks` already deps `Grappa.Session` (Networks reads
       live nick / window state for wire shape).
     * `Grappa.Admission` deps `Grappa.Networks` (cap reads via
-      `Network.max_concurrent_sessions` + `Credential` SQL joins).
+      `Network.max_concurrent_visitor_sessions` + `Credential` SQL
+      joins). The U-1 schema split added
+      `Network.max_concurrent_user_sessions` but admission still
+      reads visitor-only — U-2 (subject-aware logic split) will
+      flip admission to read both columns per `flow`'s subject_kind.
+      Either way the `Admission → Networks` edge stays, so the cycle
+      argument below is unchanged.
 
   Adding `Grappa.Session → Grappa.Admission` would close that
   triangle, which Boundary correctly rejects.

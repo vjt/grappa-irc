@@ -22,7 +22,8 @@ import AdminNetworksTab from "../AdminNetworksTab";
 // M-cluster M-10 — Networks tab unit suite. Mirror of
 // AdminVisitorsTab.test.tsx / AdminSessionsTab.test.tsx structure.
 //
-// Per-row surface: two inline number editors (max_concurrent_sessions
+// Per-row surface: three inline number editors
+// (max_concurrent_visitor_sessions + max_concurrent_user_sessions
 // + max_per_client) + per-row Save (enabled only when dirty vs.
 // server-echoed value) + per-row Reset Circuit (InlineConfirmButton,
 // visible only when circuit_state !== null).
@@ -39,7 +40,8 @@ import AdminNetworksTab from "../AdminNetworksTab";
 const BAHAMUT: AdminNetwork = {
   id: 1,
   slug: "bahamut-test",
-  max_concurrent_sessions: 100,
+  max_concurrent_visitor_sessions: 100,
+  max_concurrent_user_sessions: 3,
   max_per_client: 5,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
@@ -49,7 +51,8 @@ const BAHAMUT: AdminNetwork = {
 const AZZURRA: AdminNetwork = {
   id: 2,
   slug: "azzurra",
-  max_concurrent_sessions: 100,
+  max_concurrent_visitor_sessions: 100,
+  max_concurrent_user_sessions: 3,
   max_per_client: 3,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
@@ -59,7 +62,8 @@ const AZZURRA: AdminNetwork = {
 const OPEN_CIRCUIT: AdminNetwork = {
   id: 3,
   slug: "tripped",
-  max_concurrent_sessions: 100,
+  max_concurrent_visitor_sessions: 100,
+  max_concurrent_user_sessions: 3,
   max_per_client: 3,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
@@ -75,7 +79,8 @@ const OPEN_CIRCUIT: AdminNetwork = {
 const UNLIMITED: AdminNetwork = {
   id: 4,
   slug: "unlimited",
-  max_concurrent_sessions: null,
+  max_concurrent_visitor_sessions: null,
+  max_concurrent_user_sessions: null,
   max_per_client: null,
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
@@ -131,7 +136,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     expect(sessionsInput.value).toBe("100");
     const perClientInput = screen.getByTestId(
@@ -147,7 +152,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${UNLIMITED.slug}`,
+      `admin-network-max-visitor-sessions-${UNLIMITED.slug}`,
     )) as HTMLInputElement;
     expect(sessionsInput.value).toBe("");
     expect(sessionsInput.placeholder).toMatch(/unlimited/i);
@@ -169,16 +174,16 @@ describe("AdminNetworksTab", () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListNetworks)
       .mockResolvedValueOnce([BAHAMUT])
-      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_sessions: 200 }]);
+      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_visitor_sessions: 200 }]);
     vi.mocked(api.adminPatchNetworkCaps).mockResolvedValue({
       ...BAHAMUT,
-      max_concurrent_sessions: 200,
+      max_concurrent_visitor_sessions: 200,
     });
 
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     const save = screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`) as HTMLButtonElement;
     fireEvent.input(sessionsInput, { target: { value: "200" } });
@@ -189,7 +194,7 @@ describe("AdminNetworksTab", () => {
     // the unchanged value would lose concurrent edits to that field).
     await waitFor(() => {
       expect(api.adminPatchNetworkCaps).toHaveBeenCalledWith("test-bearer", BAHAMUT.slug, {
-        max_concurrent_sessions: 200,
+        max_concurrent_visitor_sessions: 200,
       });
     });
     // Server response is authoritative — refresh re-fetches; the next
@@ -204,17 +209,17 @@ describe("AdminNetworksTab", () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListNetworks)
       .mockResolvedValueOnce([BAHAMUT])
-      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_sessions: 200, max_per_client: 9 }]);
+      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_visitor_sessions: 200, max_per_client: 9 }]);
     vi.mocked(api.adminPatchNetworkCaps).mockResolvedValue({
       ...BAHAMUT,
-      max_concurrent_sessions: 200,
+      max_concurrent_visitor_sessions: 200,
       max_per_client: 9,
     });
 
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     const perClientInput = screen.getByTestId(
       `admin-network-max-per-client-${BAHAMUT.slug}`,
@@ -224,7 +229,7 @@ describe("AdminNetworksTab", () => {
     fireEvent.click(screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`));
     await waitFor(() => {
       expect(api.adminPatchNetworkCaps).toHaveBeenCalledWith("test-bearer", BAHAMUT.slug, {
-        max_concurrent_sessions: 200,
+        max_concurrent_visitor_sessions: 200,
         max_per_client: 9,
       });
     });
@@ -234,22 +239,22 @@ describe("AdminNetworksTab", () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListNetworks)
       .mockResolvedValueOnce([BAHAMUT])
-      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_sessions: null }]);
+      .mockResolvedValueOnce([{ ...BAHAMUT, max_concurrent_visitor_sessions: null }]);
     vi.mocked(api.adminPatchNetworkCaps).mockResolvedValue({
       ...BAHAMUT,
-      max_concurrent_sessions: null,
+      max_concurrent_visitor_sessions: null,
     });
 
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     fireEvent.input(sessionsInput, { target: { value: "" } });
     fireEvent.click(screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`));
     await waitFor(() => {
       expect(api.adminPatchNetworkCaps).toHaveBeenCalledWith("test-bearer", BAHAMUT.slug, {
-        max_concurrent_sessions: null,
+        max_concurrent_visitor_sessions: null,
       });
     });
   });
@@ -261,7 +266,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     fireEvent.input(sessionsInput, { target: { value: "-3" } });
     const save = screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`) as HTMLButtonElement;
@@ -277,7 +282,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     // 99999999999999999999 exceeds JS safe-integer; cic guards instead
     // of trusting Number.parseInt's silent truncation (HIGH-2).
@@ -297,7 +302,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     fireEvent.input(sessionsInput, { target: { value: "200" } });
     fireEvent.click(screen.getByTestId(`admin-network-save-${BAHAMUT.slug}`));
@@ -395,7 +400,7 @@ describe("AdminNetworksTab", () => {
     render(() => <AdminNetworksTab />);
 
     const sessionsInput = (await screen.findByTestId(
-      `admin-network-max-sessions-${BAHAMUT.slug}`,
+      `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
     )) as HTMLInputElement;
     fireEvent.input(sessionsInput, { target: { value: "200" } });
     fireEvent.click(screen.getByTestId("admin-networks-refresh"));
@@ -404,7 +409,7 @@ describe("AdminNetworksTab", () => {
     });
     await waitFor(() => {
       const post = screen.getByTestId(
-        `admin-network-max-sessions-${BAHAMUT.slug}`,
+        `admin-network-max-visitor-sessions-${BAHAMUT.slug}`,
       ) as HTMLInputElement;
       expect(post.value).toBe("100");
     });

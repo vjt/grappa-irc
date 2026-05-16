@@ -344,7 +344,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       # Saturate the network: cap=0 means every spawn attempt rejects
       # at admission. No live session needed — `Admission.check_network_total/1`
       # short-circuits on cap==0.
-      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_sessions: 0})
+      {:ok, _} = Networks.update_network_caps(network, %{max_concurrent_visitor_sessions: 0})
 
       conn =
         conn

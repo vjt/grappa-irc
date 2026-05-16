@@ -453,7 +453,7 @@ defmodule Grappa.BootstrapTest do
 
   describe "run/0 network total cap (T31)" do
     # Plan 2 Task 4 — Bootstrap respects per-network total session cap on
-    # cold-start. If `networks.max_concurrent_sessions` is lower than the
+    # cold-start. If `networks.max_concurrent_visitor_sessions` is lower than the
     # number of credential/visitor rows pointing at that network, the
     # over-cap rows are skipped + warned. No queue, no retry — clean
     # skip-and-log per the Bootstrap moduledoc's best-effort contract.
@@ -471,7 +471,7 @@ defmodule Grappa.BootstrapTest do
 
       {:ok, network} =
         fresh_network
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 1})
+        |> Grappa.Networks.Network.changeset(%{max_concurrent_visitor_sessions: 1})
         |> Grappa.Repo.update()
 
       for n <- 1..3 do
@@ -523,7 +523,7 @@ defmodule Grappa.BootstrapTest do
 
       {:ok, network} =
         fresh_network
-        |> Grappa.Networks.Network.changeset(%{max_concurrent_sessions: 2})
+        |> Grappa.Networks.Network.changeset(%{max_concurrent_visitor_sessions: 2})
         |> Grappa.Repo.update()
 
       for n <- 1..3 do

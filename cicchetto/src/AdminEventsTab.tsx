@@ -55,7 +55,7 @@ function renderEvent(ev: WireAdminEvent): string {
     case "session_terminated":
       return `${ev.subject_kind}:${ev.subject_id} @ ${networkLabel(ev.network_slug, ev.network_id)} terminated${actorSuffix(ev.actor_user_name)}`;
     case "network_caps_updated":
-      return `${ev.network_slug} caps: sessions=${capLabel(ev.max_concurrent_sessions)}, perClient=${capLabel(ev.max_per_client)}${actorSuffix(ev.actor_user_name)}`;
+      return `${ev.network_slug} caps: visitorSessions=${capLabel(ev.max_concurrent_visitor_sessions)}, userSessions=${capLabel(ev.max_concurrent_user_sessions)}, perClient=${capLabel(ev.max_per_client)}${actorSuffix(ev.actor_user_name)}`;
     case "circuit_reset":
       return `circuit RESET for ${networkLabel(ev.network_slug, ev.network_id)}${actorSuffix(ev.actor_user_name)}`;
     default:

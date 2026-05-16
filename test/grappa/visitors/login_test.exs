@@ -283,7 +283,7 @@ defmodule Grappa.Visitors.LoginTest do
     end
 
     test "network_cap_exceeded → {:error, :network_cap_exceeded}", %{network: net} do
-      # Task 4 changeset rejects max_concurrent_sessions: 0.
+      # Task 4 changeset rejects max_concurrent_visitor_sessions: 0.
       # Use cap=1 + register one fake live-session entry in SessionRegistry
       # so Registry.count_select returns 1, tripping the cap. The fake key
       # MUST go through `Server.registry_key/2` so the match-spec in
@@ -292,7 +292,7 @@ defmodule Grappa.Visitors.LoginTest do
       # while encoding the bug.
       {:ok, capped_net} =
         net
-        |> Network.changeset(%{max_concurrent_sessions: 1})
+        |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
         |> Repo.update()
 
       {:ok, _} =

@@ -188,13 +188,14 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     );
   });
 
-  it("network_caps_updated with both caps + actor", () => {
+  it("network_caps_updated with all three caps + actor", () => {
     events = [
       sample({
         kind: "network_caps_updated",
         network_id: 1,
         network_slug: "azzurra",
-        max_concurrent_sessions: 100,
+        max_concurrent_visitor_sessions: 100,
+        max_concurrent_user_sessions: 50,
         max_per_client: 5,
         actor_user_id: "vjt-uuid",
         actor_user_name: "vjt",
@@ -202,7 +203,8 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     ];
     render(() => <AdminEventsTab />);
     const row = screen.getByTestId("admin-event-network_caps_updated");
-    expect(row.textContent).toContain("azzurra caps: sessions=100");
+    expect(row.textContent).toContain("azzurra caps: visitorSessions=100");
+    expect(row.textContent).toContain("userSessions=50");
     expect(row.textContent).toContain("perClient=5");
     expect(row.textContent).toContain("by vjt");
   });
@@ -213,7 +215,8 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
         kind: "network_caps_updated",
         network_id: 1,
         network_slug: "azzurra",
-        max_concurrent_sessions: null,
+        max_concurrent_visitor_sessions: null,
+        max_concurrent_user_sessions: null,
         max_per_client: null,
         actor_user_id: null,
         actor_user_name: null,
@@ -221,7 +224,7 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     ];
     render(() => <AdminEventsTab />);
     expect(screen.getByTestId("admin-event-network_caps_updated").textContent).toContain(
-      "sessions=∞",
+      "visitorSessions=∞",
     );
   });
 

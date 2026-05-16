@@ -14,46 +14,53 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
     %{network: network}
   end
 
-  test "sets both --max-sessions and --max-per-client", %{network: network} do
+  test "sets all three caps (visitor + user + per_client)", %{network: network} do
     output =
       capture_io(fn ->
         SetNetworkCaps.run([
           "--network",
           "azzurra",
-          "--max-sessions",
+          "--max-visitor-sessions",
           "3",
+          "--max-user-sessions",
+          "5",
           "--max-per-client",
           "1"
         ])
       end)
 
-    assert output =~ "set caps on azzurra: max_concurrent_sessions=3 max_per_client=1"
+    assert output =~
+             "set caps on azzurra: max_concurrent_visitor_sessions=3 max_concurrent_user_sessions=5 max_per_client=1"
 
     refreshed = Networks.get_network_by_slug!(network.slug)
-    assert refreshed.max_concurrent_sessions == 3
+    assert refreshed.max_concurrent_visitor_sessions == 3
+    assert refreshed.max_concurrent_user_sessions == 5
     assert refreshed.max_per_client == 1
   end
 
   test "updates only the cap flags supplied; preserves the rest" do
     {:ok, _} =
       Networks.update_network_caps(Networks.get_network_by_slug!("azzurra"), %{
-        max_concurrent_sessions: 5,
+        max_concurrent_visitor_sessions: 5,
         max_per_client: 2
       })
 
     capture_io(fn ->
-      SetNetworkCaps.run(["--network", "azzurra", "--max-sessions", "10"])
+      SetNetworkCaps.run(["--network", "azzurra", "--max-visitor-sessions", "10"])
     end)
 
     refreshed = Networks.get_network_by_slug!("azzurra")
-    assert refreshed.max_concurrent_sessions == 10
+    assert refreshed.max_concurrent_visitor_sessions == 10
     assert refreshed.max_per_client == 2
+    # NULL DEFAULT 3 on the schema (post-U-1) — operator unset =
+    # schema default applies.
+    assert refreshed.max_concurrent_user_sessions == 3
   end
 
   test "raises Mix.Error with friendly message when the network slug is unknown" do
     assert_raise Mix.Error, ~r/network "ghost" not found/, fn ->
       capture_io(fn ->
-        SetNetworkCaps.run(["--network", "ghost", "--max-sessions", "3"])
+        SetNetworkCaps.run(["--network", "ghost", "--max-visitor-sessions", "3"])
       end)
     end
   end
@@ -61,7 +68,7 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
   test "raises Mix.Error with friendly message when --network is missing" do
     assert_raise Mix.Error, ~r/--network <slug> is required/, fn ->
       capture_io(fn ->
-        SetNetworkCaps.run(["--max-sessions", "3"])
+        SetNetworkCaps.run(["--max-visitor-sessions", "3"])
       end)
     end
   end
@@ -74,23 +81,45 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
     end
   end
 
-  test "--clear-max-sessions clears the cap", %{network: network} do
+  test "--clear-max-visitor-sessions clears the cap", %{network: network} do
     {:ok, _} =
-      Networks.update_network_caps(network, %{max_concurrent_sessions: 5, max_per_client: 2})
+      Networks.update_network_caps(network, %{
+        max_concurrent_visitor_sessions: 5,
+        max_per_client: 2
+      })
 
     capture_io(fn ->
-      SetNetworkCaps.run(["--network", "azzurra", "--clear-max-sessions"])
+      SetNetworkCaps.run(["--network", "azzurra", "--clear-max-visitor-sessions"])
     end)
 
     refreshed = Networks.get_network_by_slug!("azzurra")
-    assert is_nil(refreshed.max_concurrent_sessions)
+    assert is_nil(refreshed.max_concurrent_visitor_sessions)
     # symmetry: the unsupplied cap is preserved
+    assert refreshed.max_per_client == 2
+  end
+
+  test "--clear-max-user-sessions clears the cap", %{network: network} do
+    {:ok, _} =
+      Networks.update_network_caps(network, %{
+        max_concurrent_user_sessions: 7,
+        max_per_client: 2
+      })
+
+    capture_io(fn ->
+      SetNetworkCaps.run(["--network", "azzurra", "--clear-max-user-sessions"])
+    end)
+
+    refreshed = Networks.get_network_by_slug!("azzurra")
+    assert is_nil(refreshed.max_concurrent_user_sessions)
     assert refreshed.max_per_client == 2
   end
 
   test "--clear-max-per-client clears the cap", %{network: network} do
     {:ok, _} =
-      Networks.update_network_caps(network, %{max_concurrent_sessions: 5, max_per_client: 2})
+      Networks.update_network_caps(network, %{
+        max_concurrent_visitor_sessions: 5,
+        max_per_client: 2
+      })
 
     capture_io(fn ->
       SetNetworkCaps.run(["--network", "azzurra", "--clear-max-per-client"])
@@ -98,18 +127,32 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
 
     refreshed = Networks.get_network_by_slug!("azzurra")
     assert is_nil(refreshed.max_per_client)
-    assert refreshed.max_concurrent_sessions == 5
+    assert refreshed.max_concurrent_visitor_sessions == 5
   end
 
-  test "--clear-max-sessions and --max-sessions are mutually exclusive" do
+  test "--clear-max-visitor-sessions and --max-visitor-sessions are mutually exclusive" do
     assert_raise Mix.Error, ~r/mutually exclusive/, fn ->
       capture_io(fn ->
         SetNetworkCaps.run([
           "--network",
           "azzurra",
-          "--max-sessions",
+          "--max-visitor-sessions",
           "5",
-          "--clear-max-sessions"
+          "--clear-max-visitor-sessions"
+        ])
+      end)
+    end
+  end
+
+  test "--clear-max-user-sessions and --max-user-sessions are mutually exclusive" do
+    assert_raise Mix.Error, ~r/mutually exclusive/, fn ->
+      capture_io(fn ->
+        SetNetworkCaps.run([
+          "--network",
+          "azzurra",
+          "--max-user-sessions",
+          "5",
+          "--clear-max-user-sessions"
         ])
       end)
     end
@@ -136,14 +179,19 @@ defmodule Mix.Tasks.Grappa.SetNetworkCapsTest do
       SetNetworkCaps.run([
         "--network",
         "azzurra",
-        "--max-sessions",
+        "--max-visitor-sessions",
         "7",
+        "--max-user-sessions",
+        "11",
         "--max-per-client",
         "2"
       ])
     end)
 
-    assert %Network{max_concurrent_sessions: 7, max_per_client: 2} =
-             Networks.get_network!(network.id)
+    assert %Network{
+             max_concurrent_visitor_sessions: 7,
+             max_concurrent_user_sessions: 11,
+             max_per_client: 2
+           } = Networks.get_network!(network.id)
   end
 end

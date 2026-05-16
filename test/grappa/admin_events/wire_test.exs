@@ -133,23 +133,25 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
-  describe "network_caps_updated/6" do
-    test "renders with both caps set" do
-      event = Wire.network_caps_updated(1, "azzurra", 5, 2, "u-id", "vjt")
+  describe "network_caps_updated/7" do
+    test "renders with all three caps set" do
+      event = Wire.network_caps_updated(1, "azzurra", 5, 7, 2, "u-id", "vjt")
       assert event.kind == :network_caps_updated
-      assert event.max_concurrent_sessions == 5
+      assert event.max_concurrent_visitor_sessions == 5
+      assert event.max_concurrent_user_sessions == 7
       assert event.max_per_client == 2
     end
 
     test "nil caps mean unlimited" do
-      event = Wire.network_caps_updated(1, "azzurra", nil, nil, nil, nil)
-      assert event.max_concurrent_sessions == nil
+      event = Wire.network_caps_updated(1, "azzurra", nil, nil, nil, nil, nil)
+      assert event.max_concurrent_visitor_sessions == nil
+      assert event.max_concurrent_user_sessions == nil
       assert event.max_per_client == nil
     end
 
     test "rejects empty slug" do
       assert_raise FunctionClauseError, fn ->
-        Wire.network_caps_updated(1, "", 5, 2, nil, nil)
+        Wire.network_caps_updated(1, "", 5, 7, 2, nil, nil)
       end
     end
   end

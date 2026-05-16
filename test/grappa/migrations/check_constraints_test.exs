@@ -19,12 +19,16 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
   alias Grappa.Scrollback.Message
 
   describe "networks caps" do
-    test "max_concurrent_sessions_non_negative rejects -1" do
+    test "max_concurrent_sessions_non_negative rejects -1 (post-U-1: CHECK name unchanged; column renamed)" do
       ts = "2026-05-04T00:00:00Z"
 
+      # The U-1 migration uses ALTER TABLE RENAME COLUMN, which
+      # rewrites the CHECK expression but NOT the constraint name.
+      # The constraint stays named `max_concurrent_sessions_non_negative`
+      # and fires against the renamed column.
       assert_raise Exqlite.Error, ~r/max_concurrent_sessions_non_negative/, fn ->
         Repo.query!(
-          "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_sessions) VALUES (?, ?, ?, ?)",
+          "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_visitor_sessions) VALUES (?, ?, ?, ?)",
           ["check-test-#{System.unique_integer([:positive])}", ts, ts, -1]
         )
       end
@@ -41,10 +45,11 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
       end
     end
 
-    test "both caps accept NULL (the null-cap default)" do
+    test "visitor + per_client caps accept NULL (the null-cap default)" do
       ts = "2026-05-04T00:00:00Z"
 
-      # Sanity check that NULL passes — the CHECK is "IS NULL OR >= 0".
+      # max_concurrent_user_sessions is NULL DEFAULT 3 in the
+      # post-U-1 schema; omitting the column lets the default apply.
       assert {:ok, _} =
                Repo.query(
                  "INSERT INTO networks (slug, inserted_at, updated_at) VALUES (?, ?, ?)",
@@ -52,13 +57,13 @@ defmodule Grappa.Migrations.CheckConstraintsTest do
                )
     end
 
-    test "both caps accept 0 (degenerate lock-down)" do
+    test "all three caps accept 0 (degenerate lock-down)" do
       ts = "2026-05-04T00:00:00Z"
 
       assert {:ok, _} =
                Repo.query(
-                 "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_sessions, max_per_client) VALUES (?, ?, ?, ?, ?)",
-                 ["check-test-#{System.unique_integer([:positive])}", ts, ts, 0, 0]
+                 "INSERT INTO networks (slug, inserted_at, updated_at, max_concurrent_visitor_sessions, max_concurrent_user_sessions, max_per_client) VALUES (?, ?, ?, ?, ?, ?)",
+                 ["check-test-#{System.unique_integer([:positive])}", ts, ts, 0, 0, 0]
                )
     end
   end

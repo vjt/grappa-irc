@@ -34,7 +34,8 @@ defmodule Grappa.Networks.AdminWire do
   @type t :: %{
           id: integer(),
           slug: String.t(),
-          max_concurrent_sessions: non_neg_integer() | nil,
+          max_concurrent_visitor_sessions: non_neg_integer() | nil,
+          max_concurrent_user_sessions: non_neg_integer() | nil,
           max_per_client: non_neg_integer() | nil,
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
@@ -50,7 +51,8 @@ defmodule Grappa.Networks.AdminWire do
     %{
       id: net.id,
       slug: net.slug,
-      max_concurrent_sessions: net.max_concurrent_sessions,
+      max_concurrent_visitor_sessions: net.max_concurrent_visitor_sessions,
+      max_concurrent_user_sessions: net.max_concurrent_user_sessions,
       max_per_client: net.max_per_client,
       inserted_at: net.inserted_at,
       updated_at: net.updated_at

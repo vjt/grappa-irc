@@ -52,14 +52,14 @@ defmodule Grappa.SpawnOrchestratorTest do
     {:ok, _} = Servers.add_server(base_network, %{host: "127.0.0.1", port: port, tls: false})
 
     network =
-      case opts[:max_concurrent_sessions] do
+      case opts[:max_concurrent_visitor_sessions] do
         nil ->
           base_network
 
         cap ->
           {:ok, capped} =
             base_network
-            |> Networks.Network.changeset(%{max_concurrent_sessions: cap})
+            |> Networks.Network.changeset(%{max_concurrent_visitor_sessions: cap})
             |> Repo.update()
 
           capped
@@ -201,7 +201,7 @@ defmodule Grappa.SpawnOrchestratorTest do
       {_, port} = start_server()
       slug = "cap-#{System.unique_integer([:positive])}"
 
-      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_sessions: 1})
+      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_visitor_sessions: 1})
 
       {:ok, cred_b} =
         Credentials.bind_credential(vjt_b, network, %{
@@ -266,7 +266,7 @@ defmodule Grappa.SpawnOrchestratorTest do
       {_, port} = start_server()
       slug = "boreject-#{System.unique_integer([:positive])}"
 
-      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_sessions: 1})
+      {network, plan_a} = setup_credential(vjt_a, slug, port, %{max_concurrent_visitor_sessions: 1})
 
       {:ok, cred_b} =
         Credentials.bind_credential(vjt_b, network, %{

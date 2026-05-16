@@ -16,11 +16,13 @@ import { token } from "./lib/auth";
 // admission caps + circuit-breaker recovery + on-demand visitor reap.
 //
 // Per-row controls:
-//   * Inline number editors for `max_concurrent_sessions` + `max_per_client`.
-//     Empty string == null (the "unlimited" sentinel per
+//   * Inline number editors for `max_concurrent_visitor_sessions` +
+//     `max_concurrent_user_sessions` + `max_per_client` (post-U-1 the
+//     network-total cap is split per subject; logic split lands in
+//     U-2). Empty string == null (the "unlimited" sentinel per
 //     `Networks.update_network_caps/2`'s three-valued contract).
 //     Save fires PATCH with ONLY the changed keys (server contract:
-//     unsupplied keys keep their value; sending both keys on every
+//     unsupplied keys keep their value; sending all keys on every
 //     edit would silently overwrite a concurrent admin's edit to the
 //     other cap — CRIT-1 of the M-10 review).
 //   * Reset Circuit (InlineConfirmButton) — only rendered when
@@ -52,7 +54,8 @@ import { token } from "./lib/auth";
 // on slug; handlers close over slug (string copy), not DOM refs.
 
 type RowEdit = {
-  max_concurrent_sessions: string;
+  max_concurrent_visitor_sessions: string;
+  max_concurrent_user_sessions: string;
   max_per_client: string;
 };
 
@@ -69,8 +72,15 @@ const MAX_CAP = 2 ** 31 - 1;
 // reader users get the same wording sighted users see (MED-8 of
 // M-10 review).
 const FIELD_LABELS: Record<keyof RowEdit, string> = {
-  max_concurrent_sessions: "max sessions",
+  max_concurrent_visitor_sessions: "max visitor sessions",
+  max_concurrent_user_sessions: "max user sessions",
   max_per_client: "max per client",
+};
+
+const FIELD_TEST_ID_SLUG: Record<keyof RowEdit, string> = {
+  max_concurrent_visitor_sessions: "max-visitor-sessions",
+  max_concurrent_user_sessions: "max-user-sessions",
+  max_per_client: "max-per-client",
 };
 
 function reapKey(): string {
@@ -99,7 +109,8 @@ const AdminNetworksTab: Component = () => {
         for (const k of Object.keys(draft)) delete draft[k];
         for (const n of rows) {
           draft[n.slug] = {
-            max_concurrent_sessions: capToInput(n.max_concurrent_sessions),
+            max_concurrent_visitor_sessions: capToInput(n.max_concurrent_visitor_sessions),
+            max_concurrent_user_sessions: capToInput(n.max_concurrent_user_sessions),
             max_per_client: capToInput(n.max_per_client),
           };
         }
@@ -250,7 +261,8 @@ const AdminNetworksTab: Component = () => {
           <thead>
             <tr>
               <th>slug</th>
-              <th>max sessions</th>
+              <th>max visitor sessions</th>
+              <th>max user sessions</th>
               <th>max per client</th>
               <th>circuit</th>
               <th>
@@ -266,9 +278,21 @@ const AdminNetworksTab: Component = () => {
                   <td>
                     <CapInput
                       slug={net.slug}
-                      field="max_concurrent_sessions"
-                      value={edits[net.slug]?.max_concurrent_sessions ?? ""}
-                      onInput={(v) => onEditCap(net.slug, "max_concurrent_sessions", v)}
+                      field="max_concurrent_visitor_sessions"
+                      value={edits[net.slug]?.max_concurrent_visitor_sessions ?? ""}
+                      onInput={(v) =>
+                        onEditCap(net.slug, "max_concurrent_visitor_sessions", v)
+                      }
+                    />
+                  </td>
+                  <td>
+                    <CapInput
+                      slug={net.slug}
+                      field="max_concurrent_user_sessions"
+                      value={edits[net.slug]?.max_concurrent_user_sessions ?? ""}
+                      onInput={(v) =>
+                        onEditCap(net.slug, "max_concurrent_user_sessions", v)
+                      }
                     />
                   </td>
                   <td>
@@ -322,10 +346,7 @@ const CapInput: Component<{
   value: string;
   onInput: (value: string) => void;
 }> = (props) => {
-  const testId =
-    props.field === "max_concurrent_sessions"
-      ? `admin-network-max-sessions-${props.slug}`
-      : `admin-network-max-per-client-${props.slug}`;
+  const testId = `admin-network-${FIELD_TEST_ID_SLUG[props.field]}-${props.slug}`;
   const invalid = (): boolean => props.value.trim() !== "" && !parseCap(props.value).ok;
   return (
     <input
@@ -398,13 +419,18 @@ function parseCap(raw: string): ParseResult {
 // validation (Save should be disabled in that case); returns an empty
 // object if the row is pristine. CRIT-1 of M-10 review.
 function buildPatchBody(net: AdminNetwork, edit: RowEdit): AdminNetworkCapsPatch | null {
-  const sessions = parseCap(edit.max_concurrent_sessions);
-  if (!sessions.ok) return null;
+  const visitorSessions = parseCap(edit.max_concurrent_visitor_sessions);
+  if (!visitorSessions.ok) return null;
+  const userSessions = parseCap(edit.max_concurrent_user_sessions);
+  if (!userSessions.ok) return null;
   const perClient = parseCap(edit.max_per_client);
   if (!perClient.ok) return null;
   const body: AdminNetworkCapsPatch = {};
-  if (sessions.value !== net.max_concurrent_sessions) {
-    body.max_concurrent_sessions = sessions.value;
+  if (visitorSessions.value !== net.max_concurrent_visitor_sessions) {
+    body.max_concurrent_visitor_sessions = visitorSessions.value;
+  }
+  if (userSessions.value !== net.max_concurrent_user_sessions) {
+    body.max_concurrent_user_sessions = userSessions.value;
   }
   if (perClient.value !== net.max_per_client) {
     body.max_per_client = perClient.value;

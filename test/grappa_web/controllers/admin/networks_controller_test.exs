@@ -27,11 +27,17 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdmissionStateHelpers, Networks}
+  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Networks}
   alias Grappa.Admission.NetworkCircuit
+  alias Grappa.PubSub.Topic
 
   setup do
     AdmissionStateHelpers.reset_network_circuit()
+    # MED-1: PATCH emits :network_caps_updated via AdminEvents.record/1
+    # (singleton GenServer started by Grappa.Application). Reset the
+    # ring buffer per-test so cross-test contamination doesn't pollute
+    # the assertion. Same pattern as Grappa.AdminEventsTest.
+    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
     :ok
   end
 
@@ -73,7 +79,8 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
 
       row = Enum.find(body["networks"], &(&1["slug"] == slug))
       assert row != nil
-      assert Map.has_key?(row, "max_concurrent_sessions")
+      assert Map.has_key?(row, "max_concurrent_visitor_sessions")
+      assert Map.has_key?(row, "max_concurrent_user_sessions")
       assert Map.has_key?(row, "max_per_client")
       assert row["circuit_state"] == nil
     end
@@ -111,7 +118,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> patch("/admin/networks/azzurra", Jason.encode!(%{max_concurrent_sessions: 5}))
+        |> patch("/admin/networks/azzurra", Jason.encode!(%{max_concurrent_visitor_sessions: 5}))
 
       assert json_response(conn, 403) == %{"error" => "forbidden"}
     end
@@ -128,24 +135,23 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_sessions: 7, max_per_client: 2}))
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_visitor_sessions: 7, max_per_client: 2}))
 
       body = json_response(conn, 200)
       assert body["slug"] == slug
-      assert body["max_concurrent_sessions"] == 7
+      assert body["max_concurrent_visitor_sessions"] == 7
       assert body["max_per_client"] == 2
       assert Map.has_key?(body, "circuit_state")
 
       # Verify DB was updated (subsequent GET reflects the change).
       {:ok, reload} = Networks.get_network_by_slug(slug)
-      assert reload.max_concurrent_sessions == 7
+      assert reload.max_concurrent_visitor_sessions == 7
       assert reload.max_per_client == 2
     end
 
-    test "200 + nil clears the cap (unlimited)", %{conn: conn} do
-      slug = "p-clear-#{System.unique_integer([:positive])}"
-      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
-      {:ok, _} = Networks.update_network_caps(net, %{max_concurrent_sessions: 3})
+    test "200 + persists max_concurrent_user_sessions (U-1 new cap)", %{conn: conn} do
+      slug = "p-user-#{System.unique_integer([:positive])}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
 
       session = admin_session()
 
@@ -153,10 +159,84 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_sessions: nil}))
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_user_sessions: 9}))
 
       body = json_response(conn, 200)
-      assert body["max_concurrent_sessions"] == nil
+      assert body["slug"] == slug
+      assert body["max_concurrent_user_sessions"] == 9
+
+      {:ok, reload} = Networks.get_network_by_slug(slug)
+      assert reload.max_concurrent_user_sessions == 9
+    end
+
+    test "PATCH emits :network_caps_updated admin event with all three caps", %{conn: conn} do
+      # MED-1: lock controller → AdminEvents emission boundary so a
+      # silent-drop in `emit_network_caps_updated/2` (missing cap arg,
+      # wrong actor, dropped broadcast) red-flags here, not in a smoke
+      # test post-deploy.
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      slug = "p-emit-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+      net_id = net.id
+
+      session = admin_session()
+
+      _ =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch(
+          "/admin/networks/#{slug}",
+          Jason.encode!(%{
+            max_concurrent_visitor_sessions: 11,
+            max_concurrent_user_sessions: 4,
+            max_per_client: 2
+          })
+        )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :network_caps_updated,
+                         network_id: ^net_id,
+                         network_slug: ^slug,
+                         max_concurrent_visitor_sessions: 11,
+                         max_concurrent_user_sessions: 4,
+                         max_per_client: 2,
+                         actor_user_id: actor_id,
+                         actor_user_name: actor_name
+                       }
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+
+      # Force mailbox drain + ring-buffer assertion (controller path
+      # routes through AdminEvents singleton, so post-broadcast the
+      # event is in the buffer too).
+      [head | _] = AdminEvents.snapshot()
+      assert head.kind == :network_caps_updated
+      assert head.max_concurrent_user_sessions == 4
+    end
+
+    test "200 + nil clears the cap (unlimited)", %{conn: conn} do
+      slug = "p-clear-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+      {:ok, _} = Networks.update_network_caps(net, %{max_concurrent_visitor_sessions: 3})
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_visitor_sessions: nil}))
+
+      body = json_response(conn, 200)
+      assert body["max_concurrent_visitor_sessions"] == nil
     end
 
     test "404 on unknown slug", %{conn: conn} do
@@ -168,7 +248,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         |> put_req_header("content-type", "application/json")
         |> patch(
           "/admin/networks/nonesuch-#{System.unique_integer([:positive])}",
-          Jason.encode!(%{max_concurrent_sessions: 5})
+          Jason.encode!(%{max_concurrent_visitor_sessions: 5})
         )
 
       assert json_response(conn, 404) == %{"error" => "not_found"}
@@ -184,11 +264,11 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
         conn
         |> put_bearer(session.id)
         |> put_req_header("content-type", "application/json")
-        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_sessions: -1}))
+        |> patch("/admin/networks/#{slug}", Jason.encode!(%{max_concurrent_visitor_sessions: -1}))
 
       body = json_response(conn, 422)
       assert body["error"] == "validation_failed"
-      assert Map.has_key?(body["field_errors"], "max_concurrent_sessions")
+      assert Map.has_key?(body["field_errors"], "max_concurrent_visitor_sessions")
     end
 
     test "400 on unknown body key (whitelist)", %{conn: conn} do
