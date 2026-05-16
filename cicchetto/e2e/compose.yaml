@@ -142,6 +142,20 @@ services:
         # same surface as vjt.
         mix grappa.create_user --name admin-vjt --password test-password-not-secret
         mix run -e 'user = Grappa.Repo.get_by!(Grappa.Accounts.User, name: "admin-vjt"); {:ok, _} = Grappa.Accounts.update_admin_flags(user, %{is_admin: true})'
+        # M-cluster M-9b — third seeded user, bound to bahamut-test so
+        # Bootstrap spawns a live Session.Server at boot. The M-9b
+        # e2e logs in as admin-vjt and hits POST /admin/sessions/...
+        # /disconnect against THIS user's session (vjt's session is
+        # reserved for non-admin specs; admin-vjt has no bind and
+        # can't be targeted as a "real" disconnect because the M-9a
+        # cannot_disconnect_self 422 gate fires). Per
+        # `feedback_visitor_mint_e2e_cold_start`: pre-seed at compose
+        # time, NOT mint at test-time — the first-connection cold-
+        # start latency races the login probe budget.
+        mix grappa.create_user --name m9b-test --password test-password-not-secret
+        mix grappa.bind_network --user m9b-test --network bahamut-test \
+          --server bahamut-test:6667 --no-tls --nick m9b-grappa \
+          --auth none --autojoin '#bofh'
         # M-cluster M-8 — visitor mint endpoint (`POST /auth/login`
         # with `{identifier: nick}`) requires the configured
         # `:visitor_network` slug (`config/config.exs`: "azzurra") to

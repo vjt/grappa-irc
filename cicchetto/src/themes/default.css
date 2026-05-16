@@ -1378,6 +1378,80 @@ body {
   border-color: #c00;
 }
 
+/* M-cluster M-9b — shared inline-confirm button base. Used by
+   AdminVisitorsTab's Delete button + AdminSessionsTab's Disconnect
+   and Terminate buttons. Per-surface variants (.delete-btn,
+   .disconnect-btn, .terminate-btn) layer on top via extraClass. */
+.inline-confirm-btn {
+  background: transparent;
+  color: var(--mode-op);
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.inline-confirm-btn.confirming {
+  color: #c00;
+  border-color: #c00;
+}
+
+/* M-cluster M-9b — admin Sessions tab. Same base as Visitors but
+   wider (more columns) and with two action buttons per row. */
+.admin-sessions-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.admin-sessions-header {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.admin-sessions-table th,
+.admin-sessions-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.admin-sessions-table th {
+  color: var(--muted);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.admin-sessions-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.disconnect-btn.confirming {
+  color: #c80;
+  border-color: #c80;
+}
+
+.terminate-btn.confirming {
+  color: #c00;
+  border-color: #c00;
+}
+
+.introspection-degraded-warning {
+  color: #c80;
+  font-size: 0.75rem;
+}
+
 /* SettingsDrawer notifications section (B3) */
 
 .settings-drawer .notifications-fieldset hr {

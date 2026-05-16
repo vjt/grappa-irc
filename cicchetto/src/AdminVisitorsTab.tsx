@@ -1,4 +1,5 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
+import InlineConfirmButton from "./InlineConfirmButton";
 import { type AdminVisitor, ApiError, adminDeleteVisitor, adminListVisitors } from "./lib/api";
 import { token } from "./lib/auth";
 
@@ -72,11 +73,7 @@ const AdminVisitorsTab: Component = () => {
     }
   };
 
-  const onDeleteClick = async (v: AdminVisitor): Promise<void> => {
-    if (confirmingId() !== v.id) {
-      setConfirmingId(v.id);
-      return;
-    }
+  const onDeleteConfirm = async (v: AdminVisitor): Promise<void> => {
     const t = token();
     if (t === null) return;
     setError(null);
@@ -156,17 +153,15 @@ const AdminVisitorsTab: Component = () => {
                   <td>{renderExpires(v)}</td>
                   <td>{renderInserted(v.inserted_at)}</td>
                   <td>
-                    <button
-                      type="button"
-                      class="delete-btn"
-                      classList={{ confirming: confirmingId() === v.id }}
-                      data-testid={`admin-visitor-delete-${v.id}`}
-                      onClick={() => {
-                        void onDeleteClick(v);
-                      }}
-                    >
-                      {confirmingId() === v.id ? "Confirm delete?" : "Delete"}
-                    </button>
+                    <InlineConfirmButton
+                      idleLabel="Delete"
+                      confirmLabel="Confirm delete?"
+                      armed={confirmingId() === v.id}
+                      onArm={() => setConfirmingId(v.id)}
+                      onConfirm={() => onDeleteConfirm(v)}
+                      testId={`admin-visitor-delete-${v.id}`}
+                      extraClass="delete-btn"
+                    />
                   </td>
                 </tr>
               )}

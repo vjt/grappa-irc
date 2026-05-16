@@ -778,7 +778,14 @@ export async function me(token: string): Promise<MeResponse> {
 // M-8 doesn't render individual values (those land in M-9 Sessions
 // tab's per-row detail surface); a non-empty array implies the live
 // state values may be stale.
-export type AdminVisitorLiveState = {
+// M-cluster M-8 / M-9b — shared live-introspection wire shape.
+// Mirror of `Grappa.LiveIntrospection.AdminWire.live_state_json/0`.
+// Same physical struct surfaces under `/admin/visitors[].live_state`
+// (where it's `| null` per U-0 honesty) AND every
+// `/admin/sessions[].live_state` (non-null since the latter is
+// registry-driven). Single source per "Implement once, reuse
+// everywhere".
+export type AdminLiveState = {
   alive: boolean;
   pid_inspect: string;
   mailbox_len: number;
@@ -786,6 +793,8 @@ export type AdminVisitorLiveState = {
   joined_channels: string[] | null;
   introspection_degraded: string[];
 };
+
+export type AdminVisitorLiveState = AdminLiveState;
 
 export type AdminVisitor = {
   id: string;
@@ -809,6 +818,61 @@ export async function adminListVisitors(token: string): Promise<AdminVisitor[]> 
 
 export async function adminDeleteVisitor(token: string, id: string): Promise<void> {
   const res = await fetch(`/admin/visitors/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// M-cluster M-9b — admin Sessions tab wire types + fetch wrappers.
+// Mirror of `Grappa.LiveIntrospection.AdminWire.t()`
+// (lib/grappa/live_introspection/admin_wire.ex).
+//
+// Registry-driven: every row in the response represents a live
+// `Session.Server` pid. The U-0 honesty signal (DB intent "active"
+// but BEAM has no pid) lives on `/admin/visitors` +
+// `/admin/credentials`, NOT here — that's why `live_state` is a flat
+// non-null struct (vs Visitor's `live_state | null`).
+//
+// Mutations key on the composite `"<subject_kind>:<subject_id>:<network_id>"`
+// string per the M-9a controller contract; cic constructs it
+// client-side. Cic must NEVER round-trip `pid_inspect` back to the
+// server — it's a human-readable label only.
+export type AdminSessionLiveState = AdminLiveState;
+
+export type AdminSession = {
+  subject_kind: "user" | "visitor";
+  subject_id: string;
+  network_id: number;
+  live_state: AdminSessionLiveState;
+};
+
+export type AdminSessionsResponse = { sessions: AdminSession[] };
+
+// Composite session id constructor — single source for the wire
+// shape. Mirrors the server-side parse_session_id/1 in
+// `lib/grappa_web/controllers/admin/sessions_controller.ex`.
+export function adminSessionId(s: AdminSession): string {
+  return `${s.subject_kind}:${s.subject_id}:${s.network_id}`;
+}
+
+export async function adminListSessions(token: string): Promise<AdminSession[]> {
+  const res = await fetch("/admin/sessions", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminSessionsResponse;
+  return body.sessions;
+}
+
+export async function adminDisconnectSession(token: string, id: string): Promise<void> {
+  const res = await fetch(`/admin/sessions/${encodeURIComponent(id)}/disconnect`, {
+    method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+export async function adminTerminateSession(token: string, id: string): Promise<void> {
+  const res = await fetch(`/admin/sessions/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: buildHeaders(token),
   });

@@ -5706,6 +5706,96 @@ context functions are stateless). Pure lib/ + test/ + docs.
 
 `scripts/deploy.sh` auto-detects HOT.
 
+## 2026-05-16 — M-9b cic Sessions tab + InlineConfirmButton extraction + nginx admin allowlist fix
+
+10th bucket of the M cluster. Cic consumer of M-9a's server surface.
+
+### What shipped
+
+- `cicchetto/src/AdminSessionsTab.tsx` — sessions admin tab with two
+  per-row actions (Disconnect / Terminate) routed through the shared
+  `InlineConfirmButton`. Singleton mutex key shape
+  `"<id>:disconnect" | "<id>:terminate"` keeps the operator from
+  priming two destructive verbs simultaneously across the whole tab
+  (per-row AND per-button mutual exclusion in one signal). `LiveBadge`
+  surfaces three states: alive-with-channel-count, "alive unknown"
+  (when `"alive"` is in `introspection_degraded` — the boolean value
+  is unreliable so we don't trust it), "pid registered but dead".
+- `cicchetto/src/InlineConfirmButton.tsx` — extracted from M-8's
+  per-row Delete machine. "Dumb" component — parent owns the singleton
+  signal; the child renders + dispatches `onArm` / `onConfirm` based
+  on the current `armed` prop. M-8's `AdminVisitorsTab.tsx` refactored
+  to consume it (CSS `delete-btn` class preserved via `extraClass`).
+- `cicchetto/src/AdminPane.tsx` — `currentTab` signal + second
+  `<button role="tab">` for Sessions + `<Show when>` per-panel guards.
+  Visitors stays default-active.
+- `cicchetto/src/lib/api.ts` — `AdminLiveState` (shared base for
+  visitor + session live-state shapes; M-8's `AdminVisitorLiveState`
+  collapses to an alias per "Implement once, reuse everywhere") +
+  `AdminSession` + `adminSessionId/1` helper + three fetch wrappers
+  (`adminListSessions`, `adminDisconnectSession`, `adminTerminateSession`).
+- Tests: 13 vitest cases for AdminSessionsTab (list, alive badge,
+  alive-unknown, dead badge, degraded chip, both verbs' inline-confirm
+  state machines, per-row + cross-row mutex, refresh, empty, error,
+  verb-prefixed 422 surface); 6 cases for InlineConfirmButton; 4
+  Playwright e2e (list, mutex, disconnect-fires, terminate-fires).
+  AdminPane suite extended with tab-switching cases. AdminVisitorsTab
+  refactor preserves all 9 pre-existing vitest cases.
+
+### Nginx admin allowlist — latent M-cluster bug surfaced
+
+The nginx allowlist regex in `infra/nginx.conf` line 91 (and the
+e2e mirror at `cicchetto/e2e/nginx-test.conf`) was
+`^/(auth|me|networks|push|healthz)(/|$)` — `/admin/*` was NOT
+permitted through nginx. M-7's admin gate spec passed because it
+never fetched an admin endpoint; M-8's visitor-delete Playwright was
+SKIPPED ("loud test.skip" per `feedback_visitor_mint_e2e_cold_start`)
+so the nginx 404-via-`try_files` fall-through to the SPA's
+`index.html` was never surfaced. M-9b's first Playwright run made it
+unmissable: `/admin/sessions` returned `text/html` 200 (the SPA
+shell) and cic's `JSON.parse` threw, surfacing as "failed:
+fetch_failed" in the operator's banner.
+
+Fix: explicit allowlist
+`^/admin/(visitors|sessions|credentials|networks|reaper|circuit|users|me)(/|$)`
+in both prod (`infra/nginx.conf`) and e2e (`cicchetto/e2e/nginx-test.conf`,
+mirrored in both `:80` and `:443` server blocks). The loopback-only
+verbs (`/admin/reload`, `/admin/cic-bundle-changed`) are NOT in the
+regex so they stay unreachable from outside the container — the
+`Plugs.LoopbackOnly` gate fires server-side, and nginx never proxies
+them to begin with.
+
+This DID break M-7 + M-8's live admin surface on prod between
+2026-05-16 morning (M-7 ship) and now — but vjt's admin-surface
+usage was all via direct-to-grappa curl + remote-shell smokes per
+`reference_smoke_via_mint_session`, never via nginx → cic. The bug
+was latent until cic actually started fetching admin endpoints.
+
+### Deploy class — COLD (forced by nginx change)
+
+Per CLAUDE.md `### Hot vs cold deploy` preflight: `infra/nginx.conf`
+modified → COLD path forced (CLAUDE.md HIGH-29 "hot path doesn't
+reload nginx; CSP allowlist drift particularly bad"). The cic-bundle
+sub-deploy is folded into the cold path naturally (the
+`cicchetto-build` oneshot runs as part of `--profile prod` boot).
+
+Per `feedback_per_bucket_deploy` the original M-9b plan was
+cic-bundle-only via `scripts/deploy-cic.sh`. The nginx fix changes
+that to a full `scripts/deploy.sh` cold cycle. Single bucket, single
+cold deploy.
+
+### Gate evidence
+
+cic check: `biome check src && tsc --noEmit` exit 0.
+cic vitest (admin suite): 36 tests passed (4 files; AdminPane=7,
+AdminSessionsTab=14, AdminVisitorsTab=9, InlineConfirmButton=6).
+Elixir-side `scripts/check.sh`: `8 doctests, 29 properties, 1985
+tests, 0 failures`; bats 23/23 ok.
+Playwright e2e M-9b: 4/4 passed in 8.7s.
+
+Three-class parity matrix EXEMPT (admin-gated; M-7 gate spec
+covers reachability across all three classes).
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

@@ -33,6 +33,13 @@ export const ADMIN_USER = "admin-vjt";
 export const ADMIN_PASSWORD = "test-password-not-secret";
 export const ADMIN_IDENTIFIER = "admin-vjt@grappa.test";
 
+// M-cluster M-9b — third seeded user, bound to bahamut-test so
+// Bootstrap spawns a live Session.Server. The admin spec disconnects
+// THIS user's session (not admin-vjt's, which would trip the M-9a
+// 422 cannot_disconnect_self gate).
+export const M9B_USER = "m9b-test";
+export const M9B_NICK = "m9b-grappa";
+
 const TOKEN_ENV_VAR = "E2E_VJT_TOKEN";
 const SUBJECT_ENV_VAR = "E2E_VJT_SUBJECT";
 const ADMIN_TOKEN_ENV_VAR = "E2E_ADMIN_TOKEN";

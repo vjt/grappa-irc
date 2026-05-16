@@ -1,4 +1,5 @@
-import type { Component } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
+import AdminSessionsTab from "./AdminSessionsTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
 
 // M-7 — Admin console pane. Replaces the channel content in
@@ -6,25 +7,21 @@ import AdminVisitorsTab from "./AdminVisitorsTab";
 // SettingsDrawer. Outer pane = header + close + tab nav + active
 // tab body.
 //
-// M-8 adds the FIRST tab (Visitors). M-9 (Sessions) / M-10
-// (Networks + Credentials) / M-11 (Events) each append their own
-// `<button role="tab">` + `<tabpanel>` siblings here and gate the
-// active tab via a `currentTab` signal. M-8 ships only one tab so
-// the markup is intentionally minimal — a single `aria-selected`
-// tab in a tablist is valid ARIA without a tab-switching state
-// machine yet.
+// M-8 added the Visitors tab; M-9b adds Sessions. M-10 (Networks)
+// + M-11 (Events) will each append their own `<button role="tab">`
+// + tabpanel here and gate the active tab via the `currentTab`
+// signal introduced here.
 //
 // Mount lifecycle: a `<Show when={adminOpen() && isAdmin()}>` in
 // Shell.tsx drives mount/unmount. Shell auto-closes the pane the
 // instant `me.is_admin` flips to false — see the demote-mid-session
-// policy at Shell.tsx's createEffect. M-8 issues admin REST fetches
-// (GET/DELETE /admin/visitors) inside AdminVisitorsTab; the
-// `:admin_authn` plug 403s any request from a now-non-admin user
-// so the demote race is server-side-safe.
+// policy at Shell.tsx's createEffect. The tab components issue admin
+// REST fetches (GET/DELETE /admin/visitors, GET/POST/DELETE
+// /admin/sessions) which the `:admin_authn` plug 403s any request
+// from a now-non-admin user so the demote race is server-side-safe.
 //
 // Per-class parity matrix (`feedback_e2e_user_class_parity_matrix`):
-// admin-gated, EXEMPT from the visitor / non-admin / admin loop's
-// positive assertion. The Playwright spec at m7-admin-gate covers
+// admin-gated, EXEMPT. The Playwright spec at m7-admin-gate covers
 // reachability; per-tab specs cover only the admin case since
 // non-admin can't reach the AdminPane at all.
 
@@ -32,7 +29,13 @@ export type Props = {
   onClose: () => void;
 };
 
+type TabKey = "visitors" | "sessions";
+
 const AdminPane: Component<Props> = (props) => {
+  const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
+
+  const isActive = (k: TabKey): boolean => currentTab() === k;
+
   return (
     <section class="admin-pane" data-testid="admin-pane">
       <header class="admin-pane-header">
@@ -57,22 +60,47 @@ const AdminPane: Component<Props> = (props) => {
           type="button"
           role="tab"
           class="admin-tab"
-          aria-selected="true"
+          aria-selected={isActive("visitors")}
           aria-controls="admin-tab-visitors"
           id="admin-tab-visitors-handle"
           data-testid="admin-tab-visitors"
+          onClick={() => setCurrentTab("visitors")}
         >
           Visitors
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("sessions")}
+          aria-controls="admin-tab-sessions"
+          id="admin-tab-sessions-handle"
+          data-testid="admin-tab-sessions"
+          onClick={() => setCurrentTab("sessions")}
+        >
+          Sessions
+        </button>
       </div>
-      <div
-        role="tabpanel"
-        id="admin-tab-visitors"
-        aria-labelledby="admin-tab-visitors-handle"
-        class="admin-tab-panel"
-      >
-        <AdminVisitorsTab />
-      </div>
+      <Show when={isActive("visitors")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-visitors"
+          aria-labelledby="admin-tab-visitors-handle"
+          class="admin-tab-panel"
+        >
+          <AdminVisitorsTab />
+        </div>
+      </Show>
+      <Show when={isActive("sessions")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-sessions"
+          aria-labelledby="admin-tab-sessions-handle"
+          class="admin-tab-panel"
+        >
+          <AdminSessionsTab />
+        </div>
+      </Show>
     </section>
   );
 };
