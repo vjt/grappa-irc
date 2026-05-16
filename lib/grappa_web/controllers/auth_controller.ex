@@ -302,7 +302,7 @@ defmodule GrappaWeb.AuthController do
   # `GrappaWeb.FallbackController` (wired globally via `use GrappaWeb,
   # :controller`). Returning `{:error, reason}` here dispatches the
   # canonical wire shapes — 400 malformed_nick / 401 password_*
-  # / 429 too_many_sessions / 503 network_busy / 503 network_unreachable
+  # / 503 too_many_sessions / 503 network_busy / 503 network_unreachable
   # + Retry-After / 400 captcha_required+site_key / 400 captcha_failed /
   # 503 service_degraded / 502 upstream_unreachable / 504 timeout /
   # 500 internal / 409 anon_collision+Retry-After. The matching clause

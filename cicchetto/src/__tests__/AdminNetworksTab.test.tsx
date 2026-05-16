@@ -46,6 +46,7 @@ const BAHAMUT: AdminNetwork = {
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
+  live_counts: { visitors: 0, users: 0 },
 };
 
 const AZZURRA: AdminNetwork = {
@@ -57,6 +58,7 @@ const AZZURRA: AdminNetwork = {
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
+  live_counts: { visitors: 0, users: 0 },
 };
 
 const OPEN_CIRCUIT: AdminNetwork = {
@@ -74,6 +76,7 @@ const OPEN_CIRCUIT: AdminNetwork = {
     cooled_at_ms: 0,
     retry_after_seconds: 12,
   },
+  live_counts: { visitors: 0, users: 0 },
 };
 
 const UNLIMITED: AdminNetwork = {
@@ -85,6 +88,7 @@ const UNLIMITED: AdminNetwork = {
   inserted_at: "2026-05-01T00:00:00Z",
   updated_at: "2026-05-15T00:00:00Z",
   circuit_state: null,
+  live_counts: { visitors: 0, users: 0 },
 };
 
 beforeEach(() => {

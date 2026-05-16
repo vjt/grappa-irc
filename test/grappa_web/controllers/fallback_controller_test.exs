@@ -25,10 +25,16 @@ defmodule GrappaWeb.FallbackControllerTest do
   end
 
   describe "T31 admission capacity errors" do
-    test "{:error, :client_cap_exceeded} → 429 too_many_sessions" do
+    # U-3 (UD3): client_cap_exceeded is resource exhaustion, not rate
+    # limit. The user isn't spamming — their device is at its 1-session-
+    # per-network limit. 503 is the right surface (cf. visitor/user cap
+    # below); the envelope stays `too_many_sessions` so cic's copy stays
+    # distinct from the network-wide `network_busy` arm. 429 was the
+    # original T31 mapping; U-3 corrects it.
+    test "{:error, :client_cap_exceeded} → 503 too_many_sessions" do
       conn = FallbackController.call(build_conn_for_call(), {:error, :client_cap_exceeded})
 
-      assert conn.status == 429
+      assert conn.status == 503
       assert Jason.decode!(conn.resp_body) == %{"error" => "too_many_sessions"}
     end
 
@@ -79,6 +85,67 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert conn.status == 503
       assert Jason.decode!(conn.resp_body) == %{"error" => "network_unreachable"}
       assert Plug.Conn.get_resp_header(conn, "retry-after") == ["42"]
+    end
+
+    # U-3 (UD3): exhaustive enumeration over `Grappa.Admission.error()`.
+    # The list literal below is the WIRE CONTRACT — every member of the
+    # typed union MUST appear here with its expected status + envelope.
+    # When admission grows a new error atom, dialyzer surfaces the gap
+    # at `@spec` on `FallbackController.call/2` AND this test fails
+    # loud if the new atom has no FC clause (FunctionClauseError).
+    #
+    # The captcha sub-arms have their own describe block above (they
+    # require :persistent_term + provider wiring to exercise the
+    # captcha_required site_key/provider envelope), so this matrix
+    # covers the capacity_error() half only.
+    #
+    # U-3 fix-up (web M2): we cross-check the matrix length against
+    # `Grappa.Admission.capacity_error_atoms/0` so adding an atom to
+    # the canary list without a matrix entry fails loud. The two
+    # canaries (the canon list + this matrix) MUST move in lockstep
+    # with the `@type capacity_error/0` definition — otherwise the
+    # "fails loud" promise rots.
+    test "every Admission.capacity_error() atom has an FC clause + asserted shape" do
+      cases = [
+        {:client_cap_exceeded, 503, %{"error" => "too_many_sessions"}, []},
+        {:visitor_cap_exceeded, 503, %{"error" => "network_busy"}, []},
+        {:user_cap_exceeded, 503, %{"error" => "network_busy"}, []},
+        {{:network_circuit_open, 7}, 503, %{"error" => "network_unreachable"}, [{"retry-after", "7"}]}
+      ]
+
+      # Canary cross-check: the matrix's atom set must equal the canon
+      # `capacity_error_atoms/0` list. Adding a tag in one place without
+      # the other = silent drop (the new atom either has no test or no
+      # production clause, depending on which canary stayed in sync).
+      canon = Enum.sort(Grappa.Admission.capacity_error_atoms())
+
+      matrix_atoms =
+        cases
+        |> Enum.map(fn
+          {atom, _, _, _} when is_atom(atom) -> atom
+          {{atom, _}, _, _, _} -> atom
+        end)
+        |> Enum.sort()
+
+      assert matrix_atoms == canon,
+             "matrix atoms #{inspect(matrix_atoms)} drift from " <>
+               "Admission.capacity_error_atoms() #{inspect(canon)} — " <>
+               "add/remove a matrix entry to match the canon"
+
+      for {error, status, body, headers} <- cases do
+        conn = FallbackController.call(build_conn_for_call(), {:error, error})
+
+        assert conn.status == status,
+               "expected #{inspect(error)} → #{status}, got #{conn.status}"
+
+        assert Jason.decode!(conn.resp_body) == body,
+               "expected #{inspect(error)} → body #{inspect(body)}, got #{conn.resp_body}"
+
+        for {header, expected} <- headers do
+          assert Plug.Conn.get_resp_header(conn, header) == [expected],
+                 "expected #{inspect(error)} → header #{header}=#{expected}"
+        end
+      end
     end
   end
 

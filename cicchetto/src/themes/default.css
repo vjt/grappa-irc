@@ -1452,6 +1452,37 @@ body {
   font-size: 0.75rem;
 }
 
+/* U-3 (UD4) — per-network cap-count summary above the sessions
+   list. Visually distinct from the live-sessions table below: tighter
+   padding, italic header, no per-row hover, no action column. */
+.admin-sessions-network-summary {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.25rem 0.5rem;
+}
+
+.admin-sessions-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.admin-sessions-summary-table th,
+.admin-sessions-summary-table td {
+  text-align: left;
+  padding: 0.2rem 0.5rem;
+}
+
+.admin-sessions-summary-table th {
+  color: var(--muted);
+  font-weight: normal;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  font-style: italic;
+}
+
 /* M-cluster M-10 — admin Networks tab. Same base shape as Visitors
    + Sessions tabs (header row + table + per-row actions). Adds the
    per-row cap editor + Save button + Reset Circuit button + tab-

@@ -3,6 +3,7 @@ import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js
 import { ApiError } from "./lib/api";
 import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
+import { friendlyApiError } from "./lib/friendlyApiError";
 
 // Bare credential form. The walking-skeleton login surface is one card,
 // no branding, no "remember me" — the bouncer is single-tenant per
@@ -79,58 +80,12 @@ const CaptchaMount: Component<{
 };
 
 function friendlyMessage(err: ApiError): string {
-  switch (err.code) {
-    case "invalid_credentials":
-      return "Invalid name or password.";
-    case "too_many_sessions":
-      return "You're already connected to this network from another device or tab. Close one before opening a new session.";
-    case "network_busy":
-      return "This network is at capacity. Try again in a few minutes.";
-    case "network_unreachable": {
-      const retry = err.info.retry_after;
-      return typeof retry === "number"
-        ? `We can't reach the network right now. Retry in ${retry} seconds.`
-        : "We can't reach the network right now.";
-    }
-    // U-2 (UD7): three typed timeout phases, mapped per-phase to actionable
-    // operator copy. `connect_timeout` = TCP/TLS handshake didn't complete
-    // within the inner budget (3s default) — likely transient routing
-    // hiccup, retry fast. `welcome_timeout` = handshake succeeded but the
-    // upstream's NICK/USER → 001 RPL_WELCOME chain stalled (Bahamut rDNS
-    // is the canonical wild-world case) — upstream is slow/overloaded,
-    // wait longer. `probe_timeout` = the outer budget tripped before the
-    // inner ones; that's a server-side budget-arithmetic bug, not a
-    // user-actionable failure.
-    case "connect_timeout":
-      return "Couldn't reach the network — handshake didn't complete. Retry in a few seconds.";
-    case "welcome_timeout":
-      return "The network is responding slowly. Wait a minute and try again.";
-    case "probe_timeout":
-      return "Login service had an internal timeout. Please try again — if it persists, contact your operator.";
-    case "service_degraded":
-      // Server-side captcha-verification outage (provider 4xx/5xx,
-      // transport error, timeout — see
-      // `Grappa.Admission.Captcha.SiteVerifyHttp` and
-      // `FallbackController` clauses for `:captcha_provider_unavailable`,
-      // which renders as 503 with wire body `{error: "service_degraded"}`)
-      // OR any other server-side dependency-degradation 503 that may
-      // surface here in the future. Bucket G H1: pre-bucket-G a stale
-      // `captcha_provider_unavailable` arm shadowed this case at the
-      // call sites that translated the server contract — but the server
-      // never emits that literal wire token, so the dead arm gave silent
-      // UX degradation (raw "503 service_degraded" Error.message
-      // landed in the alert). One arm, one contract.
-      return "Login service temporarily unavailable. Please try again.";
-    case "captcha_failed":
-      return "Captcha challenge failed. Please try again.";
-    case "captcha_required":
-      // Reached only via the disabled-provider routing in handleError
-      // (operator demanded captcha but wired no provider) — every
-      // other captcha_required path branches into the widget mount.
-      return "Verification temporarily unavailable.";
-    default:
-      return err.message;
-  }
+  // U-3 (UD3): delegate to the shared `friendlyApiError` map so every
+  // ApiError surface in cic (Login, ComposeBox, future admin error
+  // banners) renders the same human copy for the same wire token.
+  // The local function name is preserved as a call-site indirection
+  // in case future Login-specific copy overrides are needed.
+  return friendlyApiError(err);
 }
 
 // Type predicate for the captcha_required info envelope. The wire

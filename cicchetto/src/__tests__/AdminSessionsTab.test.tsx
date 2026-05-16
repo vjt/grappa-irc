@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdminSession } from "../lib/api";
+import type { AdminNetwork, AdminSession } from "../lib/api";
 
 vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
@@ -11,6 +11,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     adminListSessions: vi.fn(),
+    adminListNetworks: vi.fn(),
     adminDisconnectSession: vi.fn(),
     adminTerminateSession: vi.fn(),
   };
@@ -110,11 +111,54 @@ function rowId(s: AdminSession): string {
   return `${s.subject_kind}:${s.subject_id}:${s.network_id}`;
 }
 
+// U-3 (UD4): network fixtures backing the per-network cap-count
+// summary block. Every test renders the summary above the sessions
+// table, so we default-mock `adminListNetworks` in beforeEach to
+// return these fixtures (and tests that want to assert the summary
+// shape override the mock locally).
+const BAHAMUT_NET: AdminNetwork = {
+  id: 1,
+  slug: "bahamut",
+  max_concurrent_visitor_sessions: 50,
+  max_concurrent_user_sessions: 10,
+  max_per_client: 1,
+  inserted_at: "2026-05-01T00:00:00Z",
+  updated_at: "2026-05-16T00:00:00Z",
+  circuit_state: null,
+  live_counts: { visitors: 7, users: 2 },
+};
+
+const AZZURRA_NET: AdminNetwork = {
+  id: 2,
+  slug: "azzurra",
+  max_concurrent_visitor_sessions: null, // unlimited
+  max_concurrent_user_sessions: 5,
+  max_per_client: 2,
+  inserted_at: "2026-05-01T00:00:00Z",
+  updated_at: "2026-05-16T00:00:00Z",
+  circuit_state: null,
+  live_counts: { visitors: 0, users: 0 },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
+async function mockNetworksDefault(): Promise<void> {
+  const api = await import("../lib/api");
+  vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT_NET, AZZURRA_NET]);
+}
+
 describe("AdminSessionsTab", () => {
+  // Networks fetch runs in parallel with sessions on every refresh
+  // (U-3 UD4); each test gets a default `adminListNetworks` resolved
+  // to [] so the summary section is benignly absent unless the test
+  // overrides it. Cap-count assertions below override with fixtures.
+  beforeEach(async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListNetworks).mockResolvedValue([]);
+  });
+
   it("renders one row per session after the onMount fetch resolves", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION, VISITOR_SESSION]);
@@ -289,6 +333,38 @@ describe("AdminSessionsTab", () => {
     expect(screen.getByTestId("admin-sessions-error").textContent).toContain("refresh to retry");
   });
 
+  // Web M1 reviewer fix: refresh failure AFTER a successful prior
+  // fetch must collapse stale rows + summary block — banner stands
+  // alone per the inline doc contract. Pre-fix the catch path only
+  // set `error()`, leaving the prior successful tables rendered
+  // alongside the banner (operator could not trust the visible
+  // rows). Now both signals reset to null and the loading-state
+  // paths re-collapse the rendered surface to "error only".
+  it("collapses stale rows + summary on refresh failure after a prior success", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    await mockNetworksDefault();
+
+    render(() => <AdminSessionsTab />);
+
+    // Prior success: row + summary visible.
+    await waitFor(() => {
+      expect(screen.getByTestId(`admin-session-row-${rowId(USER_SESSION)}`)).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("admin-sessions-network-summary")).toBeInTheDocument();
+
+    // Second refresh: networks endpoint fails.
+    vi.mocked(api.adminListNetworks).mockRejectedValue(new api.ApiError(500, "internal_error"));
+    fireEvent.click(screen.getByTestId("admin-sessions-refresh"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("admin-sessions-error")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId(`admin-session-row-${rowId(USER_SESSION)}`)).toBeNull();
+    expect(screen.queryByTestId("admin-sessions-network-summary")).toBeNull();
+    expect(screen.queryByTestId("admin-sessions-table")).toBeNull();
+  });
+
   it("surfaces a 422 cannot_disconnect_self error inline prefixed with the verb", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
@@ -304,6 +380,87 @@ describe("AdminSessionsTab", () => {
     await waitFor(() => {
       const err = screen.getByTestId("admin-sessions-error");
       expect(err.textContent).toContain("disconnect: cannot_disconnect_self");
+    });
+  });
+
+  // U-3 (UD4) — per-network cap-count summary block above the
+  // sessions table. Reads `live_counts` + caps from
+  // `/admin/networks`. Three assertions: (1) summary renders when
+  // networks present, (2) per-row cap formatting handles null
+  // ("unlimited" → ∞), (3) summary hidden when networks list empty.
+
+  it("renders per-network cap-count summary above the sessions table", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    await mockNetworksDefault();
+
+    render(() => <AdminSessionsTab />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("admin-sessions-network-summary")).toBeInTheDocument();
+    });
+    const bahamut = screen.getByTestId(`admin-sessions-summary-row-${BAHAMUT_NET.slug}`);
+    expect(bahamut).toBeInTheDocument();
+    expect(
+      screen.getByTestId(`admin-sessions-summary-visitors-${BAHAMUT_NET.slug}`).textContent,
+    ).toBe("7/50");
+    expect(screen.getByTestId(`admin-sessions-summary-users-${BAHAMUT_NET.slug}`).textContent).toBe(
+      "2/10",
+    );
+    expect(
+      screen.getByTestId(`admin-sessions-summary-per-client-${BAHAMUT_NET.slug}`).textContent,
+    ).toBe("1");
+  });
+
+  it("renders null caps as ∞ in the summary block", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    await mockNetworksDefault();
+
+    render(() => <AdminSessionsTab />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`admin-sessions-summary-row-${AZZURRA_NET.slug}`),
+      ).toBeInTheDocument();
+    });
+    // azzurra visitor cap is null → "0/∞"
+    expect(
+      screen.getByTestId(`admin-sessions-summary-visitors-${AZZURRA_NET.slug}`).textContent,
+    ).toBe("0/∞");
+    // azzurra user cap is 5 (not null) → "0/5"
+    expect(screen.getByTestId(`admin-sessions-summary-users-${AZZURRA_NET.slug}`).textContent).toBe(
+      "0/5",
+    );
+  });
+
+  it("hides the summary block when /admin/networks returns []", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    // beforeEach already mocks adminListNetworks → []; no override needed.
+
+    render(() => <AdminSessionsTab />);
+
+    await screen.findByTestId(`admin-session-row-${rowId(USER_SESSION)}`);
+    expect(screen.queryByTestId("admin-sessions-network-summary")).toBeNull();
+  });
+
+  it("fetches BOTH sessions + networks in parallel on refresh", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION]);
+    await mockNetworksDefault();
+
+    render(() => <AdminSessionsTab />);
+
+    await waitFor(() => {
+      expect(api.adminListSessions).toHaveBeenCalledTimes(1);
+      expect(api.adminListNetworks).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByTestId("admin-sessions-refresh"));
+    await waitFor(() => {
+      expect(api.adminListSessions).toHaveBeenCalledTimes(2);
+      expect(api.adminListNetworks).toHaveBeenCalledTimes(2);
     });
   });
 });

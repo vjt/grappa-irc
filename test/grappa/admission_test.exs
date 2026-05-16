@@ -370,4 +370,108 @@ defmodule Grappa.AdmissionTest do
       refute_receive {:telemetry, [:grappa, :admission, :capacity, :reject], _, _}, 100
     end
   end
+
+  describe "live_counts_for_network/1 — U-3 admin wire projection" do
+    # U-3 (Web M3): SessionRegistry is process-global and async tests
+    # in other modules can register `{:session, {subject, network_id}, ...}`
+    # entries against the same auto-increment id sqlite hands back
+    # inside their own sandbox connection (sqlite reuses id=1 for the
+    # first row in every per-test sandbox). Reading via the `net.id`
+    # from the shared fixture would observe cross-test residue. Use
+    # synthetic high integers per test that no factory would ever
+    # produce — `live_counts_for_network/1` accepts any integer
+    # (no DB lookup required).
+    #
+    # Test pid registrations auto-clean on pid exit, but the link-based
+    # cleanup propagates asynchronously, which can leave `SessionRegistry`
+    # non-empty briefly between tests and trip the 15s
+    # `reset_session_supervisor` poll in sibling test suites (see
+    # `project_network_circuit_ets_leak`). Every test that hand-
+    # registers entries here uses `register_for_test/2` so the
+    # `on_exit` synchronously unregisters before the next test runs.
+    test "returns zeros for a network with no live sessions" do
+      synthetic_network_id = unique_synthetic_network_id()
+      assert Admission.live_counts_for_network(synthetic_network_id) == %{visitors: 0, users: 0}
+    end
+
+    test "counts visitor + user sessions independently" do
+      synthetic_network_id = unique_synthetic_network_id()
+      register_for_test({:visitor, "vid-a"}, synthetic_network_id)
+      register_for_test({:visitor, "vid-b"}, synthetic_network_id)
+      register_for_test({:user, "uid-c"}, synthetic_network_id)
+
+      assert Admission.live_counts_for_network(synthetic_network_id) ==
+               %{visitors: 2, users: 1}
+    end
+
+    test "ignores sessions on other networks" do
+      this_network = unique_synthetic_network_id()
+      other_network = unique_synthetic_network_id()
+      register_for_test({:visitor, "vid-x"}, other_network)
+
+      assert Admission.live_counts_for_network(this_network) == %{visitors: 0, users: 0}
+    end
+  end
+
+  describe "live_counts_by_network/0 — U-3 bulk admin index projection" do
+    # Web M3 (reviewer): the admin index path uses ONE Registry scan
+    # for all networks instead of 2N scans. These tests pin (a)
+    # round-trip parity with `live_counts_for_network/1`, (b) the
+    # "no entry = caller defaults to zeros" contract, (c) correct
+    # subject_kind tagging at the bulk-fan-out level.
+    #
+    # SessionRegistry is process-global; async tests elsewhere can
+    # populate entries against autoincrement ids that overlap with our
+    # fixture. Always scope assertions via `Map.get/3` against a
+    # synthetic-unique id no factory uses + drain registrations
+    # synchronously on `on_exit`.
+    test "bulk projection has no entry for a freshly-minted network with no sessions" do
+      synthetic_network_id = unique_synthetic_network_id()
+      assert Map.get(Admission.live_counts_by_network(), synthetic_network_id) == nil
+    end
+
+    test "keys by network_id with subject-kind counts" do
+      net_a = unique_synthetic_network_id()
+      net_b = unique_synthetic_network_id()
+
+      register_for_test({:visitor, "v1"}, net_a)
+      register_for_test({:visitor, "v2"}, net_a)
+      register_for_test({:user, "u1"}, net_a)
+      register_for_test({:user, "u2"}, net_b)
+
+      bulk = Admission.live_counts_by_network()
+
+      assert Map.get(bulk, net_a) == %{visitors: 2, users: 1}
+      assert Map.get(bulk, net_b) == %{visitors: 0, users: 1}
+    end
+
+    test "bulk projection agrees with per-row projection" do
+      synthetic_network_id = unique_synthetic_network_id()
+      register_for_test({:visitor, "v-row-a"}, synthetic_network_id)
+      register_for_test({:user, "u-row-b"}, synthetic_network_id)
+
+      per_row = Admission.live_counts_for_network(synthetic_network_id)
+      bulk_row = Map.get(Admission.live_counts_by_network(), synthetic_network_id)
+
+      assert per_row == bulk_row
+    end
+  end
+
+  # 10_000_000 + unique offset → guaranteed beyond any factory's
+  # sqlite autoincrement range within the suite. The atom-based key
+  # construction in `Session.Server.registry_key/2` doesn't require
+  # the id to map to an existing Network row.
+  defp unique_synthetic_network_id, do: 10_000_000 + System.unique_integer([:positive])
+
+  # Register a fake-session key under the current test pid AND queue
+  # a synchronous `Registry.unregister/2` for it via `on_exit`. The
+  # synchronous unregister beats the link-based async cleanup so
+  # sibling test suites' `reset_session_supervisor` polls observe a
+  # clean registry without the 15s `project_network_circuit_ets_leak`
+  # timeout.
+  defp register_for_test(subject_tag, network_id) do
+    key = SessionServer.registry_key(subject_tag, network_id)
+    {:ok, _} = Registry.register(SessionRegistry, key, nil)
+    on_exit(fn -> _ = Registry.unregister(SessionRegistry, key) end)
+  end
 end

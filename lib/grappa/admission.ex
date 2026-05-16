@@ -71,6 +71,42 @@ defmodule Grappa.Admission do
 
   @type error :: capacity_error() | Captcha.error()
 
+  # Capacity-error tags exposed for the FC exhaustiveness test
+  # (`FallbackControllerTest`'s "every Admission.capacity_error() atom
+  # has an FC clause" matrix). The `@type capacity_error()` above is
+  # the type-checker contract; this list is the runtime canary. Both
+  # MUST move in lockstep — adding a tag to one without the other
+  # surfaces as a missing test case or a missing dialyzer pattern.
+  # `:network_circuit_open` appears as the bare atom; the test
+  # constructs its payload tuple at runtime.
+  @capacity_error_atoms [
+    :client_cap_exceeded,
+    :visitor_cap_exceeded,
+    :user_cap_exceeded,
+    :network_circuit_open
+  ]
+
+  @doc """
+  Canary list mirroring `t:capacity_error/0`. Consumed by the FC
+  exhaustiveness test only — production code should pattern-match
+  on the typed shape directly.
+  """
+  @spec capacity_error_atoms() :: [
+          :client_cap_exceeded
+          | :visitor_cap_exceeded
+          | :user_cap_exceeded
+          | :network_circuit_open,
+          ...
+        ]
+  def capacity_error_atoms, do: @capacity_error_atoms
+
+  @typedoc """
+  Live-session count projection for a single network, broken out by
+  subject_kind. Per U-3 (UD4) the admin Networks listing surfaces these
+  alongside the operator-set caps so capacity is visible at a glance.
+  """
+  @type live_counts :: %{visitors: non_neg_integer(), users: non_neg_integer()}
+
   @default_max_per_client_per_network Application.compile_env!(
                                         :grappa,
                                         [:admission, :default_max_per_client_per_network]
@@ -184,6 +220,69 @@ defmodule Grappa.Admission do
       {{{:session, {subject_tag, :_}, network_id}, :_, :_}, [], [true]}
     ])
   end
+
+  @doc """
+  Per-subject live-session count for a single network. Reuses the
+  same Registry match-spec that `check_network_total/2` consults at
+  admission time, so the projection cannot drift from the admission
+  policy itself (CLAUDE.md "one feature, one code path").
+
+  Returned shape is the U-3 (UD4) admin wire contract — visitors
+  + users counted independently against their respective caps.
+  `Grappa.Networks.AdminWire` composes this under `live_counts:`
+  on each row of `GET /admin/networks`.
+
+  For the bulk admin-list path use `live_counts_by_network/0`
+  instead — single Registry scan over all networks rather than
+  2N scans (one pair per network).
+  """
+  @spec live_counts_for_network(integer()) :: live_counts()
+  def live_counts_for_network(network_id) when is_integer(network_id) do
+    %{
+      visitors: count_live_sessions(network_id, :visitor),
+      users: count_live_sessions(network_id, :user)
+    }
+  end
+
+  @doc """
+  Bulk projection — `%{network_id => live_counts()}` for every network
+  with at least one live session. Single `Registry.select/2` scan
+  + `Enum.frequencies/1` in Elixir, replacing the N×2-scan path the
+  admin index would otherwise take when iterating per-row.
+
+  Networks with zero live sessions are NOT keyed (the caller must
+  default to `%{visitors: 0, users: 0}`). This matches how
+  `GET /admin/networks` already shapes the wire — `live_counts` is
+  always present per row, defaulting to zeros when the bulk map
+  has no entry.
+  """
+  @spec live_counts_by_network() :: %{integer() => live_counts()}
+  def live_counts_by_network do
+    # Match-spec head:  `{:session, {subject_tag, _uuid}, network_id}`
+    # → return  `{network_id, subject_tag}`.  Reuses the same key shape
+    # `count_live_sessions/2` consults — admission policy + projection
+    # share the same Registry ground truth.
+    pairs =
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, {:"$1", :_}, :"$2"}, :_, :_}, [], [{{:"$2", :"$1"}}]}
+      ])
+
+    pairs
+    |> Enum.frequencies()
+    |> Enum.reduce(%{}, fn {{network_id, subject_tag}, count}, acc ->
+      Map.update(
+        acc,
+        network_id,
+        bump(zeros(), subject_tag, count),
+        &bump(&1, subject_tag, count)
+      )
+    end)
+  end
+
+  defp zeros, do: %{visitors: 0, users: 0}
+
+  defp bump(%{visitors: v} = m, :visitor, n), do: %{m | visitors: v + n}
+  defp bump(%{users: u} = m, :user, n), do: %{m | users: u + n}
 
   # Bootstrap flows have nil client — skip client-cap check.
   defp check_client_cap(%{client_id: nil}, _), do: :ok

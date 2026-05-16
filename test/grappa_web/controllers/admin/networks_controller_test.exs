@@ -83,6 +83,21 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert Map.has_key?(row, "max_concurrent_user_sessions")
       assert Map.has_key?(row, "max_per_client")
       assert row["circuit_state"] == nil
+      # U-3 (UD4): live_counts projection always present; structural
+      # shape assertion (map with two non-negative integer fields)
+      # rather than exact zeros. SessionRegistry is process-global
+      # and async tests elsewhere can leave entries against the
+      # same auto-increment id sqlite hands back inside each sandbox
+      # connection (sqlite reuses id=1 across per-test sandboxes).
+      # The unit-level `live_counts_for_network/1` + `live_counts_by_network/0`
+      # tests use synthetic high ids to assert exact counts — this
+      # controller test uses real REST round-trip with a real Network
+      # row, so we settle for shape + type. Per
+      # `Grappa.Admission.live_counts/0` wire shape — never nil.
+      live = row["live_counts"]
+      assert is_map(live)
+      assert is_integer(live["visitors"]) and live["visitors"] >= 0
+      assert is_integer(live["users"]) and live["users"] >= 0
     end
 
     test "200 + circuit_state populated when circuit is open", %{conn: conn} do
@@ -142,6 +157,16 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert body["max_concurrent_visitor_sessions"] == 7
       assert body["max_per_client"] == 2
       assert Map.has_key?(body, "circuit_state")
+      # U-3 (UD4): PATCH response carries the same live_counts shape
+      # as GET — operator's post-Save table render stays in sync
+      # without a second round-trip. Structural assertion (map + two
+      # non-negative integer fields) rather than exact zeros, per the
+      # same SessionRegistry cross-sandbox-residue rationale documented
+      # at the GET test above.
+      live = body["live_counts"]
+      assert is_map(live)
+      assert is_integer(live["visitors"]) and live["visitors"] >= 0
+      assert is_integer(live["users"]) and live["users"] >= 0
 
       # Verify DB was updated (subsequent GET reflects the change).
       {:ok, reload} = Networks.get_network_by_slug(slug)

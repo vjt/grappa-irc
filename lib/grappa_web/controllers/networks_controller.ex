@@ -226,7 +226,7 @@ defmodule GrappaWeb.NetworksController do
   # + capacity inputs. Returns the orchestrator's typed error atom
   # verbatim (`:user_cap_exceeded` / `:client_cap_exceeded` /
   # `{:network_circuit_open, _}` / `{:start_failed, _}` / etc.) so
-  # FallbackController's existing T31 clauses pick up the 503/429
+  # FallbackController's existing T31 clauses pick up the 503
   # mapping unchanged. U-2: this surface is always a user-flow
   # (`:patch_network_connect`), so the cap atom is always
   # `:user_cap_exceeded`, never `:visitor_cap_exceeded`.

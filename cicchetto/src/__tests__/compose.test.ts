@@ -340,17 +340,23 @@ describe("compose submit — slash command dispatch", () => {
     expect(sb.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("REST failure surfaces ApiError.code as {error}; draft preserved", async () => {
+  it("REST failure surfaces friendlyApiError copy as {error}; draft preserved", async () => {
+    // U-3 (UD3): typed ApiErrors route through friendlyApiError so the
+    // compose-box alert renders human copy instead of raw wire tokens.
+    // Use `network_busy` — a known wire token with mapped copy — so
+    // the test pins both the catch-path wiring AND the
+    // friendlyApiError integration (vs an unmapped token that would
+    // fall through to err.message).
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.postTopic).mockRejectedValue(new api.ApiError(503, "upstream"));
+    vi.mocked(api.postTopic).mockRejectedValue(new api.ApiError(503, "network_busy"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/topic ciao mondo");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toEqual({ error: "upstream" });
+    expect(result).toEqual({ error: "This network is at capacity. Try again in a few minutes." });
     // Draft preserved so user can retry without re-typing.
     expect(compose.getDraft(k)).toBe("/topic ciao mondo");
   });
@@ -685,6 +691,30 @@ describe("compose submit — T32 verbs", () => {
 
     expect(api.patchNetwork).not.toHaveBeenCalled();
     expect(result).toMatchObject({ error: expect.stringContaining("requires") });
+  });
+
+  // U-3 (UD3): /connect surfacing a typed server-side ApiError MUST
+  // route through friendlyApiError so the operator sees human copy
+  // ("You're already at the session limit...") instead of the raw
+  // wire token "too_many_sessions". Pins the
+  // compose.ts catch path → friendlyApiError integration.
+  it("/connect on a saturated client-cap surfaces friendly copy not raw wire token", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockRejectedValue(new api.ApiError(503, "too_many_sessions"));
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/connect freenode");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({
+      error: expect.stringMatching(
+        /already at the session limit for this network from this device/i,
+      ),
+    });
+    // Raw wire token MUST NOT leak.
+    expect(result).not.toMatchObject({ error: "too_many_sessions" });
   });
 });
 

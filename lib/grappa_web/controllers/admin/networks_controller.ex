@@ -7,18 +7,24 @@ defmodule GrappaWeb.Admin.NetworksController do
   ## GET /admin/networks — operator console list
 
   Combined DB intent (`Grappa.Networks.list_all/0`) + live circuit
-  state (`Grappa.Admission.NetworkCircuit.entries/0`) in one
-  payload per MD2's combined-shape pattern. The composition lives
-  here (not in `Networks`) to avoid a `Networks → Admission`
-  boundary cycle (`Admission` already deps `Networks` for cap
-  reads at `check_capacity/1`). `GrappaWeb` boundary deps both —
-  this is the cycle-free site.
+  state (`Grappa.Admission.NetworkCircuit.entries/0`) + per-row live-
+  session counts split by subject_kind
+  (`Grappa.Admission.live_counts_for_network/1`) in one payload per
+  MD2's combined-shape pattern. The composition lives here (not in
+  `Networks`) to avoid a `Networks → Admission` boundary cycle
+  (`Admission` already deps `Networks` for cap reads at
+  `check_capacity/1`). `GrappaWeb` boundary deps both — this is the
+  cycle-free site.
 
   Returns `200 OK` with `%{"networks" => [...]}`. Per-row shape
   pinned by `Grappa.Networks.AdminWire` +
   `Grappa.Admission.NetworkCircuit.AdminWire` nested under
-  `circuit_state:`. `circuit_state: nil` when no ETS row exists
-  (= no failures observed for this network).
+  `circuit_state:` + the `t:Grappa.Admission.live_counts/0` type
+  nested under `live_counts:`. `circuit_state: nil` when no ETS row
+  exists (= no failures observed for this network); `live_counts:
+  %{visitors: 0, users: 0}` for networks with no live sessions
+  (always present, never `nil` — the Registry count is
+  authoritative).
 
   ## PATCH /admin/networks/:slug — edit caps
 
@@ -30,25 +36,36 @@ defmodule GrappaWeb.Admin.NetworksController do
   integers fail validation at the changeset boundary.
 
   Returns `200 OK` with the updated row in the same shape as a
-  single GET row. `404 not_found` on unknown slug;
-  `422 validation_failed` on a bad cap value.
+  single GET row (including `live_counts`). `404 not_found` on
+  unknown slug; `422 validation_failed` on a bad cap value.
   """
   use GrappaWeb, :controller
 
   alias Grappa.{AdminEvents, Networks}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
+  alias Grappa.Admission
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Admission.NetworkCircuit.AdminWire, as: CircuitWire
   alias Grappa.Networks.AdminWire, as: NetworkWire
   alias GrappaWeb.Admin.AuthPlug
 
   @doc """
-  Enumerate every networks row + project its live circuit state.
+  Enumerate every networks row + project its live circuit state +
+  live-session counts split by subject_kind (U-3 UD4).
+
+  Both projections (circuit + live counts) come from O(1)-per-result
+  bulk reads — `NetworkCircuit.entries/0` returns one ETS list, and
+  `Admission.live_counts_by_network/0` is a single Registry scan +
+  `Enum.frequencies/1` (not 2N scans as the per-row variant would be).
+  Per the controller's row-count growth: even at 100 networks the
+  index call stays one ETS read + one Registry scan.
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
     now_ms = System.monotonic_time(:millisecond)
     circuit_index = circuit_entries_by_network_id()
+    live_counts_index = Admission.live_counts_by_network()
+    zero_counts = %{visitors: 0, users: 0}
 
     rows =
       for net <- Networks.list_all() do
@@ -58,6 +75,7 @@ defmodule GrappaWeb.Admin.NetworksController do
           :circuit_state,
           CircuitWire.entry_to_admin_json(Map.get(circuit_index, net.id), now_ms)
         )
+        |> Map.put(:live_counts, Map.get(live_counts_index, net.id, zero_counts))
       end
 
     json(conn, %{networks: rows})
@@ -82,6 +100,7 @@ defmodule GrappaWeb.Admin.NetworksController do
         updated
         |> NetworkWire.network_to_admin_json()
         |> Map.put(:circuit_state, CircuitWire.entry_to_admin_json(circuit_entry, now_ms))
+        |> Map.put(:live_counts, Admission.live_counts_for_network(updated.id))
 
       json(conn, body)
     end

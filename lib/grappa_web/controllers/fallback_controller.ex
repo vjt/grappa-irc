@@ -156,8 +156,12 @@ defmodule GrappaWeb.FallbackController do
 
   # T31 admission errors. Status-code split:
   #
-  #   * 429 — client misbehaviour (too many sessions from same client).
   #   * 503 — server-side capacity / upstream / dependency degradation.
+  #     Includes `:client_cap_exceeded` (per-device per-network slot
+  #     is full) per U-3 (UD3) — semantically resource exhaustion, not
+  #     rate limit. 429 would imply "slow down" but the user isn't
+  #     spamming; their device already holds its allotted session
+  #     (`max_per_client`, default 1) and must disconnect first.
   #   * 400 — captcha challenge required or failed (request was
   #     well-formed but lacks a valid solve).
   #
@@ -171,9 +175,16 @@ defmodule GrappaWeb.FallbackController do
   # banner copy stays unified ("this network is at capacity") because
   # the operator-knob distinction is internal: visitor cap full does
   # NOT imply user cap full, and vice versa.
+  #
+  # U-3 (UD3): all three cap atoms now land on 503. The envelope split
+  # (`too_many_sessions` vs `network_busy`) preserves the
+  # device-scoped vs network-scoped distinction at the wire, so cic can
+  # render different copy ("you're at the limit from THIS device" vs
+  # "the network is full for everyone") per
+  # `feedback_no_localized_strings_server_side`.
   def call(conn, {:error, :client_cap_exceeded}) do
     conn
-    |> put_status(:too_many_requests)
+    |> put_status(:service_unavailable)
     |> json(%{error: "too_many_sessions"})
   end
 

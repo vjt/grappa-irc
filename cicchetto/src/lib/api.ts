@@ -1011,6 +1011,17 @@ export type AdminCircuitState = {
   retry_after_seconds: number;
 };
 
+// U-3 (UD4): per-network live-session counts split by subject_kind.
+// Mirrors `Grappa.Admission.live_counts/0`. Always present on every
+// row of `GET /admin/networks` (never nil — Registry count is
+// authoritative; zero counts are still a meaningful projection).
+// AdminSessionsTab renders these alongside the operator-set caps
+// ("Visitors: N/cap, Users: M/cap") so capacity is visible at a glance.
+export type AdminLiveCounts = {
+  visitors: number;
+  users: number;
+};
+
 export type AdminNetwork = {
   id: number;
   slug: string;
@@ -1020,6 +1031,7 @@ export type AdminNetwork = {
   inserted_at: string;
   updated_at: string;
   circuit_state: AdminCircuitState | null;
+  live_counts: AdminLiveCounts;
 };
 
 export type AdminNetworksResponse = { networks: AdminNetwork[] };

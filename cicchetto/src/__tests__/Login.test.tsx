@@ -135,8 +135,8 @@ describe("Login", () => {
     });
   });
 
-  it("renders too_many_sessions copy on 429", async () => {
-    vi.mocked(auth.login).mockRejectedValue(new ApiError(429, "too_many_sessions"));
+  it("renders too_many_sessions copy on 503 (U-3: client_cap_exceeded)", async () => {
+    vi.mocked(auth.login).mockRejectedValue(new ApiError(503, "too_many_sessions"));
     renderLogin();
     fireEvent.input(screen.getByLabelText(/nick or email/i), {
       target: { value: "alice" },
@@ -147,7 +147,7 @@ describe("Login", () => {
     fireEvent.click(screen.getByRole("button", { name: /log in/i }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "You're already connected to this network from another device or tab. Close one before opening a new session.",
+        /already at the session limit for this network from this device/i,
       );
     });
   });

@@ -1,9 +1,11 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import {
+  type AdminNetwork,
   type AdminSession,
   ApiError,
   adminDisconnectSession,
+  adminListNetworks,
   adminListSessions,
   adminSessionId,
   adminTerminateSession,
@@ -33,6 +35,14 @@ import { token } from "./lib/auth";
 // `:parked` credential). The `LiveBadge` `alive: false` branch is
 // only reachable in the brief window between BEAM crash + registry
 // sweep, not as a steady operator-visible state.
+//
+// U-3 (UD4): the tab now also renders a per-network cap-count summary
+// above the sessions table. Live counts come from `/admin/networks`'s
+// `live_counts:` projection (server-side authoritative — same
+// Registry match-spec the admission policy uses, so the projection
+// cannot drift from the policy itself). Cic fetches BOTH endpoints
+// in parallel on every refresh + post-action; the summary is a
+// read-only at-a-glance signal, not a separate state model.
 
 type ActionKind = "disconnect" | "terminate";
 
@@ -40,8 +50,16 @@ function confirmKey(id: string, kind: ActionKind): string {
   return `${id}:${kind}`;
 }
 
+function renderCap(cap: number | null): string {
+  // Mirrors the AdminNetworksTab cap-cell convention: `null` is the
+  // "unlimited" sentinel per `Networks.update_network_caps/2`. ∞ is
+  // a single glyph so the summary stays scannable.
+  return cap === null ? "∞" : String(cap);
+}
+
 const AdminSessionsTab: Component = () => {
   const [sessions, setSessions] = createSignal<AdminSession[] | null>(null);
+  const [networks, setNetworks] = createSignal<AdminNetwork[] | null>(null);
   const [confirmingKey, setConfirmingKey] = createSignal<string | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -53,9 +71,28 @@ const AdminSessionsTab: Component = () => {
     setError(null);
     setConfirmingKey(null);
     try {
-      const next = await adminListSessions(t);
-      setSessions(next);
+      // Parallel fetch — sessions list (live BEAM pids) + networks
+      // list (operator caps + Registry-projected live_counts).
+      // Both endpoints are admin-gated; failure of either
+      // collapses the whole render to the error banner (don't show
+      // half-table that the operator can't trust). U-3 (UD4).
+      const [nextSessions, nextNetworks] = await Promise.all([
+        adminListSessions(t),
+        adminListNetworks(t),
+      ]);
+      setSessions(nextSessions);
+      setNetworks(nextNetworks);
     } catch (e) {
+      // Web M1 reviewer fix: clear BOTH signals on error so the
+      // banner stands alone. Pre-fix the catch path only set
+      // `error()`, leaving the prior successful rows rendered
+      // alongside the banner — contradicting the doc comment above
+      // ("failure of either collapses the whole render to the error
+      // banner; don't show half-table that the operator can't
+      // trust"). Now the operator sees only the banner + refresh
+      // CTA when a refresh after a successful prior fetch fails.
+      setSessions(null);
+      setNetworks(null);
       const code = e instanceof ApiError ? e.code : "fetch_failed";
       setError(code);
     } finally {
@@ -118,6 +155,56 @@ const AdminSessionsTab: Component = () => {
         <p class="admin-error" role="alert" data-testid="admin-sessions-error">
           failed: {error()} — click ↻ refresh to retry
         </p>
+      </Show>
+
+      <Show when={networks() !== null && (networks() ?? []).length > 0}>
+        <section
+          class="admin-sessions-network-summary"
+          aria-label="per-network capacity summary"
+          data-testid="admin-sessions-network-summary"
+        >
+          <table class="admin-sessions-summary-table">
+            <thead>
+              <tr>
+                <th>network</th>
+                <th>visitors</th>
+                <th>users</th>
+                <th>per-client cap</th>
+              </tr>
+            </thead>
+            <tbody>
+              <For each={networks() ?? []}>
+                {(net) => (
+                  <tr
+                    class="admin-sessions-summary-row"
+                    data-testid={`admin-sessions-summary-row-${net.slug}`}
+                  >
+                    <td>{net.slug}</td>
+                    <td
+                      data-testid={`admin-sessions-summary-visitors-${net.slug}`}
+                      title={`${net.live_counts.visitors} live visitor sessions of ${renderCap(
+                        net.max_concurrent_visitor_sessions,
+                      )} cap`}
+                    >
+                      {net.live_counts.visitors}/{renderCap(net.max_concurrent_visitor_sessions)}
+                    </td>
+                    <td
+                      data-testid={`admin-sessions-summary-users-${net.slug}`}
+                      title={`${net.live_counts.users} live user sessions of ${renderCap(
+                        net.max_concurrent_user_sessions,
+                      )} cap`}
+                    >
+                      {net.live_counts.users}/{renderCap(net.max_concurrent_user_sessions)}
+                    </td>
+                    <td data-testid={`admin-sessions-summary-per-client-${net.slug}`}>
+                      {renderCap(net.max_per_client)}
+                    </td>
+                  </tr>
+                )}
+              </For>
+            </tbody>
+          </table>
+        </section>
       </Show>
 
       <Show when={sessions() === null && error() === null}>

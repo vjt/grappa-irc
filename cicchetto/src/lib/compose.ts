@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
 import { logout, token } from "./auth";
 import type { ChannelKey } from "./channelKey";
+import { friendlyApiError } from "./friendlyApiError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { networkIdBySlug, networks } from "./networks";
@@ -584,7 +585,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // REST/PubSub failure surfaces here. Preserve the draft (no
       // history push, no draft clear) so the user can retry without
       // re-typing; the {error} arm fires the ComposeBox alert banner.
-      return { error: e instanceof ApiError ? e.code : "send failed" };
+      //
+      // U-3 (UD3): typed ApiErrors get the shared `friendlyApiError`
+      // copy treatment so /connect failures (network_busy,
+      // too_many_sessions, network_unreachable, ...) render the same
+      // human copy as the Login banner does, instead of leaking the
+      // raw snake_case wire token into operator-visible alerts.
+      // `feedback_no_localized_strings_server_side`.
+      return { error: e instanceof ApiError ? friendlyApiError(e) : "send failed" };
     }
 
     // Success: push the original draft (NOT the parsed cmd) onto history,
