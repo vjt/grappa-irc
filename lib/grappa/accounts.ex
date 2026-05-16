@@ -5,7 +5,7 @@ defmodule Grappa.Accounts do
   Public surface:
 
     * users: `create_user/1`, `get_user_by_credentials/2`, `get_user!/1`,
-      `get_user_by_name!/1`
+      `get_user_by_name!/1`, `update_admin_flags/2`
     * sessions: `create_session/4`, `authenticate/1`, `revoke_session/1`
 
   Both `User` and `Session` schemas are exported so downstream callers
@@ -133,6 +133,22 @@ defmodule Grappa.Accounts do
   """
   @spec get_user_by_name!(String.t()) :: User.t()
   def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
+
+  @doc """
+  Toggle the operator-authorization `is_admin` bit on `user`. M
+  cluster's `PATCH /admin/users/:id` endpoint and the
+  `bin/grappa create-user --admin` Q-FIRST-ADMIN bootstrap path
+  both call into this.
+
+  Narrow surface: accepts only `%{is_admin: boolean()}` (User's
+  `admin_changeset/2` ignores any other key) so a controller body
+  can't smuggle name / password mutations through the admin endpoint.
+  """
+  @spec update_admin_flags(User.t(), %{required(:is_admin) => boolean()}) ::
+          {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  def update_admin_flags(%User{} = user, attrs) do
+    user |> User.admin_changeset(attrs) |> Repo.update()
+  end
 
   @doc """
   Creates a new bearer-token session for the given `subject`.

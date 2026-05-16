@@ -30,6 +30,7 @@ defmodule Grappa.Accounts.User do
           name: String.t() | nil,
           password_hash: String.t() | nil,
           password: String.t() | nil,
+          is_admin: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -39,6 +40,7 @@ defmodule Grappa.Accounts.User do
     field :name, :string
     field :password_hash, :string, redact: true
     field :password, :string, virtual: true, redact: true
+    field :is_admin, :boolean, default: false
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -72,4 +74,25 @@ defmodule Grappa.Accounts.User do
     do: change(cs, password_hash: Argon2.hash_pwd_salt(pw))
 
   defp put_password_hash(cs), do: cs
+
+  @doc """
+  Narrow changeset for `:is_admin` toggles only. Separated from
+  `changeset/2` because the latter is create-shaped (requires `:name`
+  + `:password`); folding `:is_admin` in would either force callers to
+  supply a password to flip a bit or require the create-changeset to
+  make password optional. M cluster's `PATCH /admin/users/:id` admin
+  endpoint and `bin/grappa create-user --admin` (Q-FIRST-ADMIN
+  bootstrap path) both consume `Accounts.update_admin_flags/2`, which
+  threads through this changeset.
+
+  Casts `:is_admin` only; ignores any other key in `attrs` so a
+  controller body can't sneak in `:name` / `:password_hash` /
+  `:password` mutations via the admin endpoint.
+  """
+  @spec admin_changeset(t(), %{required(:is_admin) => boolean()}) :: Ecto.Changeset.t()
+  def admin_changeset(%__MODULE__{} = user, attrs) do
+    user
+    |> cast(attrs, [:is_admin])
+    |> validate_required([:is_admin])
+  end
 end
