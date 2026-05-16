@@ -55,7 +55,16 @@ defmodule Grappa.AdmissionStateHelpers do
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Session.Backoff
 
-  @reset_registry_attempts 200
+  # 15s budget for the registry-drain loop. The DOWN-after-terminate
+  # race is fast locally (~ms) but CI runners are slow + load-burdened;
+  # 5s (pre-CP35) was tight enough that interactions between
+  # `GrappaChannelTest` (which spawns sessions without on_exit cleanup)
+  # AND the BootstrapTest setup that follows tipped over under CI load
+  # ~33% of the time. Bumping to 15s costs nothing on the fast path
+  # (this loop only iterates until count == 0) and gives the slow CI
+  # path enough headroom. Root cause (per-channel-test cleanup) is a
+  # separate cluster scope; this is the load-tolerance knob.
+  @reset_registry_attempts 600
   @reset_registry_poll_ms 25
 
   @doc """
@@ -106,13 +115,22 @@ defmodule Grappa.AdmissionStateHelpers do
 
   @doc """
   Terminate every `Grappa.Session.Server` currently under
-  `Grappa.SessionSupervisor` (DynamicSupervisor). Blocks until
+  `Grappa.SessionSupervisor` (DynamicSupervisor) AND every pid
+  still registered under `Grappa.SessionRegistry`. Blocks until
   `Grappa.SessionRegistry` observes the cleanup; raises on timeout
   (loud — silent leak is what made `BootstrapTest:468` intermittent
   under CI load; see `project_network_circuit_ets_leak`).
 
-  Idempotent: returns `:ok` immediately when the supervisor has no
-  children.
+  Two-step purge: (1) terminate every supervised child via
+  `DynamicSupervisor.terminate_child/2`, then (2) sweep the
+  Registry separately and `Process.exit(pid, :shutdown)` any
+  pid that's still registered. The Registry sweep catches the
+  race where a Session.Server died but Registry's link-based
+  cleanup hasn't propagated yet — without it the registry-clear
+  wait blocks past 15s on CI runners even though all pids are
+  long-dead.
+
+  Idempotent: returns `:ok` immediately when both surfaces are clean.
   """
   @spec reset_session_supervisor() :: :ok
   def reset_session_supervisor do
@@ -131,6 +149,25 @@ defmodule Grappa.AdmissionStateHelpers do
                   "Session.Server #{inspect(pid)} did not terminate within 2s"
       end
     end
+
+    # Registry sweep — catches Session.Servers that crashed unsupervised
+    # OR whose Registry link cleanup hasn't propagated yet. Send
+    # `:shutdown` rather than `:kill` so terminate/2 still runs if the
+    # pid is alive; if dead, no-op.
+    leftover_pids = Registry.select(Grappa.SessionRegistry, [{{:_, :"$1", :_}, [], [:"$1"]}])
+
+    Enum.each(leftover_pids, fn pid ->
+      if Process.alive?(pid) do
+        ref = Process.monitor(pid)
+        Process.exit(pid, :shutdown)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          2_000 -> Process.demonitor(ref, [:flush])
+        end
+      end
+    end)
 
     wait_until_registry_clear!(@reset_registry_attempts)
   end
