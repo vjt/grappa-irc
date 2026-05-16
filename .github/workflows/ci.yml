@@ -76,7 +76,7 @@ jobs:
         run: vendor/bats-core/bin/bats test/bin/
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         if: always()
         with:
           files: ./cover/excoveralls.json
