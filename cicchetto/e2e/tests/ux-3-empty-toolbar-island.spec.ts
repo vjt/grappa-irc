@@ -46,10 +46,17 @@ test("@webkit UX-3 — .shell-empty-toolbar mirrors .topic-bar safe-area-inset-t
   const emptyToolbar = page.locator(".shell-empty-toolbar");
   await expect(emptyToolbar).toBeVisible({ timeout: 10_000 });
 
-  // Source assertion — walks document.styleSheets, locates the rule,
-  // returns the raw padding-top declaration. The buggy rule returns
-  // `0.5rem`; the fixed rule returns a string containing both `env(`
-  // and `safe-area-inset-top`.
+  // Source assertion — walks document.styleSheets, locates any rule
+  // whose selector covers `.shell-empty-toolbar`, returns its declared
+  // padding-top. Note: vite's CSS minifier MERGES rules with identical
+  // property values into a comma-list selector — in production the
+  // `.shell-empty-toolbar` rule lives under
+  // `selectorText === ".topic-bar, .shell-empty-toolbar"`. So match on
+  // substring containment rather than exact equality. The buggy rule
+  // (`.shell-empty-toolbar { padding: 0.5rem 1rem }`) would NOT merge
+  // with `.topic-bar` (different values), so the substring would land
+  // on its own un-merged rule and still return `0.5rem 1rem` — failing
+  // both substring checks. Tight pin either way.
   const declaredPaddingTop = await page.evaluate(() => {
     for (const sheet of Array.from(document.styleSheets)) {
       let rules: CSSRuleList;
@@ -61,10 +68,12 @@ test("@webkit UX-3 — .shell-empty-toolbar mirrors .topic-bar safe-area-inset-t
       }
       for (const rule of Array.from(rules)) {
         if (!(rule instanceof CSSStyleRule)) continue;
-        if (rule.selectorText !== ".shell-empty-toolbar") continue;
-        // The shorthand `padding` is what's authored; CSSOM keeps it
-        // intact (does NOT expand to longhand) when the value
-        // contains a CSS function. Return the shorthand.
+        // Selector list may contain `.shell-empty-toolbar` alone OR
+        // merged with siblings (e.g. `.topic-bar, .shell-empty-toolbar`)
+        // — `\b`-style word boundary via split-on-comma to avoid
+        // matching `.shell-empty-toolbar-spacer`.
+        const selectors = rule.selectorText.split(",").map((s) => s.trim());
+        if (!selectors.includes(".shell-empty-toolbar")) continue;
         const padding = rule.style.getPropertyValue("padding").trim();
         const paddingTopLonghand = rule.style.getPropertyValue("padding-top").trim();
         return padding.length > 0 ? padding : paddingTopLonghand;
