@@ -15,7 +15,7 @@ import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
-import { installViewportHeightTracker } from "./lib/viewportHeight";
+import { installScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -38,6 +38,13 @@ applyFontSizeFromStorage();
 // body to keep focused inputs visible and pushes the top bar out
 // of view. Boot-time so the first frame already has the var.
 installViewportHeightTracker();
+
+// UX-3 OCT — pin window scroll. iOS auto-scrolls on input focus
+// even when the input is already visible (the scroll-into-view path
+// is programmatic, bypassing body { overflow: hidden }). The
+// listener catches every scroll attempt and snaps back to (0, 0)
+// before paint, so the app chrome never drifts.
+installScrollPin();
 
 // Push notifications cluster B0 (2026-05-14) — capture
 // `beforeinstallprompt` early. Chrome fires this event ONCE, very

@@ -71,3 +71,35 @@ export function installViewportHeightTracker(
     writeViewportHeight(vp.height);
   });
 }
+
+/**
+ * Pins window scroll to (0, 0) whenever something tries to scroll
+ * the document. iOS Safari auto-scrolls the page to "center" the
+ * focused input on keyboard open, even when the input is already
+ * visible — bypassing `body { overflow: hidden }` because the
+ * scroll-into-view path is programmatic, not gesture-driven.
+ *
+ * Listening for the `scroll` event + immediately scrolling back to
+ * (0, 0) kills the symptom at the source. The user sees the page
+ * hold still; iOS sees what it asked for and stops escalating.
+ *
+ * Passive listener — `scroll` doesn't honor preventDefault anyway;
+ * scrollTo(0, 0) is the corrective action.
+ *
+ * Idempotent like `installViewportHeightTracker` — called once from
+ * main.tsx.
+ */
+export function installScrollPin(
+  target: Window | undefined = typeof window !== "undefined" ? window : undefined,
+): void {
+  if (!target) return;
+  target.addEventListener(
+    "scroll",
+    () => {
+      if (target.scrollX !== 0 || target.scrollY !== 0) {
+        target.scrollTo(0, 0);
+      }
+    },
+    { passive: true },
+  );
+}
