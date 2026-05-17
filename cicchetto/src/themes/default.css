@@ -675,7 +675,17 @@ body {
 
 .scrollback {
   flex: 1;
-  overflow-y: auto;
+  /* UX-3 Z3 R3: `overflow-y: scroll` (NOT `auto`) is the key. With
+     `auto`, iOS only treats the element as scrollable when there's
+     real overflow — empty/sparse scrollback has no overflow, so iOS
+     accepts `touch-action: pan-y` but with no target to actually
+     pan, falls through to chrome reveal/hide gesture (URL bar
+     animation). With `scroll`, iOS treats the element as ALWAYS
+     scrollable, so `pan-y` always has a valid target and never
+     bubbles. iOS auto-hides the scroll indicator so there's no
+     permanent UI cost; macOS Safari + Firefox also auto-hide on
+     trackpad input. */
+  overflow-y: scroll;
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
@@ -696,21 +706,6 @@ body {
      scrollback. Horizontal swipes still fall through to `none` (no
      horizontal content here, and no chrome gesture). */
   touch-action: pan-y;
-}
-
-/* UX-3 Z3: when the scrollback has NO content (empty channel, fresh
-   query window, freshly cleared history), revoke `touch-action: pan-y`.
-   `pan-y` tells iOS "this element handles vertical pan"; with no
-   overflow to scroll iOS still accepts the gesture as a valid pan,
-   then — finding nothing to actually move — bubbles up as a chrome
-   reveal/hide gesture. The bug manifests when the keyboard is open
-   because iOS is biased toward revealing the URL bar to fit the
-   shrunk viewport. `touch-action: none` here matches the `.shell-mobile`
-   blanket: no gesture accepted, no chrome reveal possible. Toggled by
-   ScrollbackPane.tsx's `scrollback-locked` classList key on
-   `messages()?.length === 0`. */
-.scrollback.scrollback-locked {
-  touch-action: none;
 }
 
 .scrollback-empty {

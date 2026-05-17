@@ -1098,13 +1098,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       <Show when={props.kind === "server"}>
         <LusersCard networkSlug={props.networkSlug} />
       </Show>
-      <div
-        ref={listRef}
-        class="scrollback"
-        classList={{ "scrollback-locked": (messages()?.length ?? 0) === 0 }}
-        onScroll={onScroll}
-        data-testid="scrollback"
-      >
+      <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
         <Show
           when={(messages()?.length ?? 0) > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}
