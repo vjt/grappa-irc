@@ -1798,15 +1798,21 @@ body {
     display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
-    /* UX-3 TER: dvh (dynamic viewport height) shrinks with the
-       on-screen keyboard so the shell layout follows. With 100vh the
-       shell stayed full-screen height when the keyboard opened — iOS
-       scrolled the body up to keep the focused input visible, which
-       pushed the top bar OUT of the visible area. 100dvh tracks the
-       actual visible viewport (iOS 15.4+), so the shell shrinks
-       in-place + top bar stays pinned. 100vh fallback for older
-       browsers via @supports. */
-    height: 100vh;
+    /* UX-3 PENT: height driven by VisualViewport API via lib/viewportHeight.ts.
+       `--viewport-height` tracks `window.visualViewport.height`, which
+       SHRINKS when the iOS on-screen keyboard opens (unlike `100dvh`,
+       which tracks only browser chrome / address bar). The shell
+       shrinks in lockstep with the keyboard — iOS has no reason to
+       scroll the body to keep the focused input visible, so the top
+       bar stays pinned.
+       Fallback: `100dvh` for the brief window between page boot and
+       the first visualViewport.resize event, or for browsers that
+       don't expose visualViewport. The var is set at boot from
+       main.tsx so the first paint already has the right value.
+       Older browsers without `dvh` support fall back to 100vh via
+       an explicit override below (biome forbids the
+       progressive-enhancement duplicate-property pattern). */
+    height: var(--viewport-height, 100dvh);
     min-height: 0;
     /* UX-3 BIS: safe-area insets at the SHELL container, not at the
        individual bars. Pushes the entire mobile shell below the
@@ -1825,12 +1831,17 @@ body {
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  /* UX-3 TER: dvh override outside the rule to dodge biome's
-     duplicate-property check. @supports gates older browsers that
-     don't grok dvh; everything else gets dynamic viewport tracking. */
-  @supports (height: 100dvh) {
+  /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
+     `var()` resolves to its fallback `100dvh`; on those browsers that
+     declaration is invalid and the whole property gets discarded, so
+     the rule below provides 100vh as the final floor. @supports gate
+     avoids overriding the dvh path on modern browsers. Wrapped in
+     `not` so this only fires when dvh is unsupported — biome's
+     duplicate-property check forbids the classic
+     `height: 100vh; height: 100dvh; height: var(...)` cascade. */
+  @supports not (height: 100dvh) {
     .shell-mobile {
-      height: 100dvh;
+      height: 100vh;
     }
   }
 
