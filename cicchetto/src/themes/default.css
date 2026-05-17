@@ -698,6 +698,21 @@ body {
   touch-action: pan-y;
 }
 
+/* UX-3 Z3: when the scrollback has NO content (empty channel, fresh
+   query window, freshly cleared history), revoke `touch-action: pan-y`.
+   `pan-y` tells iOS "this element handles vertical pan"; with no
+   overflow to scroll iOS still accepts the gesture as a valid pan,
+   then — finding nothing to actually move — bubbles up as a chrome
+   reveal/hide gesture. The bug manifests when the keyboard is open
+   because iOS is biased toward revealing the URL bar to fit the
+   shrunk viewport. `touch-action: none` here matches the `.shell-mobile`
+   blanket: no gesture accepted, no chrome reveal possible. Toggled by
+   ScrollbackPane.tsx's `scrollback-locked` classList key on
+   `messages()?.length === 0`. */
+.scrollback.scrollback-locked {
+  touch-action: none;
+}
+
 .scrollback-empty {
   margin: 0;
 }
