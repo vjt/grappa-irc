@@ -85,22 +85,6 @@ body {
   overscroll-behavior: none;
 }
 
-/* UX-3 SEX: position:fixed pins body to the viewport so iOS can't
-   scroll it on input focus. UX-3 PENT shrinks the shell to fit the
-   visible viewport via VisualViewport; iOS would STILL scroll the
-   body up to "center" the focused input even though the input was
-   already in view, leaving the shell sitting high in the viewport
-   with empty space at the bottom. overflow:hidden is honored for
-   wheel scroll but iOS auto-scroll-on-focus bypasses it.
-   position:fixed gives body nothing to scroll — the shell inside
-   flows normally and scrollback's own overflow-y:auto keeps internal
-   scrolling intact. Scoped to body only (html position:fixed is
-   invalid; html is the root element). */
-body {
-  position: fixed;
-  inset: 0;
-}
-
 #root {
   min-height: 100vh;
 }
