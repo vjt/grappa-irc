@@ -1518,4 +1518,132 @@ defmodule Grappa.ScrollbackTest do
 
     :ok
   end
+
+  describe "delete_for_dm/3 (UX-1)" do
+    test "drops all rows with dm_with == peer for (subject, network)", %{user: user, network: net} do
+      # Outbound vjt → peer (channel = peer, dm_with = peer)
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      # Inbound peer → vjt (channel = vjt, dm_with = peer)
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 110, %{channel: "vjt", sender: "peer", dm_with: "peer"}))
+
+      # Unrelated DM (other peer) — must survive
+      {:ok, survive_dm} =
+        Scrollback.persist_event(sample(user, net, 120, %{channel: "other", sender: "vjt", dm_with: "other"}))
+
+      # Unrelated channel row — must survive
+      {:ok, survive_chan} =
+        Scrollback.persist_event(sample(user, net, 130, %{channel: "#room", sender: "vjt", dm_with: nil}))
+
+      assert {:ok, 2} = Scrollback.delete_for_dm({:user, user.id}, net.id, "peer")
+
+      remaining_ids =
+        Message |> Repo.all() |> Enum.map(& &1.id) |> Enum.sort()
+
+      assert remaining_ids == Enum.sort([survive_dm.id, survive_chan.id])
+    end
+
+    test "case-insensitive on peer nick", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "Peer", sender: "vjt", dm_with: "Peer"}))
+
+      assert {:ok, 1} = Scrollback.delete_for_dm({:user, user.id}, net.id, "PEER")
+    end
+
+    test "isolated by subject — alice's DM rows survive a vjt delete", %{user: vjt, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, alice_dm} =
+        Scrollback.persist_event(sample(alice, net, 100, %{channel: "peer", sender: "alice", dm_with: "peer"}))
+
+      alice_dm_id = alice_dm.id
+
+      assert {:ok, 0} = Scrollback.delete_for_dm({:user, vjt.id}, net.id, "peer")
+      assert [%Message{id: ^alice_dm_id}] = Repo.all(Message)
+    end
+
+    test "isolated by network — peer DM on other_net survives", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+
+      {:ok, other_dm} =
+        Scrollback.persist_event(sample(user, other_net, 100, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      other_id = other_dm.id
+
+      assert {:ok, 0} = Scrollback.delete_for_dm({:user, user.id}, net.id, "peer")
+      assert [%Message{id: ^other_id}] = Repo.all(Message)
+    end
+
+    test "idempotent — returns {:ok, 0} on empty matches", %{user: user, network: net} do
+      assert {:ok, 0} = Scrollback.delete_for_dm({:user, user.id}, net.id, "ghost")
+      assert {:ok, 0} = Scrollback.delete_for_dm({:user, user.id}, net.id, "ghost")
+    end
+  end
+
+  describe "delete_for_channel/3 (UX-1)" do
+    test "drops all rows for (subject, network, channel) — channel-shaped", %{
+      user: user,
+      network: net
+    } do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "#room", dm_with: nil}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 20, %{channel: "#room", dm_with: nil}))
+
+      {:ok, survive} =
+        Scrollback.persist_event(sample(user, net, 30, %{channel: "#other", dm_with: nil}))
+
+      survive_id = survive.id
+
+      assert {:ok, 2} = Scrollback.delete_for_channel({:user, user.id}, net.id, "#room")
+
+      assert [%Message{id: ^survive_id}] = Repo.all(Message)
+    end
+
+    test "case-insensitive on channel name", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "#Room", dm_with: nil}))
+
+      assert {:ok, 1} = Scrollback.delete_for_channel({:user, user.id}, net.id, "#ROOM")
+    end
+
+    test "DM rows for the same target name DO NOT match (pure channel filter)", %{
+      user: user,
+      network: net
+    } do
+      # `peer` (query-kind) — must NOT be touched by a delete_for_channel call.
+      {:ok, dm} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      # Note: channel-shaped target — would be deleted.
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 20, %{channel: "#peer", dm_with: nil}))
+
+      dm_id = dm.id
+
+      assert {:ok, 1} = Scrollback.delete_for_channel({:user, user.id}, net.id, "#peer")
+
+      assert [%Message{id: ^dm_id}] = Repo.all(Message)
+    end
+
+    test "idempotent — returns {:ok, 0} on empty matches", %{user: user, network: net} do
+      assert {:ok, 0} = Scrollback.delete_for_channel({:user, user.id}, net.id, "#ghost")
+    end
+
+    test "isolated by subject — alice's channel rows survive a vjt delete",
+         %{user: vjt, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(alice, net, 10, %{channel: "#room", dm_with: nil}))
+
+      assert {:ok, 0} = Scrollback.delete_for_channel({:user, vjt.id}, net.id, "#room")
+      assert [_] = Repo.all(Message)
+    end
+  end
 end

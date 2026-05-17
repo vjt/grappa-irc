@@ -5,6 +5,7 @@ import {
   type QueryWindowEntry,
   type WireUserEvent,
 } from "./api";
+import { loadArchive } from "./archive";
 import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
@@ -386,6 +387,14 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         by: r.by as string | null,
         reason: r.reason as string | null,
       };
+    case "archive_changed":
+      // UX-1 (2026-05-17) — server broadcasts after a successful
+      // DELETE /networks/:slug/archive/:target. Single-field envelope:
+      // cic re-fetches via `loadArchive(slug)` rather than tracking a
+      // wire-side delta (small set; refresh is idempotent and survives
+      // reconnect replay).
+      if (typeof r.network_slug !== "string") return null;
+      return { kind: "archive_changed", network_slug: r.network_slug };
     default:
       return null;
   }
@@ -595,6 +604,14 @@ createRoot(() => {
           // F1 — see `joined` arm above. Same shape + setter as
           // `subscribe.ts` per-channel kicked arm.
           setKicked(channelKey(payload.network, payload.channel), payload.by, payload.reason);
+          return;
+
+        case "archive_changed":
+          // UX-1 (2026-05-17) — server delete cleared a per-network
+          // archive entry. Re-fetch via the existing `loadArchive(slug)`
+          // helper rather than tracking the wire-side delta (the set
+          // is small and refresh is idempotent + reconnect-safe).
+          void loadArchive(payload.network_slug);
           return;
 
         default:

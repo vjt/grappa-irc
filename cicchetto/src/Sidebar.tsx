@@ -1,5 +1,8 @@
-import { type Component, For, Show } from "solid-js";
+import { type Component, createSignal, For, Show } from "solid-js";
+import InlineConfirmButton from "./InlineConfirmButton";
+import { deleteArchiveEntry } from "./lib/api";
 import { archivedBySlug, loadArchive } from "./lib/archive";
+import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
@@ -61,6 +64,15 @@ export type Props = {
 };
 
 const Sidebar: Component<Props> = (props) => {
+  // UX-1 (2026-05-17) — singleton armed-key for archive delete confirm.
+  // Mirrors AdminSessionsTab / AdminVisitorsTab — one armed row at a
+  // time across the WHOLE sidebar (across every network's archive
+  // section). Key shape: `"<slug> <target>"`. Space separator is safe
+  // here because network slugs and IRC targets cannot contain raw
+  // spaces (RFC 1459 section 2.2 + Networks.Network.changeset slug).
+  const [armedArchiveKey, setArmedArchiveKey] = createSignal<string | null>(null);
+  const archiveKey = (slug: string, target: string) => `${slug} ${target}`;
+
   const isSelected = (slug: string, name: string): boolean => {
     const s = selectedChannel();
     return s !== null && s.networkSlug === slug && s.channelName === name;
@@ -162,6 +174,28 @@ const Sidebar: Component<Props> = (props) => {
 
   const handleCloseQuery = (networkId: number, targetNick: string) => {
     closeQueryWindow(networkId, targetNick);
+  };
+
+  // UX-1 (2026-05-17) — confirmed delete of an archive entry. Both
+  // channel-shaped + query-shaped targets get the delete affordance
+  // per vjt scope decision. Server dispatches by sigil on its end;
+  // cic hands over the user-facing target string as-is. On success
+  // the server broadcasts `archive_changed` and the userTopic
+  // dispatcher re-fetches archivedBySlug for this network — no need
+  // for an optimistic mutation here.
+  const handleConfirmArchiveDelete = async (slug: string, target: string) => {
+    const t = token();
+    if (!t) return;
+    try {
+      await deleteArchiveEntry(t, slug, target);
+    } catch {
+      // Server-side delete failed (network blip, 4xx). Leave the row;
+      // the operator can retry. The InlineConfirmButton disarms on the
+      // next sibling arming or refresh. No toast — Sidebar is dense
+      // and a generic error wouldn't tell the user anything actionable.
+    } finally {
+      setArmedArchiveKey(null);
+    }
   };
 
   // CP15 B5 fix - archive list rendering filters out entries that are
@@ -362,23 +396,35 @@ const Sidebar: Component<Props> = (props) => {
               <summary>Archive</summary>
               <ul>
                 <For each={visibleArchiveForNetwork(network.slug, network.id)}>
-                  {(entry) => (
-                    <li>
-                      <button
-                        type="button"
-                        class="sidebar-window-btn"
-                        onClick={() =>
-                          handleClick(
-                            network.slug,
-                            entry.target,
-                            entry.kind === "channel" ? "channel" : "query",
-                          )
-                        }
-                      >
-                        <span class="sidebar-channel-name parted">{entry.target}</span>
-                      </button>
-                    </li>
-                  )}
+                  {(entry) => {
+                    const key = archiveKey(network.slug, entry.target);
+                    return (
+                      <li class="sidebar-archive-row">
+                        <button
+                          type="button"
+                          class="sidebar-window-btn"
+                          onClick={() =>
+                            handleClick(
+                              network.slug,
+                              entry.target,
+                              entry.kind === "channel" ? "channel" : "query",
+                            )
+                          }
+                        >
+                          <span class="sidebar-channel-name parted">{entry.target}</span>
+                        </button>
+                        <InlineConfirmButton
+                          idleLabel="×"
+                          confirmLabel="really delete?"
+                          armed={armedArchiveKey() === key}
+                          onArm={() => setArmedArchiveKey(key)}
+                          onConfirm={() => handleConfirmArchiveDelete(network.slug, entry.target)}
+                          testId={`archive-delete-${network.slug}-${entry.target}`}
+                          extraClass="sidebar-archive-delete"
+                        />
+                      </li>
+                    );
+                  }}
                 </For>
               </ul>
             </details>

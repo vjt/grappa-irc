@@ -155,4 +155,31 @@ defmodule Grappa.Scrollback.Wire do
   def archive_index(entries) when is_list(entries) do
     %{archive: Enum.map(entries, &archive_entry/1)}
   end
+
+  @typedoc """
+  UX-1 (2026-05-17) — `archive_changed` push payload broadcast on
+  `Topic.user(subject_label)` after a successful archive-entry delete.
+  Carries `network_slug` so the cic dispatcher knows which
+  per-network archive section to refresh; cic re-fetches via
+  `loadArchive(network_slug)` rather than rendering an embedded
+  delta (small, simple, idempotent — re-arriving the broadcast on
+  reconnect is a no-op).
+
+  No `target` field on purpose — the delete is fait accompli on the
+  server; cic's local archive cache for that network is stale until
+  the refresh lands, but the only loss is briefly stale row counts.
+  Sending the target would tempt cic-side optimistic patches that
+  drift from server truth.
+  """
+  @type archive_changed_payload :: %{kind: String.t(), network_slug: String.t()}
+
+  @doc """
+  Build the `archive_changed` event envelope for a network slug —
+  used by `GrappaWeb.ArchiveController.delete/2` to notify connected
+  cic tabs that the archive section for this network needs a refresh.
+  """
+  @spec archive_changed_payload(String.t()) :: archive_changed_payload()
+  def archive_changed_payload(network_slug) when is_binary(network_slug) do
+    %{kind: "archive_changed", network_slug: network_slug}
+  end
 end

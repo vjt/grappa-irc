@@ -1415,6 +1415,37 @@ body {
   border-color: #c00;
 }
 
+/* UX-1 (2026-05-17) — Sidebar archive delete affordance. Borderless +
+   muted to keep the dense per-row Archive list calm; the InlineConfirmButton
+   base provides the .confirming red treatment when armed. The full-width
+   row gives the × a stable hit area on touch. */
+.sidebar-archive-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.sidebar-archive-delete {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sidebar-archive-delete:hover {
+  color: var(--fg);
+  background: var(--border);
+}
+
+.sidebar-archive-delete.confirming {
+  color: #c00;
+  background: transparent;
+}
+
 /* M-cluster M-9b — admin Sessions tab. Same base as Visitors but
    wider (more columns) and with two action buttons per row. */
 .admin-sessions-tab {

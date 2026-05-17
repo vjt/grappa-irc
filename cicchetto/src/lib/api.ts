@@ -664,7 +664,8 @@ export type WireUserEvent =
       by: string | null;
       reason: string | null;
     }
-  | { kind: "bundle_hash"; hash: string };
+  | { kind: "bundle_hash"; hash: string }
+  | { kind: "archive_changed"; network_slug: string };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits
@@ -1296,6 +1297,28 @@ export async function listArchive(token: string, networkSlug: string): Promise<A
   if (!res.ok) throw await readError(res);
   const body = (await res.json()) as { archive: ArchiveEntry[] };
   return body.archive;
+}
+
+// UX-1 (2026-05-17) — mirror of `GrappaWeb.ArchiveController.delete/2`.
+// DELETE /networks/:slug/archive/:target → 204 on success. Server
+// dispatches by sigil (channel-shaped → delete_for_channel; otherwise
+// → delete_for_dm) so cic just hands over the user-facing target as-is.
+// On success the server broadcasts `archive_changed` on the user-topic;
+// the dispatcher in `userTopic.ts` triggers `loadArchive(slug)` so the
+// local cache refreshes without the caller plumbing the refetch.
+export async function deleteArchiveEntry(
+  token: string,
+  networkSlug: string,
+  target: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/archive/${encodeURIComponent(target)}`,
+    {
+      method: "DELETE",
+      headers: buildHeaders(token),
+    },
+  );
+  if (!res.ok) throw await readError(res);
 }
 
 // Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`

@@ -185,6 +185,7 @@ defmodule GrappaWeb.Router do
     get "/channels/:channel_id/members", MembersController, :index
 
     get "/archive", ArchiveController, :index
+    delete "/archive/:target", ArchiveController, :delete
 
     post "/nick", NickController, :create
   end

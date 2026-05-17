@@ -539,3 +539,48 @@ describe("tagNetwork (bucket F H4)", () => {
     errSpy.mockRestore();
   });
 });
+
+describe("deleteArchiveEntry (UX-1)", () => {
+  it("DELETE /networks/:slug/archive/:target with bearer + percent-encoded target", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.deleteArchiveEntry("tok", "freenode", "#sniffo");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch not called");
+    const [url, opts] = call as [string, RequestInit];
+    expect(url).toBe("/networks/freenode/archive/%23sniffo");
+    expect(opts.method).toBe("DELETE");
+    expect((opts.headers as Record<string, string>).authorization).toBe("Bearer tok");
+  });
+
+  it("query-shaped target works without sigil encoding (peer nick passes through)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.deleteArchiveEntry("tok", "freenode", "vjt-peer");
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch not called");
+    const [url] = call as [string, RequestInit];
+    expect(url).toBe("/networks/freenode/archive/vjt-peer");
+  });
+
+  it("rejects with ApiError on 4xx response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "bad_request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(api.deleteArchiveEntry("tok", "freenode", "#bad")).rejects.toBeInstanceOf(
+      api.ApiError,
+    );
+  });
+});

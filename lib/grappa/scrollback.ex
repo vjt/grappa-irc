@@ -560,6 +560,79 @@ defmodule Grappa.Scrollback do
     do: where(query, [m], m.id < ^before)
 
   @doc """
+  UX-1 (2026-05-17) — deletes all scrollback rows for a DM peer in a
+  `(subject, network_id)` pair. Case-insensitive on the peer nick to
+  match the IRC-side lowercase normalization (`dm_with` is stored
+  verbatim but compared lowered, mirroring `channel_or_dm_where/3`).
+
+  Symmetric: drops both outbound (`channel = peer`) and inbound
+  (`channel = own_nick, dm_with = peer`) sides because both rows
+  carry `dm_with = peer` per CP14 B3 (write-time backfill via
+  `dm_peer/4`). Pre-CP14 inbound rows with `dm_with = nil` slip
+  through this filter — that's the documented residue covered by
+  the CP14 migration.
+
+  Returns `{:ok, count}` always; `count` is `0` on idempotent calls
+  for an empty (subject, network, peer) triple. Never raises on
+  empty matches — boundary contract is "the row stream is gone after
+  this returns".
+
+  Sole consumer: `GrappaWeb.ArchiveController.delete/2`. Caller
+  resolves `subject` + `network_id` from the authenticated conn +
+  `Plugs.ResolveNetwork`; controller broadcasts a typed
+  `:archive_changed` event on `Topic.user(subject_label)` so connected
+  cic tabs refresh their archive section.
+  """
+  @spec delete_for_dm(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
+  def delete_for_dm(subject, network_id, peer)
+      when is_integer(network_id) and is_binary(peer) do
+    lower_peer = String.downcase(peer)
+
+    {count, _} =
+      Message
+      |> subject_where(subject)
+      |> where([m], m.network_id == ^network_id)
+      |> where([m], fragment("lower(?)", m.dm_with) == ^lower_peer)
+      |> Repo.delete_all()
+
+    {:ok, count}
+  end
+
+  @doc """
+  UX-1 (2026-05-17) — deletes all scrollback rows for a channel in a
+  `(subject, network_id)` pair. Case-insensitive on the channel name
+  (IRC channels are case-insensitive per RFC 1459 §2.2).
+
+  Pure `channel = ^name` filter (no DM aggregation): channel rows
+  carry `dm_with = nil` per `dm_peer/4`'s otherwise arm. Peer DMs are
+  out of scope here — use `delete_for_dm/3` for the query-kind path.
+
+  Returns `{:ok, count}` always — `count` is `0` on empty matches.
+  Caller (`ArchiveController.delete/2`) dispatches by sigil:
+  `target_kind/1 == :channel` → here; `:query` → `delete_for_dm/3`.
+
+  This removes local history only. The channel itself remains
+  rejoinable from the IRC server's perspective — the bouncer can
+  re-issue JOIN and the channel state (members, topic, modes) comes
+  back from upstream. cic's confirm-modal copy makes the rejoinable
+  contract explicit.
+  """
+  @spec delete_for_channel(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
+  def delete_for_channel(subject, network_id, channel)
+      when is_integer(network_id) and is_binary(channel) do
+    lower_channel = String.downcase(channel)
+
+    {count, _} =
+      Message
+      |> subject_where(subject)
+      |> where([m], m.network_id == ^network_id)
+      |> where([m], fragment("lower(?)", m.channel) == ^lower_channel)
+      |> Repo.delete_all()
+
+    {:ok, count}
+  end
+
+  @doc """
   Returns `true` if at least one row exists for `network_id`.
 
   Sole consumer is `Grappa.Networks.Credentials.unbind_credential/2`'s
