@@ -35,9 +35,10 @@
 //     .bottom-bar                — role="tablist" container
 //     .bottom-bar-network        — per-network grouping
 //     .bottom-bar-network-chip   — network slug label inside the group
+//     .bottom-bar-tab-wrap       — wrapper around channel/query tab + ×
 //     .bottom-bar-tab            — clickable window button (server/channel/query)
+//     .bottom-bar-close          — × close button (channel + query only; iOS-3)
 //     .bottom-bar-msg-unread / -events-unread / -mention — badges
-//     (no close button on mobile by design — see BottomBar.tsx)
 //
 //   Shared:
 //     [data-testid="scrollback"] — scrollback list container
@@ -156,6 +157,24 @@ export function sidebarEventsBadge(page: Page, networkSlug: string, windowName: 
 export function sidebarMentionBadge(page: Page, networkSlug: string, windowName: string) {
   const cls = isMobileViewport(page) ? ".bottom-bar-mention" : ".sidebar-mention";
   return sidebarWindow(page, networkSlug, windowName).locator(cls);
+}
+
+// iOS-3 — close × button for a channel/query window. Layout-aware:
+// desktop uses `.sidebar-close` (sibling of `.sidebar-window-btn`
+// inside `<li>`); mobile uses `.bottom-bar-close` (sibling of
+// `.bottom-bar-tab` inside `.bottom-bar-tab-wrap`). Server windows
+// have NO close button on either layout — caller is responsible for
+// only calling this on channel/query windows.
+export function sidebarCloseButton(page: Page, networkSlug: string, windowName: string) {
+  if (isMobileViewport(page)) {
+    const section = page.locator(".bottom-bar-network", {
+      has: page.locator(".bottom-bar-network-chip", { hasText: networkSlug }),
+    });
+    return section
+      .locator(".bottom-bar-tab-wrap", { has: page.locator(".bottom-bar-tab", { hasText: windowName }) })
+      .locator(".bottom-bar-close");
+  }
+  return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-close");
 }
 
 // Click the window to focus it. Solid's reactive flush + the shell's

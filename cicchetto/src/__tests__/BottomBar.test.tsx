@@ -44,8 +44,14 @@ vi.mock("../lib/queryWindows", () => ({
   setQueryWindowsByNetwork: vi.fn(),
 }));
 
+vi.mock("../lib/windowClose", () => ({
+  closeChannelWindow: vi.fn(),
+  closeQueryWindow: vi.fn(),
+}));
+
 import BottomBar from "../BottomBar";
 import * as selMod from "../lib/selection";
+import * as windowCloseMod from "../lib/windowClose";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -179,5 +185,49 @@ describe("BottomBar", () => {
     render(() => <BottomBar />);
     const bncBtn = screen.getByText("#bnc").closest("button");
     expect(bncBtn?.classList.contains("parted")).toBe(true);
+  });
+
+  // iOS-3 — close × per tab (channels + queries; NOT on server tabs).
+  it("renders a close × on each channel tab", () => {
+    render(() => <BottomBar />);
+    const italiaWrap = screen.getByText("#italia").closest(".bottom-bar-tab-wrap");
+    const closeBtn = italiaWrap?.querySelector(".bottom-bar-close");
+    expect(closeBtn).toBeTruthy();
+    expect(closeBtn?.textContent).toBe("×");
+    expect(closeBtn?.getAttribute("aria-label")).toBe("Close #italia");
+  });
+
+  it("renders a close × on each query (DM) tab", () => {
+    render(() => <BottomBar />);
+    const aliceWrap = screen.getByText("alice").closest(".bottom-bar-tab-wrap");
+    const closeBtn = aliceWrap?.querySelector(".bottom-bar-close");
+    expect(closeBtn).toBeTruthy();
+    expect(closeBtn?.textContent).toBe("×");
+    expect(closeBtn?.getAttribute("aria-label")).toBe("Close DM with alice");
+  });
+
+  it("server tabs have NO close × (server window is not closeable)", () => {
+    render(() => <BottomBar />);
+    const serverTab = screen.getAllByText("Server")[0] as HTMLElement;
+    // Server tab is not wrapped in a .bottom-bar-tab-wrap (no close button
+    // sibling). Walk up to the parent .bottom-bar-network.
+    const wrap = serverTab.closest(".bottom-bar-tab-wrap");
+    expect(wrap).toBeNull();
+  });
+
+  it("clicking close × on a channel tab calls closeChannelWindow with correct args", () => {
+    render(() => <BottomBar />);
+    const italiaWrap = screen.getByText("#italia").closest(".bottom-bar-tab-wrap");
+    const closeBtn = italiaWrap?.querySelector(".bottom-bar-close") as HTMLElement;
+    fireEvent.click(closeBtn);
+    expect(windowCloseMod.closeChannelWindow).toHaveBeenCalledWith("freenode", "#italia");
+  });
+
+  it("clicking close × on a query tab calls closeQueryWindow with correct args", () => {
+    render(() => <BottomBar />);
+    const aliceWrap = screen.getByText("alice").closest(".bottom-bar-tab-wrap");
+    const closeBtn = aliceWrap?.querySelector(".bottom-bar-close") as HTMLElement;
+    fireEvent.click(closeBtn);
+    expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
 });

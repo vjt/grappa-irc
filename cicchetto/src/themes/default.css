@@ -1937,6 +1937,42 @@ body {
   font-weight: bold;
 }
 
+/* iOS-3 — tab + close × wrap. Server window has no wrap (no close);
+   channel + query windows wrap the tab and × together so they sit
+   adjacent in the horizontal strip + share border-right with siblings. */
+.bottom-bar-tab-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+}
+
+/* iOS-3 — tab inside a wrap drops its own border-right (wrap owns it). */
+.bottom-bar-tab-wrap .bottom-bar-tab {
+  border-right: none;
+}
+
+.bottom-bar-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bottom-bar-close:hover {
+  color: var(--fg);
+  background: var(--border);
+}
+
 /* C2 — WHOIS card. Inline ephemeral surface above scrollback when a
  * /whois bundle exists for the active window's network. Single-card
  * stack — replaces in place on each new /whois. */

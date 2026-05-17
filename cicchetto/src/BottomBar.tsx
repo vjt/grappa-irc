@@ -4,6 +4,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 
@@ -16,12 +17,11 @@ import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 //
 // Reuses the same data stores as Sidebar (networks(), channelsBySlug(),
 // queryWindowsByNetwork()) and the same selection verb (setSelectedChannel).
-// One feature, one code path — total consistency.
+// One feature, one code path — total consistency. Close × helpers are
+// shared with Sidebar via lib/windowClose.ts (iOS-3 added the mobile
+// affordance; previous mobile-only X-button omission reversed).
 //
-// X-close buttons are OMITTED from mobile bottom-bar tabs (decision:
-// preserves thumb-tap area on small viewports; close behavior is
-// desktop-only via Sidebar X). If vjt reverses this, add
-// `.bottom-bar-close` buttons per tab mirroring the Sidebar pattern.
+// Server window has NO close × — always-present per network.
 //
 // Horizontal scroll: overflow-x: auto on .bottom-bar; native touch
 // momentum via the browser default. Active-tab auto-scroll-into-view
@@ -105,27 +105,37 @@ const BottomBar: Component<Props> = (props) => {
               {(channel) => {
                 const key = channelKey(network.slug, channel.name);
                 return (
-                  <button
-                    type="button"
-                    role="tab"
-                    class="bottom-bar-tab"
-                    classList={{
-                      selected: isSelected(network.slug, channel.name),
-                      parted: !channel.joined,
-                    }}
-                    onClick={() => handleClick(network.slug, channel.name, "channel")}
-                  >
-                    {channel.name}
-                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                    </Show>
-                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                    </Show>
-                    <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                    </Show>
-                  </button>
+                  <span class="bottom-bar-tab-wrap">
+                    <button
+                      type="button"
+                      role="tab"
+                      class="bottom-bar-tab"
+                      classList={{
+                        selected: isSelected(network.slug, channel.name),
+                        parted: !channel.joined,
+                      }}
+                      onClick={() => handleClick(network.slug, channel.name, "channel")}
+                    >
+                      {channel.name}
+                      <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                      </Show>
+                      <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
+                      </Show>
+                      <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
+                      </Show>
+                    </button>
+                    <button
+                      type="button"
+                      class="bottom-bar-close"
+                      aria-label={`Close ${channel.name}`}
+                      onClick={() => closeChannelWindow(network.slug, channel.name)}
+                    >
+                      ×
+                    </button>
+                  </span>
                 );
               }}
             </For>
@@ -135,24 +145,34 @@ const BottomBar: Component<Props> = (props) => {
               {(qw) => {
                 const key = channelKey(network.slug, qw.targetNick);
                 return (
-                  <button
-                    type="button"
-                    role="tab"
-                    class="bottom-bar-tab"
-                    classList={{ selected: isSelected(network.slug, qw.targetNick) }}
-                    onClick={() => handleClick(network.slug, qw.targetNick, "query")}
-                  >
-                    {qw.targetNick}
-                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                    </Show>
-                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                    </Show>
-                    <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                    </Show>
-                  </button>
+                  <span class="bottom-bar-tab-wrap">
+                    <button
+                      type="button"
+                      role="tab"
+                      class="bottom-bar-tab"
+                      classList={{ selected: isSelected(network.slug, qw.targetNick) }}
+                      onClick={() => handleClick(network.slug, qw.targetNick, "query")}
+                    >
+                      {qw.targetNick}
+                      <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                      </Show>
+                      <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
+                      </Show>
+                      <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                        <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
+                      </Show>
+                    </button>
+                    <button
+                      type="button"
+                      class="bottom-bar-close"
+                      aria-label={`Close DM with ${qw.targetNick}`}
+                      onClick={() => closeQueryWindow(network.id, qw.targetNick)}
+                    >
+                      ×
+                    </button>
+                  </span>
                 );
               }}
             </For>

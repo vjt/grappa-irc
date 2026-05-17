@@ -1,13 +1,12 @@
 import { type Component, For, Show } from "solid-js";
-import { postPart } from "./lib/api";
 import { archivedBySlug, loadArchive } from "./lib/archive";
-import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
-import { closeQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
+import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
+import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
@@ -158,13 +157,11 @@ const Sidebar: Component<Props> = (props) => {
   };
 
   const handleCloseChannel = (slug: string, channelName: string) => {
-    const t = token();
-    if (!t) return;
-    void postPart(t, slug, channelName);
+    closeChannelWindow(slug, channelName);
   };
 
   const handleCloseQuery = (networkId: number, targetNick: string) => {
-    closeQueryWindowState(networkId, targetNick);
+    closeQueryWindow(networkId, targetNick);
   };
 
   // CP15 B5 fix - archive list rendering filters out entries that are
