@@ -200,6 +200,10 @@ body {
   border-left: 1px solid var(--border);
   background: var(--bg-alt);
   overflow-y: auto;
+  /* iOS-2: top + bottom insets — drawer is full-height on mobile, so
+     both notch and home-indicator regions need clearance. */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* SocketHealthBanner — fixed-position alert at the top of the viewport,
@@ -213,7 +217,9 @@ body {
   left: 0;
   right: 0;
   z-index: 1000;
-  padding: 0.5rem 1rem;
+  /* iOS-2: clear notch/Dynamic Island — banner is fixed-top and must
+     not paint under the status-bar overlay on iPhone. */
+  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
   background: #c33;
   color: #fff;
   font-family: var(--font-mono);
@@ -240,7 +246,8 @@ body {
   left: 0;
   right: 0;
   z-index: 999;
-  padding: 0.5rem 1rem;
+  /* iOS-2: same notch clearance as socket-health-banner above. */
+  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
   background: #2a6;
   color: #fff;
   font-family: var(--font-mono);
@@ -445,7 +452,9 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
+  /* iOS-2: top inset clears notch/Dynamic Island on iPhone; max() keeps
+     the existing 0.5rem padding on non-notched devices. */
+  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1131,7 +1140,9 @@ body {
   height: 100vh;
   background: var(--bg-alt);
   border-left: 1px solid var(--border);
-  padding: 1rem;
+  /* iOS-2: top + bottom insets — drawer is full-viewport-height; max()
+     on top keeps the existing 1rem padding off non-notched devices. */
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom)) 1rem;
   z-index: 100;
   transform: translateX(100%);
   transition: transform 200ms ease-out;
@@ -1826,7 +1837,10 @@ body {
   overflow-y: hidden;
   /* touch-momentum scrolling on iOS (non-standard but widely supported) */
   -webkit-overflow-scrolling: touch;
-  height: 3rem; /* thumb-tap friendly (~48dp Material / 44px Apple HIG) */
+  min-height: 3rem; /* thumb-tap friendly (~48dp Material / 44px Apple HIG) */
+  /* iOS-2: bottom inset clears the home-indicator strip on iPhone X+.
+     env() resolves to 0 on non-notched devices, keeping desktop layout. */
+  padding-bottom: env(safe-area-inset-bottom);
   border-top: 1px solid var(--border);
   background: var(--bg-alt);
   flex-shrink: 0;
