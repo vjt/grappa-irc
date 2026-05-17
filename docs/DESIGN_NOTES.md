@@ -6014,6 +6014,160 @@ bucket. Post-U: full codebase review (parallel-review cycle per
 `docs/reviewing.md`) + iOS UI polish cluster (4 buckets per
 `project_ios_ui_polish_cluster_planned` memory).
 
+## 2026-05-17 — U cluster (cap honesty) summary
+
+Seven buckets (U-0..U-6) plus one in-cluster retro fix
+(`7bb3caa`), eight production commits total, over ~2 days,
+closing the last of the T+M+U arc: an operator who clicks
+"connect" on a cap-saturated network now gets an honest 503 +
+typed cic banner instead of a silent 200-OK with the row at
+`:connected`, no Session.Server, and the next REST write 404-ing.
+
+### Bucket summary
+
+- **U-0** `f5a1d8e` — `NetworksController.spawn_session_after_connect/3`
+  flipped to spawn-first / commit-second. Pre-U-0 the helper
+  committed the DB transition to `:connected` BEFORE calling the
+  spawn orchestrator and swallowed every spawn error while
+  returning ok. Post-U-0 the controller bails on spawn failure
+  and leaves the DB at the prior state; FallbackController
+  surfaces the typed error.
+- **U-1** `84388a7` + `313501f` (drift fix-up) — schema split.
+  The single `max_concurrent_sessions` column became
+  `max_concurrent_visitor_sessions` + `max_concurrent_user_sessions`,
+  each NULL = unlimited. In-place RENAME + ADD + DROP/re-ADD
+  to clear NOT-NULL drift from an earlier mis-applied migration.
+- **U-2** `a68bc19` — subject-aware admission +
+  three typed login-phase timeouts (`connect_timeout_ms` /
+  `rpl_welcome_timeout_ms` / `probe_timeout_ms`) +
+  five-bucket honest Bootstrap log. `Admission.check_network_total/1`
+  splits visitor cap from user cap via `Grappa.Subject.t()`
+  shape, so a saturated visitor pool never blocks operator
+  login.
+- **U-3** `c547a78` — `:client_cap_exceeded` 429 → 503 +
+  `too_many_sessions` body atom; admin live_counts projection;
+  cic `assertNever` exhaustiveness on the typed-error sum;
+  AdminSessionsTab summary.
+- **U-4** `aa82d97` — UD5.A+B+C device-identity-change
+  test-debt closure. U-2 shipped the production code
+  incidentally; U-4 added 7 tests + UD5.C e2e (`test.skip` per
+  visitor-mint cold-start lesson). Zero deploy.
+- **U-5** `010054d` — admin Networks tab per-network live cap
+  counters. `:cap_counts_changed` typed event on session lifecycle
+  telemetry; cic `liveCountsByNetworkId` signal; HOT deploy + cic
+  bundle. 1/3 → 0/3 decrement smoked end-to-end.
+- **U-6** this commit — docs sweep (README + this entry +
+  project-story episode + CLAUDE.md "No silent-swallow at
+  boundaries" rule per UD10).
+
+### UD1-UD10 decisions
+
+- **UD1** — Subject-aware admission via `Grappa.Subject.t()`. Two
+  caps, two count queries (`Registry.select` filtered by subject
+  shape), two error atoms.
+- **UD2** — Audit ALL spawn call sites for swallowed errors:
+  NetworksController (known bug, fixed in U-0); Bootstrap
+  (acceptable: boot-time skip-and-log, but honest log per
+  CLAUDE.md "Log honesty"); Visitors.Login (already honest);
+  SpawnOrchestrator boundary verified.
+- **UD3** — FallbackController maps the cap-exceeded atoms to
+  **503 + `{error, retry_after?}`**, NOT 429. Resource exhaustion,
+  not rate limit: 503 → "ask admin to bump cap or wait for slot";
+  429 → "slow down" is the wrong operator action.
+- **UD4** — Admin console cap UI: two side-by-side number inputs
+  with help text + per-network live counts (`Visitors: N/cap,
+  Users: M/cap`).
+- **UD5** — Device disconnect/reconnect with different identity.
+  UD5.A logout terminates live sessions for `(subject, client_id)`.
+  UD5.B `Admission.check_client_cap/1` filters by
+  `{client_id, current_subject}` so a different subject on the
+  same client doesn't count against the old slot. UD5.C visitor
+  `/quit` goes through the logout helper and frees the slot.
+- **UD6** — Visitor `expires_at` + reaper already fixed by T-3;
+  no U-cluster touch.
+- **UD7** — Login probe timeout split. Pre-U-2: single 3s
+  `login_probe_timeout_ms` covered TCP + TLS + NICK/USER +
+  RPL_WELCOME. Bahamut's rDNS-blocking 001 emit (variable; the
+  intermittent 504s tonight's session observed against
+  `raccooncity.azzurra.chat` motivated UD7 in the plan)
+  blew the budget. Post-U-2: three typed timeouts +
+  three typed errors (`:connect_timeout` / `:welcome_timeout` /
+  `:probe_timeout`), FallbackController maps each to its own
+  503 + Retry-After header. See plan
+  `docs/plans/2026-05-16-tmu-cluster-arc.md` §UD7 for the
+  per-phase rationale and the chosen budgets.
+- **UD8** — Migration deploy class is **COLD** per
+  `feedback_cluster_with_migration_must_cold`.
+- **UD9** — Tests: 6 admission split cases + controller
+  DB-unchanged-on-spawn-fail + cic banner vitest + Playwright
+  fill-cap + Bootstrap honest-log + 3 timeout-phase typed-error
+  cases.
+- **UD10** — Codify CLAUDE.md "No silent-swallow at boundaries"
+  rule. Generalized in U-6 to cover BOTH controller error-discard
+  (the U-0 instance) AND wide `terminate/2` catch hiding raises
+  from boundaries (the cleanup retrospective below). Lands as
+  the rule body in CLAUDE.md "Engineering Standards →
+  Code-shape rules".
+
+### Swallow-bug retrospective + meta-lesson
+
+Two swallow-bugs surfaced in the same cluster arc; both resolved
+by boundary fixes, not safety-net widening.
+
+**Bug 1 — controller error-discard (pre-U-0).** The pattern was
+in `lib/grappa_web/controllers/networks_controller.ex:180-185`
+(now the U-0 fix-comment): `Networks.connect/1` committed the DB
+transition first, then `spawn_session_after_connect/3` discarded
+the spawn orchestrator's `{:error, _}` and returned `ok`. The
+operator-visible failure mode was "PATCH /connect returns 200,
+row at `:connected`, no Session.Server, POST /messages 404s".
+The fix is the pattern (spawn-first / commit-second + `with`
+chain + FallbackController), not the specific instance.
+
+**Bug 2 — wide `terminate/2` catch hiding raise from boundary.**
+`IRC.Client.handle_call({:send, _}, _, _)` used `:ok = transport_send(...)`,
+which raised `MatchError` on the closed-but-not-nil socket shape
+and propagated `FunctionClauseError` from `:gen_tcp.send(nil, _)`
+on the nil-socket shape. Both crashes cascaded into
+`Session.Server.terminate/2`, whose narrow exit-catch list missed
+the wrapped MatchError. Supervisor blocked 5s per dying child;
+CI's `reset_session_supervisor/0` 15s registry-clear budget
+exhausted on `BootstrapTest` + class siblings (run 25975442301).
+The bug hid for **weeks** under a "shouldn't happen" exception
+clause. Fix at the IRC.Client boundary: return
+`{:error, :no_socket | :closed | _}` honestly; callers that don't
+care (notably the best-effort QUIT in `Session.Server.terminate/2`)
+`_ = `-discard the result. Commit `7bb3caa`; CI green on first
+run after.
+
+**Meta-lesson.** Both bugs were called out in code-comments as
+follow-up cues long before they bit production. The U-0 comment
+referenced "this is wrong but ship the bigger fix later"; the
+IRC.Client `:ok =` was a load-bearing pattern-match nobody owned.
+Per `project_no_silent_drops_closed`: a safety net that catches
+an impossible exception silently absorbs the next class of bug.
+**When a comment says "follow-up cue against X", file it as a
+cluster candidate immediately** — the U cluster cleanup proved
+TODO-comments are real signal, not noise.
+
+### Deploy classes
+
+- U-0: HOT (`Phoenix.CodeReloader` swap; sessions preserved).
+- U-1: COLD (migration; deploy.sh preflight catches `priv/repo/`).
+- U-2: COLD (config additions in `config/config.exs` triggered
+  long-lived-module preflight).
+- U-3: HOT.
+- U-4: zero deploy (test-debt-only).
+- U-5: HOT server + `scripts/deploy-cic.sh` for cic bundle hash.
+- U-6: zero deploy (pure docs).
+
+### Trajectory
+
+U cluster CLOSED closes the T+M+U arc. Next: iOS UI polish cluster
+(4 buckets per `project_ios_ui_polish_cluster_planned`), then the
+full post-T+M+U+iOS codebase review per
+`project_post_tmu_full_review_scheduled`.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

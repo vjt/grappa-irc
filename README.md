@@ -126,7 +126,16 @@ bin/grappa bind-network --user vjt --network azzurra \
   --nick vjt --password 'NICKSERV_PASS' --auth nickserv_identify \
   --autojoin '#italia,#hacking'
 
-# 3. Re-run scripts/deploy.sh — the cold-deploy path force-recreates
+# 3. (Optional) Set per-network session caps. Visitor caps and user
+#    caps are independent admission surfaces — visitor saturation
+#    never blocks operator login, and vice versa (see U cluster /
+#    UD1 in DESIGN_NOTES). Either flag is optional; omit for
+#    unlimited. `--max-per-client N` further bounds concurrent
+#    sessions from a single browser/client_id within a subject.
+bin/grappa set-network-caps --network azzurra \
+  --max-visitor-sessions 3 --max-user-sessions 3
+
+# 4. Re-run scripts/deploy.sh — the cold-deploy path force-recreates
 #    the container and Bootstrap picks up the new binding on boot.
 #    For a no-downtime alternative, attach via `bin/grappa remote-shell`
 #    and call the spawn orchestrator directly with the resolved
@@ -150,9 +159,15 @@ unblocking get a 4-tab pane in cicchetto, gated on `User.is_admin`:
   `connection_state` and live pid columns side-by-side; per-row
   Disconnect (park) + Terminate (M-9a/M-9b, commits `28edbd6` /
   `6be0bc3`).
-- **Networks** — per-network cap editor (partial-PATCH), Reset Circuit
-  (clears `NetworkCircuit` ETS), Force Reap (runs `Visitors.Reaper`
-  sweep on-demand) (M-10, commit `c86d8d8`).
+- **Networks** — per-network cap editor with **three independent
+  fields**: `max_concurrent_visitor_sessions` +
+  `max_concurrent_user_sessions` (each NULL = unlimited) plus
+  `max_per_client` (subject-aware bound on concurrent sessions
+  from a single browser/client_id within the same subject) —
+  side-by-side with live counters (visitors N/cap, users M/cap),
+  partial-PATCH wire shape, plus Reset Circuit (clears
+  `NetworkCircuit` ETS) and Force Reap (runs `Visitors.Reaper`
+  sweep on-demand) (M-10 + U-5, commits `c86d8d8` / `010054d`).
 - **Events** — real-time admin-event tail (200-entry ring buffer; 10
   typed event kinds: session lifecycle, cap changes, circuit trips,
   visitor mints/deletes) streamed over the `grappa:admin:events`
@@ -541,6 +556,34 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **U — cap honesty** (closed 2026-05-17). 8 production commits
+  across 7 buckets (U-0..U-6, plus the in-cluster `7bb3caa`
+  retro fix) on `main`. The original symptom: operator
+  clicks "connect" on a cap-saturated network and gets silent
+  success — DB row at `:connected`, no Session.Server, subsequent
+  REST writes 404. U-0 (`f5a1d8e`) flipped
+  `NetworksController.spawn_session_after_connect/3` to
+  spawn-first / commit-second so the error surfaces honestly. U-1
+  (`84388a7` + `313501f`) split the single `max_concurrent_sessions`
+  column into independent `max_concurrent_visitor_sessions` +
+  `max_concurrent_user_sessions` (visitor saturation no longer blocks
+  operator login). U-2 (`a68bc19`) subject-aware admission via
+  `Grappa.Subject.t()` + three typed login-phase timeouts
+  (`connect_timeout_ms` / `rpl_welcome_timeout_ms` /
+  `probe_timeout_ms`) so a slow-rDNS leaf surfaces
+  `:welcome_timeout` instead of a catchall `:timeout`. U-3 (`c547a78`)
+  503 `too_many_sessions` mapping + admin live_counts + cic typed-
+  error banner. U-4 (`aa82d97`) UD5.A+B+C device-identity-change
+  test-debt closure. U-5 (`010054d`) admin Networks tab per-network
+  live cap counters via a `:cap_counts_changed` typed event. U-6
+  is this docs sweep. **Two retrospective swallow-bugs surfaced
+  in-cluster**: the original NetworksController error-discard (U-0),
+  AND a long-standing `Session.Server.terminate/2` wide-catch
+  that hid an `IRC.Client` raise on dead-socket SEND for weeks
+  (root cause of registry-flake CI; closed by `7bb3caa`). Both
+  resolved by boundary-fixes, not safety-net widening. Meta-lesson:
+  a TODO-comment that says "follow-up cue against X" is real
+  signal; file it as a cluster candidate immediately.
 - **I — image upload** (closed 2026-05-15). 4 commits across 4
   buckets shipped same-day on `cluster/images`. I-CSP nginx
   `connect-src` allowlist for `litterbox.catbox.moe`. I-1 pluggable

@@ -2322,3 +2322,94 @@ twelve hours of post-incident forensics. The verbs let us triage
 live state; the console lets us manipulate it; the reviewer
 loop is what keeps the console from being the next vulnerability
 class.
+
+## S50 — 2026-05-17 — Cap honesty: two failures, one law, and a comment we ignored for weeks
+
+The U cluster opened on a symptom vjt could reproduce in five
+seconds. Click "connect" on a cap-saturated network. PATCH
+returns 200. The row shows `:connected`. POST a message — 404.
+There is no Session.Server. There is no banner. The operator
+gets no information at all about why their session does not
+exist. We had been carrying this bug for as long as
+`max_concurrent_sessions` had existed, hidden behind a controller
+helper that called the spawn orchestrator, got back `{:error,
+:cap_exceeded}`, and returned `ok` because nobody had wired the
+error path. The DB transition to `:connected` had been committed
+first; the spawn was the swallowed afterthought; the operator
+saw the DB and not the failure.
+
+U-0 flipped it: spawn first against the parked credential, commit
+the DB transition only on spawn success. The cap error now
+propagates through the controller's `with` chain to
+FallbackController and surfaces as a 503 with a typed atom. The
+DB stays at the prior state. Cic renders the typed atom into a
+banner the operator can actually read. U-1 split the single cap
+column into two — visitor cap and user cap as independent
+admission surfaces, so a debug-visitor flood never blocks
+operator login. U-2 made admission subject-aware via
+`Grappa.Subject.t()` and split the single 3s login-probe timeout
+into three typed budgets (TCP connect, NICK/USER → 001,
+outer wait), because `raccooncity.azzurra.chat` had been
+intermittently 504-ing at 3s when Bahamut's rDNS lookup
+blocked the 001 emit beyond the budget. U-3 wired the 503
+`too_many_sessions` mapping + admin live_counts + cic
+`assertNever` exhaustiveness on the typed-error sum. U-4 paid
+the TEST-DEBT bill — U-2 had shipped UD5.A+B production code
+incidentally, but the tests needed retroactive coverage. U-5
+polished the admin Networks tab with per-network live cap
+counters via a `:cap_counts_changed` typed event that decrements
+1/3 → 0/3 in real time as sessions die.
+
+The cluster shipped what we planned. It also shipped what we did
+not plan: a second swallow-bug, surfaced by CI going red on U-5.
+
+The CI failure was `BootstrapTest:468` + class siblings,
+intermittent, exactly the shape of `feedback_recurring_e2e_not_flake`.
+The diagnosis chain: `IRC.Client.handle_call({:send, _}, _, _)`
+had a `:ok = transport_send(...)` pattern match that raised
+`MatchError` on the closed-but-not-nil socket shape, and
+propagated `FunctionClauseError` from `:gen_tcp.send(nil, _)` on
+the nil-socket shape. Both crashes cascaded into
+`Session.Server.terminate/2`, whose exit-catch list was too
+narrow to recognize the wrapped MatchError. The supervisor
+blocked 5 seconds per dying child. The test helper
+`reset_session_supervisor/0` had a 15-second registry-clear
+budget. Three siblings in the registry, 5s each = 15s exhausted,
+test times out, CI red. The bug had hidden for weeks under a
+"shouldn't happen" exception clause; it surfaced as a CI flake
+because the test load finally pushed three concurrent
+SessionServers into the dead-socket-SEND path at once. Fix at
+the IRC.Client boundary: return `{:error, :no_socket | :closed |
+_}` honestly. Callers that don't care (`Session.Server.terminate/2`'s
+best-effort QUIT) `_ = `-discard the result. Commit `7bb3caa`.
+CI green on first run after.
+
+Two swallow-bugs, same cluster, same shape. The U-0 controller
+discarded a `{:error, _}`. The IRC.Client raised, and
+`terminate/2`'s wide catch swallowed the raise. Different
+mechanisms; same effect; same root cause; same fix pattern. The
+operator (or CI) MUST see the failure. Fix at the boundary that
+raised; never widen the catch to swallow more. The CLAUDE.md
+rule under Code-shape now covers both shapes; the U cluster is
+the canonical example and the commit hashes are the receipts.
+
+The meta-lesson is harder to ship and easier to ignore. Both
+bugs had been called out in code comments as follow-up cues long
+before they bit production. The U-0 controller had a comment
+that said "this is wrong but ship the bigger fix later." The
+IRC.Client `:ok =` was a load-bearing pattern-match that nobody
+owned. Per `project_no_silent_drops_closed`: a safety net that
+catches an impossible exception silently absorbs the next class
+of bug. The U cluster cleanup proved a corollary: a TODO-comment
+that says "follow-up cue against X" is real signal, not noise.
+File it as a cluster candidate immediately. We did not file
+either one. The bouncer ran in production with both for weeks.
+That is the cost of the comment-as-disposal pattern, and we are
+paying it back, one cluster at a time.
+
+The T+M+U arc is closed. T gave us the verbs to triage live
+state. M gave us the console to manipulate it. U made the cap
+errors honest enough that an operator can read what is going on.
+The thread holds: three clusters, one operator-experience story,
+each cluster shipped before the next began. iOS UI polish is
+next on the queue, then the full codebase review.

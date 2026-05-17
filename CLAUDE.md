@@ -120,7 +120,7 @@ bin/grappa create-user --name <user> --password <pw>
 bin/grappa bind-network --user <user> --network <slug> --nick <nick> --auth <method>
 bin/grappa add-server --network <slug> --host <host> --port <port> [--tls]
 bin/grappa remove-server --network <slug> --host <host> --port <port>
-bin/grappa set-network-caps --network <slug> --max <n>
+bin/grappa set-network-caps --network <slug> [--max-visitor-sessions N] [--max-user-sessions N] [--max-per-client N]
 bin/grappa unbind-network --user <user> --network <slug>
 bin/grappa update-network-credential ...
 bin/grappa seed-scrollback ...
@@ -428,6 +428,25 @@ not the surrounding code.**
   uniformity. When adding a new admin listing, return both
   projections; never compute one from the other to "tidy up" the
   response shape (origin: M-9b 2026-05-16; the U-0 cluster-wide rule).
+- **No silent-swallow at boundaries.** Two failure modes share one
+  root: (a) a controller helper that wraps an ok-or-error
+  orchestrator and throws the error away while returning ok
+  (`NetworksController.spawn_session_after_connect/3` pre-U-0 —
+  DB row at `:connected`, no live Session.Server, REST writes 404
+  silently); (b) a wide `try`/`catch` exit-clause in a long-lived
+  process (e.g. `Session.Server.terminate/2`) that absorbs an
+  exception class which "shouldn't happen" and so hides the next
+  bug to fall into it (the IRC.Client dead-socket SEND
+  `FunctionClauseError`/`MatchError`, hidden for weeks until it
+  starved the test-supervisor's 15s registry-clear and tipped CI
+  red — commit `7bb3caa`). Both share the lesson: the operator
+  (or CI) MUST see the failure. Fix at the boundary that raised
+  (return `{:error, _}` from `IRC.Client.handle_call({:send, _}, _, _)`
+  on a closed socket; propagate spawn errors from controller
+  helpers via `with`/FallbackController); never widen the catch
+  to swallow more. Per `project_no_silent_drops_closed` /
+  `project_network_circuit_ets_leak`: a safety net that catches
+  an impossible exception silently absorbs the next class of bug.
 
 ### OTP patterns (Elixir-specific)
 
