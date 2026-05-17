@@ -13,6 +13,7 @@ import { bootstrapAuth, isAuthenticated } from "./lib/auth";
 import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
+import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
 import { installScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
@@ -45,6 +46,15 @@ installViewportHeightTracker();
 // listener catches every scroll attempt and snaps back to (0, 0)
 // before paint, so the app chrome never drifts.
 installScrollPin();
+
+// UX-3 preserve-keyboard — single document-level capture listener.
+// When compose <input> has focus and the user taps anywhere that
+// isn't another input/textarea, suppress the implicit focus shift
+// (preventDefault on pointerdown) so iOS doesn't dismiss the
+// keyboard. Replaces per-button onPointerDown wiring (UX-3 NON +
+// BIS-DEC) — every new tappable surface inherits the behavior
+// automatically.
+installKeyboardPreserve();
 
 // Push notifications cluster B0 (2026-05-14) — capture
 // `beforeinstallprompt` early. Chrome fires this event ONCE, very

@@ -1,7 +1,6 @@
 import { type Component, createEffect, For, on, Show } from "solid-js";
 import { loadArchive, setArchiveModalNetwork, visibleArchiveForNetwork } from "./lib/archive";
 import { channelKey } from "./lib/channelKey";
-import { keepKeyboardOnPointerDown } from "./lib/keepKeyboard";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
@@ -87,11 +86,6 @@ const BottomBar: Component<Props> = (props) => {
   const archiveCount = (slug: string, networkId: number): number =>
     visibleArchiveForNetwork(slug, networkId).length;
 
-  // UX-3 NON — keep the iOS on-screen keyboard up across tab switches.
-  // Shared helper extracted to `lib/keepKeyboard.ts` so the scroll-to-
-  // bottom arrow (UX-3 BIS-DEC) can use the same trick.
-  const keepKeyboard = keepKeyboardOnPointerDown;
-
   return (
     <div class="bottom-bar" role="tablist" ref={navRef}>
       <For each={networks()}>
@@ -105,7 +99,6 @@ const BottomBar: Component<Props> = (props) => {
               role="tab"
               class="bottom-bar-tab"
               classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
-              onPointerDown={keepKeyboard}
               onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
             >
               Server
@@ -144,7 +137,6 @@ const BottomBar: Component<Props> = (props) => {
                         selected: isSelected(network.slug, channel.name),
                         parted: !channel.joined,
                       }}
-                      onPointerDown={keepKeyboard}
                       onClick={() => handleClick(network.slug, channel.name, "channel")}
                     >
                       {channel.name}
@@ -162,7 +154,6 @@ const BottomBar: Component<Props> = (props) => {
                       type="button"
                       class="bottom-bar-close"
                       aria-label={`Close ${channel.name}`}
-                      onPointerDown={keepKeyboard}
                       onClick={() => closeChannelWindow(network.slug, channel.name)}
                     >
                       ×
@@ -183,7 +174,6 @@ const BottomBar: Component<Props> = (props) => {
                       role="tab"
                       class="bottom-bar-tab bottom-bar-tab-with-close"
                       classList={{ selected: isSelected(network.slug, qw.targetNick) }}
-                      onPointerDown={keepKeyboard}
                       onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                     >
                       {qw.targetNick}
@@ -201,7 +191,6 @@ const BottomBar: Component<Props> = (props) => {
                       type="button"
                       class="bottom-bar-close"
                       aria-label={`Close DM with ${qw.targetNick}`}
-                      onPointerDown={keepKeyboard}
                       onClick={() => closeQueryWindow(network.id, qw.targetNick)}
                     >
                       ×
@@ -225,7 +214,6 @@ const BottomBar: Component<Props> = (props) => {
                     type="button"
                     class="bottom-bar-archive-chip"
                     aria-label={`Open archive for ${network.slug}`}
-                    onPointerDown={keepKeyboard}
                     onClick={() => setArchiveModalNetwork(network.slug)}
                   >
                     <span class="bottom-bar-archive-chip-icon" aria-hidden="true">
