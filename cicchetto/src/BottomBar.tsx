@@ -1,6 +1,7 @@
 import { type Component, createEffect, For, on, Show } from "solid-js";
 import { loadArchive, setArchiveModalNetwork, visibleArchiveForNetwork } from "./lib/archive";
 import { channelKey } from "./lib/channelKey";
+import { keepKeyboardOnPointerDown } from "./lib/keepKeyboard";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
@@ -87,22 +88,9 @@ const BottomBar: Component<Props> = (props) => {
     visibleArchiveForNetwork(slug, networkId).length;
 
   // UX-3 NON — keep the iOS on-screen keyboard up across tab switches.
-  // The default tap on a BottomBar button moves focus AWAY from the
-  // compose <input>, which makes iOS dismiss the keyboard. Calling
-  // preventDefault on `pointerdown` BEFORE the focus shift suppresses
-  // the focus transfer entirely — the click still fires (different
-  // event), the tab still switches, but the compose input keeps its
-  // focus and the keyboard stays open. Operators tapping rapidly
-  // through channels don't have to re-tap the input every time.
-  // No-op on desktop (no on-screen keyboard to preserve).
-  const keepKeyboard = (e: PointerEvent) => {
-    if (
-      document.activeElement instanceof HTMLInputElement ||
-      document.activeElement instanceof HTMLTextAreaElement
-    ) {
-      e.preventDefault();
-    }
-  };
+  // Shared helper extracted to `lib/keepKeyboard.ts` so the scroll-to-
+  // bottom arrow (UX-3 BIS-DEC) can use the same trick.
+  const keepKeyboard = keepKeyboardOnPointerDown;
 
   return (
     <div class="bottom-bar" role="tablist" ref={navRef}>

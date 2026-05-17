@@ -14,6 +14,7 @@ import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
+import { keepKeyboardOnPointerDown } from "./lib/keepKeyboard";
 import { linkify } from "./lib/linkify";
 import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
@@ -1153,6 +1154,7 @@ const ScrollbackPane: Component<Props> = (props) => {
           type="button"
           class="scroll-to-bottom-btn"
           data-testid="scroll-to-bottom"
+          onPointerDown={keepKeyboardOnPointerDown}
           onClick={scrollToBottom}
           aria-label="Scroll to bottom"
         >
