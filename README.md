@@ -556,6 +556,29 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **UX — 3 small bugs vjt observed live** (closed 2026-05-17). Three
+  buckets vjt caught within twenty-four hours of dogfooding cic on
+  iPhone after the iOS cluster shipped. UX-1 (`f59264d`) archive
+  close × + permanent scrollback delete — `Scrollback.delete_for_dm/3`
+  + `DELETE /networks/:slug/archive/:target` (dispatched by sigil
+  for channel vs query) + `:archive_changed` broadcast +
+  `InlineConfirmButton` two-step on sidebar archive rows. UX-2
+  (`47e38e2`) BottomBar archive chip + ArchiveModal — lifted
+  `visibleArchiveForNetwork` into `lib/archive.ts` (shared with
+  Sidebar, one-feature-one-code-path), per-network archive chip
+  visible when archive is non-empty, full-overlay modal listing
+  entries with per-row × re-using UX-1's confirm flow. UX-3
+  (`a805fcb` + `ea446e4`) `.shell-empty-toolbar` Dynamic Island
+  clearance — one-line CSS mirror of `.topic-bar`'s iOS-2
+  `max(0.5rem, env(safe-area-inset-top))` padding; follow-up commit
+  fixed the spec to handle vite's CSS-minifier rule-merging.
+  UX-Z cluster journey spec at
+  `cicchetto/e2e/tests/ux-z-cluster-journey.spec.ts` (@webkit
+  iPhone 15) replays all 3 buckets back-to-back with the
+  visitor/nickserv/registered parity matrix as a CLASSES loop
+  (registered DRIVEN; visitor + nickserv documented as
+  `test.info().annotations` skips with reason +
+  unit-coverage pointers).
 - **iOS UI polish** (closed 2026-05-17). 4 KISS buckets making cic
   on iPhone Safari feel like a native app. iOS-1 (`7226cd9`)
   viewport lock — disabled pinch-zoom + overscroll-behavior on

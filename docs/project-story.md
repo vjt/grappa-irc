@@ -2506,3 +2506,81 @@ speculation about a future consumer; the in-amend fix dropped it).
 cic feels like an app on iPhone now. The diff is small. The cluster
 arc — T → M → U → iOS — is closed. Next: full codebase review.
 
+## S52 — 2026-05-17 — Three small bugs, one mini-cluster: post-iOS dogfooding catches what specs miss
+
+The iOS cluster shipped on 2026-05-17. Within twenty-four hours of
+vjt actively using cic on his iPhone, he caught three bugs the
+cluster missed: archive entries had no delete affordance, the mobile
+BottomBar had no way to even REACH archive, and the cold-load shell
+(before any channel was selected) painted under the Dynamic Island.
+
+None of these were regressions. UX-1 was a feature gap that nobody
+had spec'd. UX-2 was a viewport bias — Sidebar's archive `<details>`
+expansion never landed in the BottomBar because BottomBar's design
+brief hadn't included an archive surface. UX-3 was a one-line miss
+in iOS-2's safe-area-inset rollout: `.topic-bar` got the `max(0.5rem,
+env(safe-area-inset-top))` padding, but `.shell-empty-toolbar` — the
+sibling header rendered when no channel is selected — was overlooked.
+A grep would have caught it; a CSS-rule diff didn't.
+
+The mini-cluster — three buckets and a close — was KISS to the bone.
+UX-1 added one server context function (`Scrollback.delete_for_dm/3`)
++ one route + one cic helper (`lib/archiveDelete.ts`) + the
+`InlineConfirmButton` two-step on sidebar archive rows. UX-2 lifted
+`visibleArchiveForNetwork` out of Sidebar into `lib/archive.ts` (one
+function, two callers), added `.bottom-bar-archive-chip` per network,
+and built a new full-overlay `ArchiveModal` that reused UX-1's
+`InlineConfirmButton` + `deleteArchiveEntry`. UX-3 was a one-line
+CSS mirror of `.topic-bar`'s padding rule. The fix bag was
+mechanical; the discipline was holding the line at "smallest possible
+diff per bucket."
+
+Two non-obvious lessons surfaced. The first: vite's CSS minifier
+MERGES rules with identical property values into comma-list
+selectors. The UX-3 Playwright spec was correct in dev (where
+`.shell-empty-toolbar` had its own rule) and broken in prod (where
+the rule lived under `.topic-bar, .shell-empty-toolbar`). The
+`selectorText === "..."` exact-equality check skipped the merged
+rule and returned `NOT FOUND`. The fix was switching to split-on-
+comma + `.includes(...)` — and the fix only surfaced because the
+per-bucket browser smoke against the deployed bundle (not just
+dev mode) caught it. Yet another reason that per-bucket browser
+smoke at deploy time is non-negotiable, even for trivial CSS bucket.
+
+The second lesson: identity-scoped signals must live INSIDE the
+identity-scoped store. UX-2's first cut put `archiveModalNetwork` at
+the top level of `lib/archive.ts`. The reviewer flagged a HIGH leak
+class: `identityScopedStore` rotation (on token refresh, identity
+switch) would flush `archivedBySlug` but leave the modal open on a
+network the new identity might not have any data for. The fix moved
+the signal INSIDE the scoped store so rotation closes the modal
+alongside the data flush. The general rule: any signal that
+REFERENCES identity-scoped data must itself be identity-scoped. This
+joins the `feedback_solidjs_for_ref_leak` family of "Solid reactivity
+needs explicit lifecycle plumbing."
+
+The cluster-close UX-Z spec mirrors the iOS-Z + M-Z + U-Z shape: one
+`@webkit` iPhone 15 spec, all three buckets back-to-back. Per
+`feedback_e2e_user_class_parity_matrix`, it asserts the parity matrix
+via a CLASSES loop. "registered" drives end-to-end; "visitor" is
+blocked on `feedback_visitor_mint_e2e_cold_start` (the bahamut-test
+mint pathway 504s on cold-start because synchronous mint exceeds
+`login_probe_timeout_ms`); "nickserv" is unseeded in the e2e harness.
+Both skipped classes are documented as `test.info().annotations`
+entries with the reason + the unit-coverage pointers. The loop
+structure is preserved so a future operator unblocking visitor cold-
+start can flip the skip + add nickserv seeding without restructuring
+the spec.
+
+The big meta-lesson is the post-cluster dogfooding window IS the
+cluster's final review pass. Three bugs in twenty-four hours after
+a four-bucket cluster — that's the friction the spec-shaped review
+flow physically can't see. Budget for a mini follow-up cluster after
+every UX-touching cluster; the iOS cluster's "real" close was the
+UX cluster.
+
+Next: vjt-driven full codebase review per
+`project_post_tmu_full_review_scheduled`. Three multi-week clusters
+landed in nine days. The review will catch what mass-shipping at
+this pace inevitably missed.
+

@@ -6325,6 +6325,97 @@ Per `project_post_tmu_full_review_scheduled`: full codebase review
 important MED) — vjt-driven start. After review: bastille deploy
 issue #8 per `project_bastille_deploy_workstream`.
 
+## 2026-05-17 — UX cluster CLOSED
+
+Three small bugs vjt observed live on his own cic instance after the
+iOS cluster shipped. Mini-cluster — KISS to the bone — no new
+abstractions, one server-side context function (`Scrollback.delete_for_dm/3`),
+one new lifted helper (`lib/archive.ts`), one CSS rule mirror, and a
+new full-overlay modal for mobile archive.
+
+### Bucket summary
+
+- **UX-1** `f59264d` — archive close × + permanent scrollback delete.
+  Sidebar archive `<details>` rows (channel + query both per vjt scope
+  decision) gained an `InlineConfirmButton` (two-step: "×" → "really
+  delete?" → DELETE). New server route `DELETE
+  /networks/:network_slug/archive/:target` dispatched by sigil
+  (`#name` → channel scrollback drop; `name` → DM scrollback drop).
+  Broadcasts typed `:archive_changed` on the per-network user-topic
+  so other connected clients re-fetch their archive. Smoking-gun e2e
+  assertion: re-JOIN post-delete shows empty scrollback (rows ARE
+  gone server-side, not just hidden in cic cache).
+- **UX-2** `47e38e2` — BottomBar archive chip + ArchiveModal (mobile).
+  Mobile users couldn't reach archive without re-joining via slash
+  command. Lifted `visibleArchiveForNetwork` into `lib/archive.ts`
+  (shared with Sidebar — one-feature-one-code-path). BottomBar
+  renders `.bottom-bar-archive-chip` per network when archive is
+  non-empty for that network; tap opens full-overlay
+  `ArchiveModal` listing entries with per-row × (re-using UX-1's
+  `InlineConfirmButton` + `deleteArchiveEntry`). Modal signal lives
+  INSIDE `identityScopedStore` so token rotation closes any open
+  modal alongside `archivedBySlug` flush (reviewer-flagged HIGH
+  identity rotation leak, fixed in-amend).
+- **UX-3** `a805fcb` + `ea446e4` — `.shell-empty-toolbar` Dynamic
+  Island clearance. iOS-2 added `padding: max(0.5rem,
+  env(safe-area-inset-top))` to `.topic-bar` but missed
+  `.shell-empty-toolbar` (cold-load shell when no channel selected).
+  One-line CSS mirror of `.topic-bar`'s rule. The follow-up commit
+  fixed the Playwright spec: vite's CSS minifier merges rules with
+  identical property values into a comma-list selector, so
+  `selectorText === ".shell-empty-toolbar"` skipped past the merged
+  `.topic-bar, .shell-empty-toolbar` rule in production. Switched to
+  split-on-comma containment check — accepts both dev and prod
+  selector shapes.
+
+### UX-Z — cluster CLOSE
+
+`cicchetto/e2e/tests/ux-z-cluster-journey.spec.ts` — single `@webkit`
+iPhone 15 spec replays all three buckets back-to-back. Per
+`feedback_e2e_user_class_parity_matrix`, the parity matrix is
+asserted via a CLASSES loop (registered DRIVEN; visitor + nickserv
+documented as `test.info().annotations` skips with the reason and
+unit-coverage pointers). The loop structure is preserved so a future
+operator unblocking `feedback_visitor_mint_e2e_cold_start` can flip
+the visitor branch + add nickserv seeding without restructuring the
+spec.
+
+### Lessons
+
+- **Operator dogfooding post-cluster catches what specs miss.** All
+  three UX bugs surfaced inside vjt's first 24h actively using cic
+  after the iOS cluster shipped. UX-1's "no delete affordance" is a
+  feature-gap the spec didn't call out; UX-2's "archive unreachable
+  on mobile" is a viewport bias that desktop-shaped specs ignored;
+  UX-3's empty-toolbar inset miss is the kind of regression that an
+  exhaustive grep would have caught but a CSS-rule diff didn't. Lesson:
+  the post-cluster dogfooding window IS the cluster's final review
+  pass; budget for a mini follow-up cluster after every UX-touching
+  cluster.
+- **Vite CSS minifier merges rules across selectors.** Spec assertions
+  that key on `selectorText === "..."` exact equality break in
+  production because vite's minifier joins rules with identical
+  property values into comma-list selectors. Use split-on-comma
+  containment checks instead. Live smoke against the deployed bundle
+  (not just dev mode) caught this — yet another reason the per-bucket
+  browser smoke at deploy time is non-negotiable.
+- **Reviewer-loop catches identity-rotation leaks across signal
+  scopes.** UX-2's first cut had `archiveModalNetwork` as a
+  top-level signal — `identityScopedStore`-rotation would flush
+  `archivedBySlug` but leave the modal open on a network the new
+  identity might not have access to. Reviewer flagged HIGH; fixed
+  in-amend by moving the signal INSIDE the scoped store. The
+  pattern generalizes: any signal that REFERENCES identity-scoped
+  data must itself live inside the scoped store.
+
+### Next workstream
+
+Per `project_post_tmu_full_review_scheduled`: full codebase review
+(orchestrate parallel-review cycle + fix ALL CRIT/HIGH + most-
+important MED) — **vjt-driven start. Do NOT auto-start review after
+UX-Z without vjt confirm.** After review: bastille deploy issue #8
+per `project_bastille_deploy_workstream`.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
