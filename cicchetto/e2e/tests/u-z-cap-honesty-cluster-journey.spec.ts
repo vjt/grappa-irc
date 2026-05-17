@@ -288,13 +288,16 @@ test("U-Z cap-honesty journey: park → user-cap-reject → row-unchanged → bu
   const after = await adminGetNetwork(admin.token, NETWORK_SLUG);
   expect(after.max_concurrent_user_sessions).toBe(0);
 
-  const userView = await fetch(
-    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(NETWORK_SLUG)}`,
-    { headers: { authorization: `Bearer ${vjt.token}` } },
-  );
+  const userView = await fetch(`${GRAPPA_BASE_URL}/networks`, {
+    headers: { authorization: `Bearer ${vjt.token}` },
+  });
   expect(userView.status).toBe(200);
-  const userViewBody = (await userView.json()) as { connection_state: string };
-  expect(userViewBody.connection_state).toBe("parked");
+  const userViewBody = (await userView.json()) as Array<{
+    slug: string;
+    connection_state: string;
+  }>;
+  const userRow = userViewBody.find((n) => n.slug === NETWORK_SLUG);
+  expect(userRow?.connection_state).toBe("parked");
 
   // STEP 4 — Admin bumps user cap to 1 (room for vjt's one
   // session). vjt /connect now succeeds with 200; spawn-orchestrator
