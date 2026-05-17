@@ -463,7 +463,10 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 1rem;
+  /* UX-3: mirror .topic-bar's safe-area-inset-top so the cold-load
+     shell (before any channel selected) clears the iPhone Dynamic
+     Island. max() preserves 0.5rem on non-notched devices. */
+  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
