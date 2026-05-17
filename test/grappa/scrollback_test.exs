@@ -1581,6 +1581,69 @@ defmodule Grappa.ScrollbackTest do
       assert {:ok, 0} = Scrollback.delete_for_dm({:user, user.id}, net.id, "ghost")
       assert {:ok, 0} = Scrollback.delete_for_dm({:user, user.id}, net.id, "ghost")
     end
+
+    test "deletes orphan rows where dm_with IS NULL and channel == peer (UX-3 Z)",
+         %{user: user, network: net} do
+      # Server NOTICE routed to a query window with no prior PRIVMSG
+      # exchange: numeric_router.scan_params/2 routes the row to
+      # `channel = nick_target`, but the persistence path never sets
+      # dm_with because no PRIVMSG-direction sender/recipient pair
+      # exists. list_archive/3 surfaces it via COALESCE(dm_with, channel);
+      # delete_for_dm/3 must match the same coalescing rule.
+      {:ok, orphan} =
+        Scrollback.persist_event(
+          sample(user, net, 200, %{
+            channel: "ghost-cp21s7-1778420256",
+            sender: "raccooncity.azzurra.chat",
+            kind: :notice,
+            body: "No such nick/channel",
+            dm_with: nil
+          })
+        )
+
+      # Unrelated dm_with-tagged row to the same peer — must also drop
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 210, %{
+            channel: "ghost-cp21s7-1778420256",
+            sender: "vjt",
+            dm_with: "ghost-cp21s7-1778420256"
+          })
+        )
+
+      # Unrelated channel row with dm_with IS NULL — must survive
+      {:ok, survive_chan} =
+        Scrollback.persist_event(sample(user, net, 220, %{channel: "#room", sender: "vjt", dm_with: nil}))
+
+      assert {:ok, 2} =
+               Scrollback.delete_for_dm(
+                 {:user, user.id},
+                 net.id,
+                 "ghost-cp21s7-1778420256"
+               )
+
+      orphan_id = orphan.id
+      survive_id = survive_chan.id
+      remaining_ids = Message |> Repo.all() |> Enum.map(& &1.id) |> Enum.sort()
+      assert remaining_ids == Enum.sort([survive_id])
+      refute orphan_id in remaining_ids
+    end
+
+    test "orphan deletion is case-insensitive on channel name (UX-3 Z)",
+         %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 100, %{
+            channel: "GhostNick",
+            sender: "server.example.org",
+            kind: :notice,
+            body: "No such nick/channel",
+            dm_with: nil
+          })
+        )
+
+      assert {:ok, 1} = Scrollback.delete_for_dm({:user, user.id}, net.id, "ghostnick")
+    end
   end
 
   describe "delete_for_channel/3 (UX-1)" do

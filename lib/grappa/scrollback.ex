@@ -588,11 +588,29 @@ defmodule Grappa.Scrollback do
       when is_integer(network_id) and is_binary(peer) do
     lower_peer = String.downcase(peer)
 
+    # UX-3 Z (2026-05-18): match the same coalescing rule `list_archive/3`
+    # uses on the read side. The read-side groups by
+    # `COALESCE(dm_with, channel)` so any row with EITHER `dm_with = peer`
+    # OR (`dm_with IS NULL` AND `channel = peer`) surfaces under target =
+    # peer. The pre-fix write side only matched `dm_with = peer`, so
+    # orphan rows — typically server NOTICEs like "No such nick/channel"
+    # routed to the query window via `numeric_router.scan_params/2` with
+    # `dm_with = NULL` because no PRIVMSG-direction sender/recipient pair
+    # existed — appeared in archive but `delete_for_dm` returned a silent
+    # `{:ok, 0}` and the operator's "really delete" tap did nothing.
+    #
+    # vjt 2026-05-18: ghost-* nicks vjt /msg'd that don't exist on the
+    # upstream → server NOTICE 401 → persisted as channel=nick,
+    # dm_with=NULL → archive shows them, delete never removed them.
     {count, _} =
       Message
       |> subject_where(subject)
       |> where([m], m.network_id == ^network_id)
-      |> where([m], fragment("lower(?)", m.dm_with) == ^lower_peer)
+      |> where(
+        [m],
+        fragment("lower(?)", m.dm_with) == ^lower_peer or
+          (is_nil(m.dm_with) and fragment("lower(?)", m.channel) == ^lower_peer)
+      )
       |> Repo.delete_all()
 
     {:ok, count}
