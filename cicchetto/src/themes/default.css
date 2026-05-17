@@ -86,7 +86,17 @@ body {
 }
 
 #root {
-  min-height: 100vh;
+  /* UX-3 UNDEC: bind to <body> (height:100%, i.e. visual viewport),
+     NOT 100vh. `100vh` resolves to the LAYOUT viewport on iOS Safari
+     (URL-bar-hidden, taller than the visible area when URL bar is
+     present), so `min-height: 100vh` made #root overflow <body>.
+     `body { overflow: hidden }` does NOT prevent iOS from scrolling
+     the document by touch — the gesture still drags the entire app
+     chrome (vjt 2026-05-18). With `height: 100%`, #root matches body
+     exactly, no overflow exists, no drag is possible. .shell / .login
+     manage their own viewport-aware heights (`100vh`, `100dvh`,
+     `--viewport-height`) inside this fixed-size frame. */
+  height: 100%;
 }
 
 .muted {
@@ -99,7 +109,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  /* UX-3 UNDEC: same trap as the old `#root { min-height: 100vh }` —
+     `100vh` resolves to iOS Safari's LAYOUT viewport (URL-bar-hidden)
+     and overflows <body>/#root (visual viewport), re-opening the
+     touch-drag-scrolls-chrome class of bug on the login screen. Bind
+     to the parent (#root, height: 100%) instead. */
+  min-height: 100%;
   padding: 1rem;
 }
 
