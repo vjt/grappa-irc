@@ -15,7 +15,6 @@ import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
-import { installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -29,15 +28,6 @@ applyTheme();
 // BEFORE render() so the first frame already has the user's preferred
 // size. iOS-4 default = "M" (14px = current behavior).
 applyFontSizeFromStorage();
-
-// UX-3 PENT — VisualViewport-driven height tracking. Writes
-// `--viewport-height: <px>` on <html> and re-writes on every
-// visualViewport.resize event. `.shell.shell-mobile` reads the var
-// (with `100dvh` fallback) so the mobile shell shrinks in lockstep
-// with the iOS on-screen keyboard. Without this, iOS scrolls the
-// body to keep focused inputs visible and pushes the top bar out
-// of view. Boot-time so the first frame already has the var.
-installViewportHeightTracker();
 
 // Push notifications cluster B0 (2026-05-14) — capture
 // `beforeinstallprompt` early. Chrome fires this event ONCE, very
