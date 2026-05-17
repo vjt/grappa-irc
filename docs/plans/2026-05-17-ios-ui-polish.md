@@ -1,16 +1,15 @@
 # iOS UI polish cluster
 
-**Status**: brainstorm v1 (orchestrator-drafted 2026-05-17,
-vjt-blessed via `project_ios_ui_polish_cluster_planned` memory).
-Implementation NOT started. iOS-1 cleared to begin.
+**Status**: **CLOSED 2026-05-17** (5/5 buckets LANDED). All 4
+production buckets + iOS-Z cluster CLOSE shipped same-day.
 
 | Bucket | Status | Deploy | Notes |
 |--------|--------|--------|-------|
-| iOS-1 — viewport lock (no pinch-zoom, no page scroll) | brainstorm | cic-bundle | `index.html` meta + `html,body` CSS |
-| iOS-2 — safe-area insets on top + bottom bars | brainstorm | cic-bundle | `env(safe-area-inset-*)` wraps |
-| iOS-3 — bottom-bar tab close × | brainstorm | cic-bundle | Add × per tab, wire to existing handlers |
-| iOS-4 — font-size selector in SettingsDrawer | brainstorm | cic-bundle | `--font-size` override via localStorage |
-| iOS-Z — cluster CLOSE | brainstorm | n/a | Composed e2e journey + docs sweep + memory close file |
+| iOS-1 — viewport lock (no pinch-zoom, no page scroll) | **LANDED** `7226cd9` | cic-bundle `BRerLmYA` | `index.html` meta + `html,body` CSS |
+| iOS-2 — safe-area insets on top + bottom bars | **LANDED** `3d59036` | cic-bundle `BDHE_VqO` | `env(safe-area-inset-*)` wraps |
+| iOS-3 — bottom-bar tab close × | **LANDED** `a439bb0` | cic-bundle `C571Jvmk` | × per tab + shared `lib/windowClose.ts` |
+| iOS-4 — font-size selector in SettingsDrawer | **LANDED** `241caa1` | cic-bundle `5cUr3vmV` | `--font-size` override via localStorage |
+| iOS-Z — cluster CLOSE | **LANDED** (this commit) | n/a | Composed e2e journey + docs sweep + memory close file |
 
 **Branch**: main (worktree not required — bucket-sized work directly
 on main per recent post-arc cadence, with per-bucket commit + push).

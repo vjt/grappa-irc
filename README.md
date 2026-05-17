@@ -556,6 +556,24 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **iOS UI polish** (closed 2026-05-17). 4 KISS buckets making cic
+  on iPhone Safari feel like a native app. iOS-1 (`7226cd9`)
+  viewport lock — disabled pinch-zoom + overscroll-behavior on
+  html/body. iOS-2 (`3d59036`) safe-area insets on TopicBar,
+  BottomBar, shell-members, settings-drawer via `env(safe-area-
+  inset-*)` — top bar clears Dynamic Island, bottom bar clears the
+  home-indicator. iOS-3 (`a439bb0`) bottom-bar tab close × on
+  mobile; shared helper `lib/windowClose.ts` so Sidebar + BottomBar
+  call the same PART logic (one-feature-one-code-path). iOS-4
+  (`241caa1`) font-size selector in SettingsDrawer — 5 radios
+  (S/M/L/XL/XXL = 12/14/16/18/20 px) with closed-set union type,
+  localStorage persistence, boot-apply mirror of `lib/theme.ts`.
+  cic-only — no server changes, no wire-protocol shapes. iOS-Z
+  cluster journey spec at `cicchetto/e2e/tests/ios-z-cluster-
+  journey.spec.ts` (@webkit iPhone 15) replays all 4 buckets
+  back-to-back. Honest limitation noted: Playwright webkit
+  emulation doesn't simulate the OS notch, so real notch-clearance
+  evidence is browser-smoke screenshots from a notched iPhone shape.
 - **U — cap honesty** (closed 2026-05-17). 8 production commits
   across 7 buckets (U-0..U-6, plus the in-cluster `7bb3caa`
   retro fix) on `main`. The original symptom: operator

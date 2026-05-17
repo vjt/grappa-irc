@@ -6253,6 +6253,78 @@ codebase review per `project_post_tmu_full_review_scheduled` →
 bastille deploy workstream per
 `project_bastille_deploy_workstream` (GitHub issue #8).
 
+## 2026-05-17 — iOS UI polish cluster CLOSED
+
+Four KISS buckets making cic on iPhone Safari feel like a native app.
+cic-only — no server changes, no wire-protocol shapes, no
+architectural touch. localStorage + CSS + Solid signals, that's it.
+
+### Bucket summary
+
+- **iOS-1** `7226cd9` — viewport lock. `<meta name="viewport">` gains
+  `maximum-scale=1, user-scalable=no` + `html, body { overflow: hidden;
+  height: 100%; overscroll-behavior: none }`. Kills pinch-zoom and
+  rubber-band overscroll — both make cic feel like a website instead
+  of an app. Browser-smoke screenshot evidence: no white scroll-area
+  below the bottom bar on iPhone shape.
+- **iOS-2** `3d59036` — safe-area insets. `padding-top:
+  max(0.5rem, env(safe-area-inset-top))` on `.topic-bar`,
+  `padding-bottom: env(safe-area-inset-bottom)` on `.bottom-bar`, both
+  insets on `.shell-members` + `.settings-drawer`. TopicBar clears the
+  Dynamic Island / notch; BottomBar clears the home-indicator. Desktop
+  layout unaffected (env() resolves to 0 outside notched contexts).
+- **iOS-3** `a439bb0` — bottom-bar tab close ×. Mobile BottomBar gained
+  the close affordance that desktop Sidebar already had (channels +
+  query windows; server tab remains non-closeable). Shared helper
+  `lib/windowClose.ts` extracted so Sidebar + BottomBar call the same
+  PART logic (one-feature-one-code-path). Playwright `@webkit` e2e
+  proves the tap → PART → tab-gone roundtrip.
+- **iOS-4** `241caa1` — font-size selector. SettingsDrawer gained a
+  fieldset with 5 radios (S/M/L/XL/XXL = 12/14/16/18/20 px). Closed-set
+  union type `FontSizeKey`, validated at the localStorage boundary
+  (invalid stored value falls back to "M"). Boot-apply pattern mirrors
+  `lib/theme.ts` — `applyFontSizeFromStorage()` runs in main.tsx BEFORE
+  render so the first paint is at the right size (no FOUC). Default
+  preserved (M = 14px = current behavior).
+
+### iOS-Z — cluster CLOSE
+
+`cicchetto/e2e/tests/ios-z-cluster-journey.spec.ts` — single `@webkit`
+iPhone 15 spec replays all four buckets back-to-back so the cluster's
+shipping reality is exercised in CI on every integration run, mirror
+shape of `m-z-admin-cluster-journey.spec.ts`. Honest limitation noted
+in the spec: Playwright webkit emulation doesn't simulate the OS-level
+notch / Dynamic Island, so `env(safe-area-inset-top)` resolves to 0
+there; real notch-clearance evidence is browser-smoke screenshots from
+a notched iPhone shape.
+
+### Lessons
+
+- **Desktop browser-smoke can't validate iPhone-shape changes.** The
+  iOS cluster scope existed because vjt hit the problems on his actual
+  iPhone — desktop emulation in Chrome devtools renders something
+  visually close enough but doesn't catch overscroll feel, notch
+  clearance, or pinch-zoom mis-behavior. Playwright `@webkit` iPhone
+  15 project + real iPhone smoke are the only test surfaces that
+  catch this class.
+- **KISS holds when scope is honestly bounded.** Four buckets, ~50
+  lines each on average (the largest was iOS-3 with the shared helper
+  extraction; iOS-1 was 6 lines of diff). No bucket creep, no
+  surprise dependencies. The cluster plan + per-bucket reviewer-loop
+  enforced the budget.
+- **Closed-set type at the localStorage boundary.** iOS-4's
+  `FontSizeKey` union literal + `isFontSizeKey` typeguard ensures a
+  corrupted localStorage value (manual edit, schema migration miss,
+  malicious extension) falls back to default instead of writing
+  garbage into the CSS var. Mirror pattern from `theme.ts`.
+
+### Next workstream
+
+Per `project_post_tmu_full_review_scheduled`: full codebase review
+(orchestrate parallel-review cycle + fix ALL CRIT/HIGH + most-
+important MED) — vjt-driven start. After review: bastille deploy
+issue #8 per `project_bastille_deploy_workstream`.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

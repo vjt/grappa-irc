@@ -2434,3 +2434,75 @@ iptables phase smoke — the test harness physically can't simulate
 it). E2e tests aren't the right tool for every cluster
 invariant. Knowing where they aren't is part of closing the
 cluster.
+
+## S51 — 2026-05-17 — Four iPhone fixes, no architecture: cic feels like an app
+
+Four buckets. ~150 lines of diff across them. No server changes, no
+wire-protocol shapes, no new abstractions. The cluster scope existed
+because vjt was using cic on his actual iPhone every day and the
+friction was real: pinch-zoom rescaled the page like a 90s website;
+the Dynamic Island chopped the top of TopicBar; the home-indicator
+ate the bottom of BottomBar; there was no way to close a channel tab
+from the bottom bar (had to PART server-side); the default 14px font
+felt small after iOS suppressed Safari's automatic text-zoom.
+
+The fix bag was mechanical. iOS-1 was six lines — the viewport meta
+gained `maximum-scale=1, user-scalable=no` and html/body gained
+`overflow:hidden; overscroll-behavior:none`. Pinch-zoom died.
+Rubber-band overscroll died. The page suddenly felt like a fixed-
+layout app instead of a webpage rendered at the wrong zoom level.
+
+iOS-2 added `env(safe-area-inset-*)` padding to the four bars/drawers
+that touch viewport edges. TopicBar's existing `0.5rem` padding-top
+became `max(0.5rem, env(safe-area-inset-top))` — preserve the
+declarative padding on non-notched contexts, take whichever is bigger
+when the notch eats space. BottomBar gained padding-bottom for the
+home-indicator. shell-members + settings-drawer (both full-height
+drawers) got both insets.
+
+iOS-3 added the close × to mobile BottomBar tabs that Sidebar had
+always had on desktop. The hidden lesson was the shared helper: the
+PART logic lived in Sidebar as two inline handlers; copying them into
+BottomBar would have given us four call sites of "the same logic with
+slightly different surrounding component shape." The bucket extracted
+`lib/windowClose.ts` instead — one function, four callers. The shared
+helper is invisible to the operator but it's the kind of structural
+discipline that keeps the cic code from rotting: when a third surface
+needs the close × (say, a future tablet layout), it imports the helper
+instead of re-implementing PART semantics for the third time.
+
+iOS-4 added the font-size selector — five radios in SettingsDrawer,
+12/14/16/18/20 px = S/M/L/XL/XXL. Closed-set union type at the
+TypeScript layer, validated at the localStorage boundary, fallback to
+default ("M") on any corrupted stored value. Boot-apply pattern lifted
+directly from `lib/theme.ts`: the helper runs in main.tsx BEFORE
+render() so the first paint is at the right size — no FOUC. The CSS
+plumbing already existed: `:root { --font-size: 14px }` cascaded into
+every `font-size: var(--font-size)` rule in the stylesheet, so the
+helper just overrides the var on `<html>` at boot. Nothing else
+changed.
+
+The cluster-close iOS-Z spec is honest about one limitation:
+Playwright's webkit emulation doesn't simulate the OS notch, so
+`env(safe-area-inset-top)` resolves to 0 inside the spec. The
+assertion is "the layout didn't break" — the top bar's bounding-rect
+top is `>= 0`. The real notch-clearance evidence is browser-smoke
+screenshots from a notched iPhone shape (vjt's own iPhone, smoked
+post-deploy). The spec comment says so explicitly: this is the kind
+of "documented limitation" discipline that keeps future-Claude from
+trusting the green checkmark for something the tooling physically
+can't verify.
+
+The KISS held because the cluster plan held. Four buckets, each one
+budgeted in the plan doc, each one closed with reviewer-loop +
+browser smoke + commit + per-bucket deploy. No scope creep. No
+"while we're in here let's also..." The orchestrator's main job was
+saying no to bucket bloat — the brief drafted at session start
+included the discipline ("KISS, smallest possible diff per bucket"),
+and per-bucket reviewer-loops surfaced the few NIT-grade simplifications
+that arose (iOS-4's lazy reactive signal was dead code from a
+speculation about a future consumer; the in-amend fix dropped it).
+
+cic feels like an app on iPhone now. The diff is small. The cluster
+arc — T → M → U → iOS — is closed. Next: full codebase review.
+
