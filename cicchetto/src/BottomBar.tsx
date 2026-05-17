@@ -86,6 +86,24 @@ const BottomBar: Component<Props> = (props) => {
   const archiveCount = (slug: string, networkId: number): number =>
     visibleArchiveForNetwork(slug, networkId).length;
 
+  // UX-3 NON — keep the iOS on-screen keyboard up across tab switches.
+  // The default tap on a BottomBar button moves focus AWAY from the
+  // compose <input>, which makes iOS dismiss the keyboard. Calling
+  // preventDefault on `pointerdown` BEFORE the focus shift suppresses
+  // the focus transfer entirely — the click still fires (different
+  // event), the tab still switches, but the compose input keeps its
+  // focus and the keyboard stays open. Operators tapping rapidly
+  // through channels don't have to re-tap the input every time.
+  // No-op on desktop (no on-screen keyboard to preserve).
+  const keepKeyboard = (e: PointerEvent) => {
+    if (
+      document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement
+    ) {
+      e.preventDefault();
+    }
+  };
+
   return (
     <div class="bottom-bar" role="tablist" ref={navRef}>
       <For each={networks()}>
@@ -99,6 +117,7 @@ const BottomBar: Component<Props> = (props) => {
               role="tab"
               class="bottom-bar-tab"
               classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
+              onPointerDown={keepKeyboard}
               onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
             >
               Server
@@ -137,6 +156,7 @@ const BottomBar: Component<Props> = (props) => {
                         selected: isSelected(network.slug, channel.name),
                         parted: !channel.joined,
                       }}
+                      onPointerDown={keepKeyboard}
                       onClick={() => handleClick(network.slug, channel.name, "channel")}
                     >
                       {channel.name}
@@ -154,6 +174,7 @@ const BottomBar: Component<Props> = (props) => {
                       type="button"
                       class="bottom-bar-close"
                       aria-label={`Close ${channel.name}`}
+                      onPointerDown={keepKeyboard}
                       onClick={() => closeChannelWindow(network.slug, channel.name)}
                     >
                       ×
@@ -174,6 +195,7 @@ const BottomBar: Component<Props> = (props) => {
                       role="tab"
                       class="bottom-bar-tab"
                       classList={{ selected: isSelected(network.slug, qw.targetNick) }}
+                      onPointerDown={keepKeyboard}
                       onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                     >
                       {qw.targetNick}
@@ -191,6 +213,7 @@ const BottomBar: Component<Props> = (props) => {
                       type="button"
                       class="bottom-bar-close"
                       aria-label={`Close DM with ${qw.targetNick}`}
+                      onPointerDown={keepKeyboard}
                       onClick={() => closeQueryWindow(network.id, qw.targetNick)}
                     >
                       ×
@@ -214,6 +237,7 @@ const BottomBar: Component<Props> = (props) => {
                     type="button"
                     class="bottom-bar-archive-chip"
                     aria-label={`Open archive for ${network.slug}`}
+                    onPointerDown={keepKeyboard}
                     onClick={() => setArchiveModalNetwork(network.slug)}
                   >
                     <span class="bottom-bar-archive-chip-icon" aria-hidden="true">
