@@ -97,6 +97,13 @@ vi.mock("../lib/archive", () => ({
   }),
   loadArchive: vi.fn().mockResolvedValue(undefined),
   clearArchive: vi.fn(),
+  visibleArchiveForNetwork: (slug: string) =>
+    slug === "freenode"
+      ? [
+          { target: "#sniffo", kind: "channel", last_activity: 200, row_count: 576 },
+          { target: "vjt-peer", kind: "query", last_activity: 100, row_count: 8 },
+        ]
+      : [],
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -550,97 +557,7 @@ describe("Sidebar", () => {
   });
 
   // CP15 B5 — archive list filters live (joined channel OR open query)
-  // entries. Mirrors server-side `Scrollback.list_archive/3`'s
-  // `active_keyset` exclusion at render time. Without the filter,
-  // re-JOINing an archived channel would duplicate the row in both
-  // Active + Archive sections (operator-reported bug). The backing
-  // `archivedBySlug` cache stays intact (refresh on next user expand
-  // re-fetches the snapshot).
-  describe("CP15 B5 — archive list filters live entries", () => {
-    it("hides an archived channel that's currently in channelsBySlug", async () => {
-      vi.resetModules();
-      vi.doMock("../lib/networks", () => ({
-        networks: () => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }],
-        channelsBySlug: () => ({
-          freenode: [{ name: "#sniffo", joined: true, source: "joined" }],
-        }),
-        networkBySlug: () => undefined,
-      }));
-      vi.doMock("../lib/selection", () => ({
-        selectedChannel: () => null,
-        setSelectedChannel: vi.fn(),
-        unreadCounts: () => ({}),
-        messagesUnread: () => ({}),
-        eventsUnread: () => ({}),
-      }));
-      vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
-      vi.doMock("../lib/queryWindows", () => ({
-        queryWindowsByNetwork: () => ({}),
-        closeQueryWindowState: vi.fn(),
-        openQueryWindowState: vi.fn(),
-        setQueryWindowsByNetwork: vi.fn(),
-      }));
-      vi.doMock("../lib/archive", () => ({
-        archivedBySlug: () => ({
-          freenode: [
-            { target: "#sniffo", kind: "channel", last_activity: 200, row_count: 576 },
-            { target: "#bofh", kind: "channel", last_activity: 100, row_count: 8 },
-          ],
-        }),
-        loadArchive: vi.fn().mockResolvedValue(undefined),
-        clearArchive: vi.fn(),
-      }));
-      vi.doMock("../lib/windowState", () => ({
-        windowStateByChannel: () => ({}),
-      }));
-      const { default: SidebarFresh } = await import("../Sidebar");
-      render(() => <SidebarFresh onSelect={vi.fn()} />);
-      const matches = screen.getAllByText("#sniffo");
-      expect(matches.length).toBe(1);
-      expect(screen.getByText("#bofh")).toBeInTheDocument();
-    });
-
-    it("hides an archived query that's currently in queryWindowsByNetwork", async () => {
-      vi.resetModules();
-      vi.doMock("../lib/networks", () => ({
-        networks: () => [{ id: 1, slug: "freenode", inserted_at: "x", updated_at: "y" }],
-        channelsBySlug: () => ({ freenode: [] }),
-        networkBySlug: () => undefined,
-      }));
-      vi.doMock("../lib/selection", () => ({
-        selectedChannel: () => null,
-        setSelectedChannel: vi.fn(),
-        unreadCounts: () => ({}),
-        messagesUnread: () => ({}),
-        eventsUnread: () => ({}),
-      }));
-      vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
-      vi.doMock("../lib/queryWindows", () => ({
-        queryWindowsByNetwork: () => ({
-          1: [{ targetNick: "vjt-peer", openedAt: "2026-05-04T10:00:00Z" }],
-        }),
-        closeQueryWindowState: vi.fn(),
-        openQueryWindowState: vi.fn(),
-        setQueryWindowsByNetwork: vi.fn(),
-      }));
-      vi.doMock("../lib/archive", () => ({
-        archivedBySlug: () => ({
-          freenode: [
-            { target: "vjt-peer", kind: "query", last_activity: 200, row_count: 8 },
-            { target: "alice-peer", kind: "query", last_activity: 100, row_count: 4 },
-          ],
-        }),
-        loadArchive: vi.fn().mockResolvedValue(undefined),
-        clearArchive: vi.fn(),
-      }));
-      vi.doMock("../lib/windowState", () => ({
-        windowStateByChannel: () => ({}),
-      }));
-      const { default: SidebarFresh } = await import("../Sidebar");
-      render(() => <SidebarFresh onSelect={vi.fn()} />);
-      const matches = screen.getAllByText("vjt-peer");
-      expect(matches.length).toBe(1);
-      expect(screen.getByText("alice-peer")).toBeInTheDocument();
-    });
-  });
+  // entries. UX-2 (2026-05-17) lifted the filter into
+  // `lib/archive.ts` `visibleArchiveForNetwork/2` so BottomBar's chip +
+  // ArchiveModal share it. Coverage moved to `archive.test.ts`.
 });

@@ -1,5 +1,6 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import AdminPane from "./AdminPane";
+import ArchiveModal from "./ArchiveModal";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
@@ -522,6 +523,12 @@ const Shell: Component = () => {
         </section>
 
         <BottomBar />
+
+        {/* UX-2 (2026-05-17) — Mobile archive overlay. Mounted ONLY
+            in the mobile branch (desktop uses Sidebar's per-network
+            `<details>` archive section instead). Self-gated on
+            `archiveModalNetwork()` — renders nothing when closed. */}
+        <ArchiveModal />
 
         <aside class="shell-members" classList={{ open: membersOpen() }}>
           <Show when={isActiveChannelJoined() && selectedChannel()}>

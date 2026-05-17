@@ -2004,6 +2004,171 @@ body {
   background: var(--border);
 }
 
+/* UX-2 (2026-05-17) — mobile archive chip per network. Renders inside
+   `.bottom-bar-network` AFTER the query tabs; tap opens
+   `ArchiveModal` for that network. Visually distinct from a tab (chip
+   shape with rounded corners + muted tone) so the operator doesn't
+   confuse it with an active window. */
+.bottom-bar-archive-chip {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-left: 1px solid var(--border);
+  padding: 0 0.6rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  white-space: nowrap;
+  height: 100%;
+  min-width: 44px;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.bottom-bar-archive-chip:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
+.bottom-bar-archive-chip-count {
+  background: var(--border);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 0 0.35rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+/* UX-2 — full-viewport archive modal. Same backdrop+dialog shape as
+   PrivacyModal but takes more vertical space (the list can be long)
+   + carries safe-area-inset padding so it clears the iPhone notch +
+   home-indicator. */
+.archive-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.archive-modal {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  width: 100%;
+  max-width: 32rem;
+  padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(0.75rem, env(safe-area-inset-bottom));
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.archive-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.archive-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: normal;
+}
+
+.archive-modal-close {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.5rem;
+}
+
+.archive-modal-close:hover {
+  color: var(--fg);
+}
+
+.archive-modal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.archive-modal-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+}
+
+.archive-modal-entry-btn {
+  flex: 1 1 auto;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  text-align: left;
+  padding: 0.6rem 0.5rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px; /* Apple HIG touch target */
+}
+
+.archive-modal-entry-btn:hover {
+  background: var(--border);
+}
+
+.archive-modal-kind {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.archive-modal-target {
+  color: var(--fg);
+}
+
+.archive-modal-delete {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 0 0.75rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  line-height: 1;
+  min-width: 44px;
+}
+
+.archive-modal-delete:hover {
+  color: var(--fg);
+  background: var(--border);
+}
+
+.archive-modal-delete.confirming {
+  color: #c00;
+  background: transparent;
+}
+
+.archive-modal-empty {
+  padding: 1rem 0.5rem;
+  text-align: center;
+}
+
 /* C2 — WHOIS card. Inline ephemeral surface above scrollback when a
  * /whois bundle exists for the active window's network. Single-card
  * stack — replaces in place on each new /whois. */

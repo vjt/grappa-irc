@@ -1,7 +1,7 @@
 import { type Component, createSignal, For, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { deleteArchiveEntry } from "./lib/api";
-import { archivedBySlug, loadArchive } from "./lib/archive";
+import { loadArchive, visibleArchiveForNetwork } from "./lib/archive";
 import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
@@ -198,27 +198,9 @@ const Sidebar: Component<Props> = (props) => {
     }
   };
 
-  // CP15 B5 fix - archive list rendering filters out entries that are
-  // CURRENTLY active (joined channel OR open query window). Server-side
-  // Scrollback.list_archive/3 does the same exclusion via active_keyset,
-  // but the client-side cache survives JOIN echoes; a re-JOIN of an
-  // archived channel would otherwise duplicate the row in both Active +
-  // Archive sections (and the archive row's click would race against the
-  // live row's selection-set). Render-time derivation keeps the backing
-  // archivedBySlug cache untouched - refresh on next user expand updates
-  // the snapshot via REST refetch.
-  const visibleArchiveForNetwork = (slug: string, networkId: number) => {
-    const entries = archivedBySlug()[slug] ?? [];
-    if (entries.length === 0) return entries;
-    const liveChannels = new Set((channelsBySlug()?.[slug] ?? []).map((c) => c.name));
-    const liveQueries = new Set(
-      (queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick),
-    );
-    return entries.filter((entry) => {
-      if (entry.kind === "channel") return !liveChannels.has(entry.target);
-      return !liveQueries.has(entry.target);
-    });
-  };
+  // Archive visibility filter is shared with BottomBar/ArchiveModal —
+  // see `lib/archive.ts` visibleArchiveForNetwork. Pre-UX-2 lived
+  // inline here.
 
   return (
     <Show
