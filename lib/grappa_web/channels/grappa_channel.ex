@@ -152,6 +152,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
+  alias Grappa.Scrollback.Wire, as: ScrollbackWire
   alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.BodyLimit
 
@@ -708,6 +709,26 @@ defmodule GrappaWeb.GrappaChannel do
     with {:ok, _} <- validate_args(nick: target_nick),
          {:ok, subject} <- resolve_subject(user_name) do
       :ok = QueryWindows.close(subject, network_id, target_nick, user_name)
+
+      # UX-3 Z2 (2026-05-18): closing a query window makes its
+      # scrollback (any peer DM rows) archive-eligible — list_archive/3
+      # excludes open query targets via the `active_keyset`. Without
+      # this broadcast, connected cic tabs only learn about the new
+      # archive entry on next page reload. Best-effort slug lookup;
+      # silent-skip on unknown network (extremely defensive — caller
+      # already verified network_id implicitly via the close path).
+      case Networks.get_network(network_id) do
+        %Network{slug: slug} ->
+          :ok =
+            Grappa.PubSub.broadcast_event(
+              Topic.user(user_name),
+              ScrollbackWire.archive_changed_payload(slug)
+            )
+
+        nil ->
+          :ok
+      end
+
       {:reply, :ok, socket}
     else
       {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}

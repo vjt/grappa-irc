@@ -43,6 +43,9 @@ defmodule GrappaWeb.ChannelsController do
 
   alias Grappa.Accounts.User
   alias Grappa.Networks.{Credentials, Network}
+  alias Grappa.PubSub
+  alias Grappa.PubSub.Topic
+  alias Grappa.Scrollback.Wire, as: ScrollbackWire
   alias Grappa.{Session, Visitors}
   alias GrappaWeb.{BodyLimit, Subject}
 
@@ -157,6 +160,13 @@ defmodule GrappaWeb.ChannelsController do
       # user subjects — visitors have no persistent credential.
       remove_from_autojoin(conn.assigns.current_subject, network, channel)
 
+      # UX-3 Z2 (2026-05-18): closing a channel makes its scrollback
+      # archive-eligible (list_archive/3 excludes joined channels via
+      # the `active_keyset`). Without this broadcast, connected cic
+      # tabs only learn the new archive entry exists on next page
+      # reload — chip count + sidebar archive section stay stale.
+      _ = broadcast_archive_changed(conn.assigns.current_subject, network.slug)
+
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -192,6 +202,29 @@ defmodule GrappaWeb.ChannelsController do
   end
 
   defp remove_from_autojoin({:visitor, _}, _, _), do: :ok
+
+  # UX-3 Z2 — mirror of `ArchiveController.broadcast_archive_changed/2`.
+  # Same subject-label derivation: users → `user.name`; visitors →
+  # `"visitor:" <> visitor.id`. cic's userTopic dispatcher (case
+  # "archive_changed") re-fetches `loadArchive(slug)` so chip count +
+  # sidebar archive section update without waiting for a page reload.
+  @spec broadcast_archive_changed(
+          {:user, User.t()} | {:visitor, Grappa.Visitors.Visitor.t()},
+          String.t()
+        ) :: :ok | {:error, term()}
+  defp broadcast_archive_changed({:user, %User{name: name}}, network_slug) do
+    PubSub.broadcast_event(Topic.user(name), ScrollbackWire.archive_changed_payload(network_slug))
+  end
+
+  defp broadcast_archive_changed(
+         {:visitor, %Grappa.Visitors.Visitor{id: visitor_id}},
+         network_slug
+       ) do
+    PubSub.broadcast_event(
+      Topic.user("visitor:" <> visitor_id),
+      ScrollbackWire.archive_changed_payload(network_slug)
+    )
+  end
 
   @doc """
   `POST /networks/:network_id/channels/:channel_id/topic` — body
