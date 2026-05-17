@@ -147,11 +147,11 @@ const BottomBar: Component<Props> = (props) => {
               {(channel) => {
                 const key = channelKey(network.slug, channel.name);
                 return (
-                  <span class="bottom-bar-tab-wrap">
+                  <>
                     <button
                       type="button"
                       role="tab"
-                      class="bottom-bar-tab"
+                      class="bottom-bar-tab bottom-bar-tab-with-close"
                       classList={{
                         selected: isSelected(network.slug, channel.name),
                         parted: !channel.joined,
@@ -179,7 +179,7 @@ const BottomBar: Component<Props> = (props) => {
                     >
                       ×
                     </button>
-                  </span>
+                  </>
                 );
               }}
             </For>
@@ -189,11 +189,11 @@ const BottomBar: Component<Props> = (props) => {
               {(qw) => {
                 const key = channelKey(network.slug, qw.targetNick);
                 return (
-                  <span class="bottom-bar-tab-wrap">
+                  <>
                     <button
                       type="button"
                       role="tab"
-                      class="bottom-bar-tab"
+                      class="bottom-bar-tab bottom-bar-tab-with-close"
                       classList={{ selected: isSelected(network.slug, qw.targetNick) }}
                       onPointerDown={keepKeyboard}
                       onClick={() => handleClick(network.slug, qw.targetNick, "query")}
@@ -218,7 +218,7 @@ const BottomBar: Component<Props> = (props) => {
                     >
                       ×
                     </button>
-                  </span>
+                  </>
                 );
               }}
             </For>

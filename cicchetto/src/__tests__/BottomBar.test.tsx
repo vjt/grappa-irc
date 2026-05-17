@@ -198,46 +198,62 @@ describe("BottomBar", () => {
   });
 
   // iOS-3 — close × per tab (channels + queries; NOT on server tabs).
+  // Post-UX-3-DEC: tab + close × are flat flex siblings (no wrapper span).
   it("renders a close × on each channel tab", () => {
     render(() => <BottomBar />);
-    const italiaWrap = screen.getByText("#italia").closest(".bottom-bar-tab-wrap");
-    const closeBtn = italiaWrap?.querySelector(".bottom-bar-close");
-    expect(closeBtn).toBeTruthy();
-    expect(closeBtn?.textContent).toBe("×");
-    expect(closeBtn?.getAttribute("aria-label")).toBe("Close #italia");
+    const italiaTab = screen.getByText("#italia").closest("button");
+    expect(italiaTab).not.toBeNull();
+    const closeBtn = italiaTab!.nextElementSibling as HTMLElement | null;
+    expect(closeBtn).not.toBeNull();
+    expect(closeBtn!.classList.contains("bottom-bar-close")).toBe(true);
+    expect(closeBtn!.textContent).toBe("×");
+    expect(closeBtn!.getAttribute("aria-label")).toBe("Close #italia");
   });
 
   it("renders a close × on each query (DM) tab", () => {
     render(() => <BottomBar />);
-    const aliceWrap = screen.getByText("alice").closest(".bottom-bar-tab-wrap");
-    const closeBtn = aliceWrap?.querySelector(".bottom-bar-close");
-    expect(closeBtn).toBeTruthy();
-    expect(closeBtn?.textContent).toBe("×");
-    expect(closeBtn?.getAttribute("aria-label")).toBe("Close DM with alice");
+    const aliceTab = screen.getByText("alice").closest("button");
+    expect(aliceTab).not.toBeNull();
+    const closeBtn = aliceTab!.nextElementSibling as HTMLElement | null;
+    expect(closeBtn).not.toBeNull();
+    expect(closeBtn!.classList.contains("bottom-bar-close")).toBe(true);
+    expect(closeBtn!.textContent).toBe("×");
+    expect(closeBtn!.getAttribute("aria-label")).toBe("Close DM with alice");
   });
 
   it("server tabs have NO close × (server window is not closeable)", () => {
     render(() => <BottomBar />);
     const serverTab = screen.getAllByText("Server")[0] as HTMLElement;
-    // Server tab is not wrapped in a .bottom-bar-tab-wrap (no close button
-    // sibling). Walk up to the parent .bottom-bar-network.
-    const wrap = serverTab.closest(".bottom-bar-tab-wrap");
-    expect(wrap).toBeNull();
+    const tabBtn = serverTab.closest("button");
+    expect(tabBtn).not.toBeNull();
+    // The bottom-bar-close MUST NOT exist as the tab's adjacent sibling.
+    // Walk the parent's children looking for any sibling .bottom-bar-close
+    // referencing Server — there must be zero.
+    const network = tabBtn!.parentElement;
+    expect(network).not.toBeNull();
+    const serverCloses = network!.querySelectorAll(
+      ':scope > .bottom-bar-close[aria-label*="Server"]',
+    );
+    expect(serverCloses.length).toBe(0);
   });
 
   it("clicking close × on a channel tab calls closeChannelWindow with correct args", () => {
     render(() => <BottomBar />);
-    const italiaWrap = screen.getByText("#italia").closest(".bottom-bar-tab-wrap");
-    const closeBtn = italiaWrap?.querySelector(".bottom-bar-close") as HTMLElement;
-    fireEvent.click(closeBtn);
+    const italiaTab = screen.getByText("#italia").closest("button");
+    expect(italiaTab).not.toBeNull();
+    const closeBtn = italiaTab!.nextElementSibling as HTMLElement | null;
+    expect(closeBtn).not.toBeNull();
+    fireEvent.click(closeBtn!);
     expect(windowCloseMod.closeChannelWindow).toHaveBeenCalledWith("freenode", "#italia");
   });
 
   it("clicking close × on a query tab calls closeQueryWindow with correct args", () => {
     render(() => <BottomBar />);
-    const aliceWrap = screen.getByText("alice").closest(".bottom-bar-tab-wrap");
-    const closeBtn = aliceWrap?.querySelector(".bottom-bar-close") as HTMLElement;
-    fireEvent.click(closeBtn);
+    const aliceTab = screen.getByText("alice").closest("button");
+    expect(aliceTab).not.toBeNull();
+    const closeBtn = aliceTab!.nextElementSibling as HTMLElement | null;
+    expect(closeBtn).not.toBeNull();
+    fireEvent.click(closeBtn!);
     expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
 

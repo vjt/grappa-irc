@@ -1921,7 +1921,15 @@ body {
   display: flex;
   flex-direction: row;
   flex-shrink: 0;
-  align-items: center;
+  /* UX-3 DEC: stretch so .bottom-bar-tab-wrap (channels/queries)
+     fills the full bottom-bar height instead of shrinking to its
+     own content. Without this, channel/query tap targets were ~40%
+     shorter than the Server tab because the wrap centered itself
+     and its inner buttons inherited the smaller box. Server tab
+     wasn't wrapped, so it always took 100% via its own height:100%
+     rule. With stretch, wrap fills, wrap's align-items:stretch
+     propagates to tab+close, all tap areas uniform. */
+  align-items: stretch;
   border-right: 1px solid var(--border);
 }
 
@@ -2006,19 +2014,15 @@ body {
   font-weight: bold;
 }
 
-/* iOS-3 — tab + close × wrap. Server window has no wrap (no close);
-   channel + query windows wrap the tab and × together so they sit
-   adjacent in the horizontal strip + share border-right with siblings. */
-.bottom-bar-tab-wrap {
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  flex-shrink: 0;
-  border-right: 1px solid var(--border);
-}
-
-/* iOS-3 — tab inside a wrap drops its own border-right (wrap owns it). */
-.bottom-bar-tab-wrap .bottom-bar-tab {
+/* UX-3 DEC: dropped `.bottom-bar-tab-wrap` <span> — tab + close ×
+   are now direct flex siblings of `.bottom-bar-network`. The tab
+   drops its own border-right via `.bottom-bar-tab-with-close`; the
+   close × owns the border-right instead. One fewer DOM node per
+   channel + per query window. Flex `align-items: stretch` on
+   `.bottom-bar-network` propagates uniformly to all tabs (Server +
+   channel + query + archive chip) so tap areas are the full bar
+   height — no centered-shrink-to-content asymmetry. */
+.bottom-bar-tab-with-close {
   border-right: none;
 }
 
@@ -2026,6 +2030,7 @@ body {
   background: transparent;
   color: var(--muted);
   border: none;
+  border-right: 1px solid var(--border);
   padding: 0 0.5rem;
   font-family: var(--font-mono);
   font-size: 1.1rem;

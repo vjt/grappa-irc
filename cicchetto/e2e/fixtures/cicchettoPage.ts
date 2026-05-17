@@ -35,7 +35,7 @@
 //     .bottom-bar                — role="tablist" container
 //     .bottom-bar-network        — per-network grouping
 //     .bottom-bar-network-chip   — network slug label inside the group
-//     .bottom-bar-tab-wrap       — wrapper around channel/query tab + ×
+//     .bottom-bar-tab + .bottom-bar-close — flat siblings (channel/query tab + ×)
 //     .bottom-bar-tab            — clickable window button (server/channel/query)
 //     .bottom-bar-close          — × close button (channel + query only; iOS-3)
 //     .bottom-bar-msg-unread / -events-unread / -mention — badges
@@ -161,18 +161,21 @@ export function sidebarMentionBadge(page: Page, networkSlug: string, windowName:
 
 // iOS-3 — close × button for a channel/query window. Layout-aware:
 // desktop uses `.sidebar-close` (sibling of `.sidebar-window-btn`
-// inside `<li>`); mobile uses `.bottom-bar-close` (sibling of
-// `.bottom-bar-tab` inside `.bottom-bar-tab-wrap`). Server windows
-// have NO close button on either layout — caller is responsible for
-// only calling this on channel/query windows.
+// inside `<li>`); mobile uses `.bottom-bar-close` — IMMEDIATELY
+// AFTER the matching `.bottom-bar-tab` in the bottom-bar's flex
+// layout (post-UX-3-DEC the wrapping <span> is dropped; tab + close
+// are direct flex siblings). Server windows have NO close button
+// on either layout — caller is responsible for only calling this
+// on channel/query windows.
 export function sidebarCloseButton(page: Page, networkSlug: string, windowName: string) {
   if (isMobileViewport(page)) {
     const section = page.locator(".bottom-bar-network", {
       has: page.locator(".bottom-bar-network-chip", { hasText: networkSlug }),
     });
+    // The tab + close are now flat siblings; locate the tab by text,
+    // then walk to the next sibling close × via xpath following-sibling.
     return section
-      .locator(".bottom-bar-tab-wrap", { has: page.locator(".bottom-bar-tab", { hasText: windowName }) })
-      .locator(".bottom-bar-close");
+      .locator(`.bottom-bar-tab:has-text("${windowName}") + .bottom-bar-close`);
   }
   return sidebarWindow(page, networkSlug, windowName).locator(".sidebar-close");
 }

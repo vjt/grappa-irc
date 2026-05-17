@@ -29,7 +29,8 @@ test("@webkit iOS-3 — bottom-bar channel tab close × removes the tab", async 
   const tab = sidebarWindow(page, NETWORK_SLUG, CHANNEL);
   await expect(tab).toBeVisible({ timeout: 10_000 });
 
-  // Close × is rendered as a sibling of the tab inside .bottom-bar-tab-wrap.
+  // Close × is rendered as a flat sibling of the tab in the
+  // bottom-bar (post-UX-3-DEC the wrapping <span> is dropped).
   const closeBtn = sidebarCloseButton(page, NETWORK_SLUG, CHANNEL);
   await expect(closeBtn).toBeVisible();
   await expect(closeBtn).toHaveText("×");
@@ -48,16 +49,18 @@ test("@webkit iOS-3 — bottom-bar Server tab has NO close × button", async ({ 
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Server tab is always-present and non-closeable. It is NOT wrapped
-  // in .bottom-bar-tab-wrap (channel + query tabs only); locating
-  // .bottom-bar-close inside the server-tab's parent should yield 0.
+  // Server tab is always-present and non-closeable. Post-UX-3-DEC the
+  // wrapper <span> is gone — Server tab must not have an adjacent
+  // .bottom-bar-close sibling. Assert via `+ .bottom-bar-close` selector.
   const section = page.locator(".bottom-bar-network", {
     has: page.locator(".bottom-bar-network-chip", { hasText: NETWORK_SLUG }),
   });
   const serverTab = section.locator(".bottom-bar-tab", { hasText: /^Server/ });
   await expect(serverTab).toBeVisible({ timeout: 10_000 });
 
-  // The .bottom-bar-tab-wrap selector that contains Server should not exist.
-  const serverWrap = section.locator(".bottom-bar-tab-wrap", { hasText: /^Server/ });
-  await expect(serverWrap).toHaveCount(0);
+  // Following-sibling close × must NOT exist for the Server tab.
+  const serverCloseSibling = section.locator(
+    '.bottom-bar-tab:has-text("Server") + .bottom-bar-close',
+  );
+  await expect(serverCloseSibling).toHaveCount(0);
 });
