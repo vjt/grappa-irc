@@ -7,7 +7,7 @@ import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
-import { queryWindowsByNetwork } from "./lib/queryWindows";
+import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
@@ -385,13 +385,24 @@ const Sidebar: Component<Props> = (props) => {
                         <button
                           type="button"
                           class="sidebar-window-btn"
-                          onClick={() =>
+                          onClick={() => {
+                            // UX-3 Z: re-open archived query window as live
+                            // so cic subscribes to the per-channel topic and
+                            // receives server broadcasts (NOTICE 401, etc.).
+                            // Idempotent — no-op if already open.
+                            if (entry.kind === "query") {
+                              openQueryWindowState(
+                                network.id,
+                                entry.target,
+                                new Date().toISOString(),
+                              );
+                            }
                             handleClick(
                               network.slug,
                               entry.target,
                               entry.kind === "channel" ? "channel" : "query",
-                            )
-                          }
+                            );
+                          }}
                         >
                           <span class="sidebar-channel-name parted">{entry.target}</span>
                         </button>

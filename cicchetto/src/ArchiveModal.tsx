@@ -8,6 +8,7 @@ import {
 } from "./lib/archive";
 import { token } from "./lib/auth";
 import { networks } from "./lib/networks";
+import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 
 // UX-2 (2026-05-17) — Mobile archive surface.
@@ -61,6 +62,20 @@ const ArchiveModal: Component = () => {
   };
 
   const handleSelectEntry = (slug: string, target: string, kind: "channel" | "query") => {
+    // UX-3 Z: query-shaped archive entries must also be re-opened as
+    // live query windows. setSelectedChannel alone only switches the
+    // UI; it does NOT subscribe cic to the per-channel Phoenix topic.
+    // Without the subscribe, any new server broadcast for this target
+    // (e.g. NOTICE 401 "No such nick/channel" when the operator sends
+    // a PRIVMSG to the archived peer) drops on the floor and the
+    // operator sees no feedback. `openQueryWindowState` POSTs to the
+    // server which persists the query_windows row and broadcasts
+    // `query_window_opened`; cic's subscribe loop re-arms and joins
+    // the per-channel topic. Idempotent — no-op if already open.
+    if (kind === "query") {
+      const net = networks()?.find((n) => n.slug === slug);
+      if (net) openQueryWindowState(net.id, target, new Date().toISOString());
+    }
     setSelectedChannel({
       networkSlug: slug,
       channelName: target,
