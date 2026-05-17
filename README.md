@@ -576,7 +576,14 @@ recent CLOSED clusters:
   error banner. U-4 (`aa82d97`) UD5.A+B+C device-identity-change
   test-debt closure. U-5 (`010054d`) admin Networks tab per-network
   live cap counters via a `:cap_counts_changed` typed event. U-6
-  is this docs sweep. **Two retrospective swallow-bugs surfaced
+  (`fcc51d2`) docs sweep + CLAUDE.md "no silent-swallow at
+  boundaries" rule. U-Z closed the cluster with a composed
+  REST-only journey spec
+  (`cicchetto/e2e/tests/u-z-cap-honesty-cluster-journey.spec.ts`)
+  pinning the park → reject → row-unchanged → bump → reconnect
+  → visitor-independence narrative in one run, plus a
+  zero-match controller-grep audit confirming the swallow class
+  is closed. **Two retrospective swallow-bugs surfaced
   in-cluster**: the original NetworksController error-discard (U-0),
   AND a long-standing `Session.Server.terminate/2` wide-catch
   that hid an `IRC.Client` raise on dead-socket SEND for weeks

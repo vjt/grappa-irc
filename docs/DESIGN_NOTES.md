@@ -6160,13 +6160,98 @@ TODO-comments are real signal, not noise.
 - U-4: zero deploy (test-debt-only).
 - U-5: HOT server + `scripts/deploy-cic.sh` for cic bundle hash.
 - U-6: zero deploy (pure docs).
+- U-Z: zero deploy (e2e + audit + docs only).
+
+### U-Z cluster CLOSE — composed journey + audit
+
+The U-Z bucket landed three things and explicitly did NOT land
+five others; the "did not land" set is itself a finding.
+
+**Shipped**:
+
+1. `cicchetto/e2e/tests/u-z-cap-honesty-cluster-journey.spec.ts`
+   — REST-only composed journey replaying the cluster narrative in
+   one spec: park vjt → admin saturates user cap (=0) → user
+   /connect 503 `network_busy` → assert DB row stays at `:parked`
+   (U-0 spawn-first invariant via `GET /admin/networks/:slug` +
+   `GET /networks/:slug`) → admin bumps cap to 1 → /connect
+   succeeds 200 → admin sets visitor cap=0 / user cap=10 →
+   /connect SUCCEEDS (UD1 independence). Mirrors M-Z's shape (one
+   spec, one `try/finally` cap-restore via `afterEach`) and
+   pairs the cluster's typed-error wire contracts with the
+   spawn-first row-preservation invariant in a single
+   reproducible run. Per `feedback_e2e_user_class_parity_matrix`:
+   the cross-bucket compositional spec, not a re-run of per-bucket
+   surfaces.
+2. Audit per plan §U-Z item 7: code-grep for
+   `{:error, _} -> :ok` patterns in
+   `lib/grappa_web/controllers/` returned ZERO matches. The
+   audit is a NON-FINDING — the swallow-class fix at U-0 +
+   subsequent buckets cleaned the controller layer; no
+   residual swallow surfaces remain. Per
+   `feedback_mega_cluster_lessons`: empty audit IS the finding;
+   document the grep explicitly so future readers don't re-run
+   the same search.
+3. Cluster-close docs (this entry, the project-story closing
+   paragraph for S50, README "U — cap honesty" closed-clusters
+   entry already in-step from U-6) + arc memory bump to
+   "U cluster CLOSED 8/8".
+
+**Documented but not driven** (per plan §U-Z items 4 + 5 + 6 + 8 +
+the per-bucket coverage delegation):
+
+- §U-Z item 3 (parallel-spawn independent caps): covered by
+  U-2 arm 2 (`u-2-admission-split.spec.ts`).
+- §U-Z item 4 (logout-as-visitor → login-as-user same client_id):
+  covered by U-4 admission_test.exs + auth_controller_test.exs
+  at unit level; the e2e arm is parked as `test.skip` in
+  `u-4-device-identity-change.spec.ts` per
+  `feedback_visitor_mint_e2e_cold_start` (bahamut-test
+  visitor-mint 504s on cold start; same blocker as M-8).
+- §U-Z item 5 (visitor /quit frees client_id slot): same
+  visitor-mint blocker class as item 4; UD5.A production
+  behavior is unit-tested.
+- §U-Z item 6 (capacity_reject admin event lands live in
+  Events tab): covered end-to-end by
+  `m-z-admin-cluster-journey.spec.ts` (M cluster close already
+  drives PATCH cap=0 → mint → assert `admin-event-capacity_reject`
+  row visible in real time).
+- §U-Z item 8 (iptables DROP → `:connect_timeout` phase smoke):
+  infeasible in the e2e harness — `iptables DROP` requires
+  `NET_ADMIN` capability inside the test container plus
+  coordinated routing to the testnet leaf. The UD7 per-phase
+  typed errors are unit-tested at
+  `test/grappa/visitors/login_test.exs` (one assertion per
+  phase boundary); the live observation is the
+  raccooncity.azzurra.chat 504-no-longer-reproduces evidence
+  from the U-2 deploy.
+
+The "documented but not driven" set is non-empty by design:
+e2e suites are not the right tool for every cluster invariant.
+Where unit coverage + a sibling spec already pin the surface,
+duplicating the assertion in the cluster-close spec adds noise
+without adding signal — per the M cluster lesson
+(`m-z-admin-cluster-journey` doesn't re-drive
+`m8-admin-visitors-delete` either).
+
+### U cluster status: **CLOSED 2026-05-17** (8/8 buckets + U-Z)
+
+Total: 8 production commits across 7 named buckets + the U-Z
+close. Two swallow-bugs surfaced and were fixed at the
+boundary, not the safety net. The CLAUDE.md rule "No
+silent-swallow at boundaries" codifies the pattern. The T+M+U
+arc is closed.
 
 ### Trajectory
 
-U cluster CLOSED closes the T+M+U arc. Next: iOS UI polish cluster
-(4 buckets per `project_ios_ui_polish_cluster_planned`), then the
-full post-T+M+U+iOS codebase review per
-`project_post_tmu_full_review_scheduled`.
+U cluster CLOSED closes the T+M+U arc. Next workstream per
+`project_post_p4_1_arc`: nick-case-sensitivity bug fix (small
+standalone per `project_nick_case_sensitivity_bug`) → iOS UI
+polish cluster (4 buckets per
+`project_ios_ui_polish_cluster_planned`) → full post-T+M+U+iOS
+codebase review per `project_post_tmu_full_review_scheduled` →
+bastille deploy workstream per
+`project_bastille_deploy_workstream` (GitHub issue #8).
 
 ## What's *not* in this document (on purpose)
 

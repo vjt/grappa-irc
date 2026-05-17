@@ -2413,3 +2413,24 @@ errors honest enough that an operator can read what is going on.
 The thread holds: three clusters, one operator-experience story,
 each cluster shipped before the next began. iOS UI polish is
 next on the queue, then the full codebase review.
+
+The U-Z close was small. One spec
+(`cicchetto/e2e/tests/u-z-cap-honesty-cluster-journey.spec.ts`)
+replays the cluster narrative end-to-end in REST: park vjt,
+admin saturates the user cap, /connect rejects 503, the DB row
+stays at `:parked` (the spawn-first-commit-second invariant that
+U-0 introduced), admin bumps cap, /connect succeeds, admin
+saturates the visitor cap, /connect STILL succeeds because the
+caps are independent. The spec asserts the load-bearing
+invariants in one reproducible run; it doesn't re-drive every
+per-bucket surface (per-bucket specs already cover those). And
+the audit step turned up zero remaining `{:error, _} -> :ok`
+patterns in any controller — the U-cluster cleanup left the
+swallow-class actually fixed. The "documented but not driven"
+list in DESIGN_NOTES is itself a finding: we wrote down which
+plan items the e2e doesn't drive AND why (per-bucket coverage
+already pins it; unit test is the right level; or — for the
+iptables phase smoke — the test harness physically can't simulate
+it). E2e tests aren't the right tool for every cluster
+invariant. Knowing where they aren't is part of closing the
+cluster.
