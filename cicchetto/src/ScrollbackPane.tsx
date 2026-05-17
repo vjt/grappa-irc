@@ -6,6 +6,8 @@ import {
   For,
   type JSX,
   on,
+  onCleanup,
+  onMount,
   Show,
 } from "solid-js";
 import InviteAckRows from "./InviteAckRows";
@@ -588,6 +590,11 @@ const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
   let markerRef: HTMLDivElement | undefined;
   const [atBottom, setAtBottom] = createSignal(true);
+  // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
+  // trap. Recomputed on every layout-affecting signal (messages,
+  // window resize, visualViewport resize → keyboard open/close).
+  // True when scrollback content actually exceeds the viewport.
+  const [isOverflowing, setIsOverflowing] = createSignal(false);
   const [bannerState, setBannerState] = createSignal<BannerState>("hidden");
   // C7.3: track whether we've done the initial scroll-to-marker for this
   // window mount. Reset on channel switch (key change).
@@ -785,6 +792,46 @@ const ScrollbackPane: Component<Props> = (props) => {
   // action — the user issued /join — so the C4.2 cluster-wide focus-
   // only-on-user-action rule is not violated; the rule guards against
   // incoming-traffic focus shifts, not user-initiated ones.
+  // UX-3 Z3 R4 — actual-overflow gate. CSS-only fix is impossible:
+  // there is no `:has-overflow` selector. `overflow-y: scroll` (R3)
+  // didn't help — iOS bubbles `pan-y` to chrome reveal whenever the
+  // gesture finds no scroll target, regardless of the container's
+  // declared overflow mode.
+  //
+  // Real fix is JS-measured: read scrollHeight vs clientHeight on
+  // every layout-affecting change and toggle a class on `.scrollback`
+  // so the CSS rule `.scrollback-overflowing { touch-action: pan-y }`
+  // / `.scrollback { touch-action: none }` (base) flips accordingly.
+  //
+  // Triggers: messages count, window resize, visualViewport resize
+  // (keyboard open/close shrinks the scrollback). Measured in a
+  // microtask after the layout settles via queueMicrotask.
+  const measureOverflow = (): void => {
+    if (!listRef) return;
+    queueMicrotask(() => {
+      if (!listRef) return;
+      setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
+    });
+  };
+
+  createEffect(
+    on(
+      () => messages()?.length ?? 0,
+      () => measureOverflow(),
+    ),
+  );
+
+  onMount(() => {
+    measureOverflow();
+    const onResize = () => measureOverflow();
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+    });
+  });
+
   createEffect(
     on(shouldShowBanner, (show) => {
       if (show && !shownBanners.has(key())) {
@@ -1098,7 +1145,13 @@ const ScrollbackPane: Component<Props> = (props) => {
       <Show when={props.kind === "server"}>
         <LusersCard networkSlug={props.networkSlug} />
       </Show>
-      <div ref={listRef} class="scrollback" onScroll={onScroll} data-testid="scrollback">
+      <div
+        ref={listRef}
+        class="scrollback"
+        classList={{ "scrollback-overflowing": isOverflowing() }}
+        onScroll={onScroll}
+        data-testid="scrollback"
+      >
         <Show
           when={(messages()?.length ?? 0) > 0}
           fallback={<p class="muted scrollback-empty">no messages yet</p>}

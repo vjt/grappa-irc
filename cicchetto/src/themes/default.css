@@ -675,36 +675,32 @@ body {
 
 .scrollback {
   flex: 1;
-  /* UX-3 Z3 R3: `overflow-y: scroll` (NOT `auto`) is the key. With
-     `auto`, iOS only treats the element as scrollable when there's
-     real overflow — empty/sparse scrollback has no overflow, so iOS
-     accepts `touch-action: pan-y` but with no target to actually
-     pan, falls through to chrome reveal/hide gesture (URL bar
-     animation). With `scroll`, iOS treats the element as ALWAYS
-     scrollable, so `pan-y` always has a valid target and never
-     bubbles. iOS auto-hides the scroll indicator so there's no
-     permanent UI cost; macOS Safari + Firefox also auto-hide on
-     trackpad input. */
+  /* UX-3 Z3 R3+R4: `overflow-y: scroll` declares the container as
+     always-scrollable for layout purposes (browsers auto-hide the
+     indicator on iOS / macOS Safari / Firefox so no permanent UI
+     cost). But iOS still falls through `pan-y` to chrome reveal when
+     scrollHeight ≤ clientHeight — there's no `:has-overflow` CSS
+     selector to gate on, so ScrollbackPane.tsx measures the DOM
+     after layout and toggles `scrollback-overflowing` accordingly.
+     Base rule: `touch-action: none` (rejects pan, no chrome reveal).
+     Overflowing rule below flips to `pan-y` so vertical scroll
+     works when there's actually something to scroll. */
   overflow-y: scroll;
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
-  /* UX-3 UNDEC R2: kill scroll-chain to the document root. When the
-     user drags past the top/bottom of the scrollback on iOS, the
-     gesture propagates to <html> and iOS rubber-bands the entire app
-     chrome (URL bar collapse/expand animation). `body { overscroll-
-     behavior: none }` (line 85) only blocks the BROWSER's own
-     overscroll (pull-to-refresh, nav gesture); the *scroll-chain*
-     from a child scroll container is its own mechanism and must be
-     contained AT the child. `contain` keeps the gesture inside this
-     element when there's no further scroll to be had — iOS gets no
-     overflow signal to bubble. */
+  /* UX-3 UNDEC R2: kill scroll-chain to the document root via
+     `overscroll-behavior: contain`. iOS bubbles `pan-y` to chrome
+     animation when overscroll is not contained, even with `pan-y`
+     enabled. */
   overscroll-behavior: contain;
-  /* UX-3 UNDEC R3: re-enable vertical pan inside the shell-mobile's
-     `touch-action: none` blanket so the user can actually scroll the
-     scrollback. Horizontal swipes still fall through to `none` (no
-     horizontal content here, and no chrome gesture). */
+  /* UX-3 Z3 R4: default-deny pan. JS-measured `.scrollback-overflowing`
+     re-enables `pan-y` below when scrollHeight > clientHeight. */
+  touch-action: none;
+}
+
+.scrollback.scrollback-overflowing {
   touch-action: pan-y;
 }
 
