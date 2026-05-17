@@ -1,94 +1,122 @@
-// UX-3 (2026-05-17) — `.shell-empty-toolbar` Dynamic Island clearance.
+// UX-3 BIS (2026-05-17) — `.shell.shell-mobile` safe-area-inset.
 //
-// iOS-2 added `padding: max(0.5rem, env(safe-area-inset-top))` to
-// `.topic-bar` so the channel-view header clears the iPhone Dynamic
-// Island. `.shell-empty-toolbar` (rendered when no channel is
-// selected — both desktop and mobile shell branches) was missing the
-// same inset, so the cold-load shell painted under the Island.
+// Original UX-3 fix put `padding: max(0.5rem, env(safe-area-inset-top))`
+// on `.topic-bar` + `.shell-empty-toolbar`. That cleared the bar's
+// CONTENT below the Dynamic Island but left the bar's BACKGROUND
+// painting under the island (the bar's outer box still started at
+// y=0). iOS Safari reserves the status-bar area for OS gestures, so
+// touches under the island were captured by the OS, not the page —
+// the bar appeared visually clear-ish but was non-interactive.
 //
-// Verification strategy. Playwright's iPhone 15 device emulation
-// matches viewport + UA but does NOT inject real `env(safe-area-*)`
-// values — `getComputedStyle().paddingTop` resolves to the
-// `max(0.5rem, env(...))` FLOOR of 8px regardless. So asserting
-// against a numeric px value can't distinguish the buggy rule
-// (`padding: 0.5rem 1rem`) from the fixed rule. Instead, walk the
-// document stylesheets, locate the `.shell-empty-toolbar` rule, and
-// assert its declared padding-top SOURCE contains both `env(` and
-// `safe-area-inset-top`. That pins the FIX shape without relying on
-// emulated viewport metrics that webkit-iphone-15 doesn't fake.
+// UX-3 BIS moves the inset from the individual bars to the
+// `.shell.shell-mobile` container itself, so the entire mobile shell
+// sits inside the safe area. Bar outer boxes start below the island.
+// Touch model correct. `box-sizing: border-box` (global) means the
+// inset is consumed FROM the shell's 100vh, not added to it.
 //
-// Also assert the rule's computed paddingTop resolves to ≥ 8px (the
-// floor) — a weak smoke that the rule actually compiled (no typo).
+// Verification strategy. Walk document.styleSheets, find the
+// `.shell-mobile` rule (lives under the `@media (max-width: 768px)`
+// branch — CSSMediaRule), assert it declares both
+// `padding-top: env(safe-area-inset-top)` and
+// `padding-bottom: env(safe-area-inset-bottom)`. Webkit-iphone-15
+// emulation matches viewport but doesn't inject real env() values —
+// computed paddingTop resolves to 0px regardless — so this is a
+// SOURCE-shape assertion, not a metric assertion.
 //
-// Per-class parity matrix per `feedback_e2e_user_class_parity_matrix`:
-// UX-3 is a CSS shape bucket — not an IRC-function spec. The
-// `.shell-empty-toolbar` rule is class-agnostic; one visitor login
-// suffices. Full visitor/nickserv/registered loop runs in UX-Z.
+// Also assert `.topic-bar` + `.shell-empty-toolbar` rules NO LONGER
+// contain `env(` / `safe-area-inset-top` (the previous fix is
+// reverted at the bar level — the container handles it now). That
+// pins the BIS fix shape so a future operator can't accidentally
+// re-add the bar-level inset (which would double-clear the island
+// and produce visually-empty space below it).
+//
+// Per `feedback_e2e_user_class_parity_matrix`: UX-3 BIS is a CSS
+// shape bucket, single visitor login sufficient. Parity matrix
+// runs in UX-Z.
 
 import { expect, test } from "@playwright/test";
 import { loginAs } from "../fixtures/cicchettoPage";
-import { partChannel } from "../fixtures/grappaApi";
-import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
+import { getSeededVjt } from "../fixtures/seedData";
 
-const CHANNEL = AUTOJOIN_CHANNELS[0];
+type SelectorPadding = { selector: string; padding: string; paddingTop: string; paddingBottom: string };
 
-test("@webkit UX-3 — .shell-empty-toolbar mirrors .topic-bar safe-area-inset-top", async ({
-  page,
-}) => {
-  const vjt = getSeededVjt();
-  await loginAs(page, vjt);
-
-  // Cold-load N-3 auto-selects the first joined channel; to surface
-  // `.shell-empty-toolbar`, PART that channel — BUG5a contract sends
-  // selectedChannel back to null and the empty stub renders.
-  await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
-
-  const emptyToolbar = page.locator(".shell-empty-toolbar");
-  await expect(emptyToolbar).toBeVisible({ timeout: 10_000 });
-
-  // Source assertion — walks document.styleSheets, locates any rule
-  // whose selector covers `.shell-empty-toolbar`, returns its declared
-  // padding-top. Note: vite's CSS minifier MERGES rules with identical
-  // property values into a comma-list selector — in production the
-  // `.shell-empty-toolbar` rule lives under
-  // `selectorText === ".topic-bar, .shell-empty-toolbar"`. So match on
-  // substring containment rather than exact equality. The buggy rule
-  // (`.shell-empty-toolbar { padding: 0.5rem 1rem }`) would NOT merge
-  // with `.topic-bar` (different values), so the substring would land
-  // on its own un-merged rule and still return `0.5rem 1rem` — failing
-  // both substring checks. Tight pin either way.
-  const declaredPaddingTop = await page.evaluate(() => {
+async function findRulePadding(
+  page: import("@playwright/test").Page,
+  selector: string,
+): Promise<SelectorPadding | null> {
+  return await page.evaluate((sel) => {
+    function visitRules(rules: CSSRuleList): SelectorPadding | null {
+      for (const rule of Array.from(rules)) {
+        if (rule instanceof CSSMediaRule) {
+          const inner = visitRules(rule.cssRules);
+          if (inner) return inner;
+          continue;
+        }
+        if (!(rule instanceof CSSStyleRule)) continue;
+        const selectors = rule.selectorText.split(",").map((s) => s.trim());
+        if (!selectors.includes(sel)) continue;
+        return {
+          selector: sel,
+          padding: rule.style.getPropertyValue("padding").trim(),
+          paddingTop: rule.style.getPropertyValue("padding-top").trim(),
+          paddingBottom: rule.style.getPropertyValue("padding-bottom").trim(),
+        };
+      }
+      return null;
+    }
     for (const sheet of Array.from(document.styleSheets)) {
       let rules: CSSRuleList;
       try {
         rules = sheet.cssRules;
       } catch {
-        // Cross-origin sheet — skip.
         continue;
       }
-      for (const rule of Array.from(rules)) {
-        if (!(rule instanceof CSSStyleRule)) continue;
-        // Selector list may contain `.shell-empty-toolbar` alone OR
-        // merged with siblings (e.g. `.topic-bar, .shell-empty-toolbar`)
-        // — `\b`-style word boundary via split-on-comma to avoid
-        // matching `.shell-empty-toolbar-spacer`.
-        const selectors = rule.selectorText.split(",").map((s) => s.trim());
-        if (!selectors.includes(".shell-empty-toolbar")) continue;
-        const padding = rule.style.getPropertyValue("padding").trim();
-        const paddingTopLonghand = rule.style.getPropertyValue("padding-top").trim();
-        return padding.length > 0 ? padding : paddingTopLonghand;
-      }
+      const found = visitRules(rules);
+      if (found) return found;
     }
     return null;
-  });
+  }, selector);
+}
 
-  expect(declaredPaddingTop).not.toBeNull();
-  expect(declaredPaddingTop).toContain("env(");
-  expect(declaredPaddingTop).toContain("safe-area-inset-top");
+test("@webkit UX-3 BIS — .shell.shell-mobile carries safe-area inset; bars do NOT", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
 
-  // Computed smoke — the rule compiled and the floor applies.
-  const computedPaddingTopPx = await emptyToolbar.evaluate(
-    (el) => parseFloat(window.getComputedStyle(el).paddingTop),
-  );
-  expect(computedPaddingTopPx).toBeGreaterThanOrEqual(8);
+  // .shell-mobile rule lives inside @media (max-width: 768px) — must
+  // recurse through CSSMediaRule.cssRules to find it. The rule MUST
+  // declare both top + bottom inset.
+  const shell = await findRulePadding(page, ".shell-mobile");
+  expect(shell).not.toBeNull();
+  // The longhands MAY be authored or expanded; tolerate either.
+  const shellTop = shell?.paddingTop ?? "";
+  const shellBottom = shell?.paddingBottom ?? "";
+  expect(shellTop).toContain("env(");
+  expect(shellTop).toContain("safe-area-inset-top");
+  expect(shellBottom).toContain("env(");
+  expect(shellBottom).toContain("safe-area-inset-bottom");
+
+  // .topic-bar + .shell-empty-toolbar MUST NOT carry the inset
+  // anymore — pin the UX-3 BIS revert so a future operator can't
+  // re-introduce the double-clear regression.
+  const topicBar = await findRulePadding(page, ".topic-bar");
+  expect(topicBar).not.toBeNull();
+  // Vite minifier may merge .topic-bar + .shell-empty-toolbar back
+  // together since they now share identical values again. The
+  // selector-list `includes(...)` match accepts either form.
+  const topicPadding = `${topicBar?.padding ?? ""} ${topicBar?.paddingTop ?? ""}`;
+  expect(topicPadding).not.toContain("env(");
+
+  const emptyToolbar = await findRulePadding(page, ".shell-empty-toolbar");
+  expect(emptyToolbar).not.toBeNull();
+  const emptyPadding = `${emptyToolbar?.padding ?? ""} ${emptyToolbar?.paddingTop ?? ""}`;
+  expect(emptyPadding).not.toContain("env(");
+
+  // .bottom-bar MUST NOT carry the inset anymore (container handles
+  // the home-indicator clearance via padding-bottom).
+  const bottomBar = await findRulePadding(page, ".bottom-bar");
+  expect(bottomBar).not.toBeNull();
+  const bottomPadding = `${bottomBar?.padding ?? ""} ${bottomBar?.paddingBottom ?? ""}`;
+  expect(bottomPadding).not.toContain("env(");
 });

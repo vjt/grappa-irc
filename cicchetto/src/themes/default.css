@@ -452,9 +452,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  /* iOS-2: top inset clears notch/Dynamic Island on iPhone; max() keeps
-     the existing 0.5rem padding on non-notched devices. */
-  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
+  padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -463,10 +461,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  /* UX-3: mirror .topic-bar's safe-area-inset-top so the cold-load
-     shell (before any channel selected) clears the iPhone Dynamic
-     Island. max() preserves 0.5rem on non-notched devices. */
-  padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem 1rem;
+  padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1805,6 +1800,21 @@ body {
     grid-template-rows: 1fr;
     height: 100vh;
     min-height: 0;
+    /* UX-3 BIS: safe-area insets at the SHELL container, not at the
+       individual bars. Pushes the entire mobile shell below the
+       Dynamic Island / status bar (top) and above the home indicator
+       (bottom), so bar OUTER boxes sit inside the safe area instead
+       of just shifting their content via padding while the box
+       remains under the island. The pre-UX-3-BIS approach (inset on
+       .topic-bar / .shell-empty-toolbar / .bottom-bar padding) put
+       the bar's *content* below the island but left the bar's
+       background under it — and iOS captures touches in the
+       status-bar reservation zone, so the bar appeared visually
+       clear-ish but was non-interactive. box-sizing: border-box
+       (global, line 67) means the inset is consumed FROM the 100vh,
+       not added to it. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .shell-mobile .shell-main {
@@ -1872,9 +1882,6 @@ body {
   /* touch-momentum scrolling on iOS (non-standard but widely supported) */
   -webkit-overflow-scrolling: touch;
   min-height: 3rem; /* thumb-tap friendly (~48dp Material / 44px Apple HIG) */
-  /* iOS-2: bottom inset clears the home-indicator strip on iPhone X+.
-     env() resolves to 0 on non-notched devices, keeping desktop layout. */
-  padding-bottom: env(safe-area-inset-bottom);
   border-top: 1px solid var(--border);
   background: var(--bg-alt);
   flex-shrink: 0;

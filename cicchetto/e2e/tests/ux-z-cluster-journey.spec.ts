@@ -102,17 +102,36 @@ test("@webkit UX-Z cluster — Dynamic Island clearance + BottomBar archive chip
     const vjt = getSeededVjt();
     await loginAs(page, vjt);
 
-    // ── UX-3 — .shell-empty-toolbar safe-area-inset assertion ──
+    // ── UX-3 BIS — .shell.shell-mobile carries safe-area inset ──
     //
-    // Surface the empty-toolbar by PARTing the autojoin channel
-    // (BUG5a contract sends selectedChannel back to null). N-3's
-    // cold-load auto-select disarms after first fire, so the empty
-    // stub renders post-PART.
+    // Surface the empty-toolbar by PARTing the autojoin channel (so
+    // selectedChannel goes back to null + empty stub renders), then
+    // assert the SHELL container — not the bars — carries the inset.
+    // See ux-3-empty-toolbar-island.spec.ts for the WHY (the original
+    // bar-level padding cleared content but left the bar's outer box
+    // under the island, where iOS captures touches).
     await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
     const emptyToolbar = page.locator(".shell-empty-toolbar");
     await expect(emptyToolbar).toBeVisible({ timeout: 10_000 });
 
-    const declaredPadding = await page.evaluate(() => {
+    const shellPadding = await page.evaluate(() => {
+      function visitRules(rules: CSSRuleList): { top: string; bottom: string } | null {
+        for (const rule of Array.from(rules)) {
+          if (rule instanceof CSSMediaRule) {
+            const inner = visitRules(rule.cssRules);
+            if (inner) return inner;
+            continue;
+          }
+          if (!(rule instanceof CSSStyleRule)) continue;
+          const selectors = rule.selectorText.split(",").map((s) => s.trim());
+          if (!selectors.includes(".shell-mobile")) continue;
+          return {
+            top: rule.style.getPropertyValue("padding-top").trim(),
+            bottom: rule.style.getPropertyValue("padding-bottom").trim(),
+          };
+        }
+        return null;
+      }
       for (const sheet of Array.from(document.styleSheets)) {
         let rules: CSSRuleList;
         try {
@@ -120,25 +139,14 @@ test("@webkit UX-Z cluster — Dynamic Island clearance + BottomBar archive chip
         } catch {
           continue;
         }
-        for (const rule of Array.from(rules)) {
-          if (!(rule instanceof CSSStyleRule)) continue;
-          // Vite's CSS minifier merges rules with identical property
-          // values into a comma-list selector (e.g.
-          // `.topic-bar, .shell-empty-toolbar` post-UX-3 fix). Match
-          // via split-on-comma so the spec accepts both dev and prod
-          // selector shapes.
-          const selectors = rule.selectorText.split(",").map((s) => s.trim());
-          if (!selectors.includes(".shell-empty-toolbar")) continue;
-          const padding = rule.style.getPropertyValue("padding").trim();
-          const paddingTopLonghand = rule.style.getPropertyValue("padding-top").trim();
-          return padding.length > 0 ? padding : paddingTopLonghand;
-        }
+        const found = visitRules(rules);
+        if (found) return found;
       }
       return null;
     });
-    expect(declaredPadding).not.toBeNull();
-    expect(declaredPadding).toContain("env(");
-    expect(declaredPadding).toContain("safe-area-inset-top");
+    expect(shellPadding).not.toBeNull();
+    expect(shellPadding?.top ?? "").toContain("safe-area-inset-top");
+    expect(shellPadding?.bottom ?? "").toContain("safe-area-inset-bottom");
 
     // ── UX-2 — BottomBar archive chip surfaces post-PART ──
     //
