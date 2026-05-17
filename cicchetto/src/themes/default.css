@@ -691,6 +691,11 @@ body {
      element when there's no further scroll to be had — iOS gets no
      overflow signal to bubble. */
   overscroll-behavior: contain;
+  /* UX-3 UNDEC R3: re-enable vertical pan inside the shell-mobile's
+     `touch-action: none` blanket so the user can actually scroll the
+     scrollback. Horizontal swipes still fall through to `none` (no
+     horizontal content here, and no chrome gesture). */
+  touch-action: pan-y;
 }
 
 .scrollback-empty {
@@ -1840,6 +1845,19 @@ body {
        progressive-enhancement duplicate-property pattern). */
     height: var(--viewport-height, 100dvh);
     min-height: 0;
+    /* UX-3 UNDEC R3: `touch-action: none` is what actually blocks
+       iOS Safari's URL-bar reveal/hide gesture. `overscroll-behavior`
+       only contains scroll-chain when a child scroll container hits
+       its edge — but when the user drags from a non-scrollable area
+       (or a scroll container that has nothing to scroll), iOS
+       interprets the gesture as a chrome reveal. `touch-action: none`
+       on the shell tells the browser "this element consumes touch —
+       no pan, no zoom, no chrome gesture." Inner scroll containers
+       (.scrollback, .bottom-bar) re-enable pan on the axis they
+       actually scroll via their own `touch-action`. Tap / click /
+       focus are NOT blocked by `none` (those are pointer events,
+       not gesture events) so tab tap + input focus still work. */
+    touch-action: none;
     /* UX-3 BIS: safe-area insets at the SHELL container, not at the
        individual bars. Pushes the entire mobile shell below the
        Dynamic Island / status bar (top) and above the home indicator
@@ -1901,6 +1919,12 @@ body {
     right: 0;
     transform: translateX(100%);
     transition: transform 200ms ease-out;
+    /* UX-3 UNDEC R3: drawer is `position: fixed` so it sits OUTSIDE
+       the `.shell-mobile { touch-action: none }` blanket. Re-assert
+       `pan-y` here so members list scrolls inside the drawer but
+       horizontal drag (back-swipe gesture) doesn't reveal chrome. */
+    touch-action: pan-y;
+    overscroll-behavior: contain;
   }
 
   .shell-members.open {
@@ -1940,6 +1964,11 @@ body {
      document root and iOS rubber-bands the chrome. `contain` stops
      the chain at this element. */
   overscroll-behavior: contain;
+  /* UX-3 UNDEC R3: re-enable horizontal pan inside shell-mobile's
+     `touch-action: none` blanket — bottom bar scrolls horizontally
+     when tabs overflow. Vertical drag falls through to `none` (no
+     vertical content, and no chrome gesture). */
+  touch-action: pan-x;
   min-height: 3rem; /* thumb-tap friendly (~48dp Material / 44px Apple HIG) */
   border-top: 1px solid var(--border);
   background: var(--bg-alt);
