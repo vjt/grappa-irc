@@ -10,6 +10,11 @@ vi.mock("../lib/theme", () => ({
   setTheme: vi.fn(),
 }));
 
+vi.mock("../lib/fontSize", () => ({
+  getFontSize: vi.fn(() => "M"),
+  setFontSize: vi.fn(),
+}));
+
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
   token: () => "test-bearer",

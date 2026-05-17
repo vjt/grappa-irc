@@ -12,6 +12,7 @@ import { bootstrapAuth, isAuthenticated } from "./lib/auth";
 // app entry has to wire the side-effect module explicitly.
 import "./lib/subscribe";
 import "./lib/userTopic";
+import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
 import Shell from "./Shell";
@@ -22,6 +23,11 @@ import "./themes/default.css";
 // FOUC on cold load and no flash on toggle (both themes ship in one CSS
 // file via :root[data-theme="..."] blocks).
 applyTheme();
+
+// Same rationale for `--font-size`: write the CSS var on `<html>`
+// BEFORE render() so the first frame already has the user's preferred
+// size. iOS-4 default = "M" (14px = current behavior).
+applyFontSizeFromStorage();
 
 // Push notifications cluster B0 (2026-05-14) — capture
 // `beforeinstallprompt` early. Chrome fires this event ONCE, very

@@ -1,6 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import { logout, token } from "./lib/auth";
+import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { user } from "./lib/networks";
 import {
   disablePush,
@@ -50,6 +51,7 @@ function isAdmin(): boolean {
 const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();
   const [pref, setPref] = createSignal<ThemePref>(getTheme());
+  const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
 
   const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
@@ -67,6 +69,12 @@ const SettingsDrawer: Component<Props> = (props) => {
     const value = (e.currentTarget as HTMLInputElement).value as ThemePref;
     setPref(value);
     setTheme(value);
+  };
+
+  const onFontSizeChange = (e: Event) => {
+    const value = (e.currentTarget as HTMLInputElement).value as FontSizeKey;
+    setSize(value);
+    setFontSize(value);
   };
 
   const onLogout = async () => {
@@ -361,6 +369,65 @@ const SettingsDrawer: Component<Props> = (props) => {
               </For>
             </ul>
           </Show>
+        </fieldset>
+
+        <fieldset class="font-size-fieldset">
+          <legend>text size</legend>
+          <label>
+            <input
+              type="radio"
+              name="font-size"
+              value="S"
+              checked={size() === "S"}
+              onChange={onFontSizeChange}
+              data-testid="font-size-S"
+            />
+            S
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="font-size"
+              value="M"
+              checked={size() === "M"}
+              onChange={onFontSizeChange}
+              data-testid="font-size-M"
+            />
+            M
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="font-size"
+              value="L"
+              checked={size() === "L"}
+              onChange={onFontSizeChange}
+              data-testid="font-size-L"
+            />
+            L
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="font-size"
+              value="XL"
+              checked={size() === "XL"}
+              onChange={onFontSizeChange}
+              data-testid="font-size-XL"
+            />
+            XL
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="font-size"
+              value="XXL"
+              checked={size() === "XXL"}
+              onChange={onFontSizeChange}
+              data-testid="font-size-XXL"
+            />
+            XXL
+          </label>
         </fieldset>
 
         <Show when={isAdmin()}>
