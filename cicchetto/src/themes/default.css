@@ -76,6 +76,13 @@ body {
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
+  /* iOS-1: lock viewport. Pinch-zoom disabled via meta viewport;
+     overflow:hidden prevents page-level scroll (scrollback handles its
+     own); overscroll-behavior:none kills rubber-band bounce on iOS
+     Safari. Acts like a native app. */
+  overflow: hidden;
+  height: 100%;
+  overscroll-behavior: none;
 }
 
 #root {
