@@ -680,6 +680,17 @@ body {
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
+  /* UX-3 UNDEC R2: kill scroll-chain to the document root. When the
+     user drags past the top/bottom of the scrollback on iOS, the
+     gesture propagates to <html> and iOS rubber-bands the entire app
+     chrome (URL bar collapse/expand animation). `body { overscroll-
+     behavior: none }` (line 85) only blocks the BROWSER's own
+     overscroll (pull-to-refresh, nav gesture); the *scroll-chain*
+     from a child scroll container is its own mechanism and must be
+     contained AT the child. `contain` keeps the gesture inside this
+     element when there's no further scroll to be had — iOS gets no
+     overflow signal to bubble. */
+  overscroll-behavior: contain;
 }
 
 .scrollback-empty {
@@ -1924,6 +1935,11 @@ body {
   overflow-y: hidden;
   /* touch-momentum scrolling on iOS (non-standard but widely supported) */
   -webkit-overflow-scrolling: touch;
+  /* UX-3 UNDEC R2: same scroll-chain kill as `.scrollback`. Horizontal
+     drag past the left/right edge of the bottom bar propagates to the
+     document root and iOS rubber-bands the chrome. `contain` stops
+     the chain at this element. */
+  overscroll-behavior: contain;
   min-height: 3rem; /* thumb-tap friendly (~48dp Material / 44px Apple HIG) */
   border-top: 1px solid var(--border);
   background: var(--bg-alt);
