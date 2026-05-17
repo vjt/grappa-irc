@@ -1798,6 +1798,14 @@ body {
     display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
+    /* UX-3 TER: dvh (dynamic viewport height) shrinks with the
+       on-screen keyboard so the shell layout follows. With 100vh the
+       shell stayed full-screen height when the keyboard opened — iOS
+       scrolled the body up to keep the focused input visible, which
+       pushed the top bar OUT of the visible area. 100dvh tracks the
+       actual visible viewport (iOS 15.4+), so the shell shrinks
+       in-place + top bar stays pinned. 100vh fallback for older
+       browsers via @supports. */
     height: 100vh;
     min-height: 0;
     /* UX-3 BIS: safe-area insets at the SHELL container, not at the
@@ -1811,10 +1819,19 @@ body {
        background under it — and iOS captures touches in the
        status-bar reservation zone, so the bar appeared visually
        clear-ish but was non-interactive. box-sizing: border-box
-       (global, line 67) means the inset is consumed FROM the 100vh,
+       (global, line 67) means the inset is consumed FROM the height,
        not added to it. */
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* UX-3 TER: dvh override outside the rule to dodge biome's
+     duplicate-property check. @supports gates older browsers that
+     don't grok dvh; everything else gets dynamic viewport tracking. */
+  @supports (height: 100dvh) {
+    .shell-mobile {
+      height: 100dvh;
+    }
   }
 
   .shell-mobile .shell-main {
