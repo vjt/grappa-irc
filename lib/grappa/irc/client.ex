@@ -87,6 +87,18 @@ defmodule Grappa.IRC.Client do
   # `project_extract_irc_libs`).
   @type session_metadata :: [user: String.t(), network: String.t()]
 
+  # Return shape of every public `send_*` helper. `:invalid_line` is the
+  # high-level guard against CR/LF/NUL in user-supplied params; the
+  # transport-level errors (`:no_socket | :closed | :inet.posix()`) are
+  # honest tagged tuples from `transport_send/2` when the underlying
+  # TCP/SSL socket is gone (connect_failed pre-assignment, recv-loop
+  # nilled post-tcp_closed, peer-RST race mid-SEND). All `send_*`
+  # callers should `_ = `-discard or `case`-match — the helpers never
+  # raise. See `handle_call({:send, _}, _, _)` for the U-cluster
+  # fix history.
+  @type send_result ::
+          :ok | {:error, :invalid_line | :no_socket | :closed | :inet.posix()}
+
   @type opts :: %{
           required(:host) => String.t() | charlist(),
           required(:port) => :inet.port_number(),
@@ -171,8 +183,14 @@ defmodule Grappa.IRC.Client do
   `:ssl.send` whether invoked from `handle_cast` or `handle_call`,
   and the line-rate IRC traffic this Client carries is nowhere near
   GenServer-call overhead bounds.
+
+  Returns `:ok` on a successful write, or `{:error, :no_socket |
+  :closed | :inet.posix()}` when the underlying transport is gone
+  (connect_failed pre-assignment, peer RST in flight). Callers that
+  don't care about delivery may `_ = `-discard the result;
+  `Session.Server.terminate/2` does this for the best-effort QUIT.
   """
-  @spec send_line(pid(), iodata()) :: :ok
+  @spec send_line(pid(), iodata()) :: send_result()
   def send_line(client, line), do: GenServer.call(client, {:send, line})
 
   @doc """
@@ -184,7 +202,7 @@ defmodule Grappa.IRC.Client do
   which the server quietly drops, leaving the operator to debug a
   silent no-op (codebase review irc/S3, 2026-05-12).
   """
-  @spec send_privmsg(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_privmsg(pid(), String.t(), String.t()) :: send_result()
   def send_privmsg(client, target, body) do
     if target != "" and Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
       send_line(client, "PRIVMSG #{target} :#{body}\r\n")
@@ -202,7 +220,7 @@ defmodule Grappa.IRC.Client do
   and the pending-window state machine wedged a `:pending` entry that
   never resolved.
   """
-  @spec send_join(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_join(pid(), String.t()) :: send_result()
   def send_join(client, channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel),
       do: send_line(client, "JOIN #{channel}\r\n"),
@@ -215,7 +233,7 @@ defmodule Grappa.IRC.Client do
   /comma/BELL, or length > 50) with `{:error, :invalid_line}`. Same
   irc/S2 rationale as `send_join/2`.
   """
-  @spec send_part(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_part(pid(), String.t()) :: send_result()
   def send_part(client, channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel),
       do: send_line(client, "PART #{channel}\r\n"),
@@ -231,7 +249,7 @@ defmodule Grappa.IRC.Client do
   Used by `Grappa.Session.send_topic/4` (the `/topic` slash command in
   cicchetto's compose box).
   """
-  @spec send_topic(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_topic(pid(), String.t(), String.t()) :: send_result()
   def send_topic(client, channel, body) do
     if Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(body) and
          Identifier.valid_channel?(channel) do
@@ -248,7 +266,7 @@ defmodule Grappa.IRC.Client do
   `state.nick` and emits the per-channel `:nick_change` persist effects;
   no scrollback row is written by this helper.
   """
-  @spec send_nick(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_nick(pid(), String.t()) :: send_result()
   def send_nick(client, nick) do
     if Identifier.safe_line_token?(nick) and Identifier.valid_nick?(nick) do
       send_line(client, "NICK #{nick}\r\n")
@@ -258,7 +276,7 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc "Sends `QUIT :<reason>\\r\\n`. Rejects CR/LF/NUL with `{:error, :invalid_line}`."
-  @spec send_quit(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_quit(pid(), String.t()) :: send_result()
   def send_quit(client, reason) do
     if Identifier.safe_line_token?(reason),
       do: send_line(client, "QUIT :#{reason}\r\n"),
@@ -278,7 +296,7 @@ defmodule Grappa.IRC.Client do
   (RFC 2812 §4.6). A populated `AWAY :reason` sets it. The two-function
   shape makes the distinction explicit at the call site.
   """
-  @spec send_away(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_away(pid(), String.t()) :: send_result()
   def send_away(client, reason) when is_binary(reason) do
     if Identifier.safe_line_token?(reason),
       do: send_line(client, "AWAY :#{reason}\r\n"),
@@ -286,7 +304,7 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc "Sends bare `AWAY\\r\\n` to unset away status. No validation needed."
-  @spec send_away_unset(pid()) :: :ok
+  @spec send_away_unset(pid()) :: send_result()
   def send_away_unset(client), do: send_line(client, "AWAY\r\n")
 
   @doc """
@@ -307,7 +325,7 @@ defmodule Grappa.IRC.Client do
   `Parser.strip_crlf/1` covered only CR/LF while `safe_line_token?/1`
   also rejected NUL. S9 (cluster #10) closes the empty-token gap.
   """
-  @spec send_pong(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_pong(pid(), String.t()) :: send_result()
   def send_pong(client, token) do
     if token != "" and Identifier.safe_line_token?(token),
       do: send_line(client, "PONG :#{token}\r\n"),
@@ -322,8 +340,7 @@ defmodule Grappa.IRC.Client do
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_kick` handle_call (resp-A4 close).
   """
-  @spec send_kick(pid(), String.t(), String.t(), String.t()) ::
-          :ok | {:error, :invalid_line}
+  @spec send_kick(pid(), String.t(), String.t(), String.t()) :: send_result()
   def send_kick(client, channel, nick, reason) do
     if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) and
          Identifier.safe_line_token?(reason) do
@@ -341,8 +358,7 @@ defmodule Grappa.IRC.Client do
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_invite` handle_call (resp-A4 close).
   """
-  @spec send_invite(pid(), String.t(), String.t()) ::
-          :ok | {:error, :invalid_line}
+  @spec send_invite(pid(), String.t(), String.t()) :: send_result()
   def send_invite(client, channel, nick) do
     if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) do
       send_line(client, "INVITE #{nick} #{channel}\r\n")
@@ -360,7 +376,7 @@ defmodule Grappa.IRC.Client do
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_banlist` handle_call (resp-A4 close).
   """
-  @spec send_banlist(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_banlist(pid(), String.t()) :: send_result()
   def send_banlist(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "MODE #{channel} b\r\n"),
@@ -373,7 +389,7 @@ defmodule Grappa.IRC.Client do
   ergonomic call shape — multi-target WHOIS (RFC 2812 §3.6.2 allows a
   comma-separated list AND a server prefix arg) is out of MVP scope.
   """
-  @spec send_whois(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_whois(pid(), String.t()) :: send_result()
   def send_whois(client, nick) do
     if Identifier.valid_nick?(nick),
       do: send_line(client, "WHOIS #{nick}\r\n"),
@@ -393,7 +409,7 @@ defmodule Grappa.IRC.Client do
   into `state.whowas_pending` and emits `{:whowas_bundle, target, accum}`
   on 369 (or a `not_found: true` bundle on 406).
   """
-  @spec send_whowas(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_whowas(pid(), String.t()) :: send_result()
   def send_whowas(client, nick) do
     if Identifier.valid_nick?(nick),
       do: send_line(client, "WHOWAS #{nick}\r\n"),
@@ -410,7 +426,7 @@ defmodule Grappa.IRC.Client do
   (terminator) reply with the WHO list. EventRouter folds 352 into
   `state.who_pending` and emits `{:who_bundle, target, accum}` on 315.
   """
-  @spec send_who(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_who(pid(), String.t()) :: send_result()
   def send_who(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "WHO #{channel}\r\n"),
@@ -431,7 +447,7 @@ defmodule Grappa.IRC.Client do
   existing 366 → `members_seeded` flow refreshes the MembersPane and
   no scrollback rows are emitted.
   """
-  @spec send_names(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_names(pid(), String.t()) :: send_result()
   def send_names(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "NAMES #{channel}\r\n"),
@@ -449,8 +465,7 @@ defmodule Grappa.IRC.Client do
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_umode` handle_call (resp-A4 close).
   """
-  @spec send_umode(pid(), String.t(), String.t()) ::
-          :ok | {:error, :invalid_line}
+  @spec send_umode(pid(), String.t(), String.t()) :: send_result()
   def send_umode(client, nick, modes) do
     if Identifier.valid_nick?(nick) and Identifier.safe_line_token?(modes) do
       send_line(client, "MODE #{nick} #{modes}\r\n")
@@ -468,7 +483,7 @@ defmodule Grappa.IRC.Client do
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_topic_clear` handle_call (resp-A4 close).
   """
-  @spec send_topic_clear(pid(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_topic_clear(pid(), String.t()) :: send_result()
   def send_topic_clear(client, channel) do
     if Identifier.valid_channel?(channel),
       do: send_line(client, "TOPIC #{channel} :\r\n"),
@@ -483,7 +498,7 @@ defmodule Grappa.IRC.Client do
 
   No params, no validation: LUSERS is universally accepted.
   """
-  @spec send_lusers(pid()) :: :ok
+  @spec send_lusers(pid()) :: send_result()
   def send_lusers(client) do
     send_line(client, "LUSERS\r\n")
   end
@@ -578,7 +593,14 @@ defmodule Grappa.IRC.Client do
         # with different Retry-After hints at the HTTP edge.
         send(state.dispatch_to, :irc_connected)
         {fsm, sends} = AuthFSM.initial_handshake(state.fsm)
-        Enum.each(sends, &(:ok = transport_send(connected, &1)))
+        # `_ =`-discard: a peer RST between connect-success and the
+        # first handshake byte will surface as `{:error, :closed}` from
+        # transport_send. The recv-loop's `{:tcp_closed, _}` info
+        # message follows and stops the Client cleanly. Crashing here
+        # would cascade through Session.Server's narrow exit-catch
+        # list at session/server.ex:660-677 (U-cluster cleanup
+        # 2026-05-17 root cause).
+        Enum.each(sends, &(_ = transport_send(connected, &1)))
         {:noreply, %{connected | fsm: fsm}}
 
       {:error, reason} ->
@@ -606,8 +628,21 @@ defmodule Grappa.IRC.Client do
 
   @impl GenServer
   def handle_call({:send, line}, _, state) do
-    :ok = transport_send(state, ensure_crlf(line))
-    {:reply, :ok, state}
+    # transport_send returns {:error, :no_socket | :closed | _} when
+    # the socket is nil (connect_failed pre-assignment, or recv-loop
+    # nilled post-tcp_closed) or closed-but-not-nil (race between
+    # SEND and recv-loop dispatch of {:tcp_closed, _}). Pre-fix this
+    # was `:ok = transport_send(...)`, which raised MatchError on
+    # the closed-non-nil shape AND propagated the FunctionClauseError
+    # from :gen_tcp.send(nil, _) on the nil-socket shape. Either
+    # crash cascaded into Session.Server.terminate/2 whose narrow
+    # exit-catch list missed the wrapped MatchError shape — supervisor
+    # blocked 5s per dying child, CI's reset_session_supervisor 15s
+    # registry-clear budget exhausted on BootstrapTest + class
+    # siblings (run 25975442301, 2026-05-17). Returning the honest
+    # tuple lets the caller decide (Session.Server.terminate/2
+    # discards the result; an interactive caller can retry).
+    {:reply, transport_send(state, ensure_crlf(line)), state}
   end
 
   # IRC framing requires every line to end with CRLF. The high-level
@@ -680,12 +715,20 @@ defmodule Grappa.IRC.Client do
   defp run_fsm_step(%Message{} = msg, state) do
     case AuthFSM.step(state.fsm, msg) do
       {:cont, fsm, sends} ->
-        Enum.each(sends, &(:ok = transport_send(state, &1)))
+        # `_ =`-discard for same reason as handle_continue connect-
+        # success: peer RST mid-handshake reply is benign, recv-loop
+        # `:tcp_closed` follows. transport_setopts still asserts `:ok`
+        # because it's a local opt change (no I/O) — it cannot fail
+        # for a transport-level reason short of the socket already
+        # being gone, in which case the next info-message will stop us.
+        Enum.each(sends, &(_ = transport_send(state, &1)))
         :ok = transport_setopts(state, active: :once)
         {:noreply, %{state | fsm: fsm}}
 
       {:stop, reason, fsm, sends} ->
-        Enum.each(sends, &(:ok = transport_send(state, &1)))
+        # Same discard rationale; the FSM has already decided to stop
+        # so an outbound write failure changes nothing.
+        Enum.each(sends, &(_ = transport_send(state, &1)))
         log_stop_reason(reason, fsm)
         {:stop, reason, %{state | fsm: fsm}}
     end
@@ -706,6 +749,13 @@ defmodule Grappa.IRC.Client do
   defp log_stop_reason({:nick_rejected, code, nick}, _) do
     Logger.error("upstream rejected nick", numeric: code, nick: nick)
   end
+
+  # Nil-socket guard: connect_failed before socket assignment, or
+  # recv-loop nilled post-tcp_closed. Returns honest tagged tuple
+  # rather than letting :gen_tcp.send(nil, _) raise FunctionClauseError
+  # (which would crash the Client and cascade through Session.Server's
+  # terminate/2 — see handle_call({:send, _}, _, _) comment).
+  defp transport_send(%{socket: nil}, _), do: {:error, :no_socket}
 
   defp transport_send(%{transport: :tcp, socket: sock}, data),
     do: :gen_tcp.send(sock, data)

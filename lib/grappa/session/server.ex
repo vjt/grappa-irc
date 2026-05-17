@@ -638,11 +638,19 @@ defmodule Grappa.Session.Server do
   # exit reason (e.g. `:killed`, an `{:exception, _}` shape) is a real
   # bug and must surface — pre-fix the wide `catch :exit, _` swallowed
   # crashes that would otherwise have been visible in supervisor logs.
-  # Notably, `:gen_tcp.send` on a closed/nil socket inside the Client's
-  # handle_call raises (`MatchError`/`FunctionClauseError`); the wide
-  # catch hid this. Surfacing the wrapped `{:exit, {{:badmatch, _}, _}}`
-  # is the correct cue for a follow-up against `IRC.Client.transport_send`
-  # to handle the dead-socket SEND path explicitly.
+  #
+  # U-cluster cleanup (2026-05-17): the dead-socket SEND class
+  # (`:gen_tcp.send(nil, _)` raising FunctionClauseError; `:ok =
+  # transport_send` raising MatchError on `{:error, :closed}`) was
+  # fixed at the IRC.Client boundary — `transport_send/2` now has a
+  # nil-socket guard returning `{:error, :no_socket}`, and
+  # `handle_call({:send, _}, _, _)` returns the tagged tuple instead
+  # of `:ok =`-matching. `Client.send_quit/2` returns `{:error, _}`
+  # cleanly on a dead socket; the `_ =` discard here absorbs it. The
+  # pre-fix `:exit, {{%FunctionClauseError{}, _}, _}` catches were
+  # dead code post-boundary-fix and removed per
+  # `feedback_no_silent_drops_closed` (a safety net that catches an
+  # impossible exception silently absorbs the next class of bug).
   @impl GenServer
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
@@ -664,16 +672,6 @@ defmodule Grappa.Session.Server do
           :exit, {:shutdown, _} -> :ok
           :exit, {:noproc, _} -> :ok
           :exit, {:timeout, _} -> :ok
-          # IRC.Client.send/2 raises FunctionClauseError when its
-          # `:gen_tcp.send/2` call hits a `nil` socket — the connect
-          # path crashed (:econnrefused, :tcp_closed in transit, etc.)
-          # before `state.socket` was assigned. The exit reason wraps
-          # the raise plus `{GenServer, :call, [...]}` context.
-          # Without this clause, terminate/2 propagates the raise and
-          # the supervisor's terminate cascade blocks for 5s per dead
-          # session — test isolation falls over under load.
-          :exit, {{%FunctionClauseError{}, _}, _} -> :ok
-          :exit, {%FunctionClauseError{}, _} -> :ok
         end
     end
   end

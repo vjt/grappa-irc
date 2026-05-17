@@ -351,6 +351,78 @@ defmodule Grappa.IRC.ClientTest do
 
       assert {:error, :invalid_line} = Client.send_topic_clear(client, "no-prefix")
     end
+
+    # U cluster cleanup: dead-socket SEND must NOT raise. Pre-fix
+    # `handle_call({:send, _}, _, state)` did `:ok = transport_send(state, ...)`
+    # which raises `MatchError` on `{:error, :closed}` from a closed-non-nil
+    # socket, and `transport_send` itself raised `FunctionClauseError` from
+    # `:gen_tcp.send/2` on a nil socket. Either crash cascaded into the
+    # caller (`Session.Server.terminate/2`), whose narrow exit-catch list
+    # at lib/grappa/session/server.ex:660-677 missed the wrapped
+    # `MatchError` shape — so terminate/2 propagated, the supervisor
+    # blocked for 5s per dying child, and CI's
+    # `AdmissionStateHelpers.reset_session_supervisor` exhausted its 15s
+    # registry-clear budget. Origin: U-5 CI failure on commit 010054d,
+    # run 25975442301, BootstrapTest:506 + class siblings.
+    test "send_line/2 returns {:error, :closed} when socket is closed-but-not-nil (no raise)" do
+      {server, port} = start_server()
+      client = start_client(port)
+      :ok = await_handshake(server)
+
+      # Snapshot the live socket, close it underneath the Client, then
+      # send. handle_call({:send, _}, _, state) hands the closed-but-
+      # non-nil socket to `:gen_tcp.send/2`, which returns
+      # `{:error, :closed}`. Pre-fix the `:ok = transport_send(...)`
+      # pattern in handle_call raised MatchError on this; post-fix the
+      # honest error tuple comes back to the caller.
+      state = :sys.get_state(client)
+      :ok = :gen_tcp.close(state.socket)
+
+      result =
+        try do
+          Client.send_line(client, "PING :should-not-raise\r\n")
+        catch
+          kind, payload -> {:caught, kind, payload}
+        end
+
+      assert match?({:error, _}, result),
+             "expected {:error, _}, got #{inspect(result)}"
+
+      assert Process.alive?(client),
+             "IRC.Client crashed instead of returning {:error, _}"
+    end
+
+    test "send_quit/2 returns {:error, _} when socket is nil (no raise)" do
+      # Reproduces the BootstrapTest CI flake mechanism: a
+      # Session.Server's terminate/2 calls Client.send_quit on a
+      # Client whose `state.socket` was already nilled by a prior
+      # `:tcp_closed` info message (connect succeeded, then the
+      # upstream went away). The Client must return {:error, _}, NOT
+      # raise — otherwise Session.Server.terminate/2's caller exit
+      # blocks the supervisor for 5s per child under load.
+      #
+      # We inject `socket: nil` via `:sys.replace_state` rather than
+      # racing connect_failed (which would crash the linked Client
+      # before we could send anything).
+      {server, port} = start_server()
+      client = start_client(port)
+      :ok = await_handshake(server)
+
+      :sys.replace_state(client, fn state -> %{state | socket: nil} end)
+
+      result =
+        try do
+          Client.send_quit(client, "test shutting down")
+        catch
+          kind, payload -> {:caught, kind, payload}
+        end
+
+      assert match?({:error, _}, result),
+             "expected {:error, _}, got #{inspect(result)}"
+
+      assert Process.alive?(client),
+             "IRC.Client crashed instead of returning {:error, _}"
+    end
   end
 
   describe "inbound: server → client → dispatch_to" do
