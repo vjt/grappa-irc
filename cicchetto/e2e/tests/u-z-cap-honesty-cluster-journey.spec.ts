@@ -127,10 +127,14 @@ async function adminPatchCaps(
   }
 }
 
-// GET /admin/networks/:slug returning the row's current cap config +
-// state. Used by Step 3 to assert U-0's spawn-first/commit-second
-// invariant: a 503-rejected /connect MUST leave the credential row at
-// its pre-PATCH `connection_state` (no partial DB commit).
+// Fetch a single network's admin row by filtering the
+// `GET /admin/networks` index payload. The singular-GET endpoint is
+// intentionally absent (M-cluster shipped only index + PATCH); index
+// is O(networks) and the seed fixture stays at a handful, so the
+// scan is trivial. Used by Step 3 to assert U-0's spawn-first/
+// commit-second invariant: a 503-rejected /connect MUST leave the
+// credential row at its pre-PATCH `connection_state` (no partial
+// DB commit).
 async function adminGetNetwork(
   adminToken: string,
   slug: string,
@@ -139,17 +143,24 @@ async function adminGetNetwork(
   max_concurrent_user_sessions: number | null;
   max_concurrent_visitor_sessions: number | null;
 }> {
-  const res = await fetch(`${GRAPPA_BASE_URL}/admin/networks/${encodeURIComponent(slug)}`, {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/networks`, {
     headers: { authorization: `Bearer ${adminToken}` },
   });
   if (!res.ok) {
-    throw new Error(`adminGetNetwork: ${slug} → ${res.status} ${await res.text()}`);
+    throw new Error(`adminGetNetwork(index): ${slug} → ${res.status} ${await res.text()}`);
   }
-  return (await res.json()) as {
-    slug: string;
-    max_concurrent_user_sessions: number | null;
-    max_concurrent_visitor_sessions: number | null;
+  const body = (await res.json()) as {
+    networks: Array<{
+      slug: string;
+      max_concurrent_user_sessions: number | null;
+      max_concurrent_visitor_sessions: number | null;
+    }>;
   };
+  const row = body.networks.find((n) => n.slug === slug);
+  if (!row) {
+    throw new Error(`adminGetNetwork: ${slug} not in /admin/networks index`);
+  }
+  return row;
 }
 
 // PATCH /networks/:slug {connection_state: "connected"} returning raw
@@ -265,9 +276,10 @@ test("U-Z cap-honesty journey: park → user-cap-reject → row-unchanged → bu
   // STEP 3 — Row stays at the prior :parked state (U-0 invariant:
   // spawn-first/commit-second; no partial DB commit on spawn fail).
   // Verified via:
-  //   (a) GET /admin/networks/:slug — the cap we just PATCHed
-  //       persists (so we know the PATCH landed); other fields
-  //       (visitor cap) unchanged (no surprise side-effects).
+  //   (a) GET /admin/networks (index-filtered by slug) — the cap
+  //       we just PATCHed persists (so we know the PATCH landed);
+  //       other fields (visitor cap) unchanged (no surprise
+  //       side-effects).
   //   (b) GET /networks/:slug — the user-facing row is still
   //       `:parked` (the failed /connect did NOT commit
   //       connection_state := :connected).
