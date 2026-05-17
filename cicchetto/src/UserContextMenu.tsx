@@ -1,5 +1,5 @@
 import { type Component, createEffect, For, onCleanup } from "solid-js";
-import { openQueryWindowState } from "./lib/queryWindows";
+import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import {
   pushChannelBan,
@@ -89,12 +89,16 @@ const UserContextMenu: Component<Props> = (props) => {
     {
       label: "Query",
       // Always enabled — no perm required. Opens DM window + switches focus.
+      // canonicalQueryNick wraps to keep focus on an existing
+      // case-insensitive match (RFC 2812 §2.2 — IRC nicks are
+      // case-insensitive).
       enabled: true,
       action: () => {
-        openQueryWindowState(props.networkId, props.targetNick, new Date().toISOString());
+        const canonical = canonicalQueryNick(props.networkId, props.targetNick);
+        openQueryWindowState(props.networkId, canonical, new Date().toISOString());
         setSelectedChannel({
           networkSlug: props.networkSlug,
-          channelName: props.targetNick,
+          channelName: canonical,
           kind: "query",
         });
       },

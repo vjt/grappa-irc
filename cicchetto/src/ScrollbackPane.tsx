@@ -23,7 +23,7 @@ import { networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
-import { openQueryWindowState } from "./lib/queryWindows";
+import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
@@ -641,11 +641,17 @@ const ScrollbackPane: Component<Props> = (props) => {
   };
 
   // C7.6: left-click a nick → open query window + switch focus.
+  // canonicalQueryNick wraps to keep the focus on an existing
+  // case-insensitive match (RFC 2812 §2.2); members-list nick is
+  // usually canonical already but the NAMES casing can drift from
+  // the originally-opened query window's casing (NickServ
+  // GhostRECOVER, /nick foo → /nick FOO mid-conversation).
   const handleNickClick = (nick: string): void => {
     const nid = networkId();
     if (nid === undefined) return;
-    openQueryWindowState(nid, nick, new Date().toISOString());
-    setSelectedChannel({ networkSlug: props.networkSlug, channelName: nick, kind: "query" });
+    const canonical = canonicalQueryNick(nid, nick);
+    openQueryWindowState(nid, canonical, new Date().toISOString());
+    setSelectedChannel({ networkSlug: props.networkSlug, channelName: canonical, kind: "query" });
   };
 
   // C7.6: right-click a nick → show UserContextMenu at cursor.

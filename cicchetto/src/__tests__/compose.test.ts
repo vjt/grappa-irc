@@ -60,11 +60,15 @@ vi.mock("../lib/socket", () => ({
 }));
 
 // Mock queryWindows.ts — compose.ts calls openQueryWindowState for /msg /query /q.
+// canonicalQueryNick is identity by default (no existing window match);
+// per-test overrides via vi.mocked(...).mockImplementation cover the
+// case-insensitive-existing-window arm.
 vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: vi.fn(),
   closeQueryWindowState: vi.fn(),
   queryWindowsByNetwork: vi.fn(() => ({})),
   setQueryWindowsByNetwork: vi.fn(),
+  canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
 }));
 
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.

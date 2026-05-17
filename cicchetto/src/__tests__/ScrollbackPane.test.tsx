@@ -67,6 +67,7 @@ vi.mock("../lib/queryWindows", () => ({
   queryWindowsByNetwork: () => ({}),
   closeQueryWindowState: vi.fn(),
   setQueryWindowsByNetwork: vi.fn(),
+  canonicalQueryNick: (_networkId: number, nick: string) => nick,
 }));
 
 vi.mock("../lib/socket", () => ({

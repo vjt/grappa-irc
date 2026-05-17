@@ -54,6 +54,7 @@ vi.mock("../UserContextMenu", () => ({
 // without dragging the real stores into render tests.
 vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: vi.fn(),
+  canonicalQueryNick: (_networkId: number, nick: string) => nick,
 }));
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: vi.fn(),

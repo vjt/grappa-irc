@@ -125,4 +125,45 @@ describe("queryWindows state", () => {
     openQueryWindowState(1, "dave", "2026-05-04T13:00:00Z");
     expect(socket.pushOpenQueryWindow).toHaveBeenCalledWith(1, "dave");
   });
+
+  // Nick case-sensitivity fix (post-U): canonicalQueryNick resolves
+  // user-input casing to the existing window's stored casing so the
+  // sidebar/scrollback ChannelKey ("slug nick") stays stable across
+  // /q-with-different-casing. Pre-fix `/q GRAPPA` when `grappa`
+  // existed created a dead duplicate window (ChannelKey
+  // "slug GRAPPA" matched no row).
+  describe("canonicalQueryNick", () => {
+    it("returns the stored casing when an existing window matches case-insensitively", async () => {
+      const { setQueryWindowsByNetwork, canonicalQueryNick } = await import("../lib/queryWindows");
+      setQueryWindowsByNetwork({
+        1: [{ targetNick: "grappa", openedAt: "2026-05-04T10:00:00Z" }],
+      });
+      expect(canonicalQueryNick(1, "GRAPPA")).toBe("grappa");
+      expect(canonicalQueryNick(1, "Grappa")).toBe("grappa");
+      expect(canonicalQueryNick(1, "grappa")).toBe("grappa");
+    });
+
+    it("returns the input unchanged when no window matches", async () => {
+      const { setQueryWindowsByNetwork, canonicalQueryNick } = await import("../lib/queryWindows");
+      setQueryWindowsByNetwork({
+        1: [{ targetNick: "alice", openedAt: "2026-05-04T10:00:00Z" }],
+      });
+      // No prior window for "bob" — first-open casing wins, return as-is.
+      expect(canonicalQueryNick(1, "Bob")).toBe("Bob");
+    });
+
+    it("returns the input unchanged when the network has no windows yet", async () => {
+      const { canonicalQueryNick } = await import("../lib/queryWindows");
+      expect(canonicalQueryNick(42, "Carol")).toBe("Carol");
+    });
+
+    it("scopes the lookup per-network (a match on network 2 does not affect network 1)", async () => {
+      const { setQueryWindowsByNetwork, canonicalQueryNick } = await import("../lib/queryWindows");
+      setQueryWindowsByNetwork({
+        2: [{ targetNick: "grappa", openedAt: "2026-05-04T10:00:00Z" }],
+      });
+      expect(canonicalQueryNick(1, "GRAPPA")).toBe("GRAPPA");
+      expect(canonicalQueryNick(2, "GRAPPA")).toBe("grappa");
+    });
+  });
 });

@@ -83,11 +83,41 @@ const exports = createRoot(() => {
     pushOpenQueryWindow(networkId, targetNick);
   };
 
+  /**
+   * Returns the canonical casing for `nick` if a query window for it is
+   * already open on `networkId`, otherwise returns `nick` unchanged.
+   *
+   * IRC nicks are case-insensitive (RFC 2812 §2.2); the server-side
+   * `Grappa.QueryWindows` row is unique on `(subject, network_id,
+   * lower(target_nick))` and the stored `target_nick` preserves the
+   * first-opened casing. cic mirrors that: the row's `targetNick`
+   * value is the canonical casing for sidebar/scrollback ChannelKey
+   * derivation.
+   *
+   * Without this helper, typing `/q GRAPPA` when a `grappa` window
+   * already exists would `setSelectedChannel({channelName: "GRAPPA"})`,
+   * producing the ChannelKey `"slug GRAPPA"` that no sidebar row,
+   * scrollback store, or members map knows about — a fully dead
+   * duplicate window. Resolving to the canonical casing keeps the
+   * focus on the existing row.
+   *
+   * Lookup is `O(n)` over the network's open windows; the operator's
+   * open-window count is tiny (handful at most), so a linear scan
+   * costs nothing measurable.
+   */
+  const canonicalQueryNick = (networkId: number, nick: string): string => {
+    const lower = nick.toLowerCase();
+    const existing = untrack(queryWindowsByNetwork)[networkId] ?? [];
+    const match = existing.find((w) => w.targetNick.toLowerCase() === lower);
+    return match ? match.targetNick : nick;
+  };
+
   return {
     queryWindowsByNetwork,
     setQueryWindowsByNetwork,
     closeQueryWindowState,
     openQueryWindowState,
+    canonicalQueryNick,
   };
 });
 
@@ -95,3 +125,4 @@ export const queryWindowsByNetwork = exports.queryWindowsByNetwork;
 export const setQueryWindowsByNetwork = exports.setQueryWindowsByNetwork;
 export const closeQueryWindowState = exports.closeQueryWindowState;
 export const openQueryWindowState = exports.openQueryWindowState;
+export const canonicalQueryNick = exports.canonicalQueryNick;

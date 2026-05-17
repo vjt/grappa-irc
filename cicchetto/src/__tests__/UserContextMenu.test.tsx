@@ -39,6 +39,7 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: (...args: unknown[]) => mockOpenQueryWindowState(...args),
   queryWindowsByNetwork: vi.fn(() => ({})),
+  canonicalQueryNick: (_networkId: number, nick: string) => nick,
 }));
 
 vi.mock("../lib/selection", () => ({

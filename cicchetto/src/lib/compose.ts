@@ -6,7 +6,7 @@ import { friendlyApiError } from "./friendlyApiError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { networkIdBySlug, networks } from "./networks";
-import { openQueryWindowState } from "./queryWindows";
+import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { parseSlash } from "./slashCommands";
@@ -262,21 +262,32 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         case "msg": {
           // /msg <target> <text> — open query window, switch focus (user
           // action per spec #1), then send the PRIVMSG immediately.
+          //
+          // canonicalQueryNick: resolve user-input casing to the existing
+          // window's stored casing (RFC 2812 §2.2 — IRC nicks are case-
+          // insensitive). `/msg GRAPPA hi` when a `grappa` window already
+          // exists MUST focus the existing row and route the send through
+          // its ChannelKey — using cmd.target as-is would create a dead
+          // "slug GRAPPA" key that no sidebar / scrollback store knows.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/msg: network not found" };
-          openQueryWindowState(networkId, cmd.target, new Date().toISOString());
-          setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
-          await sendPrivmsg(networkSlug, cmd.target, cmd.body);
+          const canonical = canonicalQueryNick(networkId, cmd.target);
+          openQueryWindowState(networkId, canonical, new Date().toISOString());
+          setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
+          await sendPrivmsg(networkSlug, canonical, cmd.body);
           result = { ok: true };
           break;
         }
         case "query": {
           // /query <nick> / /q <nick> — open query window and switch focus.
           // No message sent (spec #1: /query opens window without sending).
+          //
+          // canonicalQueryNick: see /msg case above.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/query: network not found" };
-          openQueryWindowState(networkId, cmd.target, new Date().toISOString());
-          setSelectedChannel({ networkSlug, channelName: cmd.target, kind: "query" });
+          const canonical = canonicalQueryNick(networkId, cmd.target);
+          openQueryWindowState(networkId, canonical, new Date().toISOString());
+          setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
           result = { ok: true };
           break;
         }

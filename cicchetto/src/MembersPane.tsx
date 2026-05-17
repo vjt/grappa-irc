@@ -5,7 +5,7 @@ import { memberSigil } from "./lib/memberSigil";
 import { type MemberEntry, membersByChannel } from "./lib/members";
 import { networkBySlug, networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
-import { openQueryWindowState } from "./lib/queryWindows";
+import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
 import UserContextMenu from "./UserContextMenu";
@@ -105,10 +105,17 @@ const MembersPane: Component<Props> = (props) => {
   const onClick = (nick: string): void => {
     const nid = networkId();
     if (nid === undefined) return;
-    openQueryWindowState(nid, nick, new Date().toISOString());
+    // canonicalQueryNick wraps to keep focus on an existing
+    // case-insensitive match (RFC 2812 §2.2). NAMES casing can drift
+    // from the originally-opened query window's stored casing
+    // (NickServ ghost recover, mid-conversation /nick foo → /nick FOO);
+    // without this wrap a member-left-click would phantom-focus a
+    // ChannelKey no sidebar row knows about.
+    const canonical = canonicalQueryNick(nid, nick);
+    openQueryWindowState(nid, canonical, new Date().toISOString());
     setSelectedChannel({
       networkSlug: props.networkSlug,
-      channelName: nick,
+      channelName: canonical,
       kind: "query",
     });
   };
