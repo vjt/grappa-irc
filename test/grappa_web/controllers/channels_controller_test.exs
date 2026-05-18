@@ -18,6 +18,8 @@ defmodule GrappaWeb.ChannelsControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.IRCServer
+  alias Grappa.PubSub.Topic
+  alias Grappa.Session.WindowState
 
   setup %{conn: conn} do
     # Pre-bind "vjt" + "azzurra" credential so Session.Server.init can
@@ -378,6 +380,102 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       reloaded = Grappa.Networks.Credentials.get_credential!(vjt, network)
       assert reloaded.autojoin_channels == ["#other"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # UX-4 bucket H — PART-fail still closes window. The cast handler
+    # eagerly cleans up local state (members + topics + channel_modes +
+    # channels_created + userhost_cache + window_state) regardless of
+    # whether upstream eventually ACKs or rejects (442 ERR_NOTONCHANNEL /
+    # 403 ERR_NOSUCHCHANNEL). The `channels_changed` broadcast fires
+    # unconditionally so cic's channelsBySlug refetch triggers and the
+    # sidebar entry disappears.
+    test "eager PART of a never-joined channel drops window_state + emits channels_changed",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-h-eager-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: []})
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.user(vjt.name)
+        )
+
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # Seed window_state[#unjoined] = :failed (e.g. prior +i JOIN rejection)
+      # so the eager wipe has something to clear. Without this seed the
+      # idempotency arm fires and the test asserts a no-op.
+      :sys.replace_state(pid, fn s ->
+        %{
+          s
+          | window_state:
+              WindowState.set_failed(
+                s.window_state,
+                "#unjoined",
+                "+i (invite only)",
+                473
+              )
+        }
+      end)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23unjoined")
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      # Cast → eager cleanup runs → channels_changed broadcast fires.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "channels_changed"}
+                     },
+                     1_000
+
+      # Window_state entry cleared even though no upstream PART echo
+      # arrived (the PART line itself goes out per the wire assertion below,
+      # but our fake IRC server is a passthrough — no 442/403 / PART echo).
+      state = :sys.get_state(pid)
+      assert WindowState.state_of(state.window_state, "#unjoined") == nil
+
+      assert {:ok, "PART #unjoined\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #unjoined\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "eager PART of a joined channel drops members + window_state immediately (don't wait for echo)",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-h-joined-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: []})
+
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # Seed state.members[#chan] + window_state[#chan]=:joined to mirror a
+      # post-JOIN session. The eager-wipe path must clean both even though
+      # the upstream PART echo (handled by EventRouter's self-PART arm)
+      # would also drop them — bucket H closes the gap when upstream rejects.
+      :sys.replace_state(pid, fn s ->
+        %{
+          s
+          | members: Map.put(s.members, "#joined", %{"vjt" => [], "alice" => []}),
+            window_state: WindowState.set_joined(s.window_state, "#joined"),
+            topics: Map.put(s.topics, "#joined", %{topic: "ciao", by: "x", at: 1})
+        }
+      end)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23joined")
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "PART #joined\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PART #joined\r\n"), 1_000)
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.members, "#joined")
+      refute Map.has_key?(state.topics, "#joined")
+      assert WindowState.state_of(state.window_state, "#joined") == nil
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

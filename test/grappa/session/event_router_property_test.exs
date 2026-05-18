@@ -128,6 +128,61 @@ defmodule Grappa.Session.EventRouterPropertyTest do
           # clause flunked intermittently rather than every run.
           assert status in [:present, :away]
 
+        # UX-4 bucket H found the property-test exhaustiveness was
+        # narrower than EventRouter's `effect/0` type union — adding
+        # the missing arms here so future seed-dependent generations
+        # don't flunk on legitimate (typed) effects. The arms mirror
+        # the type contract at `lib/grappa/session/event_router.ex`
+        # `@type effect`.
+        {:members_seeded, channel, members} ->
+          assert is_binary(channel)
+          assert is_map(members)
+
+        {:channel_created, channel, ts} ->
+          assert is_binary(channel)
+          assert match?(%DateTime{}, ts)
+
+        {:joined, channel} ->
+          assert is_binary(channel)
+
+        {:join_failed, channel, reason, numeric} ->
+          assert is_binary(channel)
+          assert is_binary(reason)
+          assert is_integer(numeric) and numeric > 0
+
+        {:parted, channel} ->
+          assert is_binary(channel)
+
+        {:kicked, channel, by, reason} ->
+          assert is_binary(channel)
+          assert is_binary(by)
+          assert is_binary(reason) or is_nil(reason)
+
+        {:whois_bundle, target, accum} ->
+          assert is_binary(target)
+          assert is_map(accum)
+
+        {:peer_away, peer, away_message} ->
+          assert is_binary(peer)
+          assert is_binary(away_message)
+
+        {:invite_ack, channel, peer} ->
+          assert is_binary(channel)
+          assert is_binary(peer)
+
+        {:lusers_bundle, accum} ->
+          assert is_map(accum)
+
+        {:whowas_bundle, target, accum} ->
+          assert is_binary(target)
+          assert is_map(accum)
+
+        {:visitor_r_observed, nick} ->
+          assert is_binary(nick)
+
+        {:visitor_nick_changed, nick} ->
+          assert is_binary(nick)
+
         other ->
           flunk("malformed effect: #{inspect(other)}")
       end)

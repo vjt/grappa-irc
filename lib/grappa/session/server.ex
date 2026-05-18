@@ -94,6 +94,7 @@ defmodule Grappa.Session.Server do
     ModeChunker,
     NSInterceptor,
     NumericRouter,
+    PartCleanup,
     WindowState
   }
 
@@ -1240,6 +1241,38 @@ defmodule Grappa.Session.Server do
 
   @impl GenServer
   def handle_cast({:send_part, channel}, state) when is_binary(channel) do
+    # UX-4 bucket H — eager local-state cleanup regardless of upstream
+    # PART outcome. Pre-fix the operator's window stayed in the sidebar
+    # forever if upstream rejected PART (442 ERR_NOTONCHANNEL on PART
+    # against a chan we never joined; 403 ERR_NOSUCHCHANNEL on a
+    # never-existed chan). No PART echo → EventRouter never runs its
+    # cleanup → state.members keeps the (possibly absent) key → no
+    # channels_changed broadcast → cic's channelsBySlug refetch never
+    # fires → sidebar entry persists.
+    #
+    # Per the plan ("server best-effort sends PART but doesn't gate
+    # window close") we now drop the per-channel local state right at
+    # the cast handler. `PartCleanup.cleanup_local/2` is the single
+    # source — same helper EventRouter's PART-echo self-arm calls when
+    # upstream DOES echo PART successfully. Idempotent in both
+    # directions: eager wipe of an unknown channel is a no-op except
+    # for the channels_changed broadcast we always fire (it forces cic
+    # to refetch GET /channels, which already won't include the
+    # channel since the controller removed it from autojoin); upstream
+    # PART echo arriving after our eager wipe sees the channel already
+    # absent and runs the same cleanup harmlessly.
+    #
+    # Race trade: if upstream really keeps us in the channel (unusual —
+    # PART is best-effort wire-level, the RFC doesn't permit servers
+    # to refuse a member's PART), future PRIVMSGs on the channel would
+    # land at scrollback channel=#ch with no state.members entry. cic
+    # would render them on the (now-absent) window and the operator
+    # would see a "ghost" channel resurface. Plan accepts this trade —
+    # the race is theoretical (PART is wire-fast, ms-scale) and the
+    # alternative is the persistent-ghost bug this bucket closes.
+    state = PartCleanup.cleanup_local(state, channel)
+    broadcast_channels_changed(state)
+
     case Client.send_part(state.client, channel) do
       :ok ->
         {:noreply, state}
@@ -2034,11 +2067,7 @@ defmodule Grappa.Session.Server do
     next_keys = next.members |> Map.keys() |> Enum.sort()
 
     if prev_keys != next_keys do
-      :ok =
-        Grappa.PubSub.broadcast_event(
-          Topic.user(prev.subject_label),
-          SessionWire.channels_changed()
-        )
+      broadcast_channels_changed(next)
 
       # CP22 cluster B (channel-client-polish #14, B-restart) — persist
       # the snapshot so a graceful or crash restart can rehydrate. Same
@@ -2052,6 +2081,24 @@ defmodule Grappa.Session.Server do
     end
 
     :ok
+  end
+
+  # UX-4 bucket H — `handle_cast({:send_part, _})` calls this directly
+  # to force a `channels_changed` broadcast regardless of whether the
+  # state.members keyset changed. The eager-PART cleanup may be a no-op
+  # (operator PARTed a chan they never joined), but cic's channelsBySlug
+  # still needs to refetch — the controller-side autojoin removal already
+  # happened, and a stale autojoin entry would leave the row in the
+  # sidebar without a refetch trigger. Mirror of the broadcast inside
+  # `maybe_broadcast_channels_changed/2` so the wire shape stays single-
+  # sourced.
+  @spec broadcast_channels_changed(t()) :: :ok
+  defp broadcast_channels_changed(state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        SessionWire.channels_changed()
+      )
   end
 
   @spec persist_last_joined(Grappa.Session.subject(), pos_integer(), [String.t()], last_joined_persister() | nil) :: :ok
