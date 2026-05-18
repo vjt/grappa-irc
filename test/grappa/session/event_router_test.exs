@@ -453,6 +453,86 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert attrs.body == body
     end
+
+    # UX-4 bucket G — services-sender PRIVMSG arrivals persist on
+    # `$server` (not the own-nick / target channel) so they surface in
+    # the server-messages window and bypass cic's dm-listener auto-open
+    # path. The classifier is `Grappa.IRC.Identifier.services_sender?/1`
+    # — same closed allowlist as Session.Server's outbound rule, so
+    # arrival + send doors stay byte-aligned.
+    test "PRIVMSG from NickServ to own_nick routes to $server (no query auto-open)" do
+      state = base_state()
+
+      # state.nick defaults to "vjt" (base_state) — PRIVMSG addressed to
+      # us from NickServ. Pre-bucket-G this routed to channel="vjt"
+      # (own-nick topic) → cic dm-listener auto-opened a "NickServ" query.
+      m =
+        msg(
+          :privmsg,
+          ["vjt", "This nickname is registered. Please type ..."],
+          {:nick, "NickServ", "services", "azzurra.chat"}
+        )
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.sender == "NickServ"
+    end
+
+    test "PRIVMSG from ChanServ (case-insensitive) routes to $server" do
+      state = base_state()
+
+      m =
+        msg(
+          :privmsg,
+          ["vjt", "[#room] access granted"],
+          {:nick, "chanserv", "s", "h"}
+        )
+
+      assert {:cont, ^state, [{:persist, :privmsg, %{channel: "$server"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "PRIVMSG from regular user nick (Conserv — not in allowlist) routes to query window (regression guard)" do
+      state = base_state()
+
+      # Conserv ends in -serv but is NOT in the closed allowlist; it's a
+      # real ops nick on some networks. Bucket H/S4 covered this for
+      # outbound; bucket G mirrors for inbound.
+      m =
+        msg(:privmsg, ["vjt", "ops chat"], {:nick, "Conserv", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      # Target arm preserves the conversation's natural routing — peer
+      # PRIVMSGs to own_nick land at channel = own_nick (the DM topic).
+      assert attrs.channel == "vjt"
+      assert attrs.sender == "Conserv"
+    end
+
+    test "PRIVMSG from NickServ to a CHANNEL still routes to $server (services-PRIVMSG override is sender-keyed)" do
+      state = base_state()
+
+      # NickServ-PRIVMSG-to-channel is exotic — services almost always
+      # NOTICE the channel for advertisements, not PRIVMSG. The
+      # privmsg_default override is sender-keyed (services-sender →
+      # $server) regardless of wire target, so this edge case lands in
+      # the server window. Channel-NOTICE from services takes the
+      # complementary arm and stays in the channel — the standard
+      # services-advertisement path. Asymmetry intentional; see
+      # privmsg_default comment.
+      m =
+        msg(
+          :privmsg,
+          ["#italia", "global notice from services"],
+          {:nick, "NickServ", "s", "h"}
+        )
+
+      assert {:cont, ^state, [{:persist, :privmsg, %{channel: "$server"}}]} =
+               EventRouter.route(m, state)
+    end
   end
 
   describe "route/2 — :notice" do
@@ -584,7 +664,7 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
     end
 
-    test "NickServ sender routes to $server (services regex)" do
+    test "NickServ sender routes to $server (services allowlist)" do
       state = base_state()
 
       m =
@@ -610,6 +690,25 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, ^state, [{:persist, :notice, %{channel: "$server"}}]} =
                EventRouter.route(m, state)
+    end
+
+    # UX-4 bucket G — closed-allowlist regression guard: ops nicks that
+    # end in "serv" (Conserv, Dataserv, Reserv on real networks) used to
+    # match the `~r/Serv$/i` regex and route to $server, swallowing the
+    # operator's query-window content. The allowlist (now in Identifier)
+    # rejects them — they're regular user nicks and fall through to the
+    # peer-nick query window arm.
+    test "ops nick Conserv (ends in -serv but not in allowlist) routes to query window" do
+      state = base_state()
+
+      m =
+        msg(:notice, ["vjt", "you got opped"], {:nick, "Conserv", "u", "host.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "Conserv"
+      assert attrs.sender == "Conserv"
     end
 
     test "regular user nick → persist on channel = sender_nick (query window)" do

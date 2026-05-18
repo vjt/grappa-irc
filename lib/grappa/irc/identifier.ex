@@ -52,6 +52,17 @@ defmodule Grappa.IRC.Identifier do
   # `<system>`, etc.
   @meta_sender_regex ~r/^<[^>\s]+>$/
 
+  # UX-4 bucket G: closed allowlist of well-known IRC services nicks.
+  # Pre-bucket-G the source-of-truth was split — `Grappa.Session.Server`
+  # carried this list (for outbound PRIVMSG no-persist routing) and
+  # `Grappa.Session.EventRouter` carried a `~r/Serv$/i` regex (for
+  # inbound NOTICE $server routing). The regex was tighter than the
+  # allowlist for outbound (regression: bucket H/S4 lifecycle proved
+  # `Conserv` / `Dataserv` / `Reserv` are real ops nicks that MUST NOT
+  # be misclassified as services). Bucket G unifies on the allowlist so
+  # every door uses the same predicate.
+  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv)
+
   @doc "True iff the input is a syntactically valid IRC nickname."
   @spec valid_nick?(term()) :: boolean()
   def valid_nick?(s) when is_binary(s), do: Regex.match?(@nick_regex, s)
@@ -155,4 +166,34 @@ defmodule Grappa.IRC.Identifier do
     do: not String.contains?(s, ["\r", "\n", "\x00"])
 
   def safe_line_token?(_), do: false
+
+  @doc """
+  True iff `s` is the nick of a well-known IRC services entity (NickServ,
+  ChanServ, MemoServ, OperServ, BotServ, HostServ, HelpServ).
+  Case-insensitive. Channel-sigil targets (`#`, `&`, `+`, `!`) are by
+  definition NOT services (PRIVMSG to a channel goes to the room, not a
+  service bot) and return `false` without further inspection.
+
+  UX-4 bucket G: single source of truth shared by
+  `Grappa.Session.Server` (outbound PRIVMSG-to-*serv: wire-only, no
+  scrollback row so credential bodies don't leak — W12), `Grappa.Session.EventRouter`
+  (inbound PRIVMSG/NOTICE from *serv: persist on the synthetic
+  `"$server"` channel so the messages land in the server-messages
+  window instead of auto-opening a query window), and
+  `GrappaWeb.MessagesController` (REST POST classification, indirectly
+  via Session.send_privmsg). The closed allowlist intentionally rejects
+  candidates like `Conserv` / `Dataserv` / `Reserv` (real ops nicks on
+  some networks) — bucket H lifecycle/S4 burned us on a broader
+  `String.ends_with?("serv")` substring match that silently dropped
+  legitimate user traffic.
+  """
+  @spec services_sender?(term()) :: boolean()
+  def services_sender?("#" <> _), do: false
+  def services_sender?("&" <> _), do: false
+  def services_sender?("+" <> _), do: false
+  def services_sender?("!" <> _), do: false
+
+  def services_sender?(s) when is_binary(s), do: String.downcase(s) in @services
+
+  def services_sender?(_), do: false
 end

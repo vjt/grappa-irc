@@ -80,7 +80,7 @@ defmodule Grappa.Session.Server do
   """
   use GenServer, restart: :transient
 
-  alias Grappa.IRC.{AuthFSM, Client, Message}
+  alias Grappa.IRC.{AuthFSM, Client, Identifier, Message}
   alias Grappa.{Log, Mentions, Scrollback, Session, UserSettings}
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -1755,34 +1755,25 @@ defmodule Grappa.Session.Server do
       String.contains?(lower, "password incorrect")
   end
 
-  # IRC services suite — closed allowlist of well-known service nicks.
-  # PRIVMSG to one is a credential or control command (NickServ
-  # IDENTIFY, ChanServ REGISTER, OperServ ROOMS, etc.) — never persist
-  # body to scrollback (cleartext password leak, W12) and never
-  # broadcast over PubSub (other tabs of the same user shouldn't see
-  # the password). Generic rule, not NSInterceptor-specific:
+  # IRC services suite — delegates to `Grappa.IRC.Identifier.services_sender?/1`
+  # (UX-4 bucket G unified the closed allowlist there so EventRouter
+  # inbound NOTICE/PRIVMSG routing and this outbound path read from a
+  # single source). PRIVMSG to one is a credential or control command
+  # (NickServ IDENTIFY, ChanServ REGISTER, OperServ ROOMS, etc.) —
+  # never persist body to scrollback (cleartext password leak, W12) and
+  # never broadcast over PubSub (other tabs of the same user shouldn't
+  # see the password). Generic rule, not NSInterceptor-specific:
   # NSInterceptor's regex matches NickServ only; this scrollback skip
   # is broader.
   #
-  # Bucket H — lifecycle/S4: pre-fix this used
+  # Bucket H — lifecycle/S4 history: pre-fix this used
   # `String.ends_with?(target, "serv")` which silently misclassified
   # ANY target ending in those bytes — channels like `#dataserv` /
   # `#aiserv`, nicks like `Conserv` / `Dataserv` / `Reserv` (real ops
   # nicks on some networks) — and silently dropped them from
-  # scrollback. The closed allowlist is the privacy contract: ONLY
-  # the well-known service nicks get the skip. Channel-prefixed
-  # targets (`#`, `&`, `+`, `!`) are by definition NOT services
-  # (PRIVMSG to a channel goes to the room, not a service bot) and
-  # bypass the check entirely.
-  @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv)
-  defp service_target?("#" <> _), do: false
-  defp service_target?("&" <> _), do: false
-  defp service_target?("+" <> _), do: false
-  defp service_target?("!" <> _), do: false
-
-  defp service_target?(target) when is_binary(target) do
-    String.downcase(target) in @services
-  end
+  # scrollback. The closed allowlist (now in Identifier) is the
+  # privacy contract.
+  defp service_target?(target), do: Identifier.services_sender?(target)
 
   # Existing behavior — persist scrollback row, broadcast on per-channel
   # PubSub topic, send the wire line. Reply carries the persisted row.

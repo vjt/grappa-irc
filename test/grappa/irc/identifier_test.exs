@@ -227,4 +227,63 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_sender?("with space")
     end
   end
+
+  # UX-4 bucket G — IRC services-sender classifier. Closed allowlist
+  # shared by Session.Server's outbound `service_target?` (PRIVMSG to
+  # NickServ: wire-only, no scrollback) and EventRouter's inbound
+  # routing (PRIVMSG / NOTICE from NickServ → `$server` window). The
+  # allowlist intentionally rejects ops nicks like `Conserv` / `Reserv`
+  # — bucket H/S4 closed the same misclassification class for outbound.
+  describe "services_sender?/1" do
+    test "accepts the seven well-known services nicks (case-insensitive)" do
+      for nick <- ~w(NickServ ChanServ MemoServ OperServ BotServ HostServ HelpServ) do
+        assert Identifier.services_sender?(nick), "expected #{nick} to classify as services"
+        assert Identifier.services_sender?(String.downcase(nick))
+        assert Identifier.services_sender?(String.upcase(nick))
+      end
+    end
+
+    test "rejects channel-sigil targets without inspecting the allowlist" do
+      refute Identifier.services_sender?("#nickserv")
+      refute Identifier.services_sender?("&chanserv")
+      refute Identifier.services_sender?("+memoserv")
+      refute Identifier.services_sender?("!operserv")
+      # The classifier is sigil-aware even when the suffix matches —
+      # ops sometimes set up `#dataserv` channels and PRIVMSGs to them
+      # must NOT trigger the no-persist credential branch.
+      refute Identifier.services_sender?("#dataserv")
+    end
+
+    test "rejects ops nicks that happen to end in 'serv' (bucket H regression guard)" do
+      refute Identifier.services_sender?("Conserv")
+      refute Identifier.services_sender?("Dataserv")
+      refute Identifier.services_sender?("Reserv")
+      refute Identifier.services_sender?("bobserv")
+      refute Identifier.services_sender?("conserve")
+    end
+
+    test "rejects non-binary / empty input" do
+      refute Identifier.services_sender?(nil)
+      refute Identifier.services_sender?(:nickserv)
+      refute Identifier.services_sender?("")
+      refute Identifier.services_sender?(123)
+    end
+
+    property "any non-allowlist binary returns false" do
+      # Generate binaries that explicitly do NOT match the allowlist
+      # (case-insensitive). Property: services_sender?/1 is false for
+      # every such input.
+      allowlist =
+        MapSet.new(~w(nickserv chanserv memoserv operserv botserv hostserv helpserv))
+
+      check all(s <- StreamData.string(:ascii, min_length: 1, max_length: 20)) do
+        if String.downcase(s) in allowlist do
+          assert Identifier.services_sender?(s)
+        else
+          # Channel-sigil prefixes always false; non-allowlist always false.
+          refute Identifier.services_sender?(s)
+        end
+      end
+    end
+  end
 end

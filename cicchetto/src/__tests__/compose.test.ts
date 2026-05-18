@@ -274,6 +274,83 @@ describe("compose submit — slash command dispatch", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  // UX-4 bucket G — `/msg <Xserv> <text>` sends the wire frame but
+  // does NOT open a query window or shift focus. Services responses
+  // route to the `$server` window server-side (Identifier.services_sender?
+  // allowlist + EventRouter persist-to-$server); a services query
+  // window would just sit empty.
+  it("/msg nickserv body sends PRIVMSG but does NOT open query window or shift focus (bucket G)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/msg nickserv IDENTIFY s3cret");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "nickserv", "IDENTIFY s3cret");
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+    expect(sel.setSelectedChannel).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/msg ChanServ (mixed case) also bypasses query-window open (bucket G)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const qw = await import("../lib/queryWindows");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/msg ChanServ REGISTER #x pwd");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "ChanServ", "REGISTER #x pwd");
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  // UX-4 bucket G — regression guard: ops nicks ending in -serv
+  // (Conserv, Dataserv, Reserv) are NOT in the services allowlist;
+  // /msg <ops-nick> behaves like /msg <regular-user> and opens a
+  // query window.
+  it("/msg Conserv (ops nick, not in allowlist) opens query window + shifts focus (bucket G regression guard)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const qw = await import("../lib/queryWindows");
+    const sel = await import("../lib/selection");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/msg Conserv yo");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "Conserv", "yo");
+    expect(qw.openQueryWindowState).toHaveBeenCalled();
+    expect(sel.setSelectedChannel).toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("/query nickserv rejects with error explaining services route to $server (bucket G)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const qw = await import("../lib/queryWindows");
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/query nickserv");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(qw.openQueryWindowState).not.toHaveBeenCalled();
+    expect(result).toHaveProperty("error");
+    if ("error" in result) {
+      expect(result.error).toMatch(/services/i);
+    }
+  });
+
   it("/join channel posts to channels endpoint with null key", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");

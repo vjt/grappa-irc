@@ -1575,8 +1575,17 @@ defmodule Grappa.Session.EventRouter do
   # Pre-CP13 this single matcher greedy-routed everything to `$server` —
   # the new chain preserves NickServ/MOTD behavior while restoring
   # ChanServ inline + per-user notices.
+  #
+  # UX-4 bucket G: the services-sender discriminator now reads from
+  # `Grappa.IRC.Identifier.services_sender?/1` (closed allowlist) instead
+  # of a local `~r/Serv$/i` regex. Pre-bucket-G the regex matched ops
+  # nicks like `Conserv` / `Dataserv` / `Reserv` (bucket H/S4 already
+  # closed the same class of bug for outbound PRIVMSG via the allowlist
+  # in `Session.Server`) and silently routed their NOTICEs to `$server`
+  # instead of the operator's query window. Unifying on the Identifier
+  # predicate keeps the allowlist single-sourced (CLAUDE.md "implement
+  # once, reuse everywhere").
   @chanserv_bracket_regex ~r/^\[\s*(#\S+)\s*\]\s*:?\s*(.*)$/s
-  @services_sender_regex ~r/Serv$/i
 
   defp do_route(
          %Message{command: :notice, params: [target, body]} = msg,
@@ -1782,7 +1791,7 @@ defmodule Grappa.Session.EventRouter do
           {String.t(), String.t()}
   defp route_non_channel_notice_non_chanserv(sender, body) do
     cond do
-      Regex.match?(@services_sender_regex, sender) ->
+      Identifier.services_sender?(sender) ->
         {"$server", body}
 
       String.contains?(sender, ".") ->
@@ -1841,7 +1850,31 @@ defmodule Grappa.Session.EventRouter do
   @spec privmsg_default(Message.t(), state(), binary()) :: {:cont, state(), [effect()]}
   defp privmsg_default(%Message{params: [channel, _]} = msg, state, body) do
     kind = if ctcp_action?(body), do: :action, else: :privmsg
-    {state, eff} = build_persist(state, kind, channel, Message.sender_nick(msg), body, %{})
+    sender = Message.sender_nick(msg)
+    # UX-4 bucket G: PRIVMSG (or ACTION) from a well-known *serv sender
+    # persists on the synthetic `$server` channel so it lands in the
+    # server-messages window instead of opening / routing into a query
+    # window for the services nick. cic's dm-listener auto-opens a
+    # query window for any inbound PRIVMSG on the own-nick topic
+    # (see subscribe.ts dm-listener handler) — re-keying services
+    # traffic to `$server` both routes the scrollback row to the
+    # correct window AND bypasses the auto-open path without needing
+    # a cic-side carve-out ("no parallel client-side state machine"
+    # per CLAUDE.md). The classifier lives in
+    # `Grappa.IRC.Identifier.services_sender?/1` alongside
+    # `Session.Server`'s outbound `service_target?` so both arrival +
+    # send doors observe the same allowlist.
+    #
+    # Asymmetry with the channel-NOTICE arm above (line ~344) is
+    # INTENTIONAL: channel-PRIVMSG-from-services is exotic (services
+    # rarely send PRIVMSG to a room — they NOTICE), so the override
+    # has near-zero collateral. Channel-NOTICE-from-services IS the
+    # standard services-advertisement pattern (mass /memo broadcasts,
+    # network notices) and belongs in the channel where everyone is
+    # already watching — so the channel-NOTICE arm does NOT apply the
+    # `$server` override.
+    route_channel = if Identifier.services_sender?(sender), do: "$server", else: channel
+    {state, eff} = build_persist(state, kind, route_channel, sender, body, %{})
     {:cont, state, [eff]}
   end
 

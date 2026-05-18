@@ -10,6 +10,7 @@ import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { quitAll } from "./quit";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
+import { isServicesSender } from "./servicesSender";
 import { parseSlash } from "./slashCommands";
 import {
   pushAwaySet,
@@ -270,8 +271,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // exists MUST focus the existing row and route the send through
           // its ChannelKey — using cmd.target as-is would create a dead
           // "slug GRAPPA" key that no sidebar / scrollback store knows.
+          //
+          // UX-4 bucket G: *serv targets (NickServ IDENTIFY etc.) skip
+          // the open-query + focus-switch — services responses route to
+          // the `$server` window server-side (Identifier.services_sender?
+          // closed allowlist + EventRouter persist-to-$server), so a
+          // services query window would just sit empty. The wire frame
+          // still ships (operator's IDENTIFY reaches NickServ); only
+          // the optimistic UI-state mutations are skipped.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/msg: network not found" };
+          if (isServicesSender(cmd.target)) {
+            await sendPrivmsg(networkSlug, cmd.target, cmd.body);
+            result = { ok: true };
+            break;
+          }
           const canonical = canonicalQueryNick(networkId, cmd.target);
           openQueryWindowState(networkId, canonical, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
@@ -284,8 +298,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // No message sent (spec #1: /query opens window without sending).
           //
           // canonicalQueryNick: see /msg case above.
+          //
+          // UX-4 bucket G: *serv targets reject — opening a query window
+          // for NickServ would be a dead window (services route to $server
+          // server-side). Surface as a user-facing error so the operator
+          // can re-issue `/msg <Xserv> ...` if they wanted to send.
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/query: network not found" };
+          if (isServicesSender(cmd.target)) {
+            return {
+              error: `/query: ${cmd.target} is a services nick; responses land in the server window — use /msg ${cmd.target} <command>`,
+            };
+          }
           const canonical = canonicalQueryNick(networkId, cmd.target);
           openQueryWindowState(networkId, canonical, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });

@@ -148,18 +148,38 @@ defmodule GrappaWeb.MessagesController do
     # UX can branch.
     with :ok <- BodyLimit.check(body),
          :ok <- validate_post_target_name(channel),
-         {:ok, message} <- Session.send_privmsg(subject, network.id, channel, body) do
-      # `:network` is preloaded by `Scrollback.persist_event/1` —
-      # the Session contract returns a wire-shape-ready row. Don't
-      # re-preload here; reaching across to Repo from the controller
-      # would re-introduce the cross-boundary dep that A4 closed.
-      conn
-      |> put_status(:created)
-      |> render(:show, message: message)
+         {:ok, result} <- Session.send_privmsg(subject, network.id, channel, body) do
+      render_send_result(conn, result)
     end
   end
 
   def create(_, %{"channel_id" => _}), do: {:error, :bad_request}
+
+  # `Session.send_privmsg/4`'s contract returns either:
+  #   * `{:ok, %Scrollback.Message{}}` — channel- or user-targeted PRIVMSG
+  #     with a persisted scrollback row + per-channel PubSub broadcast.
+  #   * `{:ok, :no_persist}` — *serv-targeted PRIVMSG (NickServ IDENTIFY,
+  #     ChanServ REGISTER, etc.) — wire-only, no scrollback row, no
+  #     PubSub broadcast (W12 credential leak avoidance, codified in
+  #     `Grappa.IRC.Identifier.services_sender?/1`).
+  #
+  # UX-4 bucket G: pre-fix the controller's `with {:ok, message} <- ...`
+  # silently fell through on `{:ok, :no_persist}` — the `with` returned
+  # the no-persist tag verbatim, FallbackController has no `{:ok, _}`
+  # clause, and Phoenix raised on the unsent conn → 500. Split into
+  # two arms here so the type contract is honored without a discriminator
+  # leak into the `with` chain.
+  defp render_send_result(conn, %Scrollback.Message{} = message) do
+    conn
+    |> put_status(:created)
+    |> render(:show, message: message)
+  end
+
+  defp render_send_result(conn, :no_persist) do
+    conn
+    |> put_status(:accepted)
+    |> json(%{ok: true})
+  end
 
   # Cursor mutex: at most one of `before` / `after` / `around`. Two or
   # more present together silently picking one would mask client bugs;

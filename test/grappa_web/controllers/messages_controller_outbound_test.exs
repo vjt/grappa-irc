@@ -346,4 +346,72 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
+
+  # UX-4 bucket G — POST to a *serv target (NickServ IDENTIFY etc.):
+  # Session.send_privmsg returns `{:ok, :no_persist}` (wire-only path,
+  # W12 credential leak avoidance). Pre-bucket-G the controller's
+  # `with {:ok, message} <- ...` non-matched on the no-persist tag,
+  # FallbackController had no clause, and Phoenix raised 500 on the
+  # unsent conn. The controller now branches on the result kind and
+  # returns 202 + `%{ok: true}` for the no-persist path; the wire
+  # frame still ships upstream so NickServ receives the IDENTIFY.
+  describe "POST to *serv target (UX-4 bucket G)" do
+    test "POST to NickServ returns 202 ok=true, no scrollback row, line on wire",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(vjt.name, network.slug, "NickServ")
+        )
+
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/NickServ/messages", %{
+          "body" => "IDENTIFY s3cret"
+        })
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      # Wire frame still ships — operator's IDENTIFY reaches NickServ.
+      assert {:ok, "PRIVMSG NickServ :IDENTIFY s3cret\r\n"} =
+               IRCServer.wait_for_line(
+                 server,
+                 &String.starts_with?(&1, "PRIVMSG NickServ"),
+                 1_000
+               )
+
+      # No scrollback row persisted (credential never lands in DB).
+      assert [] = Scrollback.fetch({:user, vjt.id}, network.id, "NickServ", nil, 10)
+
+      # No PubSub broadcast on the NickServ topic (no row, no fanout).
+      refute_received %Phoenix.Socket.Broadcast{event: "event", payload: _}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "POST to chanserv (lowercase) returns 202", %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/chanserv/messages", %{
+          "body" => "REGISTER #x pwd"
+        })
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
 end
