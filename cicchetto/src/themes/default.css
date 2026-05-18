@@ -296,15 +296,6 @@ body {
   padding: 0.25rem 0;
 }
 
-.sidebar-network h3 {
-  font-size: 0.85rem;
-  font-weight: normal;
-  color: var(--accent);
-  margin: 0;
-  padding: 0.25rem 1rem;
-  text-transform: lowercase;
-}
-
 .sidebar-network ul {
   list-style: none;
   margin: 0;
@@ -339,6 +330,31 @@ body {
 .sidebar-network li.selected .sidebar-window-btn {
   background: var(--border);
   color: var(--accent);
+}
+
+/* UX-4 bucket C — collapsed network header row. The `<h3>` per-network
+   header is gone; the first `<li>` IS both the network grouping label
+   AND the server-window selector. Accent color + lowercase keeps the
+   network grouping visually distinct from indented channel rows; the
+   shallower left padding lets the emoji sit closer to the row edge
+   while the channels remain indented underneath.
+
+   Specificity note: this rule co-qualifies `.sidebar-network li` (matching
+   the base `.sidebar-network li .sidebar-window-btn` rule's 0,2,1
+   specificity) so the header-row overrides actually take effect. Without
+   the `li` qualifier the rule scores only (0,2,0) and silently loses to
+   the base rule — same trap as the `.sidebar-network-greyed` cascade
+   below documents. Placed AFTER the base rules per biome
+   `noDescendingSpecificity`. */
+.sidebar-network li.sidebar-network-header .sidebar-window-btn {
+  padding-left: 0.75rem;
+  color: var(--accent);
+  text-transform: lowercase;
+}
+
+.sidebar-network-emoji {
+  margin-right: 0.4rem;
+  flex: 0 0 auto;
 }
 
 .sidebar-close {
@@ -428,9 +444,13 @@ body {
   font-style: italic;
 }
 
-.sidebar-network-greyed > h3 {
+/* UX-4 bucket C — away badge styling. Lives inline in the collapsed
+   network-header row (was inside the dropped `<h3>` until C). Muted +
+   small so it reads as a passive indicator, not an unread badge. */
+.sidebar-away-badge {
+  margin-left: 0.4rem;
   color: var(--muted);
-  font-style: italic;
+  font-size: 0.75rem;
 }
 
 /* CP15 B5 — pending JOIN visual: distinct from greyed (italic + dim is

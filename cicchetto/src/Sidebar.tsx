@@ -229,24 +229,41 @@ const Sidebar: Component<Props> = (props) => {
             <section
               class={`sidebar-network${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
             >
-              <h3 title={isNetworkGreyed(network.slug) ? networkReason(network.slug) : undefined}>
-                {network.slug}
-                {/* C8.3 — away visual indicator. Shows [away] badge when the
-                  user is in away state on this network. Driven by the
-                  away_confirmed server event via awayStatus.ts. */}
-                <Show when={awayByNetwork()[network.slug]}>
-                  <span class="sidebar-away-badge">[away]</span>
-                </Show>
-              </h3>
               <ul>
-                {/* Server window — always present, not closeable */}
-                <li classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}>
+                {/* UX-4 bucket C — network header + server window collapsed
+                  into a single row. The old per-network `<h3>` is gone; this
+                  row IS both the network grouping label AND the server-window
+                  selector. Click sets `selectedChannel.kind = "server"` with
+                  channel = `$server`. The `.sidebar-network-header` class
+                  keeps the row visually distinct from the indented per-channel
+                  rows below via accent color + shallower left padding. */}
+                <li
+                  class="sidebar-network-header"
+                  classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
+                >
                   <button
                     type="button"
                     onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
                     class="sidebar-window-btn"
                   >
-                    <span class="sidebar-channel-name">Server</span>
+                    <span class="sidebar-network-emoji" aria-hidden="true">
+                      ⚙️
+                    </span>
+                    <span
+                      class="sidebar-channel-name"
+                      title={
+                        isNetworkGreyed(network.slug) ? networkReason(network.slug) : undefined
+                      }
+                    >
+                      {network.slug}
+                    </span>
+                    {/* C8.3 — away visual indicator. Surfaces on the
+                      collapsed network-header row when the user is in away
+                      state on this network. Driven by `away_confirmed`
+                      server event via awayStatus.ts. */}
+                    <Show when={awayByNetwork()[network.slug]}>
+                      <span class="sidebar-away-badge">[away]</span>
+                    </Show>
                     {/* CP13 — server-window receives :notice rows for server-routed
                       numerics + NickServ + MOTD + ChanServ-fallback. Same badge
                       treatment as channels so unread counts surface uniformly. */}

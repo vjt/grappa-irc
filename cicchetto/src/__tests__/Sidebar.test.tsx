@@ -111,6 +111,13 @@ vi.mock("../lib/auth", () => ({
   socketUserName: () => "alice",
 }));
 
+let mockAwayByNetwork: Record<string, boolean> = {};
+
+vi.mock("../lib/awayStatus", () => ({
+  awayByNetwork: () => mockAwayByNetwork,
+  setAwayState: vi.fn(),
+}));
+
 let mockWindowState: Record<string, string> = {};
 
 vi.mock("../lib/windowState", () => ({
@@ -129,6 +136,7 @@ beforeEach(() => {
   mockWindowState = {};
   mockNetworkConnectionState = {};
   mockNetworkConnectionReason = {};
+  mockAwayByNetwork = {};
 });
 
 describe("Sidebar", () => {
@@ -171,9 +179,13 @@ describe("Sidebar", () => {
   // CP13 — server window also surfaces the 3 badge classes (msg-unread,
   // events-unread, mention) so server-routed numerics + NickServ + MOTD
   // get the same unread treatment as channels.
+  //
+  // UX-4 bucket C — the server window is now the collapsed network-header
+  // row. "Server" is gone as a literal label; the row displays the network
+  // slug instead. Find via the header `<li class="sidebar-network-header">`.
   it("renders all 3 badge classes on the Server window when counts present", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
-    const serverLi = screen.getByText("Server").closest("li");
+    const serverLi = screen.getByText("freenode").closest("li.sidebar-network-header");
     expect(serverLi).not.toBeNull();
     const msg = serverLi?.querySelector(".sidebar-msg-unread");
     const events = serverLi?.querySelector(".sidebar-events-unread");
@@ -229,10 +241,12 @@ describe("Sidebar", () => {
   });
 
   // C1.2: Server window is present, not closeable (no X button)
+  //
+  // UX-4 bucket C — "Server" label gone; the collapsed network-header row
+  // IS the server-window selector. No close button on that row.
   it("server window has no close button", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
-    const serverEntry = screen.getByText("Server");
-    const li = serverEntry.closest("li");
+    const li = screen.getByText("freenode").closest("li.sidebar-network-header");
     expect(li?.querySelector(".sidebar-close")).toBeNull();
   });
 
@@ -560,4 +574,66 @@ describe("Sidebar", () => {
   // entries. UX-2 (2026-05-17) lifted the filter into
   // `lib/archive.ts` `visibleArchiveForNetwork/2` so BottomBar's chip +
   // ArchiveModal share it. Coverage moved to `archive.test.ts`.
+
+  // UX-4 bucket C — collapsed network+server window with `⚙️ <slug>`
+  // prefix. The per-network `<h3>` header is gone; the first `<li>` IS
+  // both the network grouping label AND the server-window selector.
+  describe("UX-4 bucket C — collapsed network header row", () => {
+    it("renders NO <h3> per network section (header collapsed into row)", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      expect(container.querySelector(".sidebar-network h3")).toBeNull();
+    });
+
+    it("renders the network header row with .sidebar-network-header class + slug", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const headers = container.querySelectorAll("li.sidebar-network-header");
+      expect(headers.length).toBe(1);
+      expect(headers[0]?.textContent).toContain("freenode");
+    });
+
+    it("network header row renders the ⚙️ emoji prefix", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const emoji = container.querySelector("li.sidebar-network-header .sidebar-network-emoji");
+      expect(emoji?.textContent).toBe("⚙️");
+    });
+
+    it("clicking the network header row selects the server window", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const headerBtn = container.querySelector(
+        "li.sidebar-network-header .sidebar-window-btn",
+      ) as HTMLElement | null;
+      expect(headerBtn).not.toBeNull();
+      fireEvent.click(headerBtn as HTMLElement);
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "$server",
+        kind: "server",
+      });
+    });
+
+    it("[away] badge surfaces on the collapsed network header row", () => {
+      mockAwayByNetwork = { freenode: true };
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = container.querySelector("li.sidebar-network-header");
+      const badge = header?.querySelector(".sidebar-away-badge");
+      expect(badge?.textContent).toBe("[away]");
+    });
+
+    it("[away] badge is absent when the network is not away", () => {
+      mockAwayByNetwork = {};
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = container.querySelector("li.sidebar-network-header");
+      expect(header?.querySelector(".sidebar-away-badge")).toBeNull();
+    });
+
+    it("channel rows still render as siblings inside the same <ul> as the header", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const ul = container.querySelector(".sidebar-network ul");
+      const headerLi = ul?.querySelector("li.sidebar-network-header");
+      const italiaLi = screen.getByText("#italia").closest("li");
+      expect(headerLi).not.toBeNull();
+      expect(italiaLi?.parentElement).toBe(ul);
+      expect(headerLi?.parentElement).toBe(ul);
+    });
+  });
 });
