@@ -1,12 +1,13 @@
 import { createSignal } from "solid-js";
 import { ApiError, patchNetwork, postJoin, postNick, postPart, postTopic } from "./api";
-import { logout, token } from "./auth";
+import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { friendlyApiError } from "./friendlyApiError";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
-import { networkIdBySlug, networks } from "./networks";
+import { networkIdBySlug } from "./networks";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
+import { quitAll } from "./quit";
 import { sendMessage as sendPrivmsg } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { parseSlash } from "./slashCommands";
@@ -292,41 +293,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         case "quit": {
-          // Nuclear: park ALL bound networks, then logout.
-          // `Promise.allSettled` — partial PATCH failures do NOT block the
-          // logout. The user wants OUT regardless of individual network
-          // PATCH success. One failed PATCH means that network may auto-
-          // respawn on next boot (Bootstrap skips :parked only), but the
-          // session is still terminated from cicchetto's perspective.
-          //
-          // Codebase audit cic M5 — surface partial failures via
-          // console.warn (one entry per rejected PATCH). Pre-fix the
-          // rejected results vanished — the user logged out cleanly
-          // but a network ghost-state hid in the silence. The warning
-          // is best-effort observability: still proceed to logout, but
-          // the diagnostic trail no longer evaporates. Toast/UI
-          // surfacing isn't useful here — the browser is navigating
-          // away within milliseconds.
-          const allNets = networks() ?? [];
-          const parkBody: { connection_state: "parked"; reason?: string } = {
-            connection_state: "parked",
-          };
-          if (cmd.reason !== null) parkBody.reason = cmd.reason;
-          const results = await Promise.allSettled(
-            allNets.map((n) => patchNetwork(t, n.slug, parkBody)),
-          );
-          for (let i = 0; i < results.length; i++) {
-            const r = results[i];
-            const net = allNets[i];
-            if (r === undefined || net === undefined) continue;
-            if (r.status === "rejected") {
-              console.warn(`[/quit] PATCH park failed for network ${net.slug}:`, r.reason);
-            }
-          }
-          // logout() clears auth (setToken(null)), which triggers:
-          //   1. socket.ts createEffect → WS disconnect
-          //   2. RequireAuth → redirect to /login
-          await logout();
+          // Nuclear: park ALL bound networks, then logout. The
+          // implementation lives in `lib/quit.ts` so the sidebar
+          // server-window × (UX-4 bucket D) can call the same path for
+          // visitors without re-parsing through here.
+          await quitAll(cmd.reason);
           // After logout the component tree will unmount — no further
           // result processing needed. Return early to skip history push.
           return { ok: true };

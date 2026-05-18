@@ -86,6 +86,11 @@ vi.mock("../lib/queryWindows", () => ({
 vi.mock("../lib/api", () => ({
   postPart: vi.fn().mockResolvedValue(undefined),
   listArchive: vi.fn(),
+  // UX-4 bucket D — disconnectNetwork in lib/windowClose hits patchNetwork
+  // (registered branch) or quitAll → patchNetwork (visitor branch). Real
+  // windowClose is intentionally NOT mocked so the close-button wiring is
+  // tested end-to-end; mock patchNetwork to silence the network call.
+  patchNetwork: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("../lib/archive", () => ({
@@ -106,9 +111,19 @@ vi.mock("../lib/archive", () => ({
       : [],
 }));
 
+let mockSubject: { kind: "user" | "visitor"; [k: string]: unknown } | null = {
+  kind: "user",
+  id: "u-1",
+  name: "alice",
+};
+
 vi.mock("../lib/auth", () => ({
   token: () => "tok",
   socketUserName: () => "alice",
+  // UX-4 bucket D — windowClose.disconnectNetwork reads getSubject()
+  // to branch visitor → quitAll vs user → patchNetwork(parked).
+  getSubject: () => mockSubject,
+  logout: vi.fn().mockResolvedValue(undefined),
 }));
 
 let mockAwayByNetwork: Record<string, boolean> = {};
@@ -240,14 +255,14 @@ describe("Sidebar", () => {
     expect(screen.getByText("bob")).toBeInTheDocument();
   });
 
-  // C1.2: Server window is present, not closeable (no X button)
-  //
-  // UX-4 bucket C — "Server" label gone; the collapsed network-header row
-  // IS the server-window selector. No close button on that row.
-  it("server window has no close button", () => {
+  // UX-4 bucket D — the network-header row (formerly the standalone
+  // server-row) IS closeable. Click dispatches `disconnectNetwork`
+  // which routes to /quit for visitors and PATCH :parked for users.
+  // Selection auto-redirects to home via selection.ts effect.
+  it("server window has a close button (UX-4 bucket D)", () => {
     render(() => <Sidebar onSelect={vi.fn()} />);
     const li = screen.getByText("freenode").closest("li.sidebar-network-header");
-    expect(li?.querySelector(".sidebar-close")).toBeNull();
+    expect(li?.querySelector(".sidebar-close")).not.toBeNull();
   });
 
   // C1.2: Channel windows have a close button
@@ -634,6 +649,33 @@ describe("Sidebar", () => {
       expect(headerLi).not.toBeNull();
       expect(italiaLi?.parentElement).toBe(ul);
       expect(headerLi?.parentElement).toBe(ul);
+    });
+  });
+
+  // UX-4 bucket D — server-window × button on the collapsed header row.
+  // Click routes to lib/windowClose.disconnectNetwork which branches on
+  // subject kind (visitor → quitAll, registered → patchNetwork(parked)).
+  describe("UX-4 bucket D — server-window × button", () => {
+    it("renders a close × button on the network-header row", () => {
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = container.querySelector("li.sidebar-network-header");
+      const closeBtn = header?.querySelector(".sidebar-close");
+      expect(closeBtn).not.toBeNull();
+      expect(closeBtn?.textContent).toBe("×");
+      expect(closeBtn?.getAttribute("aria-label")).toBe("Disconnect freenode");
+    });
+
+    it("clicking × on the header row triggers patchNetwork(:parked) for registered users", async () => {
+      mockSubject = { kind: "user", id: "u-1", name: "alice" };
+      const apiMod2 = await import("../lib/api");
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const header = container.querySelector("li.sidebar-network-header");
+      const closeBtn = header?.querySelector(".sidebar-close") as HTMLElement;
+      fireEvent.click(closeBtn);
+      await Promise.resolve();
+      expect(apiMod2.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
+        connection_state: "parked",
+      });
     });
   });
 });

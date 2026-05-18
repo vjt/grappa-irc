@@ -13,12 +13,31 @@ import { channelKey } from "../lib/channelKey";
 // on token rotation/logout, all three maps are emptied so a new
 // bearer doesn't see the prior tenant's window states.
 
-vi.mock("../lib/api", () => ({
-  setOn401Handler: vi.fn(),
-  // Pulled in transitively by selection.ts → scrollback.ts.
-  listMessages: vi.fn().mockResolvedValue([]),
-  displayNick: (u: { nick: string }) => u.nick,
-}));
+vi.mock(import("../lib/api"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    setOn401Handler: vi.fn(),
+    // Pulled in transitively by selection.ts → scrollback.ts.
+    listMessages: vi.fn().mockResolvedValue([]),
+    // UX-4 bucket D — selection.ts also imports `networks` from
+    // `lib/networks` to drive the parked-network → home redirect.
+    // networks.ts's createResource chain fires `me()` + `listNetworks()`
+    // when the token changes (this suite sets tokA/tokB). Mock the
+    // minimum-but-valid envelope so the resource resolves silently;
+    // pass-through `tagNetwork` and other helpers via `actual`.
+    me: vi.fn().mockResolvedValue({
+      kind: "user",
+      id: "u-test",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "2026-01-01T00:00:00Z",
+      read_cursors: {},
+    }),
+    listNetworks: vi.fn().mockResolvedValue([]),
+    listChannels: vi.fn().mockResolvedValue([]),
+  };
+});
 
 beforeEach(() => {
   vi.resetModules();

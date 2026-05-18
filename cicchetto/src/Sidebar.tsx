@@ -9,7 +9,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
+import { closeChannelWindow, closeQueryWindow, disconnectNetwork } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
@@ -176,6 +176,16 @@ const Sidebar: Component<Props> = (props) => {
     closeQueryWindow(networkId, targetNick);
   };
 
+  // UX-4 bucket D — close the server window for a network. Routes
+  // through windowClose.ts → visitor branches to quitAll (nuclear: park
+  // every network + logout); registered PATCHes the one network to
+  // `:parked`. Selection auto-redirects to home via the
+  // `connection_state_changed` arm in selection.ts (one effect, all
+  // park triggers).
+  const handleCloseNetwork = (slug: string) => {
+    disconnectNetwork(slug);
+  };
+
   // UX-1 (2026-05-17) — confirmed delete of an archive entry. Both
   // channel-shaped + query-shaped targets get the delete affordance
   // per vjt scope decision. Server dispatches by sigil on its end;
@@ -283,6 +293,21 @@ const Sidebar: Component<Props> = (props) => {
                         </>
                       );
                     })()}
+                  </button>
+                  {/* UX-4 bucket D — × button on the network-header row
+                    closes the server window which == /disconnect for
+                    registered users (one network parked → selection
+                    redirects to home) and == /quit for visitors (all
+                    networks parked + logout). Routing in
+                    windowClose.disconnectNetwork; selection redirect
+                    in selection.ts. */}
+                  <button
+                    type="button"
+                    class="sidebar-close"
+                    aria-label={`Disconnect ${network.slug}`}
+                    onClick={() => handleCloseNetwork(network.slug)}
+                  >
+                    ×
                   </button>
                 </li>
 

@@ -3,9 +3,10 @@ import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
+import { networks } from "./networks";
 import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
-import type { WindowKind } from "./windowKinds";
+import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, type WindowKind } from "./windowKinds";
 
 // Per-channel selection store: which channel is currently focused +
 // per-channel unread counters. Module-singleton signal store mirroring
@@ -201,6 +202,60 @@ const exports = identityScopedStore((onIdentityChange) => {
       }
     }),
   );
+
+  // UX-4 bucket D — redirect selection to home when a network the
+  // user is currently looking at transitions INTO `:parked` or
+  // `:failed`. Subscribing here (one place, on `networks()`) means
+  // the redirect fires uniformly across:
+  //   * Server-window × button (`disconnectNetwork` in windowClose.ts)
+  //   * /disconnect typed in the compose box
+  //   * Server-side circuit-breaker park (admission control trips)
+  //   * Operator `bin/grappa disconnect` admin verb
+  // Per CLAUDE.md "Don't duplicate state — derive it": one effect,
+  // one transition observer, all triggers route through it.
+  //
+  // Transition-only: `lastConnectionState` tracks the previous value
+  // per network slug so the operator can still navigate BACK to a
+  // parked window (to view history) without bouncing back to home.
+  // Identity rotation clears the map so a re-login doesn't carry
+  // stale state from the previous identity's networks.
+  //
+  // Home and visitor windows have no network credential so
+  // `networkBySlug` returns undefined → no entry in the map → no
+  // redirect (correct: home is the redirect TARGET, never the source).
+  const lastConnectionState = new Map<string, string>();
+  onIdentityChange(() => lastConnectionState.clear());
+
+  createEffect(() => {
+    const nets = networks();
+    if (!nets) return;
+    // Prune entries for slugs no longer in the live list (a DELETE
+    // /networks unbinds a slug — without this the Map would carry
+    // dead keys for the lifetime of the identity).
+    const live = new Set(nets.map((n) => n.slug));
+    for (const slug of lastConnectionState.keys()) {
+      if (!live.has(slug)) lastConnectionState.delete(slug);
+    }
+    for (const net of nets) {
+      if (net.kind !== "user") continue;
+      const prev = lastConnectionState.get(net.slug);
+      const curr = net.connection_state;
+      lastConnectionState.set(net.slug, curr);
+      if (prev === undefined) continue;
+      if (curr === prev) continue;
+      if (curr !== "parked" && curr !== "failed") continue;
+      untrack(() => {
+        const sel = selectedChannel();
+        if (!sel) return;
+        if (sel.networkSlug !== net.slug) return;
+        setSelectedChannel({
+          networkSlug: HOME_WINDOW_SLUG,
+          channelName: HOME_WINDOW_NAME,
+          kind: "home",
+        });
+      });
+    }
+  });
 
   return {
     unreadCounts,

@@ -6,16 +6,35 @@ import { channelKey } from "../lib/channelKey";
 // history), so listMessages is mocked too. Identity-transition
 // cleanup is asserted directly via `auth.setToken(...)`.
 
-vi.mock("../lib/api", () => ({
-  listNetworks: vi.fn(),
-  listChannels: vi.fn(),
-  listMessages: vi.fn(),
-  sendMessage: vi.fn(),
-  me: vi.fn(),
-  login: vi.fn(),
-  logout: vi.fn(),
-  setOn401Handler: vi.fn(),
-}));
+vi.mock(import("../lib/api"), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    listNetworks: vi.fn().mockResolvedValue([]),
+    listChannels: vi.fn().mockResolvedValue({}),
+    listMessages: vi.fn(),
+    sendMessage: vi.fn(),
+    // UX-4 bucket D — selection.ts now imports `networks` from
+    // `lib/networks` to drive the parked-network → home redirect.
+    // networks.ts's `createResource` chain fires `me()` on every token
+    // change; without a resolved value the resource handler crashes
+    // when reaching `m.read_cursors`. Return a minimal-but-valid
+    // MeResponse so the resource resolves silently. Pass-through the
+    // real `tagNetwork` so the boundary tagger keeps its contract
+    // checks (visitor-vs-user discrimination, nick guard).
+    me: vi.fn().mockResolvedValue({
+      kind: "user",
+      id: "u-test",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "2026-01-01T00:00:00Z",
+      read_cursors: {},
+    }),
+    login: vi.fn(),
+    logout: vi.fn(),
+    setOn401Handler: vi.fn(),
+  };
+});
 
 // CP29 R-4: selection.ts now POSTs to the server via
 // `setReadCursor` on focus-leave / browser-blur. Stub the verb so
@@ -603,6 +622,174 @@ describe("selection store", () => {
       await Promise.resolve();
 
       expect(selection.messagesUnread()[key]).toBe(1);
+    });
+  });
+
+  // UX-4 bucket D — when the user-network the operator is currently
+  // looking at transitions INTO :parked (or :failed), selection auto-
+  // redirects to home. Subscription is in selection.ts and fires
+  // uniformly for /disconnect typed, sidebar × button, circuit-breaker
+  // park, and admin verb. Test by simulating userTopic.ts's
+  // `connection_state_changed` → refetchNetworks() arm with mocked
+  // GET /networks responses that flip the row's connection_state.
+  describe("parked-network → home redirect (UX-4 bucket D)", () => {
+    type Conn = "connected" | "parked" | "failed";
+    const userNet = (overrides: { connection_state: Conn }) => ({
+      kind: "user" as const,
+      id: 1,
+      slug: "freenode",
+      nick: "alice",
+      connection_state: overrides.connection_state,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    it("redirects selection to home when current network flips connected → parked", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks)
+        .mockResolvedValueOnce([userNet({ connection_state: "connected" })])
+        .mockResolvedValueOnce([userNet({ connection_state: "parked" })])
+        .mockResolvedValue([userNet({ connection_state: "parked" })]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokRedir");
+      await vi.waitFor(() => {
+        const nets = networks.networks();
+        expect(nets?.length).toBe(1);
+        const n = nets?.[0];
+        expect(n?.kind).toBe("user");
+        if (n?.kind === "user") expect(n.connection_state).toBe("connected");
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      networks.refetchNetworks();
+      await vi.waitFor(() => {
+        const after = sel.selectedChannel();
+        expect(after?.networkSlug).toBe("$home");
+      });
+    });
+
+    it("does NOT redirect when a different network parks", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const otherNet = (state: Conn) => ({
+        kind: "user" as const,
+        id: 2,
+        slug: "azzurra",
+        nick: "alice",
+        connection_state: state,
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "",
+        updated_at: "",
+      });
+      vi.mocked(api.listNetworks)
+        .mockResolvedValueOnce([userNet({ connection_state: "connected" }), otherNet("connected")])
+        .mockResolvedValueOnce([userNet({ connection_state: "connected" }), otherNet("parked")])
+        .mockResolvedValue([userNet({ connection_state: "connected" }), otherNet("parked")]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokRedir2");
+      await vi.waitFor(() => {
+        const nets = networks.networks();
+        expect(nets?.length).toBe(2);
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      networks.refetchNetworks();
+      await vi.waitFor(() => {
+        const nets = networks.networks();
+        const azz = nets?.find((n) => n.slug === "azzurra");
+        expect(azz?.kind).toBe("user");
+        if (azz?.kind === "user") expect(azz.connection_state).toBe("parked");
+      });
+      // Selection stays put — other network parked, not the selected one.
+      const after = sel.selectedChannel();
+      expect(after?.networkSlug).toBe("freenode");
+      expect(after?.channelName).toBe("#italia");
+    });
+
+    it("does NOT redirect on the initial load even if the network starts parked", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet({ connection_state: "parked" })]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokRedir3");
+      await vi.waitFor(() => {
+        expect(networks.networks()?.length).toBe(1);
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      // Initial load means no `prev` state — the redirect only triggers
+      // on a transition. Operator may have legitimately navigated to a
+      // parked-network window to view history.
+      await new Promise((r) => setTimeout(r, 20));
+      const after = sel.selectedChannel();
+      expect(after?.networkSlug).toBe("freenode");
+    });
+
+    it("does NOT redirect when operator navigates BACK to an already-parked window", async () => {
+      // Post-park, the operator may click a row under a parked network
+      // to view scrollback history. The redirect must NOT bounce them
+      // back to home — that would lock the operator out of historical
+      // context. lastConnectionState already reflects parked → no
+      // transition → no redirect.
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks)
+        .mockResolvedValueOnce([userNet({ connection_state: "connected" })])
+        .mockResolvedValueOnce([userNet({ connection_state: "parked" })])
+        .mockResolvedValue([userNet({ connection_state: "parked" })]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokRedir4");
+      await vi.waitFor(() => {
+        const n = networks.networks()?.[0];
+        expect(n?.kind).toBe("user");
+        if (n?.kind === "user") expect(n.connection_state).toBe("connected");
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      // Trigger the parked transition — selection bounces to home.
+      networks.refetchNetworks();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.networkSlug).toBe("$home");
+      });
+      // Operator re-navigates to the parked-network window — must stay
+      // put (no infinite bounce).
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      const after = sel.selectedChannel();
+      expect(after?.networkSlug).toBe("freenode");
+      expect(after?.channelName).toBe("#italia");
     });
   });
 });

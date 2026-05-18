@@ -103,8 +103,8 @@ vi.mock("../lib/auth", () => ({
 // "network not found" guard. The mock data parallels the real helper's
 // behavior (slug→Network Map lookup) for the freenode / libera fixtures.
 const mockNetworksData = [
-  { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
-  { id: 2, slug: "libera", inserted_at: "", updated_at: "" },
+  { kind: "user", id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
+  { kind: "user", id: 2, slug: "libera", inserted_at: "", updated_at: "" },
 ];
 vi.mock("../lib/networks", () => ({
   networks: vi.fn(() => mockNetworksData),
