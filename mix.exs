@@ -146,7 +146,15 @@ defmodule Grappa.MixProject do
         "cmd mix compile --warnings-as-errors",
         "format --check-formatted",
         "credo --strict",
-        "deps.audit",
+        # `--ignore-advisory-ids GHSA-g2wm-735q-3f56` skips the LOW-severity
+        # cowlib cookie-injection advisory that has NO patched version
+        # ("First patched versions:" empty in the advisory). cic does NOT
+        # call cow_cookie:cookie/1 (no request-cookie composition path; we
+        # only consume Cookie headers via Plug). Per CLAUDE.md "Medium-
+        # or-above findings fail the build" — LOW with no fix is filtered.
+        # Re-evaluate when cowlib publishes a patch (revisit the
+        # vulnerable-version range above).
+        "deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56",
         "hex.audit",
         "sobelow --config --exit Medium",
         "doctor",
