@@ -1906,11 +1906,17 @@ defmodule Grappa.Session.EventRouter do
     end)
   end
 
-  # User-mode prefix table (Q-non-blocking pin): hard-coded `(ov)@+`
-  # default per RFC 2812 + most networks. PREFIX ISUPPORT-driven
-  # negotiation deferred to Phase 5; the table is a compile-time
-  # constant here.
-  @user_mode_prefixes %{"o" => "@", "v" => "+"}
+  # User-mode prefix table (Q-non-blocking pin): hard-coded `(ohv)@%+`
+  # default per RFC 2812 + ISUPPORT PREFIX=(ohv)@%+ as advertised by
+  # Bahamut / InspIRCd / UnrealIRCd. PREFIX ISUPPORT-driven negotiation
+  # deferred to Phase 5; the table is a compile-time constant here.
+  #
+  # UX-4 bucket J (2026-05-19): added `h => %` for halfops. The tier
+  # rank used by cic for MembersPane sort order is op > halfop > voice
+  # > plain — derived from `Map.values/1` order at the consumer, not
+  # encoded as a rank field here (cic owns the sort, server owns the
+  # per-member modes list).
+  @user_mode_prefixes %{"o" => "@", "h" => "%", "v" => "+"}
 
   # Channel modes that consume a parameter when being set (+).
   # RFC 2811 type A (list: b/e/I), type B (always-param: k) and type C
@@ -2003,7 +2009,7 @@ defmodule Grappa.Session.EventRouter do
   defp toggle_mode(modes, prefix, :remove), do: List.delete(modes, prefix)
 
   @spec split_mode_prefix(String.t()) :: {String.t(), [String.t()]}
-  defp split_mode_prefix(<<prefix, rest::binary>>) when prefix in [?@, ?+] do
+  defp split_mode_prefix(<<prefix, rest::binary>>) when prefix in [?@, ?%, ?+] do
     {rest, [<<prefix>>]}
   end
 

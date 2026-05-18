@@ -327,3 +327,93 @@ describe("members.applyPresenceEvent", () => {
     });
   });
 });
+
+describe("members.sortMembers (bucket J)", () => {
+  it("orders by tier: op > halfop > voice > plain", async () => {
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "plain", modes: [] },
+      { nick: "voice", modes: ["+"] },
+      { nick: "op", modes: ["@"] },
+      { nick: "halfop", modes: ["%"] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted.map((m) => m.nick)).toEqual(["op", "halfop", "voice", "plain"]);
+  });
+
+  it("alpha-sorts case-insensitive within each tier", async () => {
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "carol", modes: [] },
+      { nick: "Alice", modes: [] },
+      { nick: "bob", modes: [] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted.map((m) => m.nick)).toEqual(["Alice", "bob", "carol"]);
+  });
+
+  it("op tier preserves alpha order across mixed cases", async () => {
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "Zoe", modes: ["@"] },
+      { nick: "alice", modes: ["@"] },
+      { nick: "Bob", modes: ["@"] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted.map((m) => m.nick)).toEqual(["alice", "Bob", "Zoe"]);
+  });
+
+  it("full mixed list: tier rank then alpha", async () => {
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "zane", modes: [] },
+      { nick: "voicedB", modes: ["+"] },
+      { nick: "opA", modes: ["@"] },
+      { nick: "halfopZ", modes: ["%"] },
+      { nick: "alpha", modes: [] },
+      { nick: "voicedA", modes: ["+"] },
+      { nick: "opZ", modes: ["@"] },
+      { nick: "halfopA", modes: ["%"] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted.map((m) => m.nick)).toEqual([
+      "opA",
+      "opZ",
+      "halfopA",
+      "halfopZ",
+      "voicedA",
+      "voicedB",
+      "alpha",
+      "zane",
+    ]);
+  });
+
+  it("returns a NEW array (does not mutate input)", async () => {
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "b", modes: [] },
+      { nick: "a", modes: ["@"] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted).not.toBe(input);
+    expect(input.map((m) => m.nick)).toEqual(["b", "a"]);
+  });
+
+  it("empty input returns empty array", async () => {
+    const { sortMembers } = await import("../lib/members");
+    expect(sortMembers([])).toEqual([]);
+  });
+
+  it("a member with multiple modes ([@, +]) ranks by highest tier (op)", async () => {
+    // Real-world: a user can hold both @ and + simultaneously. sigil/tier
+    // priority is op-wins (see memberSigil.ts) — same precedence here.
+    const { sortMembers } = await import("../lib/members");
+    const input = [
+      { nick: "plain", modes: [] },
+      { nick: "opvoiced", modes: ["@", "+"] },
+      { nick: "voiced", modes: ["+"] },
+    ];
+    const sorted = sortMembers(input);
+    expect(sorted.map((m) => m.nick)).toEqual(["opvoiced", "voiced", "plain"]);
+  });
+});

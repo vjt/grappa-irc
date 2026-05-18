@@ -1,7 +1,7 @@
 // Returns the rendered prefix sigil for a member, given their mode list:
-// "@" for op, "+" for voiced, " " (single space) for plain — the space
-// keeps columns aligned with @/+-prefixed siblings in monospace
-// rendering.
+// "@" for op, "%" for halfop, "+" for voiced, " " (single space) for
+// plain — the space keeps columns aligned with @/%/+-prefixed siblings
+// in monospace rendering.
 //
 // Lifted from `ScrollbackPane.tsx`'s former module-private `memberSigil`
 // helper so the same sigil derivation is reused by MembersPane (right
@@ -16,8 +16,9 @@
 // `feedback_css_block_button_wraps_inline_prefix` for the regression
 // post-mortem.
 
-export const memberSigil = (modes: string[]): "@" | "+" | " " => {
+export const memberSigil = (modes: string[]): "@" | "%" | "+" | " " => {
   if (modes.includes("@")) return "@";
+  if (modes.includes("%")) return "%";
   if (modes.includes("+")) return "+";
   return " ";
 };

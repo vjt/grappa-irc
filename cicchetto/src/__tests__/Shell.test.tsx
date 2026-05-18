@@ -69,6 +69,11 @@ vi.mock("../lib/members", () => ({
   membersByChannel: () => ({}),
   applyPresenceEvent: vi.fn(),
   seedFromTest: vi.fn(),
+  // UX-4 bucket J: MembersPane imports `sortMembers`; the mock must
+  // expose it so Shell render tests (which mount MembersPane) don't
+  // throw "No 'sortMembers' export". Identity sort is fine here — none
+  // of the Shell tests assert member order.
+  sortMembers: <T,>(list: T[]) => list,
 }));
 
 vi.mock("../lib/channelTopic", () => ({

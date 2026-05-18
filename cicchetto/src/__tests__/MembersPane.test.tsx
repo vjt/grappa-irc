@@ -11,9 +11,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 let mockMembers: Record<string, Array<{ nick: string; modes: string[] }>> = {};
 let mockWindowState: Record<string, string> = {};
 
-vi.mock("../lib/members", () => ({
-  membersByChannel: () => mockMembers,
-}));
+vi.mock("../lib/members", async () => {
+  // Re-export the real `sortMembers` so render tests exercise the
+  // actual sort routine (bucket J). `membersByChannel` stays stubbed
+  // so we can drive the render with arbitrary fixtures.
+  const real = await vi.importActual<typeof import("../lib/members")>("../lib/members");
+  return {
+    membersByChannel: () => mockMembers,
+    sortMembers: real.sortMembers,
+  };
+});
 
 vi.mock("../lib/windowState", () => ({
   windowStateByChannel: () => mockWindowState,
@@ -261,5 +268,55 @@ describe("MembersPane", () => {
     expect(recorded.ownModes).toEqual([]);
 
     vi.doUnmock("../UserContextMenu");
+  });
+
+  // Bucket J (2026-05-19) — render order is op > halfop > voice > plain,
+  // alpha within tier (case-insensitive per RFC 2812 §2.2). Source of
+  // truth for the rule is `sortMembers` in lib/members.ts; MembersPane
+  // calls it inside a createMemo. These tests assert the rule is wired
+  // at the render boundary — `members.test.ts` covers the sort kernel.
+  it("renders members in tier order: op > halfop > voice > plain (bucket J)", () => {
+    mockWindowState = { "freenode #italia": "joined" };
+    // Inject in deliberately-wrong arrival order — sort must rescue.
+    mockMembers = {
+      "freenode #italia": [
+        { nick: "plain", modes: [] },
+        { nick: "voice", modes: ["+"] },
+        { nick: "op", modes: ["@"] },
+        { nick: "halfop", modes: ["%"] },
+      ],
+    };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const buttons = Array.from(document.querySelectorAll(".member-name"));
+    expect(buttons.map((b) => (b.textContent || "").trim())).toEqual([
+      "@op",
+      "%halfop",
+      "+voice",
+      "plain",
+    ]);
+  });
+
+  it("alpha-sorts within each tier (case-insensitive — bucket J)", () => {
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [
+        { nick: "Zoe", modes: ["@"] },
+        { nick: "alice", modes: ["@"] },
+        { nick: "Bob", modes: ["@"] },
+      ],
+    };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const buttons = Array.from(document.querySelectorAll(".member-name"));
+    expect(buttons.map((b) => (b.textContent || "").trim())).toEqual(["@alice", "@Bob", "@Zoe"]);
+  });
+
+  it("renders halfops with .member-halfop class and % sigil (bucket J)", () => {
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [{ nick: "carol", modes: ["%"] }],
+    };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const halfop = document.querySelector(".member-halfop");
+    expect(halfop?.textContent).toContain("%carol");
   });
 });

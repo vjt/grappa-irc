@@ -17,6 +17,7 @@
  *   --border                : 1px hairlines between panes / sections
  *   --mention               : own-nick mention highlight bg-tint
  *   --mode-op               : @ ops nick color
+ *   --mode-halfop           : % halfops nick color
  *   --mode-voiced           : + voiced nick color
  *   --mode-plain            : plain (no mode) nick color (= --fg)
  *   --font-mono             : font stack
@@ -46,6 +47,7 @@
   --border: #1f1f1f;
   --mention: #2a1f00;
   --mode-op: #d77070;
+  --mode-halfop: #d7af5f;
   --mode-voiced: #70d770;
   --mode-plain: var(--fg);
 }
@@ -59,6 +61,7 @@
   --border: #c0c0c0;
   --mention: #fff8c0;
   --mode-op: #7f0000;
+  --mode-halfop: #7f5f00;
   --mode-voiced: #007f00;
   --mode-plain: var(--fg);
 }
@@ -1145,6 +1148,10 @@ body {
 
 .members-pane li.member-op {
   color: var(--mode-op);
+}
+
+.members-pane li.member-halfop {
+  color: var(--mode-halfop);
 }
 
 .members-pane li.member-voiced {

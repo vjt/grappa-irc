@@ -18,6 +18,28 @@ describe("applyModeString", () => {
     expect(after).toEqual([{ nick: "bob", modes: ["+"] }]);
   });
 
+  it("+h grants % to a target nick (bucket J — halfop)", () => {
+    const before = m({ carol: [] });
+    const after = applyModeString(before, "+h", ["carol"]);
+    expect(after).toEqual([{ nick: "carol", modes: ["%"] }]);
+  });
+
+  it("-h revokes % from a target nick (bucket J — halfop)", () => {
+    const before = m({ carol: ["%"] });
+    const after = applyModeString(before, "-h", ["carol"]);
+    expect(after).toEqual([{ nick: "carol", modes: [] }]);
+  });
+
+  it("+ohv pairs three args by position: alice@, bob%, carol+ (bucket J — halfop)", () => {
+    const before = m({ alice: [], bob: [], carol: [] });
+    const after = applyModeString(before, "+ohv", ["alice", "bob", "carol"]);
+    expect(after).toEqual([
+      { nick: "alice", modes: ["@"] },
+      { nick: "bob", modes: ["%"] },
+      { nick: "carol", modes: ["+"] },
+    ]);
+  });
+
   it("-o revokes @ from a target nick", () => {
     const before = m({ alice: ["@"] });
     const after = applyModeString(before, "-o", ["alice"]);

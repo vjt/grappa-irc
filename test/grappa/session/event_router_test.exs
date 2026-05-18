@@ -1119,6 +1119,46 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#italia"]["alice"] == []
     end
 
+    test "MODE +h adds % to target nick's mode list (bucket J — halfop)" do
+      state = base_state(%{members: %{"#italia" => %{"carol" => []}}})
+
+      m = msg(:mode, ["#italia", "+h", "carol"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["carol"] == ["%"]
+      assert attrs.meta == %{modes: "+h", args: ["carol"]}
+    end
+
+    test "MODE -h removes % from target nick's mode list (bucket J — halfop)" do
+      state = base_state(%{members: %{"#italia" => %{"carol" => ["%"]}}})
+
+      m = msg(:mode, ["#italia", "-h", "carol"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, _}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["carol"] == []
+    end
+
+    test "MODE +ohv applies sequentially across args (bucket J — halfop)" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"a" => [], "b" => [], "c" => []}}
+        })
+
+      m = msg(:mode, ["#italia", "+ohv", "a", "b", "c"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :mode, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert new_state.members["#italia"]["a"] == ["@"]
+      assert new_state.members["#italia"]["b"] == ["%"]
+      assert new_state.members["#italia"]["c"] == ["+"]
+      assert attrs.meta == %{modes: "+ohv", args: ["a", "b", "c"]}
+    end
+
     test "MODE +ovo applies sequentially across args" do
       state =
         base_state(%{
@@ -1558,11 +1598,13 @@ defmodule Grappa.Session.EventRouterTest do
       # creates the entry with our own nick, then 353/366 merge the rest.
       state = base_state(%{members: %{"#italia" => %{"vjt" => []}}})
 
-      # `:server 353 vjt = #italia :@op_user +voiced_user plain_user`
+      # `:server 353 vjt = #italia :@op_user +voiced_user %halfop_user plain_user`
+      # — UX-4 bucket J: halfop `%` prefix is now stripped via the same
+      # `split_mode_prefix/1` path as `@` and `+`.
       m =
         msg(
           {:numeric, 353},
-          ["vjt", "=", "#italia", "@op_user +voiced_user plain_user"],
+          ["vjt", "=", "#italia", "@op_user +voiced_user %halfop_user plain_user"],
           {:server, "irc.azzurra.chat"}
         )
 
@@ -1572,6 +1614,7 @@ defmodule Grappa.Session.EventRouterTest do
                "vjt" => [],
                "op_user" => ["@"],
                "voiced_user" => ["+"],
+               "halfop_user" => ["%"],
                "plain_user" => []
              }
     end

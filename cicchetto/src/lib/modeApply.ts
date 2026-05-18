@@ -5,18 +5,21 @@ import { nickEquals } from "./nickEquals";
 // `apply_mode_string/4`: applies a single MODE event's mode string +
 // args to a channel's member list, returning a new list.
 //
-// Mode-prefix table: (ov)@+ — `o` grants/revokes `@` (op), `v` grants/
-// revokes `+` (voiced). Hard-coded matches the server side. PREFIX
+// Mode-prefix table: (ohv)@%+ — `o` grants/revokes `@` (op), `h`
+// grants/revokes `%` (halfop), `v` grants/revokes `+` (voiced).
+// Hard-coded matches the server side
+// (`Grappa.Session.EventRouter.@user_mode_prefixes`). PREFIX
 // ISUPPORT-driven negotiation deferred to Phase 5+ (server + client
 // move together).
 //
-// Mode chars that aren't (ov) are channel-modes (e.g. `n`, `t`, `m`,
+// Mode chars that aren't (ohv) are channel-modes (e.g. `n`, `t`, `m`,
 // `k`, `l`) — they have no per-user effect, so the parser ignores
 // them. Unknown targets (in the args list) are also no-ops (defensive
 // against an out-of-order MODE arriving before its target's JOIN).
 
 const MODE_PREFIX_TABLE: Record<string, string> = {
   o: "@",
+  h: "%",
   v: "+",
 };
 

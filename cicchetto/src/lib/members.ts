@@ -125,3 +125,42 @@ export const membersByChannel = exports_.membersByChannel;
 export const seedMembers = exports_.seedMembers;
 export const applyPresenceEvent = exports_.applyPresenceEvent;
 export const seedFromTest = exports_.seedFromTest;
+
+// UX-4 bucket J (2026-05-19) — tier rank for MembersPane sort order.
+// Mirrors the sigil precedence in `memberSigil.ts`: op (@) outranks
+// halfop (%), halfop outranks voice (+), voice outranks plain. Lower
+// rank value = higher position (op = 0 on top).
+//
+// Server-side `Grappa.Session.EventRouter.@user_mode_prefixes` is the
+// allowed set of per-user modes (o/h/v); any other prefix on a member's
+// `modes` array would mean wire contract drift, so this fn doesn't
+// need a defensive fallback for unknown prefixes — the entry falls
+// through to plain (rank 3) on its own.
+const tierRank = (modes: readonly string[]): 0 | 1 | 2 | 3 => {
+  if (modes.includes("@")) return 0;
+  if (modes.includes("%")) return 1;
+  if (modes.includes("+")) return 2;
+  return 3;
+};
+
+/**
+ * Returns a new array with members sorted by tier (op > halfop > voice
+ * > plain) and case-insensitive alpha within each tier. Pure — does
+ * not mutate the input.
+ *
+ * Used by MembersPane to keep the right-pane order stable across MODE
+ * events: `+o alice` moves alice to the top, `-o alice` drops her
+ * back into the plain tier. The render side calls this on every
+ * `membersByChannel` change; the work is O(n log n) over a per-channel
+ * member count (typically tens to low hundreds) and cheap enough to
+ * skip memoisation.
+ *
+ * Alpha tie-breaker is case-insensitive per RFC 2812 §2.2 — IRC nicks
+ * are case-insensitive, so sort order MUST match.
+ */
+export const sortMembers = (members: ChannelMembers): ChannelMembers =>
+  [...members].sort((a, b) => {
+    const rankDiff = tierRank(a.modes) - tierRank(b.modes);
+    if (rankDiff !== 0) return rankDiff;
+    return a.nick.toLowerCase().localeCompare(b.nick.toLowerCase());
+  });

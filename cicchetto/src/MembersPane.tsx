@@ -1,8 +1,8 @@
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { memberSigil } from "./lib/memberSigil";
-import { type MemberEntry, membersByChannel } from "./lib/members";
+import { type MemberEntry, membersByChannel, sortMembers } from "./lib/members";
 import { networkBySlug, networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
@@ -48,6 +48,7 @@ export type Props = {
 
 const tierClass = (modes: string[]): string => {
   if (modes.includes("@")) return "member-op";
+  if (modes.includes("%")) return "member-halfop";
   if (modes.includes("+")) return "member-voiced";
   return "member-plain";
 };
@@ -56,7 +57,16 @@ type MenuFor = { nick: string; x: number; y: number } | null;
 
 const MembersPane: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
-  const list = (): MemberEntry[] => membersByChannel()[key()] ?? [];
+  // UX-4 bucket J: render order is op > halfop > voice > plain, alpha
+  // within tier (case-insensitive per RFC 2812 §2.2). `sortMembers/1`
+  // owns the rule; MembersPane is the sole consumer today but the
+  // helper sits in lib/members.ts alongside the data store so the
+  // sort contract co-locates with the source-of-truth shape.
+  // `createMemo` caches the sorted array reference across reactive
+  // reads — only re-sorts when `membersByChannel` or `key()` actually
+  // changes (i.e. once per WS event burst per channel, not once per
+  // For-each iteration).
+  const list = createMemo((): MemberEntry[] => sortMembers(membersByChannel()[key()] ?? []));
   const state = (): string | undefined => windowStateByChannel()[key()];
 
   // C5.1: context menu state — which nick was right-clicked + screen coords.
