@@ -108,8 +108,41 @@ defmodule Grappa.Session.NumericRouter do
 
   # Active deny list: numerics whose params look nick-shaped but the
   # token is NOT a routing destination — it's the rejected/offending
-  # input. Always go to `{:server, nil}`. Closed set; expand deliberately.
+  # input, a server-metadata token, or just an ack. Always go to
+  # `{:server, nil}`. Closed set; expand deliberately.
   @active_numerics MapSet.new([
+                     # UX-4 bucket I (2026-05-19): connect-storm numerics
+                     # whose middle params are server metadata (own ID,
+                     # server name, version string, supported umode/chanmode
+                     # letters) that happen to match `Identifier.valid_nick?`
+                     # syntax. Pre-fix `scan_params/2` speculatively routed
+                     # these to `{:query, <metadata-token>}`, persisting a
+                     # `:notice` row at `channel=<metadata-token>` that
+                     # surfaced as a ghost entry in the per-network Archive
+                     # section (via `Scrollback.list_archive/3`'s
+                     # `COALESCE(dm_with, channel)` GROUP BY). All connect-
+                     # storm numerics belong on `$server` by definition —
+                     # they describe the SERVER, not a user-correlatable
+                     # destination.
+                     #
+                     # 004 RPL_MYINFO       — params: [own_nick, servername,
+                     #                        version, usermodes, chanmodes,
+                     #                        chanmodes_with_param?]. The
+                     #                        usermodes token (e.g.
+                     #                        "oiwgrsk") is the reported
+                     #                        ghost.
+                     # 042 RPL_YOURID       — params: [own_nick, <id>,
+                     #                        "your unique ID"]. Alphanumeric
+                     #                        ID (e.g. "6FXAAAAAB") matches
+                     #                        nick-shape.
+                     # 263 RPL_TRYAGAIN     — params: [own_nick, command,
+                     #                        "Please wait..."]. The
+                     #                        offending command name is not
+                     #                        a routing destination (mirrors
+                     #                        461 ERR_NEEDMOREPARAMS).
+                     4,
+                     42,
+                     263,
                      # 305 RPL_UNAWAY — upstream confirmed away unset
                      305,
                      # 306 RPL_NOWAWAY — upstream confirmed away set

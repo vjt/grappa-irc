@@ -120,7 +120,7 @@ defmodule Grappa.Session.NumericRouterTest do
   # Active deny list: nick-shaped tokens that are NOT destinations
   # ---------------------------------------------------------------------------
 
-  @active_numerics [305, 306, 421, 432, 433, 437, 461]
+  @active_numerics [4, 42, 263, 305, 306, 421, 432, 433, 437, 461]
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -128,6 +128,26 @@ defmodule Grappa.Session.NumericRouterTest do
         m = msg(numeric, ["vjt", "looks_like_a_nick", "trailing"])
         assert {:server, nil} = NumericRouter.route(m, state())
       end
+    end
+
+    test "004 RPL_MYINFO: usermodes letters are NOT a query destination (bucket I)" do
+      # Real-world Bahamut params: own_nick, servername, version,
+      # usermodes, chanmodes — `oiwgrsk` is nick-shaped (letters only,
+      # ≤30 chars per `Identifier.valid_nick?`) and pre-fix routed to
+      # `{:query, "oiwgrsk"}`, leaking a ghost row into the Archive
+      # section via list_archive's COALESCE(dm_with, channel).
+      m = msg(4, ["vjt", "irc.example.org", "bahamut-2.2.1", "oiwgrsk", "biklmnopstvI"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "042 RPL_YOURID: alphanumeric ID is NOT a query destination (bucket I)" do
+      m = msg(42, ["vjt", "6FXAAAAAB", "your unique ID"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "263 RPL_TRYAGAIN: offending command name is NOT a query destination (bucket I)" do
+      m = msg(263, ["vjt", "WHOIS", "Please wait a while and try again."])
+      assert {:server, nil} = NumericRouter.route(m, state())
     end
 
     test "433 ERR_NICKNAMEINUSE: rejected nick is NOT a query destination" do
