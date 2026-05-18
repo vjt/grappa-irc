@@ -221,7 +221,7 @@ defmodule Grappa.Session.Server do
 
   @typedoc """
   In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
-  JOIN — both cic-initiated `Session.send_join/3` calls and the 001
+  JOIN — both cic-initiated `Session.send_join/4` calls and the 001
   RPL_WELCOME autojoin loop — keyed by `String.downcase/1` of the
   channel so a 471/473/474/475/403/405 failure numeric can correlate
   even when the upstream echoes a case-folded channel name.
@@ -476,7 +476,7 @@ defmodule Grappa.Session.Server do
       # 001 RPL_WELCOME loop sends `JOIN #chan` (canonical) regardless
       # of whether the operator typed `#Chan` in a mix task pre-
       # bucket-A or the credentials row was migrated post-bucket-A.
-      # Symmetric with `Session.send_join/3`'s entry-point canonical
+      # Symmetric with `Session.send_join/4`'s entry-point canonical
       # rebind. Sigil-aware: nick-shape entries (not valid here, but
       # the predicate is defensive) pass through unchanged.
       autojoin: Enum.map(opts.autojoin_channels, &Grappa.IRC.Identifier.canonical_channel/1),
@@ -1204,10 +1204,11 @@ defmodule Grappa.Session.Server do
   end
 
   @impl GenServer
-  def handle_call({:send_join, channel}, _, state) when is_binary(channel) do
+  def handle_call({:send_join, channel, key}, _, state)
+      when is_binary(channel) and (is_nil(key) or is_binary(key)) do
     # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
     # returns `{:error, :invalid_line}` for malformed channels. The
-    # `Session.send_join/3` facade gates `valid_channel?` before the
+    # `Session.send_join/4` facade gates `valid_channel?` before the
     # call (CRIT-1 fix), so reaching this clause with a malformed
     # channel requires a caller bypassing the facade. Defensive
     # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
@@ -1220,10 +1221,14 @@ defmodule Grappa.Session.Server do
     # fires BEFORE the REST controller returns 202. Pre-conversion the
     # cast sat in the Session.Server mailbox under CI load, delaying
     # the broadcast by >5s and making cp15-b6-kicked time out at the
-    # sidebar-row assertion. See `Session.send_join/3` doc for the full
+    # sidebar-row assertion. See `Session.send_join/4` doc for the full
     # rationale. Reply `:ok` AFTER `record_in_flight_join` so the
     # caller's wall clock includes the broadcast.
-    case Client.send_join(state.client, channel) do
+    #
+    # UX-4 bucket F: `key` is the optional +k channel key (nil for
+    # keyless channels). Client.send_join/3 emits the wire frame in
+    # the keyed or keyless shape based on key.
+    case Client.send_join(state.client, channel, key) do
       :ok ->
         {:reply, :ok, record_in_flight_join(state, channel)}
 
@@ -1412,7 +1417,12 @@ defmodule Grappa.Session.Server do
     state =
       state.autojoin
       |> Enum.reduce(state, fn channel, acc ->
-        case Client.send_join(acc.client, channel) do
+        # Autojoin channels are operator-configured (or persisted from
+        # last_joined_channels at reboot). Keys are NOT persisted —
+        # operator must re-join with /join #chan key for +k channels.
+        # UX-4 bucket F: explicit nil here keeps the autojoin wire
+        # frame shape stable (`JOIN #chan\r\n` only).
+        case Client.send_join(acc.client, channel, nil) do
           :ok ->
             record_in_flight_join(acc, channel)
 
@@ -2558,7 +2568,7 @@ defmodule Grappa.Session.Server do
 
   # CP15 B2: record an outbound JOIN as in-flight, keyed by lowercase
   # channel for case-insensitive correlation against failure-numeric
-  # echoes (RFC 2812 §2.2). Both `Session.send_join/3` calls and the
+  # echoes (RFC 2812 §2.2). Both `Session.send_join/4` calls and the
   # 001 RPL_WELCOME autojoin loop call through here so the tracking
   # behavior is identical regardless of who initiated the JOIN.
   # Label is `nil` for now — labeled-response correlation lands later.

@@ -1286,17 +1286,23 @@ export async function postTopic(
 }
 
 // Mirror of `GrappaWeb.ChannelsController.create/2`. POST a channel
-// name; the server forwards a JOIN to the upstream session. The 202
-// envelope is `{ok: true}` — we don't read the body.
+// name (+ optional UX-4 bucket F +k channel key); the server forwards
+// a JOIN to the upstream session. The 202 envelope is `{ok: true}` —
+// we don't read the body. `null` key omits the field; the empty
+// string is treated as "no key" downstream so the wire shape
+// stays consistent.
 export async function postJoin(
   token: string,
   networkSlug: string,
   channelName: string,
+  key: string | null,
 ): Promise<void> {
+  const body: { name: string; key?: string } = { name: channelName };
+  if (key !== null && key !== "") body.key = key;
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/channels`, {
     method: "POST",
     headers: buildHeaders(token),
-    body: JSON.stringify({ name: channelName }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
 }

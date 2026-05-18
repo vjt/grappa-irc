@@ -189,6 +189,100 @@ defmodule GrappaWeb.ChannelsControllerTest do
 
       assert json_response(conn, 400)["error"] == "bad_request"
     end
+
+    # UX-4 bucket F: +k channel-key support — body accepts optional
+    # `"key": "<key>"` field. Threaded through to the upstream JOIN
+    # frame as `JOIN <chan> <key>\r\n` when present.
+    test "with active session + key sends JOIN with key upstream",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels", %{
+          "name" => "#priv",
+          "key" => "s3cret"
+        })
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "JOIN #priv s3cret\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #priv s3cret\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "key field with CRLF returns 400 (bucket F)",
+         %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{
+          "name" => "#chan",
+          "key" => "k\r\nQUIT"
+        })
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "key field with embedded space returns 400 (bucket F)",
+         %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{
+          "name" => "#chan",
+          "key" => "key with space"
+        })
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "empty-string key sends the no-key JOIN form (bucket F)",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels", %{
+          "name" => "#sniffo",
+          "key" => ""
+        })
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "key field as non-string type returns 400 (bucket F)",
+         %{conn: conn, vjt: vjt} do
+      _ = ensure_azzurra_credential(vjt)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/azzurra/channels", %{
+          "name" => "#chan",
+          "key" => 42
+        })
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
   end
 
   describe "DELETE /networks/:network_id/channels/:channel_id" do

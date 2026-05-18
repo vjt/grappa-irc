@@ -51,7 +51,7 @@ export type SlashCommand =
   | { kind: "empty" }
   | { kind: "privmsg"; body: string }
   | { kind: "me"; body: string }
-  | { kind: "join"; channel: string }
+  | { kind: "join"; channel: string; key: string | null }
   | { kind: "part"; channel: string | null; reason: string | null }
   | { kind: "topic-show" }
   | { kind: "topic-set"; text: string }
@@ -140,9 +140,17 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   me: (_verb, rest) => ({ kind: "me", body: rest }),
 
   join: (verb, rest) => {
-    const [channel] = tokens(rest);
+    // UX-4 bucket F: `/join #chan` OR `/join #chan key` (+k channel
+    // support). Second positional token is the optional key. Tokens
+    // beyond the second are rejected — keys per RFC 2812 are a single
+    // word (no embedded spaces).
+    const toks = tokens(rest);
+    const channel = toks[0];
     if (!channel) return err(verb, "/join requires a channel name");
-    return { kind: "join", channel };
+    if (toks.length > 2)
+      return err(verb, "/join: too many arguments (expected /join <chan> [key])");
+    const key = toks[1] ?? null;
+    return { kind: "join", channel, key };
   },
 
   part: (_verb, rest) => {

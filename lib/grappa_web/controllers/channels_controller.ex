@@ -113,22 +113,32 @@ defmodule GrappaWeb.ChannelsController do
   end
 
   @doc """
-  `POST /networks/:network_id/channels` — body `{"name": "#chan"}`.
-  Calls through to `Session.send_join/3`, which writes
+  `POST /networks/:network_id/channels` — body `{"name": "#chan"}` or
+  `{"name": "#chan", "key": "secret"}` (UX-4 bucket F +k channel
+  support). Calls through to `Session.send_join/4`, which writes
   `window_states[ch] = :pending` AND broadcasts `window_pending` on the
   user-level PubSub topic before returning. cic's setPending dispatch
   has fired (and the synthetic sidebar pseudo-row has rendered) by the
   time this returns 202 + `{"ok": true}`.
+
+  The key (when present) is forwarded to the upstream JOIN frame as
+  the +k channel key. It is NOT persisted to autojoin and NOT logged
+  in scrollback. A wrong/missing key surfaces server-side as 475
+  ERR_BADCHANNELKEY through the existing join-failure pipeline →
+  `:join_failed` event with numeric=475 → cic surfaces the failure
+  in the synthetic pseudo-row (state=:failed).
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session | :invalid_line}
-  def create(conn, %{"name" => name})
+  def create(conn, %{"name" => name} = params)
       when is_binary(name) and name != "" do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
+    key = normalize_join_key_param(Map.get(params, "key"))
 
     with :ok <- validate_channel_name(name),
-         :ok <- Session.send_join(subject, network.id, name) do
+         :ok <- validate_optional_key(key),
+         :ok <- Session.send_join(subject, network.id, name, key) do
       conn
       |> put_status(:accepted)
       |> json(%{ok: true})
@@ -136,6 +146,24 @@ defmodule GrappaWeb.ChannelsController do
   end
 
   def create(_, _), do: {:error, :bad_request}
+
+  # The wire body accepts `null`, missing, or a binary key. Normalise
+  # `""` to `nil` so the empty-key form maps to "no key" downstream
+  # (mirrors `Session.send_join/4`'s normalize_join_key).
+  defp normalize_join_key_param(nil), do: nil
+  defp normalize_join_key_param(""), do: nil
+  defp normalize_join_key_param(key) when is_binary(key), do: key
+  defp normalize_join_key_param(_), do: :bad_key
+
+  defp validate_optional_key(nil), do: :ok
+  defp validate_optional_key(:bad_key), do: {:error, :bad_request}
+
+  defp validate_optional_key(key) when is_binary(key) do
+    if byte_size(key) <= 64 and Grappa.IRC.Identifier.safe_line_token?(key) and
+         not String.contains?(key, [" ", "\t"]),
+       do: :ok,
+       else: {:error, :bad_request}
+  end
 
   @doc """
   `DELETE /networks/:network_id/channels/:channel_id` — casts

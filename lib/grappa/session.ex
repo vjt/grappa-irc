@@ -334,21 +334,47 @@ defmodule Grappa.Session do
 
   `{:error, :no_session}` if not registered. `{:error, :invalid_line}`
   if the channel name fails IRC-shape gates (CRLF/NUL or non-`#`/`&`
-  prefix). Returns `:ok` once the broadcast has fired.
+  prefix) OR the key contains CR/LF/NUL/space. Returns `:ok` once the
+  broadcast has fired.
+
+  UX-4 bucket F — `key` is the optional +k channel key. Pass `nil`
+  (or `""`, normalised) for keyless channels. The key never reaches
+  scrollback or storage; it's only forwarded to the upstream JOIN
+  wire frame. Server-side 475 ERR_BADCHANNELKEY (when the key is
+  wrong/missing) flows through the existing join-failure numeric
+  pipeline → `:join_failed` event with numeric=475.
   """
-  @spec send_join(subject(), integer(), String.t()) ::
+  @spec send_join(subject(), integer(), String.t(), String.t() | nil) ::
           :ok | {:error, :no_session | :invalid_line}
-  def send_join(subject, network_id, channel)
-      when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
-      call_session(subject, network_id, {:send_join, Identifier.canonical_channel(channel)})
+  def send_join(subject, network_id, channel, key)
+      when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
+             (is_nil(key) or is_binary(key)) do
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) and
+         safe_join_key?(key) do
+      call_session(
+        subject,
+        network_id,
+        {:send_join, Identifier.canonical_channel(channel), normalize_join_key(key)}
+      )
     else
       {:error, :invalid_line}
     end
   end
 
+  # Empty-string key is normalised to nil so the wire shape matches the
+  # `nil` clause (no trailing key param). Mirrors `Client.send_join/3`.
+  defp normalize_join_key(""), do: nil
+  defp normalize_join_key(other), do: other
+
+  defp safe_join_key?(nil), do: true
+  defp safe_join_key?(""), do: true
+
+  defp safe_join_key?(key) when is_binary(key) do
+    Identifier.safe_line_token?(key) and not String.contains?(key, [" ", "\t"])
+  end
+
   @doc """
-  Queues a PART upstream through the session. Cast (see `send_join/3`
+  Queues a PART upstream through the session. Cast (see `send_join/4`
   for the rationale). `{:error, :no_session}` if not registered.
   """
   @spec send_part(subject(), integer(), String.t()) ::

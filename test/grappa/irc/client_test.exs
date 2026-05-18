@@ -178,11 +178,32 @@ defmodule Grappa.IRC.ClientTest do
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"), 1_000)
     end
 
-    test "send_join/2 emits JOIN with channel param" do
+    test "send_join/3 emits JOIN with channel param (no key)" do
       {server, port} = start_server()
       client = start_client(port)
 
-      :ok = Client.send_join(client, "#sniffo")
+      :ok = Client.send_join(client, "#sniffo", nil)
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+    end
+
+    # UX-4 bucket F: +k channel-key support.
+    test "send_join/3 emits JOIN with channel + key when key is non-nil" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_join(client, "#sniffo", "secret")
+
+      assert {:ok, "JOIN #sniffo secret\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+    end
+
+    test "send_join/3 with empty-string key emits the no-key form" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_join(client, "#sniffo", "")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -988,12 +1009,28 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_privmsg(client, "#chan", "hi\x00bye")
     end
 
-    test "send_join/2 rejects \\r\\n in channel", %{client: client} do
-      assert {:error, :invalid_line} = Client.send_join(client, "#chan\r\nQUIT")
+    test "send_join/3 rejects \\r\\n in channel", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "#chan\r\nQUIT", nil)
     end
 
     test "send_part/2 rejects \\r\\n in channel", %{client: client} do
       assert {:error, :invalid_line} = Client.send_part(client, "#chan\r\nQUIT")
+    end
+
+    # UX-4 bucket F: key field also runs through safe_line_token? — CRLF
+    # or space in the key would let a caller smuggle bytes into the
+    # wire frame. Reject at the same boundary as the channel.
+    test "send_join/3 rejects \\r\\n in key", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "#chan", "k\r\nQUIT")
+    end
+
+    test "send_join/3 rejects NUL byte in key", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "#chan", "k\x00ey")
+    end
+
+    test "send_join/3 rejects key with embedded space (would shift wire param)",
+         %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "#chan", "key with space")
     end
 
     # Codebase review 2026-05-12 irc/S2: pre-fix `send_join` / `send_part`
@@ -1005,12 +1042,12 @@ defmodule Grappa.IRC.ClientTest do
     # think we sent. Reject at the boundary like `send_topic` already
     # does — `valid_channel?/1` catches missing-prefix + embedded-whitespace
     # + comma + BELL + length>50 in one regex.
-    test "send_join/2 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
-      assert {:error, :invalid_line} = Client.send_join(client, "no-hash")
+    test "send_join/3 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "no-hash", nil)
     end
 
-    test "send_join/2 rejects empty channel (irc/S2)", %{client: client} do
-      assert {:error, :invalid_line} = Client.send_join(client, "")
+    test "send_join/3 rejects empty channel (irc/S2)", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_join(client, "", nil)
     end
 
     test "send_part/2 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
@@ -1071,7 +1108,7 @@ defmodule Grappa.IRC.ClientTest do
       lines_before = IRCServer.sent_lines(server)
 
       _ = Client.send_privmsg(client, "#chan", "hi\r\nQUIT :pwn")
-      _ = Client.send_join(client, "#chan\r\nQUIT")
+      _ = Client.send_join(client, "#chan\r\nQUIT", nil)
 
       # No new line lands; if the guard leaks the bytes through, the
       # server would see PRIVMSG / QUIT / JOIN with embedded CR/LF.

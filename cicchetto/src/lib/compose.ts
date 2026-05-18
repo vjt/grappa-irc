@@ -200,7 +200,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           result = { ok: true };
           break;
         case "join":
-          await postJoin(t, networkSlug, cmd.channel);
+          await postJoin(t, networkSlug, cmd.channel, cmd.key);
           // CP17: server-driven `:pending` window-state origination.
           // Server's `record_in_flight_join/2` writes
           // `window_states[ch] = :pending` and broadcasts

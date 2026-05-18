@@ -1919,7 +1919,7 @@ describe("ScrollbackPane", () => {
       const btn = document.querySelector(".scrollback-invite-join") as HTMLButtonElement;
       btn.click();
       await waitFor(() => {
-        expect(mockPostJoin).toHaveBeenCalledWith("test-token", "freenode", "#sbiffo");
+        expect(mockPostJoin).toHaveBeenCalledWith("test-token", "freenode", "#sbiffo", null);
         expect(mockSetSelectedChannel).toHaveBeenCalledWith({
           networkSlug: "freenode",
           channelName: "#sbiffo",

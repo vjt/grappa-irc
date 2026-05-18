@@ -48,12 +48,32 @@ describe("parseSlash — /me", () => {
 });
 
 describe("parseSlash — /join", () => {
-  it("/join <channel>", () => {
-    expect(parseSlash("/join #grappa")).toEqual({ kind: "join", channel: "#grappa" });
+  it("/join <channel> (no key)", () => {
+    expect(parseSlash("/join #grappa")).toEqual({
+      kind: "join",
+      channel: "#grappa",
+      key: null,
+    });
   });
 
   it("/join missing channel → error", () => {
     expect(parseSlash("/join")).toMatchObject({ kind: "error", verb: "join" });
+  });
+
+  // UX-4 bucket F: +k channel-key support.
+  it("/join <channel> <key> threads key", () => {
+    expect(parseSlash("/join #priv secret")).toEqual({
+      kind: "join",
+      channel: "#priv",
+      key: "secret",
+    });
+  });
+
+  it("/join <channel> <key> <extra> → error (too many args)", () => {
+    expect(parseSlash("/join #priv secret junk")).toMatchObject({
+      kind: "error",
+      verb: "join",
+    });
   });
 });
 

@@ -10,7 +10,7 @@ defmodule Grappa.IRC.Client do
   client) — every parsed line is forwarded, including the auth-handshake
   numerics this module also runs through the FSM internally. Outbound
   lines are sent verbatim — callers can use the high-level helpers
-  (`send_privmsg/3`, `send_join/2`, etc.) or the raw `send_line/2` for
+  (`send_privmsg/3`, `send_join/3`, etc.) or the raw `send_line/2` for
   unframed wire bytes.
 
   ## Backpressure
@@ -212,26 +212,50 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `JOIN <channel>\\r\\n`. Rejects CR/LF/NUL AND a malformed
+  Sends `JOIN <channel>\\r\\n` (when `key` is `nil`) or
+  `JOIN <channel> <key>\\r\\n` (when `key` is a binary, RFC 2812 +k
+  channel-key support — bucket F). Rejects CR/LF/NUL AND a malformed
   channel name (missing `#`/`&`/`+`/`!` prefix, embedded whitespace
   /comma/BELL, or length > 50) with `{:error, :invalid_line}`.
+  Key (when present) must pass `safe_line_token?` — CR/LF/NUL/space
+  cause a reject; the empty string is treated as "no key" (sent as the
+  no-key form).
   Without the `valid_channel?` check (codebase review irc/S2,
   2026-05-12) the upstream-facing JOIN landed for malformed channels
   and the pending-window state machine wedged a `:pending` entry that
   never resolved.
   """
-  @spec send_join(pid(), String.t()) :: send_result()
-  def send_join(client, channel) do
+  @spec send_join(pid(), String.t(), String.t() | nil) :: send_result()
+  def send_join(client, channel, nil) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel),
       do: send_line(client, "JOIN #{channel}\r\n"),
       else: reject_invalid_line(:join)
+  end
+
+  def send_join(client, channel, "") do
+    send_join(client, channel, nil)
+  end
+
+  def send_join(client, channel, key) when is_binary(key) do
+    if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) and
+         safe_join_key?(key),
+       do: send_line(client, "JOIN #{channel} #{key}\r\n"),
+       else: reject_invalid_line(:join)
+  end
+
+  # +k channel key — additionally rejects whitespace (space, tab) since
+  # an embedded space would shift the JOIN wire param boundary and a
+  # tab is not RFC-valid in a key. CR/LF/NUL caught by safe_line_token?.
+  defp safe_join_key?(key) when is_binary(key) do
+    Identifier.safe_line_token?(key) and
+      not String.contains?(key, [" ", "\t"])
   end
 
   @doc """
   Sends `PART <channel>\\r\\n`. Rejects CR/LF/NUL AND a malformed
   channel name (missing `#`/`&`/`+`/`!` prefix, embedded whitespace
   /comma/BELL, or length > 50) with `{:error, :invalid_line}`. Same
-  irc/S2 rationale as `send_join/2`.
+  irc/S2 rationale as `send_join/3`.
   """
   @spec send_part(pid(), String.t()) :: send_result()
   def send_part(client, channel) do
@@ -646,7 +670,7 @@ defmodule Grappa.IRC.Client do
   end
 
   # IRC framing requires every line to end with CRLF. The high-level
-  # send_* helpers (send_privmsg/3, send_join/2, etc.) already include
+  # send_* helpers (send_privmsg/3, send_join/3, etc.) already include
   # \r\n in their format strings — but bypass paths like a raw
   # send_line/2 from a controller or a CTCP-reply effect can forget,
   # and a missing terminator silently concatenates with the next

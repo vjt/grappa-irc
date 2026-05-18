@@ -675,7 +675,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   const handleJoinChannel = (channel: string): void => {
     const t = token();
     if (!t) return;
-    void postJoin(t, props.networkSlug, channel).then(() => {
+    // INVITE-CTA does not pass a +k key (no UX surface for it on the
+    // invite row; keyed-channel invites are rare and the operator can
+    // still type `/join #chan key` in compose if needed).
+    void postJoin(t, props.networkSlug, channel, null).then(() => {
       setSelectedChannel({ networkSlug: props.networkSlug, channelName: channel, kind: "channel" });
     });
   };

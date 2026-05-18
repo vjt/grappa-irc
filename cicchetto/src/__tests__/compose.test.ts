@@ -274,7 +274,7 @@ describe("compose submit — slash command dispatch", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it("/join channel posts to channels endpoint", async () => {
+  it("/join channel posts to channels endpoint with null key", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.postJoin).mockResolvedValue();
@@ -284,7 +284,23 @@ describe("compose submit — slash command dispatch", () => {
     compose.setDraft(k, "/join #italia");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(api.postJoin).toHaveBeenCalledWith("tok", "freenode", "#italia");
+    expect(api.postJoin).toHaveBeenCalledWith("tok", "freenode", "#italia", null);
+    expect(result).toEqual({ ok: true });
+  });
+
+  // UX-4 bucket F: +k channel-key support — `/join #chan key` threads
+  // the key through postJoin to the REST surface.
+  it("/join channel key posts to channels endpoint with key (bucket F)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.postJoin).mockResolvedValue();
+
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/join #priv s3cret");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.postJoin).toHaveBeenCalledWith("tok", "freenode", "#priv", "s3cret");
     expect(result).toEqual({ ok: true });
   });
 

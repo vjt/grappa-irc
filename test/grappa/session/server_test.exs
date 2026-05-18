@@ -1420,12 +1420,12 @@ defmodule Grappa.Session.ServerTest do
 
     test ":send_join call inserts into in_flight_joins keyed by lowercase channel" do
       # CP15 B2 contract: every outbound JOIN — cic-initiated via the
-      # Session.send_join/3 call — records {channel, at_ms, label?} in
+      # Session.send_join/4 call — records {channel, at_ms, label?} in
       # state.in_flight_joins keyed by String.downcase/1 of the channel
       # so a later 471/473/474/475/403/405 numeric can correlate even
       # when the upstream echoes a case-folded channel name.
       #
-      # UX-4 bucket A: `Session.send_join/3` canonicalises the channel
+      # UX-4 bucket A: `Session.send_join/4` canonicalises the channel
       # arg at the entry boundary (sigil-aware) so cic-typed `#Sniffo`
       # becomes `#sniffo` before it ever reaches Session.Server. The
       # in_flight_joins display-value follows suit — there is no
@@ -1435,7 +1435,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
-      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -1465,7 +1465,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
-      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -1543,7 +1543,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
-      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -1576,7 +1576,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
-      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -1598,7 +1598,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Second send_join — channel already :joined; must NOT broadcast
       # window_pending (cic would flicker) and must NOT downgrade state.
-      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} =
         IRCServer.wait_for_line(
@@ -1626,7 +1626,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "001 autojoin loop inserts one in_flight_joins entry per channel" do
-      # The 001 RPL_WELCOME handler calls Client.send_join/2 for each
+      # The 001 RPL_WELCOME handler calls Client.send_join/3 for each
       # autojoin channel; B2 threads state mutation through the loop so
       # every autojoined channel ends up tracked in in_flight_joins —
       # without this, an autojoin failure numeric (471 etc.) cannot be
@@ -1678,7 +1678,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = await_handshake(server)
-      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo")
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -1786,7 +1786,7 @@ defmodule Grappa.Session.ServerTest do
           %{state | in_flight_joins: %{"#stale" => {"#stale", stale_at, nil}}}
         end)
 
-      :ok = Session.send_join({:user, user.id}, network.id, "#fresh")
+      :ok = Session.send_join({:user, user.id}, network.id, "#fresh", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #fresh\r\n"), 1_000)
 
@@ -1815,7 +1815,7 @@ defmodule Grappa.Session.ServerTest do
           %{state | in_flight_joins: %{"#recent" => {"#recent", recent_at, nil}}}
         end)
 
-      :ok = Session.send_join({:user, user.id}, network.id, "#fresh")
+      :ok = Session.send_join({:user, user.id}, network.id, "#fresh", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #fresh\r\n"), 1_000)
 
