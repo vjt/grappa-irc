@@ -556,7 +556,8 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
-- **UX — 3 small bugs vjt observed live** (closed 2026-05-17). Three
+- **UX — 3 small bugs vjt observed live + post-close iPhone bug-hunt**
+  (closed 2026-05-17, reopened + extended 2026-05-18). Three
   buckets vjt caught within twenty-four hours of dogfooding cic on
   iPhone after the iOS cluster shipped. UX-1 (`f59264d`) archive
   close × + permanent scrollback delete — `Scrollback.delete_for_dm/3`
@@ -578,7 +579,33 @@ recent CLOSED clusters:
   visitor/nickserv/registered parity matrix as a CLASSES loop
   (registered DRIVEN; visitor + nickserv documented as
   `test.info().annotations` skips with reason +
-  unit-coverage pointers).
+  unit-coverage pointers). **Reopened 2026-05-18 for sixteen
+  additional `ux-3-*` commits** spanning three macro-problems
+  vjt surfaced on iPhone dogfooding: (a) iOS keyboard-resilience
+  saga (six commits, four reverts — `100dvh` and `position: fixed`
+  attempts all backed out; shipped stack is viewport-meta
+  `interactive-widget=resizes-content` + VisualViewport API
+  → `--viewport-height` + `window.scrollTo(0,0)` pin +
+  preventDefault on BottomBar pointerdown + flat-flex BottomBar);
+  (b) iOS chrome-gesture rubber-band saga (UNDEC R1+R2+R3 —
+  `#root` height-100% + `overscroll-behavior: contain` on
+  scrollable surfaces + `touch-action: none` on `.shell-mobile`
+  blanket with `pan-y`/`pan-x` re-enable per scroll-container);
+  (c) empty-scrollback pan-rejection (Z3-R4 `8a49ea3` — JS
+  DOM-measurement of `scrollHeight > clientHeight` gates a
+  `.scrollback-overflowing` class that toggles `pan-y`; CSS has no
+  `:has-overflow` selector). Plus server-side delete-vs-list
+  asymmetry (Z `db8650f` — `delete_for_dm` now matches
+  `list_archive`'s COALESCE rule), close-broadcast (Z2 `ca0acac`
+  — `ChannelsController.delete` + `GrappaChannel.close_query_window`
+  broadcast `archive_changed`), archive-open subscribe re-arm
+  (Z-arch `e0cdf4b` — archive open calls `openQueryWindowState`
+  BEFORE `setSelectedChannel`), and keyboard-preserve helper
+  evolution (Quart-DEC + TER-DEC + BIS-DEC — globalized via
+  document capture listener with `mousedown` not `pointerdown`).
+  Sixteen reopened commits all shipped same-day on `main`; UX-4
+  opens fresh as the next bug-cluster from vjt's ongoing iPhone
+  dogfooding.
 - **iOS UI polish** (closed 2026-05-17). 4 KISS buckets making cic
   on iPhone Safari feel like a native app. iOS-1 (`7226cd9`)
   viewport lock — disabled pinch-zoom + overscroll-behavior on

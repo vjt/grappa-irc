@@ -6416,6 +6416,193 @@ important MED) — **vjt-driven start. Do NOT auto-start review after
 UX-Z without vjt confirm.** After review: bastille deploy issue #8
 per `project_bastille_deploy_workstream`.
 
+---
+
+## 2026-05-18 — UX cluster reopened: keyboard saga + chrome-gesture saga + scroll-on-empty
+
+The original three-bucket UX cluster closed 2026-05-17 cleanly. Within
+twenty-four hours vjt resumed dogfooding on iPhone and hit a different
+class of bugs: the iOS keyboard, the iOS Safari rubber-band /
+chrome-gesture overlay, and the touch-pan event routing on empty
+scrollback. The cluster reopened in the same orchestrator session and
+shipped sixteen additional commits across three macro-problems and
+one server-side delete-vs-list asymmetry, all on `main`. The
+deliberate decision was to keep all sixteen under the `ux-3-*` commit
+prefix (rather than open a fresh cluster mid-bug-hunt) — UX-4 opens
+fresh once docs catch up.
+
+### The keyboard-resilience saga (six commits, four reverts)
+
+Bug shape: typing into the composer dismissed the iOS keyboard, OR
+the viewport scrolled when keyboard opened, OR the BottomBar
+disappeared, OR the topic bar disappeared. iOS Safari composes the
+visual viewport differently from the layout viewport, the
+`interactive-widget` viewport meta affects keyboard-show layout
+shifts, and `100dvh` resolves differently depending on whether the
+keyboard is open.
+
+- **BIS** `87dbd13` KEEP — shell-level safe-area inset
+- **TER** `e9d1fd3` REVERT — `100dvh` hid the top bar when keyboard opened
+- **QUAT** `814bf6c` REVERT — `position: fixed` on shell broke BottomBar interaction
+- **SEX** `e75714d` REVERT — `position: fixed` on body broke topic-bar
+- **SEPT** `08c0def` KEEP — viewport-meta `interactive-widget=resizes-content`
+- **PENT** `382aa31` KEEP — VisualViewport API drives `--viewport-height`
+- **OCT** `0b12d7c` + `d7f988f` (e2e) KEEP — `window.scrollTo(0,0)` programmatic-scroll pin
+- **NON** `bb939b8` KEEP — `preventDefault` on BottomBar `pointerdown`
+- **DEC** `a360c57` KEEP — flat-flex BottomBar layout disentangle
+
+The shipped stack: viewport meta `interactive-widget=resizes-content`
++ VisualViewport API → `--viewport-height` CSS var + `window.scrollTo(0,0)`
+pin + BottomBar `preventDefault` on pointerdown + flat-flex BottomBar.
+Each ingredient is necessary; four `position: fixed` / `100dvh`
+attempts all REVERTED. The Playwright e2e at `d7f988f` locks the
+stack against future regression on the OCT layer.
+
+### The chrome-gesture rubber-band saga (UNDEC, three rounds)
+
+Bug shape: dragging on the cic shell (anywhere, even on an empty
+scrollback) showed the iOS Safari chrome bar at the top and dismissed
+the keyboard. The browser thinks the user wants to scroll the
+viewport, not the app. Three rounds:
+
+- **UNDEC R1** `ee1961a` KEEP — `#root { height: 100% }` (kill real overflow on root)
+- **UNDEC R2** `b597a25` KEEP — `overscroll-behavior: contain` on `.scrollback` + `.bottom-bar`
+- **UNDEC R3** `ff65ad9` KEEP — `touch-action: none` on `.shell-mobile` blanket + `pan-y/pan-x` re-enable per scroll-container
+
+`overscroll-behavior: contain` alone (R2) doesn't catch the
+drag-from-non-scrolling-area case. `touch-action: none` on the
+shell-blanket level + targeted `pan-y` re-enable per scroll
+container (R3) is what finally rejects the gesture cleanly.
+
+### Z-arch — archive open re-arms per-channel topic subscribe
+
+Bug shape: opening an archive entry from sidebar or modal selected
+the channel but did NOT subscribe to its Phoenix topic. Server
+NOTICE 401 etc. arrivals went unreceived. Fix in `e0cdf4b` — both
+`ArchiveModal` and `Sidebar` archive-row click now call
+`openQueryWindowState(...)` BEFORE `setSelectedChannel(...)`.
+
+**Lesson**: "selecting a channel" ≠ "subscribing to a channel". The
+two operations are independent across the cic state. Callers that
+expect live events from the new selection must do both — the
+window-open IS the subscribe. Pre-existing main-flow JOIN paths do
+both because the JOIN code path explicitly opens; archive-revival
+was a side door that skipped half the work.
+
+### Z3-R4 — JS-measured overflow gates scrollback touch-action
+
+Bug shape: even with `touch-action: none` on `.shell-mobile`, dragging
+on empty scrollback (no messages, or fewer messages than fit the
+viewport) STILL scrolled the chrome. The R3 fix left `.scrollback` at
+`pan-y` permanently, which means "this element is allowed to be
+panned vertically" — and iOS interprets pan-y on a non-overflowing
+element as "no scroll to do here, propagate to viewport."
+
+Three rounds:
+
+- **Z3** `2399272` SUPERSEDED — `touch-action: none` on empty scrollback by emptiness-test class
+- **Z3-R3** `bc4088c` SUPERSEDED — `overflow-y: scroll` to force "always scrollable" semantics
+- **Z3-R4** `8a49ea3` KEEP — JS DOM-measurement (`scrollHeight > clientHeight`) gates `.scrollback-overflowing` class which toggles `pan-y`
+
+Z3 worked when scrollback was literally empty but broke when there
+were 1-2 messages that didn't fill viewport. Z3-R3's `overflow-y:
+scroll` made the inner element technically-always-scrollable but iOS
+still treated it as non-overflow because content height ≤ container
+height. Z3-R4 measures actual overflow on `messages-change ∪
+window-resize ∪ visualViewport-resize` events and toggles the class
+synchronously. This is the canonical fix; there is no CSS-only
+`:has-overflow` pseudo-class.
+
+### Z + Z2 — server-side delete-vs-list asymmetry + close broadcast
+
+`db8650f` (Z) — `Scrollback.delete_for_dm/3` was using a strict
+`channel = ? AND dm_with = ?` match, but `list_archive` used
+`COALESCE(dm_with, channel) = ?` — so DM rows that the LIST
+returned could not be DELETEd. The two functions are a read/write
+pair on the same data and MUST share the predicate. Generalize:
+**any read/write pair on the same column MUST share the same key
+predicate.** When one side coalesces or normalizes, the other must
+too.
+
+`ca0acac` (Z2) — `ChannelsController.delete` + the equivalent
+GrappaChannel `close_query_window` handler now broadcast
+`archive_changed` on the per-network user-topic. Before Z2, closing
+a window did NOT update the sidebar archive chip count or the
+ArchiveModal contents until page reload. Reactive UI surface drift
+from the source of truth = silent UX bug.
+
+### Quart-DEC + TER-DEC + BIS-DEC — keyboard-preserve helper evolution
+
+The "keepKeyboard" UX rule says: tapping certain buttons (scroll-to-
+bottom arrow, archive-row entries, etc.) MUST NOT dismiss the iOS
+keyboard. Three rounds of evolving the implementation:
+
+- **BIS-DEC** `0c2c6de` SUPERSEDED — per-button explicit `onPointerDown` wiring on scroll-to-bottom arrow
+- **TER-DEC** `8313681` KEEP — globalize via `document`-level capture listener (replaces per-button wiring)
+- **Quart-DEC** `c433872` KEEP — switch `pointerdown` → `mousedown` (pointerdown blocks scroll-gesture dispatch on iOS, mousedown is focus-only)
+
+The mousedown/pointerdown distinction is non-obvious: on iOS,
+`pointerdown` is a gesture-start event that blocks scroll
+propagation; `mousedown` is a synthesized focus-shift-only event
+that doesn't. Using mousedown preserves the touch-scroll behavior on
+the underlying scrollable area (archive modal scrollable list) while
+still firing soon enough to capture focus before the keyboard
+dismisses.
+
+### Saga-wide lessons (carry forward)
+
+- **Real-iPhone smoke is non-negotiable for iOS Safari work.**
+  Playwright webkit emulation does NOT simulate the OS keyboard, the
+  visual viewport, the chrome rubber-band, or the
+  `touch-action`/`pan-*` interpretation. Sixteen commits worth of
+  bug-hunt was all caught by vjt on his iPhone, none by webkit
+  Playwright. Specs lock fixes once shipped; they cannot discover
+  iOS-specific quirks.
+- **CSS has no `:has-overflow` selector.** Conditional touch-action
+  based on whether content overflows requires JS DOM-measurement
+  toggling a class. A single CSS declaration cannot solve "reject
+  pan gesture when no scroll work is available." Z3-R4 is the
+  canonical pattern; reach for it any time a touch-routing decision
+  depends on actual layout state.
+- **Read/write pairs on shared columns MUST share the predicate.**
+  `list_archive` used COALESCE, `delete_for_dm` used strict match;
+  the asymmetry orphaned rows that LIST returned and DELETE could
+  not touch. Generalize: when one side of a read/write pair
+  coalesces, normalizes, lowercases, etc, the other side MUST do
+  the same. Audit every context module pair.
+- **Setting `selectedChannel` ≠ subscribing.** Two independent cic
+  operations. Side-door entry points (archive revival, future
+  deep-link, etc.) must explicitly call BOTH the window-open helper
+  AND the channel selector. Pre-existing JOIN paths get it right
+  because JOIN explicitly opens; sideways entries got it wrong
+  silently. Z-arch is the lesson; future window-open code paths
+  must follow.
+- **`pointerdown` ≠ `mousedown` on iOS.** pointerdown is gesture-
+  start (blocks scroll-gesture dispatch); mousedown is a synthesized
+  focus-shift-only event. For "preserve scroll under tap" use
+  mousedown; for "block all default touch behavior" use pointerdown.
+- **Documented technical-debt carry: ArchiveModal silent-swallow
+  catch.** `ArchiveModal.handleConfirmDelete` has a bare
+  `catch {}` clause — CLAUDE.md UD10 "no silent-swallow at
+  boundaries" violation, flagged during this cluster but left
+  unfixed. Carried to UX-4 as discovered debt; first slot that
+  touches ArchiveModal will close it.
+
+### What this cluster taught about cluster scope
+
+The original UX cluster shipped 2026-05-17 as three buckets, each
+small and atomic. The reopened bug-hunt added sixteen more commits
+in the same session. The decision to keep them all under `ux-3-*`
+prefix (rather than open UX-4 mid-session) was right: it kept the
+narrative coherent, reviewer cycles tight, and the deploy cadence
+fast. The cost is docs-sweep load: this section is bigger than the
+original UX cluster section because it covers more ground.
+
+**Apply**: when a closed cluster reopens within hours-to-days, stay
+on the original cluster prefix. Open the next cluster fresh only
+once docs catch up and a new bug-class emerges. The cluster ID is
+about narrative coherence, not commit count.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
