@@ -1,12 +1,19 @@
 import { createEffect, createSignal, on, untrack } from "solid-js";
 import { token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
-import { networks } from "./networks";
+import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
+import { channelsBySlug, networkBySlug, networks } from "./networks";
+import { queryWindowsByNetwork } from "./queryWindows";
 import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
-import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, type WindowKind } from "./windowKinds";
+import {
+  HOME_WINDOW_NAME,
+  HOME_WINDOW_SLUG,
+  SERVER_WINDOW_NAME,
+  type WindowKind,
+} from "./windowKinds";
 
 // Per-channel selection store: which channel is currently focused +
 // per-channel unread counters. Module-singleton signal store mirroring
@@ -161,6 +168,15 @@ const exports = identityScopedStore((onIdentityChange) => {
       if (!sel) return;
       // C7.5: clear all three badge stores on focus.
       clearBadgesForWindow(sel.networkSlug, sel.channelName);
+      // UX-4 bucket E: record channel/query focus into MRU. Only
+      // channel + query enter MRU — home is the final fallback target
+      // (recording it would make it the default next-pick and short-
+      // circuit the chain). Server windows are the second-tier fallback
+      // (skipped for the same reason). list / mentions are ephemeral
+      // and shouldn't take focus when an unrelated window closes.
+      if (sel.kind === "channel" || sel.kind === "query") {
+        recordFocus(channelKey(sel.networkSlug, sel.channelName));
+      }
       // Fire-and-forget: the verb guards itself via scrollback's
       // loadedChannels Set.
       void loadInitialScrollback(sel.networkSlug, sel.channelName);
@@ -255,6 +271,175 @@ const exports = identityScopedStore((onIdentityChange) => {
         });
       });
     }
+  });
+
+  // UX-4 bucket E — close-window auto-focus picker.
+  //
+  // Fires when the currently-selected window vanishes from its live
+  // store (channelsBySlug drops the channel after a PART/kick/server-
+  // side close; queryWindowsByNetwork drops the query after a
+  // close_query_window broadcast). The picker shifts focus to:
+  //
+  //   1. The most-recently-viewed live channel/query window (MRU).
+  //   2. The closed window's network server window, IF that network
+  //      is still :connected (parked/failed networks would re-trigger
+  //      bucket D's home-redirect — pre-empt the fight by routing
+  //      straight to home).
+  //   3. Home as the universal last resort.
+  //
+  // One reactive effect covers ALL close triggers — × button, /part
+  // typed in compose, server-side kick, /disconnect cascade, query
+  // close_query_window. Per CLAUDE.md "Don't duplicate state — derive
+  // it": one observer, all triggers funnel through it.
+  //
+  // The just-closed key is evicted from MRU BEFORE the picker runs —
+  // per `feedback_target_window_ux_rule` ("SOURCE state must clear at
+  // switch BEFORE TARGET decisions"). Without eviction, pickLiveMru
+  // would see the just-closed window at MRU head and short-circuit to
+  // it (which by definition is no longer live, but the predicate would
+  // need to know that — eviction is simpler than encoding the
+  // exclude in the predicate).
+  //
+  // Race with bucket D: when /disconnect parks a network, the server
+  // emits both per-channel PART (closes channels → bucket E fires) AND
+  // a network-state flip to :parked (bucket D's home-redirect fires).
+  // Both terminate at home; no infinite loop. Bucket E's server-window
+  // fallback guard (`connection_state !== "connected"`) ensures bucket
+  // E doesn't pick the just-parked network's server window only to
+  // have bucket D bounce it to home on the next tick.
+  //
+  // Ordering note: if channelsBySlug refetches BEFORE the networks()
+  // flip lands, bucket E sees `connection_state === "connected"` and
+  // picks the parking network's server window momentarily; then bucket
+  // D fires on the parked-transition and bounces to home. A brief
+  // server-pane flash is visible. If networks() flips first, bucket D
+  // fires (sel matches the parking net) → home; bucket E then early-
+  // returns because sel.kind === "home". Both paths converge at home;
+  // the flash is the cost of decoupling the two effects via the
+  // signal-driven `connection_state` guard rather than peeking at
+  // bucket D's `lastConnectionState` Map.
+  //
+  // Transition-only firing: the picker MUST NOT fire just because the
+  // operator selected a window that isn't yet in channelsBySlug (e.g.
+  // optimistic pending channels via the windowState branch). The effect
+  // tracks `wasLive`: the previous-run result of the stillLive check
+  // for the current selection key. Only when wasLive=true AND now
+  // stillLive=false does the picker fire — that's the "window vanished"
+  // transition. A fresh selection that starts not-live keeps wasLive
+  // at false; the picker waits until the channel arrives in
+  // channelsBySlug (then wasLive=true) before becoming armed.
+  const lastSeenLive = new Map<ChannelKey, boolean>();
+  onIdentityChange(() => lastSeenLive.clear());
+
+  createEffect(() => {
+    const sel = selectedChannel();
+    if (!sel) return;
+    if (sel.kind !== "channel" && sel.kind !== "query") return;
+
+    const cbs = channelsBySlug() ?? {};
+    const qwbn = queryWindowsByNetwork();
+    const selKey = channelKey(sel.networkSlug, sel.channelName);
+
+    const stillLive = (() => {
+      if (sel.kind === "channel") {
+        const list = cbs[sel.networkSlug] ?? [];
+        // Decode the canonical name via selKey rather than reusing
+        // sel.channelName raw — bucket A canonicalises channel names
+        // end-to-end, but a stray non-canonical setSelectedChannel
+        // would otherwise stale-fire this check. Defensive parity with
+        // the symmetric MRU lookup at the picker step (decoded from
+        // a canonicalised ChannelKey).
+        const decoded = decodeChannelKey(selKey);
+        const name = decoded?.name ?? sel.channelName;
+        return list.some((c) => c.name === name);
+      }
+      const net = networkBySlug(sel.networkSlug);
+      if (!net) return false;
+      const queries = qwbn[net.id] ?? [];
+      const lower = sel.channelName.toLowerCase();
+      return queries.some((q) => q.targetNick.toLowerCase() === lower);
+    })();
+
+    const wasLive = lastSeenLive.get(selKey) ?? false;
+    lastSeenLive.set(selKey, stillLive);
+
+    if (stillLive) return;
+    if (!wasLive) return;
+
+    // Selection's window WAS live and now is not — transition fired.
+    // Evict from MRU and pick next via fallback chain.
+    untrack(() => {
+      evictFromMru(selKey);
+      lastSeenLive.delete(selKey);
+
+      const isLiveKey = (key: ChannelKey): boolean => {
+        const decoded = decodeChannelKey(key);
+        if (decoded === null) return false;
+        const { slug, name } = decoded;
+        const chans = cbs[slug] ?? [];
+        if (chans.some((c) => c.name === name)) return true;
+        const net = networkBySlug(slug);
+        if (net) {
+          const qs = qwbn[net.id] ?? [];
+          const lower = name.toLowerCase();
+          if (qs.some((q) => q.targetNick.toLowerCase() === lower)) return true;
+        }
+        return false;
+      };
+
+      const next = pickLiveMru(selKey, isLiveKey);
+      if (next !== null) {
+        const decoded = decodeChannelKey(next);
+        if (decoded !== null) {
+          const { slug, name } = decoded;
+          const chans = cbs[slug] ?? [];
+          if (chans.some((c) => c.name === name)) {
+            setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
+            return;
+          }
+          const net = networkBySlug(slug);
+          if (net) {
+            const qs = qwbn[net.id] ?? [];
+            const lower = name.toLowerCase();
+            const match = qs.find((q) => q.targetNick.toLowerCase() === lower);
+            if (match !== undefined) {
+              setSelectedChannel({
+                networkSlug: slug,
+                channelName: match.targetNick,
+                kind: "query",
+              });
+              return;
+            }
+          }
+        }
+      }
+
+      // No live MRU candidate. Fall back to the closed window's network
+      // server window IF still connected. Visitor networks have no
+      // connection_state field — always assume connected (visitor close
+      // paths terminate the whole session via quitAll; bucket E never
+      // sees a "visitor server closed" trigger in isolation).
+      const closedNet = networkBySlug(sel.networkSlug);
+      if (closedNet !== undefined) {
+        const isConnected =
+          closedNet.kind === "visitor" || closedNet.connection_state === "connected";
+        if (isConnected) {
+          setSelectedChannel({
+            networkSlug: sel.networkSlug,
+            channelName: SERVER_WINDOW_NAME,
+            kind: "server",
+          });
+          return;
+        }
+      }
+
+      // Last resort: home. Always present per bucket B.
+      setSelectedChannel({
+        networkSlug: HOME_WINDOW_SLUG,
+        channelName: HOME_WINDOW_NAME,
+        kind: "home",
+      });
+    });
   });
 
   return {

@@ -11,7 +11,7 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
   return {
     ...actual,
     listNetworks: vi.fn().mockResolvedValue([]),
-    listChannels: vi.fn().mockResolvedValue({}),
+    listChannels: vi.fn().mockResolvedValue([]),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
     // UX-4 bucket D — selection.ts now imports `networks` from
@@ -790,6 +790,302 @@ describe("selection store", () => {
       const after = sel.selectedChannel();
       expect(after?.networkSlug).toBe("freenode");
       expect(after?.channelName).toBe("#italia");
+    });
+  });
+
+  // UX-4 bucket E — close-window auto-focus picker. When the
+  // currently-selected window vanishes from its live store
+  // (channelsBySlug drops the channel after PART/kick; queryWindowsByNetwork
+  // drops the query after close_query_window broadcast), focus shifts
+  // to MRU > server > home. Tests drive the close transition by
+  // re-mocking listChannels and calling refetchChannels (channel path)
+  // OR by mutating queryWindowsByNetwork directly (query path).
+  describe("close-window auto-focus picker (UX-4 bucket E)", () => {
+    type Conn = "connected" | "parked" | "failed";
+    const userNet = (slug: string, id: number, conn: Conn) => ({
+      kind: "user" as const,
+      id,
+      slug,
+      nick: "alice",
+      connection_state: conn,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    it("picks the MRU candidate when an MRU entry is live", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([
+          { name: "#grappa", joined: true, source: "autojoin" },
+          { name: "#cicchetto", joined: true, source: "autojoin" },
+        ])
+        .mockResolvedValue([{ name: "#cicchetto", joined: true, source: "autojoin" }]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE1");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(2);
+      });
+
+      // Focus #cicchetto then #grappa — MRU is [#grappa, #cicchetto].
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      // Close #grappa — refetch reflects only #cicchetto.
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.channelName).toBe("#cicchetto");
+      });
+      expect(sel.selectedChannel()?.kind).toBe("channel");
+      expect(sel.selectedChannel()?.networkSlug).toBe("freenode");
+    });
+
+    it("falls back to server window when MRU is empty and network is connected", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([{ name: "#grappa", joined: true, source: "autojoin" }])
+        .mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE2");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+
+      // Only focus #grappa — MRU is [#grappa]. After eviction it's
+      // empty.
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.kind).toBe("server");
+      });
+      expect(sel.selectedChannel()?.channelName).toBe("$server");
+      expect(sel.selectedChannel()?.networkSlug).toBe("freenode");
+    });
+
+    it("falls back to home when MRU is empty and network is parked", async () => {
+      // /disconnect cascade: server emits PARTs for all channels →
+      // channelsBySlug refetches empty → close-picker fires → server
+      // fallback gated on connection_state === "connected" → fails
+      // (parked) → home. Bucket D's network-state effect would also
+      // fire on the parked transition; both converge at home.
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "parked")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([{ name: "#grappa", joined: true, source: "autojoin" }])
+        .mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE3");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.networkSlug).toBe("$home");
+      });
+      expect(sel.selectedChannel()?.kind).toBe("home");
+    });
+
+    it("skips MRU entries that are no longer live (stale entry)", async () => {
+      // Operator focused #a, #b, #c. Then #c PARTs (left from another
+      // tab / kicked). Then #b PARTs. MRU is still [#c, #b, #a] but
+      // #c and #b are dead. Picker must skip both and land on #a.
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([
+          { name: "#a", joined: true, source: "autojoin" },
+          { name: "#b", joined: true, source: "autojoin" },
+          { name: "#c", joined: true, source: "autojoin" },
+        ])
+        // After #c parts.
+        .mockResolvedValueOnce([
+          { name: "#a", joined: true, source: "autojoin" },
+          { name: "#b", joined: true, source: "autojoin" },
+        ])
+        // After #b parts.
+        .mockResolvedValue([{ name: "#a", joined: true, source: "autojoin" }]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE4");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(3);
+      });
+      // Build MRU: #a, #b, #c → MRU is [#c, #b, #a].
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#a",
+        kind: "channel",
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#b",
+        kind: "channel",
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#c",
+        kind: "channel",
+      });
+
+      // #c PARTs — picker should pick #b (next MRU).
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.channelName).toBe("#b");
+      });
+
+      // #b also PARTs — MRU now has stale #c at head + #a; picker
+      // skips #c and lands on #a.
+      networks.refetchChannels();
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.channelName).toBe("#a");
+      });
+    });
+
+    it("does NOT fire when a non-selected window closes", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([
+          { name: "#grappa", joined: true, source: "autojoin" },
+          { name: "#cicchetto", joined: true, source: "autojoin" },
+        ])
+        .mockResolvedValue([{ name: "#grappa", joined: true, source: "autojoin" }]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE5");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(2);
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // Close #cicchetto (not selected). Selection should stay on #grappa.
+      networks.refetchChannels();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sel.selectedChannel()?.channelName).toBe("#grappa");
+    });
+
+    it("does NOT fire when selection is home/server (those don't vanish via close)", async () => {
+      // Home and server are NEVER closed via the channel/query close
+      // path — server-window close goes through bucket D's
+      // disconnectNetwork (which directly bumps to home). The
+      // close-watcher gates on kind ∈ {channel, query}.
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([{ name: "#grappa", joined: true, source: "autojoin" }])
+        .mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tokE6");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+      sel.setSelectedChannel({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+      // Channel vanishes — but selection is home, not the vanished
+      // channel. Selection must stay at home.
+      networks.refetchChannels();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sel.selectedChannel()?.kind).toBe("home");
+    });
+
+    it("picks MRU when a query window vanishes", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels).mockResolvedValue([
+        { name: "#grappa", joined: true, source: "autojoin" },
+      ]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      const qw = await import("../lib/queryWindows");
+      auth.setToken("tokE7");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+
+      // Seed open query windows.
+      qw.setQueryWindowsByNetwork({
+        1: [
+          { targetNick: "bob", openedAt: "2026-01-01T00:00:00Z" },
+          { targetNick: "carol", openedAt: "2026-01-01T00:00:01Z" },
+        ],
+      });
+
+      // Focus #grappa then bob then carol — MRU is [carol, bob, #grappa].
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "bob",
+        kind: "query",
+      });
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "carol",
+        kind: "query",
+      });
+
+      // Close carol (drop from queryWindowsByNetwork).
+      qw.setQueryWindowsByNetwork({
+        1: [{ targetNick: "bob", openedAt: "2026-01-01T00:00:00Z" }],
+      });
+      await vi.waitFor(() => {
+        expect(sel.selectedChannel()?.channelName).toBe("bob");
+      });
+      expect(sel.selectedChannel()?.kind).toBe("query");
     });
   });
 });
