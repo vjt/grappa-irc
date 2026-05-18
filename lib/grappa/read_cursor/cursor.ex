@@ -33,6 +33,7 @@ defmodule Grappa.ReadCursor.Cursor do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Message
   alias Grappa.Visitors.Visitor
@@ -76,6 +77,7 @@ defmodule Grappa.ReadCursor.Cursor do
   def changeset(cursor, attrs) do
     cursor
     |> cast(attrs, [:user_id, :visitor_id, :network_id, :channel, :last_read_message_id])
+    |> canonicalize_channel()
     |> validate_required([:network_id, :channel, :last_read_message_id])
     |> validate_length(:channel, min: 1)
     |> validate_subject_xor()
@@ -89,6 +91,21 @@ defmodule Grappa.ReadCursor.Cursor do
       name: :read_cursors_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
+  end
+
+  # UX-4 bucket A — defense-in-depth canonicalisation. Mirrors
+  # `Grappa.Scrollback.Message.changeset/2`. Nicks (DM-shape windows)
+  # pass through unchanged because `Identifier.canonical_channel/1`
+  # only folds sigil-prefixed channel names.
+  @spec canonicalize_channel(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp canonicalize_channel(changeset) do
+    case get_change(changeset, :channel) do
+      ch when is_binary(ch) ->
+        put_change(changeset, :channel, Identifier.canonical_channel(ch))
+
+      _ ->
+        changeset
+    end
   end
 
   # Mirror of Scrollback.Message.validate_subject_xor/1.

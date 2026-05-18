@@ -179,6 +179,7 @@ defmodule Grappa.Networks.Credential do
       :connection_state_reason,
       :connection_state_changed_at
     ])
+    |> canonicalize_channel_lists()
     |> validate_required([:user_id, :network_id, :nick, :auth_method])
     # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
     # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
@@ -203,6 +204,35 @@ defmodule Grappa.Networks.Credential do
     |> put_encrypted_password()
     |> put_default_connection_state_changed_at()
   end
+
+  # UX-4 bucket A — canonicalise channel names in both array columns
+  # before persistence. Operators may type `#Sniffo` in a mix task or
+  # the future REST credentials surface; the runtime persists
+  # `last_joined_channels` from `Session.Server` state.members keys
+  # which are themselves canonicalised by EventRouter at intake. The
+  # backfill migration covers existing rows; this changeset covers
+  # everything written from bucket-A forward.
+  @spec canonicalize_channel_lists(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp canonicalize_channel_lists(changeset) do
+    changeset
+    |> maybe_canonicalize_channel_list(:autojoin_channels)
+    |> maybe_canonicalize_channel_list(:last_joined_channels)
+  end
+
+  defp maybe_canonicalize_channel_list(changeset, field) do
+    case get_change(changeset, field) do
+      list when is_list(list) ->
+        put_change(changeset, field, Enum.map(list, &canonicalize_channel_entry/1))
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp canonicalize_channel_entry(name) when is_binary(name),
+    do: Identifier.canonical_channel(name)
+
+  defp canonicalize_channel_entry(other), do: other
 
   # The migration column has no DB default (sqlite ADD COLUMN forbids
   # CURRENT_TIMESTAMP defaults — see migration 20260504120000 moduledoc).

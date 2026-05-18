@@ -22,7 +22,29 @@ declare const channelKeyBrand: unique symbol;
 export type ChannelKey = string & { readonly [channelKeyBrand]: true };
 
 export const channelKey = (slug: string, name: string): ChannelKey =>
-  `${slug} ${name}` as ChannelKey;
+  `${slug} ${canonicalChannel(name)}` as ChannelKey;
+
+// UX-4 bucket A — sigil-aware lowercase canonicalisation for IRC
+// channel names. Mirrors `Grappa.IRC.Identifier.canonical_channel/1`
+// on the server. Channel names (sigils `#&!+` per RFC 2812) are
+// case-insensitive; nicks (DM-target windows) keep their casing
+// because display + CTCP visibility row's `dm_with` carry meaning.
+//
+// Applied at every channel-bearing cic boundary: `channelKey(slug,
+// name)` (composite key), `joinChannel(...)` (Phoenix Channel topic
+// segment), REST endpoint URL path-segment producers, slash-command
+// channel arg producers. Without this, `#Chan` from the operator's
+// typed input would create a duplicate window beside the `#chan` the
+// server canonicalises to in scrollback + window_state.
+export function canonicalChannel(name: string): string {
+  if (name.length === 0) return name;
+  const first = name.charCodeAt(0);
+  // 0x23 #, 0x26 &, 0x21 !, 0x2B +
+  if (first === 0x23 || first === 0x26 || first === 0x21 || first === 0x2b) {
+    return name.toLowerCase();
+  }
+  return name;
+}
 
 // Codebase audit cic M4 — paired decoder for the composite key. Pre-
 // fix, `Sidebar.pseudoChannelsForNetwork` and the `subscribe.ts`

@@ -90,6 +90,66 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  describe "canonical_channel/1" do
+    test "lowercases sigil-prefixed channel names" do
+      assert Identifier.canonical_channel("#Chan") == "#chan"
+      assert Identifier.canonical_channel("#CHAN") == "#chan"
+      assert Identifier.canonical_channel("#cHaN") == "#chan"
+      assert Identifier.canonical_channel("&LocalChan") == "&localchan"
+      assert Identifier.canonical_channel("!Safe") == "!safe"
+      assert Identifier.canonical_channel("+Modeless") == "+modeless"
+    end
+
+    test "passes already-lowercase channels through verbatim" do
+      assert Identifier.canonical_channel("#chan") == "#chan"
+      assert Identifier.canonical_channel("&local") == "&local"
+    end
+
+    test "leaves nicks unchanged (case is meaningful for display)" do
+      assert Identifier.canonical_channel("Vjt") == "Vjt"
+      assert Identifier.canonical_channel("CristoBOT") == "CristoBOT"
+    end
+
+    test "leaves the $server pseudo-channel marker unchanged" do
+      assert Identifier.canonical_channel("$server") == "$server"
+    end
+
+    test "passes non-binary input through unchanged" do
+      assert Identifier.canonical_channel(nil) == nil
+      assert Identifier.canonical_channel(:atom) == :atom
+    end
+
+    test "is idempotent" do
+      assert Identifier.canonical_channel(Identifier.canonical_channel("#Chan")) == "#chan"
+    end
+
+    property "lowercases any sigil-prefixed channel-shape input" do
+      # Channel body chars: anything but space, comma, BELL, and ASCII
+      # uppercase (so the lowercase predicate has something to fold).
+      sigils = StreamData.member_of([?#, ?&, ?!, ?+])
+      body = StreamData.string([?A..?Z, ?a..?z, ?0..?9, ?-], min_length: 1, max_length: 20)
+
+      check all(sigil <- sigils, name <- body) do
+        input = <<sigil>> <> name
+        canon = Identifier.canonical_channel(input)
+        assert canon == String.downcase(input)
+        # Round-trip stability.
+        assert Identifier.canonical_channel(canon) == canon
+      end
+    end
+
+    property "leaves any non-sigil input unchanged" do
+      # First char anything that is NOT a channel sigil.
+      first = StreamData.filter(StreamData.integer(?A..?z), &(&1 not in [?#, ?&, ?!, ?+]))
+      tail = StreamData.string(:ascii, max_length: 15)
+
+      check all(c <- first, t <- tail) do
+        input = <<c>> <> t
+        assert Identifier.canonical_channel(input) == input
+      end
+    end
+  end
+
   describe "valid_network_slug?/1" do
     test "accepts lowercase alphanum + dash + underscore" do
       assert Identifier.valid_network_slug?("azzurra")

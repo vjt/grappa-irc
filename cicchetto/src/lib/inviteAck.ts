@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { canonicalChannel } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 
 // P-0e — invite-ack ephemeral store. Append-only list of (peer, ts) per
@@ -48,7 +49,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   });
 
   const appendInviteAck = (networkSlug: string, channel: string, peer: string): void => {
-    const channelKey = channel.toLowerCase();
+    // UX-4 bucket A: use the shared sigil-aware canonicaliser so the
+    // invite-ack store keys collapse on the same form the server
+    // broadcasts on (per-channel topic) and the rest of cic uses for
+    // window-state lookups.
+    const channelKey = canonicalChannel(channel);
     seq += 1;
     const entry: InviteAckEntry = { peer, ts: seq };
     setInviteAckBySlug((prev) => {

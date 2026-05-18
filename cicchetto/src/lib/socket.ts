@@ -1,6 +1,7 @@
 import { type Channel, Socket } from "phoenix";
 import { createEffect, createRoot, on } from "solid-js";
 import { token } from "./auth";
+import { canonicalChannel } from "./channelKey";
 import { recordSocketClose, recordSocketError, recordSocketOpen } from "./socketHealth";
 
 // Phoenix Channels singleton. Mirrors `auth.ts`'s module-singleton shape:
@@ -110,7 +111,13 @@ export function joinChannel(
   channelName: string,
   onJoinOk?: (reply: unknown) => void,
 ): Channel {
-  const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${channelName}`;
+  // UX-4 bucket A — canonicalise channel-shape segment so cic joins
+  // the same Phoenix topic the server broadcasts on. Server-side
+  // `Grappa.PubSub.Topic.channel/3` canonicalises at build time; if
+  // cic subscribed to `#Chan` while server emits on `#chan`, the
+  // fastlane fan-out would skip this socket entirely. Nicks (DM
+  // windows) pass through unchanged.
+  const topic = `grappa:user:${userName}/network:${networkSlug}/channel:${canonicalChannel(channelName)}`;
   const ch = getSocket().channel(topic);
   // Surface server-side join failures to the console + Phase 5
   // telemetry hook (the `unknown topic` and `forbidden` shapes the

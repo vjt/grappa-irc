@@ -189,8 +189,91 @@ defmodule Grappa.Session.EventRouter do
   `{:cont, state, []}` — no mutation, no effects. The caller's
   `handle_info` clause already drops on the wildcard `{:irc, _}`
   match; this match is the equivalent here.
+
+  ## Channel-name canonicalisation (UX-4 bucket A)
+
+  IRC channel names are case-insensitive (RFC 2812 §2.2). This entry
+  point canonicalises every channel-shape param in `msg.params` to
+  lowercase BEFORE dispatching to the per-command `do_route/2` clause,
+  so every downstream consumer (members map, topics cache,
+  channel_modes cache, channels_created cache, window_states, persist
+  effects, PubSub broadcasts) observes a single key per channel
+  regardless of upstream casing.
+
+  The lowercase predicate is sigil-aware
+  (`Identifier.canonical_channel/1` only folds `#&!+`-prefixed
+  strings) so nick params (PRIVMSG target = nick for DMs, MODE target
+  = nick for user-mode-on-self, NICK new-nick, KICK target nick,
+  numerics carrying target nicks) pass through unchanged — case is
+  meaningful for nick display and CTCP visibility row's `dm_with`
+  column.
+
+  Pre-bucket-A this entry point delegated directly to the per-command
+  clauses, which used the raw case from the wire. Cache-key lookups
+  applied `normalize_channel/1` (a local downcase) but persist + PubSub
+  paths did not, so `#Chan` and `#chan` routed to two windows, two
+  scrollback rowsets, two read-cursors, two PubSub topics.
   """
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
+  def route(%Message{} = msg, state) do
+    do_route(canonicalize_channel_params(msg), state)
+  end
+
+  # Rewrites `msg.params` so every channel-shape param is canonicalised
+  # to lowercase. The position of the channel param differs per command
+  # (verbs put channel at param 0; numerics typically at param 1 after
+  # the own-nick echo; 353 RPL_NAMREPLY puts it at param 2 after own-
+  # nick + visibility-prefix; 341 RPL_INVITING puts target_nick at 1
+  # then channel at 2 per Bahamut ordering). Anything not channel-shape
+  # (nicks, modes, body, reasons, raw param strings) passes through.
+  @spec canonicalize_channel_params(Message.t()) :: Message.t()
+  defp canonicalize_channel_params(%Message{command: command, params: params} = msg) do
+    %{msg | params: do_canonicalize_params(command, params)}
+  end
+
+  # Verb channels live at param 0.
+  defp do_canonicalize_params(cmd, [ch | rest])
+       when cmd in [:privmsg, :notice, :join, :part, :topic, :kick, :invite] and
+              is_binary(ch) do
+    [Identifier.canonical_channel(ch) | rest]
+  end
+
+  # MODE: channel-or-nick target at param 0. canonical_channel/1 is a
+  # no-op on nicks so this is safe for both channel-MODE (which leads
+  # downstream to the channel_modes cache + members map) and user-MODE
+  # on self (target == own_nick, unchanged).
+  defp do_canonicalize_params(:mode, [target | rest]) when is_binary(target) do
+    [Identifier.canonical_channel(target) | rest]
+  end
+
+  # Numerics where channel is at param 1 (after the own-nick echo).
+  # 332 RPL_TOPIC / 333 RPL_TOPICWHOTIME / 331 RPL_NOTOPIC / 329
+  # RPL_CREATIONTIME / 324 RPL_CHANNELMODEIS / 366 RPL_ENDOFNAMES /
+  # 352 RPL_WHOREPLY / join-failure 403/405/471/473/474/475/476/477.
+  defp do_canonicalize_params({:numeric, n}, [own_nick, ch | rest])
+       when n in [332, 333, 331, 329, 324, 366, 352, 403, 405, 471, 473, 474, 475, 476, 477] and
+              is_binary(ch) do
+    [own_nick, Identifier.canonical_channel(ch) | rest]
+  end
+
+  # 353 RPL_NAMREPLY: params [_, visibility_prefix, channel, names_blob].
+  defp do_canonicalize_params({:numeric, 353}, [own_nick, prefix, ch | rest])
+       when is_binary(ch) do
+    [own_nick, prefix, Identifier.canonical_channel(ch) | rest]
+  end
+
+  # 341 RPL_INVITING (Bahamut ordering): params [_, target_nick, channel | _].
+  defp do_canonicalize_params({:numeric, 341}, [own_nick, target_nick, ch | rest])
+       when is_binary(ch) do
+    [own_nick, target_nick, Identifier.canonical_channel(ch) | rest]
+  end
+
+  # All other commands (NICK, QUIT, PING/PONG, CAP, AUTHENTICATE,
+  # numerics without a channel param, vendor verbs) pass through
+  # unchanged — there is no channel-shape param to canonicalise.
+  defp do_canonicalize_params(_, params), do: params
+
+  @spec do_route(Message.t(), state()) :: {:cont, state(), [effect()]}
   # CTCP VERSION query — body is `\x01VERSION\x01` or `\x01VERSION ...\x01`
   # (some clients append trailing args/space). Per RFC 2812 + CTCP spec,
   # responses MUST go via NOTICE (not PRIVMSG) to the SENDER's nick to
@@ -205,9 +288,9 @@ defmodule Grappa.Session.EventRouter do
   #      VERSION" instead of silently consuming the CTCP. CTCP framing
   #      stripped from body for readability; the notice kind matches the
   #      outbound reply (also a NOTICE), pairing query + answer visually.
-  def route(%Message{command: :privmsg, params: [target, body]} = msg, state)
-      when is_binary(target) and is_binary(body) and
-             binary_part(body, 0, 1) == <<0x01>> do
+  defp do_route(%Message{command: :privmsg, params: [target, body]} = msg, state)
+       when is_binary(target) and is_binary(body) and
+              binary_part(body, 0, 1) == <<0x01>> do
     case ctcp_verb(body) do
       "VERSION" ->
         sender = Message.sender_nick(msg)
@@ -225,7 +308,13 @@ defmodule Grappa.Session.EventRouter do
         # the broadcast lands on a topic cic isn't subscribed to
         # until that window already exists, defeating auto-open.
         # Channel-targeted CTCP keeps target as channel (no re-key).
-        dm_channel = if target == state.nick, do: state.nick, else: target
+        # UX-4 A: canonicalise channel-shape targets at the persist
+        # boundary; nicks pass through unchanged.
+        dm_channel =
+          if target == state.nick,
+            do: state.nick,
+            else: Identifier.canonical_channel(target)
+
         notice_body = "CTCP VERSION query → grappa #{version}"
         {state2, persist_eff} = build_persist(state, :notice, dm_channel, sender, notice_body, %{})
 
@@ -240,21 +329,21 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  def route(%Message{command: :privmsg, params: [channel, body]} = msg, state)
-      when is_binary(channel) and is_binary(body) do
+  defp do_route(%Message{command: :privmsg, params: [channel, body]} = msg, state)
+       when is_binary(channel) and is_binary(body) do
     privmsg_default(msg, state, body)
   end
 
-  def route(%Message{command: :notice, params: [channel, body]} = msg, state)
-      when is_binary(channel) and is_binary(body) and
-             byte_size(channel) > 0 and
-             binary_part(channel, 0, 1) in ["#", "&", "!", "+"] do
+  defp do_route(%Message{command: :notice, params: [channel, body]} = msg, state)
+       when is_binary(channel) and is_binary(body) and
+              byte_size(channel) > 0 and
+              binary_part(channel, 0, 1) in ["#", "&", "!", "+"] do
     {state, eff} = build_persist(state, :notice, channel, Message.sender_nick(msg), body, %{})
     {:cont, state, [eff]}
   end
 
-  def route(%Message{command: :join, params: [channel | _]} = msg, state)
-      when is_binary(channel) do
+  defp do_route(%Message{command: :join, params: [channel | _]} = msg, state)
+       when is_binary(channel) do
     sender = Message.sender_nick(msg)
 
     members =
@@ -304,8 +393,8 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, effects}
   end
 
-  def route(%Message{command: :part, params: [channel | rest]} = msg, state)
-      when is_binary(channel) do
+  defp do_route(%Message{command: :part, params: [channel | rest]} = msg, state)
+       when is_binary(channel) do
     sender = Message.sender_nick(msg)
 
     reason =
@@ -409,7 +498,7 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, effects}
   end
 
-  def route(%Message{command: :quit, params: rest} = msg, state) do
+  defp do_route(%Message{command: :quit, params: rest} = msg, state) do
     sender = Message.sender_nick(msg)
 
     reason =
@@ -452,8 +541,8 @@ defmodule Grappa.Session.EventRouter do
   # accepted; emit `:visitor_r_observed` carrying the captured
   # password so `Session.Server.apply_effects/2` can commit it
   # atomically into the visitors row.
-  def route(%Message{command: :mode, params: [target, modes | _]}, state)
-      when is_binary(target) and is_binary(modes) and target == state.nick do
+  defp do_route(%Message{command: :mode, params: [target, modes | _]}, state)
+       when is_binary(target) and is_binary(modes) and target == state.nick do
     # `pending_auth` is set on `Session.Server` state but is optional
     # from the pure router's POV (the typespec admits `optional(any())
     # => any()`); pure unit tests on user sessions skip it.
@@ -466,8 +555,8 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, effects}
   end
 
-  def route(%Message{command: :mode, params: [channel, modes | args]} = msg, state)
-      when is_binary(channel) and is_binary(modes) do
+  defp do_route(%Message{command: :mode, params: [channel, modes | args]} = msg, state)
+       when is_binary(channel) and is_binary(modes) do
     sender = Message.sender_nick(msg)
     members = apply_mode_string(state.members, channel, modes, args)
 
@@ -503,8 +592,8 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff | mode_effects]}
   end
 
-  def route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
-      when is_binary(new_nick) do
+  defp do_route(%Message{command: :nick, params: [new_nick | _]} = msg, state)
+       when is_binary(new_nick) do
     old_nick = Message.sender_nick(msg)
     channels = channels_with_member(state.members, old_nick)
 
@@ -551,8 +640,8 @@ defmodule Grappa.Session.EventRouter do
   # S2.3: update topics cache with new text + set_by (nick from prefix) +
   # set_at (server-side wall-clock — no numeric available for this path).
   # Also produces a :topic scrollback row (unchanged from pre-S2.3).
-  def route(%Message{command: :topic, params: [channel, body]} = msg, state)
-      when is_binary(channel) and is_binary(body) do
+  defp do_route(%Message{command: :topic, params: [channel, body]} = msg, state)
+       when is_binary(channel) and is_binary(body) do
     sender = Message.sender_nick(msg)
     chan_key = normalize_channel(channel)
 
@@ -569,8 +658,8 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state2, [eff, {:topic_changed, channel, entry}]}
   end
 
-  def route(%Message{command: :kick, params: [channel, target | rest]} = msg, state)
-      when is_binary(channel) and is_binary(target) do
+  defp do_route(%Message{command: :kick, params: [channel, target | rest]} = msg, state)
+       when is_binary(channel) and is_binary(target) do
     sender = Message.sender_nick(msg)
 
     reason =
@@ -641,11 +730,11 @@ defmodule Grappa.Session.EventRouter do
   # no entry for the channel, skip the merge entirely; the
   # names_fold/3 call below still feeds the per-target accumulator,
   # and the 366 drain emits the scrollback rows for non-joined targets.
-  def route(
-        %Message{command: {:numeric, 353}, params: [_, _, channel, names_blob]},
-        state
-      )
-      when is_binary(channel) and is_binary(names_blob) do
+  defp do_route(
+         %Message{command: {:numeric, 353}, params: [_, _, channel, names_blob]},
+         state
+       )
+       when is_binary(channel) and is_binary(names_blob) do
     tokens = String.split(names_blob, " ", trim: true)
 
     members =
@@ -667,11 +756,11 @@ defmodule Grappa.Session.EventRouter do
   # Does NOT produce a scrollback row (spec: :topic rows come ONLY from the
   # TOPIC command, i.e. someone changing the topic mid-session). The set_by /
   # set_at fields may arrive in the 333 that follows; partial entry is fine.
-  def route(
-        %Message{command: {:numeric, 332}, params: [_, channel, topic_text]},
-        state
-      )
-      when is_binary(channel) and is_binary(topic_text) do
+  defp do_route(
+         %Message{command: {:numeric, 332}, params: [_, channel, topic_text]},
+         state
+       )
+       when is_binary(channel) and is_binary(topic_text) do
     chan_key = normalize_channel(channel)
     existing = Map.get(Map.get(state, :topics, %{}), chan_key, %{text: nil, set_by: nil, set_at: nil})
     entry = %{existing | text: topic_text}
@@ -683,11 +772,11 @@ defmodule Grappa.Session.EventRouter do
   # The 332 may not have arrived yet (out-of-order); create the entry with
   # text: nil if so — 332 will fill it in when it arrives.
   # Unix timestamp param is always the last positional.
-  def route(
-        %Message{command: {:numeric, 333}, params: [_, channel, setter, unix_ts_str]},
-        state
-      )
-      when is_binary(channel) and is_binary(setter) and is_binary(unix_ts_str) do
+  defp do_route(
+         %Message{command: {:numeric, 333}, params: [_, channel, setter, unix_ts_str]},
+         state
+       )
+       when is_binary(channel) and is_binary(setter) and is_binary(unix_ts_str) do
     chan_key = normalize_channel(channel)
     existing = Map.get(Map.get(state, :topics, %{}), chan_key, %{text: nil, set_by: nil, set_at: nil})
     ts = parse_unix_ts(unix_ts_str)
@@ -698,11 +787,11 @@ defmodule Grappa.Session.EventRouter do
 
   # 331 RPL_NOTOPIC: explicit "no topic set" — store an explicit-empty entry
   # so cicchetto can render a "(no topic set)" placeholder (spec #20).
-  def route(
-        %Message{command: {:numeric, 331}, params: [_, channel | _]},
-        state
-      )
-      when is_binary(channel) do
+  defp do_route(
+         %Message{command: {:numeric, 331}, params: [_, channel | _]},
+         state
+       )
+       when is_binary(channel) do
     chan_key = normalize_channel(channel)
     entry = %{text: nil, set_by: nil, set_at: nil}
     topics = Map.put(Map.get(state, :topics, %{}), chan_key, entry)
@@ -723,11 +812,11 @@ defmodule Grappa.Session.EventRouter do
   # NumericRouter `@delegated_numerics` so Server skips its dual-persist
   # path; without that, a malformed 329 would still leak the bogus
   # trailing as a `:notice` body.
-  def route(
-        %Message{command: {:numeric, 329}, params: [_, channel, unix_ts_str]},
-        state
-      )
-      when is_binary(channel) and is_binary(unix_ts_str) do
+  defp do_route(
+         %Message{command: {:numeric, 329}, params: [_, channel, unix_ts_str]},
+         state
+       )
+       when is_binary(channel) and is_binary(unix_ts_str) do
     case Integer.parse(unix_ts_str) do
       {ts, ""} when ts > 0 ->
         chan_key = normalize_channel(channel)
@@ -743,11 +832,11 @@ defmodule Grappa.Session.EventRouter do
   # 324 RPL_CHANNELMODEIS: initial mode snapshot after JOIN. Replaces the
   # channel_modes entry entirely with the parsed +modes [params] shape.
   # Mode string starts with '+'; args follow as separate params.
-  def route(
-        %Message{command: {:numeric, 324}, params: [_, channel, mode_str | mode_args]},
-        state
-      )
-      when is_binary(channel) and is_binary(mode_str) do
+  defp do_route(
+         %Message{command: {:numeric, 324}, params: [_, channel, mode_str | mode_args]},
+         state
+       )
+       when is_binary(channel) and is_binary(mode_str) do
     chan_key = normalize_channel(channel)
     entry = parse_mode_snapshot(mode_str, mode_args)
     channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
@@ -772,11 +861,11 @@ defmodule Grappa.Session.EventRouter do
   # state.members[target] — joined targets defer to the members_seeded
   # refresh path above (no scrollback rows). The accumulator is dropped
   # in both cases.
-  def route(
-        %Message{command: {:numeric, 366}, params: [_, channel, _ | _]},
-        state
-      )
-      when is_binary(channel) do
+  defp do_route(
+         %Message{command: {:numeric, 366}, params: [_, channel, _ | _]},
+         state
+       )
+       when is_binary(channel) do
     members = Map.get(state.members, channel, %{})
     members_seeded = {:members_seeded, channel, members}
 
@@ -794,11 +883,11 @@ defmodule Grappa.Session.EventRouter do
   # The whois_pending fold is gated on a pre-existing entry — only operator-
   # issued WHOIS commands set up the accumulator (see Server's
   # `:send_whois` handler).
-  def route(
-        %Message{command: {:numeric, 311}, params: [_, target, user, host | rest]},
-        state
-      )
-      when is_binary(target) and is_binary(user) and is_binary(host) do
+  defp do_route(
+         %Message{command: {:numeric, 311}, params: [_, target, user, host | rest]},
+         state
+       )
+       when is_binary(target) and is_binary(user) and is_binary(host) do
     nick_key = normalize_nick(target)
     cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
     realname = whois_trailing(rest)
@@ -823,11 +912,11 @@ defmodule Grappa.Session.EventRouter do
   # The interleaved WHOIS+WHOWAS-for-same-target case is rare (operator-
   # driven, one at a time); we bias toward whois because it's the more
   # common verb.
-  def route(
-        %Message{command: {:numeric, 312}, params: [_, target, server | rest]},
-        state
-      )
-      when is_binary(target) and is_binary(server) do
+  defp do_route(
+         %Message{command: {:numeric, 312}, params: [_, target, server | rest]},
+         state
+       )
+       when is_binary(target) and is_binary(server) do
     nick_key = normalize_nick(target)
     whois_pending = Map.get(state, :whois_pending, %{})
     trailing = whois_trailing(rest)
@@ -843,22 +932,22 @@ defmodule Grappa.Session.EventRouter do
 
   # 313 RPL_WHOISOPERATOR: `:server 313 own_nick target :is an IRC operator`.
   # Folds `is_operator: true`.
-  def route(
-        %Message{command: {:numeric, 313}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 313}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_operator: true}), []}
   end
 
   # 317 RPL_WHOISIDLE: `:server 317 own_nick target idle_seconds [signon] :seconds idle`.
   # Some servers omit signon (only emit `idle_seconds`). We tolerate both
   # shapes — the trailing text is human-readable and ignored.
-  def route(
-        %Message{command: {:numeric, 317}, params: [_, target, idle_str | rest]},
-        state
-      )
-      when is_binary(target) and is_binary(idle_str) do
+  defp do_route(
+         %Message{command: {:numeric, 317}, params: [_, target, idle_str | rest]},
+         state
+       )
+       when is_binary(target) and is_binary(idle_str) do
     base_fold = %{idle_seconds: parse_int_or_nil(idle_str)}
 
     fold =
@@ -880,11 +969,11 @@ defmodule Grappa.Session.EventRouter do
   # The trailing param is a space-separated list of channels with mode prefixes.
   # Multiple 319s may arrive for one target (large channel lists chunk over
   # multiple lines) — accumulate into a single list, preserving prefixes.
-  def route(
-        %Message{command: {:numeric, 319}, params: [_, target | rest]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 319}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
     chans =
       case whois_trailing(rest) do
         nil -> []
@@ -899,11 +988,11 @@ defmodule Grappa.Session.EventRouter do
   # If no accumulator exists (target never set up via /whois), drop silently —
   # an unsolicited 318 (services bouncing back, race with disconnect) is
   # not actionable.
-  def route(
-        %Message{command: {:numeric, 318}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 318}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     pending = Map.get(state, :whois_pending, %{})
     nick_key = normalize_nick(target)
 
@@ -933,11 +1022,11 @@ defmodule Grappa.Session.EventRouter do
   #     extract host + ip via `parse_whois_actually_trailing/1`.
 
   # 275 RPL_USINGSSL: `:server 275 own_nick target :is using a secure connection (SSL)`.
-  def route(
-        %Message{command: {:numeric, 275}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 275}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{using_ssl: true}), []}
   end
 
@@ -952,11 +1041,11 @@ defmodule Grappa.Session.EventRouter do
   #     a `peer_away` wire event on the user-level topic, cic dm-listener
   #     renders an inline ephemeral row in the peer's DM window. cic owns
   #     localization (no human-readable string baked into the wire payload).
-  def route(
-        %Message{command: {:numeric, 301}, params: [_, target | rest]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 301}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
     nick_key = normalize_nick(target)
     pending = Map.get(state, :whois_pending, %{})
     msg = whois_trailing(rest)
@@ -971,57 +1060,57 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # 307 RPL_WHOISREGNICK: `:server 307 own_nick target :has identified for this nick`.
-  def route(
-        %Message{command: {:numeric, 307}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 307}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_registered: true}), []}
   end
 
   # 308 RPL_WHOISADMIN: `:server 308 own_nick target :is an IRC Server Administrator`.
-  def route(
-        %Message{command: {:numeric, 308}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 308}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_admin: true}), []}
   end
 
   # 309 RPL_WHOISSADMIN: `:server 309 own_nick target :is a Services Administrator`.
-  def route(
-        %Message{command: {:numeric, 309}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 309}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_services_admin: true}), []}
   end
 
   # 310 RPL_WHOISHELPER: `:server 310 own_nick target :is a Help Operator`.
-  def route(
-        %Message{command: {:numeric, 310}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 310}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_helper: true}), []}
   end
 
   # 316 RPL_WHOISCHANOP: `:server 316 own_nick target :<text>` (RFC1459-compat,
   # NULL in current Bahamut but defined for legacy ircds).
-  def route(
-        %Message{command: {:numeric, 316}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 316}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_chanop: true}), []}
   end
 
   # 325 RPL_WHOISAGENT (Azzurra): `:server 325 own_nick target :is a Services Agent`.
-  def route(
-        %Message{command: {:numeric, 325}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 325}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_agent: true}), []}
   end
 
@@ -1029,11 +1118,11 @@ defmodule Grappa.Session.EventRouter do
   # Extract the mode string from the localized trailing prefix; on parse
   # failure (unexpected template, server emits a non-Bahamut variant) fold
   # nothing — the bundle still emits, just without `umodes`.
-  def route(
-        %Message{command: {:numeric, 326}, params: [_, target | rest]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 326}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
     case parse_whois_modes_trailing(whois_trailing(rest)) do
       nil -> {:cont, state, []}
       modes -> {:cont, whois_fold(state, target, %{umodes: modes}), []}
@@ -1041,22 +1130,22 @@ defmodule Grappa.Session.EventRouter do
   end
 
   # 339 RPL_WHOISJAVA (Azzurra): `:server 339 own_nick target :is a Java User`.
-  def route(
-        %Message{command: {:numeric, 339}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 339}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     {:cont, whois_fold(state, target, %{is_java: true}), []}
   end
 
   # 378 RPL_WHOISACTUALLY (Azzurra, oper-visible): `:server 378 own_nick
   # target :is connecting from <host> [<ip>]`. Extracts host + ip from the
   # localized trailing template; on parse failure folds nothing.
-  def route(
-        %Message{command: {:numeric, 378}, params: [_, target | rest]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 378}, params: [_, target | rest]},
+         state
+       )
+       when is_binary(target) do
     case parse_whois_actually_trailing(whois_trailing(rest)) do
       nil ->
         {:cont, state, []}
@@ -1081,11 +1170,11 @@ defmodule Grappa.Session.EventRouter do
   # irssi-shape compact string — defensive payload so scrollback replay
   # remains readable even if a future cic version drops the structured
   # render or a raw API consumer reads the rows directly.
-  def route(
-        %Message{command: {:numeric, 315}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 315}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     pending = Map.get(state, :who_pending, %{})
     chan_key = String.downcase(target)
 
@@ -1150,15 +1239,15 @@ defmodule Grappa.Session.EventRouter do
   # index 6 (H=here/G=gone, plus optional ops/voice glyphs) is preserved as
   # `:modes`. Both effects coexist: userhost_cache is for nick-targeted
   # WHOIS-cache reuse, who_pending is the operator-facing /who bundle.
-  def route(
-        %Message{
-          command: {:numeric, 352},
-          params: [_, channel, user, host, server, target, flags | rest]
-        },
-        state
-      )
-      when is_binary(target) and is_binary(user) and is_binary(host) and
-             is_binary(channel) and is_binary(server) and is_binary(flags) do
+  defp do_route(
+         %Message{
+           command: {:numeric, 352},
+           params: [_, channel, user, host, server, target, flags | rest]
+         },
+         state
+       )
+       when is_binary(target) and is_binary(user) and is_binary(host) and
+              is_binary(channel) and is_binary(server) and is_binary(flags) do
     nick_key = normalize_nick(target)
     cache = Map.put(Map.get(state, :userhost_cache, %{}), nick_key, %{user: user, host: host})
 
@@ -1183,8 +1272,8 @@ defmodule Grappa.Session.EventRouter do
   # actually registered us as — may differ from requested due to
   # case-fold normalization, services rename, length truncation).
   # Reconcile state.nick to upstream's authority.
-  def route(%Message{command: {:numeric, 1}, params: [welcomed_nick | _]}, state)
-      when is_binary(welcomed_nick) do
+  defp do_route(%Message{command: {:numeric, 1}, params: [welcomed_nick | _]}, state)
+       when is_binary(welcomed_nick) do
     {:cont, %{state | nick: welcomed_nick}, []}
   end
 
@@ -1202,11 +1291,11 @@ defmodule Grappa.Session.EventRouter do
   # caller's NumericRouter $server route persists it as a server message.
   @join_failure_numerics [471, 473, 474, 475, 403, 405]
 
-  def route(
-        %Message{command: {:numeric, code}, params: [_, channel, reason | _]},
-        state
-      )
-      when code in @join_failure_numerics and is_binary(channel) and is_binary(reason) do
+  defp do_route(
+         %Message{command: {:numeric, code}, params: [_, channel, reason | _]},
+         state
+       )
+       when code in @join_failure_numerics and is_binary(channel) and is_binary(reason) do
     key = String.downcase(channel)
     in_flight = Map.get(state, :in_flight_joins, %{})
 
@@ -1227,7 +1316,7 @@ defmodule Grappa.Session.EventRouter do
   # The numeric fires in response to an upstream AWAY (unset) command — either
   # from explicit `/away` (bare) or from the auto-away path. The :present atom
   # mirrors the away_state closed set.
-  def route(%Message{command: {:numeric, 305}}, state) do
+  defp do_route(%Message{command: {:numeric, 305}}, state) do
     {:cont, state, [{:away_confirmed, :present}]}
   end
 
@@ -1238,7 +1327,7 @@ defmodule Grappa.Session.EventRouter do
   # The :away atom is intentionally generic — the numeric doesn't distinguish
   # explicit from auto-away; Session.Server's state carries that distinction
   # and cicchetto derives the display from away_state, not this numeric.
-  def route(%Message{command: {:numeric, 306}}, state) do
+  defp do_route(%Message{command: {:numeric, 306}}, state) do
     {:cont, state, [{:away_confirmed, :away}]}
   end
 
@@ -1254,11 +1343,11 @@ defmodule Grappa.Session.EventRouter do
   # Bahamut sends params as [own_nick, target_nick, channel]; some
   # variants carry a trailing description (": invitation sent") which is
   # ignored — cic owns the rendering.
-  def route(
-        %Message{command: {:numeric, 341}, params: [_, target, channel | _]},
-        state
-      )
-      when is_binary(target) and is_binary(channel) do
+  defp do_route(
+         %Message{command: {:numeric, 341}, params: [_, target, channel | _]},
+         state
+       )
+       when is_binary(target) and is_binary(channel) do
     {:cont, state, [{:invite_ack, channel, target}]}
   end
 
@@ -1280,75 +1369,75 @@ defmodule Grappa.Session.EventRouter do
 
   # 251 RPL_LUSERCLIENT: `:There are <N> users and <I> invisible on <S> servers`.
   # Resets the accumulator (start of new sequence).
-  def route(
-        %Message{command: {:numeric, 251}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 251}, params: params},
+         state
+       )
+       when is_list(params) do
     [n, i, s] = extract_lusers_ints(List.last(params), 3)
 
     {:cont, Map.put(state, :lusers_pending, %{total_users: n, invisible: i, servers: s}), []}
   end
 
   # 252 RPL_LUSEROP: `<N> :IRC Operators online`.
-  def route(
-        %Message{command: {:numeric, 252}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 252}, params: params},
+         state
+       )
+       when is_list(params) do
     [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
     {:cont, lusers_fold(state, %{operators: n}), []}
   end
 
   # 253 RPL_LUSERUNKNOWN: `<N> :unknown connection(s)`. Optional —
   # Bahamut omits when count = 0.
-  def route(
-        %Message{command: {:numeric, 253}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 253}, params: params},
+         state
+       )
+       when is_list(params) do
     [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
     {:cont, lusers_fold(state, %{unknown_connections: n}), []}
   end
 
   # 254 RPL_LUSERCHANNELS: `<N> :channels formed`.
-  def route(
-        %Message{command: {:numeric, 254}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 254}, params: params},
+         state
+       )
+       when is_list(params) do
     [n] = extract_lusers_ints(lusers_param_or_trailing(params), 1)
     {:cont, lusers_fold(state, %{channels_formed: n}), []}
   end
 
   # 255 RPL_LUSERME: `:I have <N> clients and <S> servers`.
-  def route(
-        %Message{command: {:numeric, 255}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 255}, params: params},
+         state
+       )
+       when is_list(params) do
     [n, s] = extract_lusers_ints(List.last(params), 2)
     {:cont, lusers_fold(state, %{local_clients: n, local_servers: s}), []}
   end
 
   # 265 RPL_LOCALUSERS: `:Current local users: <N> Max: <M>` (or shaped
   # as separate params on some servers).
-  def route(
-        %Message{command: {:numeric, 265}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 265}, params: params},
+         state
+       )
+       when is_list(params) do
     [n, m] = extract_lusers_ints(List.last(params), 2)
     {:cont, lusers_fold(state, %{current_local: n, max_local: m}), []}
   end
 
   # 266 RPL_GLOBALUSERS: `:Current global users: <N> Max: <M>`. Last
   # numeric in Bahamut's emit order — flushes the bundle.
-  def route(
-        %Message{command: {:numeric, 266}, params: params},
-        state
-      )
-      when is_list(params) do
+  defp do_route(
+         %Message{command: {:numeric, 266}, params: params},
+         state
+       )
+       when is_list(params) do
     [n, m] = extract_lusers_ints(List.last(params), 2)
     accum = Map.merge(Map.get(state, :lusers_pending) || %{}, %{current_global: n, max_global: m})
     {:cont, Map.put(state, :lusers_pending, nil), [{:lusers_bundle, accum}]}
@@ -1380,11 +1469,11 @@ defmodule Grappa.Session.EventRouter do
   # Append a new historical entry to the entries list. Skips when no
   # whowas_pending entry exists (unsolicited 314 — operator never issued
   # /whowas; not actionable).
-  def route(
-        %Message{command: {:numeric, 314}, params: [_, target, user, host | rest]},
-        state
-      )
-      when is_binary(target) and is_binary(user) and is_binary(host) do
+  defp do_route(
+         %Message{command: {:numeric, 314}, params: [_, target, user, host | rest]},
+         state
+       )
+       when is_binary(target) and is_binary(user) and is_binary(host) do
     realname = whois_trailing(rest)
     entry = %{user: user, host: host, realname: realname}
     {:cont, whowas_append_entry(state, target, entry), []}
@@ -1393,11 +1482,11 @@ defmodule Grappa.Session.EventRouter do
   # 369 RPL_ENDOFWHOWAS: `:server 369 own_nick target :End of WHOWAS`.
   # Emits the bundle + drops the pending entry. Silently ignored if no
   # accumulator exists (unsolicited terminator).
-  def route(
-        %Message{command: {:numeric, 369}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 369}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     pending = Map.get(state, :whowas_pending, %{})
     nick_key = normalize_nick(target)
 
@@ -1417,11 +1506,11 @@ defmodule Grappa.Session.EventRouter do
   # `not_found: true` so cic renders a single "no history" surface
   # instead of two arms (success vs not-found). Silently ignored if no
   # accumulator exists.
-  def route(
-        %Message{command: {:numeric, 406}, params: [_, target | _]},
-        state
-      )
-      when is_binary(target) do
+  defp do_route(
+         %Message{command: {:numeric, 406}, params: [_, target | _]},
+         state
+       )
+       when is_binary(target) do
     pending = Map.get(state, :whowas_pending, %{})
     nick_key = normalize_nick(target)
 
@@ -1448,11 +1537,11 @@ defmodule Grappa.Session.EventRouter do
   # — for numerics with a server prefix it returns the server hostname, for
   # prefix-less lines it returns the anonymous_sender sentinel ("*"). Both are
   # accepted by valid_sender?.
-  def route(
-        %Message{command: {:numeric, motd_numeric}, params: [_ | rest]} = msg,
-        state
-      )
-      when motd_numeric in [375, 372, 376] do
+  defp do_route(
+         %Message{command: {:numeric, motd_numeric}, params: [_ | rest]} = msg,
+         state
+       )
+       when motd_numeric in [375, 372, 376] do
     body = List.last(rest)
     sender = Message.sender_nick(msg)
 
@@ -1489,13 +1578,13 @@ defmodule Grappa.Session.EventRouter do
   @chanserv_bracket_regex ~r/^\[\s*(#\S+)\s*\]\s*:?\s*(.*)$/s
   @services_sender_regex ~r/Serv$/i
 
-  def route(
-        %Message{command: :notice, params: [target, body]} = msg,
-        state
-      )
-      when is_binary(target) and is_binary(body) and
-             byte_size(target) > 0 and
-             binary_part(target, 0, 1) not in ["#", "&", "!", "+"] do
+  defp do_route(
+         %Message{command: :notice, params: [target, body]} = msg,
+         state
+       )
+       when is_binary(target) and is_binary(body) and
+              byte_size(target) > 0 and
+              binary_part(target, 0, 1) not in ["#", "&", "!", "+"] do
     sender = Message.sender_nick(msg)
     {channel, body_to_persist} = route_non_channel_notice(sender, body)
     {state, eff} = build_persist(state, :notice, channel, sender, body_to_persist, %{})
@@ -1511,7 +1600,7 @@ defmodule Grappa.Session.EventRouter do
   # once with meta.raw (from the bucket-1 catch-all). EventRouter's
   # role for numerics is typed folds + state derivation; pure
   # persistence is Server's responsibility.
-  def route(%Message{command: {:numeric, _}} = _, state), do: {:cont, state, []}
+  defp do_route(%Message{command: {:numeric, _}} = _, state), do: {:cont, state, []}
 
   # No-silent-drops B6.1 CRIT-1 (2026-05-14): credential-bearing verbs
   # MUST NOT persist to scrollback. AUTHENTICATE carries SASL base64
@@ -1524,9 +1613,9 @@ defmodule Grappa.Session.EventRouter do
   # invisibly.
   @no_persist_verbs ~w(authenticate pass oper)a
 
-  def route(%Message{command: command} = _, state)
-      when command in @no_persist_verbs,
-      do: {:cont, state, []}
+  defp do_route(%Message{command: command} = _, state)
+       when command in @no_persist_verbs,
+       do: {:cont, state, []}
 
   # No-silent-drops bucket 1 (2026-05-14): the catch-all used to return
   # `{:cont, state, []}` for every unhandled command — KILL, WALLOPS,
@@ -1575,7 +1664,7 @@ defmodule Grappa.Session.EventRouter do
   # Server's numeric handler at server.ex:1545). Belt-and-braces: a
   # {:numeric, n} that somehow reaches command_to_verb_string/1 still
   # renders as Integer.to_string(n).
-  def route(%Message{command: command, params: params} = msg, state) do
+  defp do_route(%Message{command: command, params: params} = msg, state) do
     sender = Message.sender_nick(msg)
     verb = command_to_verb_string(command)
 
@@ -1595,9 +1684,16 @@ defmodule Grappa.Session.EventRouter do
     {:cont, state, [eff]}
   end
 
+  # UX-4 bucket A: this helper is only called from the catch-all
+  # fallthrough `do_route(%Message{command: command, ...})` at line
+  # ~1667, which is preceded by both the numeric catch-all
+  # `do_route(%Message{command: {:numeric, _}}, state)` and the
+  # `@no_persist_verbs` guard. By construction, `command` reaches here
+  # as `atom() | {:unknown, binary()}`. A `{:numeric, n}` clause was
+  # removed once Dialyzer flagged it as unreachable — keeping it would
+  # be dead code per CLAUDE.md "Dialyzer warnings are design signals."
   @spec command_to_verb_string(Message.command()) :: String.t()
   defp command_to_verb_string({:unknown, verb}) when is_binary(verb), do: verb
-  defp command_to_verb_string({:numeric, n}) when is_integer(n), do: Integer.to_string(n)
   defp command_to_verb_string(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()
 
   # Q1: self-KICK (target == state.nick) drops the channel key entirely —
@@ -1918,12 +2014,23 @@ defmodule Grappa.Session.EventRouter do
   # S2.3 helpers — topic + channel-mode cache
   # ---------------------------------------------------------------------------
 
-  # IRC channel names are case-insensitive (RFC 2812 §2.2). Normalise to
-  # downcase for cache keys — same direction as members map convention (keys
-  # are stored case-preserved as-received from server; we normalise here at
-  # write AND read time so lookups are always case-insensitive).
+  # UX-4 bucket A: IRC channel names are case-insensitive (RFC 2812
+  # §2.2). Pre-bucket-A this helper was a downcase-anywhere,
+  # nick-or-channel kitchen-sink — it lived only in cache key
+  # normalisation (topics, channel_modes, channels_created) while the
+  # PERSIST + PUBSUB BROADCAST paths used the raw case. Net result:
+  # `#Chan` and `#chan` routed to two windows, two scrollback rowsets,
+  # two read-cursors, two PubSub topics.
+  #
+  # Bucket A unified the canonicalisation at every channel-bearing
+  # boundary (Session entry API, schema changesets, this module's
+  # clauses, Topic.channel/3, backfill migration). This delegates to
+  # `Identifier.canonical_channel/1` so the sigil-aware predicate
+  # (`#&!+`-only; nick targets pass through unchanged) is the single
+  # source of truth.
   @spec normalize_channel(String.t()) :: String.t()
-  defp normalize_channel(channel) when is_binary(channel), do: String.downcase(channel)
+  defp normalize_channel(channel) when is_binary(channel),
+    do: Identifier.canonical_channel(channel)
 
   # Empty baseline entry returned when a channel_modes entry doesn't exist yet
   # (e.g. when a MODE arrives before 324 RPL_CHANNELMODEIS).
@@ -2157,7 +2264,7 @@ defmodule Grappa.Session.EventRouter do
   # Returns the trailing param (last element) when present, else nil.
   # Used to extract realname / server_info / channels-chunk text from
   # WHOIS numerics where the trailing param is the human-readable payload.
-  @spec whois_trailing([term()]) :: String.t() | nil
+  @spec whois_trailing([String.t()]) :: String.t() | nil
   defp whois_trailing([]), do: nil
 
   defp whois_trailing(rest) when is_list(rest) do
@@ -2236,7 +2343,7 @@ defmodule Grappa.Session.EventRouter do
   # with hops as integer (nil if unparseable) and realname as the rest of
   # the trailing string. If the trailing param is absent (RFC-violating
   # server), both fields are nil.
-  @spec parse_who_trailing([term()]) :: {integer() | nil, String.t() | nil}
+  @spec parse_who_trailing([String.t()]) :: {integer() | nil, String.t() | nil}
   defp parse_who_trailing([]), do: {nil, nil}
 
   defp parse_who_trailing(rest) when is_list(rest) do

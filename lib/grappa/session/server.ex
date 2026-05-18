@@ -472,7 +472,14 @@ defmodule Grappa.Session.Server do
       userhost_cache: %{},
       window_state: WindowState.new(),
       in_flight_joins: %{},
-      autojoin: opts.autojoin_channels,
+      # UX-4 bucket A — canonicalise the autojoin list at boot so the
+      # 001 RPL_WELCOME loop sends `JOIN #chan` (canonical) regardless
+      # of whether the operator typed `#Chan` in a mix task pre-
+      # bucket-A or the credentials row was migrated post-bucket-A.
+      # Symmetric with `Session.send_join/3`'s entry-point canonical
+      # rebind. Sigil-aware: nick-shape entries (not valid here, but
+      # the predicate is defensive) pass through unchanged.
+      autojoin: Enum.map(opts.autojoin_channels, &Grappa.IRC.Identifier.canonical_channel/1),
       client: nil,
       notify_pid: Map.get(opts, :notify_pid),
       notify_ref: Map.get(opts, :notify_ref),
@@ -939,10 +946,15 @@ defmodule Grappa.Session.Server do
   # CP22 cluster B (channel-client-polish #14) — /who <#channel>. Two
   # effects: (1) prime the accumulator entry in state.who_pending so
   # EventRouter folds 352 RPL_WHOREPLY rows into it; (2) emit
-  # `WHO #channel\r\n`. The entry's `target_display` is the user-typed
-  # channel (case preserved); EventRouter normalises to lowercase for
-  # the lookup key. Replaces any prior accumulator for the same target
-  # (running /who twice without an 315 in between drops the first).
+  # `WHO #channel\r\n`. The entry's `target_display` matches `target`
+  # — UX-4 bucket A canonicalises the channel arg at `Session.send_who/3`
+  # so `target` here is already lowercase; the scrollback 315 EOF row
+  # body (`*** End of /WHO list for #chan`) shows the canonical form.
+  # Pre-bucket-A the docstring claimed "case preserved" — that was
+  # the upstream-echoed case; now the canonical form is the single
+  # form everywhere (members map, persist channel, EOF body).
+  # Replaces any prior accumulator for the same target (running /who
+  # twice without an 315 in between drops the first).
   # On send_line failure the accumulator stays primed — a transient
   # send error doesn't strand the WHO flow because no numerics will
   # arrive to drain it; harmless until the next /who replaces the entry.
@@ -956,10 +968,11 @@ defmodule Grappa.Session.Server do
   # CP22 cluster B (channel-client-polish #14) — /names <#channel>. Two
   # effects: (1) prime the accumulator entry in state.names_pending so
   # EventRouter folds 353 RPL_NAMREPLY rows into it; (2) emit
-  # `NAMES #channel\r\n`. The entry's `target_display` preserves
-  # operator-typed case; EventRouter normalises to lowercase for the
-  # lookup key. Replaces any prior accumulator for the same target
-  # (running /names twice without a 366 in between drops the first).
+  # `NAMES #channel\r\n`. `target_display` matches `target` — UX-4 A
+  # canonicalises at `Session.send_names/4` so the scrollback display
+  # is canonical (see /who docstring above for the rationale).
+  # Replaces any prior accumulator for the same target (running /names
+  # twice without a 366 in between drops the first).
   # On send_line failure the accumulator stays primed — a transient
   # send error doesn't strand the NAMES flow because no numerics will
   # arrive to drain it; harmless until the next /names replaces the entry.

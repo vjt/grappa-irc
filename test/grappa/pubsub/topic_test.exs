@@ -63,6 +63,41 @@ defmodule Grappa.PubSub.TopicTest do
     end
   end
 
+  # UX-4 bucket A — the channel segment is canonicalised at build
+  # time so producer + subscriber observe the same topic string
+  # regardless of upstream casing. Before bucket A this segment was
+  # passed verbatim and `#Chan` + `#chan` produced two distinct
+  # PubSub topics, partitioning subscribers.
+  describe "channel/3 — UX-4 A: channel-name canonicalisation" do
+    test "lowercases sigil-prefixed channel names (#)" do
+      assert Topic.channel("vjt", "net", "#Foo") ==
+               "grappa:user:vjt/network:net/channel:#foo"
+
+      assert Topic.channel("vjt", "net", "#FOO") == Topic.channel("vjt", "net", "#foo")
+    end
+
+    test "all four RFC 2812 sigils fold (#, &, !, +)" do
+      assert Topic.channel("u", "n", "&LOCAL") =~ "channel:&local"
+      assert Topic.channel("u", "n", "!SAFE") =~ "channel:!safe"
+      assert Topic.channel("u", "n", "+MODELESS") =~ "channel:+modeless"
+    end
+
+    test "preserves nick (DM-window) case" do
+      # The third segment is conceptually a "window key" — for DM
+      # windows it's a peer nick, not a channel name. Nicks are
+      # display-meaningful (CTCP visibility row's `dm_with`, sender
+      # badge) so canonical_channel/1's sigil-aware predicate
+      # leaves them alone.
+      assert Topic.channel("vjt", "net", "CristoBOT") ==
+               "grappa:user:vjt/network:net/channel:CristoBOT"
+    end
+
+    test "preserves $server pseudo-channel sentinel case" do
+      assert Topic.channel("vjt", "net", "$server") ==
+               "grappa:user:vjt/network:net/channel:$server"
+    end
+  end
+
   describe "admin_events/0" do
     test "builds the admin-events fan-out topic" do
       assert Topic.admin_events() == "grappa:admin:events"

@@ -1424,6 +1424,12 @@ defmodule Grappa.Session.ServerTest do
       # state.in_flight_joins keyed by String.downcase/1 of the channel
       # so a later 471/473/474/475/403/405 numeric can correlate even
       # when the upstream echoes a case-folded channel name.
+      #
+      # UX-4 bucket A: `Session.send_join/3` canonicalises the channel
+      # arg at the entry boundary (sigil-aware) so cic-typed `#Sniffo`
+      # becomes `#sniffo` before it ever reaches Session.Server. The
+      # in_flight_joins display-value follows suit — there is no
+      # mixed-case form to preserve once the boundary has folded.
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
@@ -1435,7 +1441,7 @@ defmodule Grappa.Session.ServerTest do
 
       state = :sys.get_state(pid)
       assert {channel, at_ms, label} = Map.fetch!(state.in_flight_joins, "#sniffo")
-      assert channel == "#Sniffo"
+      assert channel == "#sniffo"
       assert is_integer(at_ms)
       assert label == nil
 
@@ -1468,7 +1474,7 @@ defmodule Grappa.Session.ServerTest do
                        payload: %{
                          kind: "window_pending",
                          network: net_slug,
-                         channel: "#Sniffo",
+                         channel: "#sniffo",
                          state: "pending"
                        }
                      },
@@ -1477,7 +1483,7 @@ defmodule Grappa.Session.ServerTest do
       assert net_slug == network.slug
 
       state = :sys.get_state(pid)
-      assert WindowState.state_of(state.window_state, "#Sniffo") == :pending
+      assert WindowState.state_of(state.window_state, "#sniffo") == :pending
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1487,6 +1493,10 @@ defmodule Grappa.Session.ServerTest do
       # autojoin path also flows through record_in_flight_join/2, so
       # every autojoined channel gets the same :pending state +
       # user-topic broadcast. Single producer for both code paths.
+      #
+      # UX-4 bucket A: `Session.Server.init/1` canonicalises the
+      # autojoin list at boot, so the broadcast carries the canonical
+      # channel name regardless of the operator's case-as-typed input.
       {server, port} = start_server()
 
       {user, network, _} =
@@ -1501,13 +1511,13 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "window_pending", channel: "#Sniffo", state: "pending"}
+                       payload: %{kind: "window_pending", channel: "#sniffo", state: "pending"}
                      },
                      1_000
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "window_pending", channel: "#OTHER", state: "pending"}
+                       payload: %{kind: "window_pending", channel: "#other", state: "pending"}
                      },
                      1_000
 
@@ -1516,8 +1526,8 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
       state = :sys.get_state(pid)
-      assert WindowState.state_of(state.window_state, "#Sniffo") == :pending
-      assert WindowState.state_of(state.window_state, "#OTHER") == :pending
+      assert WindowState.state_of(state.window_state, "#sniffo") == :pending
+      assert WindowState.state_of(state.window_state, "#other") == :pending
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1621,6 +1631,10 @@ defmodule Grappa.Session.ServerTest do
       # every autojoined channel ends up tracked in in_flight_joins —
       # without this, an autojoin failure numeric (471 etc.) cannot be
       # correlated and falls through to the $server window unannotated.
+      #
+      # UX-4 bucket A: `Session.Server.init/1` canonicalises the
+      # autojoin list, so both the outbound wire line and the in-flight
+      # display value carry the canonical channel form.
       {server, port} = start_server()
 
       {user, network, _} =
@@ -1631,8 +1645,8 @@ defmodule Grappa.Session.ServerTest do
       :ok = await_handshake(server)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #Sniffo\r\n"), 1_000)
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #OTHER\r\n"), 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #other\r\n"), 1_000)
 
       # Sync via PING/PONG before sampling state — the autojoin Enum
       # mutation runs in handle_info and we need to wait for it to
@@ -1642,8 +1656,8 @@ defmodule Grappa.Session.ServerTest do
 
       state = :sys.get_state(pid)
 
-      assert {"#Sniffo", _, nil} = Map.fetch!(state.in_flight_joins, "#sniffo")
-      assert {"#OTHER", _, nil} = Map.fetch!(state.in_flight_joins, "#other")
+      assert {"#sniffo", _, nil} = Map.fetch!(state.in_flight_joins, "#sniffo")
+      assert {"#other", _, nil} = Map.fetch!(state.in_flight_joins, "#other")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3185,11 +3199,18 @@ defmodule Grappa.Session.ServerTest do
     :ok = await_handshake(server)
     IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
+    # UX-4 bucket A: outbound JOIN line carries the canonical
+    # lowercase channel; helper accepts any input case and matches
+    # against the canonical form on the wire. The fed-back JOIN-self
+    # echo also uses the canonical form so EventRouter's downstream
+    # state seeding observes the same key everywhere.
+    canonical = Grappa.IRC.Identifier.canonical_channel(channel)
+
     # Wait for the session to send JOIN (proves 001 processed)
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"), 1_000)
+    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{canonical}"), 1_000)
 
     # Feed the JOIN-self echo back so members[channel] is seeded
-    IRCServer.feed(server, ":grappa-test!u@h JOIN :#{channel}\r\n")
+    IRCServer.feed(server, ":grappa-test!u@h JOIN :#{canonical}\r\n")
 
     # Flush via PING/PONG — unique token prevents stale-buffer false-match
     # when flush_server is called again after this helper returns.

@@ -48,11 +48,29 @@ defmodule Grappa.Visitors.VisitorChannel do
   def changeset(attrs) do
     %__MODULE__{}
     |> cast(attrs, [:visitor_id, :network_slug, :name])
+    |> canonicalize_name()
     |> validate_required([:visitor_id, :network_slug, :name])
     |> validate_change(:network_slug, &validate_network_slug/2)
     |> validate_change(:name, &validate_channel_name/2)
     |> unique_constraint([:visitor_id, :network_slug, :name])
     |> foreign_key_constraint(:visitor_id)
+  end
+
+  # UX-4 bucket A — defense-in-depth canonicalisation at the persist
+  # boundary. No `Visitors.add_autojoin/3` writer exists in `lib/`
+  # today (the visitor JOIN snapshot is read-only via
+  # `Visitors.list_autojoin_channels/1`; writes will land when the
+  # visitor-rejoin-on-restart cluster lands a producer). Pinning the
+  # rule in the changeset means the future writer — whether
+  # Session.Server's JOIN persistence path or an operator mix task —
+  # cannot corrupt the `(visitor_id, network_slug, name)` unique index
+  # with mixed-case keys, the way bucket A pins it for
+  # `Scrollback.Message`/`ReadCursor.Cursor`/`Networks.Credential`.
+  defp canonicalize_name(changeset) do
+    case get_change(changeset, :name) do
+      ch when is_binary(ch) -> put_change(changeset, :name, Identifier.canonical_channel(ch))
+      _ -> changeset
+    end
   end
 
   defp validate_network_slug(field, value) when is_binary(value) do

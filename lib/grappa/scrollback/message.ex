@@ -230,6 +230,7 @@ defmodule Grappa.Scrollback.Message do
       :meta,
       :dm_with
     ])
+    |> canonicalize_channel()
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> validate_subject_xor()
     |> validate_identifier(:channel, &valid_target?/1)
@@ -239,6 +240,24 @@ defmodule Grappa.Scrollback.Message do
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
+  end
+
+  # UX-4 bucket A — defense-in-depth canonicalisation at the persist
+  # boundary. EventRouter already canonicalises every channel-shape
+  # param before clause dispatch, but the REST controllers, the
+  # operator mix tasks, and any future Phase 6 listener facade also
+  # produce `Grappa.Scrollback.Message` changesets — pinning the
+  # rule here means a single bypass cannot corrupt the
+  # `(user_id, network_id, channel, server_time)` index with mixed-
+  # case keys. `dm_with` is a NICK column (display-case-meaningful)
+  # so it is intentionally NOT canonicalised; the `valid_target?/1`
+  # predicate keeps accepting `$server` and DM-target nicks verbatim.
+  @spec canonicalize_channel(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp canonicalize_channel(changeset) do
+    case get_change(changeset, :channel) do
+      ch when is_binary(ch) -> put_change(changeset, :channel, Identifier.canonical_channel(ch))
+      _ -> changeset
+    end
   end
 
   # Mirror of Grappa.Accounts.Session.validate_subject_xor/1.

@@ -40,7 +40,7 @@ defmodule Grappa.PubSub do
   contract stays single-sourced.
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [Topic]
+  use Boundary, top_level?: true, deps: [Grappa.IRC], exports: [Topic]
 
   @doc """
   Broadcasts a typed `"event"` payload to a `GrappaChannel` topic via

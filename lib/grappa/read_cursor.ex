@@ -49,7 +49,7 @@ defmodule Grappa.ReadCursor do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Scrollback],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Networks, Grappa.PubSub, Grappa.Repo, Grappa.Scrollback],
     # `Visitors.Visitor` is referenced by `ReadCursor.Cursor` (the
     # `belongs_to :visitor` association) in struct-only form.
     # Mirrors Scrollback's identical handling — see
@@ -99,6 +99,11 @@ defmodule Grappa.ReadCursor do
   @spec get(subject(), integer(), String.t()) :: Cursor.t() | nil
   def get(subject, network_id, channel)
       when is_integer(network_id) and is_binary(channel) and channel != "" do
+    # UX-4 bucket A — canonicalise channel at the read boundary so a
+    # cic-side `#Chan` lookup hits the canonical `#chan` cursor row.
+    # Sigil-aware; nick-shape DM windows pass through unchanged.
+    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+
     Cursor
     |> subject_filter(subject)
     |> where([c], c.network_id == ^network_id and c.channel == ^channel)
@@ -137,6 +142,11 @@ defmodule Grappa.ReadCursor do
   def set(subject, network_id, channel, message_id)
       when is_integer(network_id) and is_binary(channel) and channel != "" and
              is_integer(message_id) and message_id > 0 do
+    # UX-4 bucket A — canonicalise once at the entry boundary so every
+    # downstream call (`message_belongs?/4` validator + `do_set/4`
+    # → `get/3` + `Cursor.changeset/2`) observes the canonical key.
+    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+
     if message_belongs?(subject, network_id, channel, message_id) do
       do_set(subject, network_id, channel, message_id)
     else

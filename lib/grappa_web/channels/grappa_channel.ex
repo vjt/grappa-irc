@@ -195,6 +195,7 @@ defmodule GrappaWeb.GrappaChannel do
   @impl Phoenix.Channel
   def join(topic, _, socket) do
     with {:ok, parsed} <- Topic.parse(topic),
+         parsed <- canonicalize_topic(parsed),
          :ok <- authorize(parsed, socket) do
       # NO manual `Phoenix.PubSub.subscribe/2` here — the framework's
       # fastlane subscription (installed by Phoenix.Channel.Server.init/1)
@@ -206,6 +207,20 @@ defmodule GrappaWeb.GrappaChannel do
       {:error, :forbidden} -> {:error, %{reason: "forbidden"}}
     end
   end
+
+  # UX-4 bucket A — canonicalise the channel segment of a per-channel
+  # topic so subscribers join the SAME topic string the broadcasters
+  # emit on. `Topic.channel/3` canonicalises at build time; this
+  # mirrors it at parse time so a cic-side `socket.channel("grappa:
+  # user:vjt/network:az/channel:#Chan")` falls onto the canonical
+  # `#chan` topic regardless of input casing. User + network topics
+  # carry no channel segment and pass through unchanged. Admin events
+  # likewise.
+  defp canonicalize_topic({:channel, user_name, network_slug, channel}) do
+    {:channel, user_name, network_slug, Grappa.IRC.Identifier.canonical_channel(channel)}
+  end
+
+  defp canonicalize_topic(other), do: other
 
   # CP29 R-3: per-channel topic joins return the current read cursor in
   # the join reply so cic doesn't need a per-window REST round-trip on

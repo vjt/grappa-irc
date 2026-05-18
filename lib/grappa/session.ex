@@ -301,7 +301,8 @@ defmodule Grappa.Session do
     # :invalid_line — input-shape error beats not-found. The Scrollback
     # row is never persisted on rejection (the call_session never runs).
     if Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
-      call_session(subject, network_id, {:send_privmsg, target, body})
+      # UX-4 A: lowercase channel-shape targets; nicks pass through.
+      call_session(subject, network_id, {:send_privmsg, Identifier.canonical_channel(target), body})
     else
       {:error, :invalid_line}
     end
@@ -340,7 +341,7 @@ defmodule Grappa.Session do
   def send_join(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
-      call_session(subject, network_id, {:send_join, channel})
+      call_session(subject, network_id, {:send_join, Identifier.canonical_channel(channel)})
     else
       {:error, :invalid_line}
     end
@@ -355,7 +356,7 @@ defmodule Grappa.Session do
   def send_part(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
-      cast_session(subject, network_id, {:send_part, channel})
+      cast_session(subject, network_id, {:send_part, Identifier.canonical_channel(channel)})
     else
       {:error, :invalid_line}
     end
@@ -379,7 +380,7 @@ defmodule Grappa.Session do
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(body) do
     if Identifier.safe_line_token?(channel) and Identifier.safe_line_token?(body) do
-      call_session(subject, network_id, {:send_topic, channel, body})
+      call_session(subject, network_id, {:send_topic, Identifier.canonical_channel(channel), body})
     else
       {:error, :invalid_line}
     end
@@ -620,7 +621,7 @@ defmodule Grappa.Session do
           | {:error, :no_session}
   def list_members(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:list_members, channel})
+    call_session(subject, network_id, {:list_members, Identifier.canonical_channel(channel)})
   end
 
   @doc """
@@ -638,7 +639,7 @@ defmodule Grappa.Session do
           | {:error, :no_topic | :no_session}
   def get_topic(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:get_topic, channel})
+    call_session(subject, network_id, {:get_topic, Identifier.canonical_channel(channel)})
   end
 
   @doc """
@@ -656,7 +657,7 @@ defmodule Grappa.Session do
           | {:error, :no_modes | :no_session}
   def get_channel_modes(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:get_channel_modes, channel})
+    call_session(subject, network_id, {:get_channel_modes, Identifier.canonical_channel(channel)})
   end
 
   @typedoc """
@@ -696,7 +697,7 @@ defmodule Grappa.Session do
           | {:error, :not_tracked | :no_session}
   def get_window_state(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:get_window_state, channel})
+    call_session(subject, network_id, {:get_window_state, Identifier.canonical_channel(channel)})
   end
 
   @doc """
@@ -737,7 +738,7 @@ defmodule Grappa.Session do
   def send_op(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
-    call_session(subject, network_id, {:send_op, channel, nicks})
+    call_session(subject, network_id, {:send_op, Identifier.canonical_channel(channel), nicks})
   end
 
   @doc "Sends `MODE <channel> -ooo... <nicks>` upstream, chunked per ISUPPORT MODES=."
@@ -746,7 +747,7 @@ defmodule Grappa.Session do
   def send_deop(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
-    call_session(subject, network_id, {:send_deop, channel, nicks})
+    call_session(subject, network_id, {:send_deop, Identifier.canonical_channel(channel), nicks})
   end
 
   @doc "Sends `MODE <channel> +vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
@@ -755,7 +756,7 @@ defmodule Grappa.Session do
   def send_voice(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
-    call_session(subject, network_id, {:send_voice, channel, nicks})
+    call_session(subject, network_id, {:send_voice, Identifier.canonical_channel(channel), nicks})
   end
 
   @doc "Sends `MODE <channel> -vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
@@ -764,7 +765,7 @@ defmodule Grappa.Session do
   def send_devoice(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
-    call_session(subject, network_id, {:send_devoice, channel, nicks})
+    call_session(subject, network_id, {:send_devoice, Identifier.canonical_channel(channel), nicks})
   end
 
   @doc """
@@ -778,7 +779,7 @@ defmodule Grappa.Session do
   def send_kick(subject, network_id, channel, nick, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) and is_binary(reason) do
-    call_session(subject, network_id, {:send_kick, channel, nick, reason})
+    call_session(subject, network_id, {:send_kick, Identifier.canonical_channel(channel), nick, reason})
   end
 
   @doc """
@@ -793,7 +794,7 @@ defmodule Grappa.Session do
   def send_ban(subject, network_id, channel, mask_or_nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(mask_or_nick) do
-    call_session(subject, network_id, {:send_ban, channel, mask_or_nick})
+    call_session(subject, network_id, {:send_ban, Identifier.canonical_channel(channel), mask_or_nick})
   end
 
   @doc """
@@ -805,7 +806,7 @@ defmodule Grappa.Session do
   def send_unban(subject, network_id, channel, mask)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(mask) do
-    call_session(subject, network_id, {:send_unban, channel, mask})
+    call_session(subject, network_id, {:send_unban, Identifier.canonical_channel(channel), mask})
   end
 
   @doc """
@@ -818,7 +819,7 @@ defmodule Grappa.Session do
   def send_invite(subject, network_id, channel, nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) do
-    call_session(subject, network_id, {:send_invite, channel, nick})
+    call_session(subject, network_id, {:send_invite, Identifier.canonical_channel(channel), nick})
   end
 
   @doc """
@@ -844,7 +845,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line}
   def send_banlist(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:send_banlist, channel})
+    call_session(subject, network_id, {:send_banlist, Identifier.canonical_channel(channel)})
   end
 
   @doc """
@@ -908,7 +909,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line}
   def send_who(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:send_who, channel})
+    call_session(subject, network_id, {:send_who, Identifier.canonical_channel(channel)})
   end
 
   @doc """
@@ -935,7 +936,9 @@ defmodule Grappa.Session do
   def send_names(subject, network_id, channel, origin_window)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              (is_nil(origin_window) or is_binary(origin_window)) do
-    call_session(subject, network_id, {:send_names, channel, origin_window})
+    canonical = Identifier.canonical_channel(channel)
+    canonical_origin = if is_binary(origin_window), do: Identifier.canonical_channel(origin_window), else: origin_window
+    call_session(subject, network_id, {:send_names, canonical, canonical_origin})
   end
 
   @doc """
@@ -962,7 +965,7 @@ defmodule Grappa.Session do
   def send_mode(subject, network_id, target, modes, params)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and
              is_binary(modes) and is_list(params) do
-    call_session(subject, network_id, {:send_mode, target, modes, params})
+    call_session(subject, network_id, {:send_mode, Identifier.canonical_channel(target), modes, params})
   end
 
   @doc """
@@ -976,7 +979,7 @@ defmodule Grappa.Session do
           :ok | {:error, :no_session | :invalid_line}
   def send_topic_clear(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
-    call_session(subject, network_id, {:send_topic_clear, channel})
+    call_session(subject, network_id, {:send_topic_clear, Identifier.canonical_channel(channel)})
   end
 
   @doc """

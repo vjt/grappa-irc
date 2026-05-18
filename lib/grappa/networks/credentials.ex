@@ -124,6 +124,11 @@ defmodule Grappa.Networks.Credentials do
           {:ok, Credential.t()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
   def remove_autojoin_channel(%User{} = user, %Network{} = network, channel_name)
       when is_binary(channel_name) do
+    # UX-4 bucket A — canonicalise so a REST DELETE with `#Chan` in the
+    # URL path removes the canonical `#chan` row (which is what the
+    # Credential.changeset/2 writer normalises to).
+    channel_name = Grappa.IRC.Identifier.canonical_channel(channel_name)
+
     case get_credential(user, network) do
       {:ok, cred} ->
         new_autojoin = Enum.reject(cred.autojoin_channels, &(&1 == channel_name))

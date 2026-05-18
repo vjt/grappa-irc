@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { channelKey, decodeChannelKey } from "../lib/channelKey";
+import { canonicalChannel, channelKey, decodeChannelKey } from "../lib/channelKey";
 
 // Codebase audit cic M4 — channelKey encoder + decoder round-trip.
 // Pre-fix, Sidebar + subscribe.ts open-coded the composite-key parsing
@@ -40,5 +40,59 @@ describe("channelKey + decodeChannelKey round-trip", () => {
     // 0x20 so production keys never hit this edge.
     const k = "freenode #italia weird" as ReturnType<typeof channelKey>;
     expect(decodeChannelKey(k)).toEqual({ slug: "freenode", name: "#italia weird" });
+  });
+
+  // UX-4 bucket A — sigil-aware channel-name canonicalisation. Mirrors
+  // `Grappa.IRC.Identifier.canonical_channel/1` on the server so the
+  // composite key for `#Chan` and `#chan` collapses to the same row.
+  describe("channelKey + canonicalChannel: case-insensitive composite", () => {
+    it("collapses sigil-channels to lowercase in the composite key", () => {
+      expect(channelKey("freenode", "#CHAN")).toBe("freenode #chan");
+      expect(channelKey("freenode", "#Chan")).toBe("freenode #chan");
+      expect(channelKey("freenode", "#cHaN")).toBe("freenode #chan");
+    });
+
+    it("all four RFC 2812 sigils fold (#, &, !, +)", () => {
+      expect(channelKey("net", "#UPPER")).toBe("net #upper");
+      expect(channelKey("net", "&LOCAL")).toBe("net &local");
+      expect(channelKey("net", "!SAFE")).toBe("net !safe");
+      expect(channelKey("net", "+MODELESS")).toBe("net +modeless");
+    });
+
+    it("preserves NICK (DM) case — display + CTCP visibility row carry meaning", () => {
+      expect(channelKey("net", "CristoBOT")).toBe("net CristoBOT");
+      expect(channelKey("net", "Vjt")).toBe("net Vjt");
+    });
+
+    it("preserves the $server pseudo-channel sentinel case", () => {
+      expect(channelKey("net", "$server")).toBe("net $server");
+    });
+  });
+
+  describe("canonicalChannel — sigil-aware lowercase", () => {
+    it("lowercases sigil-prefixed channel names", () => {
+      expect(canonicalChannel("#Chan")).toBe("#chan");
+      expect(canonicalChannel("&LocalChan")).toBe("&localchan");
+      expect(canonicalChannel("!SAFE")).toBe("!safe");
+      expect(canonicalChannel("+Modeless")).toBe("+modeless");
+    });
+
+    it("leaves nicks unchanged", () => {
+      expect(canonicalChannel("Vjt")).toBe("Vjt");
+      expect(canonicalChannel("CristoBOT")).toBe("CristoBOT");
+    });
+
+    it("leaves $server unchanged", () => {
+      expect(canonicalChannel("$server")).toBe("$server");
+    });
+
+    it("is idempotent", () => {
+      expect(canonicalChannel(canonicalChannel("#Chan"))).toBe("#chan");
+      expect(canonicalChannel(canonicalChannel("alice"))).toBe("alice");
+    });
+
+    it("handles the empty string", () => {
+      expect(canonicalChannel("")).toBe("");
+    });
   });
 });

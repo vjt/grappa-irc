@@ -503,6 +503,15 @@ defmodule Grappa.Scrollback do
   # rows as the current credential's nick can identify; the
   # write-time path covers everything from CP14 B3 forward.
   defp channel_or_dm_where(query, channel, own_nick) when is_binary(channel) do
+    # UX-4 bucket A: canonicalise the channel param at the read
+    # boundary so case-insensitive lookups land on the canonical
+    # lowercase row regardless of how the REST URL path-segment was
+    # cased by the cic caller. Mirrors the write-time canonicalisation
+    # in `Grappa.Scrollback.Message.changeset/2` + the backfill
+    # migration. Sigil-aware via `Identifier.canonical_channel/1` —
+    # nick-shape DM targets pass through unchanged.
+    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+
     cond do
       # Own-nick query window: restrict to self-msgs only
       # (`/msg <ownnick> body` rows where both channel + dm_with = ownnick).

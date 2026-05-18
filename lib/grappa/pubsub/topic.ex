@@ -63,7 +63,21 @@ defmodule Grappa.PubSub.Topic do
     "grappa:user:" <> user_name <> "/network:" <> network_slug
   end
 
-  @doc "Builds the per-(user, network, channel) fan-out topic."
+  @doc """
+  Builds the per-(user, network, channel) fan-out topic.
+
+  UX-4 bucket A: the `channel_name` segment is canonicalised to
+  lowercase via `Grappa.IRC.Identifier.canonical_channel/1` (sigil-
+  aware — nicks for DM windows pass through unchanged). Every
+  broadcaster, every subscriber-side `Channel.join/3` callback, and
+  every `parse/1` callsite observe the same topic string regardless
+  of whether the producer received the channel name from upstream
+  IRC (case-as-sent), from the operator (case-as-typed), or from a
+  REST controller (case-as-URL-segment). Before bucket A, the
+  segment was passed through verbatim — `#Chan` and `#chan`
+  produced two distinct PubSub topics, partitioning subscribers and
+  silently dropping fan-out for one of the cases.
+  """
   @spec channel(String.t(), String.t(), String.t()) :: t()
   def channel(user_name, network_slug, channel_name)
       when is_binary(user_name) and user_name != "" and
@@ -71,7 +85,9 @@ defmodule Grappa.PubSub.Topic do
              is_binary(channel_name) and channel_name != "" do
     "grappa:user:" <>
       user_name <>
-      "/network:" <> network_slug <> "/channel:" <> channel_name
+      "/network:" <>
+      network_slug <>
+      "/channel:" <> Grappa.IRC.Identifier.canonical_channel(channel_name)
   end
 
   @doc """

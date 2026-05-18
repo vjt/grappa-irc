@@ -63,6 +63,35 @@ defmodule Grappa.IRC.Identifier do
   def valid_channel?(_), do: false
 
   @doc """
+  Returns the canonical lowercase form of a channel name. Non-channel
+  input (nicks, the synthetic `$server` pseudo-channel, anything not
+  prefixed with a RFC-2812 sigil `#&+!`) is passed through verbatim —
+  case is meaningful for nicks (CTCP visibility row's `dm_with`, sender
+  badge display) and the `$server` marker is fixed-case by intent.
+
+  UX-4 bucket A: IRC channel names are case-insensitive per RFC 2812
+  §1.3; storing them case-sensitive caused `#Chan` and `#chan` to route
+  to different windows, scrollback rows, read-cursors, and PubSub
+  topics. Canonicalize at every channel-bearing boundary
+  (`Grappa.Session` entry API, `Grappa.Session.EventRouter` channel
+  param extraction, schema changesets defense-in-depth, PubSub
+  topic builder, backfill migration) so the rest of the codebase
+  observes a single key per channel regardless of upstream-or-input
+  casing.
+
+  The sigil-aware predicate is shared with `Grappa.Scrollback.target_kind/1`
+  (M7 2026-05-08) — promoting this to the IRC identifier namespace so
+  every channel-touching context can apply it without depending on
+  Scrollback. Non-binary input returns unchanged.
+  """
+  @spec canonical_channel(term()) :: term()
+  def canonical_channel(<<sigil::utf8, _::binary>> = name)
+      when sigil in [?#, ?&, ?!, ?+],
+      do: String.downcase(name)
+
+  def canonical_channel(name), do: name
+
+  @doc """
   True iff the input is a valid Grappa network slug (lowercase
   alphanumeric + dash + underscore, 1-32 chars). Tighter than IRC
   proper because it doubles as a URL path segment and PubSub topic

@@ -52,6 +52,119 @@ defmodule Grappa.Session.EventRouterTest do
     })
   end
 
+  describe "route/2 — UX-4 bucket A: channel-name canonicalisation" do
+    # The `route/2` wrapper pre-canonicalises every channel-shape param
+    # in `msg.params` to lowercase before clause dispatch
+    # (`canonicalize_channel_params/1` + per-command position table),
+    # so every downstream consumer (members map, topics cache,
+    # channel_modes cache, channels_created cache, window_states,
+    # persist effects, PubSub broadcasts) observes a single key per
+    # channel regardless of upstream casing. Nicks (DM-target PRIVMSG,
+    # user-MODE on self, KICK target nick, WHOIS numerics) pass
+    # through unchanged because `Identifier.canonical_channel/1` is
+    # sigil-aware.
+
+    test "JOIN #UpperChan keys state.members on the canonical lowercase form" do
+      state = base_state()
+      m = msg(:join, ["#UpperChan"], {:nick, "vjt", "u", "h"})
+      {:cont, new_state, _} = EventRouter.route(m, state)
+      assert Map.has_key?(new_state.members, "#upperchan")
+      refute Map.has_key?(new_state.members, "#UpperChan")
+    end
+
+    test "JOIN #CHAN and PRIVMSG #chan route to the same state.members key" do
+      state = base_state()
+      join = msg(:join, ["#CHAN"], {:nick, "vjt", "u", "h"})
+      {:cont, after_join, _} = EventRouter.route(join, state)
+      assert Map.has_key?(after_join.members, "#chan")
+
+      privmsg = msg(:privmsg, ["#chan", "hi"], {:nick, "alice", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(privmsg, after_join)
+      assert [{:persist, :privmsg, attrs}] = effects
+      assert attrs.channel == "#chan"
+    end
+
+    test "TOPIC #Chan emits :topic_changed keyed on canonical form" do
+      state = base_state(%{members: %{"#chan" => %{}}})
+      m = msg(:topic, ["#Chan", "new topic"], {:nick, "vjt", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert {:topic_changed, "#chan", _} = Enum.find(effects, &match?({:topic_changed, _, _}, &1))
+    end
+
+    test "KICK #UPPER target persists with canonical channel + preserves target nick case" do
+      state = base_state(%{members: %{"#upper" => %{"Vjt" => [], "alice" => []}}})
+      m = msg(:kick, ["#UPPER", "Vjt", "out"], {:nick, "alice", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert {:persist, :kick, attrs} = Enum.find(effects, &match?({:persist, :kick, _}, &1))
+      assert attrs.channel == "#upper"
+      assert attrs.meta.target == "Vjt"
+    end
+
+    test "user-MODE on self (target = own_nick) does NOT lowercase target" do
+      state = base_state(%{nick: "Vjt"})
+      m = msg(:mode, ["Vjt", "+i"], {:nick, "Vjt", "u", "h"})
+      {:cont, _, _} = EventRouter.route(m, state)
+      # No crash: the user-MODE clause guards on `target == state.nick`,
+      # which would fail if canonicalisation accidentally folded the
+      # nick. The assertion is the pattern match succeeding.
+    end
+
+    test "PRIVMSG to DM target (nick) preserves nick case" do
+      state = base_state(%{nick: "vjt"})
+      m = msg(:privmsg, ["CristoBOT", "hi"], {:nick, "vjt", "u", "h"})
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:persist, :privmsg, attrs}] = effects
+      # DM target = peer nick. Channel column holds the peer nick
+      # verbatim (case-preserved); display case is meaningful for
+      # the nick badge.
+      assert attrs.channel == "CristoBOT"
+    end
+
+    test "353 RPL_NAMREPLY canonicalises channel at param 2" do
+      # 353 augments an existing members entry (set up by JOIN-self);
+      # the test pre-populates the canonical key to mirror the live
+      # JOIN flow (`JOIN #CHAN` → wrapper canonicalises → clause keys
+      # state.members on `#chan`).
+      state = base_state(%{members: %{"#chan" => %{}}})
+
+      m =
+        msg(
+          {:numeric, 353},
+          ["vjt", "=", "#CHAN", "alice bob @op"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, new_state, _} = EventRouter.route(m, state)
+      assert Enum.sort(Map.keys(new_state.members["#chan"])) == ["alice", "bob", "op"]
+    end
+
+    test "341 RPL_INVITING (Bahamut order) canonicalises channel at param 2" do
+      state = base_state()
+
+      m =
+        msg(
+          {:numeric, 341},
+          ["vjt", "alice", "#CHAN"],
+          {:server, "irc.test.org"}
+        )
+
+      {:cont, _, effects} = EventRouter.route(m, state)
+      assert [{:invite_ack, "#chan", "alice"}] = effects
+    end
+
+    test "all four RFC 2812 sigils are canonicalised (#&!+)" do
+      state = base_state()
+
+      for sigil <- ["#", "&", "!", "+"] do
+        m = msg(:join, [sigil <> "MIXED"], {:nick, "vjt", "u", "h"})
+        {:cont, new_state, _} = EventRouter.route(m, state)
+        assert Map.has_key?(new_state.members, sigil <> "mixed")
+      end
+    end
+  end
+
   describe "route/2 — fallthrough (no-silent-drops bucket 1 + B6.1 + B6.11)" do
     # Pre-bucket-1, EventRouter's catch-all returned `{:cont, state, []}`
     # for every unhandled command — KILL, WALLOPS, GLOBOPS, ERROR,
@@ -640,6 +753,12 @@ defmodule Grappa.Session.EventRouterTest do
       test "#{numeric} matches case-insensitively (server echoes #SNIFFO, in-flight is #sniffo)" do
         # RFC 2812 §2.2 — channel comparisons are case-insensitive. Server
         # may echo a case-folded channel name; correlation must still hit.
+        # UX-4 bucket A: `EventRouter.route/2`'s wrapper canonicalises
+        # every channel-shape param before clause dispatch, so the
+        # emitted `:join_failed` effect carries the canonical
+        # lowercase form (`#sniffo`) regardless of the upstream-echoed
+        # mixed-case `#SNIFFO`. Members map, window_states, persist
+        # rows, PubSub topics all observe the same canonical key.
         state = in_flight_state("#sniffo")
 
         m =
@@ -649,7 +768,7 @@ defmodule Grappa.Session.EventRouterTest do
             {:server, "irc.test.org"}
           )
 
-        assert {:cont, next_state, [{:join_failed, "#SNIFFO", _, unquote(numeric)}]} =
+        assert {:cont, next_state, [{:join_failed, "#sniffo", _, unquote(numeric)}]} =
                  EventRouter.route(m, state)
 
         refute Map.has_key?(next_state.in_flight_joins, "#sniffo")
@@ -2902,19 +3021,28 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "366 lookup is case-insensitive on target channel (RFC 2812 §2.2)" do
+      # UX-4 bucket A: `EventRouter.route/2`'s wrapper canonicalises
+      # the channel param before clause dispatch. `Session.send_names/4`
+      # also canonicalises at entry — the accumulator `target_display`
+      # is the canonical form, and the EOF body `*** End of /NAMES
+      # list for X` carries the canonical channel. Total-consistency
+      # rule (CLAUDE.md): display + lookup + persist + broadcast all
+      # share one form. Pre-bucket-A the `target_display` was the
+      # operator's typed case; CP22-vintage docstrings still mentioned
+      # this — now stale; the tests pin the new contract.
       state =
         base_state(%{
           members: %{},
-          names_pending: %{"#bofh" => %{target_display: "#BOFH", names: ["alice"]}}
+          names_pending: %{"#bofh" => %{target_display: "#bofh", names: ["alice"]}}
         })
 
       m = msg({:numeric, 366}, ["vjt", "#BOFH", "End of /NAMES list"], {:server, "irc.test.org"})
 
       {:cont, new_state, effects} = EventRouter.route(m, state)
       assert new_state.names_pending == %{}
-      assert [{:members_seeded, "#BOFH", _}, _, eof] = effects
+      assert [{:members_seeded, "#bofh", _}, _, eof] = effects
       assert {:persist, :notice, eof_attrs} = eof
-      assert eof_attrs.meta.names_target == "#BOFH"
+      assert eof_attrs.meta.names_target == "#bofh"
     end
   end
 end
