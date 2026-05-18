@@ -20,6 +20,7 @@ import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
+import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
 import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
@@ -312,35 +313,22 @@ const Shell: Component = () => {
           </Show>
 
           <section class="shell-main">
+            {/* UX-4 bucket L (2026-05-19) — ShellChrome is always
+                rendered, regardless of selected window kind. Cluster-
+                wide rule: settings cog MUST be reachable from every
+                window (channel / query / server / home / mentions /
+                admin / empty). Pre-bucket the cog lived inside
+                TopicBar (channel-kind only) + per-branch fallbacks. */}
+            <ShellChrome
+              onToggleSidebar={() => setSidebarOpen((v) => !v)}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
             <Show
               when={adminOpen()}
               fallback={
                 <Show
                   when={selectedChannel()}
-                  fallback={
-                    <>
-                      <header class="shell-empty-toolbar">
-                        <button
-                          type="button"
-                          class="topic-bar-hamburger"
-                          aria-label="open channel sidebar"
-                          onClick={() => setSidebarOpen((v) => !v)}
-                        >
-                          ☰
-                        </button>
-                        <span class="shell-empty-toolbar-spacer" />
-                        <button
-                          type="button"
-                          class="topic-bar-settings"
-                          aria-label="open settings"
-                          onClick={() => setSettingsOpen(true)}
-                        >
-                          ⚙
-                        </button>
-                      </header>
-                      <p class="muted">select a channel to view scrollback</p>
-                    </>
-                  }
+                  fallback={<p class="muted">select a channel to view scrollback</p>}
                 >
                   {(sel) => (
                     <>
@@ -348,9 +336,7 @@ const Shell: Component = () => {
                         <TopicBar
                           networkSlug={sel().networkSlug}
                           channelName={sel().channelName}
-                          onToggleSidebar={() => setSidebarOpen((v) => !v)}
                           onToggleMembers={() => setMembersOpen((v) => !v)}
-                          onOpenSettings={() => setSettingsOpen(true)}
                         />
                       </Show>
                       <Show
@@ -448,28 +434,22 @@ const Shell: Component = () => {
         </Show>
 
         <section class="shell-main">
+          {/* UX-4 bucket L — ShellChrome always visible on mobile too.
+              Hamburger toggles members drawer when a channel is
+              selected; collapses to no hamburger for other window
+              kinds (no members surface) — ShellChrome's Show on
+              `onToggleSidebar` handles the slot conditionally. */}
+          <ShellChrome
+            onToggleSidebar={
+              selectedChannel()?.kind === "channel" ? () => setMembersOpen((v) => !v) : undefined
+            }
+            hamburgerLabel="open members sidebar"
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
           <Show
             when={adminOpen()}
             fallback={
-              <Show
-                when={selectedChannel()}
-                fallback={
-                  <>
-                    <header class="shell-empty-toolbar">
-                      <span class="shell-empty-toolbar-spacer" />
-                      <button
-                        type="button"
-                        class="topic-bar-settings"
-                        aria-label="open settings"
-                        onClick={() => setSettingsOpen(true)}
-                      >
-                        ⚙
-                      </button>
-                    </header>
-                    <p class="muted">select a channel below</p>
-                  </>
-                }
-              >
+              <Show when={selectedChannel()} fallback={<p class="muted">select a channel below</p>}>
                 {(sel) => (
                   <>
                     <Show when={sel().kind === "channel"}>
@@ -480,9 +460,7 @@ const Shell: Component = () => {
                       <TopicBar
                         networkSlug={sel().networkSlug}
                         channelName={sel().channelName}
-                        onToggleSidebar={() => undefined}
                         onToggleMembers={() => setMembersOpen((v) => !v)}
-                        onOpenSettings={() => setSettingsOpen(true)}
                       />
                     </Show>
                     <Show

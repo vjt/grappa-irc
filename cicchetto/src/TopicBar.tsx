@@ -2,13 +2,9 @@ import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { membersByChannel } from "./lib/members";
-import { isMobile } from "./lib/theme";
 import { windowIsJoined } from "./lib/windowState";
 
 // Top bar of the middle pane. Hosts:
-//  * left ☰ hamburger — opens the channel sidebar drawer (DESKTOP ONLY;
-//    on mobile the sidebar is replaced by BottomBar, so this hamburger is
-//    hidden via isMobile() gating — C6.3 single-hamburger reshape)
 //  * channel name (bold accent)
 //  * topic strip: single-line ellipsized; "(no topic set)" placeholder
 //    when no topic is cached. Click/tap → modal expand with full topic,
@@ -16,27 +12,26 @@ import { windowIsJoined } from "./lib/windowState";
 //  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
 //    Rendered only when modes are cached and non-empty (C3.1).
 //  * nick count from members.length
-//  * right ☰ hamburger — opens members drawer (desktop + mobile; this is
-//    the SINGLE hamburger on mobile per spec #10)
-//  * ⚙ settings button — opens SettingsDrawer
+//  * right ☰ hamburger — opens members drawer (desktop + mobile)
+//
+// UX-4 bucket L (2026-05-19): the settings cog AND the left channel-
+// sidebar hamburger moved out of TopicBar into the cluster-wide
+// ShellChrome bar — both the cog and the sidebar toggle must be
+// reachable from every window kind, not just channel windows.
+// TopicBar now renders only the topic / mode / member-count info +
+// the members hamburger (channel-specific, has no analog in non-
+// channel windows so stays here).
 //
 // Modal state uses `"closed" | "open"` string-literal union per the
 // closed-set rule (CLAUDE.md).
 //
 // Always pinned at the top of the channel-window scrollback area — no
 // auto-collapse on scroll (vjt-blessed 2026-05-04).
-//
-// C6.3: Left hamburger hidden on mobile via <Show when={!isMobile()}>. The
-// right hamburger (members) remains on both desktop and mobile and becomes
-// the sole hamburger on mobile — providing thumb-friendly members access
-// without the channel sidebar that no longer exists on mobile.
 
 export type Props = {
   networkSlug: string;
   channelName: string;
-  onToggleSidebar: () => void;
   onToggleMembers: () => void;
-  onOpenSettings: () => void;
 };
 
 type ModalState = "closed" | "open";
@@ -70,19 +65,15 @@ const TopicBar: Component<Props> = (props) => {
 
   return (
     <div class="topic-bar">
-      {/* C6.3: left channel-sidebar hamburger hidden on mobile.
-          On mobile, channels live in BottomBar — no left drawer exists.
-          Only the right members hamburger survives as the single tap target. */}
-      <Show when={!isMobile()}>
-        <button
-          type="button"
-          class="topic-bar-hamburger"
-          aria-label="open channel sidebar"
-          onClick={props.onToggleSidebar}
-        >
-          ☰
-        </button>
-      </Show>
+      {/* UX-4 bucket L (2026-05-19): left channel-sidebar hamburger
+          dropped — sidebar toggle is owned by ShellChrome (the always-
+          visible bar above TopicBar) per the cluster-wide "settings
+          cog always reachable from every window" rule. ShellChrome's
+          hamburger handles desktop sidebar AND mobile members toggle
+          uniformly across all window kinds, including the server
+          window. TopicBar pre-bucket rendered its own left hamburger
+          gated on `!isMobile()`; ShellChrome's hamburger replaces it
+          end-to-end. */}
       <span class="topic-bar-channel">{props.channelName}</span>
       {/* Topic strip — always present; shows placeholder when no topic cached */}
       <button
@@ -115,14 +106,6 @@ const TopicBar: Component<Props> = (props) => {
           ☰
         </button>
       </Show>
-      <button
-        type="button"
-        class="topic-bar-settings"
-        aria-label="open settings"
-        onClick={props.onOpenSettings}
-      >
-        ⚙
-      </button>
 
       {/* Topic modal — opens on topic strip click; shows full topic, setter, timestamp */}
       <Show when={modalState() === "open"}>

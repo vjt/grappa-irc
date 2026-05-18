@@ -59,7 +59,6 @@ vi.mock("../lib/archive", () => ({
 }));
 
 import BottomBar from "../BottomBar";
-import * as archiveMod from "../lib/archive";
 import * as selMod from "../lib/selection";
 import * as windowCloseMod from "../lib/windowClose";
 
@@ -257,107 +256,11 @@ describe("BottomBar", () => {
     expect(windowCloseMod.closeQueryWindow).toHaveBeenCalledWith(1, "alice");
   });
 
-  // UX-2 (2026-05-17) — mobile archive chip per network. Renders only
-  // when `visibleArchiveForNetwork(slug, id)` returns ≥1 entry; tap
-  // calls `setArchiveModalNetwork(slug)` which opens `ArchiveModal`.
-  describe("UX-2 — archive chip", () => {
-    it("does NOT render a chip when archive is empty for every network", () => {
-      const { container } = render(() => <BottomBar />);
-      expect(container.querySelectorAll(".bottom-bar-archive-chip").length).toBe(0);
-    });
-
-    it("auto-loads archive for every network on mount", () => {
-      render(() => <BottomBar />);
-      expect(archiveMod.loadArchive).toHaveBeenCalledWith("freenode");
-      expect(archiveMod.loadArchive).toHaveBeenCalledWith("libera");
-    });
-
-    it("renders a chip per network with non-empty visible archive entries", async () => {
-      vi.resetModules();
-      vi.doMock("../lib/networks", () => ({
-        networks: () => [
-          { id: 1, slug: "freenode", inserted_at: "", updated_at: "" },
-          { id: 2, slug: "libera", inserted_at: "", updated_at: "" },
-        ],
-        channelsBySlug: () => ({ freenode: [], libera: [] }),
-      }));
-      vi.doMock("../lib/selection", () => ({
-        selectedChannel: () => null,
-        setSelectedChannel: vi.fn(),
-        unreadCounts: () => ({}),
-        messagesUnread: () => ({}),
-        eventsUnread: () => ({}),
-      }));
-      vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
-      vi.doMock("../lib/channelKey", () => ({
-        channelKey: (slug: string, name: string) => `${slug} ${name}`,
-      }));
-      vi.doMock("../lib/queryWindows", () => ({
-        queryWindowsByNetwork: () => ({}),
-      }));
-      vi.doMock("../lib/windowClose", () => ({
-        closeChannelWindow: vi.fn(),
-        closeQueryWindow: vi.fn(),
-      }));
-      vi.doMock("../lib/archive", () => ({
-        archivedBySlug: () => ({}),
-        loadArchive: vi.fn().mockResolvedValue(undefined),
-        setArchiveModalNetwork: vi.fn(),
-        visibleArchiveForNetwork: (slug: string) =>
-          slug === "freenode"
-            ? [
-                { target: "vjt-peer", kind: "query", last_activity: 100, row_count: 4 },
-                { target: "#bofh", kind: "channel", last_activity: 200, row_count: 8 },
-              ]
-            : [],
-      }));
-      const { default: BottomBarFresh } = await import("../BottomBar");
-      const { container } = render(() => <BottomBarFresh />);
-      const chips = container.querySelectorAll(".bottom-bar-archive-chip");
-      expect(chips.length).toBe(1);
-      expect(chips[0]?.textContent).toContain("Archive");
-      expect(chips[0]?.textContent).toContain("2");
-    });
-
-    it("clicking the chip calls setArchiveModalNetwork with the slug", async () => {
-      vi.resetModules();
-      vi.doMock("../lib/networks", () => ({
-        networks: () => [{ id: 1, slug: "freenode", inserted_at: "", updated_at: "" }],
-        channelsBySlug: () => ({ freenode: [] }),
-      }));
-      vi.doMock("../lib/selection", () => ({
-        selectedChannel: () => null,
-        setSelectedChannel: vi.fn(),
-        unreadCounts: () => ({}),
-        messagesUnread: () => ({}),
-        eventsUnread: () => ({}),
-      }));
-      vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
-      vi.doMock("../lib/channelKey", () => ({
-        channelKey: (slug: string, name: string) => `${slug} ${name}`,
-      }));
-      vi.doMock("../lib/queryWindows", () => ({
-        queryWindowsByNetwork: () => ({}),
-      }));
-      vi.doMock("../lib/windowClose", () => ({
-        closeChannelWindow: vi.fn(),
-        closeQueryWindow: vi.fn(),
-      }));
-      const setArchiveModalNetwork = vi.fn();
-      vi.doMock("../lib/archive", () => ({
-        archivedBySlug: () => ({}),
-        loadArchive: vi.fn().mockResolvedValue(undefined),
-        setArchiveModalNetwork,
-        visibleArchiveForNetwork: () => [
-          { target: "vjt-peer", kind: "query", last_activity: 100, row_count: 4 },
-        ],
-      }));
-      const { default: BottomBarFresh } = await import("../BottomBar");
-      const { container } = render(() => <BottomBarFresh />);
-      const chip = container.querySelector(".bottom-bar-archive-chip") as HTMLElement;
-      expect(chip).toBeTruthy();
-      fireEvent.click(chip);
-      expect(setArchiveModalNetwork).toHaveBeenCalledWith("freenode");
-    });
-  });
+  // UX-4 bucket L (2026-05-19): the per-network mobile archive chip
+  // moved from BottomBar to the always-visible ShellChrome bar at the
+  // top of `.shell-main`. BottomBar no longer renders archive chips
+  // and no longer eager-loads `loadArchive` per network — desktop's
+  // `<details>` lazy-loads on user expand, and ShellChrome resolves
+  // archive on demand from the currently-selected window's network.
+  // Coverage moved to ShellChrome.test.tsx.
 });

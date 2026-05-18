@@ -309,3 +309,29 @@ describe("SettingsDrawer (M-7 admin console entry)", () => {
     );
   });
 });
+
+describe("SettingsDrawer (bucket L — chrome polish)", () => {
+  it("renders × close button in the header (desktop parity)", () => {
+    wrap(true, vi.fn(), vi.fn());
+    expect(screen.getByTestId("settings-drawer-close")).toBeInTheDocument();
+  });
+
+  it("clicking × close fires onClose", () => {
+    const onClose = vi.fn();
+    wrap(true, onClose, vi.fn());
+    fireEvent.click(screen.getByTestId("settings-drawer-close"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("renders bottom done button (mobile thumb-reach)", () => {
+    wrap(true, vi.fn(), vi.fn());
+    expect(screen.getByTestId("settings-drawer-done")).toBeInTheDocument();
+  });
+
+  it("clicking done fires onClose", () => {
+    const onClose = vi.fn();
+    wrap(true, onClose, vi.fn());
+    fireEvent.click(screen.getByTestId("settings-drawer-done"));
+    expect(onClose).toHaveBeenCalled();
+  });
+});

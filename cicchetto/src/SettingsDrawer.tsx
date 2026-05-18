@@ -11,6 +11,7 @@ import {
   type PushDeviceSummary,
 } from "./lib/push";
 import { getTheme, setTheme, type ThemePref } from "./lib/theme";
+import { deviceClassIcon, parseUserAgent } from "./lib/userAgent";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   getNotificationPrefs,
@@ -225,7 +226,23 @@ const SettingsDrawer: Component<Props> = (props) => {
         role="dialog"
         aria-label="settings"
       >
-        <h2>settings</h2>
+        {/* UX-4 bucket L (2026-05-19) — sticky header with × close
+            (desktop parity, top-right corner of the drawer). The
+            bottom "done" button (added after `log out`) covers the
+            mobile thumb-reach case where the × is awkward to tap at
+            the top of a tall drawer. */}
+        <header class="settings-drawer-header">
+          <h2>settings</h2>
+          <button
+            type="button"
+            class="settings-drawer-close"
+            aria-label="close settings"
+            data-testid="settings-drawer-close"
+            onClick={props.onClose}
+          >
+            ×
+          </button>
+        </header>
         <fieldset>
           <legend>theme</legend>
           <label>
@@ -352,20 +369,35 @@ const SettingsDrawer: Component<Props> = (props) => {
             <h3>devices</h3>
             <ul class="devices-list" data-testid="devices-list">
               <For each={devices()}>
-                {(d) => (
-                  <li>
-                    <span class="device-ua">{d.user_agent ?? "(unknown browser)"}</span>
-                    <button
-                      type="button"
-                      class="device-remove"
-                      onClick={() => {
-                        void removeDevice(d.id);
-                      }}
-                    >
-                      remove
-                    </button>
-                  </li>
-                )}
+                {(d) => {
+                  // UX-4 bucket L (2026-05-19) — replace the raw UA
+                  // string with `{icon} {Browser} on {OS}`. Title
+                  // attribute preserves the full UA so a hover (desktop)
+                  // can still surface the original for debugging /
+                  // device disambiguation across same-browser instances.
+                  const parsed = parseUserAgent(d.user_agent);
+                  return (
+                    <li>
+                      <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
+                        <span class="device-ua-icon" aria-hidden="true">
+                          {deviceClassIcon(parsed.deviceClass)}
+                        </span>
+                        <span class="device-ua-name">
+                          {parsed.browser} on {parsed.os}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        class="device-remove"
+                        onClick={() => {
+                          void removeDevice(d.id);
+                        }}
+                      >
+                        remove
+                      </button>
+                    </li>
+                  );
+                }}
               </For>
             </ul>
           </Show>
@@ -452,6 +484,19 @@ const SettingsDrawer: Component<Props> = (props) => {
           }}
         >
           log out
+        </button>
+
+        {/* UX-4 bucket L — bottom "done" button. Same close verb as
+            the top × — mobile thumb-reach surface. Sits below logout
+            so the scroll position when scroll-to-bottom lands on a
+            thumb-friendly close affordance. */}
+        <button
+          type="button"
+          class="settings-drawer-done"
+          data-testid="settings-drawer-done"
+          onClick={props.onClose}
+        >
+          done
         </button>
       </aside>
     </>

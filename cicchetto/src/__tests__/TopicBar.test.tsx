@@ -41,9 +41,7 @@ import TopicBar from "../TopicBar";
 const baseProps = () => ({
   networkSlug: "freenode",
   channelName: "#italia",
-  onToggleSidebar: vi.fn(),
   onToggleMembers: vi.fn(),
-  onOpenSettings: vi.fn(),
 });
 
 beforeEach(() => {
@@ -64,12 +62,10 @@ describe("TopicBar", () => {
     expect(screen.getByText(/2 nicks/i)).toBeInTheDocument();
   });
 
-  it("clicking left hamburger fires onToggleSidebar", () => {
-    const props = baseProps();
-    render(() => <TopicBar {...props} />);
-    fireEvent.click(screen.getByLabelText(/open channel sidebar/i));
-    expect(props.onToggleSidebar).toHaveBeenCalled();
-  });
+  // UX-4 bucket L (2026-05-19): TopicBar's left sidebar hamburger
+  // moved to ShellChrome (always-visible toolbar). TopicBar no longer
+  // renders a "open channel sidebar" affordance — the corresponding
+  // test moved to ShellChrome.test.tsx.
 
   it("clicking right hamburger fires onToggleMembers", () => {
     const props = baseProps();
@@ -78,12 +74,9 @@ describe("TopicBar", () => {
     expect(props.onToggleMembers).toHaveBeenCalled();
   });
 
-  it("clicking ⚙ settings fires onOpenSettings", () => {
-    const props = baseProps();
-    render(() => <TopicBar {...props} />);
-    fireEvent.click(screen.getByLabelText(/open settings/i));
-    expect(props.onOpenSettings).toHaveBeenCalled();
-  });
+  // UX-4 bucket L (2026-05-19): the settings cog moved out of TopicBar
+  // into ShellChrome (covered in Shell.test.tsx). TopicBar no longer
+  // renders ⚙ — the corresponding test moved to ShellChrome.test.tsx.
 
   describe("members hamburger + nick count visibility (joined-only)", () => {
     it("hides the right hamburger when the channel is not joined", () => {

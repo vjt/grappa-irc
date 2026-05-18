@@ -1,5 +1,4 @@
 import { type Component, createEffect, For, on, Show } from "solid-js";
-import { loadArchive, setArchiveModalNetwork, visibleArchiveForNetwork } from "./lib/archive";
 import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
@@ -72,19 +71,13 @@ const BottomBar: Component<Props> = (props) => {
   // is idempotent + cheap (server returns an empty list when there's
   // nothing archived), and the result is cached per identity rotation.
   //
-  // Re-runs only when the `networks()` resource refetches (rare —
-  // create/delete/refresh). createResource itself does not re-fire
-  // unless its source signal changes, so this is not a per-render
-  // cost. If a future heartbeat starts touching networks() more
-  // aggressively, narrow this to a diff of new slugs only.
-  createEffect(() => {
-    for (const net of networks() ?? []) {
-      void loadArchive(net.slug);
-    }
-  });
-
-  const archiveCount = (slug: string, networkId: number): number =>
-    visibleArchiveForNetwork(slug, networkId).length;
+  // UX-4 bucket L (2026-05-19) — archive chip moved out of BottomBar
+  // into the always-visible ShellChrome bar (top-right). BottomBar
+  // pre-fix eagerly loaded archive per network to gate chip visibility;
+  // ShellChrome resolves the archive target by reading the currently-
+  // selected window's network slug + opens the ArchiveModal on click.
+  // The per-network sidebar `<details>` archive section (desktop) still
+  // lazy-loads on user expand.
 
   return (
     <div class="bottom-bar" role="tablist" ref={navRef}>
@@ -199,32 +192,6 @@ const BottomBar: Component<Props> = (props) => {
                 );
               }}
             </For>
-
-            {/* UX-2 (2026-05-17) — Archive chip per network. Visible only
-                when this network has at least one archived (non-active)
-                entry. Tap opens `ArchiveModal` for this slug — full
-                overlay with per-row × delete via UX-1's verbs. The
-                effect above eagerly loads archive for every network so
-                this signal flips on as soon as the server responds. */}
-            {(() => {
-              const count = archiveCount(network.slug, network.id);
-              return (
-                <Show when={count > 0}>
-                  <button
-                    type="button"
-                    class="bottom-bar-archive-chip"
-                    aria-label={`Open archive for ${network.slug}`}
-                    onClick={() => setArchiveModalNetwork(network.slug)}
-                  >
-                    <span class="bottom-bar-archive-chip-icon" aria-hidden="true">
-                      📁
-                    </span>
-                    <span class="bottom-bar-archive-chip-label">Archive</span>
-                    <span class="bottom-bar-archive-chip-count">{count}</span>
-                  </button>
-                </Show>
-              );
-            })()}
           </div>
         )}
       </For>

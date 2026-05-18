@@ -495,19 +495,6 @@ body {
   background: var(--bg);
 }
 
-.shell-empty-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.shell-empty-toolbar-spacer {
-  flex: 1;
-}
-
 .topic-bar-hamburger {
   background: transparent;
   color: var(--muted);
@@ -631,14 +618,46 @@ body {
   font-size: 0.85rem;
 }
 
-.topic-bar-settings {
+/* UX-4 bucket L (2026-05-19) — ShellChrome bar: always-visible
+   top-of-`.shell-main` toolbar. Hosts hamburger (mobile) + archive
+   button + settings cog. The buttons share `.shell-chrome-btn` base
+   class for size parity with `.topic-bar-hamburger` per plan-doc
+   "Hamburger + cog button size parity: cog grows to hamburger size". */
+
+.shell-chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.shell-chrome-spacer {
+  flex: 1;
+}
+
+.shell-chrome-btn {
   background: transparent;
   color: var(--muted);
   border: 1px solid var(--border);
   padding: 0.25rem 0.5rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
+  line-height: 1;
   cursor: pointer;
+  min-width: 2.25rem;
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shell-chrome-btn:hover,
+.shell-chrome-btn:focus-visible {
+  color: var(--fg);
+  outline: none;
 }
 
 /* JOIN-self banner (C3.2) */
@@ -1198,7 +1217,15 @@ body {
   top: 0;
   right: 0;
   width: 22rem;
-  max-width: 100vw;
+  /* UX-4 bucket L (2026-05-19) — XXL font-size scope.
+     Pre-bucket the drawer used `width: 22rem` + `max-width: 100vw`;
+     at XXL text size (--font-size: 22px equiv), `22rem` becomes wide
+     enough on small viewports that the drawer fills > 80% of screen
+     AND the inner long labels (e.g. "all private messages from nicks")
+     wrap awkwardly. Cap at 28rem so XXL text still fits at the same
+     rem-relative width without spilling horizontally. The 100vw
+     ceiling stays for very narrow viewports (iPhone SE class). */
+  max-width: min(28rem, 100vw);
   height: 100vh;
   background: var(--bg-alt);
   border-left: 1px solid var(--border);
@@ -1231,6 +1258,49 @@ body {
 .settings-drawer-backdrop.open {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* UX-4 bucket L (2026-05-19) — sticky header with × close button. */
+.settings-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.settings-drawer-close {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 1.125rem;
+  line-height: 1;
+  cursor: pointer;
+  min-width: 2.25rem;
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-drawer-close:hover,
+.settings-drawer-close:focus-visible {
+  color: var(--fg);
+  outline: none;
+}
+
+/* UX-4 bucket L — bottom "done" button (mobile thumb-reach surface). */
+.settings-drawer-done {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+  margin-top: auto;
 }
 
 .settings-drawer h2 {
@@ -1794,6 +1864,23 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* UX-4 bucket L (2026-05-19) — device-ua row decomposed into icon
+   (📱/💻/❔) + parsed name ("Chrome on macOS") instead of the raw
+   UA string. Icon is fixed-width so multi-line wrap stays clean. */
+.settings-drawer .device-ua-icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+}
+
+.settings-drawer .device-ua-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-drawer .device-remove {
@@ -2140,42 +2227,10 @@ body {
   background: var(--border);
 }
 
-/* UX-2 (2026-05-17) — mobile archive chip per network. Renders inside
-   `.bottom-bar-network` AFTER the query tabs; tap opens
-   `ArchiveModal` for that network. Visually distinct from a tab (chip
-   shape with rounded corners + muted tone) so the operator doesn't
-   confuse it with an active window. */
-.bottom-bar-archive-chip {
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  border-left: 1px solid var(--border);
-  padding: 0 0.6rem;
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  cursor: pointer;
-  white-space: nowrap;
-  height: 100%;
-  min-width: 44px;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex-shrink: 0;
-}
-
-.bottom-bar-archive-chip:hover {
-  background: var(--border);
-  color: var(--fg);
-}
-
-.bottom-bar-archive-chip-count {
-  background: var(--border);
-  color: var(--fg);
-  border-radius: 999px;
-  padding: 0 0.35rem;
-  font-size: 0.7rem;
-  line-height: 1.4;
-}
+/* UX-2 (2026-05-17) — mobile archive chip per network. UX-4 bucket L
+   (2026-05-19): rules removed in lockstep with the JSX drop —
+   archive button is now in the always-visible ShellChrome bar at the
+   top of `.shell-main`. */
 
 /* UX-2 — full-viewport archive modal. Same backdrop+dialog shape as
    PrivacyModal but takes more vertical space (the list can be long)
