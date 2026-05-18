@@ -123,6 +123,59 @@ defmodule Grappa.Networks.Wire do
           at: String.t() | nil
         }
 
+  @typedoc """
+  UX-4 bucket B: per-row entry inside the `:home` window's networks
+  list. Strict subset of `network_with_nick_json` — no `id`, no
+  timestamps, no `kind` discriminator. The home pane is a UI view, not
+  a network mirror.
+
+  Identical shape used in two places:
+
+    * `home_data/1` envelope (returned from `GET /me` for user
+      subjects, nested under `home_data.networks`).
+    * `home_network_state_changed_event/2` typed broadcast payload
+      (per-row patch on every credential `connection_state` transition,
+      so cic can patch the matching slot in-place without a `GET /me`
+      refetch).
+
+  Keeping the two payloads structurally identical via the shared
+  `home_network_row/2` builder is the "single edit, not fourteen"
+  rule: future field add lands here and at the builder, both
+  consumers pick it up without drift.
+  """
+  @type home_network_row :: %{
+          slug: String.t(),
+          nick: String.t(),
+          connection_state: Credential.connection_state(),
+          connection_state_reason: String.t() | nil,
+          connection_state_changed_at: String.t() | nil
+        }
+
+  @typedoc """
+  UX-4 bucket B: home envelope nested under `MeJSON.show/1`'s
+  `:home_data` key for user subjects. Visitors get `nil` outright
+  (visitor home is cic-only help text — no server roundtrip).
+
+  Nested under `:networks` (not flat) so future home cards
+  (`home_data.pinned`, `home_data.mentions_summary`, etc.) land as
+  sibling keys without touching every caller.
+  """
+  @type home_data :: %{networks: [home_network_row()]}
+
+  @typedoc """
+  Wire payload for `kind: "home_network_state_changed"` broadcast on
+  `Topic.user(user_name)`. Co-emitted alongside
+  `connection_state_changed` from `Networks.broadcast_state_change/4`
+  so HomePane patches the per-row slot in-place (the wider
+  `connection_state_changed` payload is consumed by other surfaces —
+  Sidebar greyed-cascade, query-window store — and HomePane
+  shouldn't be forced to depend on its shape).
+  """
+  @type home_network_state_changed_event :: %{
+          kind: String.t(),
+          network: home_network_row()
+        }
+
   @doc """
   Renders a `Networks.Credential` row to its public JSON shape. The
   `:network` association MUST be preloaded — pattern match fails
@@ -248,6 +301,63 @@ defmodule Grappa.Networks.Wire do
       to: to,
       reason: reason,
       at: WireTime.iso8601_or_nil(c.connection_state_changed_at)
+    }
+  end
+
+  @doc """
+  Builds a single `home_network_row` from a `Credential` + the live
+  nick (resolved by the caller via `Session.current_nick/2`, falling
+  back to `cred.nick` on `:no_session`). The `:network` association
+  MUST be preloaded — pattern match fails loudly otherwise.
+
+  Shared by `home_data/1` (envelope) and
+  `home_network_state_changed_event/2` (typed broadcast) so the row
+  shape is one edit, not two.
+  """
+  @spec home_network_row(Credential.t(), String.t()) :: home_network_row()
+  def home_network_row(%Credential{network: %Network{slug: slug}} = cred, nick)
+      when is_binary(nick) and nick != "" do
+    %{
+      slug: slug,
+      nick: nick,
+      connection_state: cred.connection_state,
+      connection_state_reason: cred.connection_state_reason,
+      connection_state_changed_at: WireTime.iso8601_or_nil(cred.connection_state_changed_at)
+    }
+  end
+
+  @doc """
+  Renders the `home_data` envelope for a user subject — list of
+  `(credential, live_nick)` pairs to the nested `%{networks: [...]}`
+  shape. Caller composes the pairs via
+  `Networks.home_data_for_user/1`.
+
+  Visitor home is cic-only help text (no server roundtrip) — the
+  `MeJSON` clause for visitors sets `home_data: nil` directly without
+  calling this function.
+  """
+  @spec home_data([{Credential.t(), String.t()}]) :: home_data()
+  def home_data(pairs) when is_list(pairs) do
+    %{networks: Enum.map(pairs, fn {cred, nick} -> home_network_row(cred, nick) end)}
+  end
+
+  @doc """
+  Renders the broadcast event payload for
+  `kind: "home_network_state_changed"`. Co-emitted from
+  `Networks.broadcast_state_change/4` alongside
+  `connection_state_changed_event/4`.
+
+  Caller threads the live nick the same way `home_data/1` does —
+  state-of-record on the credential row plus the per-network IRC nick
+  (live if running, configured if parked/failed).
+  """
+  @spec home_network_state_changed_event(Credential.t(), String.t()) ::
+          home_network_state_changed_event()
+  def home_network_state_changed_event(%Credential{} = cred, nick)
+      when is_binary(nick) and nick != "" do
+    %{
+      kind: "home_network_state_changed",
+      network: home_network_row(cred, nick)
     }
   end
 end

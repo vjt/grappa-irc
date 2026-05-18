@@ -318,4 +318,140 @@ defmodule Grappa.Networks.WireTest do
       assert payload.kind == "connection_state_changed"
     end
   end
+
+  # UX-4 bucket B (2026-05-18). The home pane's per-row payload is the
+  # narrow projection consumed by HomePane on cold-load (via /me's
+  # `home_data` envelope) AND by HomePane on live updates (via the
+  # `home_network_state_changed` typed event). Both reads go through
+  # the shared `home_network_row/2` builder so the wire shape is one
+  # edit, not two — the wire-parity test below pins that invariant.
+  describe "home_network_row/2 (UX-4 B)" do
+    test "renders {slug, nick, connection_state, ...} from a preloaded credential",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      row = Wire.home_network_row(cred, "vjt-live")
+
+      assert row.slug == network.slug
+      assert row.nick == "vjt-live"
+      assert row.connection_state == :connected
+      assert row.connection_state_reason == nil
+      # bind_credential defaults `connection_state_changed_at` to now; the
+      # wire boundary converts to ISO-8601.
+      assert is_binary(row.connection_state_changed_at)
+      assert {:ok, _, 0} = DateTime.from_iso8601(row.connection_state_changed_at)
+    end
+
+    test "surfaces nil connection_state_changed_at as nil on the wire",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      row =
+        Wire.home_network_row(
+          %{cred | connection_state_changed_at: nil},
+          "vjt"
+        )
+
+      assert row.connection_state_changed_at == nil
+    end
+
+    test "crashes loudly on unloaded :network assoc (mirror of credential_to_json/1)",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = Credentials.get_credential!(user, network)
+      assert match?(%Ecto.Association.NotLoaded{}, cred.network)
+
+      assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, "vjt") end
+    end
+
+    test "rejects empty/non-string nick (defensive — caller bug)",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{nick: "vjt", auth_method: :none})
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, "") end
+      assert_raise FunctionClauseError, fn -> Wire.home_network_row(cred, nil) end
+    end
+  end
+
+  describe "home_data/1 (UX-4 B)" do
+    test "renders %{networks: [...]} from a list of (cred, nick) pairs",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      envelope = Wire.home_data([{cred, "vjt-live"}])
+
+      assert %{networks: [row]} = envelope
+      assert row.slug == network.slug
+      assert row.nick == "vjt-live"
+    end
+
+    test "renders %{networks: []} for an empty list (user with no credentials)" do
+      assert Wire.home_data([]) == %{networks: []}
+    end
+  end
+
+  describe "home_network_state_changed_event/2 (UX-4 B)" do
+    test "renders %{kind, network} with the shared row builder",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{
+          nick: "vjt",
+          auth_method: :none
+        })
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      payload = Wire.home_network_state_changed_event(cred, "vjt-live")
+
+      assert payload.kind == "home_network_state_changed"
+      assert payload.network.slug == network.slug
+      assert payload.network.nick == "vjt-live"
+      assert payload.network.connection_state == :connected
+    end
+
+    # The wire-parity invariant: a future field add MUST appear in both
+    # the /me envelope row AND the typed-event payload's `:network`
+    # field. Both must route through `home_network_row/2` — a regression
+    # that builds one inline would surface here.
+    test "the event's :network field is structurally identical to the envelope row",
+         %{user: user, network: network} do
+      {:ok, _} =
+        Credentials.bind_credential(user, network, %{nick: "vjt", auth_method: :none})
+
+      cred = user |> Credentials.get_credential!(network) |> Repo.preload(:network)
+
+      envelope = Wire.home_data([{cred, "vjt"}])
+      [row] = envelope.networks
+
+      event = Wire.home_network_state_changed_event(cred, "vjt")
+
+      assert event.network == row
+    end
+  end
 end

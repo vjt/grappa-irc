@@ -11,7 +11,7 @@ import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows"
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
-import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
@@ -203,93 +203,113 @@ const Sidebar: Component<Props> = (props) => {
   // inline here.
 
   return (
-    <Show
-      when={(networks()?.length ?? 0) > 0}
-      fallback={<p class="muted sidebar-empty">no networks</p>}
-    >
-      <For each={networks()}>
-        {(network) => (
-          <section
-            class={`sidebar-network${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
+    <>
+      {/* UX-4 bucket B — `$home` pinned ABOVE all networks. Identity-
+          scoped (NOT per-network), so it lives OUTSIDE the per-network
+          `<For>` loop. Both visitor + registered identities see this
+          row; HomePane internally branches on `homeData()`. */}
+      <ul class="sidebar-home-section">
+        <li classList={{ selected: isSelected(HOME_WINDOW_SLUG, HOME_WINDOW_NAME) }}>
+          <button
+            type="button"
+            class="sidebar-window-btn sidebar-home-btn"
+            onClick={() => handleClick(HOME_WINDOW_SLUG, HOME_WINDOW_NAME, "home")}
           >
-            <h3 title={isNetworkGreyed(network.slug) ? networkReason(network.slug) : undefined}>
-              {network.slug}
-              {/* C8.3 — away visual indicator. Shows [away] badge when the
+            <span class="sidebar-channel-name">Home</span>
+          </button>
+        </li>
+      </ul>
+
+      <Show
+        when={(networks()?.length ?? 0) > 0}
+        fallback={<p class="muted sidebar-empty">no networks</p>}
+      >
+        <For each={networks()}>
+          {(network) => (
+            <section
+              class={`sidebar-network${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
+            >
+              <h3 title={isNetworkGreyed(network.slug) ? networkReason(network.slug) : undefined}>
+                {network.slug}
+                {/* C8.3 — away visual indicator. Shows [away] badge when the
                   user is in away state on this network. Driven by the
                   away_confirmed server event via awayStatus.ts. */}
-              <Show when={awayByNetwork()[network.slug]}>
-                <span class="sidebar-away-badge">[away]</span>
-              </Show>
-            </h3>
-            <ul>
-              {/* Server window — always present, not closeable */}
-              <li classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}>
-                <button
-                  type="button"
-                  onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
-                  class="sidebar-window-btn"
-                >
-                  <span class="sidebar-channel-name">Server</span>
-                  {/* CP13 — server-window receives :notice rows for server-routed
+                <Show when={awayByNetwork()[network.slug]}>
+                  <span class="sidebar-away-badge">[away]</span>
+                </Show>
+              </h3>
+              <ul>
+                {/* Server window — always present, not closeable */}
+                <li classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}>
+                  <button
+                    type="button"
+                    onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
+                    class="sidebar-window-btn"
+                  >
+                    <span class="sidebar-channel-name">Server</span>
+                    {/* CP13 — server-window receives :notice rows for server-routed
                       numerics + NickServ + MOTD + ChanServ-fallback. Same badge
                       treatment as channels so unread counts surface uniformly. */}
-                  {(() => {
-                    const key = channelKey(network.slug, SERVER_WINDOW_NAME);
+                    {(() => {
+                      const key = channelKey(network.slug, SERVER_WINDOW_NAME);
+                      return (
+                        <>
+                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                          </Show>
+                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
+                          </Show>
+                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
+                          </Show>
+                        </>
+                      );
+                    })()}
+                  </button>
+                </li>
+
+                {/* Channel windows */}
+                <For each={channelsBySlug()?.[network.slug] ?? []}>
+                  {(channel) => {
+                    const key = channelKey(network.slug, channel.name);
                     return (
-                      <>
-                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                        </Show>
-                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                        </Show>
-                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                          <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                        </Show>
-                      </>
+                      <li classList={{ selected: isSelected(network.slug, channel.name) }}>
+                        <button
+                          type="button"
+                          onClick={() => handleClick(network.slug, channel.name, "channel")}
+                          class={`sidebar-window-btn${isGreyed(network.slug, channel.name) ? " sidebar-window-greyed" : ""}`}
+                        >
+                          <span
+                            class="sidebar-channel-name"
+                            classList={{ parted: !channel.joined }}
+                          >
+                            {channel.name}
+                          </span>
+                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                          </Show>
+                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
+                          </Show>
+                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
+                          </Show>
+                        </button>
+                        <button
+                          type="button"
+                          class="sidebar-close"
+                          aria-label={`Close ${channel.name}`}
+                          onClick={() => handleCloseChannel(network.slug, channel.name)}
+                        >
+                          ×
+                        </button>
+                      </li>
                     );
-                  })()}
-                </button>
-              </li>
+                  }}
+                </For>
 
-              {/* Channel windows */}
-              <For each={channelsBySlug()?.[network.slug] ?? []}>
-                {(channel) => {
-                  const key = channelKey(network.slug, channel.name);
-                  return (
-                    <li classList={{ selected: isSelected(network.slug, channel.name) }}>
-                      <button
-                        type="button"
-                        onClick={() => handleClick(network.slug, channel.name, "channel")}
-                        class={`sidebar-window-btn${isGreyed(network.slug, channel.name) ? " sidebar-window-greyed" : ""}`}
-                      >
-                        <span class="sidebar-channel-name" classList={{ parted: !channel.joined }}>
-                          {channel.name}
-                        </span>
-                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                        </Show>
-                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                        </Show>
-                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                          <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                        </Show>
-                      </button>
-                      <button
-                        type="button"
-                        class="sidebar-close"
-                        aria-label={`Close ${channel.name}`}
-                        onClick={() => handleCloseChannel(network.slug, channel.name)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  );
-                }}
-              </For>
-
-              {/* CP15 B5/B6 — synthetic channel rows: entries the operator
+                {/* CP15 B5/B6 — synthetic channel rows: entries the operator
                   is aware of (windowState carries the key) but that aren't
                   in channelsBySlug yet. State drives the styling: pending
                   shows the optimistic-feedback class while the upstream
@@ -304,127 +324,128 @@ const Sidebar: Component<Props> = (props) => {
                   PART (no cross-topic ordering between channels_changed
                   and per-channel PART broadcasts). Reverted; cp15-b5
                   gates on per-channel join-line wire-truth instead. */}
-              <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
-                {(row) => (
-                  <li classList={{ selected: isSelected(network.slug, row.name) }}>
-                    <button
-                      type="button"
-                      onClick={() => handleClick(network.slug, row.name, "channel")}
-                      class={
-                        row.state === "pending"
-                          ? "sidebar-window-btn sidebar-window-pending"
-                          : "sidebar-window-btn sidebar-window-greyed"
-                      }
-                    >
-                      <span
-                        class="sidebar-channel-name"
-                        classList={{ pending: row.state === "pending" }}
-                      >
-                        {row.name}
-                      </span>
-                    </button>
-                  </li>
-                )}
-              </For>
-
-              {/* Query (DM) windows */}
-              <For each={queryWindowsByNetwork()[network.id] ?? []}>
-                {(qw) => {
-                  const key = channelKey(network.slug, qw.targetNick);
-                  return (
-                    <li classList={{ selected: isSelected(network.slug, qw.targetNick) }}>
+                <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
+                  {(row) => (
+                    <li classList={{ selected: isSelected(network.slug, row.name) }}>
                       <button
                         type="button"
-                        onClick={() => handleClick(network.slug, qw.targetNick, "query")}
-                        class={`sidebar-window-btn${isGreyed(network.slug, qw.targetNick) ? " sidebar-window-greyed" : ""}`}
+                        onClick={() => handleClick(network.slug, row.name, "channel")}
+                        class={
+                          row.state === "pending"
+                            ? "sidebar-window-btn sidebar-window-pending"
+                            : "sidebar-window-btn sidebar-window-greyed"
+                        }
                       >
-                        <span class="sidebar-channel-name">{qw.targetNick}</span>
-                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                        </Show>
-                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                          <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                        </Show>
-                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                          <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                        </Show>
-                      </button>
-                      <button
-                        type="button"
-                        class="sidebar-close"
-                        aria-label={`Close DM with ${qw.targetNick}`}
-                        onClick={() => handleCloseQuery(network.id, qw.targetNick)}
-                      >
-                        ×
+                        <span
+                          class="sidebar-channel-name"
+                          classList={{ pending: row.state === "pending" }}
+                        >
+                          {row.name}
+                        </span>
                       </button>
                     </li>
-                  );
-                }}
-              </For>
-            </ul>
+                  )}
+                </For>
 
-            {/* CP15 B4 — Archive section, collapsed by default. Lazy fetch
-                on first expand via the toggle event; entries clickable to
-                set selection. Channel kind keeps the channel-shaped name;
-                query kind opens the DM window for the target nick. */}
-            <details
-              class="sidebar-archive"
-              onToggle={(e) => {
-                if ((e.currentTarget as HTMLDetailsElement).open) {
-                  void loadArchive(network.slug);
-                }
-              }}
-            >
-              <summary>Archive</summary>
-              <ul>
-                <For each={visibleArchiveForNetwork(network.slug, network.id)}>
-                  {(entry) => {
-                    const key = archiveKey(network.slug, entry.target);
+                {/* Query (DM) windows */}
+                <For each={queryWindowsByNetwork()[network.id] ?? []}>
+                  {(qw) => {
+                    const key = channelKey(network.slug, qw.targetNick);
                     return (
-                      <li class="sidebar-archive-row">
+                      <li classList={{ selected: isSelected(network.slug, qw.targetNick) }}>
                         <button
                           type="button"
-                          class="sidebar-window-btn"
-                          onClick={() => {
-                            // UX-3 Z: re-open archived query window as live
-                            // so cic subscribes to the per-channel topic and
-                            // receives server broadcasts (NOTICE 401, etc.).
-                            // Idempotent — no-op if already open.
-                            if (entry.kind === "query") {
-                              openQueryWindowState(
-                                network.id,
-                                entry.target,
-                                new Date().toISOString(),
-                              );
-                            }
-                            handleClick(
-                              network.slug,
-                              entry.target,
-                              entry.kind === "channel" ? "channel" : "query",
-                            );
-                          }}
+                          onClick={() => handleClick(network.slug, qw.targetNick, "query")}
+                          class={`sidebar-window-btn${isGreyed(network.slug, qw.targetNick) ? " sidebar-window-greyed" : ""}`}
                         >
-                          <span class="sidebar-channel-name parted">{entry.target}</span>
+                          <span class="sidebar-channel-name">{qw.targetNick}</span>
+                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
+                          </Show>
+                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
+                          </Show>
+                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
+                          </Show>
                         </button>
-                        <InlineConfirmButton
-                          idleLabel="×"
-                          confirmLabel="really delete?"
-                          armed={armedArchiveKey() === key}
-                          onArm={() => setArmedArchiveKey(key)}
-                          onConfirm={() => handleConfirmArchiveDelete(network.slug, entry.target)}
-                          testId={`archive-delete-${network.slug}-${entry.target}`}
-                          extraClass="sidebar-archive-delete"
-                        />
+                        <button
+                          type="button"
+                          class="sidebar-close"
+                          aria-label={`Close DM with ${qw.targetNick}`}
+                          onClick={() => handleCloseQuery(network.id, qw.targetNick)}
+                        >
+                          ×
+                        </button>
                       </li>
                     );
                   }}
                 </For>
               </ul>
-            </details>
-          </section>
-        )}
-      </For>
-    </Show>
+
+              {/* CP15 B4 — Archive section, collapsed by default. Lazy fetch
+                on first expand via the toggle event; entries clickable to
+                set selection. Channel kind keeps the channel-shaped name;
+                query kind opens the DM window for the target nick. */}
+              <details
+                class="sidebar-archive"
+                onToggle={(e) => {
+                  if ((e.currentTarget as HTMLDetailsElement).open) {
+                    void loadArchive(network.slug);
+                  }
+                }}
+              >
+                <summary>Archive</summary>
+                <ul>
+                  <For each={visibleArchiveForNetwork(network.slug, network.id)}>
+                    {(entry) => {
+                      const key = archiveKey(network.slug, entry.target);
+                      return (
+                        <li class="sidebar-archive-row">
+                          <button
+                            type="button"
+                            class="sidebar-window-btn"
+                            onClick={() => {
+                              // UX-3 Z: re-open archived query window as live
+                              // so cic subscribes to the per-channel topic and
+                              // receives server broadcasts (NOTICE 401, etc.).
+                              // Idempotent — no-op if already open.
+                              if (entry.kind === "query") {
+                                openQueryWindowState(
+                                  network.id,
+                                  entry.target,
+                                  new Date().toISOString(),
+                                );
+                              }
+                              handleClick(
+                                network.slug,
+                                entry.target,
+                                entry.kind === "channel" ? "channel" : "query",
+                              );
+                            }}
+                          >
+                            <span class="sidebar-channel-name parted">{entry.target}</span>
+                          </button>
+                          <InlineConfirmButton
+                            idleLabel="×"
+                            confirmLabel="really delete?"
+                            armed={armedArchiveKey() === key}
+                            onArm={() => setArmedArchiveKey(key)}
+                            onConfirm={() => handleConfirmArchiveDelete(network.slug, entry.target)}
+                            testId={`archive-delete-${network.slug}-${entry.target}`}
+                            extraClass="sidebar-archive-delete"
+                          />
+                        </li>
+                      );
+                    }}
+                  </For>
+                </ul>
+              </details>
+            </section>
+          )}
+        </For>
+      </Show>
+    </>
   );
 };
 

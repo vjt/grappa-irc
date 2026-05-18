@@ -4,6 +4,7 @@ import ArchiveModal from "./ArchiveModal";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
+import HomePane from "./HomePane";
 import { ownNickForNetwork } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
@@ -12,7 +13,8 @@ import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
-import { isActiveChannelJoined, windowStateByChannel } from "./lib/windowState";
+import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG } from "./lib/windowKinds";
+import { isActiveChannelJoined } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
@@ -255,19 +257,17 @@ const Shell: Component = () => {
     ),
   );
 
-  // /names UX cluster N-3 — cold-load auto-select first joined channel.
-  // Fresh page load lands on `selectedChannel === null` with the empty
-  // "select a channel below" stub + an empty members aside; operators
-  // perceive this as "members pane broken" rather than "nothing
-  // selected yet". Auto-select the first joined channel (in flat
-  // network → channels iteration order) once both `channelsBySlug`
-  // (REST) and `windowStateByChannel` (WS replay-driven) have a joined
-  // entry. ONE-SHOT — fires once on cold load, then disarms forever.
+  // UX-4 bucket B (2026-05-18) — cold-load default lands on the
+  // `$home` window. ONE-SHOT: fires once after `user()` (the /me
+  // resource) resolves, then disarms forever via `coldLoadAutoSelected`.
+  // Does NOT override an existing selection — if the operator clicked
+  // a channel between mount and /me-arrival, the early-return at
+  // `selectedChannel() !== null` keeps the click-driven selection.
   //
-  // Without the disarm, subsequent self-PART → setSelectedChannel(null)
-  // transitions would re-trigger this effect and re-select a sibling
-  // joined channel, fighting the BUG5a "PART rolls selection to empty
-  // stub" contract.
+  // Replaces the prior /names N-3 first-joined-channel auto-select.
+  // The home pane IS the new landing window for both visitor and
+  // registered identities; the operator navigates to specific
+  // channels via the sidebar / BottomBar / keybindings.
   let coldLoadAutoSelected = false;
   createEffect(() => {
     if (coldLoadAutoSelected) return;
@@ -275,21 +275,16 @@ const Shell: Component = () => {
       coldLoadAutoSelected = true;
       return;
     }
-    const cbs = channelsBySlug() ?? {};
-    const states = windowStateByChannel();
-    for (const net of networks() ?? []) {
-      for (const ch of cbs[net.slug] ?? []) {
-        if (states[channelKey(net.slug, ch.name)] === "joined") {
-          setSelectedChannel({
-            networkSlug: net.slug,
-            channelName: ch.name,
-            kind: "channel",
-          });
-          coldLoadAutoSelected = true;
-          return;
-        }
-      }
-    }
+    // Wait for /me to land before we can pick a default at all.
+    const m = user();
+    if (!m) return;
+    // Default landing: home window. Both registered + visitor.
+    setSelectedChannel({
+      networkSlug: HOME_WINDOW_SLUG,
+      channelName: HOME_WINDOW_NAME,
+      kind: "home",
+    });
+    coldLoadAutoSelected = true;
   });
 
   return (
@@ -359,39 +354,49 @@ const Shell: Component = () => {
                         />
                       </Show>
                       <Show
-                        when={sel().kind === "mentions"}
+                        when={sel().kind === "home"}
                         fallback={
-                          <>
-                            <ScrollbackPane
-                              networkSlug={sel().networkSlug}
-                              channelName={sel().channelName}
-                              kind={sel().kind}
+                          <Show
+                            when={sel().kind === "mentions"}
+                            fallback={
+                              <>
+                                <ScrollbackPane
+                                  networkSlug={sel().networkSlug}
+                                  channelName={sel().channelName}
+                                  kind={sel().kind}
+                                />
+                                {/* CP13 S9: ComposeBox renders on $server too —
+                                    slash-only is enforced inside compose.ts so plain
+                                    text gets rejected with a friendly error. */}
+                                <ComposeBox
+                                  networkSlug={sel().networkSlug}
+                                  channelName={sel().channelName}
+                                />
+                              </>
+                            }
+                          >
+                            {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
+                                onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
+                            <MentionsWindow
+                              bundle={
+                                mentionsBundleBySlug()[sel().networkSlug] ?? {
+                                  network_slug: sel().networkSlug,
+                                  away_started_at: "",
+                                  away_ended_at: "",
+                                  away_reason: null,
+                                  messages: [],
+                                }
+                              }
+                              ownNick={ownNickForSlug(sel().networkSlug)}
+                              onMentionClicked={handleMentionClicked}
                             />
-                            {/* CP13 S9: ComposeBox renders on $server too —
-                                slash-only is enforced inside compose.ts so plain
-                                text gets rejected with a friendly error. */}
-                            <ComposeBox
-                              networkSlug={sel().networkSlug}
-                              channelName={sel().channelName}
-                            />
-                          </>
+                          </Show>
                         }
                       >
-                        {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
-                            onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
-                        <MentionsWindow
-                          bundle={
-                            mentionsBundleBySlug()[sel().networkSlug] ?? {
-                              network_slug: sel().networkSlug,
-                              away_started_at: "",
-                              away_ended_at: "",
-                              away_reason: null,
-                              messages: [],
-                            }
-                          }
-                          ownNick={ownNickForSlug(sel().networkSlug)}
-                          onMentionClicked={handleMentionClicked}
-                        />
+                        {/* UX-4 bucket B — home pane. No TopicBar, no
+                            ComposeBox, no MembersPane (sibling <aside>
+                            already self-gates on isActiveChannelJoined). */}
+                        <HomePane />
                       </Show>
                     </>
                   )}
@@ -481,37 +486,47 @@ const Shell: Component = () => {
                       />
                     </Show>
                     <Show
-                      when={sel().kind === "mentions"}
+                      when={sel().kind === "home"}
                       fallback={
-                        <>
-                          <ScrollbackPane
-                            networkSlug={sel().networkSlug}
-                            channelName={sel().channelName}
-                            kind={sel().kind}
+                        <Show
+                          when={sel().kind === "mentions"}
+                          fallback={
+                            <>
+                              <ScrollbackPane
+                                networkSlug={sel().networkSlug}
+                                channelName={sel().channelName}
+                                kind={sel().kind}
+                              />
+                              {/* CP13 S9: ComposeBox renders on $server too —
+                                  slash-only is enforced inside compose.ts so plain
+                                  text gets rejected with a friendly error. */}
+                              <ComposeBox
+                                networkSlug={sel().networkSlug}
+                                channelName={sel().channelName}
+                              />
+                            </>
+                          }
+                        >
+                          <MentionsWindow
+                            bundle={
+                              mentionsBundleBySlug()[sel().networkSlug] ?? {
+                                network_slug: sel().networkSlug,
+                                away_started_at: "",
+                                away_ended_at: "",
+                                away_reason: null,
+                                messages: [],
+                              }
+                            }
+                            ownNick={ownNickForSlug(sel().networkSlug)}
+                            onMentionClicked={handleMentionClicked}
                           />
-                          {/* CP13 S9: ComposeBox renders on $server too —
-                              slash-only is enforced inside compose.ts so plain
-                              text gets rejected with a friendly error. */}
-                          <ComposeBox
-                            networkSlug={sel().networkSlug}
-                            channelName={sel().channelName}
-                          />
-                        </>
+                        </Show>
                       }
                     >
-                      <MentionsWindow
-                        bundle={
-                          mentionsBundleBySlug()[sel().networkSlug] ?? {
-                            network_slug: sel().networkSlug,
-                            away_started_at: "",
-                            away_ended_at: "",
-                            away_reason: null,
-                            messages: [],
-                          }
-                        }
-                        ownNick={ownNickForSlug(sel().networkSlug)}
-                        onMentionClicked={handleMentionClicked}
-                      />
+                      {/* UX-4 bucket B — home pane on mobile. Same HomePane
+                          component as desktop; layout is the only branch
+                          difference. */}
+                      <HomePane />
                     </Show>
                   </>
                 )}

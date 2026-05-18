@@ -68,7 +68,8 @@ defmodule GrappaWeb.NetworksController do
         # issues /nick. Cicchetto uses this nick to subscribe to the
         # own-nick DM topic — a stale nick silently drops all inbound DMs.
         # Fall back to credential nick when the session is parked/failed.
-        # `resolve_network_nick/2` is extracted to keep nesting ≤ 2 (Credo).
+        # `Networks.resolve_network_nick/2` is the single-sourced lookup
+        # shared with `Networks.home_data_for_user/1` (UX-4 bucket B).
         #
         # T32 (CP19 parked-window): the credential is also threaded through
         # so the wire shape can carry the T32 connection-state fields cic
@@ -77,7 +78,7 @@ defmodule GrappaWeb.NetworksController do
         # value; T32 fields come straight off the credential row of record.
         network_triples =
           Enum.map(credentials, fn cred ->
-            {cred.network, resolve_network_nick(user.id, cred), cred}
+            {cred.network, Networks.resolve_network_nick(user.id, cred), cred}
           end)
 
         render(conn, :index, networks: {:user, network_triples})
@@ -116,19 +117,6 @@ defmodule GrappaWeb.NetworksController do
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
-
-  # BUG1-FIX: resolve the live IRC nick for a (user_id, credential) pair.
-  # Asks the running Session.Server for its current nick — which may differ
-  # from `cred.nick` after NickServ ghost/regain or an explicit /nick.
-  # Falls back to the credential's configured nick when the session is
-  # parked, failed, or not yet bootstrapped.
-  @spec resolve_network_nick(Ecto.UUID.t(), Credential.t()) :: String.t()
-  defp resolve_network_nick(user_id, cred) do
-    case Session.current_nick({:user, user_id}, cred.network_id) do
-      {:ok, nick} -> nick
-      {:error, :no_session} -> cred.nick
-    end
-  end
 
   @spec require_user_subject(Plug.Conn.t()) ::
           {:ok, User.t()} | {:error, :forbidden}

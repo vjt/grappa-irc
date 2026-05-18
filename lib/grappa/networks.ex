@@ -302,6 +302,47 @@ defmodule Grappa.Networks do
     |> Repo.update()
   end
 
+  @doc """
+  UX-4 bucket B: builds the `home_data` envelope returned from
+  `GET /me` for a user subject. Nested
+  `%{networks: [home_network_row, ...]}` per
+  `Networks.Wire.home_data/1`.
+
+  Per-row nick is resolved live via `resolve_network_nick/2` (live
+  IRC nick from the running Session.Server, falling back to
+  `cred.nick` on `:no_session`). Same resolution rule the
+  `GET /networks` controller uses — single source.
+
+  Visitors do not call this — `MeJSON.show/1` sets
+  `home_data: nil` directly for visitor subjects.
+  """
+  @spec home_data_for_user(User.t()) :: Wire.home_data()
+  def home_data_for_user(%User{id: user_id} = user) do
+    user
+    |> Grappa.Networks.Credentials.list_credentials_for_user()
+    |> Enum.map(fn cred -> {cred, resolve_network_nick(user_id, cred)} end)
+    |> Wire.home_data()
+  end
+
+  @doc """
+  Resolves the live IRC nick for a `(user_id, credential)` pair. Asks
+  the running `Session.Server` for its current nick — which may
+  differ from `cred.nick` after NickServ ghost/regain or an explicit
+  `/nick`. Falls back to the credential's configured nick when the
+  session is parked, failed, or not yet bootstrapped.
+
+  Single-sourced for `GET /networks` (`NetworksController.index/2`)
+  and `home_data_for_user/1` so a future divergence (e.g. visitor
+  parity for live-nick) is one edit.
+  """
+  @spec resolve_network_nick(Ecto.UUID.t(), Credential.t()) :: String.t()
+  def resolve_network_nick(user_id, %Credential{} = cred) do
+    case Session.current_nick({:user, user_id}, cred.network_id) do
+      {:ok, nick} -> nick
+      {:error, :no_session} -> cred.nick
+    end
+  end
+
   @typedoc """
   PubSub event payload broadcast on every successful (non-idempotent)
   `connection_state` transition. Topic shape is
@@ -551,12 +592,26 @@ defmodule Grappa.Networks do
           String.t() | nil
         ) :: :ok
   defp broadcast_state_change(
-         %Credential{user: %User{name: user_name}} = cred,
+         %Credential{user: %User{id: user_id, name: user_name}} = cred,
          from,
          to,
          reason
        ) do
-    payload = Wire.connection_state_changed_event(cred, from, to, reason)
-    :ok = Grappa.PubSub.broadcast_event(Topic.user(user_name), payload)
+    topic = Topic.user(user_name)
+    nick = resolve_network_nick(user_id, cred)
+
+    # UX-4 bucket B: co-emit the narrow home-pane patch alongside the
+    # wider connection_state_changed event. Two events, one transition,
+    # zero parallel state — cic's HomePane mirrors `home_data.networks`
+    # in-place from the per-row payload, the Sidebar greyed-cascade +
+    # query-window store keep reading `connection_state_changed`.
+    # Distinct payloads so neither consumer is forced to depend on the
+    # other's wider shape; the shared row builder
+    # (`Wire.home_network_row/2`) keeps them structurally aligned.
+    state_payload = Wire.connection_state_changed_event(cred, from, to, reason)
+    home_payload = Wire.home_network_state_changed_event(cred, nick)
+
+    :ok = Grappa.PubSub.broadcast_event(topic, state_payload)
+    :ok = Grappa.PubSub.broadcast_event(topic, home_payload)
   end
 end

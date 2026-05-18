@@ -7,19 +7,27 @@
 //   :server    → "server"
 //   :list      → "list"
 //   :mentions  → "mentions"
+//   :home      → "home"         (UX-4 bucket B — identity-scoped, NOT per-network)
 //
 // `Window` is the cicchetto-side representation of a single tab entry.
 // `networkId` is the integer FK from the server `Network` schema;
 // `target` is the channel name (e.g. "#grappa"), DM nick, or empty
-// string for pseudo-windows (server, list, mentions).
+// string for pseudo-windows (server, list, mentions, home).
 //
 // `orderWindows` is a pure function: takes a flat list, groups by
 // network_id (stable insertion order — first-seen networkId gets index
 // 0), and within each group sorts: server first, channels (alpha),
 // queries (alpha), list, mentions. Ephemeral kinds (list, mentions)
 // only appear when they're in the input — no placeholder injection.
+//
+// The `home` kind is identity-scoped, NOT per-network — it never
+// enters the per-network grouping path (Sidebar pins it as a separate
+// row ABOVE the network sections; BottomBar omits it). It's listed in
+// `WindowKind` so `selectedChannel.kind` accepts it (the active-pane
+// dispatcher in Shell.tsx branches on it) without forcing every
+// orderWindows-callsite to special-case its absence.
 
-export type WindowKind = "channel" | "query" | "server" | "list" | "mentions";
+export type WindowKind = "channel" | "query" | "server" | "list" | "mentions" | "home";
 
 // The synthetic channel name used for the per-network server-messages
 // window (kind = "server"). Server-side `Grappa.Session.NumericRouter`
@@ -32,6 +40,15 @@ export type WindowKind = "channel" | "query" | "server" | "list" | "mentions";
 // BottomBar.tsx — drift between the cic-side string and the server-side
 // `{:server, nil}` fanout would silently break the window.
 export const SERVER_WINDOW_NAME = "$server";
+
+// UX-4 bucket B: sentinels for the identity-scoped `home` window. Used
+// as both `networkSlug` and `channelName` in `selectedChannel` — home
+// is NOT bound to any network so both fields are sentinel literals
+// (mirror of how `$server` is the synthetic channel for server pane).
+// Single source: imported by Shell.tsx (selection dispatch), Sidebar.tsx
+// (pinned row), HomePane.tsx (no-op self-check), and test mocks.
+export const HOME_WINDOW_SLUG = "$home";
+export const HOME_WINDOW_NAME = "$home";
 
 export type Window = {
   /** Stable string id for keying in UI lists. */
@@ -47,8 +64,13 @@ export type GroupedWindows = {
   windows: Window[];
 };
 
-// Within-network kind rank (lower = earlier).
+// Within-network kind rank (lower = earlier). `home` is identity-scoped
+// (NOT per-network) so it never enters `orderWindows`; the rank is
+// listed here only so `Record<WindowKind, number>` stays exhaustive
+// (a future change that does pass a `home` window through would surface
+// at compile time, not silently drop).
 const KIND_RANK: Record<WindowKind, number> = {
+  home: -1,
   server: 0,
   channel: 1,
   query: 2,

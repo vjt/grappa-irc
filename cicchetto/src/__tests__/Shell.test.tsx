@@ -233,31 +233,39 @@ describe("Shell — three-pane integration", () => {
   });
 
   it("/names UX cluster N-3 — auto-selects first joined channel on cold load when nothing is selected", async () => {
-    // Cold-load shape: selectedChannel is null, channelsBySlug already
-    // populated (REST), windowStateByChannel has at least one "joined"
-    // entry (WS replay landed). The Shell effect picks the first joined
-    // channel in flat (network → channels) iteration order so the
-    // operator lands on a channel instead of the empty stub.
+    // UX-4 bucket B (2026-05-18) REPLACED this behavior: cold-load now
+    // defaults to the `$home` window regardless of whether any channels
+    // have reached `:joined`. The N-3 first-joined-channel selection is
+    // superseded — operators wanting a specific channel click in the
+    // sidebar, and the home pane itself is the new "landing window."
+    //
+    // Test rewritten to assert the new contract: cold-load lands on
+    // home, NOT on the first joined channel.
     windowStateMap.current = { "freenode #a": "joined", "freenode #b": "joined" };
     render(() => <Shell />);
     await waitFor(() => {
       expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
-        networkSlug: "freenode",
-        channelName: "#a",
-        kind: "channel",
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
       });
     });
   });
 
-  it("/names UX cluster N-3 — does NOT auto-select when no channel has reached :joined", () => {
-    // Pending-only state: REST resolved channelsBySlug but the WS replay
-    // hasn't yet flipped any window into :joined. Effect must NOT
-    // pick a pending channel — that would land the operator in a
-    // non-interactive window.
+  it("UX-4 B — cold-load defaults to home even when no channel has reached :joined", async () => {
+    // UX-4 B replacement for the prior N-3 "do nothing if no joined
+    // channels" test. The new contract: cold-load ALWAYS lands on home,
+    // independent of channel state. The empty-stub "select a channel"
+    // fallback is no longer the cold-load endpoint.
     windowStateMap.current = { "freenode #a": "pending", "freenode #b": "pending" };
     render(() => <Shell />);
-    expect(selectionState.setSelectedChannelMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/select a channel/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+    });
   });
 
   it("/names UX cluster N-3 — does NOT override an existing selection", () => {

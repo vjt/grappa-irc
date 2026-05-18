@@ -10,6 +10,7 @@ import { socketUserName, token } from "./auth";
 import { setAwayState } from "./awayStatus";
 import { setServerBundleHash } from "./bundleHash";
 import { channelKey } from "./channelKey";
+import { patchHomeNetwork } from "./home";
 import { appendInviteAck } from "./inviteAck";
 import { setLusersBundle } from "./lusersBundle";
 import { setMentionsBundle } from "./mentionsWindow";
@@ -395,6 +396,38 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // reconnect replay).
       if (typeof r.network_slug !== "string") return null;
       return { kind: "archive_changed", network_slug: r.network_slug };
+    case "home_network_state_changed": {
+      // UX-4 bucket B — per-row patch for the HomePane's networks list.
+      // Co-emitted by `Networks.broadcast_state_change/4` alongside the
+      // wider `connection_state_changed` arm so HomePane can patch its
+      // `home_data.networks` slot in-place from the narrow payload
+      // (no /me refetch). Same shape as `home_data.networks[*]` —
+      // single shared server-side builder `Wire.home_network_row/2`.
+      const net = r.network;
+      if (typeof net !== "object" || net === null) return null;
+      const n = net as Record<string, unknown>;
+      if (
+        typeof n.slug !== "string" ||
+        typeof n.nick !== "string" ||
+        (n.connection_state !== "connected" &&
+          n.connection_state !== "parked" &&
+          n.connection_state !== "failed") ||
+        (n.connection_state_reason !== null && typeof n.connection_state_reason !== "string") ||
+        (n.connection_state_changed_at !== null &&
+          typeof n.connection_state_changed_at !== "string")
+      )
+        return null;
+      return {
+        kind: "home_network_state_changed",
+        network: {
+          slug: n.slug,
+          nick: n.nick,
+          connection_state: n.connection_state,
+          connection_state_reason: n.connection_state_reason as string | null,
+          connection_state_changed_at: n.connection_state_changed_at as string | null,
+        },
+      };
+    }
     default:
       return null;
   }
@@ -612,6 +645,13 @@ createRoot(() => {
           // helper rather than tracking the wire-side delta (the set
           // is small and refresh is idempotent + reconnect-safe).
           void loadArchive(payload.network_slug);
+          return;
+
+        case "home_network_state_changed":
+          // UX-4 bucket B — per-row patch into the HomePane signal.
+          // Co-emitted with `connection_state_changed`; HomePane
+          // patches in-place without a /me refetch.
+          patchHomeNetwork(payload.network);
           return;
 
         default:

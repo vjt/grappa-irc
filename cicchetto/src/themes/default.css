@@ -2663,3 +2663,146 @@ body {
   font-size: 0.8rem;
   font-style: italic;
 }
+
+/* UX-4 bucket B — `$home` window. Identity-scoped sentinel pinned
+   ABOVE all network sections in the sidebar; HomePane component
+   renders in the main pane. */
+
+.sidebar-home-section {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-home-section li {
+  display: flex;
+  align-items: stretch;
+}
+
+.sidebar-home-section li .sidebar-home-btn {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  padding: 0.4rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  text-align: left;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.sidebar-home-section li .sidebar-home-btn:hover {
+  background: var(--border);
+}
+
+.sidebar-home-section li.selected .sidebar-home-btn {
+  background: var(--border);
+  color: var(--accent);
+}
+
+.home-pane {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  color: var(--fg);
+  min-height: 0;
+}
+
+.home-pane-title {
+  margin: 0 0 1rem 0;
+  color: var(--accent);
+  font-size: 1.1rem;
+}
+
+.home-pane p {
+  margin: 0 0 0.75rem 0;
+}
+
+.home-pane code {
+  background: var(--border);
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+  font-size: 0.9em;
+}
+
+.home-pane-networks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.home-pane-network-row {
+  margin: 0;
+  padding: 0;
+}
+
+.home-pane-network-btn {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(6rem, auto) minmax(5rem, auto) 1fr;
+  gap: 0.75rem;
+  align-items: baseline;
+  width: 100%;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  text-align: left;
+  cursor: pointer;
+}
+
+.home-pane-network-btn:hover {
+  background: var(--border);
+  border-color: var(--accent);
+}
+
+.home-pane-network-slug {
+  font-weight: bold;
+  color: var(--accent);
+}
+
+.home-pane-network-nick {
+  color: var(--muted);
+}
+
+.home-pane-network-state {
+  text-transform: uppercase;
+  font-size: 0.8em;
+  font-weight: bold;
+}
+
+.home-pane-network-row-connected .home-pane-network-state {
+  color: var(--accent);
+}
+
+.home-pane-network-row-parked .home-pane-network-state {
+  color: var(--muted);
+}
+
+.home-pane-network-row-failed .home-pane-network-state {
+  color: #d04040;
+}
+
+.home-pane-network-row-parked .home-pane-network-btn,
+.home-pane-network-row-failed .home-pane-network-btn {
+  opacity: 0.85;
+}
+
+.home-pane-network-reason {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.9em;
+  grid-column: 1 / -1;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.4rem;
+  margin-top: 0.2rem;
+}

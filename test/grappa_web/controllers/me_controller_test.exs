@@ -36,6 +36,10 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["is_admin"] == false
       # CP29 R-3: read_cursors envelope. Empty for a fresh subject.
       assert body["read_cursors"] == %{}
+      # UX-4 bucket B: home_data envelope. Fresh user with zero
+      # credentials → empty networks list (NOT nil — nil is the
+      # visitor signal).
+      assert body["home_data"] == %{"networks" => []}
       refute Map.has_key?(body, "password_hash")
       refute Map.has_key?(body, "password")
       refute Map.has_key?(body, "nick")
@@ -97,6 +101,11 @@ defmodule GrappaWeb.MeControllerTest do
       assert is_binary(body["expires_at"])
       # CP29 R-3: read_cursors envelope present for visitors too.
       assert body["read_cursors"] == %{}
+      # UX-4 bucket B: visitors get `home_data: nil` — visitor home is
+      # cic-only help text (no server roundtrip). The discriminator
+      # nil vs %{networks: [...]} is how cic dispatches
+      # HomePaneVisitor vs HomePaneRegistered.
+      assert body["home_data"] == nil
       refute Map.has_key?(body, "name")
       refute Map.has_key?(body, "inserted_at")
       refute Map.has_key?(body, "password_encrypted")
@@ -160,6 +169,73 @@ defmodule GrappaWeb.MeControllerTest do
       # {:error, :unauthorized} which FallbackController maps to a uniform
       # 401 wire body (verified end-to-end by the no-Bearer test above).
       assert MeController.show(conn, %{}) == {:error, :unauthorized}
+    end
+  end
+
+  # UX-4 bucket B (2026-05-18) — home_data envelope for users with
+  # bound credentials. Pins both the projection shape AND the
+  # parity contract: the row shape in `home_data.networks[*]` must
+  # be structurally identical to the typed
+  # `home_network_state_changed` event's `:network` field, so a
+  # future field add can't drift the two consumers.
+  describe "GET /me — home_data envelope" do
+    test "user with bound credentials gets one home_data row per credential",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+      slug1 = "home-#{System.unique_integer([:positive])}"
+      slug2 = "home-#{System.unique_integer([:positive])}"
+      {net1, _} = network_with_server(port: 7402, slug: slug1)
+      {net2, _} = network_with_server(port: 7403, slug: slug2)
+      _ = credential_fixture(user, net1)
+      _ = credential_fixture(user, net2)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      body = json_response(conn, 200)
+
+      assert %{"networks" => rows} = body["home_data"]
+      assert length(rows) == 2
+
+      by_slug = Map.new(rows, &{&1["slug"], &1})
+
+      assert by_slug[net1.slug]["connection_state"] == "connected"
+      assert by_slug[net1.slug]["nick"] != nil
+      assert is_binary(by_slug[net1.slug]["connection_state_changed_at"])
+      assert by_slug[net2.slug]["connection_state"] == "connected"
+    end
+
+    # Wire-parity invariant: the JSON shape of one row in `home_data.networks`
+    # must equal the JSON shape of `home_network_state_changed.network`.
+    # Both flow through `Networks.Wire.home_network_row/2`, so a future
+    # field addition lands in both consumers atomically. A regression that
+    # builds one inline would surface here as a key/value mismatch.
+    test "envelope row JSON keys are structurally identical to the typed event's :network",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+      slug = "home-parity-#{System.unique_integer([:positive])}"
+      {net, _} = network_with_server(port: 7404, slug: slug)
+      _ = credential_fixture(user, net)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/me")
+
+      [row] = json_response(conn, 200)["home_data"]["networks"]
+
+      cred =
+        user
+        |> Grappa.Networks.Credentials.list_credentials_for_user()
+        |> hd()
+
+      nick = Grappa.Networks.resolve_network_nick(user.id, cred)
+      event = Grappa.Networks.Wire.home_network_state_changed_event(cred, nick)
+
+      # Both producers must yield the same map structure once Jason-encoded.
+      assert row == event.network |> Jason.encode!() |> Jason.decode!()
     end
   end
 end

@@ -702,6 +702,201 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  # UX-4 bucket B (2026-05-18). Every credential `connection_state`
+  # transition co-emits a narrow `home_network_state_changed` payload on
+  # the SAME user-topic alongside the wider `connection_state_changed`
+  # event. HomePane patches `home_data.networks` in-place from this; the
+  # Sidebar greyed-cascade + query-window store keep reading the wider
+  # event. Two events, one transition, zero parallel state.
+  describe "broadcast_state_change — UX-4 B home co-emit" do
+    test "connect/1 from :parked also emits home_network_state_changed" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "secretpw",
+          auth_method: :auto
+        })
+
+      {:ok, parked} = Networks.disconnect(cred, "manual")
+      assert parked.connection_state == :parked
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      {:ok, _} = Networks.connect(parked)
+
+      slug = net.slug
+
+      # Drain both co-emitted broadcasts. Order is connection_state_changed
+      # first, home_network_state_changed second — pinned by
+      # `broadcast_state_change/4` so cic's discriminated dispatch
+      # consumes them in the order they fire.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "connection_state_changed"}
+                     },
+                     1_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "home_network_state_changed",
+                         network: %{slug: ^slug, connection_state: :connected, nick: "vjt"}
+                       }
+                     },
+                     1_000
+    end
+
+    test "disconnect/2 from :connected also emits home_network_state_changed" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "secretpw",
+          auth_method: :auto
+        })
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      reason = "operator paused"
+      {:ok, _} = Networks.disconnect(cred, reason)
+
+      slug = net.slug
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "connection_state_changed"}
+                     },
+                     1_000
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: "home_network_state_changed",
+                         network: %{
+                           slug: ^slug,
+                           connection_state: :parked,
+                           connection_state_reason: ^reason
+                         }
+                       }
+                     },
+                     1_000
+    end
+
+    # Idempotency carry: `connect/1` on a row already at `:connected`
+    # is a no-op (no DB write, no broadcast). The home co-emit MUST
+    # follow the same contract — otherwise a duplicate PATCH /connect
+    # under U-0's concurrent-safety semantics would fan out a phantom
+    # `home_network_state_changed` event and cic would render a
+    # spurious "row patched" log line.
+    test "idempotent connect/1 (already :connected) emits NEITHER event" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "secretpw",
+          auth_method: :auto
+        })
+
+      assert cred.connection_state == :connected
+
+      topic = Topic.user(user.name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      {:ok, _} = Networks.connect(cred)
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "connection_state_changed"}}, 100
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "home_network_state_changed"}}, 100
+    end
+  end
+
+  describe "home_data_for_user/1 (UX-4 B)" do
+    test "renders %{networks: []} for a user with zero credentials" do
+      user = user_fixture()
+      assert Networks.home_data_for_user(user) == %{networks: []}
+    end
+
+    test "renders one row per credential, alpha by slug (matches list_credentials_for_user)" do
+      user = user_fixture()
+      net_a = network_fixture("net-a-#{System.unique_integer([:positive])}")
+      net_b = network_fixture("net-b-#{System.unique_integer([:positive])}")
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net_a, %{
+          nick: "vjt-a",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net_b, %{
+          nick: "vjt-b",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      assert %{networks: rows} = Networks.home_data_for_user(user)
+      assert length(rows) == 2
+
+      # Each row carries the credential's configured nick (no Session.Server
+      # running in this test → resolve_network_nick falls back to cred.nick).
+      by_slug = Map.new(rows, &{&1.slug, &1})
+
+      assert by_slug[net_a.slug].nick == "vjt-a"
+      assert by_slug[net_a.slug].connection_state == :connected
+      assert by_slug[net_b.slug].nick == "vjt-b"
+      assert by_slug[net_b.slug].connection_state == :connected
+    end
+
+    test "surfaces parked credentials too (NOT filtered to :connected)" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt",
+          password: "x",
+          auth_method: :auto
+        })
+
+      {:ok, _} = Networks.disconnect(cred, "manual")
+
+      assert %{networks: [row]} = Networks.home_data_for_user(user)
+      assert row.slug == net.slug
+      assert row.connection_state == :parked
+      assert row.connection_state_reason == "manual"
+    end
+  end
+
+  describe "resolve_network_nick/2 (UX-4 B promotion from controller)" do
+    test "falls back to cred.nick when there's no live Session.Server" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} =
+        Credentials.bind_credential(user, net, %{
+          nick: "vjt-cred",
+          auth_method: :none,
+          autojoin_channels: []
+        })
+
+      cred =
+        user
+        |> Credentials.list_credentials_for_user()
+        |> hd()
+
+      assert Networks.resolve_network_nick(user.id, cred) == "vjt-cred"
+    end
+  end
+
   describe "unbind_credential/2" do
     test "deletes the credential row" do
       user = user_fixture()

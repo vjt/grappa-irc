@@ -90,6 +90,30 @@ export type LoginResponse = {
 // envelope unconditionally).
 export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
 
+// UX-4 bucket B — one row in the `home_data.networks` array, returned
+// from `GET /me` for user subjects. Mirror of server-side
+// `Grappa.Networks.Wire.home_network_row/0`. Identical shape to the
+// `:network` field of `home_network_state_changed` typed events so
+// HomePane can patch slots in-place from live updates without
+// re-derivation.
+//
+// Strict subset of `UserNetwork` (no `id`, no `kind`, no timestamps):
+// the home pane is a UI view, not a network mirror. cic's
+// `HomePaneRegistered` reads ONLY these fields.
+export type HomeNetworkRow = {
+  slug: string;
+  nick: string;
+  connection_state: "connected" | "parked" | "failed";
+  connection_state_reason: string | null;
+  connection_state_changed_at: string | null;
+};
+
+// UX-4 bucket B — `home_data` envelope. Nested under `:networks` (NOT
+// flat) so future home cards (`home_data.pinned`,
+// `home_data.mentions_summary`, etc.) land as sibling keys without
+// touching every caller.
+export type HomeData = { networks: HomeNetworkRow[] };
+
 export type MeResponse =
   | {
       kind: "user";
@@ -108,6 +132,11 @@ export type MeResponse =
       is_admin: boolean;
       inserted_at: string;
       read_cursors?: ReadCursorsEnvelope;
+      // UX-4 bucket B — required for user subjects (server's
+      // `MeJSON.show/1` user clause sets it unconditionally). Optional
+      // on the type so test mocks predating the field landing don't
+      // need touching — production /me always emits it.
+      home_data?: HomeData;
     }
   | {
       kind: "visitor";
@@ -116,6 +145,12 @@ export type MeResponse =
       network_slug: string;
       expires_at: string;
       read_cursors?: ReadCursorsEnvelope;
+      // UX-4 bucket B — visitor home is cic-only help text by design.
+      // Server's `MeJSON.show/1` visitor clause sets `home_data: nil`
+      // unconditionally. Optional + literal-null narrows the
+      // discriminator: presence-with-`null` is the visitor signal,
+      // presence-with-`{networks: [...]}` is the registered signal.
+      home_data?: null;
     };
 
 // Display-nick for a `MeResponse` — `user.name` for users,
@@ -665,7 +700,15 @@ export type WireUserEvent =
       reason: string | null;
     }
   | { kind: "bundle_hash"; hash: string }
-  | { kind: "archive_changed"; network_slug: string };
+  | { kind: "archive_changed"; network_slug: string }
+  // UX-4 bucket B — per-row patch for the HomePane's networks list.
+  // Co-emitted by `Networks.broadcast_state_change/4` alongside the
+  // wider `connection_state_changed` arm so HomePane patches its
+  // `home_data.networks` slot in-place without re-deriving from the
+  // wider payload. The shape of `network` is the SAME `HomeNetworkRow`
+  // /me delivers in `home_data.networks[*]` (single shared server-side
+  // builder `Wire.home_network_row/2`).
+  | { kind: "home_network_state_changed"; network: HomeNetworkRow };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits
