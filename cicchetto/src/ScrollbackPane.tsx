@@ -16,6 +16,7 @@ import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { createdByChannel, topicByChannel } from "./lib/channelTopic";
+import { isDocumentVisible } from "./lib/documentVisibility";
 import { linkify } from "./lib/linkify";
 import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
@@ -860,39 +861,77 @@ const ScrollbackPane: Component<Props> = (props) => {
   // C7.3: also reset markerScrolled so the next channel's unread marker
   // gets its own scroll-to-marker behavior.
   //
-  // Scroll-on-window-switch fix: the underlying `[data-testid="scrollback"]`
-  // <div> is the SAME DOM node across selectedChannel changes (Solid's
-  // <Show> in Shell.tsx is non-keyed), so its `scrollTop` survives the
-  // switch. Without an explicit reset, opening an empty query window
-  // (scrollTop=0) and then re-selecting a populated channel leaves the
-  // channel pinned at scrollTop=0 — the length-effect below only fires
-  // when `messages().length` changes, and a previously-loaded channel's
-  // length is identical to the last time we viewed it.
+  // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
   //
-  // Spec on switch:
-  //   * window has unread marker → scroll marker into view, centered
-  //     (mirrors length-effect's marker branch — same UX whether the
-  //     marker appears via initial fetch or via switch-back).
-  //   * no marker → snap to tail; auto-follow takes over after the
-  //     first append.
-  // markerScrolled latch reset so the length-effect remains free to
-  // re-fire for a future window where the marker shows up only after
-  // a delayed REST page lands. atBottom set per branch so the floating
-  // "scroll to bottom" button doesn't flash visible mid-switch.
-  // Pre-fix bug: `markerRef` retained the (now-disposed) DOM pointer
-  // from the prior window after a key change because Solid's ref-binding
-  // lifecycle for <For>-rendered elements doesn't auto-null the variable
-  // on unmount. The createEffect would take the marker branch on the
-  // wrong window, call scrollIntoView on a stale node, and never fall
-  // through to scrollTop = scrollHeight — viewport stuck at top.
+  // Two activation triggers converge on ONE routine
+  // (`scrollToActivation`):
+  //   1. `selectedChannel` change — operator switched windows (the
+  //      effect below tracks `key()`).
+  //   2. `document.visibilitychange` → visible — PWA backgrounded then
+  //      re-opened (the second effect below tracks `isDocumentVisible`
+  //      transitions false→true).
   //
-  // Fix shape: (1) null markerRef synchronously at key change; (2) defer
-  // the scroll decision via queueMicrotask so Solid commits the new
-  // window's rows first — at that point markerRef is reassigned by
-  // <div ref={markerRef}> if the new window has a marker, OR remains
-  // undefined and we scroll-to-bottom. (3) reset sessionStart so the
-  // new window captures its own focus-session boundary for marker
-  // injection (target-window UX rule).
+  // Single source of truth: any future activation trigger plugs into
+  // `scrollToActivation` and inherits the marker-or-bottom routine
+  // for free. No ad-hoc scrollTop preserve/restore lives anywhere
+  // else in this component for the activation path — `onScroll`'s
+  // `loadMore` block has its own preservation but that's pagination-
+  // prepend bookkeeping, semantically distinct (operator IS scrolling
+  // up, we keep their reading position stable while older rows
+  // PREPEND from REST).
+  //
+  // Decision body: marker present → scrollIntoView({block: "center"})
+  // + latch markerScrolled; no marker → scrollTop = scrollHeight
+  // + atBottom = true. queueMicrotask defers the DOM read+write until
+  // Solid commits the row diffs (per the markerRef-staleness fix
+  // below). atBottom is set per branch so the floating "scroll to
+  // bottom" button doesn't flash visible mid-activation.
+  const scrollToActivation = (): void => {
+    if (!listRef) return;
+    queueMicrotask(() => {
+      if (!listRef) return;
+      if (markerRef) {
+        markerRef.scrollIntoView?.({ block: "center" });
+        setMarkerScrolled(true);
+        const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+        setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+      } else {
+        listRef.scrollTop = listRef.scrollHeight;
+        setAtBottom(true);
+      }
+    });
+  };
+
+  // Activation trigger 1 — `selectedChannel` change. The underlying
+  // `[data-testid="scrollback"]` <div> is the SAME DOM node across
+  // selectedChannel changes (Solid's <Show> in Shell.tsx is non-keyed),
+  // so its `scrollTop` survives the switch. Without an explicit reset,
+  // opening an empty query window (scrollTop=0) and then re-selecting
+  // a populated channel leaves the channel pinned at scrollTop=0 — the
+  // length-effect below only fires when `messages().length` changes,
+  // and a previously-loaded channel's length is identical to the last
+  // time we viewed it.
+  //
+  // Per-channel pre-work this trigger owns (does NOT belong in
+  // `scrollToActivation` because visibility-return on the SAME channel
+  // must NOT reset these):
+  //   * bannerState — switching channels disposes the per-channel
+  //     banner state; visibility-return preserves it.
+  //   * markerScrolled — latch reset so the new channel's marker
+  //     gets its own scroll-to-marker (re-fires for a future window
+  //     where the marker shows up only after a delayed REST page).
+  //   * markerRef = undefined — null the (now-disposed) DOM pointer
+  //     from the prior window. Pre-fix bug: Solid's ref-binding
+  //     lifecycle for <For>-rendered elements doesn't auto-null the
+  //     variable on unmount; the effect would take the marker branch
+  //     on the wrong window, call scrollIntoView on a stale node, and
+  //     never fall through — viewport stuck at top.
+  //   * sessionTopId — capture the focus-session boundary (highest
+  //     id present right now) so future arrivals during this session
+  //     are "live-read" and never spawn a fresh marker.
+  //
+  // `defer: true` skips the initial mount run so the shouldShowBanner
+  // effect's first-mount evaluation isn't pre-emptively cleared.
   createEffect(
     on(
       key,
@@ -907,22 +946,32 @@ const ScrollbackPane: Component<Props> = (props) => {
         const msgs = messages();
         const top = msgs && msgs.length > 0 ? (msgs[msgs.length - 1]?.id ?? null) : null;
         setSessionTopId(top);
-        if (!listRef) return;
-        queueMicrotask(() => {
-          if (!listRef) return;
-          if (markerRef) {
-            markerRef.scrollIntoView?.({ block: "center" });
-            setMarkerScrolled(true);
-            const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-            setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
-          } else {
-            listRef.scrollTop = listRef.scrollHeight;
-            setAtBottom(true);
-          }
-        });
+        scrollToActivation();
       },
       { defer: true },
     ),
+  );
+
+  // Activation trigger 2 — `isDocumentVisible` false→true transition.
+  // PWA backgrounded (visibility-hide, browser-tab-switch, OS app
+  // switch) then re-opened. selection.ts owns the cursor settle on
+  // false→true (clearBadgesForWindow); this effect owns the scroll
+  // settle. NO per-channel pre-work — visibility-return on the SAME
+  // selectedChannel must preserve bannerState / markerScrolled /
+  // markerRef / sessionTopId (the operator hasn't left the window;
+  // only the browser tab lost visibility).
+  //
+  // `prev === undefined` guards the initial-mount run (signal owns
+  // the prev sentinel pattern; mirrors selection.ts's identical guard
+  // shape at on(isDocumentVisible)). false→true is the only edge that
+  // triggers; true→false is owned by selection.ts.
+  createEffect(
+    on(isDocumentVisible, (visible, prev) => {
+      if (prev === undefined) return;
+      if (prev === false && visible === true) {
+        scrollToActivation();
+      }
+    }),
   );
 
   // CP29 R-4: cold-mount + delayed-REST settle. The key-change effect

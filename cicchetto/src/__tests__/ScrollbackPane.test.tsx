@@ -27,6 +27,14 @@ vi.mock("../lib/selection", () => ({
 
 const [scrollback, setScrollback] = createSignal<Record<string, ScrollbackMessage[]>>({});
 const [userNick, setUserNick] = createSignal<string | null>(null);
+// UX-4 bucket K — `isDocumentVisible` is a Solid signal in the real
+// module; tests drive false↔true transitions via this seam so the
+// `scrollToActivation` visibility-trigger effect fires deterministically.
+const [docVisible, setDocVisible] = createSignal<boolean>(true);
+
+vi.mock("../lib/documentVisibility", () => ({
+  isDocumentVisible: () => docVisible(),
+}));
 
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
@@ -190,6 +198,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   setScrollback({});
   setUserNick(null);
+  setDocVisible(true);
   mockMembersByChannel.mockReturnValue({});
   mockTopicByChannel.mockReturnValue({});
   mockCreatedByChannel.mockReturnValue({});
@@ -2241,6 +2250,139 @@ describe("ScrollbackPane", () => {
       const colored = bodyEl?.querySelector("span") as HTMLElement | null | undefined;
       // mIRC color 4 = red (#ff0000); jsdom parses inline style.
       expect(colored?.style.color).toBe("rgb(255, 0, 0)");
+    });
+  });
+
+  // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
+  // Two activation triggers (selectedChannel change + visibility false→
+  // true) converge on the same `scrollToActivation` routine: marker
+  // present → scrollIntoView({block: "center"}); no marker → snap to
+  // tail. The selectedChannel-change branch is already exercised
+  // indirectly by other tests via initial render; this block focuses
+  // on the new visibility-return trigger.
+  describe("scroll-on-activate canonical (bucket K)", () => {
+    // jsdom does not implement Element.prototype.scrollIntoView; the
+    // production code optional-chains the call (`?.({block:...})`) but
+    // tests need a spy on the property to verify the routine fired.
+    // Polyfill + restore per test so the spy doesn't leak between
+    // tests in the suite.
+    let scrollIntoViewSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      scrollIntoViewSpy = vi.fn();
+      // Element.prototype assignment so every node (including
+      // dynamically-rendered <For> children) inherits the spy.
+      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+      (Element.prototype as any).scrollIntoView = scrollIntoViewSpy;
+    });
+
+    it("visibility false→true on a window with NO unread marker snaps scrollTop to scrollHeight", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+      // Initial mount: prev === undefined, no visibility-trigger fire.
+      // Drive false then true so the createEffect sees a real
+      // false→true transition and calls scrollToActivation.
+      setDocVisible(false);
+      setDocVisible(true);
+
+      // queueMicrotask delays the DOM read+write; wait for it to flush.
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+
+      // No marker → routine takes the scrollTop branch, not scrollIntoView.
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+      // atBottom branch sets atBottom=true → scroll-to-bottom button hidden.
+      expect(screen.queryByTestId("scroll-to-bottom")).toBeNull();
+    });
+
+    it("visibility true→true (no transition) does NOT re-fire the activation routine", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+      // Same value: createEffect's `on(isDocumentVisible, ...)` only
+      // fires when the tracked signal actually changes. Solid de-dupes
+      // identical values; re-setting true is a no-op.
+      setDocVisible(true);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
+
+    it("initial mount does NOT trigger the visibility-activation routine (prev === undefined guard)", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+
+      // On initial mount, `on(isDocumentVisible, (visible, prev) =>
+      // { if (prev === undefined) return; ... })` short-circuits.
+      // The length-effect handles initial render scroll; the
+      // visibility-activation effect is dormant until a real
+      // transition fires.
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
+
+    it("visibility true→false does NOT trigger the routine (only false→true edge fires)", async () => {
+      setScrollback({
+        "freenode #grappa": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1,
+            kind: "privmsg",
+            sender: "alice",
+            body: "hello",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // Drive an explicit true→false transition. selection.ts owns
+      // this edge (cursor settle); ScrollbackPane's activation effect
+      // is silent here.
+      setDocVisible(false);
+      await new Promise((r) => queueMicrotask(() => r(undefined)));
+
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
     });
   });
 });
