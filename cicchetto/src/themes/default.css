@@ -1227,6 +1227,14 @@ html.resize-dragging * {
   max-width: 28rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
+  /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
+     `.settings-drawer` (see comment there). The modal has no own
+     `overflow-y` today (short content fits in viewport), so the pair
+     is currently defensive — the day someone grows the modal past
+     viewport AND adds `overflow-y: auto`, the gesture-routing is
+     already in place. Mirror `.shell-members.open`. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .image-upload-modal h2 {
@@ -1403,6 +1411,15 @@ html.resize-dragging * {
   flex-direction: column;
   gap: 1rem;
   overflow-y: auto;
+  /* UX-5 BO (2026-05-19): drawer is `position: fixed` but still a DOM
+     descendant of `.shell-mobile` which sets `touch-action: none` (UX-3
+     PENT, ~:2144). `touch-action` inherits down the tree, so without
+     this re-assertion iOS Safari rejects vertical pan inside the
+     drawer and escalates the gesture to the document — at which point
+     `installScrollPin` snap-yanks `window.scrollTo(0, 0)` producing
+     the visible flicker. Mirror `.shell-members.open` (~:2210). */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .settings-drawer.open {
@@ -1532,6 +1549,12 @@ html.resize-dragging * {
   padding: 1rem;
   overflow-y: auto;
   background: var(--bg);
+  /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
+     `.settings-drawer` (see comment there). `.admin-pane` is mounted
+     inside `.shell-main` → `.shell-mobile`; without re-asserting
+     `pan-y` here the admin tabs don't scroll on iPhone. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .admin-pane-header {
@@ -1600,6 +1623,12 @@ html.resize-dragging * {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* UX-5 BO (2026-05-19): nested scroll authority inside `.admin-pane`
+     (which itself re-asserts `pan-y`); without this the gesture is
+     routed by the parent and the nested tab content doesn't scroll
+     independently on iOS. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .admin-visitors-tab {
@@ -2422,6 +2451,10 @@ html.resize-dragging * {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
+     `.settings-drawer` (see comment there). Mirror `.shell-members.open`. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .archive-modal-header {
@@ -3016,6 +3049,13 @@ html.resize-dragging * {
   font-size: var(--font-size);
   color: var(--fg);
   min-height: 0;
+  /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
+     `.settings-drawer` (see comment there). The home pane sits inside
+     `.shell-main` → `.shell-mobile` and is tall on iPhone (network
+     rows + [Reconnect] chips from BR + onboarding copy); without
+     `pan-y` it doesn't scroll. */
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .home-pane-title {
