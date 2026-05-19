@@ -116,4 +116,23 @@ describe("orderWindows", () => {
     expect(g1.windows.map((w) => w.target)).toEqual(["alice", "bob"]);
     expect(g2.windows.map((w) => w.target)).toEqual(["anna", "zara"]);
   });
+
+  // UX-4 bucket N (2026-05-19) — `admin` is identity-scoped, NOT
+  // per-network. Like `home`, it should never be passed through
+  // orderWindows in practice (Sidebar pins both above the network
+  // sections), but the rank is listed in KIND_RANK so the
+  // `Record<WindowKind, number>` stays exhaustive. If an admin window
+  // DID get through, it would sort BEFORE every per-network window
+  // (rank -1, less than server's 0). This test pins the rank to
+  // catch regressions where admin's rank silently drifts.
+  it("UX-4 N — admin kind ranks before per-network windows when present", () => {
+    const admin = makeWindow({ kind: "admin", networkId: 1, target: "" });
+    const server = makeWindow({ kind: "server", networkId: 1, target: "libera" });
+    const channel = makeWindow({ kind: "channel", networkId: 1, target: "#grappa" });
+    const result = orderWindows([server, channel, admin]);
+    const group = result[0] as GroupedWindows;
+    expect(group.windows[0]?.kind).toBe("admin");
+    expect(group.windows[1]?.kind).toBe("server");
+    expect(group.windows[2]?.kind).toBe("channel");
+  });
 });

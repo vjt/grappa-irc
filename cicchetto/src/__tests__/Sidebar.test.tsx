@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockNetworkConnectionState: Record<string, string | undefined> = {};
 let mockNetworkConnectionReason: Record<string, string | null | undefined> = {};
+// UX-4 bucket N — mutable holder so individual tests can flip the
+// admin gate on/off. `isAdmin()` in Sidebar drives the new admin row
+// visibility; default false to keep pre-N tests unchanged.
+const adminHolder = vi.hoisted(() => ({ value: false }));
 
 vi.mock("../lib/networks", () => ({
   networks: () => [
@@ -48,6 +52,9 @@ vi.mock("../lib/networks", () => ({
       connection_state_changed_at: null,
     };
   },
+  // UX-4 bucket N — Sidebar imports `isAdmin` to gate the new admin
+  // row. Default false; tests for the admin row flip the holder.
+  isAdmin: () => adminHolder.value,
 }));
 
 vi.mock("../lib/selection", () => ({
@@ -152,6 +159,7 @@ beforeEach(() => {
   mockNetworkConnectionState = {};
   mockNetworkConnectionReason = {};
   mockAwayByNetwork = {};
+  adminHolder.value = false;
 });
 
 describe("Sidebar", () => {
@@ -228,6 +236,7 @@ describe("Sidebar", () => {
     vi.doMock("../lib/networks", () => ({
       networks: () => [],
       channelsBySlug: () => ({}),
+      isAdmin: () => false,
     }));
     vi.doMock("../lib/selection", () => ({
       selectedChannel: () => null,
@@ -675,6 +684,49 @@ describe("Sidebar", () => {
       await Promise.resolve();
       expect(apiMod2.patchNetwork).toHaveBeenCalledWith("tok", "freenode", {
         connection_state: "parked",
+      });
+    });
+  });
+
+  // UX-4 bucket N — admin sidebar row. Identity-scoped, admin-only,
+  // pinned between Home and the first network's server row. Visibility
+  // gated on `isAdmin()` from `lib/networks.ts` (single source of truth
+  // shared with Shell.tsx pane dispatcher + SettingsDrawer.tsx drawer
+  // entry). Click sets selection to the `$admin` pseudo-window kind.
+  describe("UX-4 bucket N — admin sidebar row", () => {
+    it("admin user: renders the admin row between Home and the first network", () => {
+      adminHolder.value = true;
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const adminRow = container.querySelector('[data-testid="sidebar-admin-row"]');
+      expect(adminRow).not.toBeNull();
+      // Row label literally reads "admin".
+      expect(adminRow?.textContent).toContain("admin");
+      // Row glyph is the wrench (🔧) — verified via the dedicated
+      // emoji span so a stray "admin" appearance elsewhere doesn't
+      // false-positive.
+      const emoji = adminRow?.querySelector(".sidebar-admin-emoji");
+      expect(emoji?.textContent).toBe("🔧");
+    });
+
+    it("non-admin user: does NOT render the admin row", () => {
+      adminHolder.value = false;
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      expect(container.querySelector('[data-testid="sidebar-admin-row"]')).toBeNull();
+      expect(container.querySelector(".sidebar-admin-section")).toBeNull();
+    });
+
+    it("clicking the admin row sets selection to the $admin window", () => {
+      adminHolder.value = true;
+      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const row = container.querySelector(
+        '[data-testid="sidebar-admin-row"]',
+      ) as HTMLElement | null;
+      expect(row).not.toBeNull();
+      fireEvent.click(row as HTMLElement);
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "$admin",
+        channelName: "$admin",
+        kind: "admin",
       });
     });
   });

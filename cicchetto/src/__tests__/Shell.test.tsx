@@ -1,20 +1,45 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// UX-4 bucket N (2026-05-19) — selection mock must use a REAL Solid
+// signal so Shell's reactive `<Show when={sel.kind === "admin" && isAdmin()}>`
+// re-runs when tests flip selection via `setSelectedChannel`. The
+// pre-bucket plain-object getter pattern stored the new value but
+// never notified consumers — fine for tests that only assert
+// `setSelectedChannel was called`, but bucket N's pane-mount test
+// chains "click → setSelectedChannel(admin) → Show flips → AdminPane
+// mounts in DOM" and needs end-to-end reactivity. A real signal
+// trivially also satisfies the `.toHaveBeenCalledWith` style tests
+// since `setSelectedChannelMock` still wraps the setter.
 const selectionState = vi.hoisted(() => {
-  const state: {
-    current: { networkSlug: string; channelName: string; kind: string } | null;
-  } = {
-    current: null,
+  // Lazy-init the signal inside the first accessor call — `vi.hoisted`
+  // runs before vitest's solid-js plugin has fully primed Solid's
+  // dispose-owner stack, so creating the signal at hoist-time would
+  // log "createSignal called without owner". Tests reset the signal
+  // in beforeEach via `setSelSig(null)`.
+  let sig:
+    | [
+        () => { networkSlug: string; channelName: string; kind: string } | null,
+        (
+          v: { networkSlug: string; channelName: string; kind: string } | null,
+        ) => { networkSlug: string; channelName: string; kind: string } | null,
+      ]
+    | null = null;
+  const ensure = () => {
+    if (sig === null) {
+      sig = createSignal<{ networkSlug: string; channelName: string; kind: string } | null>(null);
+    }
+    return sig;
   };
   return {
-    selSig: () => state.current,
+    selSig: () => ensure()[0](),
     setSelSig: (v: { networkSlug: string; channelName: string; kind: string } | null) => {
-      state.current = v;
+      ensure()[1](v);
     },
     setSelectedChannelMock: vi.fn(
       (v: { networkSlug: string; channelName: string; kind: string } | null) => {
-        state.current = v;
+        ensure()[1](v);
       },
     ),
   };
@@ -30,12 +55,37 @@ const tokenHolder = vi.hoisted(() => ({ value: null as string | null }));
 // M-cluster M-7 — mutable me holder. Default is a non-admin user so
 // the existing pre-M-7 tests pass unchanged (no admin entry rendered,
 // no admin pane mounted). M-7 tests below flip is_admin to true.
-const userHolder = vi.hoisted(() => ({
-  current: { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" } as
+//
+// UX-4 bucket N (2026-05-19) — like selectionState, this is now a real
+// Solid signal so the demote-mid-session test can flip is_admin and
+// observe Shell's reactive demote effect redirect selection.
+const userHolder = vi.hoisted(() => {
+  type Me =
     | { kind: "user"; id: string; name: string; is_admin: boolean; inserted_at: string }
     | { kind: "visitor"; id: string; nick: string; network_slug: string; expires_at: string }
-    | null,
-}));
+    | null;
+  let sig: [() => Me, (v: Me) => Me] | null = null;
+  const ensure = () => {
+    if (sig === null) {
+      sig = createSignal<Me>({
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: false,
+        inserted_at: "x",
+      });
+    }
+    return sig;
+  };
+  return {
+    get current() {
+      return ensure()[0]();
+    },
+    set current(v: Me) {
+      ensure()[1](v);
+    },
+  };
+});
 
 vi.mock("@solidjs/router", () => ({
   useNavigate: () => vi.fn(),
@@ -50,6 +100,14 @@ vi.mock("../lib/networks", () => ({
     ],
   }),
   user: () => userHolder.current,
+  // UX-4 bucket N — Shell.tsx imports `isAdmin` from networks.ts as
+  // single source of truth (hoisted from Shell + SettingsDrawer +
+  // Sidebar). Mirror the live impl so tests that flip is_admin on the
+  // userHolder propagate through the predicate.
+  isAdmin: () => {
+    const u = userHolder.current;
+    return u?.kind === "user" && u.is_admin === true;
+  },
   networkBySlug: () => undefined,
 }));
 
@@ -122,8 +180,7 @@ vi.mock("../lib/auth", () => ({
 // so PrivacyModal (transitively imported by Shell) still finds its
 // `privacyModalState` etc. exports.
 vi.mock("../lib/imageUploadOrchestrator", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../lib/imageUploadOrchestrator")>();
+  const actual = await importOriginal<typeof import("../lib/imageUploadOrchestrator")>();
   return {
     ...actual,
     loadUploadTtlSeconds: vi.fn(async () => {}),
@@ -258,9 +315,30 @@ describe("Shell — three-pane integration", () => {
     expect(container.querySelector(".shell-members")).toBeTruthy();
   });
 
-  it("renders 'select a channel' fallback when nothing is selected", () => {
+  it("UX-4 B / N — cold-load synchronously lands on the home pane (no 'select a channel' fallback)", async () => {
+    // Pre-UX-4-N this test asserted the empty-state fallback was
+    // visible. That was an artefact of the broken Shell-test mock:
+    // the old plain-object selectionState updated `.current` on
+    // setSelectedChannel but did NOT notify Solid consumers, so the
+    // bucket B cold-load auto-select call landed silently and the
+    // fallback Show stayed true. UX-4 bucket N's pane-mount work
+    // required upgrading the mock to a real Solid signal — which
+    // surfaces the actual contract: cold-load synchronously lands on
+    // home for every identity (visitor + registered), and the
+    // fallback path is unreachable in practice. Pre-UX-4 the empty-
+    // state fallback IS still rendered briefly before /me resolves;
+    // here userHolder is seeded synchronously so the effect fires on
+    // the first reactive tick.
     render(() => <Shell />);
-    expect(screen.getByText(/select a channel/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+    });
+    // home pane is rendered, no "select a channel" fallback.
+    expect(screen.queryByText(/select a channel/i)).toBeNull();
   });
 
   it("/names UX cluster N-3 — auto-selects first joined channel on cold load when nothing is selected", async () => {
@@ -577,8 +655,16 @@ describe("Shell — mobile layout (isMobile = true)", () => {
 // pane content live in SettingsDrawer.test.tsx + AdminPane.test.tsx
 // respectively; these tests pin the Shell-level wiring: pane mounts
 // when admin clicks the drawer entry, replaces channel content,
-// auto-unmounts on demote.
-describe("Shell — M-7 admin pane lifecycle", () => {
+// auto-redirects to home on demote.
+//
+// UX-4 bucket N (2026-05-19) — pane mount is now selection-driven:
+// `<Show when={sel.kind === "admin" && isAdmin()}>`. The drawer
+// "admin console" entry sets selection to the admin window; the
+// dedicated sidebar admin row does the same. Demote-mid-session
+// redirects selection back to home (was: flip adminOpen=false; now:
+// setSelectedChannel(home), which collapses the admin Show AND lands
+// the operator on a deterministic window). Tests below pin both paths.
+describe("Shell — M-7/N admin pane lifecycle", () => {
   it("does NOT render the admin pane for a non-admin user even after settings open", () => {
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
@@ -599,6 +685,16 @@ describe("Shell — M-7 admin pane lifecycle", () => {
     fireEvent.click(screen.getByLabelText(/open settings/i));
     const entry = await screen.findByTestId("admin-console-entry");
     fireEvent.click(entry);
+    // UX-4 bucket N — selection-driven: drawer entry sets selection to
+    // admin window. Shell's `<Show when={sel.kind === "admin" && isAdmin()}>`
+    // flips true on the next reactive cycle.
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$admin",
+        channelName: "$admin",
+        kind: "admin",
+      });
+    });
     await waitFor(() => {
       expect(container.querySelector(".admin-pane")).toBeInTheDocument();
     });
@@ -606,16 +702,45 @@ describe("Shell — M-7 admin pane lifecycle", () => {
     expect(container.querySelector(".scrollback-pane")).toBeNull();
   });
 
-  it("clicking admin pane close button returns to channel content", async () => {
+  it("clicking admin pane close button returns to home (selection-driven)", async () => {
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
-    selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+    // Start on admin window directly — equivalent to the post-drawer-
+    // entry state. Avoids re-asserting the drawer wiring here (covered
+    // by the prior test).
+    selectionState.setSelSig({ networkSlug: "$admin", channelName: "$admin", kind: "admin" });
     const { container } = render(() => <Shell />);
-    fireEvent.click(screen.getByLabelText(/open settings/i));
-    fireEvent.click(await screen.findByTestId("admin-console-entry"));
     await waitFor(() => expect(container.querySelector(".admin-pane")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("admin-pane-close"));
-    await waitFor(() => expect(container.querySelector(".admin-pane")).toBeNull());
-    expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
+    // UX-4 bucket N — onClose navigates selection to home.
+    expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+      networkSlug: "$home",
+      channelName: "$home",
+      kind: "home",
+    });
+  });
+
+  it("UX-4 N — demote-mid-session redirects selection to home when on admin window", async () => {
+    // Admin operator currently sitting on the admin window.
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
+    selectionState.setSelSig({ networkSlug: "$admin", channelName: "$admin", kind: "admin" });
+    render(() => <Shell />);
+    // Demote: flip is_admin to false on the same holder. userHolder is
+    // backed by a real Solid signal, so Shell's demote effect (which
+    // reads isAdmin → user()) observes the flip and redirects to home.
+    userHolder.current = {
+      kind: "user",
+      id: "u1",
+      name: "vjt",
+      is_admin: false,
+      inserted_at: "x",
+    };
+    await waitFor(() => {
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+    });
   });
 });
 

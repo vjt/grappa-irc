@@ -59,12 +59,12 @@ export type Props = {
 const ShellChrome: Component<Props> = (props) => {
   // Archive button visibility: only when the selected window has a
   // network context (channel / query / server kinds carry
-  // networkSlug; home / mentions / empty do not). Resolved per
+  // networkSlug; home / mentions / admin / empty do not). Resolved per
   // render via `selectedChannel`; no parallel state.
   const archiveSlug = (): string | null => {
     const sel = selectedChannel();
     if (sel === null) return null;
-    if (sel.kind === "home" || sel.kind === "mentions") return null;
+    if (sel.kind === "home" || sel.kind === "mentions" || sel.kind === "admin") return null;
     return sel.networkSlug;
   };
 

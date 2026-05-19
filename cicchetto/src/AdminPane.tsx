@@ -14,12 +14,14 @@ import { startAdminEventsSubscription, uninstallAdminEvents } from "./lib/adminE
 // M-11 adds Events (real-time stream of admin-relevant events
 // fan-out on `grappa:admin:events`).
 //
-// Mount lifecycle: a `<Show when={adminOpen() && isAdmin()}>` in
-// Shell.tsx drives mount/unmount. Shell auto-closes the pane the
-// instant `me.is_admin` flips to false — see the demote-mid-session
-// policy at Shell.tsx's createEffect. The tab components issue admin
-// REST fetches which the `:admin_authn` plug 403s any request from a
-// now-non-admin user, so the demote race is server-side-safe.
+// Mount lifecycle: a `<Show when={selectedChannel().kind === "admin" && isAdmin()}>`
+// in Shell.tsx drives mount/unmount (UX-4 bucket N: selection-driven;
+// pre-bucket-N a parallel `adminOpen` signal duplicated the gate).
+// Shell auto-redirects selection to home the instant `me.is_admin`
+// flips to false — see the demote-mid-session createEffect at
+// Shell.tsx. The tab components issue admin REST fetches which the
+// `:admin_authn` plug 403s any request from a now-non-admin user, so
+// the demote race is server-side-safe.
 //
 // M-11 subscription lifecycle lives HERE (not in `AdminEventsTab`)
 // so the ring buffer accumulates while the operator browses

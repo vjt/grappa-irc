@@ -8,11 +8,12 @@
 //   :list      → "list"
 //   :mentions  → "mentions"
 //   :home      → "home"         (UX-4 bucket B — identity-scoped, NOT per-network)
+//   :admin     → "admin"        (UX-4 bucket N — identity-scoped, NOT per-network, admin-only)
 //
 // `Window` is the cicchetto-side representation of a single tab entry.
 // `networkId` is the integer FK from the server `Network` schema;
 // `target` is the channel name (e.g. "#grappa"), DM nick, or empty
-// string for pseudo-windows (server, list, mentions, home).
+// string for pseudo-windows (server, list, mentions, home, admin).
 //
 // `orderWindows` is a pure function: takes a flat list, groups by
 // network_id (stable insertion order — first-seen networkId gets index
@@ -20,14 +21,14 @@
 // queries (alpha), list, mentions. Ephemeral kinds (list, mentions)
 // only appear when they're in the input — no placeholder injection.
 //
-// The `home` kind is identity-scoped, NOT per-network — it never
-// enters the per-network grouping path (Sidebar pins it as a separate
-// row ABOVE the network sections; BottomBar omits it). It's listed in
-// `WindowKind` so `selectedChannel.kind` accepts it (the active-pane
-// dispatcher in Shell.tsx branches on it) without forcing every
-// orderWindows-callsite to special-case its absence.
+// The `home` and `admin` kinds are identity-scoped, NOT per-network —
+// they never enter the per-network grouping path (Sidebar pins both as
+// separate rows ABOVE the network sections; BottomBar omits them).
+// They're listed in `WindowKind` so `selectedChannel.kind` accepts them
+// (the active-pane dispatcher in Shell.tsx branches on them) without
+// forcing every orderWindows-callsite to special-case their absence.
 
-export type WindowKind = "channel" | "query" | "server" | "list" | "mentions" | "home";
+export type WindowKind = "channel" | "query" | "server" | "list" | "mentions" | "home" | "admin";
 
 // The synthetic channel name used for the per-network server-messages
 // window (kind = "server"). Server-side `Grappa.Session.NumericRouter`
@@ -50,6 +51,17 @@ export const SERVER_WINDOW_NAME = "$server";
 export const HOME_WINDOW_SLUG = "$home";
 export const HOME_WINDOW_NAME = "$home";
 
+// UX-4 bucket N: sentinels for the identity-scoped `admin` window.
+// Mirror of the home sentinels. Admin is admin-only (gated on
+// `me.is_admin === true` at the Sidebar projection AND at the Shell
+// pane dispatcher) so non-admin operators see no admin row and can't
+// reach the pane by hand-crafting a selection. Single source: imported
+// by Shell.tsx (selection dispatch + pane mount), Sidebar.tsx (pinned
+// row + visibility gate), SettingsDrawer.tsx (drawer "admin console"
+// entry — secondary trigger).
+export const ADMIN_WINDOW_SLUG = "$admin";
+export const ADMIN_WINDOW_NAME = "$admin";
+
 export type Window = {
   /** Stable string id for keying in UI lists. */
   id: string;
@@ -64,13 +76,14 @@ export type GroupedWindows = {
   windows: Window[];
 };
 
-// Within-network kind rank (lower = earlier). `home` is identity-scoped
-// (NOT per-network) so it never enters `orderWindows`; the rank is
-// listed here only so `Record<WindowKind, number>` stays exhaustive
-// (a future change that does pass a `home` window through would surface
-// at compile time, not silently drop).
+// Within-network kind rank (lower = earlier). `home` and `admin` are
+// identity-scoped (NOT per-network) so they never enter `orderWindows`;
+// the ranks are listed here only so `Record<WindowKind, number>` stays
+// exhaustive (a future change that does pass either through would
+// surface at compile time, not silently drop).
 const KIND_RANK: Record<WindowKind, number> = {
-  home: -1,
+  home: -2,
+  admin: -1,
   server: 0,
   channel: 1,
   query: 2,

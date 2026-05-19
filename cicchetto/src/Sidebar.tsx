@@ -6,12 +6,18 @@ import { token } from "./lib/auth";
 import { awayByNetwork } from "./lib/awayStatus";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
-import { channelsBySlug, networkBySlug, networks } from "./lib/networks";
+import { channelsBySlug, isAdmin, networkBySlug, networks } from "./lib/networks";
 import { openQueryWindowState, queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { closeChannelWindow, closeQueryWindow, disconnectNetwork } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
-import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import {
+  ADMIN_WINDOW_NAME,
+  ADMIN_WINDOW_SLUG,
+  HOME_WINDOW_NAME,
+  HOME_WINDOW_SLUG,
+  SERVER_WINDOW_NAME,
+} from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
@@ -229,6 +235,31 @@ const Sidebar: Component<Props> = (props) => {
           </button>
         </li>
       </ul>
+
+      {/* UX-4 bucket N — `$admin` pinned between Home and the first
+          network's `$server` row. Identity-scoped (NOT per-network)
+          AND admin-only (gated on `isAdmin()` — single source of truth
+          shared with Shell.tsx pane dispatcher + SettingsDrawer.tsx
+          drawer entry). Non-admin operators see no row at all and
+          cannot reach the AdminPane by hand-crafting a selection
+          (Shell's `<Show when={isAdmin()}>` gates the mount too). */}
+      <Show when={isAdmin()}>
+        <ul class="sidebar-admin-section">
+          <li classList={{ selected: isSelected(ADMIN_WINDOW_SLUG, ADMIN_WINDOW_NAME) }}>
+            <button
+              type="button"
+              class="sidebar-window-btn sidebar-admin-btn"
+              data-testid="sidebar-admin-row"
+              onClick={() => handleClick(ADMIN_WINDOW_SLUG, ADMIN_WINDOW_NAME, "admin")}
+            >
+              <span class="sidebar-admin-emoji" aria-hidden="true">
+                🔧
+              </span>
+              <span class="sidebar-channel-name">admin</span>
+            </button>
+          </li>
+        </ul>
+      </Show>
 
       <Show
         when={(networks()?.length ?? 0) > 0}

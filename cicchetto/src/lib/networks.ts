@@ -148,6 +148,18 @@ const exports = createRoot(() => {
 
   const networkIdBySlug = (slug: string): number | undefined => networkBySlug(slug)?.id;
 
+  // UX-4 bucket N — admin predicate hoisted here from Shell.tsx +
+  // SettingsDrawer.tsx + Sidebar.tsx (three callsites, rule-of-three
+  // threshold). Single source of truth for the M-cluster M-7 admin
+  // gate (drawer entry, AdminPane mount, demote-mid-session
+  // auto-close, sidebar admin row visibility). Narrows the
+  // `MeResponse` discriminated union so the user-only `is_admin`
+  // field is reachable; visitor + null both collapse to false.
+  const isAdmin = (): boolean => {
+    const u = user();
+    return u?.kind === "user" && u.is_admin === true;
+  };
+
   return {
     networks,
     user,
@@ -157,6 +169,7 @@ const exports = createRoot(() => {
     mutateNetworkNick,
     networkBySlug,
     networkIdBySlug,
+    isAdmin,
   };
 });
 
@@ -168,3 +181,4 @@ export const refetchNetworks = exports.refetchNetworks;
 export const mutateNetworkNick = exports.mutateNetworkNick;
 export const networkBySlug = exports.networkBySlug;
 export const networkIdBySlug = exports.networkIdBySlug;
+export const isAdmin = exports.isAdmin;

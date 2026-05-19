@@ -20,10 +20,12 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
 }));
 
-// M-cluster M-7 — admin gate. SettingsDrawer reads `user()` from
-// `lib/networks` to gate the "admin console" entry off
-// `me.kind === "user" && me.is_admin === true`. Mock returns a
-// mutable holder so individual tests can flip subject + admin flag.
+// M-cluster M-7 — admin gate. SettingsDrawer reads `isAdmin()` from
+// `lib/networks` (UX-4 bucket N hoisted the predicate there as the
+// single source of truth shared with Shell.tsx pane dispatcher +
+// Sidebar.tsx admin row). Mock returns a mutable holder so individual
+// tests can flip subject + admin flag; isAdmin computed from the
+// hoisted me to keep the existing assertions semantically intact.
 const meHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string; is_admin: boolean; inserted_at: string }
@@ -32,6 +34,10 @@ const meHolder = vi.hoisted(() => ({
 }));
 vi.mock("../lib/networks", () => ({
   user: () => meHolder.current,
+  isAdmin: () => {
+    const u = meHolder.current;
+    return u?.kind === "user" && u.is_admin === true;
+  },
 }));
 
 vi.mock("../lib/push", () => ({

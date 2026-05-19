@@ -8,7 +8,7 @@ import {
   saveUploadTtlSeconds,
   uploadTtlSecondsValue,
 } from "./lib/imageUploadOrchestrator";
-import { user } from "./lib/networks";
+import { isAdmin } from "./lib/networks";
 import {
   disablePush,
   type EnablePushResult,
@@ -27,7 +27,8 @@ import {
 
 // Right-overlay drawer: theme toggle + notifications (push permission +
 // per-trigger prefs + device list) + optional "admin console" entry
-// (gated on me.is_admin === true, M-cluster M-7) + logout.
+// (gated on `isAdmin()` from lib/networks.ts — single source of truth
+// shared with Shell.tsx pane gate + Sidebar.tsx admin row) + logout.
 //
 // open prop drives the .open class; the drawer stays mounted across
 // open/close so onMount-loaded state (devices + prefs) doesn't refetch
@@ -37,23 +38,14 @@ export type Props = {
   open: boolean;
   onClose: () => void;
   // M-7 — fires when the operator clicks the "admin console" entry.
-  // Shell.tsx handles closing the drawer + opening the AdminPane.
+  // Shell.tsx handles closing the drawer + selecting the admin
+  // window (UX-4 bucket N: selection-driven AdminPane mount;
+  // pre-bucket-N Shell flipped a separate `adminOpen` signal).
   // Required even though only admin renderings invoke it — both
   // SettingsDrawer call sites in Shell (desktop + mobile) pass the
-  // same `setAdminOpen(true)` handler.
+  // same selection-set handler.
   onOpenAdmin: () => void;
 };
-
-// M-cluster M-7 — admin predicate. Single source of truth for the
-// drawer entry visibility gate, mirror-shape of the same predicate in
-// `Shell.tsx` (which uses it for the AdminPane mount gate +
-// demote-auto-close effect). Narrows `MeResponse` to the user arm so
-// the `is_admin` field is reachable; visitor + null both collapse to
-// false.
-function isAdmin(): boolean {
-  const u = user();
-  return u?.kind === "user" && u.is_admin === true;
-}
 
 const SettingsDrawer: Component<Props> = (props) => {
   const navigate = useNavigate();

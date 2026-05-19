@@ -128,7 +128,10 @@ export type MeResponse =
       // refetch policy. Disjoint from `WhoisBundle.is_admin` (peer's
       // IRC privileges from upstream WHOIS) — different domain, same
       // field name, kept structurally separate via discriminated
-      // unions on different types.
+      // unions on different types. UX-4 bucket N: AdminPane mount is
+      // now driven by `selectedChannel().kind === "admin"` (no
+      // separate `adminOpen` signal); demote handling lives in
+      // Shell.tsx's redirect-on-demote createEffect.
       is_admin: boolean;
       inserted_at: string;
       read_cursors?: ReadCursorsEnvelope;

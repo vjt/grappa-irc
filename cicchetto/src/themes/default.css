@@ -2786,6 +2786,53 @@ body {
   color: var(--accent);
 }
 
+/* UX-4 bucket N (2026-05-19) — Admin sidebar section. Identity-scoped,
+   admin-only, pinned between Home and the first network. Visual parity
+   with `.sidebar-home-section` (same padding, font-weight, hover state,
+   selected state) — operator scanning the sidebar reads home + admin
+   as a co-equal "identity-scoped" group above per-network sections. */
+
+.sidebar-admin-section {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-admin-section li {
+  display: flex;
+  align-items: stretch;
+}
+
+.sidebar-admin-section li .sidebar-admin-btn {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  padding: 0.4rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  text-align: left;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.sidebar-admin-section li .sidebar-admin-btn:hover {
+  background: var(--border);
+}
+
+.sidebar-admin-section li.selected .sidebar-admin-btn {
+  background: var(--border);
+  color: var(--accent);
+}
+
+.sidebar-admin-emoji {
+  margin-right: 0.4rem;
+  flex: 0 0 auto;
+}
+
 .home-pane {
   flex: 1 1 auto;
   overflow-y: auto;

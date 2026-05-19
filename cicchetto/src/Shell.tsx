@@ -12,10 +12,15 @@ import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
-import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
+import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
-import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG } from "./lib/windowKinds";
+import {
+  ADMIN_WINDOW_NAME,
+  ADMIN_WINDOW_SLUG,
+  HOME_WINDOW_NAME,
+  HOME_WINDOW_SLUG,
+} from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
@@ -56,36 +61,52 @@ const Shell: Component = () => {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
-  // M-cluster M-7 — admin pane lifecycle. True replaces the channel /
-  // mentions branch in the main pane with `<AdminPane>`. Auto-closes
-  // when `me.is_admin` flips to false (demote-mid-session) via the
-  // createEffect below. M-7 has no admin REST fetches; pure
-  // presentational gate.
-  const [adminOpen, setAdminOpen] = createSignal(false);
 
-  // Reactive admin predicate — single source of truth for both the
-  // drawer entry gate and the demote-auto-close effect. Narrows the
-  // `MeResponse` discriminated union so the user-only `is_admin` field
-  // is reachable.
-  const isAdmin = (): boolean => {
-    const u = user();
-    return u?.kind === "user" && u.is_admin === true;
-  };
+  // UX-4 bucket N — admin pane lifecycle is now selection-driven.
+  // `selectedChannel.kind === "admin"` is the SINGLE source of truth
+  // for the AdminPane mount (replacing the M-7 parallel `adminOpen`
+  // signal). Triggers:
+  //   * Sidebar admin row click (UX-4 bucket N — primary, always-
+  //     visible affordance for admins).
+  //   * SettingsDrawer "admin console" entry (M-7 secondary trigger,
+  //     kept as a fallback per the "two doors, one room" rule).
+  // Both call setSelectedChannel({kind: "admin", ...ADMIN_*}).
+  //
+  // Visibility gate `isAdmin()` lives in `lib/networks.ts` — single
+  // source of truth shared with SettingsDrawer (drawer entry) +
+  // Sidebar (admin row). Pane mount further gates on `isAdmin()`
+  // here so a stale selection (kind === "admin" persisted across
+  // a demote) can't reach AdminPane content for a non-admin user.
+  //
+  // Demote-mid-session: when `me.is_admin` flips to false (another
+  // admin demotes this operator, OR the bearer rotates to a
+  // non-admin user), the createEffect below redirects selection
+  // back to home if currently on admin. Sidebar admin row vanishes
+  // via the same `isAdmin()` predicate. Drawer entry hides via the
+  // mirror predicate in SettingsDrawer.
 
-  // M-7 demote-mid-session: when `me.is_admin` flips to false (another
-  // admin demotes this operator, OR the bearer rotates to a non-admin
-  // user), close the admin pane on the next tick. The drawer entry
-  // hides automatically via the same `isAdmin()` predicate.
+  // M-7 demote redirect — when the operator loses admin AND is
+  // currently on the admin window, navigate back to home so the
+  // pane doesn't fall through to the empty "select a channel"
+  // fallback (which would be visually startling). Selection-driven
+  // model: setting kind === "home" both hides the AdminPane (Shell's
+  // `<Show when={sel.kind === "admin"}>` flips false) and lands the
+  // operator on a deterministic landing window.
   //
   // Correctness depends on `user()` (createResource accessor in
   // lib/networks.ts) keeping the prior value across refetches rather
-  // than transiently returning `undefined` — which would close the
-  // pane mid-admin-operation. createResource's `previous` semantics
-  // hold this invariant today. If anyone refactors to plain
-  // `createSignal<MeResponse | null>` with explicit `setUser(null)`
-  // on bearer rotation, add a loading-gate before this effect.
+  // than transiently returning `undefined` — which would redirect
+  // home mid-admin-operation. createResource's `previous` semantics
+  // hold this invariant today.
   createEffect(() => {
-    if (!isAdmin()) setAdminOpen(false);
+    if (isAdmin()) return;
+    const sel = selectedChannel();
+    if (sel?.kind !== "admin") return;
+    setSelectedChannel({
+      networkSlug: HOME_WINDOW_SLUG,
+      channelName: HOME_WINDOW_NAME,
+      kind: "home",
+    });
   });
 
   // Per-network own IRC nick — derived via `ownNickForNetwork(net, me)`
@@ -345,7 +366,7 @@ const Shell: Component = () => {
               onOpenSettings={() => setSettingsOpen(true)}
             />
             <Show
-              when={adminOpen()}
+              when={selectedChannel()?.kind === "admin" && isAdmin()}
               fallback={
                 <Show
                   when={selectedChannel()}
@@ -410,7 +431,19 @@ const Shell: Component = () => {
                 </Show>
               }
             >
-              <AdminPane onClose={() => setAdminOpen(false)} />
+              {/* UX-4 bucket N — AdminPane mount driven by selection +
+                  isAdmin guard. onClose navigates back to home, mirroring
+                  the demote-redirect effect; both paths terminate at the
+                  same landing window. */}
+              <AdminPane
+                onClose={() =>
+                  setSelectedChannel({
+                    networkSlug: HOME_WINDOW_SLUG,
+                    channelName: HOME_WINDOW_NAME,
+                    kind: "home",
+                  })
+                }
+              />
             </Show>
           </section>
 
@@ -425,7 +458,13 @@ const Shell: Component = () => {
           <SettingsDrawer
             open={settingsOpen()}
             onClose={() => setSettingsOpen(false)}
-            onOpenAdmin={() => setAdminOpen(true)}
+            onOpenAdmin={() =>
+              setSelectedChannel({
+                networkSlug: ADMIN_WINDOW_SLUG,
+                channelName: ADMIN_WINDOW_NAME,
+                kind: "admin",
+              })
+            }
           />
         </div>
       }
@@ -468,7 +507,7 @@ const Shell: Component = () => {
             onOpenSettings={() => setSettingsOpen(true)}
           />
           <Show
-            when={adminOpen()}
+            when={selectedChannel()?.kind === "admin" && isAdmin()}
             fallback={
               <Show when={selectedChannel()} fallback={<p class="muted">select a channel below</p>}>
                 {(sel) => (
@@ -532,7 +571,15 @@ const Shell: Component = () => {
               </Show>
             }
           >
-            <AdminPane onClose={() => setAdminOpen(false)} />
+            <AdminPane
+              onClose={() =>
+                setSelectedChannel({
+                  networkSlug: HOME_WINDOW_SLUG,
+                  channelName: HOME_WINDOW_NAME,
+                  kind: "home",
+                })
+              }
+            />
           </Show>
         </section>
 
@@ -555,7 +602,13 @@ const Shell: Component = () => {
         <SettingsDrawer
           open={settingsOpen()}
           onClose={() => setSettingsOpen(false)}
-          onOpenAdmin={() => setAdminOpen(true)}
+          onOpenAdmin={() =>
+            setSelectedChannel({
+              networkSlug: ADMIN_WINDOW_SLUG,
+              channelName: ADMIN_WINDOW_NAME,
+              kind: "admin",
+            })
+          }
         />
       </div>
     </Show>
