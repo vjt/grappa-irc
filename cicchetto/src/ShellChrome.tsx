@@ -9,12 +9,6 @@ import { selectedChannel } from "./lib/selection";
 // settings cog MUST be reachable from every window kind, INCLUDING
 // the server window.
 //
-// Pre-bucket the cog lived inside TopicBar (rendered only for
-// `sel.kind === "channel"`) + Shell.tsx's empty-toolbar fallbacks
-// (pre-select only). Operator on a query / server / home / mentions
-// window had NO way to open settings — only by switching to a channel
-// window first.
-//
 // Slots (left → right):
 //   * Spacer — pushes the right group to the far right.
 //   * Archive button (📂) — opens ArchiveModal for the currently-
@@ -32,6 +26,16 @@ import { selectedChannel } from "./lib/selection";
 // since UX-4 bucket L dropped the mobile sidebar branch and the
 // desktop sidebar has no `.open` CSS rule). Removed end-to-end:
 // `sidebarOpen` state is gone from Shell.tsx too.
+//
+// UX-5 bucket BT (2026-05-19) — extracted `ChromeButtons` named
+// export: same archive + cog with identical visibility rules, but
+// WITHOUT the outer `<header class="shell-chrome">` wrapper. Shell.tsx
+// mobile-channel branch passes <ChromeButtons /> through TopicBar's
+// `inlineChromeSlot` prop so the chrome buttons render INSIDE the
+// topic-bar row — dropping the standalone `.shell-chrome` row that
+// wasted ~32px above the scrollback area on iPhone. Default export
+// (`<header class="shell-chrome">` wrapper) stays the desktop +
+// mobile-non-channel substrate.
 
 export type Props = {
   /**
@@ -40,11 +44,15 @@ export type Props = {
   onOpenSettings: () => void;
 };
 
-const ShellChrome: Component<Props> = (props) => {
-  // Archive button visibility: only when the selected window has a
-  // network context (channel / query / server kinds carry
-  // networkSlug; home / mentions / admin / empty do not). Resolved per
-  // render via `selectedChannel`; no parallel state.
+// UX-5 bucket BT — inner buttons-only render. Reuses the same archive
+// visibility rule and the same cog wiring as the wrapper default
+// export. Caller hosts the layout (`<header class="shell-chrome">` for
+// the standalone bar, or `.topic-bar` for the inline mobile-channel
+// path). Exported separately so the wire-truth contract stays in ONE
+// component — `archiveSlug()` resolution + onOpenSettings prop shape
+// + data-testid markers ("shell-chrome-archive", "shell-chrome-cog")
+// are not duplicated.
+export const ChromeButtons: Component<Props> = (props) => {
   const archiveSlug = (): string | null => {
     const sel = selectedChannel();
     if (sel === null) return null;
@@ -53,8 +61,7 @@ const ShellChrome: Component<Props> = (props) => {
   };
 
   return (
-    <header class="shell-chrome" data-testid="shell-chrome">
-      <span class="shell-chrome-spacer" />
+    <>
       <Show when={archiveSlug()}>
         {(slug) => (
           <button
@@ -77,6 +84,15 @@ const ShellChrome: Component<Props> = (props) => {
       >
         ⚙
       </button>
+    </>
+  );
+};
+
+const ShellChrome: Component<Props> = (props) => {
+  return (
+    <header class="shell-chrome" data-testid="shell-chrome">
+      <span class="shell-chrome-spacer" />
+      <ChromeButtons onOpenSettings={props.onOpenSettings} />
     </header>
   );
 };

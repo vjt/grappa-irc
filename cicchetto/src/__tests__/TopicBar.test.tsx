@@ -1,15 +1,6 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/members", () => ({
-  membersByChannel: () => ({
-    "freenode #italia": [
-      { nick: "vjt", modes: ["@"] },
-      { nick: "alice", modes: [] },
-    ],
-  }),
-}));
-
 vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
@@ -57,9 +48,16 @@ describe("TopicBar", () => {
     expect(screen.getByText("#italia")).toBeInTheDocument();
   });
 
-  it("renders the nick count from members store", () => {
-    render(() => <TopicBar {...baseProps()} />);
-    expect(screen.getByText(/2 nicks/i)).toBeInTheDocument();
+  // UX-5 bucket BT (2026-05-19) — the "X nicks" count strip was
+  // dropped from the topic-bar (vjt 2026-05-19 dogfood — "useless";
+  // the MembersPane on the right is the canonical surface). The pre-
+  // bucket "renders the nick count" test became a mirror — replaced
+  // with a negative assertion pinning the absence so a future
+  // resurrection trips a guard.
+  it("UX-5 bucket BT — does NOT render a '.topic-bar-count' nick count strip", () => {
+    const { container } = render(() => <TopicBar {...baseProps()} />);
+    expect(container.querySelector(".topic-bar-count")).toBeNull();
+    expect(screen.queryByText(/\d+ nicks/i)).not.toBeInTheDocument();
   });
 
   // UX-4 bucket L (2026-05-19): TopicBar's left sidebar hamburger
@@ -85,10 +83,14 @@ describe("TopicBar", () => {
       expect(screen.queryByLabelText(/open members sidebar/i)).not.toBeInTheDocument();
     });
 
-    it("hides the nick count when the channel is not joined", () => {
+    // UX-5 bucket BT (2026-05-19) — "X nicks" strip was dropped. The
+    // joined-gated visibility test is now redundant; the strip is
+    // gone everywhere. Kept as negative guard for the not-joined
+    // path so a resurrection would surface.
+    it("UX-5 bucket BT — never renders nick count, joined or not", () => {
       mockWindowIsJoined.mockReturnValue(false);
       render(() => <TopicBar {...baseProps()} />);
-      expect(screen.queryByText(/2 nicks/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/\d+ nicks/i)).not.toBeInTheDocument();
     });
   });
 
@@ -185,6 +187,36 @@ describe("TopicBar", () => {
       mockModesByChannel.mockReturnValue({});
       render(() => <TopicBar {...baseProps()} />);
       expect(screen.queryByText(/^\+/)).toBeNull();
+    });
+  });
+
+  // UX-5 bucket BT (2026-05-19) — TopicBar exposes an optional
+  // `inlineChromeSlot` JSX slot that renders after the members
+  // hamburger. Shell.tsx mobile-channel branch passes
+  // <ChromeButtons /> (archive + cog) through this slot so chrome
+  // buttons sit on the SAME row as channel/topic/modes/count —
+  // dropping the standalone .shell-chrome row that wasted ~32px
+  // above the scrollback area on iPhone. Desktop branch passes no
+  // slot; the standalone .shell-chrome row stays for desktop layout.
+  describe("UX-5 bucket BT — inlineChromeSlot", () => {
+    it("renders the slot content when inlineChromeSlot is provided", () => {
+      render(() => (
+        <TopicBar
+          {...baseProps()}
+          inlineChromeSlot={
+            <button type="button" data-testid="bt-slot">
+              x
+            </button>
+          }
+        />
+      ));
+      expect(screen.getByTestId("bt-slot")).toBeInTheDocument();
+    });
+
+    it("does NOT render an inline slot wrapper when prop is omitted", () => {
+      const { container } = render(() => <TopicBar {...baseProps()} />);
+      // No leftover wrapper element when prop absent.
+      expect(container.querySelector(".topic-bar-inline-chrome")).toBeNull();
     });
   });
 });

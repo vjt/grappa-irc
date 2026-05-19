@@ -1,7 +1,6 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createSignal, type JSX, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
-import { membersByChannel } from "./lib/members";
 import { windowIsJoined } from "./lib/windowState";
 
 // Top bar of the middle pane. Hosts:
@@ -11,16 +10,28 @@ import { windowIsJoined } from "./lib/windowState";
 //    setter nick, and set-at timestamp (C3.1).
 //  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
 //    Rendered only when modes are cached and non-empty (C3.1).
-//  * nick count from members.length
 //  * right ☰ hamburger — opens members drawer (desktop + mobile)
+//  * optional `inlineChromeSlot` (UX-5 bucket BT, 2026-05-19) — JSX
+//    children rendered after the hamburger. Shell.tsx mobile-channel
+//    branch passes <ChromeButtons /> here so the archive + cog buttons
+//    sit on the SAME row as the topic, dropping the standalone
+//    .shell-chrome row that wasted ~32px above the scrollback area on
+//    iPhone. Desktop branch passes no slot; the standalone .shell-chrome
+//    row stays for the unchanged desktop layout.
 //
 // UX-4 bucket L (2026-05-19): the settings cog AND the left channel-
 // sidebar hamburger moved out of TopicBar into the cluster-wide
 // ShellChrome bar — both the cog and the sidebar toggle must be
 // reachable from every window kind, not just channel windows.
-// TopicBar now renders only the topic / mode / member-count info +
-// the members hamburger (channel-specific, has no analog in non-
-// channel windows so stays here).
+// TopicBar now renders only the topic / mode info + the members
+// hamburger (channel-specific, has no analog in non-channel windows
+// so stays here).
+//
+// UX-5 bucket BT (2026-05-19): the "X nicks" count strip was dropped
+// (vjt 2026-05-19 dogfood — "useless"). The right MembersPane is the
+// source of truth for member-count surfacing; the topic-bar didn't
+// need a duplicate, and dropping it tightens the row on narrow
+// viewports where every pixel matters.
 //
 // Modal state uses `"closed" | "open"` string-literal union per the
 // closed-set rule (CLAUDE.md).
@@ -32,6 +43,13 @@ export type Props = {
   networkSlug: string;
   channelName: string;
   onToggleMembers: () => void;
+  /**
+   * UX-5 bucket BT — optional inline JSX slot rendered after the
+   * members hamburger. Used by Shell.tsx's mobile-channel branch to
+   * absorb ShellChrome's archive + cog buttons into the topic-bar
+   * row, dropping the standalone chrome row on iPhone.
+   */
+  inlineChromeSlot?: JSX.Element;
 };
 
 type ModalState = "closed" | "open";
@@ -40,7 +58,6 @@ const TopicBar: Component<Props> = (props) => {
   const [modalState, setModalState] = createSignal<ModalState>("closed");
 
   const key = () => channelKey(props.networkSlug, props.channelName);
-  const memberCount = () => membersByChannel()[key()]?.length ?? 0;
 
   const topicEntry = () => topicByChannel()[key()] ?? null;
   const topicText = () => topicEntry()?.text ?? null;
@@ -94,12 +111,11 @@ const TopicBar: Component<Props> = (props) => {
           {modeStr()}
         </span>
       </Show>
-      {/* Nick count + members hamburger only when actively joined.
-          Parked / failed / kicked channels have stale or absent member
-          lists; the right pane is suppressed in Shell.tsx for the same
-          reason — this hides the toggle that would otherwise dangle. */}
+      {/* Members hamburger only when actively joined. Parked / failed
+          / kicked channels have stale or absent member lists; the
+          right pane is suppressed in Shell.tsx for the same reason —
+          this hides the toggle that would otherwise dangle. */}
       <Show when={windowIsJoined(key())}>
-        <span class="topic-bar-count">{memberCount()} nicks</span>
         <button
           type="button"
           class="topic-bar-hamburger"
@@ -109,6 +125,14 @@ const TopicBar: Component<Props> = (props) => {
           ☰
         </button>
       </Show>
+
+      {/* UX-5 bucket BT (2026-05-19) — optional inline chrome slot.
+          Shell.tsx mobile-channel branch passes <ChromeButtons /> here
+          so the archive + cog sit on the SAME row as the topic strip
+          instead of a separate .shell-chrome row stacked above. Slot
+          is omitted on desktop + mobile-non-channel paths; those
+          branches keep the standalone .shell-chrome row. */}
+      {props.inlineChromeSlot}
 
       {/* Topic modal — opens on topic strip click; shows full topic, setter, timestamp */}
       <Show when={modalState() === "open"}>

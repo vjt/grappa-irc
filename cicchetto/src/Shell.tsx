@@ -27,7 +27,7 @@ import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
-import ShellChrome from "./ShellChrome";
+import ShellChrome, { ChromeButtons } from "./ShellChrome";
 import Sidebar from "./Sidebar";
 import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
@@ -481,8 +481,17 @@ const Shell: Component = () => {
               UX-5 bucket A (2026-05-19) — hamburger prop dropped.
               TopicBar's own `.topic-bar-hamburger` (channel-window-
               only, CSS-visible on mobile) owns the members-drawer
-              toggle; ShellChrome's hamburger was a duplicate. */}
-          <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
+              toggle; ShellChrome's hamburger was a duplicate.
+              UX-5 bucket BT (2026-05-19) — on mobile-channel, the
+              standalone .shell-chrome row is dropped and ChromeButtons
+              render INSIDE the TopicBar instead, reclaiming the ~32px
+              the chrome row stole above the scrollback area on iPhone.
+              Non-channel mobile windows (home / mentions / admin /
+              server) keep the standalone row since they have no
+              TopicBar to absorb the buttons. */}
+          <Show when={selectedChannel()?.kind !== "channel"}>
+            <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
+          </Show>
           <Show
             when={selectedChannel()?.kind === "admin" && isAdmin()}
             fallback={
@@ -494,11 +503,17 @@ const Shell: Component = () => {
                           `.topic-bar-hamburger` is the single
                           members-drawer toggle on mobile (CSS-hidden
                           on desktop via @media). ShellChrome above no
-                          longer renders its own hamburger. */}
+                          longer renders its own hamburger.
+                          UX-5 bucket BT (2026-05-19) — inline chrome
+                          slot absorbs archive + cog from the dropped
+                          standalone .shell-chrome row. */}
                       <TopicBar
                         networkSlug={sel().networkSlug}
                         channelName={sel().channelName}
                         onToggleMembers={() => setMembersOpen((v) => !v)}
+                        inlineChromeSlot={
+                          <ChromeButtons onOpenSettings={() => setSettingsOpen(true)} />
+                        }
                       />
                     </Show>
                     <Show

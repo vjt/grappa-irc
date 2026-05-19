@@ -14,14 +14,21 @@
 //   2. The desktop `.shell` container picks up the `.shell-no-members`
 //      class — collapses the grid to `16rem 1fr` so the main pane
 //      reclaims the right column.
-//   3. TopicBar suppresses the right hamburger AND the nick count when
-//      the active channel isn't joined (TopicBar.tsx).
+//   3. TopicBar suppresses the right hamburger when the active channel
+//      isn't joined (TopicBar.tsx).
 //
 // This spec exercises the three relevant non-joined cases (server, DM,
 // parked channel via /part) plus the joined baseline; the unit tests
 // in src/__tests__/windowState.test.ts + Shell.test.tsx cover the
 // pending/failed/kicked branches that don't have an easy e2e shape
 // (would require synthesizing failure numerics from upstream).
+//
+// UX-5 bucket BT (2026-05-19) — the "X nicks" count strip was dropped
+// from the TopicBar (vjt 2026-05-19 dogfood — "useless"; MembersPane
+// is the canonical surface). Pre-bucket this spec asserted on
+// `.topic-bar-count` visibility in four places; the hamburger
+// presence assertion below covers the same joined-state contract
+// (both gate on the same `windowIsJoined(key())` predicate).
 
 import { test, expect } from "@playwright/test";
 import {
@@ -34,7 +41,13 @@ import { partChannel } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
-const SERVER_WINDOW_LABEL = "Server";
+// UX-5 bucket BT (2026-05-19) — UX-4 bucket C merged the Server window
+// selector INTO the `.sidebar-network-header` row, which renders the
+// network slug (e.g. `bahamut-test`) and NOT a literal "Server"
+// label. The pre-bucket constant `"Server"` made `sidebarWindow` resolve
+// 0 hits (test latent-broken since UX-4 C). Resolve to the network slug
+// which IS the rendered text in the header row.
+const SERVER_WINDOW_LABEL = NETWORK_SLUG;
 const DM_PEER = "members-scope-peer";
 // Random per-run suffix so the spec is repeatable on a long-lived
 // testnet — same shape as cp15-b5/m8.
@@ -54,10 +67,9 @@ test("cic-members-panel-scope — joined channel shows MembersPane (baseline)", 
   // and the .shell does NOT carry the .shell-no-members modifier.
   await expect(page.locator(".shell-members .members-pane")).toBeVisible({ timeout: 5_000 });
   await expect(page.locator(".shell.shell-no-members")).toHaveCount(0);
-  // TopicBar shows the nick count + hamburger. The hamburger has
-  // `display: none` on desktop (CSS in default.css:357 — drawer toggle
-  // is mobile-only) so we assert presence in DOM, not visibility.
-  await expect(page.locator(".topic-bar-count")).toBeVisible();
+  // TopicBar shows the hamburger. The hamburger has `display: none`
+  // on desktop (CSS in default.css — drawer toggle is mobile-only)
+  // so we assert presence in DOM, not visibility.
   await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(1);
 });
 
@@ -72,8 +84,7 @@ test("cic-members-panel-scope — Server window does NOT mount MembersPane", asy
   // Grid collapses on desktop (.shell-mobile is single-column anyway).
   await expect(page.locator(".shell.shell-no-members, .shell-mobile")).toHaveCount(1);
   // TopicBar isn't rendered for the server window (kind !== "channel"),
-  // so neither the count nor the hamburger surface.
-  await expect(page.locator(".topic-bar-count")).toHaveCount(0);
+  // so the hamburger doesn't surface.
   await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(0);
 });
 
@@ -90,7 +101,7 @@ test("cic-members-panel-scope — DM (query) window does NOT mount MembersPane",
   await expect(page.locator(".shell-members .members-pane")).toHaveCount(0);
   await expect(page.locator(".shell.shell-no-members, .shell-mobile")).toHaveCount(1);
   // TopicBar isn't rendered for query windows either.
-  await expect(page.locator(".topic-bar-count")).toHaveCount(0);
+  await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(0);
 });
 
 test("cic-members-panel-scope — parked channel suppresses MembersPane + TopicBar hamburger", async ({
@@ -116,11 +127,10 @@ test("cic-members-panel-scope — parked channel suppresses MembersPane + TopicB
   await partChannel(vjt.token, NETWORK_SLUG, PARK_CHANNEL);
 
   // After PART: window state transitions away from :joined. MembersPane
-  // unmounts, TopicBar suppresses the right hamburger + count, and the
-  // grid collapses on desktop. The sidebar entry stays (archive
-  // section); we don't assert on its presence here — that's covered by
+  // unmounts, TopicBar suppresses the right hamburger, and the grid
+  // collapses on desktop. The sidebar entry stays (archive section);
+  // we don't assert on its presence here — that's covered by
   // cp15-b6-part-archive-rejoin.
   await expect(page.locator(".shell-members .members-pane")).toHaveCount(0, { timeout: 5_000 });
   await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(0);
-  await expect(page.locator(".topic-bar-count")).toHaveCount(0);
 });

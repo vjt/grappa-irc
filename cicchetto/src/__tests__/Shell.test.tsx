@@ -675,6 +675,65 @@ describe("Shell — mobile layout (isMobile = true)", () => {
     });
     expect(container.querySelector(".compose-box")).toBeInTheDocument();
   });
+
+  // UX-5 bucket BT (2026-05-19) — narrow-mode chrome+topic compression.
+  // The standalone `.shell-chrome` row is dropped on mobile WHEN a
+  // TopicBar is mounted (channel window only); the archive + cog
+  // buttons render INLINE inside the topic-bar via the
+  // `inlineChromeSlot` prop. Non-channel mobile windows (home /
+  // mentions / admin / server) keep the standalone `.shell-chrome` row
+  // since they have no TopicBar to host the buttons. Desktop is
+  // unchanged on every window kind.
+  describe("UX-5 bucket BT — narrow-mode chrome+topic compression", () => {
+    it("mobile channel window: NO standalone .shell-chrome row; cog renders INSIDE .topic-bar", async () => {
+      mobileState.value = true;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+      });
+      // Standalone chrome row is NOT mounted in the channel-window branch.
+      expect(container.querySelector(".shell-chrome")).toBeNull();
+      // Cog still reachable — rendered inline inside the topic-bar.
+      const cog = container.querySelector(".topic-bar [data-testid='shell-chrome-cog']");
+      expect(cog).not.toBeNull();
+    });
+
+    it("mobile channel window: archive button renders INSIDE .topic-bar (network context present)", async () => {
+      mobileState.value = true;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+      });
+      const archive = container.querySelector(".topic-bar [data-testid='shell-chrome-archive']");
+      expect(archive).not.toBeNull();
+    });
+
+    it("mobile home window: standalone .shell-chrome row STAYS (no TopicBar to absorb buttons)", async () => {
+      mobileState.value = true;
+      selectionState.setSelSig({ networkSlug: "$home", channelName: "$home", kind: "home" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector("[data-testid='shell-chrome']")).toBeInTheDocument();
+      });
+      expect(container.querySelector(".shell-chrome")).not.toBeNull();
+      expect(container.querySelector(".topic-bar")).toBeNull();
+    });
+
+    it("desktop channel window: standalone .shell-chrome row STAYS (compression is narrow-mode only)", async () => {
+      mobileState.value = false;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+      });
+      expect(container.querySelector(".shell-chrome")).not.toBeNull();
+      // Desktop topic-bar must NOT inline the chrome buttons.
+      const inlineCog = container.querySelector(".topic-bar [data-testid='shell-chrome-cog']");
+      expect(inlineCog).toBeNull();
+    });
+  });
 });
 
 // M-cluster M-7 — admin pane lifecycle on Shell. The drawer entry +

@@ -348,11 +348,23 @@ body {
    the `li` qualifier the rule scores only (0,2,0) and silently loses to
    the base rule — same trap as the `.sidebar-network-greyed` cascade
    below documents. Placed AFTER the base rules per biome
-   `noDescendingSpecificity`. */
+   `noDescendingSpecificity`.
+
+   UX-5 bucket BT (2026-05-19) — `justify-content: flex-start` +
+   `gap: 0.4rem` override the base `.sidebar-window-btn` rule's
+   `justify-content: space-between` (line 313-327) which floated the
+   network slug toward the middle of the row when the right cluster
+   (away badge / unread counts) was thin or absent. Header rows now
+   read as a header — slug left-anchored against the ⚙️ emoji. The
+   slug `<span class="sidebar-channel-name">` itself gets
+   `font-weight: bold` (rule below) for visual scannability — the
+   network name is the primary identifier per section. */
 .sidebar-network li.sidebar-network-header .sidebar-window-btn {
   padding-left: 0.75rem;
   color: var(--accent);
   text-transform: lowercase;
+  justify-content: flex-start;
+  gap: 0.4rem;
 }
 
 .sidebar-network-emoji {
@@ -381,6 +393,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* UX-5 bucket BT (2026-05-19) — network-header slug bolded for visual
+   scannability. Placed AFTER the `.sidebar-channel-name` base rule
+   so its (0,3,1) specificity stacks on top of the (0,1,0) base
+   without tripping biome's `noDescendingSpecificity` check. */
+.sidebar-network li.sidebar-network-header .sidebar-channel-name {
+  font-weight: bold;
 }
 
 .sidebar-channel-name.parted {
@@ -609,11 +629,6 @@ body {
 
 .topic-modal-meta {
   margin: 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.topic-bar-count {
   color: var(--muted);
   font-size: 0.85rem;
 }
