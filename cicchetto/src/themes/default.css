@@ -2946,3 +2946,64 @@ body {
   padding-top: 0.4rem;
   margin-top: 0.2rem;
 }
+
+/* UX-5 BR (2026-05-19) — explicit [Reconnect] affordance for :parked
+ * / :failed rows. Pre-BR the whole row was a single <button>; post-BR
+ * non-connected rows render as <div class="home-pane-network-card">
+ * with an inline chip so the action is visible AND nest-safe (button-
+ * in-button is invalid HTML). :connected rows keep the whole-row
+ * <button> as the jump-to-$server shortcut. */
+.home-pane-network-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  opacity: 0.85;
+}
+
+.home-pane-network-card-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(6rem, auto) minmax(5rem, auto);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.home-pane-network-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.home-pane-network-reconnect {
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0.3rem 0.8rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.home-pane-network-reconnect:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.home-pane-network-reconnect:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.home-pane-network-error {
+  color: #d04040;
+  font-size: 0.9em;
+}
