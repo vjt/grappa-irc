@@ -57,7 +57,7 @@ test("UX-1 — × on archive entry confirms + deletes scrollback permanently", a
 
   // Expand the per-network Archive <details>.
   const archiveSection = page
-    .locator(".sidebar-network", { has: page.locator("h3", { hasText: NETWORK_SLUG }) })
+    .locator(".sidebar-network", { has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }) })
     .locator("details.sidebar-archive");
   await archiveSection.locator("summary").click();
   await expect(archiveSection).toHaveAttribute("open", "");

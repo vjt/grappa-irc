@@ -1,16 +1,20 @@
-// UX-2 (2026-05-17) — Mobile archive surface (chip → modal).
+// UX-2 (2026-05-17) — Mobile archive surface (top-right button → modal).
 //
-// Mobile (webkit iPhone 15) BottomBar carries a `.bottom-bar-archive-chip`
-// per network when that network has at least one archived (non-active)
-// entry. Tap opens `ArchiveModal` (full overlay) listing entries with a
-// × delete affordance per row. Confirm flow re-uses UX-1's
+// Originally targeted a per-network `.bottom-bar-archive-chip`. UX-4
+// bucket L (2026-05-19, commit `17aefeb`) moved the archive entry-point
+// out of BottomBar's per-network chips into the always-visible
+// ShellChrome bar at the top of `.shell-main` (selector
+// `[data-testid="shell-chrome-archive"]`). The button resolves the
+// network from the currently-selected window, then opens
+// `ArchiveModal` (full overlay) listing entries with × delete
+// affordance per row. Confirm flow still re-uses UX-1's
 // `deleteArchiveEntry` + `InlineConfirmButton`.
 //
 // Flow under test:
 //   1. PART seed channel → :parted → channel moves out of channelsBySlug.
-//   2. Archive chip appears in BottomBar for the network (visibleArchive
-//      derives 1 entry).
-//   3. Tap chip → modal opens, lists the PARTed channel.
+//   2. Select the network's server window so ShellChrome resolves a
+//      non-null archive slug (home/admin/mentions hide the button).
+//   3. Tap the ShellChrome archive button → modal opens, lists PARTed channel.
 //   4. Tap × → InlineConfirmButton arms ("really delete?").
 //   5. Tap again → DELETE fires → server broadcasts `archive_changed` →
 //      cic re-fetches → entry vanishes from the modal.
@@ -21,8 +25,8 @@
 //
 // Per-class parity matrix per `feedback_e2e_user_class_parity_matrix`:
 // UX-2 is a UI shape bucket — not an IRC-function spec. The visitor
-// path here exercises BottomBar + ArchiveModal end-to-end. The full
-// visitor/nickserv/registered loop runs in the UX-Z composed journey.
+// path here exercises ShellChrome + ArchiveModal end-to-end. The full
+// visitor/nickserv/registered loop runs in the UX-4-Z composed journey.
 
 import { expect, test } from "@playwright/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
@@ -36,7 +40,7 @@ test.afterEach(async () => {
   await joinChannel(vjt.token, NETWORK_SLUG, CHANNEL);
 });
 
-test("@webkit UX-2 — BottomBar archive chip opens modal + delete drops entry", async ({
+test("@webkit UX-2 — ShellChrome archive button opens modal + delete drops entry", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -46,22 +50,28 @@ test("@webkit UX-2 — BottomBar archive chip opens modal + delete drops entry",
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible({ timeout: 10_000 });
 
-  // PART so the channel moves into archive.
+  // PART so the channel moves into archive. After PART, the cic
+  // selection redirect (bucket E close-watcher) moves focus away from
+  // the closed channel. ShellChrome's archive button only renders when
+  // the selected window has a network context (channel / query /
+  // server) — home/admin/mentions hide it. Tap the server tab to
+  // guarantee the button surfaces.
   await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).not.toBeVisible({ timeout: 10_000 });
 
-  // Chip appears inside the per-network bottom-bar section once the
-  // archive REST refetch fires (driven by the `archive_changed`
-  // broadcast on PART). Eager-load in BottomBar.tsx primes the list.
-  const networkSection = page.locator(".bottom-bar-network", {
-    has: page.locator(".bottom-bar-network-chip", { hasText: NETWORK_SLUG }),
-  });
-  const chip = networkSection.locator(".bottom-bar-archive-chip");
-  await expect(chip).toBeVisible({ timeout: 10_000 });
-  await expect(chip).toContainText("Archive");
+  // Select the network's $server tab so ShellChrome resolves the
+  // archive slug to NETWORK_SLUG (bucket C collapsed the network
+  // header into a server-tab on mobile too: BottomBar renders the
+  // user-facing label "Server" for the kind="server" tab).
+  const serverTab = sidebarWindow(page, NETWORK_SLUG, "Server");
+  await serverTab.tap();
 
-  // Tap chip → modal opens.
-  await chip.tap();
+  // ShellChrome archive button is in the top-right of `.shell-main`.
+  // Single global button (bucket L) — bound to selectedChannel's
+  // network. Test-id `shell-chrome-archive` is the stable contract.
+  const archiveBtn = page.getByTestId("shell-chrome-archive");
+  await expect(archiveBtn).toBeVisible({ timeout: 10_000 });
+  await archiveBtn.tap();
 
   const modal = page.locator(".archive-modal");
   await expect(modal).toBeVisible({ timeout: 5_000 });

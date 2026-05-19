@@ -102,7 +102,7 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
 
   // Network header section + ComposeBox baseline: not greyed.
   const networkSection = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   });
   await expect(networkSection).not.toHaveClass(/sidebar-network-greyed/);
   const composeBox = page.locator(".compose-box");

@@ -14,6 +14,14 @@
 // Touch model correct. `box-sizing: border-box` (global) means the
 // inset is consumed FROM the shell's 100vh, not added to it.
 //
+// UX-4 bucket L (2026-05-19, commit 17aefeb) DROPPED
+// `.shell-empty-toolbar` from the JSX and swept the CSS orphan in
+// lockstep — the always-visible ShellChrome bar replaced the empty-
+// toolbar fallbacks. The pre-L `.shell-empty-toolbar` assertion arms
+// were removed from this spec (the rule no longer exists; asserting
+// "the rule does NOT contain env()" against a deleted rule would
+// always pass-vacuously but reads as a regression signal).
+//
 // Verification strategy. Walk document.styleSheets, find the
 // `.shell-mobile` rule (lives under the `@media (max-width: 768px)`
 // branch — CSSMediaRule), assert it declares both
@@ -23,12 +31,12 @@
 // computed paddingTop resolves to 0px regardless — so this is a
 // SOURCE-shape assertion, not a metric assertion.
 //
-// Also assert `.topic-bar` + `.shell-empty-toolbar` rules NO LONGER
-// contain `env(` / `safe-area-inset-top` (the previous fix is
-// reverted at the bar level — the container handles it now). That
-// pins the BIS fix shape so a future operator can't accidentally
-// re-add the bar-level inset (which would double-clear the island
-// and produce visually-empty space below it).
+// Also assert `.topic-bar` rule NO LONGER contains `env(` /
+// `safe-area-inset-top` (the previous fix is reverted at the bar
+// level — the container handles it now). That pins the BIS fix shape
+// so a future operator can't accidentally re-add the bar-level inset
+// (which would double-clear the island and produce visually-empty
+// space below it).
 //
 // Per `feedback_e2e_user_class_parity_matrix`: UX-3 BIS is a CSS
 // shape bucket, single visitor login sufficient. Parity matrix
@@ -97,21 +105,20 @@ test("@webkit UX-3 BIS — .shell.shell-mobile carries safe-area inset; bars do 
   expect(shellBottom).toContain("env(");
   expect(shellBottom).toContain("safe-area-inset-bottom");
 
-  // .topic-bar + .shell-empty-toolbar MUST NOT carry the inset
-  // anymore — pin the UX-3 BIS revert so a future operator can't
-  // re-introduce the double-clear regression.
+  // .topic-bar MUST NOT carry the inset anymore — pin the UX-3 BIS
+  // revert so a future operator can't re-introduce the double-clear
+  // regression.
+  //
+  // UX-4 bucket L (commit 17aefeb) DROPPED `.shell-empty-toolbar` from
+  // the JSX (Shell.tsx's empty-toolbar fallbacks were replaced by the
+  // always-visible ShellChrome bar). The CSS rule was swept as a CSS
+  // orphan in the same bucket. The empty-toolbar bar-level
+  // double-clear class is now structurally impossible — the rule no
+  // longer exists and the selector itself is gone from the JSX.
   const topicBar = await findRulePadding(page, ".topic-bar");
   expect(topicBar).not.toBeNull();
-  // Vite minifier may merge .topic-bar + .shell-empty-toolbar back
-  // together since they now share identical values again. The
-  // selector-list `includes(...)` match accepts either form.
   const topicPadding = `${topicBar?.padding ?? ""} ${topicBar?.paddingTop ?? ""}`;
   expect(topicPadding).not.toContain("env(");
-
-  const emptyToolbar = await findRulePadding(page, ".shell-empty-toolbar");
-  expect(emptyToolbar).not.toBeNull();
-  const emptyPadding = `${emptyToolbar?.padding ?? ""} ${emptyToolbar?.paddingTop ?? ""}`;
-  expect(emptyPadding).not.toContain("env(");
 
   // .bottom-bar MUST NOT carry the inset anymore (container handles
   // the home-indicator clearance via padding-bottom).

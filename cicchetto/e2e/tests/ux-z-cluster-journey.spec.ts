@@ -11,9 +11,11 @@
 //     contains `env(` and `safe-area-inset-top`. Runs FIRST (pre-PART,
 //     pre-modal) so the empty-toolbar is surfaceable via the BUG5a
 //     contract (PART → setSelectedChannel(null) → empty stub).
-//   * UX-2 BottomBar archive chip — after PARTing seeded channel,
-//     archive chip appears in `.bottom-bar-network`; tap opens
-//     ArchiveModal.
+//   * UX-2 ShellChrome archive button (post UX-4 bucket L migration) —
+//     after PARTing seeded channel, archive button appears top-right in
+//     `.shell-chrome`; tap opens ArchiveModal. Originally a per-network
+//     `.bottom-bar-archive-chip`; bucket L (commit 17aefeb) moved it
+//     into the always-visible ShellChrome bar.
 //   * UX-1 archive delete × + permanent scrollback drop — inside the
 //     modal, tap × (arms confirm), tap again (DELETE fires →
 //     `archive_changed` broadcast → entry gone from modal).
@@ -104,16 +106,14 @@ test("@webkit UX-Z cluster — Dynamic Island clearance + BottomBar archive chip
 
     // ── UX-3 BIS — .shell.shell-mobile carries safe-area inset ──
     //
-    // Surface the empty-toolbar by PARTing the autojoin channel (so
-    // selectedChannel goes back to null + empty stub renders), then
-    // assert the SHELL container — not the bars — carries the inset.
-    // See ux-3-empty-toolbar-island.spec.ts for the WHY (the original
-    // bar-level padding cleared content but left the bar's outer box
-    // under the island, where iOS captures touches).
-    await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
-    const emptyToolbar = page.locator(".shell-empty-toolbar");
-    await expect(emptyToolbar).toBeVisible({ timeout: 10_000 });
-
+    // Originally surfaced via PART → `.shell-empty-toolbar` empty stub
+    // → assert the SHELL container — not the bars — carries the inset.
+    // UX-4 bucket L (commit 17aefeb) DROPPED `.shell-empty-toolbar`
+    // from the JSX (replaced by always-visible ShellChrome bar), so
+    // there's no longer an empty-stub to surface. The structural
+    // invariant `.shell.shell-mobile` carrying `env(safe-area-inset-*)`
+    // is testable directly from the stylesheet without any DOM-state
+    // setup — assert it after `loginAs` settles.
     const shellPadding = await page.evaluate(() => {
       function visitRules(rules: CSSRuleList): { top: string; bottom: string } | null {
         for (const rule of Array.from(rules)) {
@@ -148,19 +148,27 @@ test("@webkit UX-Z cluster — Dynamic Island clearance + BottomBar archive chip
     expect(shellPadding?.top ?? "").toContain("safe-area-inset-top");
     expect(shellPadding?.bottom ?? "").toContain("safe-area-inset-bottom");
 
-    // ── UX-2 — BottomBar archive chip surfaces post-PART ──
+    // PART seed channel so the UX-2 archive-button arm has an archived
+    // entry to render in the modal.
+    await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
+
+    // ── UX-2 — ShellChrome archive button surfaces post-PART ──
     //
     // The PART above moved #bofh into archive. BottomBar's eager
-    // createEffect calls loadArchive on mount, and the
-    // `archive_changed` broadcast on PART re-triggers the fetch, so
-    // the chip should appear within the archive-broadcast round-trip.
-    const networkSection = page.locator(".bottom-bar-network", {
-      has: page.locator(".bottom-bar-network-chip", { hasText: NETWORK_SLUG }),
-    });
-    const chip = networkSection.locator(".bottom-bar-archive-chip");
-    await expect(chip).toBeVisible({ timeout: 10_000 });
-    await expect(chip).toContainText("Archive");
-    await chip.tap();
+    // archive load was dropped by UX-4 bucket L; archive is now opened
+    // via the always-visible ShellChrome top-right button, which
+    // resolves the network from `selectedChannel()`. After the PART,
+    // bucket E's close-watcher redirects selection away from the
+    // closed channel (home/server depending on MRU). The
+    // ShellChrome archive button only renders when the selected
+    // window carries a network context — channel / query / server.
+    // Tap the network's $server tab so the button surfaces.
+    const serverTab = sidebarWindow(page, NETWORK_SLUG, "Server");
+    await serverTab.tap();
+
+    const archiveBtn = page.getByTestId("shell-chrome-archive");
+    await expect(archiveBtn).toBeVisible({ timeout: 10_000 });
+    await archiveBtn.tap();
 
     const modal = page.locator(".archive-modal");
     await expect(modal).toBeVisible({ timeout: 5_000 });

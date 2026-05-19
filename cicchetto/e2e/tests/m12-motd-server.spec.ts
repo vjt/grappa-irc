@@ -48,14 +48,17 @@ test("M12 — MOTD persists into $server channel + cicchetto Server window rende
     kind: "notice",
   });
 
-  // Client-side: log in + click the Server window (always-present
-  // sidebar slot).
+  // Client-side: log in + click the network-header row (UX-4 bucket C
+  // collapsed the per-network `<h3>` + separate "Server" `<li>` into a
+  // single `<li class="sidebar-network-header">` that IS both the
+  // network grouping label AND the server-window selector. The row's
+  // visible text is `⚙️ <slug>`; selecting it dispatches
+  // `selectedChannel.kind = "server"`.
   await loginAs(page, vjt);
   const serverEntry = page
     .locator(".sidebar-network")
-    .filter({ has: page.locator("h3").filter({ hasText: "bahamut-test" }) })
-    .locator("li")
-    .filter({ has: page.locator(".sidebar-channel-name").filter({ hasText: /^Server$/ }) });
+    .filter({ has: page.locator(".sidebar-network-header").filter({ hasText: "bahamut-test" }) })
+    .locator(".sidebar-network-header");
   await expect(serverEntry).toHaveCount(1);
   await serverEntry.locator(".sidebar-window-btn").click();
 

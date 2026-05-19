@@ -100,14 +100,16 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   await page.goto("/");
 
   // Shell-ready signal: a per-network section appears once the
-  // `networks()` resource resolves. Selector differs by layout — desktop
-  // renders `.sidebar-network h3`, mobile renders
-  // `.bottom-bar-network-chip` (the `.sidebar-network` DOM is absent
-  // entirely in the mobile JSX branch, so a single OR-style selector
-  // would be more brittle than a viewport-conditioned one).
+  // `networks()` resource resolves. Selector differs by layout —
+  // desktop renders the collapsed network/server header row
+  // (`.sidebar-network-header` since UX-4 bucket C; pre-C was a
+  // `<h3>` per network), mobile renders `.bottom-bar-network-chip`
+  // (the `.sidebar-network` DOM is absent entirely in the mobile JSX
+  // branch, so a single OR-style selector would be more brittle than
+  // a viewport-conditioned one).
   const readySelector = isMobileViewport(page)
     ? ".bottom-bar-network-chip"
-    : ".sidebar-network h3";
+    : ".sidebar-network-header";
   await expect(page.locator(readySelector).first()).toBeVisible({
     timeout: SHELL_READY_TIMEOUT_MS,
   });
@@ -134,12 +136,14 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
     });
     return section.locator(".bottom-bar-tab", { hasText: windowName });
   }
-  // Desktop: scope to the section whose <h3> exactly matches the slug.
-  // Solid renders the slug as the first text node of the h3 (followed
-  // by an optional [away] badge), so hasText accepts substring match
-  // and tolerates the badge suffix.
+  // Desktop: scope to the section whose collapsed network header
+  // row (UX-4 bucket C `.sidebar-network-header` row, replacing the
+  // pre-C `<h3>` per network) carries the network slug. The header
+  // row's button-text is `<emoji> <slug>`, so `hasText` matches the
+  // slug substring + tolerates the emoji prefix + optional [away]
+  // badge suffix.
   const section = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: networkSlug }),
+    has: page.locator(".sidebar-network-header", { hasText: networkSlug }),
   });
   return section.locator("li", { hasText: windowName });
 }

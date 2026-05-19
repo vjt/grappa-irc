@@ -31,12 +31,14 @@
 import { expect, test } from "@playwright/test";
 import {
   loginAs,
+  selectChannel,
   sidebarCloseButton,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
+  NETWORK_NICK,
   NETWORK_SLUG,
 } from "../fixtures/seedData";
 
@@ -47,6 +49,12 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
 }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
+
+  // UX-4 bucket B made `:home` the cold-load default selection, so the
+  // shell now lands on HomePane (no TopicBar) post-login. The iOS-2
+  // arm needs `.topic-bar` in the DOM — explicitly select the autojoin
+  // channel so the topic-bar gates resolve.
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   // Wait for TopicBar to render — `.topic-bar` is gated on
   // `selectedChannel().kind === "channel"` in Shell.tsx, so it only

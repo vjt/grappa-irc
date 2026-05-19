@@ -556,6 +556,64 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **UX-4 — post-iPhone-dogfooding bug-hunt cluster** (closed
+  2026-05-19). 14 production buckets A-N + Z (E2E backfill + docs).
+  Plan-doc: `docs/plans/2026-05-18-ux-4-cluster.md`. Cluster theme:
+  fix the twenty UX/server bugs vjt surfaced after iPhone
+  dogfooding the iOS + UX clusters. **A** (`118c9d6`) channel
+  case-insensitivity end-to-end (sigil-aware `Identifier.canonical_channel/1`
+  at every channel-bearing boundary + backfill migration for
+  `messages` / `read_cursors` / `query_windows` / `last_joined`;
+  foundation for the 13 downstream buckets). **B** (`0e3a48f`) home
+  window first-class — new `:home` WindowKind pinned above all
+  networks; HomePane visitor (cic-only help) / registered (server-
+  backed networks list with click-to-connect via T32 unpark);
+  server adds `home_data` to /me + co-emits `home_network_state_changed`
+  on connection_state flips. **C** (`cbfa521`) sidebar collapse —
+  network header + server-window row collapsed into single
+  `⚙️ <slug>` row. **D** (`cdc5470`) server-window × button →
+  `disconnectNetwork` verb branching on subject kind (registered =
+  PATCH parked, visitor = nuclear quitAll); selection auto-redirects
+  to home on park transition via `lib/selection.ts` createEffect.
+  **E** (`ec4d6a8`) close-window auto-focus chain MRU > server >
+  home; new `lib/mru.ts` identity-scoped MRU store. **F** (`57914b8`)
+  `/join #chan key` (+k channel support) wire-format end-to-end —
+  compose parser → REST → Session → IRC.Client → upstream JOIN frame,
+  475 ERR_BADCHANNELKEY via existing failure pipeline. **G**
+  (`a878c59`) *serv routing — `Identifier.services_sender?/1` closed
+  allowlist (nickserv/chanserv/operserv/memoserv/botserv/hostserv/
+  helpserv); PRIVMSG/NOTICE from services routes to `$server`, no
+  query auto-open; REST 500 root-cause fix at MessagesController.
+  **H** (`85d8de2`) PART-fail still closes window via eager
+  `PartCleanup.cleanup_local/2` + unconditional `channels_changed`
+  broadcast. **I** (`e8e25cf`) suppress umodes-ghost-window — 4
+  RPL_MYINFO + 42 RPL_YOURID + 263 RPL_TRYAGAIN added to
+  `NumericRouter.@active_numerics` deny-list (004 usermode letters
+  no longer leak into per-network Archive). **J** (`91ae315`)
+  MembersPane sort op > halfop > voice > plain (alpha tie-break)
+  + halfop (`%`) support end-to-end (server `@user_mode_prefixes`
+  + cic `modeApply` / `memberSigil` / `sortMembers` / `--mode-halfop`
+  CSS var). **K** (`31208f0`) canonical `scrollToActivation` routine
+  — two triggers (selectedChannel change AND `document.visibilitychange`
+  → visible) converge on marker-or-bottom. **L** (`17aefeb`) settings
+  overhaul — new `ShellChrome` always-visible bar replaces TopicBar
+  cog + per-window empty-toolbar fallbacks (settings cog reachable
+  from every window kind including server/home/admin); UA parser;
+  archive button moved from BottomBar per-network chips to global
+  top-right; `XXL` font-size width cap; hamburger + cog size parity.
+  **M** (`4a0bc64`) upload-TTL → settings + DB pref via existing
+  `user_settings.data` JSON map key (NOT new column — HOT deploy
+  preserved); reviewer-loop caught HIGH cold-load gap via Shell.tsx
+  bootstrap `loadUploadTtlSeconds` createEffect. **N** (`b8f2df0`)
+  Admin sidebar window — new `:admin` WindowKind + Sidebar row
+  (admin-only via `isAdmin()` hoist), AdminPane mount now selection-
+  driven (killed the M-7 `adminOpen` signal). **Z** closes the
+  cluster with `ux-4-z-cluster-journey.spec.ts` (@webkit iPhone 15
+  composed journey replaying all 14 buckets back-to-back per parity
+  matrix), plan-doc closure annotation, and this README entry. Two
+  stale specs caused by bucket L's archive-chip migration
+  (`ux-2-mobile-archive` + `ux-z-cluster-journey`) updated in
+  lockstep.
 - **UX — 3 small bugs vjt observed live + post-close iPhone bug-hunt**
   (closed 2026-05-17, reopened + extended 2026-05-18). Three
   buckets vjt caught within twenty-four hours of dogfooding cic on
