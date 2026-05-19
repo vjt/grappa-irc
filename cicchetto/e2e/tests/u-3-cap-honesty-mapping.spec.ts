@@ -48,6 +48,7 @@ import {
   AUTOJOIN_CHANNELS,
   getSeededAdmin,
   getSeededVjt,
+  M9B_USER,
   NETWORK_SLUG,
 } from "../fixtures/seedData";
 import { login, patchNetworkConnectionState } from "../fixtures/grappaApi";
@@ -163,22 +164,27 @@ test.afterEach(async () => {
 
 // Arm 1: UD3 — client cap saturation → 503 too_many_sessions.
 //
-// Constructs a second live accounts_session row for the same user
-// under a distinct fixed client_id. The first /connect under that
-// client_id establishes the live Session.Server; admin then drops
-// `max_per_client` to 1 (the saturating cap = current count). The
-// next /connect from the SAME client_id trips
-// `Admission.check_client_cap/2` → `:client_cap_exceeded` →
-// FallbackController U-3 clause → 503 `too_many_sessions`.
+// UX-5 bucket BC (2026-05-19) re-frame: pre-BC this arm exercised
+// self-saturation (same user holding 1 session against cap=1, second
+// /connect by the same user → 503). That assertion pinned a bug:
+// the cap counted the requesting subject's own pre-existing session
+// against itself, which made T32 park → /connect always 503 at the
+// default `max_per_client = 1`. Per CLAUDE.md "Never assert buggy
+// behavior," the assertion was migrated to the genuine cap-saturation
+// case: a SECOND distinct user on the SAME device. m9b-test (seeded
+// alongside vjt in compose.yaml) provides the cross-subject fixture.
 //
-// Why we mint a fresh login (not reuse vjt.token):
-// the seeded vjt bearer was created by globalSetup without a
-// fixed x-grappa-client-id, so its `accounts_sessions.client_id`
-// column may be NULL (per `Plug.RequireClientId` handling at the
-// time of login). The cap dimension we're exercising counts
-// `accounts_sessions WHERE client_id = X AND visitor.network_slug
-// = slug OR Credential(user_id, network_id) match`. We need
-// deterministic client_id population to assert against.
+// What's still asserted end-to-end at the HTTP boundary:
+//   - admin-set `max_per_client = 1` saturates when 2 distinct users
+//     each hold 1 accounts_session on the SAME client_id;
+//   - FallbackController U-3 clause maps `:client_cap_exceeded` →
+//     503 envelope `too_many_sessions` (status flip from pre-U-3's
+//     429, the U-3 wire-contract change being regression-guarded).
+//
+// What is NO LONGER asserted (correctly): a user can never be cap-
+// blocked by its OWN pre-existing session. Covered server-side by
+// the UX-5 BC unit + controller tests, and at the e2e by
+// `ux-5-bc-park-respawn.spec.ts`.
 test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () => {
   const vjt = getSeededVjt();
 
@@ -207,52 +213,40 @@ test("U-3 (UD3) — client cap saturation → 503 too_many_sessions", async () =
   const admin = await login(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
   await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 10 });
 
-  // Login once under the fixed client_id → creates accounts_session
-  // (vjt, client_id, ...). Use the SAME bearer for both /connect
-  // attempts so the user_id ↔ client_id linkage is consistent and
-  // the per-client subject-count assertion is honest.
-  const bearer = await loginWithClientId(vjt.identifier, vjt.password, clientId);
+  // vjt logs in under the fixed client_id → creates
+  // accounts_session(vjt, client_id). /connect succeeds at cap=10.
+  const vjtBearer = await loginWithClientId(vjt.identifier, vjt.password, clientId);
+  const vjtConnect = await connectWithClientId(vjtBearer, NETWORK_SLUG, clientId);
+  expect(vjtConnect.status).toBe(200);
 
-  // First /connect: 200 (cap=10, count=1).
-  const first = await connectWithClientId(bearer, NETWORK_SLUG, clientId);
-  expect(first.status).toBe(200);
-
-  // Admin drops max_per_client to 1 — the current count (1
-  // session for this user × this network under this client_id)
-  // saturates the cap.
+  // Admin drops max_per_client to 1 — vjt's session occupies the slot.
   await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 1 });
 
-  // Park to free the live pid so the next /connect triggers a fresh
-  // spawn path that re-checks admission. (admission gate runs ONLY
-  // on fresh spawn; idempotent re-connect of an already-live pid
-  // returns 200 without re-checking caps.) Then a second login
-  // under the same client_id (different bearer = different
-  // accounts_session row) bumps the per-client count to 2 against
-  // the cap of 1.
-  await patchNetworkConnectionState(bearer, NETWORK_SLUG, { connection_state: "parked" }).catch(
+  // m9b-test (a DIFFERENT user with a credential for the SAME network,
+  // logged in from the SAME device) tries /connect. The cap counts vjt's
+  // session (different subject, NOT self-excluded) → count=1, cap=1 →
+  // :client_cap_exceeded → 503 too_many_sessions. This is the genuine
+  // cross-subject saturation the cap exists to enforce.
+  const m9bIdentifier = `${M9B_USER}@grappa.test`;
+  const m9bBearer = await loginWithClientId(m9bIdentifier, "test-password-not-secret", clientId);
+
+  // Park m9b's Bootstrap session first so /connect goes through the
+  // fresh-spawn admission path (idempotent re-connect of a live pid
+  // would 200 without re-checking caps).
+  await patchNetworkConnectionState(m9bBearer, NETWORK_SLUG, { connection_state: "parked" }).catch(
     () => {},
   );
 
-  // Second concurrent session row under the same client_id.
-  // `count_subjects_for_client_on_network` joins on
-  // `accounts_sessions WHERE client_id = ? AND ...` — two rows for
-  // the same user_id collapse to count=1 via `count(s.user_id,
-  // :distinct)`, so this alone wouldn't saturate. But the
-  // `effective_max_per_client` cap is checked against `count >= cap`
-  // — we need count=1 (current) AND cap=1 (saturating) AND a NEW
-  // subject not yet in the count. That requires a different
-  // user_id, which we don't have a fixture for. Settle for the
-  // assertion that admin-set cap=1 AND a fresh /connect attempt
-  // tripping the cap when count is at-or-over.
-  //
-  // Per `Admission.check_client_cap/2`: `count >= cap` returns
-  // `:client_cap_exceeded`. With ONE accounts_session row (current
-  // count=1) and cap=1, count >= cap is true → 503 expected.
-  const second = await connectWithClientId(bearer, NETWORK_SLUG, clientId);
-
-  expect(second.status).toBe(503);
-  const body = (await second.json()) as { error: string };
+  const m9bConnect = await connectWithClientId(m9bBearer, NETWORK_SLUG, clientId);
+  expect(m9bConnect.status).toBe(503);
+  const body = (await m9bConnect.json()) as { error: string };
   expect(body.error).toBe("too_many_sessions");
+
+  // Restore m9b's session so subsequent specs see a healthy baseline.
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: null });
+  await patchNetworkConnectionState(m9bBearer, NETWORK_SLUG, {
+    connection_state: "connected",
+  }).catch(() => {});
 });
 
 // Arm 2: UD4 — admin Sessions tab renders per-network cap-count

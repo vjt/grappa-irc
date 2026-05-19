@@ -284,7 +284,10 @@ defmodule Grappa.Bootstrap do
         capacity_input = %{
           network_id: network_id,
           client_id: nil,
-          flow: :bootstrap_user
+          flow: :bootstrap_user,
+          # Boot-time spawn has no client + no prior subject of record;
+          # cap is bypassed via the nil client_id short-circuit.
+          requesting_subject: nil
         }
 
         spawn_with_admission({:user, user_id}, network_id, plan, capacity_input, log_keys, acc)
@@ -320,7 +323,8 @@ defmodule Grappa.Bootstrap do
             capacity_input = %{
               network_id: network_id,
               client_id: nil,
-              flow: :bootstrap_visitor
+              flow: :bootstrap_visitor,
+              requesting_subject: nil
             }
 
             log_keys = [visitor_id: visitor_id, network: slug]

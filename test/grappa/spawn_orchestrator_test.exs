@@ -147,7 +147,7 @@ defmodule Grappa.SpawnOrchestratorTest do
   end
 
   defp capacity_input(network_id, flow) do
-    %{network_id: network_id, client_id: nil, flow: flow}
+    %{network_id: network_id, client_id: nil, flow: flow, requesting_subject: nil}
   end
 
   # `Backoff.{record_failure,reset}/2` are GenServer casts; a sync

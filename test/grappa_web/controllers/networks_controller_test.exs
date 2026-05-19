@@ -412,6 +412,124 @@ defmodule GrappaWeb.NetworksControllerTest do
     # Session.Server cannot produce. The FC clause is a safety net
     # against a future init/1 change, not a reachable production path.
     # If a future bucket adds a sync probe to init/1, add the test then.
+
+    # UX-5 bucket BC (2026-05-19) — cap-on-park unblocker. The operator's
+    # browser holds an active accounts_session under `client_id = X`;
+    # they X-button the network header (T32 park) then send /connect
+    # (PATCH connection_state=connected). Pre-BC the cap counted vjt's
+    # OWN session against him with the default `max_per_client = 1`,
+    # returning 503 `too_many_sessions`. T32 was a red herring — the
+    # bug fired on first PATCH /connect from any logged-in user.
+    # Post-BC, `requesting_subject: {:user, user.id}` is threaded into
+    # the admission input and self-exclusion at
+    # `Admission.count_subjects_for_client_on_network/4` drops the
+    # requesting subject's rows from the cap count.
+    test "PATCH /connect succeeds when requesting user already holds own session on this device (UX-5 BC)",
+         %{conn: conn} do
+      vjt = user_fixture(name: "vjt-ux5bc-self-#{u()}")
+      client_id = "11111111-2222-4444-8888-fedcba987650"
+
+      # Session minted on the same client_id the PATCH will carry — this
+      # is the row that pre-BC counted toward the cap as 1, blocking
+      # any subsequent spawn from the SAME subject + same device.
+      {:ok, session} =
+        Grappa.Accounts.create_session({:user, vjt.id}, "1.2.3.4", "ua", client_id: client_id)
+
+      slug = "net-ux5bc-self-#{u()}"
+      {:ok, irc_server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
+      port = IRCServer.port(irc_server)
+      {network, _} = network_with_server(port: port, slug: slug)
+
+      # Pin per-device cap at 1 — the tightest configuration AND the
+      # production default. Pre-fix this guarantees the buggy path.
+      {:ok, _} = Networks.update_network_caps(network, %{max_per_client: 1})
+
+      cred = credential_fixture(vjt, network)
+      # Seed the credential as parked so :connected is a valid transition
+      # (mirrors the T32 X-button → park flow).
+      _ =
+        cred
+        |> Ecto.Changeset.change(%{
+          connection_state: :parked,
+          connection_state_reason: "user-disconnect",
+          connection_state_changed_at: DateTime.truncate(DateTime.utc_now(), :second)
+        })
+        |> Repo.update!()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-grappa-client-id", client_id)
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      body = json_response(conn, 200)
+      assert body["connection_state"] == "connected"
+
+      # DB persisted the transition.
+      updated = Repo.get_by!(Credential, user_id: vjt.id, network_id: network.id)
+      assert updated.connection_state == :connected
+
+      # Tear down the spawned session.
+      :ok = Grappa.Session.stop_session({:user, vjt.id}, network.id)
+    end
+
+    # Negative twin: a DIFFERENT user on the SAME device must still be
+    # cap-blocked. The fix narrows the cap to "different subjects on the
+    # same device," not "no cap at all." This guards against a regression
+    # that drops the exclusion clause and loosens the cap entirely.
+    test "PATCH /connect 503s when a DIFFERENT user holds the cap slot on same device (UX-5 BC negative)",
+         %{conn: conn} do
+      alice = user_fixture(name: "alice-ux5bc-other-#{u()}")
+      bob = user_fixture(name: "bob-ux5bc-other-#{u()}")
+      client_id = "22222222-3333-4444-8888-fedcba987651"
+
+      slug = "net-ux5bc-other-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      {:ok, _} = Networks.update_network_caps(network, %{max_per_client: 1})
+
+      # alice has a credential + an accounts_session under client_id X.
+      # That row IS the cap-occupying session; bob trying to PATCH /connect
+      # from the same device must 503 (cross-subject = legit cap hit).
+      _ = credential_fixture(alice, network)
+
+      {:ok, _} =
+        Grappa.Accounts.create_session({:user, alice.id}, "1.2.3.4", "ua", client_id: client_id)
+
+      # bob also has a credential on this network but no live session;
+      # their PATCH carries bob's own bearer + same client_id header.
+      cred_bob = credential_fixture(bob, network)
+
+      _ =
+        cred_bob
+        |> Ecto.Changeset.change(%{
+          connection_state: :parked,
+          connection_state_reason: "user-disconnect",
+          connection_state_changed_at: DateTime.truncate(DateTime.utc_now(), :second)
+        })
+        |> Repo.update!()
+
+      {:ok, bob_session} =
+        Grappa.Accounts.create_session({:user, bob.id}, "1.2.3.5", "ua",
+          client_id: "33333333-4444-4444-8888-fedcba987652"
+        )
+
+      conn =
+        conn
+        |> put_bearer(bob_session.id)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-grappa-client-id", client_id)
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      # 503 too_many_sessions: alice's session occupies the slot, bob
+      # is a different subject, cap stays honest.
+      assert json_response(conn, 503)["error"] == "too_many_sessions"
+
+      # DB stays parked — U-0 stop-swallow lesson: failure must NOT
+      # silently transition the row.
+      reloaded = Repo.get_by!(Credential, user_id: bob.id, network_id: network.id)
+      assert reloaded.connection_state == :parked
+    end
   end
 
   describe "PATCH /networks/:network_id — failed transition (server-set only)" do

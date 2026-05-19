@@ -60,7 +60,8 @@ defmodule Grappa.Admission do
   @type capacity_input :: %{
           network_id: integer(),
           client_id: Grappa.ClientId.t() | nil,
-          flow: flow()
+          flow: flow(),
+          requesting_subject: Grappa.Session.subject() | nil
         }
 
   @type capacity_error ::
@@ -123,9 +124,18 @@ defmodule Grappa.Admission do
   or skip the row + log (Bootstrap).
   """
   @spec check_capacity(capacity_input()) :: :ok | {:error, capacity_error()}
-  def check_capacity(%{network_id: network_id, flow: flow, client_id: client_id} = input)
+  def check_capacity(
+        %{
+          network_id: network_id,
+          flow: flow,
+          client_id: client_id,
+          requesting_subject: requesting_subject
+        } = input
+      )
       when is_integer(network_id) do
     subject_kind = subject_kind_for_flow(flow)
+
+    _ = validate_requesting_subject!(requesting_subject, subject_kind, flow)
 
     result =
       with :ok <- check_circuit(network_id),
@@ -142,6 +152,26 @@ defmodule Grappa.Admission do
         Telemetry.capacity_reject(flow, error, network_id, client_id)
         {:error, error}
     end
+  end
+
+  # `requesting_subject` is the prior identity (if any) the device is
+  # spawning this session AS. The cap excludes its existing
+  # accounts_sessions rows so a subject re-establishing its session on
+  # the same device cannot be cap-blocked by its own pre-existing rows
+  # (UX-5 bucket BC, 2026-05-19). Bootstrap flows + Login Case 1 carry
+  # `nil` (no prior subject); user/visitor re-spawns carry the matching
+  # tagged-tuple. A mismatch between the flow's subject_kind and the
+  # tuple's tag is a caller bug — surface it via a hard FunctionClauseError
+  # rather than silently mis-counting (`feedback_silent_swallow`).
+  defp validate_requesting_subject!(nil, _, _), do: :ok
+
+  defp validate_requesting_subject!({:visitor, _}, :visitor, _), do: :ok
+  defp validate_requesting_subject!({:user, _}, :user, _), do: :ok
+
+  defp validate_requesting_subject!(other, subject_kind, flow) do
+    raise ArgumentError,
+          "Admission.check_capacity: requesting_subject #{inspect(other)} does not match " <>
+            "flow #{inspect(flow)} (subject_kind=#{inspect(subject_kind)})"
   end
 
   # Flow → subject_kind dispatch. U-2 (UD1): the typed `flow` field
@@ -287,10 +317,25 @@ defmodule Grappa.Admission do
   # Bootstrap flows have nil client — skip client-cap check.
   defp check_client_cap(%{client_id: nil}, _), do: :ok
 
-  defp check_client_cap(%{client_id: client_id, network_id: network_id}, subject_kind)
+  defp check_client_cap(
+         %{
+           client_id: client_id,
+           network_id: network_id,
+           requesting_subject: requesting_subject
+         },
+         subject_kind
+       )
        when is_binary(client_id) do
     cap = effective_max_per_client(network_id)
-    count = count_subjects_for_client_on_network(client_id, network_id, subject_kind)
+
+    count =
+      count_subjects_for_client_on_network(
+        client_id,
+        network_id,
+        subject_kind,
+        requesting_subject
+      )
+
     if count >= cap, do: {:error, :client_cap_exceeded}, else: :ok
   end
 
@@ -310,7 +355,19 @@ defmodule Grappa.Admission do
   # (visitor → user, or vice versa) counts independently against
   # client_cap per subject_kind. The same client_id holding a visitor
   # session must not block a user login on that device, and the inverse.
-  defp count_subjects_for_client_on_network(client_id, network_id, :visitor) do
+  #
+  # UX-5 bucket BC (2026-05-19): `requesting_subject` is the prior
+  # identity the device is spawning AS. When non-nil AND its tag matches
+  # `subject_kind`, the count EXCLUDES rows attributable to that subject
+  # — the cap blocks DIFFERENT subjects on the same device, never the
+  # requesting subject's own pre-existing accounts_sessions. Without
+  # self-exclusion the cap counts the operator's own browser session
+  # against them, making T32 park → /connect always fail at
+  # `max_per_client = 1` (the default). The visitor + user clauses
+  # remain disjoint (visitor JOINs visitors, user JOINs credentials) so
+  # an exclusion in one clause cannot leak into the other; see the
+  # UX-5 BC "cross-clause disjointness" test in `admission_test.exs`.
+  defp count_subjects_for_client_on_network(client_id, network_id, :visitor, requesting_subject) do
     %Network{slug: slug} = Repo.get!(Network, network_id)
 
     visitor_count_q =
@@ -324,10 +381,10 @@ defmodule Grappa.Admission do
         select: count(s.visitor_id, :distinct)
       )
 
-    Repo.one(visitor_count_q)
+    Repo.one(exclude_visitor(visitor_count_q, requesting_subject))
   end
 
-  defp count_subjects_for_client_on_network(client_id, network_id, :user) do
+  defp count_subjects_for_client_on_network(client_id, network_id, :user, requesting_subject) do
     user_count_q =
       from(s in AccountSession,
         join: c in Credential,
@@ -338,8 +395,23 @@ defmodule Grappa.Admission do
         select: count(s.user_id, :distinct)
       )
 
-    Repo.one(user_count_q)
+    Repo.one(exclude_user(user_count_q, requesting_subject))
   end
+
+  # Self-exclusion narrowing — only applies when the requesting subject's
+  # tag matches the clause's subject_kind. `validate_requesting_subject!/3`
+  # at the admission entry has already rejected cross-tag combos
+  # (`:user` flow with `{:visitor, _}` etc.), so the no-op fallback below
+  # only runs for the explicit `nil` case.
+  defp exclude_visitor(q, {:visitor, visitor_id}),
+    do: from([s, _v] in q, where: s.visitor_id != ^visitor_id)
+
+  defp exclude_visitor(q, _), do: q
+
+  defp exclude_user(q, {:user, user_id}),
+    do: from([s, _c] in q, where: s.user_id != ^user_id)
+
+  defp exclude_user(q, _), do: q
 
   @doc """
   Delegates to the configured Captcha behaviour impl.

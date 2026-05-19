@@ -227,7 +227,14 @@ defmodule GrappaWeb.NetworksController do
     capacity_input = %{
       network_id: network_id,
       client_id: client_id,
-      flow: :patch_network_connect
+      flow: :patch_network_connect,
+      # UX-5 bucket BC (2026-05-19): the requesting user IS the subject
+      # the spawn is for. Self-exclusion in `check_client_cap` keeps the
+      # cap from counting vjt's own active browser accounts_session
+      # against him on the T32 park → /connect respawn path. Without it,
+      # `max_per_client = 1` (the default) would always 503 the first
+      # PATCH /connect from any logged-in user.
+      requesting_subject: {:user, user_id}
     }
 
     case Grappa.SpawnOrchestrator.spawn({:user, user_id}, network_id, plan, capacity_input) do

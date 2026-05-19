@@ -191,7 +191,9 @@ defmodule Grappa.Visitors.Login do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
-      flow: :login_fresh
+      flow: :login_fresh,
+      # No prior subject — fresh anon provision (UX-5 bucket BC).
+      requesting_subject: nil
     }
 
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
@@ -216,12 +218,16 @@ defmodule Grappa.Visitors.Login do
   end
 
   # Case 2 — registered, password gate
-  defp dispatch(%Visitor{password_encrypted: pwd} = visitor, input, network, timeouts)
+  defp dispatch(%Visitor{password_encrypted: pwd, id: visitor_id} = visitor, input, network, timeouts)
        when is_binary(pwd) do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
-      flow: :login_existing
+      flow: :login_existing,
+      # UX-5 bucket BC: the visitor IS the requesting subject; the cap
+      # must not count their own pre-existing accounts_session against
+      # them on respawn from the same device.
+      requesting_subject: {:visitor, visitor_id}
     }
 
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
@@ -231,11 +237,12 @@ defmodule Grappa.Visitors.Login do
   end
 
   # Case 3 — anon, token gate
-  defp dispatch(%Visitor{password_encrypted: nil} = visitor, input, network, _) do
+  defp dispatch(%Visitor{password_encrypted: nil, id: visitor_id} = visitor, input, network, _) do
     capacity_input = %{
       network_id: network.id,
       client_id: input.client_id,
-      flow: :login_existing
+      flow: :login_existing,
+      requesting_subject: {:visitor, visitor_id}
     }
 
     with :ok <- Grappa.Admission.check_capacity(capacity_input),
