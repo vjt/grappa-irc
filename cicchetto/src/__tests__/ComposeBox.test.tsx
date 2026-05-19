@@ -28,8 +28,6 @@ vi.mock("../lib/imageUploadOrchestrator", () => {
     dismissUpload: vi.fn(),
     retryUpload: vi.fn(),
     uploadState: vi.fn(() => mockUploadStateValue),
-    setChosenTtl: vi.fn(),
-    getChosenTtl: vi.fn(() => null),
   };
   return actual;
 });
@@ -481,21 +479,14 @@ describe("ComposeBox", () => {
       expect(ta.hasAttribute("disabled")).toBe(false);
     });
 
-    it("renders a TTL dropdown when host.ttlOptions has entries", () => {
+    // UX-4 bucket M (2026-05-19) — TTL select moved to SettingsDrawer.
+    // ComposeBox no longer renders ANY select inside the form; this
+    // regression-guard ensures it stays out so a future re-add (under
+    // any data-attr / class name) would fail loudly.
+    it("does NOT render any <select> inside the compose form (TTL moved to SettingsDrawer in bucket M)", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const select = document.querySelector("select[data-image-ttl]") as HTMLSelectElement | null;
-      expect(select).not.toBeNull();
-      // Has at least one option matching litterboxHost.ttlOptions.
-      const opts = select?.querySelectorAll("option");
-      expect(opts?.length ?? 0).toBeGreaterThan(0);
-    });
-
-    it("changing the TTL dropdown calls setChosenTtl", async () => {
-      const orch = await import("../lib/imageUploadOrchestrator");
-      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-      const select = document.querySelector("select[data-image-ttl]") as HTMLSelectElement;
-      fireEvent.change(select, { target: { value: "1h" } });
-      expect(orch.setChosenTtl).toHaveBeenCalledWith("1h");
+      const select = document.querySelector(".compose-box select");
+      expect(select).toBeNull();
     });
   });
 });

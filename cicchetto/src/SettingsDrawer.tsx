@@ -2,6 +2,12 @@ import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import { logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
+import { activeHost } from "./lib/image-upload";
+import {
+  loadUploadTtlSeconds,
+  saveUploadTtlSeconds,
+  uploadTtlSecondsValue,
+} from "./lib/imageUploadOrchestrator";
 import { user } from "./lib/networks";
 import {
   disablePush,
@@ -60,6 +66,11 @@ const SettingsDrawer: Component<Props> = (props) => {
   const [pushBanner, setPushBanner] = createSignal<string | null>(null);
   const [savingPrefs, setSavingPrefs] = createSignal(false);
   const [prefsError, setPrefsError] = createSignal<string | null>(null);
+  // UX-4 bucket M (2026-05-19) — upload-TTL signals. Server is the
+  // authoritative source; loadUploadTtlSeconds populates the cic
+  // cache on drawer mount, saveUploadTtlSeconds round-trips on
+  // change. `null` = "use the active host's defaultTtl".
+  const [uploadTtlSavingError, setUploadTtlSavingError] = createSignal<string | null>(null);
   // Comma-separated UI shadows for the two whitelist text inputs — the
   // server stores normalized lists; cic edits are joined with ", " and
   // re-split on PUT so partial typing doesn't drop characters.
@@ -117,6 +128,13 @@ const SettingsDrawer: Component<Props> = (props) => {
     void refreshPrefs();
     void refreshDevices();
     void probeLocalSubscription();
+    const t = token();
+    if (t !== null) {
+      // UX-4 bucket M — populate the cic-side upload-TTL cache so the
+      // fieldset's `<select>` reflects the server value before the
+      // first user interaction.
+      void loadUploadTtlSeconds(t);
+    }
   });
 
   const probeLocalSubscription = async () => {
@@ -209,6 +227,36 @@ const SettingsDrawer: Component<Props> = (props) => {
     } catch {
       /* swallowed — UI will refresh on next drawer open */
     }
+  };
+
+  // UX-4 bucket M (2026-05-19) — upload-TTL `<select>` change handler.
+  // Reads the host-token from the option `value=`, looks up its `seconds`
+  // counterpart from `activeHost().ttlOptions`, and PUTs through.
+  // Empty-string value = "use default" sentinel → PUTs `null` to clear
+  // the server-side preference.
+  const onUploadTtlChange = async (e: Event) => {
+    const t = token();
+    if (t === null) return;
+    const select = e.currentTarget as HTMLSelectElement;
+    const v = select.value;
+    const next: number | null =
+      v === "" ? null : (activeHost().ttlOptions.find((o) => o.value === v)?.seconds ?? null);
+    setUploadTtlSavingError(null);
+    try {
+      await saveUploadTtlSeconds(t, next);
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "save_failed";
+      setUploadTtlSavingError(code);
+    }
+  };
+
+  // Current `<select>` value: walk the active host's ladder to find an
+  // entry whose `seconds` matches the cached preference. Empty string
+  // when the preference is null (renders the "use site default" option).
+  const uploadTtlSelectValue = (): string => {
+    const seconds = uploadTtlSecondsValue();
+    if (seconds === null) return "";
+    return activeHost().ttlOptions.find((o) => o.seconds === seconds)?.value ?? "";
   };
 
   return (
@@ -402,6 +450,39 @@ const SettingsDrawer: Component<Props> = (props) => {
             </ul>
           </Show>
         </fieldset>
+
+        {/* UX-4 bucket M (2026-05-19) — image upload retention preference.
+            Host-gated: only renders when the active image host exposes
+            ttlOptions (litterbox does; a hypothetical imgur-style host
+            wouldn't). The `<option value="">` "use site default" entry
+            maps to a `null` PUT — clears the preference and falls back
+            to `activeHost().defaultTtl`. Server stores integer seconds,
+            cic translates to/from the host token at this boundary. */}
+        <Show when={activeHost().ttlOptions.length > 0}>
+          <fieldset class="upload-ttl-fieldset">
+            <legend>image upload retention</legend>
+            <label>
+              upload duration:
+              <select
+                data-testid="upload-ttl-select"
+                value={uploadTtlSelectValue()}
+                onChange={(e) => {
+                  void onUploadTtlChange(e);
+                }}
+              >
+                <option value="">use site default ({activeHost().defaultTtl ?? ""})</option>
+                <For each={activeHost().ttlOptions}>
+                  {(opt) => <option value={opt.value}>{opt.label}</option>}
+                </For>
+              </select>
+            </label>
+            <Show when={uploadTtlSavingError() !== null}>
+              <p class="upload-ttl-error" role="alert" data-testid="upload-ttl-error">
+                {uploadTtlSavingError()}
+              </p>
+            </Show>
+          </fieldset>
+        </Show>
 
         <fieldset class="font-size-fieldset">
           <legend>text size</legend>

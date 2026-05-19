@@ -18,6 +18,8 @@ defmodule Grappa.UserSettingsTest do
   use Grappa.DataCase, async: true
   use ExUnitProperties
 
+  import Grappa.AuthFixtures, only: [visitor_fixture: 0]
+
   alias Grappa.{Accounts, Repo, UserSettings}
   alias Grappa.UserSettings.Settings
 
@@ -500,6 +502,135 @@ defmodule Grappa.UserSettingsTest do
 
       assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
       assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)
+  # ---------------------------------------------------------------------------
+
+  describe "get_upload_ttl_seconds/1" do
+    test "returns nil when no settings row exists" do
+      fake_id = Ecto.UUID.generate()
+      assert UserSettings.get_upload_ttl_seconds({:user, fake_id}) == nil
+    end
+
+    test "returns nil when row exists but no upload_ttl_seconds key" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+    end
+
+    test "returns nil when stored value is malformed (string instead of integer)" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"upload_ttl_seconds" => "24h"}}))
+
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+    end
+
+    test "returns nil when stored value is zero or negative" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"upload_ttl_seconds" => 0}}))
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"upload_ttl_seconds" => -1}}))
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+    end
+
+    test "returns nil when stored value exceeds upper bound" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+      Repo.update!(Settings.changeset(settings, %{data: %{"upload_ttl_seconds" => 31_536_001}}))
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+    end
+
+    test "returns stored integer when in-range" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600)
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 3600
+    end
+  end
+
+  describe "put_upload_ttl_seconds/2" do
+    test "persists a positive integer and reads back identically" do
+      user = user_fixture()
+      assert {:ok, %Settings{}} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 86_400)
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 86_400
+    end
+
+    test "persists nil by deleting the key (clears preference)" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600)
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 3600
+
+      assert {:ok, %Settings{}} = UserSettings.put_upload_ttl_seconds({:user, user.id}, nil)
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == nil
+    end
+
+    test "rejects zero" do
+      user = user_fixture()
+      assert {:error, %Ecto.Changeset{}} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 0)
+    end
+
+    test "rejects negative" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_upload_ttl_seconds({:user, user.id}, -3600)
+    end
+
+    test "rejects value above upper bound (1 year + 1 second)" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_upload_ttl_seconds({:user, user.id}, 31_536_001)
+    end
+
+    test "accepts the upper bound exactly" do
+      user = user_fixture()
+
+      assert {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 31_536_000)
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 31_536_000
+    end
+
+    test "rejects non-integer non-nil" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_upload_ttl_seconds({:user, user.id}, "3600")
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600.5)
+    end
+
+    test "preserves other data keys (notification_prefs + highlight_patterns)" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo"])
+
+      {:ok, _} =
+        UserSettings.put_notification_prefs({:user, user.id}, %{
+          channel_messages_all: false,
+          channel_messages_only: [],
+          channel_mentions: true,
+          private_messages_all: true,
+          private_messages_only: []
+        })
+
+      assert {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600)
+
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo"]
+      prefs = UserSettings.get_notification_prefs({:user, user.id})
+      assert prefs.channel_mentions == true
+    end
+
+    test "works for visitor subjects (visitor-parity)" do
+      visitor = visitor_fixture()
+      assert {:ok, _} = UserSettings.put_upload_ttl_seconds({:visitor, visitor.id}, 3600)
+      assert UserSettings.get_upload_ttl_seconds({:visitor, visitor.id}) == 3600
     end
   end
 end

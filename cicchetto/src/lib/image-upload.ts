@@ -45,7 +45,20 @@ export type UploadError =
   | { kind: "invalid_response"; body: string }
   | { kind: "provider"; message: string };
 
-export type TtlOption = { value: string; label: string };
+export type TtlOption = {
+  /** Host-specific token spelling (e.g. `"24h"` for litterbox's form
+   *  `time=` field). What the host's `upload()` actually sends. */
+  value: string;
+  /** UI label (e.g. `"24 hours"`). */
+  label: string;
+  /** UX-4 bucket M (2026-05-19) — integer seconds equivalent of `value`.
+   *  The server-side preference is stored as an integer (seconds); cic
+   *  translates between the host token and seconds at the SettingsDrawer
+   *  boundary so the server stays oblivious to per-host token spellings.
+   *  Used by `imageUploadOrchestrator` to pick a matching `value` from
+   *  the active host's ladder given a stored-seconds preference. */
+  seconds: number;
+};
 
 export type UploadOptions = {
   /** A `value` from the host's `ttlOptions`. Falls back to
@@ -56,9 +69,8 @@ export type UploadOptions = {
 
 export interface ImageHost {
   /** Stable identifier — used as a localStorage key suffix
-   *  (`image-upload-privacy-acknowledged:<id>`,
-   *  `image-upload-ttl:<id>`) so per-host UI state doesn't leak
-   *  across providers. */
+   *  (`image-upload-privacy-acknowledged:<id>`) so per-host UI state
+   *  doesn't leak across providers. */
   readonly id: string;
   /** Hostname or short label, surfaced in the privacy modal. */
   readonly displayName: string;
@@ -194,10 +206,10 @@ export const litterboxHost: ImageHost = {
   retentionStatement:
     "a public temporary host. Anyone with the URL can view files there for the next 24 hours.",
   ttlOptions: [
-    { value: "1h", label: "1 hour" },
-    { value: "12h", label: "12 hours" },
-    { value: "24h", label: "24 hours" },
-    { value: "72h", label: "72 hours" },
+    { value: "1h", label: "1 hour", seconds: 3600 },
+    { value: "12h", label: "12 hours", seconds: 43_200 },
+    { value: "24h", label: "24 hours", seconds: 86_400 },
+    { value: "72h", label: "72 hours", seconds: 259_200 },
   ],
   defaultTtl: "24h",
   acceptedMimeTypes: ["image/png", "image/jpeg", "image/gif", "image/webp", "image/apng"],

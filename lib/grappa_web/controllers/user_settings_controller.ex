@@ -80,4 +80,43 @@ defmodule GrappaWeb.UserSettingsController do
   end
 
   def update_notification_prefs(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `GET /me/settings/upload-ttl-seconds` — returns the subject's
+  stored upload-TTL preference (integer seconds) or `null` when no
+  preference is set.
+
+  UX-4 bucket M (2026-05-19). The image-upload orchestrator (cic-side)
+  uses `null` as the "fall back to active host's defaultTtl" sentinel,
+  so the UI can render a stable "Use site default (24h)" entry when
+  the user has never picked a TTL.
+  """
+  @spec show_upload_ttl_seconds(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_upload_ttl_seconds(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    seconds = UserSettings.get_upload_ttl_seconds(subject)
+    render(conn, :upload_ttl_seconds, seconds: seconds)
+  end
+
+  @doc """
+  `PUT /me/settings/upload-ttl-seconds` — persists the subject's
+  upload-TTL preference. Body shape: `{"upload_ttl_seconds": N}` where
+  `N` is a positive integer up to 31_536_000 (1 year), OR `null` to
+  clear the preference (revert to the active host's default).
+
+  Validation in `Grappa.UserSettings.put_upload_ttl_seconds/2`. 422 +
+  `field_errors.upload_ttl_seconds` on rejection.
+  """
+  @spec update_upload_ttl_seconds(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t()}
+  def update_upload_ttl_seconds(conn, %{"upload_ttl_seconds" => seconds})
+      when is_integer(seconds) or is_nil(seconds) do
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, _} <- UserSettings.put_upload_ttl_seconds(subject, seconds) do
+      render(conn, :upload_ttl_seconds, seconds: UserSettings.get_upload_ttl_seconds(subject))
+    end
+  end
+
+  def update_upload_ttl_seconds(_, _), do: {:error, :bad_request}
 end

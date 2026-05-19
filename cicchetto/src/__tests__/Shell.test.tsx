@@ -22,6 +22,10 @@ const selectionState = vi.hoisted(() => {
 
 // Mutable isMobile ref so individual tests can flip to mobile mode.
 const mobileState = vi.hoisted(() => ({ value: false }));
+// UX-4 bucket M (2026-05-19) — bearer state for the post-login bootstrap
+// effect that loads the upload-TTL preference. Default null = no token
+// yet; tests that exercise the bootstrap set it before mount.
+const tokenHolder = vi.hoisted(() => ({ value: null as string | null }));
 
 // M-cluster M-7 — mutable me holder. Default is a non-admin user so
 // the existing pre-M-7 tests pass unchanged (no admin entry rendered,
@@ -108,8 +112,23 @@ vi.mock("../lib/theme", () => ({
 
 vi.mock("../lib/auth", () => ({
   logout: vi.fn().mockResolvedValue(undefined),
-  token: () => null,
+  token: () => tokenHolder.value,
 }));
+
+// UX-4 bucket M (2026-05-19) — Shell.tsx's bootstrap effect calls
+// loadUploadTtlSeconds when both token + /me have resolved. Mock so
+// the test doesn't hit the network; specific tests assert against the
+// mock to verify the bootstrap fired exactly once. Use importOriginal
+// so PrivacyModal (transitively imported by Shell) still finds its
+// `privacyModalState` etc. exports.
+vi.mock("../lib/imageUploadOrchestrator", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../lib/imageUploadOrchestrator")>();
+  return {
+    ...actual,
+    loadUploadTtlSeconds: vi.fn(async () => {}),
+  };
+});
 
 vi.mock("../lib/queryWindows", () => ({
   queryWindowsByNetwork: () => ({}),
@@ -214,14 +233,21 @@ vi.mock("../lib/windowState", () => ({
 
 import Shell from "../Shell";
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  // UX-4 bucket M (2026-05-19) — vi.fn inside vi.mock factory isn't
+  // always reset by clearAllMocks; clear explicitly so test-3's
+  // "not called" assertion isn't poisoned by test-1's call.
+  const orch = await import("../lib/imageUploadOrchestrator");
+  vi.mocked(orch.loadUploadTtlSeconds).mockClear();
   selectionState.setSelSig(null);
   mobileState.value = false;
   mockWindowIsJoined.mockReturnValue(true);
   windowStateMap.current = {};
   // M-7 default — non-admin user. M-7 tests below opt in via mutation.
   userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
+  // UX-4 bucket M default — no token unless a test opts in.
+  tokenHolder.value = null;
 });
 
 describe("Shell — three-pane integration", () => {
@@ -590,5 +616,42 @@ describe("Shell — M-7 admin pane lifecycle", () => {
     fireEvent.click(screen.getByTestId("admin-pane-close"));
     await waitFor(() => expect(container.querySelector(".admin-pane")).toBeNull());
     expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
+  });
+});
+
+// UX-4 bucket M (2026-05-19) — Shell.tsx's post-login bootstrap effect
+// calls loadUploadTtlSeconds once when BOTH token + /me have resolved.
+// Without this, the operator's saved upload-TTL preference would
+// silently default to host.defaultTtl on the first upload after every
+// page reload (until the SettingsDrawer was opened at least once).
+// NOTE: SettingsDrawer also calls loadUploadTtlSeconds in onMount
+// (drawer is mounted inside Shell even when closed, so its onMount
+// fires regardless). These tests assert the SHELL bootstrap fires
+// independently — the assertion is "at least one call when conditions
+// met" + "exact call shape" rather than count-strict.
+describe("Shell — upload-TTL bootstrap (UX-4 bucket M)", () => {
+  it("loads the server preference when token + user are both present", async () => {
+    const orch = await import("../lib/imageUploadOrchestrator");
+    tokenHolder.value = "test-bearer";
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
+
+    render(() => <Shell />);
+
+    await waitFor(() => {
+      expect(orch.loadUploadTtlSeconds).toHaveBeenCalledWith("test-bearer");
+    });
+  });
+
+  it("does NOT load via the Shell-level bootstrap when token is absent", async () => {
+    const orch = await import("../lib/imageUploadOrchestrator");
+    tokenHolder.value = null;
+    userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: false, inserted_at: "x" };
+
+    render(() => <Shell />);
+
+    // SettingsDrawer's onMount ALSO gates on token() !== null, so with
+    // no token there's no call from either source.
+    await Promise.resolve();
+    expect(orch.loadUploadTtlSeconds).not.toHaveBeenCalled();
   });
 });

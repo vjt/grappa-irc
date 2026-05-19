@@ -147,13 +147,21 @@ defmodule GrappaWeb.Router do
     get "/me", MeController, :show
 
     # Per-user settings — push notifications cluster B3 (2026-05-14).
-    # First exposed accessor: notification_prefs. User-only (visitors
-    # get :forbidden inside the controller); persists into the existing
-    # `user_settings.data` JSON column via Grappa.UserSettings typed
-    # accessors. Future per-key accessors plug in here as additional
-    # routes, not by widening /me.
+    # Visitor-parity V4 (2026-05-15) lifted the user-only gate; both
+    # registered users + visitors hit these endpoints. Persists into
+    # the existing `user_settings.data` JSON column via
+    # `Grappa.UserSettings` typed accessors. Future per-key accessors
+    # plug in here as additional routes, not by widening /me.
     get "/me/settings/notification-prefs", UserSettingsController, :show_notification_prefs
     put "/me/settings/notification-prefs", UserSettingsController, :update_notification_prefs
+
+    # UX-4 bucket M (2026-05-19) — image-upload TTL preference. Server
+    # stores integer seconds; cic translates to/from the active host's
+    # ttlOption tokens. `null` body / `null` response = "use the active
+    # host's defaultTtl" sentinel. Per-key accessor lives in
+    # `Grappa.UserSettings.{get,put}_upload_ttl_seconds`.
+    get "/me/settings/upload-ttl-seconds", UserSettingsController, :show_upload_ttl_seconds
+    put "/me/settings/upload-ttl-seconds", UserSettingsController, :update_upload_ttl_seconds
 
     get "/networks", NetworksController, :index
 

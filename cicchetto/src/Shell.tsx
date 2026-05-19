@@ -6,8 +6,10 @@ import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import HomePane from "./HomePane";
 import { ownNickForNetwork } from "./lib/api";
+import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
+import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, networkBySlug, networks, user } from "./lib/networks";
@@ -226,6 +228,25 @@ const Shell: Component = () => {
   });
   install();
   onCleanup(uninstall);
+
+  // UX-4 bucket M (2026-05-19) — populate the cic-side upload-TTL
+  // cache once per app start, when both /me has resolved AND the
+  // bearer is available. The orchestrator's dispatchUpload reads from
+  // this cache; without an early load the operator's saved
+  // preference would be ignored on the FIRST upload after a reload
+  // (until the operator opens the SettingsDrawer at least once).
+  // One-shot: disarms forever via `uploadTtlBootstrapped` after the
+  // first successful fire — token + user are stable across the
+  // session, so re-firing on signal churn is wasted REST traffic.
+  let uploadTtlBootstrapped = false;
+  createEffect(() => {
+    if (uploadTtlBootstrapped) return;
+    const t = token();
+    const m = user();
+    if (t === null || !m) return;
+    uploadTtlBootstrapped = true;
+    void loadUploadTtlSeconds(t);
+  });
 
   // Auto-close sidebar drawer when the user picks a channel.
   // `defer: true` skips the initial run so we don't immediately close

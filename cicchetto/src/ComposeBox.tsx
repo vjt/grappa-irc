@@ -1,13 +1,11 @@
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, recallNext, recallPrev, setDraft, submit } from "./lib/compose";
 import { activeHost } from "./lib/image-upload";
 import {
   cancelUpload,
   dismissUpload,
-  getChosenTtl,
   retryUpload,
-  setChosenTtl,
   triggerUpload,
   uploadState,
 } from "./lib/imageUploadOrchestrator";
@@ -122,11 +120,6 @@ const ComposeBox: Component<Props> = (props) => {
     }
   };
 
-  const onTtlChange = (e: Event) => {
-    const select = e.currentTarget as HTMLSelectElement;
-    setChosenTtl(select.value);
-  };
-
   const onCancelUpload = () => {
     cancelUpload(key());
   };
@@ -138,8 +131,6 @@ const ComposeBox: Component<Props> = (props) => {
   const onDismissUpload = () => {
     dismissUpload(key());
   };
-
-  const ttlValue = (): string => getChosenTtl() ?? activeHost().defaultTtl ?? "";
 
   // ---- Submit ------------------------------------------------------
 
@@ -230,19 +221,6 @@ const ComposeBox: Component<Props> = (props) => {
             <circle cx="12" cy="13" r="4" />
           </svg>
         </button>
-        <Show when={activeHost().ttlOptions.length > 0}>
-          <select
-            class="compose-box-image-ttl"
-            data-image-ttl
-            value={ttlValue()}
-            onChange={onTtlChange}
-            title="image upload retention"
-          >
-            <For each={activeHost().ttlOptions}>
-              {(opt) => <option value={opt.value}>{opt.label}</option>}
-            </For>
-          </select>
-        </Show>
         <textarea
           value={getDraft(key())}
           onInput={onInput}

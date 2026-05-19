@@ -5,6 +5,19 @@ vi.mock("../lib/scrollback", () => ({
   sendMessage: vi.fn(async () => {}),
 }));
 
+// UX-4 bucket M (2026-05-19) — server-pref upload-TTL replaces the
+// localStorage-keyed one. Mock the REST wrapper so tests don't hit
+// the network; the orchestrator's internal signal still updates
+// through the cache-mirror hooks.
+vi.mock("../lib/userSettings", async () => {
+  const actual = await vi.importActual<typeof import("../lib/userSettings")>("../lib/userSettings");
+  return {
+    ...actual,
+    getUploadTtlSeconds: vi.fn(async () => null),
+    putUploadTtlSeconds: vi.fn(async (_token: string, seconds: number | null) => seconds),
+  };
+});
+
 vi.mock("../lib/image-upload", async () => {
   const actual = await vi.importActual<typeof import("../lib/image-upload")>("../lib/image-upload");
   return {
@@ -19,14 +32,17 @@ import {
   acknowledgePrivacy,
   cancelUpload,
   dismissUpload,
-  getChosenTtl,
+  loadUploadTtlSeconds,
   privacyModalState,
+  resetUploadTtlSecondsForTests,
   retryUpload,
-  setChosenTtl,
+  saveUploadTtlSeconds,
   triggerUpload,
   uploadState,
+  uploadTtlSecondsValue,
 } from "../lib/imageUploadOrchestrator";
 import { sendMessage } from "../lib/scrollback";
+import * as userSettings from "../lib/userSettings";
 
 const slug = "freenode";
 const channel = "#a";
@@ -52,8 +68,8 @@ const makeTestHost = (overrides: Partial<ImageHost> = {}): ImageHost => ({
   displayName: "test.host.example",
   retentionStatement: "TEST host — files exist for the next 24 hours.",
   ttlOptions: [
-    { value: "1h", label: "1 hour" },
-    { value: "24h", label: "24 hours" },
+    { value: "1h", label: "1 hour", seconds: 3600 },
+    { value: "24h", label: "24 hours", seconds: 86_400 },
   ],
   defaultTtl: "24h",
   acceptedMimeTypes: ["image/png", "image/jpeg"],
@@ -74,12 +90,17 @@ const makeTestHost = (overrides: Partial<ImageHost> = {}): ImageHost => ({
 beforeEach(() => {
   pendingResolvers = [];
   vi.mocked(sendMessage).mockClear();
-  // Wipe localStorage between tests so privacy/TTL state doesn't leak.
+  // Wipe localStorage between tests so privacy state doesn't leak.
   localStorage.clear();
   // Reset modal state explicitly — singleton survives across tests.
   dismissUpload(key);
   // Reset to default (litterbox).
   vi.mocked(activeHost).mockReturnValue(makeTestHost());
+  // UX-4 bucket M — reset the server-pref cache so each test starts
+  // from "no preference set" (host default).
+  resetUploadTtlSecondsForTests();
+  vi.mocked(userSettings.getUploadTtlSeconds).mockResolvedValue(null);
+  vi.mocked(userSettings.putUploadTtlSeconds).mockImplementation(async (_, s) => s);
 });
 
 afterEach(() => {
@@ -318,23 +339,37 @@ describe("cancel + dismiss + retry", () => {
 });
 
 // --------------------------------------------------------------------
-// TTL persistence
+// TTL persistence — UX-4 bucket M (2026-05-19)
+//
+// Server is the authoritative source. The orchestrator caches the
+// preference in a cic-side signal that SettingsDrawer reads/writes
+// via loadUploadTtlSeconds/saveUploadTtlSeconds. Dispatching an
+// upload translates the cached integer seconds into the active host's
+// ttlOption.value token; falls back to host.defaultTtl when no
+// preference (or no matching ladder entry).
 // --------------------------------------------------------------------
 
 describe("TTL persistence", () => {
-  it("getChosenTtl returns null when no preference saved", () => {
-    expect(getChosenTtl()).toBeNull();
+  it("uploadTtlSecondsValue starts null when never loaded", () => {
+    expect(uploadTtlSecondsValue()).toBeNull();
   });
 
-  it("setChosenTtl persists per-host, getChosenTtl reads it back", () => {
-    setChosenTtl("1h");
-    expect(localStorage.getItem("image-upload-ttl:test-host")).toBe("1h");
-    expect(getChosenTtl()).toBe("1h");
+  it("loadUploadTtlSeconds populates the cache from the server", async () => {
+    vi.mocked(userSettings.getUploadTtlSeconds).mockResolvedValueOnce(3600);
+    await loadUploadTtlSeconds("tok");
+    expect(uploadTtlSecondsValue()).toBe(3600);
   });
 
-  it("triggerUpload uses chosen TTL when set, else host.defaultTtl", () => {
+  it("saveUploadTtlSeconds round-trips via the REST wrapper + mirrors the cache", async () => {
+    await saveUploadTtlSeconds("tok", 43_200);
+    expect(userSettings.putUploadTtlSeconds).toHaveBeenCalledWith("tok", 43_200);
+    expect(uploadTtlSecondsValue()).toBe(43_200);
+  });
+
+  it("triggerUpload uses cached pref when matched to host ladder", async () => {
     localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
-    setChosenTtl("1h");
+    // 3600 seconds matches the test host's "1h" token.
+    await saveUploadTtlSeconds("tok", 3600);
 
     let capturedTtl: string | undefined;
     vi.mocked(activeHost).mockReturnValue(
@@ -350,10 +385,47 @@ describe("TTL persistence", () => {
     expect(capturedTtl).toBe("1h");
   });
 
-  it("ttl persistence is per-host id", () => {
-    setChosenTtl("1h");
-    vi.mocked(activeHost).mockReturnValue(makeTestHost({ id: "other-host" }));
+  it("triggerUpload falls back to host.defaultTtl when no pref cached", () => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
 
-    expect(getChosenTtl()).toBeNull();
+    let capturedTtl: string | undefined;
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        defaultTtl: "24h",
+        upload: (_file, options, _onProgress, _signal) => {
+          capturedTtl = options.ttl;
+          return new Promise<string>(() => {});
+        },
+      }),
+    );
+
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(capturedTtl).toBe("24h");
+  });
+
+  it("triggerUpload falls back to host.defaultTtl when cached pref doesn't match the host ladder", async () => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    // 9999s isn't in the ladder.
+    await saveUploadTtlSeconds("tok", 9999);
+
+    let capturedTtl: string | undefined;
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        defaultTtl: "24h",
+        upload: (_file, options, _onProgress, _signal) => {
+          capturedTtl = options.ttl;
+          return new Promise<string>(() => {});
+        },
+      }),
+    );
+
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(capturedTtl).toBe("24h");
+  });
+
+  it("loadUploadTtlSeconds swallows REST errors silently (cache stays null)", async () => {
+    vi.mocked(userSettings.getUploadTtlSeconds).mockRejectedValueOnce(new Error("network"));
+    await loadUploadTtlSeconds("tok");
+    expect(uploadTtlSecondsValue()).toBeNull();
   });
 });

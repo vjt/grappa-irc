@@ -48,6 +48,8 @@ defmodule Grappa.UserSettings do
   | `"notification_prefs"` | `notification_prefs()` | `get_notification_prefs/1`,     |
   |                        |                        | `put_notification_prefs/2`,     |
   |                        |                        | `default_notification_prefs/0`  |
+  | `"upload_ttl_seconds"` | `pos_integer() \\| nil`| `get_upload_ttl_seconds/1`,     |
+  |                        |                        | `put_upload_ttl_seconds/2`      |
 
   ## Boundary
 
@@ -95,6 +97,13 @@ defmodule Grappa.UserSettings do
         }
 
   @notification_prefs_key "notification_prefs"
+  @upload_ttl_seconds_key "upload_ttl_seconds"
+
+  # Upper bound for upload_ttl_seconds: one year. Image hosts (litterbox,
+  # 0x0.st) cap at days; nobody legitimately wants a year-long TTL token
+  # for a transient screenshot. A bound this loose accepts whatever ladder
+  # cic surfaces today while making "100-year TTL DOS body" return 422.
+  @upload_ttl_seconds_max 31_536_000
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -291,6 +300,85 @@ defmodule Grappa.UserSettings do
       cs = Settings.changeset(settings, %{data: merged_data})
       Repo.update(cs)
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Returns the stored upload-TTL preference for `subject`, in seconds.
+
+  Returns `nil` when no row exists, the row has no `"upload_ttl_seconds"`
+  key, or the stored value is malformed (not a positive integer in
+  range). `nil` is the "use system default" sentinel — the image-upload
+  orchestrator falls back to the active host's `defaultTtl` when this
+  is nil.
+
+  Reads with string key `"upload_ttl_seconds"` — Ecto's `:map` decodes
+  JSON with string keys after a DB round-trip.
+  """
+  @spec get_upload_ttl_seconds(Subject.t()) :: pos_integer() | nil
+  def get_upload_ttl_seconds({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil ->
+        nil
+
+      %Settings{data: data} ->
+        case data[@upload_ttl_seconds_key] do
+          n when is_integer(n) and n > 0 and n <= @upload_ttl_seconds_max -> n
+          _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  Sets the upload-TTL preference for `subject`, in seconds. Pass `nil`
+  to clear the preference (revert to system default).
+
+  Validates that `seconds` is `nil` OR a positive integer
+  `<= #{@upload_ttl_seconds_max}` (1 year — bounds an accidental DOS
+  shape, see moduledoc note on `@upload_ttl_seconds_max`).
+
+  Preserves other keys in `data` (merge semantics, mirror of
+  `set_highlight_patterns/2` + `put_notification_prefs/2`).
+  """
+  @spec put_upload_ttl_seconds(Subject.t(), pos_integer() | nil) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_upload_ttl_seconds({_, _} = subject, seconds) do
+    with :ok <- validate_upload_ttl_seconds(seconds, subject),
+         {:ok, settings} <- get_or_init(subject) do
+      merged_data =
+        case seconds do
+          nil -> Map.delete(settings.data, @upload_ttl_seconds_key)
+          n -> Map.put(settings.data, @upload_ttl_seconds_key, n)
+        end
+
+      cs = Settings.changeset(settings, %{data: merged_data})
+      Repo.update(cs)
+    end
+  end
+
+  @spec validate_upload_ttl_seconds(term(), Subject.t()) ::
+          :ok | {:error, Ecto.Changeset.t()}
+  defp validate_upload_ttl_seconds(nil, _), do: :ok
+
+  defp validate_upload_ttl_seconds(n, _)
+       when is_integer(n) and n > 0 and n <= @upload_ttl_seconds_max,
+       do: :ok
+
+  defp validate_upload_ttl_seconds(_, subject) do
+    attrs = Subject.put_subject_id(%{data: %{}}, subject)
+
+    cs =
+      %Settings{}
+      |> Settings.changeset(attrs)
+      |> Ecto.Changeset.add_error(
+        :upload_ttl_seconds,
+        "must be a positive integer up to #{@upload_ttl_seconds_max} seconds, or null"
+      )
+
+    {:error, cs}
   end
 
   # ---------------------------------------------------------------------------

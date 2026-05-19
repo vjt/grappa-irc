@@ -31,9 +31,11 @@ defmodule Grappa.UserSettings.Settings do
   The following keys are reserved in `data`. Future additions MUST be
   documented here to avoid collisions:
 
-  | Key                   | Type               | Owner context               |
-  |-----------------------|--------------------|-----------------------------|
-  | `"highlight_patterns"` | `list(String.t())` | `Grappa.UserSettings` (S2.2) |
+  | Key                   | Type                                | Owner context                |
+  |-----------------------|-------------------------------------|------------------------------|
+  | `"highlight_patterns"` | `list(String.t())`                 | `Grappa.UserSettings` (S2.2) |
+  | `"notification_prefs"` | `Grappa.UserSettings.notification_prefs()` | `Grappa.UserSettings` (B3) |
+  | `"upload_ttl_seconds"` | `pos_integer() \\| nil`           | `Grappa.UserSettings` (UX-4 M) |
 
   ## String-key invariant (IMPORTANT)
 

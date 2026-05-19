@@ -73,3 +73,59 @@ export async function putNotificationPrefs(
   const body = (await res.json()) as NotificationPrefsResponse;
   return body.notification_prefs;
 }
+
+// ---------------------------------------------------------------------------
+// upload_ttl_seconds — UX-4 bucket M (2026-05-19).
+//
+// Server stores the operator's upload-TTL preference as an integer of
+// seconds, in the `user_settings.data` JSON column under key
+// `"upload_ttl_seconds"`. `null` is the "no preference set — fall back
+// to the active host's `defaultTtl`" sentinel.
+//
+// Cic translates between the integer seconds and the host-specific
+// token spelling (`"24h"` for litterbox's wire format) at the
+// SettingsDrawer + imageUploadOrchestrator boundaries. The server stays
+// oblivious to per-host ladders.
+// ---------------------------------------------------------------------------
+
+export type UploadTtlResponse = {
+  upload_ttl_seconds: number | null;
+};
+
+export async function getUploadTtlSeconds(token: string): Promise<number | null> {
+  const res = await fetch("/me/settings/upload-ttl-seconds", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, res.statusText || "upload_ttl_get_failed");
+  }
+  const body = (await res.json()) as UploadTtlResponse;
+  return body.upload_ttl_seconds;
+}
+
+export async function putUploadTtlSeconds(
+  token: string,
+  seconds: number | null,
+): Promise<number | null> {
+  const res = await fetch("/me/settings/upload-ttl-seconds", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ upload_ttl_seconds: seconds }),
+  });
+  if (!res.ok) {
+    let info: Record<string, unknown> = {};
+    let code = res.statusText || "upload_ttl_put_failed";
+    try {
+      info = (await res.json()) as Record<string, unknown>;
+      if (typeof info.error === "string") code = info.error;
+    } catch {
+      /* fallthrough — code stays as statusText */
+    }
+    throw new ApiError(res.status, code, info);
+  }
+  const body = (await res.json()) as UploadTtlResponse;
+  return body.upload_ttl_seconds;
+}

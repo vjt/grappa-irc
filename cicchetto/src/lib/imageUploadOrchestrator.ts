@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { activeHost, type ImageHost, type UploadError } from "./image-upload";
 import { sendMessage } from "./scrollback";
+import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
 
 // Image-upload orchestration — images cluster I-2 (2026-05-15).
 //
@@ -9,17 +10,23 @@ import { sendMessage } from "./scrollback";
 // camera / drag-drop / paste triggers) and the host transport layer
 // (image-upload.ts — pluggable ImageHost interface). Holds the
 // per-channel upload-in-flight state, the singleton privacy-modal
-// gate, the per-host TTL preference, and the auto-send wiring.
+// gate, the cached upload-TTL preference, and the auto-send wiring.
 //
 // Single entry point: triggerUpload(key, networkSlug, channelName,
 // file). All four trigger surfaces collapse to that one call. The
-// rest of the surface — uploadState, cancel, dismiss, retry, TTL
-// dropdown wiring — is consumed by ComposeBox.tsx; the privacy-modal
-// surface is consumed by PrivacyModal.tsx mounted at Shell root.
+// rest of the surface — uploadState, cancel, dismiss, retry — is
+// consumed by ComposeBox.tsx; the privacy-modal surface is consumed
+// by PrivacyModal.tsx mounted at Shell root; the TTL preference is
+// consumed by SettingsDrawer.tsx (UX-4 bucket M, 2026-05-19 — TTL
+// moved from per-message ComposeBox `<select>` to durable
+// per-user setting).
 //
-// Per-host namespacing: privacy-ack flag + chosen-TTL preference both
-// keyed under `:<host.id>` so swapping providers tomorrow doesn't
-// inherit the wrong defaults silently. See A6 + A7 in the brainstorm.
+// Per-host namespacing: the privacy-ack flag is keyed under
+// `:<host.id>` (privacyKey/0) so swapping providers tomorrow doesn't
+// inherit the wrong default. The upload-TTL preference is server-side
+// + host-agnostic (integer seconds) — the host-specific token is
+// resolved per-dispatch via `pickHostTokenFromSeconds/2`. See A6 + A7
+// in the brainstorm.
 //
 // IRC stays text only: on resolve, we build `📸 ${url}` and call
 // scrollback.sendMessage directly — bypasses compose.ts submit() so
@@ -67,10 +74,65 @@ const pendingPrivacyGated = new Map<
 >();
 
 const PRIVACY_KEY_PREFIX = "image-upload-privacy-acknowledged";
-const TTL_KEY_PREFIX = "image-upload-ttl";
 
 const privacyKey = (host: ImageHost): string => `${PRIVACY_KEY_PREFIX}:${host.id}`;
-const ttlKey = (host: ImageHost): string => `${TTL_KEY_PREFIX}:${host.id}`;
+
+// UX-4 bucket M (2026-05-19) — upload-TTL is a per-user preference
+// persisted on the server (`user_settings.data["upload_ttl_seconds"]`)
+// as integer seconds. SettingsDrawer owns the read/write UI; this
+// orchestrator translates the stored seconds → host token at dispatch
+// time. `null` means "no preference set — use the active host's
+// defaultTtl" (host-defined, e.g. litterbox's `"24h"`).
+//
+// The signal is a cic-side cache mirror of the server value: load on
+// app start (`loadUploadTtlSeconds`), write-through on user change
+// (`saveUploadTtlSeconds`). Reset to null when the host changes
+// ladder semantics — but since `activeHost()` is module-level today
+// (litterbox-only) the reset path is unused in production. Tests
+// exercise it via `resetUploadTtlSecondsForTests`.
+const [uploadTtlSeconds, setUploadTtlSecondsSignal] = createSignal<number | null>(null);
+
+export function uploadTtlSecondsValue(): number | null {
+  return uploadTtlSeconds();
+}
+
+/** Load the server-persisted upload-TTL into the cic cache. Called
+ *  once per app start from `Shell.tsx`'s post-login bootstrap effect
+ *  (gated on token + /me both resolving) so the operator's saved
+ *  preference applies to the first upload, not only after the
+ *  SettingsDrawer is opened. Errors are swallowed (cache stays at
+ *  null = "use host default"). */
+export async function loadUploadTtlSeconds(token: string): Promise<void> {
+  try {
+    const seconds = await getUploadTtlSeconds(token);
+    setUploadTtlSecondsSignal(seconds);
+  } catch {
+    /* swallowed — fall back to host default */
+  }
+}
+
+/** Persist a new upload-TTL preference. On success, mirror into the
+ *  cic cache. Throws ApiError on 4xx/5xx. */
+export async function saveUploadTtlSeconds(token: string, seconds: number | null): Promise<void> {
+  const persisted = await putUploadTtlSeconds(token, seconds);
+  setUploadTtlSecondsSignal(persisted);
+}
+
+/** Test-only: reset the cic cache. Production code never calls this —
+ *  the cache survives drawer open/close and is only refreshed by
+ *  `loadUploadTtlSeconds`. */
+export function resetUploadTtlSecondsForTests(): void {
+  setUploadTtlSecondsSignal(null);
+}
+
+/** Translate a stored-seconds preference into a host-specific token
+ *  from the active host's ladder. Returns `null` when no match exists
+ *  (caller falls back to `host.defaultTtl`). */
+function pickHostTokenFromSeconds(host: ImageHost, seconds: number | null): string | null {
+  if (seconds === null) return null;
+  const match = host.ttlOptions.find((opt) => opt.seconds === seconds);
+  return match?.value ?? null;
+}
 
 function setEntry(key: ChannelKey, entry: UploadStateEntry | null): void {
   setUploadStates((prev) => {
@@ -89,16 +151,6 @@ export function uploadState(key: ChannelKey): UploadStateEntry | null {
 
 export function privacyModalState(): PrivacyModalState {
   return modalState();
-}
-
-export function getChosenTtl(): string | null {
-  const host = activeHost();
-  return localStorage.getItem(ttlKey(host));
-}
-
-export function setChosenTtl(value: string): void {
-  const host = activeHost();
-  localStorage.setItem(ttlKey(host), value);
 }
 
 function friendlyErrorMessage(err: UploadError): string {
@@ -154,7 +206,7 @@ function dispatchUpload(
 
   setEntry(key, { filename: file.name, loaded: 0, total: file.size });
 
-  const ttl = getChosenTtl() ?? host.defaultTtl ?? undefined;
+  const ttl = pickHostTokenFromSeconds(host, uploadTtlSeconds()) ?? host.defaultTtl ?? undefined;
 
   host
     .upload(

@@ -49,8 +49,28 @@ vi.mock("../lib/userSettings", async () => {
     putNotificationPrefs: vi
       .fn()
       .mockImplementation((_t: string, prefs: unknown) => Promise.resolve(prefs)),
+    getUploadTtlSeconds: vi.fn().mockResolvedValue(null),
+    putUploadTtlSeconds: vi
+      .fn()
+      .mockImplementation((_t: string, seconds: number | null) => Promise.resolve(seconds)),
   };
 });
+
+// UX-4 bucket M (2026-05-19) — SettingsDrawer imports the upload-TTL
+// signal accessors from the orchestrator. The orchestrator's signal
+// behaviour is exercised in `imageUploadOrchestrator.test.ts`; here
+// we mock the public surface so the drawer test stays focused on
+// drawer rendering + event wiring.
+const uploadTtlHolder = vi.hoisted(() => ({ current: null as number | null }));
+vi.mock("../lib/imageUploadOrchestrator", () => ({
+  loadUploadTtlSeconds: vi.fn(async () => {
+    /* no-op; SettingsDrawer test asserts on the call only */
+  }),
+  saveUploadTtlSeconds: vi.fn(async (_t: string, seconds: number | null) => {
+    uploadTtlHolder.current = seconds;
+  }),
+  uploadTtlSecondsValue: () => uploadTtlHolder.current,
+}));
 
 import SettingsDrawer from "../SettingsDrawer";
 
@@ -62,6 +82,7 @@ beforeEach(() => {
   // Default: no subject loaded yet — covers the pre-login / loading
   // state where me() returns null. Admin entry MUST be hidden.
   meHolder.current = null;
+  uploadTtlHolder.current = null;
 });
 
 describe("SettingsDrawer", () => {
@@ -333,5 +354,59 @@ describe("SettingsDrawer (bucket L — chrome polish)", () => {
     wrap(true, onClose, vi.fn());
     fireEvent.click(screen.getByTestId("settings-drawer-done"));
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+// UX-4 bucket M (2026-05-19) — upload-TTL fieldset migrated out of
+// ComposeBox. Server-pref (integer seconds) round-trips via the
+// orchestrator's REST wrapper; cic translates to/from host token at
+// this boundary.
+describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
+  it("renders the upload-TTL select with the active host's ladder", () => {
+    wrap(true);
+    const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
+    expect(select).toBeInTheDocument();
+    const opts = Array.from(select.querySelectorAll("option")).map((o) => o.value);
+    // "" = use site default; rest mirror litterboxHost.ttlOptions.
+    expect(opts).toContain("");
+    expect(opts).toContain("1h");
+    expect(opts).toContain("24h");
+  });
+
+  it("loads the server preference on mount", async () => {
+    const orch = await import("../lib/imageUploadOrchestrator");
+    wrap(true);
+    await waitFor(() => {
+      expect(orch.loadUploadTtlSeconds).toHaveBeenCalledWith("test-bearer");
+    });
+  });
+
+  it("reflects the cached preference in the select value", () => {
+    // 86_400 matches litterboxHost's "24h" entry.
+    uploadTtlHolder.current = 86_400;
+    wrap(true);
+    const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
+    expect(select.value).toBe("24h");
+  });
+
+  it("selecting an option PUTs the matching seconds", async () => {
+    const orch = await import("../lib/imageUploadOrchestrator");
+    wrap(true);
+    const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "1h" } });
+    await waitFor(() => {
+      expect(orch.saveUploadTtlSeconds).toHaveBeenCalledWith("test-bearer", 3600);
+    });
+  });
+
+  it("selecting 'use site default' PUTs null (clear preference)", async () => {
+    const orch = await import("../lib/imageUploadOrchestrator");
+    uploadTtlHolder.current = 3600;
+    wrap(true);
+    const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() => {
+      expect(orch.saveUploadTtlSeconds).toHaveBeenCalledWith("test-bearer", null);
+    });
   });
 });
