@@ -164,7 +164,7 @@ beforeEach(() => {
 
 describe("Sidebar", () => {
   it("renders all channels grouped by network", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     expect(screen.getByText("#italia")).toBeInTheDocument();
     expect(screen.getByText("#azzurra")).toBeInTheDocument();
     expect(screen.getByText("#bnc")).toBeInTheDocument();
@@ -172,19 +172,19 @@ describe("Sidebar", () => {
   });
 
   it("parted channels (joined: false) get the .parted class", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const parted = screen.getByText("#azzurra");
     expect(parted.classList.contains("parted")).toBe(true);
   });
 
   it("joined channels do NOT get the .parted class", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const joined = screen.getByText("#italia");
     expect(joined.classList.contains("parted")).toBe(false);
   });
 
   it("renders unread count for channels with messages while away", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     // Scope to the #bnc <li> — the Server <li> also has a msg-unread badge
     // since CP13 (S8). The test asserts the channel-side badge specifically.
     const bncLi = screen.getByText("#bnc").closest("li");
@@ -193,7 +193,7 @@ describe("Sidebar", () => {
   });
 
   it("renders mention badge with @-prefix for channels with mentions", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const italiaLi = screen.getByText("#italia").closest("li");
     const mention = italiaLi?.querySelector(".sidebar-mention");
     expect(mention?.textContent).toBe("@2");
@@ -207,7 +207,7 @@ describe("Sidebar", () => {
   // row. "Server" is gone as a literal label; the row displays the network
   // slug instead. Find via the header `<li class="sidebar-network-header">`.
   it("renders all 3 badge classes on the Server window when counts present", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const serverLi = screen.getByText("freenode").closest("li.sidebar-network-header");
     expect(serverLi).not.toBeNull();
     const msg = serverLi?.querySelector(".sidebar-msg-unread");
@@ -218,17 +218,15 @@ describe("Sidebar", () => {
     expect(mention?.textContent).toBe("@1");
   });
 
-  it("clicking a channel calls setSelectedChannel + onSelect", async () => {
+  it("clicking a channel calls setSelectedChannel (UX-5 bucket A: onSelect prop dropped)", async () => {
     const sel = await import("../lib/selection");
-    const onSelect = vi.fn();
-    render(() => <Sidebar onSelect={onSelect} />);
+    render(() => <Sidebar />);
     fireEvent.click(screen.getByText("#italia"));
     expect(sel.setSelectedChannel).toHaveBeenCalledWith({
       networkSlug: "freenode",
       channelName: "#italia",
       kind: "channel",
     });
-    expect(onSelect).toHaveBeenCalled();
   });
 
   it("renders 'no networks' fallback when networks list is empty", async () => {
@@ -253,13 +251,13 @@ describe("Sidebar", () => {
       setQueryWindowsByNetwork: vi.fn(),
     }));
     const { default: SidebarFresh } = await import("../Sidebar");
-    render(() => <SidebarFresh onSelect={vi.fn()} />);
+    render(() => <SidebarFresh />);
     expect(screen.getByText(/no networks/i)).toBeInTheDocument();
   });
 
   // C1.2: Query windows appear in sidebar
   it("renders query windows (alice, bob) for the network", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     expect(screen.getByText("alice")).toBeInTheDocument();
     expect(screen.getByText("bob")).toBeInTheDocument();
   });
@@ -269,14 +267,14 @@ describe("Sidebar", () => {
   // which routes to /quit for visitors and PATCH :parked for users.
   // Selection auto-redirects to home via selection.ts effect.
   it("server window has a close button (UX-4 bucket D)", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const li = screen.getByText("freenode").closest("li.sidebar-network-header");
     expect(li?.querySelector(".sidebar-close")).not.toBeNull();
   });
 
   // C1.2: Channel windows have a close button
   it("channel windows have a close button", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const channelEntry = screen.getByText("#italia");
     const li = channelEntry.closest("li");
     expect(li?.querySelector(".sidebar-close")).toBeTruthy();
@@ -284,7 +282,7 @@ describe("Sidebar", () => {
 
   // C1.2: Query windows have a close button
   it("query windows have a close button", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const queryEntry = screen.getByText("alice");
     const li = queryEntry.closest("li");
     expect(li?.querySelector(".sidebar-close")).toBeTruthy();
@@ -292,7 +290,7 @@ describe("Sidebar", () => {
 
   // C1.2: Clicking X on a query window calls closeQueryWindowState
   it("clicking close on query window calls closeQueryWindowState", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const aliceEntry = screen.getByText("alice");
     const li = aliceEntry.closest("li");
     const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
@@ -302,7 +300,7 @@ describe("Sidebar", () => {
 
   // C1.2: Clicking X on a channel calls postPart
   it("clicking close on channel calls postPart", () => {
-    render(() => <Sidebar onSelect={vi.fn()} />);
+    render(() => <Sidebar />);
     const italiaEntry = screen.getByText("#italia");
     const li = italiaEntry.closest("li");
     const closeBtn = li?.querySelector(".sidebar-close") as HTMLElement;
@@ -315,7 +313,7 @@ describe("Sidebar", () => {
   // (`loadArchive(slug)`), entries clickable → setSelectedChannel.
   describe("Archive section", () => {
     it("renders Archive <details> per network, collapsed by default", () => {
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const archive = screen.getByText("Archive");
       const details = archive.closest("details") as HTMLDetailsElement | null;
       expect(details).toBeTruthy();
@@ -323,7 +321,7 @@ describe("Sidebar", () => {
     });
 
     it("renders one button per archived entry inside the network section", () => {
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       // Both entries are rendered eagerly (the renderer reads from
       // `archivedBySlug()` which the test mock pre-populates). Lazy
       // FETCH still happens on expand; the renderer doesn't wait.
@@ -332,7 +330,7 @@ describe("Sidebar", () => {
     });
 
     it("expanding the Archive <details> calls loadArchive(slug)", () => {
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const archive = screen.getByText("Archive");
       const details = archive.closest("details") as HTMLDetailsElement;
       details.open = true;
@@ -342,7 +340,7 @@ describe("Sidebar", () => {
     });
 
     it("clicking an archived channel entry sets selection with kind=channel", () => {
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       fireEvent.click(screen.getByText("#sniffo"));
       expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
         networkSlug: "freenode",
@@ -352,7 +350,7 @@ describe("Sidebar", () => {
     });
 
     it("clicking an archived query entry sets selection with kind=query", () => {
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       fireEvent.click(screen.getByText("vjt-peer"));
       expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
         networkSlug: "freenode",
@@ -371,7 +369,7 @@ describe("Sidebar", () => {
   describe("CP15 B5 — windowState visual cues", () => {
     it("channel rows get .sidebar-window-greyed when state=failed", () => {
       mockWindowState = { "freenode #italia": "failed" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -379,7 +377,7 @@ describe("Sidebar", () => {
 
     it("channel rows get .sidebar-window-greyed when state=kicked", () => {
       mockWindowState = { "freenode #italia": "kicked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -387,7 +385,7 @@ describe("Sidebar", () => {
 
     it("channel rows get .sidebar-window-greyed when state=parked", () => {
       mockWindowState = { "freenode #italia": "parked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -395,7 +393,7 @@ describe("Sidebar", () => {
 
     it("channel rows do NOT get .sidebar-window-greyed when state=joined", () => {
       mockWindowState = { "freenode #italia": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(false);
@@ -403,7 +401,7 @@ describe("Sidebar", () => {
 
     it("channel rows do NOT get .sidebar-window-greyed when no state entry", () => {
       mockWindowState = {};
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(false);
@@ -414,7 +412,7 @@ describe("Sidebar", () => {
       // map shape is the same — apply uniformly so future state kinds
       // ride the same render branch without per-kind plumbing.
       mockWindowState = { "freenode alice": "kicked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("alice").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -428,7 +426,7 @@ describe("Sidebar", () => {
       // under the channelsBySlug branch (state transitions from
       // pending → joined and the greyed class falls off).
       mockWindowState = { "freenode #new-room": "pending" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       expect(screen.getByText("#new-room")).toBeInTheDocument();
     });
 
@@ -438,7 +436,7 @@ describe("Sidebar", () => {
       // pending row only fires when channelsBySlug doesn't already
       // carry the channel.
       mockWindowState = { "freenode #italia": "pending" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const matches = screen.getAllByText("#italia");
       expect(matches.length).toBe(1);
     });
@@ -456,21 +454,21 @@ describe("Sidebar", () => {
   describe("CP19 T32 — per-network parked/failed derivation overlay", () => {
     it("network header gets .sidebar-network-greyed when connection_state=parked", () => {
       mockNetworkConnectionState = { freenode: "parked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const header = screen.getByText("freenode").closest("section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
     });
 
     it("network header gets .sidebar-network-greyed when connection_state=failed", () => {
       mockNetworkConnectionState = { freenode: "failed" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const header = screen.getByText("freenode").closest("section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
     });
 
     it("network header does NOT get .sidebar-network-greyed when connection_state=connected", () => {
       mockNetworkConnectionState = { freenode: "connected" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const header = screen.getByText("freenode").closest("section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(false);
     });
@@ -482,7 +480,7 @@ describe("Sidebar", () => {
       // If they did, /disconnect would leave channels visually live.
       mockNetworkConnectionState = { freenode: "parked" };
       mockWindowState = { "freenode #italia": "joined" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -491,7 +489,7 @@ describe("Sidebar", () => {
     it("channel rows cascade greyed when network is failed, even with no window state entry", () => {
       mockNetworkConnectionState = { freenode: "failed" };
       mockWindowState = {};
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("#italia").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -499,7 +497,7 @@ describe("Sidebar", () => {
 
     it("query rows cascade greyed when network is parked", () => {
       mockNetworkConnectionState = { freenode: "parked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const li = screen.getByText("alice").closest("li");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
@@ -508,7 +506,7 @@ describe("Sidebar", () => {
     it("does NOT cascade greyed when network is connected (existing per-channel rule still applies)", () => {
       mockNetworkConnectionState = { freenode: "connected" };
       mockWindowState = { "freenode #italia": "failed" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       // #italia (per-channel failed) stays greyed via the existing rule.
       const liFailed = screen.getByText("#italia").closest("li");
       expect(
@@ -526,7 +524,7 @@ describe("Sidebar", () => {
     it("network header tooltip carries the connection_state_reason when parked", () => {
       mockNetworkConnectionState = { freenode: "parked" };
       mockNetworkConnectionReason = { freenode: "testing parked state" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const h3 = screen.getByText("freenode");
       expect(h3.getAttribute("title")).toBe("testing parked state");
     });
@@ -534,7 +532,7 @@ describe("Sidebar", () => {
     it("network header tooltip is absent when connected (no reason to show)", () => {
       mockNetworkConnectionState = { freenode: "connected" };
       mockNetworkConnectionReason = { freenode: "should not appear" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const h3 = screen.getByText("freenode");
       expect(h3.getAttribute("title")).toBeNull();
     });
@@ -555,7 +553,7 @@ describe("Sidebar", () => {
   describe("CP15 B6 — synthetic sidebar rows for failed/kicked/parked", () => {
     it("renders a synthetic row for a channel in state=failed NOT yet in channelsBySlug", () => {
       mockWindowState = { "freenode #invite-only": "failed" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const row = screen.getByText("#invite-only");
       expect(row).toBeInTheDocument();
       // Greyed since state ∈ {failed, kicked, parked}.
@@ -566,7 +564,7 @@ describe("Sidebar", () => {
 
     it("renders a synthetic row for a channel in state=kicked NOT yet in channelsBySlug", () => {
       mockWindowState = { "freenode #banned": "kicked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const row = screen.getByText("#banned");
       expect(row).toBeInTheDocument();
       const li = row.closest("li");
@@ -576,7 +574,7 @@ describe("Sidebar", () => {
 
     it("renders a synthetic row for a channel in state=parked NOT yet in channelsBySlug", () => {
       mockWindowState = { "freenode #disconnected": "parked" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const row = screen.getByText("#disconnected");
       expect(row).toBeInTheDocument();
       const li = row.closest("li");
@@ -588,7 +586,7 @@ describe("Sidebar", () => {
       // Mirror of the pending dedup gate — channelsBySlug branch wins
       // when both projections would render the same name.
       mockWindowState = { "freenode #italia": "failed" };
-      render(() => <Sidebar onSelect={vi.fn()} />);
+      render(() => <Sidebar />);
       const matches = screen.getAllByText("#italia");
       expect(matches.length).toBe(1);
     });
@@ -604,25 +602,25 @@ describe("Sidebar", () => {
   // both the network grouping label AND the server-window selector.
   describe("UX-4 bucket C — collapsed network header row", () => {
     it("renders NO <h3> per network section (header collapsed into row)", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       expect(container.querySelector(".sidebar-network h3")).toBeNull();
     });
 
     it("renders the network header row with .sidebar-network-header class + slug", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const headers = container.querySelectorAll("li.sidebar-network-header");
       expect(headers.length).toBe(1);
       expect(headers[0]?.textContent).toContain("freenode");
     });
 
     it("network header row renders the ⚙️ emoji prefix", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const emoji = container.querySelector("li.sidebar-network-header .sidebar-network-emoji");
       expect(emoji?.textContent).toBe("⚙️");
     });
 
     it("clicking the network header row selects the server window", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const headerBtn = container.querySelector(
         "li.sidebar-network-header .sidebar-window-btn",
       ) as HTMLElement | null;
@@ -637,7 +635,7 @@ describe("Sidebar", () => {
 
     it("[away] badge surfaces on the collapsed network header row", () => {
       mockAwayByNetwork = { freenode: true };
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       const badge = header?.querySelector(".sidebar-away-badge");
       expect(badge?.textContent).toBe("[away]");
@@ -645,13 +643,13 @@ describe("Sidebar", () => {
 
     it("[away] badge is absent when the network is not away", () => {
       mockAwayByNetwork = {};
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       expect(header?.querySelector(".sidebar-away-badge")).toBeNull();
     });
 
     it("channel rows still render as siblings inside the same <ul> as the header", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const ul = container.querySelector(".sidebar-network ul");
       const headerLi = ul?.querySelector("li.sidebar-network-header");
       const italiaLi = screen.getByText("#italia").closest("li");
@@ -666,7 +664,7 @@ describe("Sidebar", () => {
   // subject kind (visitor → quitAll, registered → patchNetwork(parked)).
   describe("UX-4 bucket D — server-window × button", () => {
     it("renders a close × button on the network-header row", () => {
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       const closeBtn = header?.querySelector(".sidebar-close");
       expect(closeBtn).not.toBeNull();
@@ -677,7 +675,7 @@ describe("Sidebar", () => {
     it("clicking × on the header row triggers patchNetwork(:parked) for registered users", async () => {
       mockSubject = { kind: "user", id: "u-1", name: "alice" };
       const apiMod2 = await import("../lib/api");
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const header = container.querySelector("li.sidebar-network-header");
       const closeBtn = header?.querySelector(".sidebar-close") as HTMLElement;
       fireEvent.click(closeBtn);
@@ -696,7 +694,7 @@ describe("Sidebar", () => {
   describe("UX-4 bucket N — admin sidebar row", () => {
     it("admin user: renders the admin row between Home and the first network", () => {
       adminHolder.value = true;
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const adminRow = container.querySelector('[data-testid="sidebar-admin-row"]');
       expect(adminRow).not.toBeNull();
       // Row label literally reads "admin".
@@ -710,14 +708,14 @@ describe("Sidebar", () => {
 
     it("non-admin user: does NOT render the admin row", () => {
       adminHolder.value = false;
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       expect(container.querySelector('[data-testid="sidebar-admin-row"]')).toBeNull();
       expect(container.querySelector(".sidebar-admin-section")).toBeNull();
     });
 
     it("clicking the admin row sets selection to the $admin window", () => {
       adminHolder.value = true;
-      const { container } = render(() => <Sidebar onSelect={vi.fn()} />);
+      const { container } = render(() => <Sidebar />);
       const row = container.querySelector(
         '[data-testid="sidebar-admin-row"]',
       ) as HTMLElement | null;

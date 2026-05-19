@@ -5,6 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Cluster-wide rule: settings cog visible from EVERY window kind. The
 // archive button is visible only when the selected window carries a
 // network context (channel/query/server); home/mentions/empty hide it.
+//
+// UX-5 bucket A (2026-05-19) — the hamburger slot was dropped from
+// ShellChrome entirely. Pre-bucket the chrome rendered a hamburger
+// that duplicated TopicBar's `.topic-bar-hamburger` on mobile and
+// toggled a no-op `.open` class on desktop. Hamburger-related tests
+// moved out; only the cog + archive-button surfaces remain.
 
 const mockSetArchiveModalNetwork = vi.fn();
 vi.mock("../lib/archive", () => ({
@@ -43,22 +49,12 @@ describe("ShellChrome (bucket L)", () => {
     expect(onOpenSettings).toHaveBeenCalled();
   });
 
-  it("renders the hamburger when onToggleSidebar is provided", () => {
-    const onToggleSidebar = vi.fn();
-    render(() => <ShellChrome onToggleSidebar={onToggleSidebar} onOpenSettings={vi.fn()} />);
-    expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
-  });
-
-  it("hides the hamburger when onToggleSidebar is omitted", () => {
-    render(() => <ShellChrome onOpenSettings={vi.fn()} />);
-    expect(screen.queryByLabelText(/open channel sidebar/i)).not.toBeInTheDocument();
-  });
-
-  it("clicking the hamburger fires onToggleSidebar", () => {
-    const onToggleSidebar = vi.fn();
-    render(() => <ShellChrome onToggleSidebar={onToggleSidebar} onOpenSettings={vi.fn()} />);
-    fireEvent.click(screen.getByLabelText(/open channel sidebar/i));
-    expect(onToggleSidebar).toHaveBeenCalled();
+  it("UX-5 bucket A — does NOT render a hamburger button (slot dropped)", () => {
+    mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
+    const { container } = render(() => <ShellChrome onOpenSettings={vi.fn()} />);
+    expect(container.querySelectorAll(".shell-chrome-hamburger").length).toBe(0);
+    expect(screen.queryByLabelText(/open channel sidebar/i)).toBeNull();
+    expect(screen.queryByLabelText(/open members sidebar/i)).toBeNull();
   });
 
   describe("archive button visibility (per window kind)", () => {

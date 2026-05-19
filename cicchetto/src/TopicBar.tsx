@@ -65,15 +65,18 @@ const TopicBar: Component<Props> = (props) => {
 
   return (
     <div class="topic-bar">
-      {/* UX-4 bucket L (2026-05-19): left channel-sidebar hamburger
-          dropped — sidebar toggle is owned by ShellChrome (the always-
-          visible bar above TopicBar) per the cluster-wide "settings
-          cog always reachable from every window" rule. ShellChrome's
-          hamburger handles desktop sidebar AND mobile members toggle
-          uniformly across all window kinds, including the server
-          window. TopicBar pre-bucket rendered its own left hamburger
-          gated on `!isMobile()`; ShellChrome's hamburger replaces it
-          end-to-end. */}
+      {/* UX-4 bucket L (2026-05-19): TopicBar's left channel-sidebar
+          hamburger was dropped (sidebar is always-visible on desktop,
+          not rendered on mobile — no toggle needed). The settings cog
+          moved out of TopicBar into ShellChrome (always-visible bar
+          above) per the cluster-wide "settings cog reachable from
+          every window" rule.
+          UX-5 bucket A (2026-05-19): ShellChrome's own hamburger was
+          also dropped — it was a desktop no-op and duplicated this
+          bar's right members hamburger on mobile. TopicBar's
+          `.topic-bar-hamburger` below (channel-only, CSS-hidden on
+          desktop via @media) is now the SINGLE hamburger across the
+          whole shell. */}
       <span class="topic-bar-channel">{props.channelName}</span>
       {/* Topic strip — always present; shows placeholder when no topic cached */}
       <button

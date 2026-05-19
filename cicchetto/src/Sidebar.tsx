@@ -33,8 +33,12 @@ import { windowStateByChannel } from "./lib/windowState";
 //   - list     → X button → client-side dismiss (no server call)
 //   - mentions → X button → client-side dismiss (no server call)
 //
-// onSelect is fired AFTER the selection state is updated — Shell.tsx
-// uses it to auto-close the mobile sidebar drawer.
+// UX-5 bucket A (2026-05-19) — `onSelect` prop dropped. Pre-bucket
+// Shell.tsx fired it from the desktop branch to auto-close the
+// sidebar drawer when the operator picked a channel. The desktop
+// sidebar is always-visible (no drawer to close) and the mobile
+// branch never mounts Sidebar (uses BottomBar instead). The prop
+// had no remaining consumer.
 //
 // CP15 B5 — windowState visual cues:
 //   * Channel/query rows whose state ∈ {failed, kicked, parked} get
@@ -65,11 +69,9 @@ import { windowStateByChannel } from "./lib/windowState";
 const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
-export type Props = {
-  onSelect?: () => void;
-};
+export type Props = Record<string, never>;
 
-const Sidebar: Component<Props> = (props) => {
+const Sidebar: Component<Props> = () => {
   // UX-1 (2026-05-17) — singleton armed-key for archive delete confirm.
   // Mirrors AdminSessionsTab / AdminVisitorsTab — one armed row at a
   // time across the WHOLE sidebar (across every network's archive
@@ -171,7 +173,6 @@ const Sidebar: Component<Props> = (props) => {
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
     setSelectedChannel({ networkSlug: slug, channelName: name, kind });
-    props.onSelect?.();
   };
 
   const handleCloseChannel = (slug: string, channelName: string) => {

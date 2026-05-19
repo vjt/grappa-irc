@@ -391,7 +391,7 @@ describe("Shell — three-pane integration", () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     render(() => <Shell />);
     await waitFor(() => {
-      expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/open members sidebar/i)).toBeInTheDocument();
     });
     expect(screen.getByPlaceholderText(/message #a/i)).toBeInTheDocument();
   });
@@ -455,18 +455,18 @@ describe("Shell — three-pane integration", () => {
     });
   });
 
-  it("Esc closes any open drawer", async () => {
+  it("UX-5 bucket A — Esc closes the members drawer (sidebar drawer dropped)", async () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     const { container } = render(() => <Shell />);
     await waitFor(() => {
-      expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/open members sidebar/i)).toBeInTheDocument();
     });
-    // Open sidebar via topic-bar hamburger
-    fireEvent.click(screen.getByLabelText(/open channel sidebar/i));
-    expect(container.querySelector(".shell-sidebar")?.classList.contains("open")).toBe(true);
+    // Open members drawer via TopicBar hamburger
+    fireEvent.click(screen.getByLabelText(/open members sidebar/i));
+    expect(container.querySelector(".shell-members")?.classList.contains("open")).toBe(true);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await waitFor(() => {
-      expect(container.querySelector(".shell-sidebar")?.classList.contains("open")).toBe(false);
+      expect(container.querySelector(".shell-members")?.classList.contains("open")).toBe(false);
     });
   });
 
@@ -480,23 +480,9 @@ describe("Shell — three-pane integration", () => {
     expect(container.querySelector(".settings-drawer")?.classList.contains("open")).toBe(true);
   });
 
-  it("empty-state renders the ☰ open-sidebar button (mobile escape hatch)", () => {
-    render(() => <Shell />);
-    // selectionState set to null in beforeEach — empty state.
-    expect(screen.getByLabelText(/open channel sidebar/i)).toBeInTheDocument();
-  });
-
   it("empty-state renders the ⚙ settings button", () => {
     render(() => <Shell />);
     expect(screen.getByLabelText(/open settings/i)).toBeInTheDocument();
-  });
-
-  it("clicking empty-state ☰ opens the sidebar drawer", () => {
-    const { container } = render(() => <Shell />);
-    const sidebar = container.querySelector(".shell-sidebar");
-    expect(sidebar?.classList.contains("open")).toBe(false);
-    fireEvent.click(screen.getByLabelText(/open channel sidebar/i));
-    expect(sidebar?.classList.contains("open")).toBe(true);
   });
 
   it("clicking empty-state ⚙ opens the settings drawer", () => {
@@ -504,6 +490,46 @@ describe("Shell — three-pane integration", () => {
     fireEvent.click(screen.getByLabelText(/open settings/i));
     const settings = container.querySelector(".settings-drawer");
     expect(settings?.classList.contains("open")).toBe(true);
+  });
+
+  // UX-5 bucket A (2026-05-19) — hamburger visibility matrix. Pre-
+  // bucket Shell rendered a ShellChrome hamburger on both desktop +
+  // mobile that duplicated TopicBar's members hamburger on mobile and
+  // toggled a no-op `.open` class on desktop. Post-bucket: ZERO chrome
+  // hamburgers on either branch; mobile members drawer lives in
+  // TopicBar.tsx (channel-window-only).
+  describe("UX-5 bucket A — hamburger visibility matrix", () => {
+    it("desktop, no selection: 0 hamburgers (chrome hamburger dropped)", () => {
+      mobileState.value = false;
+      const { container } = render(() => <Shell />);
+      expect(container.querySelectorAll(".shell-chrome-hamburger").length).toBe(0);
+      expect(container.querySelectorAll(".topic-bar-hamburger").length).toBe(0);
+      expect(screen.queryByLabelText(/open channel sidebar/i)).toBeNull();
+    });
+
+    it("desktop, channel selected: 0 chrome hamburgers, TopicBar hamburger in DOM (visibility gated by @media in e2e)", async () => {
+      mobileState.value = false;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+      });
+      expect(container.querySelectorAll(".shell-chrome-hamburger").length).toBe(0);
+      // TopicBar's members hamburger always renders in the DOM for
+      // joined channels; CSS @media gating handles desktop visibility.
+      expect(container.querySelectorAll(".topic-bar-hamburger").length).toBe(1);
+    });
+
+    it("desktop, home selected: 0 hamburgers (no members surface)", async () => {
+      mobileState.value = false;
+      selectionState.setSelSig({ networkSlug: "$home", channelName: "$home", kind: "home" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector("[data-testid='shell-chrome']")).toBeInTheDocument();
+      });
+      expect(container.querySelectorAll(".shell-chrome-hamburger").length).toBe(0);
+      expect(container.querySelectorAll(".topic-bar-hamburger").length).toBe(0);
+    });
   });
 
   describe("members aside scope (joined-channel only)", () => {

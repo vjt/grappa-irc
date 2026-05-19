@@ -36,10 +36,15 @@ import TopicBar from "./TopicBar";
 // ScrollbackPane / ComposeBox / MembersPane / SettingsDrawer / BottomBar.
 //
 // Drawer state lives here:
-//   * sidebarOpen — left channel-list drawer (desktop only; on mobile, channels
-//     live in BottomBar and the sidebar is not rendered at all)
 //   * membersOpen — right members-list drawer (desktop + mobile via single hamburger)
 //   * settingsOpen — full-cover settings overlay (desktop+mobile)
+//
+// UX-5 bucket A (2026-05-19) — the left `sidebarOpen` drawer was
+// dropped. The desktop sidebar is always visible (no toggle needed);
+// the mobile branch doesn't render `.shell-sidebar` at all (channels
+// live in BottomBar). The ShellChrome hamburger that toggled this
+// signal is removed end-to-end — it duplicated TopicBar's members
+// hamburger on mobile and toggled a no-op `.open` class on desktop.
 //
 // Mobile layout (≤768px, isMobile() reactive signal from theme.ts):
 //   * JSX branches on isMobile() — NOT just CSS display toggling.
@@ -52,13 +57,8 @@ import TopicBar from "./TopicBar";
 // drawer state (Esc), irssi-style compose auto-focus + insert (any
 // printable key off-compose), and tab-complete (Tab in compose textarea).
 // install() is idempotent; uninstall fires on unmount.
-//
-// The sidebar auto-close effect fires on both branches. On mobile, it is a
-// harmless no-op: setSidebarOpen(false) writes a signal whose DOM node is
-// not rendered in the mobile branch.
 
 const Shell: Component = () => {
-  const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
 
@@ -223,7 +223,6 @@ const Shell: Component = () => {
       });
     },
     closeDrawer: () => {
-      setSidebarOpen(false);
       setMembersOpen(false);
       setSettingsOpen(false);
     },
@@ -268,21 +267,6 @@ const Shell: Component = () => {
     uploadTtlBootstrapped = true;
     void loadUploadTtlSeconds(t);
   });
-
-  // Auto-close sidebar drawer when the user picks a channel.
-  // `defer: true` skips the initial run so we don't immediately close
-  // a drawer the user just opened with the default selection.
-  // On mobile this is a harmless no-op: setSidebarOpen(false) writes to
-  // a signal whose corresponding DOM node is not rendered.
-  createEffect(
-    on(
-      selectedChannel,
-      () => {
-        setSidebarOpen(false);
-      },
-      { defer: true },
-    ),
-  );
 
   // Auto-close the members drawer when the active selection no longer
   // has a member-list-shaped UI (DM, server, mentions, parked/failed/
@@ -339,17 +323,14 @@ const Shell: Component = () => {
           <SocketHealthBanner />
           <BundleRefreshBanner />
           <PrivacyModal />
-          <aside class="shell-sidebar" classList={{ open: sidebarOpen() }}>
-            <Sidebar onSelect={() => setSidebarOpen(false)} />
+          <aside class="shell-sidebar">
+            <Sidebar />
           </aside>
 
-          <Show when={sidebarOpen() || membersOpen()}>
+          <Show when={membersOpen()}>
             <div
               class="shell-drawer-backdrop open"
-              onClick={() => {
-                setSidebarOpen(false);
-                setMembersOpen(false);
-              }}
+              onClick={() => setMembersOpen(false)}
               aria-hidden="true"
             />
           </Show>
@@ -360,11 +341,13 @@ const Shell: Component = () => {
                 wide rule: settings cog MUST be reachable from every
                 window (channel / query / server / home / mentions /
                 admin / empty). Pre-bucket the cog lived inside
-                TopicBar (channel-kind only) + per-branch fallbacks. */}
-            <ShellChrome
-              onToggleSidebar={() => setSidebarOpen((v) => !v)}
-              onOpenSettings={() => setSettingsOpen(true)}
-            />
+                TopicBar (channel-kind only) + per-branch fallbacks.
+
+                UX-5 bucket A (2026-05-19) — hamburger prop dropped.
+                Desktop sidebar is always visible (no toggle); the
+                mobile members drawer is opened by TopicBar's own
+                hamburger (channel-window-only). */}
+            <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
             <Show
               when={selectedChannel()?.kind === "admin" && isAdmin()}
               fallback={
@@ -495,17 +478,11 @@ const Shell: Component = () => {
 
         <section class="shell-main">
           {/* UX-4 bucket L — ShellChrome always visible on mobile too.
-              Hamburger toggles members drawer when a channel is
-              selected; collapses to no hamburger for other window
-              kinds (no members surface) — ShellChrome's Show on
-              `onToggleSidebar` handles the slot conditionally. */}
-          <ShellChrome
-            onToggleSidebar={
-              selectedChannel()?.kind === "channel" ? () => setMembersOpen((v) => !v) : undefined
-            }
-            hamburgerLabel="open members sidebar"
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
+              UX-5 bucket A (2026-05-19) — hamburger prop dropped.
+              TopicBar's own `.topic-bar-hamburger` (channel-window-
+              only, CSS-visible on mobile) owns the members-drawer
+              toggle; ShellChrome's hamburger was a duplicate. */}
+          <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
           <Show
             when={selectedChannel()?.kind === "admin" && isAdmin()}
             fallback={
@@ -513,10 +490,11 @@ const Shell: Component = () => {
                 {(sel) => (
                   <>
                     <Show when={sel().kind === "channel"}>
-                      {/* C6.3: on mobile, TopicBar is given onToggleSidebar as no-op
-                          (channel sidebar doesn't exist on mobile) and onToggleMembers
-                          as the single hamburger. TopicBar hides the sidebar hamburger
-                          on mobile via isMobile() gating inside TopicBar itself. */}
+                      {/* C6.3 / UX-5 bucket A: TopicBar's
+                          `.topic-bar-hamburger` is the single
+                          members-drawer toggle on mobile (CSS-hidden
+                          on desktop via @media). ShellChrome above no
+                          longer renders its own hamburger. */}
                       <TopicBar
                         networkSlug={sel().networkSlug}
                         channelName={sel().channelName}
