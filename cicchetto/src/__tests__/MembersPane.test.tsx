@@ -91,11 +91,13 @@ describe("MembersPane", () => {
     const voiced = document.querySelector(".member-voiced");
     expect(voiced?.textContent).toContain("+alice");
     const plain = document.querySelector(".member-plain");
-    // Plain rows render a single leading space so columns align with
-    // their @/+-prefixed siblings — the prefix lives in DOM text content
-    // (not CSS ::before), so vitest can assert it. See memory
-    // `feedback_css_block_button_wraps_inline_prefix` for why.
-    expect(plain?.textContent).toContain(" bob");
+    // UX-5 bucket BC2: plain (no-mode) members render with NO prefix
+    // glyph — the pre-BC2 column-alignment space (` bob`) is moot
+    // once the prefix gets its own bold/colored span. Just the bare
+    // nick. Op/voiced rows verify the prefix is still present via
+    // `@vjt` / `+alice` above.
+    expect(plain?.textContent).toContain("bob");
+    expect(plain?.textContent).not.toContain(" bob");
   });
 
   it("renders the count in the heading when state=joined + non-empty list", () => {

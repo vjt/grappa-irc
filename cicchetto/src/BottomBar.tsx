@@ -7,6 +7,7 @@ import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } fro
 import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import NickText from "./NickText";
 
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
 //
@@ -169,7 +170,7 @@ const BottomBar: Component<Props> = (props) => {
                       classList={{ selected: isSelected(network.slug, qw.targetNick) }}
                       onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                     >
-                      {qw.targetNick}
+                      <NickText nick={qw.targetNick} extraClass="bottom-bar-tab-nick" />
                       <Show when={(messagesUnread()[key] ?? 0) > 0}>
                         <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
                       </Show>

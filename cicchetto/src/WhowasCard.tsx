@@ -1,5 +1,6 @@
 import { type Component, Show } from "solid-js";
 import { dismissWhowasCard, whowasCardBySlug } from "./lib/whowasCard";
+import NickText from "./NickText";
 
 // P-0c — WHOWAS card. Renders the historical-user reply inline at the
 // top of the active window's scrollback pane (mirror of WhoisCard).
@@ -32,7 +33,7 @@ const WhowasCard: Component<Props> = (props) => {
         <div class="whowas-card" data-testid="whowas-card">
           <div class="whowas-card-header">
             <span class="whowas-card-title">/whowas</span>
-            <span class="whowas-card-target">{b().target}</span>
+            <NickText nick={b().target} extraClass="whowas-card-target" />
             <button
               type="button"
               class="whowas-card-close"
@@ -44,7 +45,11 @@ const WhowasCard: Component<Props> = (props) => {
           </div>
           <Show
             when={!b().not_found}
-            fallback={<p class="whowas-card-empty muted">no history for {b().target}</p>}
+            fallback={
+              <p class="whowas-card-empty muted">
+                no history for <NickText nick={b().target} />
+              </p>
+            }
           >
             <dl class="whowas-card-fields">
               <Show when={b().user !== null && b().host !== null}>

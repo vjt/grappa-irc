@@ -10,6 +10,7 @@ import { token } from "./lib/auth";
 import { networks } from "./lib/networks";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
+import NickText from "./NickText";
 
 // UX-2 (2026-05-17) — Mobile archive surface.
 //
@@ -133,7 +134,11 @@ const ArchiveModal: Component = () => {
                             onClick={() => handleSelectEntry(slug, entry.target, entry.kind)}
                           >
                             <span class="archive-modal-kind">{entry.kind}</span>
-                            <span class="archive-modal-target">{entry.target}</span>
+                            {entry.kind === "query" ? (
+                              <NickText nick={entry.target} extraClass="archive-modal-target" />
+                            ) : (
+                              <span class="archive-modal-target">{entry.target}</span>
+                            )}
                           </button>
                           <InlineConfirmButton
                             idleLabel="×"

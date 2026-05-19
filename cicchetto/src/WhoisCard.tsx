@@ -1,6 +1,7 @@
 import { type Component, For, Show } from "solid-js";
 import type { WhoisBundle } from "./lib/api";
 import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
+import NickText from "./NickText";
 
 // C2 — WHOIS card. Renders the aggregated WHOIS bundle inline at the top
 // of the active window's scrollback pane. Per spec #2:
@@ -97,7 +98,7 @@ const WhoisCard: Component<Props> = (props) => {
       {(b) => (
         <div class="whois-card" data-testid="whois-card">
           <div class="whois-card-header">
-            <span class="whois-card-target">{b().target}</span>
+            <NickText nick={b().target} extraClass="whois-card-target" />
             <For each={collectTags(b())}>
               {(tag) => (
                 <span class={`whois-card-tag whois-card-tag-${tag.cssMod}`}>{tag.label}</span>

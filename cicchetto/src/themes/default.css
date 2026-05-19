@@ -20,6 +20,11 @@
  *   --mode-halfop           : % halfops nick color
  *   --mode-voiced           : + voiced nick color
  *   --mode-plain            : plain (no mode) nick color (= --fg)
+ *   --nick-color-0..15      : xchat-style colored-nick palette (UX-5
+ *                             bucket BC2). Hues chosen per theme for
+ *                             readable contrast against --bg. djb2
+ *                             hash → palette index lives in
+ *                             cicchetto/src/lib/nickColor.ts.
  *   --font-mono             : font stack
  *   --font-size, --line-height
  *   --breakpoint-mobile     : 768px (mirrored in JS via theme.ts isMobile)
@@ -50,6 +55,30 @@
   --mode-halfop: #d7af5f;
   --mode-voiced: #70d770;
   --mode-plain: var(--fg);
+  /*
+   * UX-5 bucket BC2 — colored nicks palette (dark theme variant).
+   * Hand-picked 16 hues with adequate contrast (~6:1+) against
+   * #0a0a0a. Spread across the hue wheel; saturation moderated so
+   * adjacent nicks don't visually clash. Mirrors xchat/irssi-dark
+   * aesthetics — saturated mid-lightness, never pastel-low (would
+   * disappear into the muted background).
+   */
+  --nick-color-0: #ff8c8c; /* coral */
+  --nick-color-1: #ffb060; /* orange */
+  --nick-color-2: #ffd060; /* gold */
+  --nick-color-3: #d8e060; /* lime */
+  --nick-color-4: #90d870; /* spring green */
+  --nick-color-5: #60d8a8; /* mint */
+  --nick-color-6: #60d8d8; /* cyan */
+  --nick-color-7: #60b8e8; /* sky */
+  --nick-color-8: #88a8ff; /* periwinkle */
+  --nick-color-9: #b890ff; /* lavender */
+  --nick-color-10: #e088e0; /* magenta */
+  --nick-color-11: #ff90c0; /* pink */
+  --nick-color-12: #e0a888; /* rose-tan */
+  --nick-color-13: #c0c0c0; /* silver */
+  --nick-color-14: #a0e8b8; /* sage */
+  --nick-color-15: #f0d090; /* sand */
 }
 
 :root[data-theme="mirc-light"] {
@@ -64,6 +93,31 @@
   --mode-halfop: #7f5f00;
   --mode-voiced: #007f00;
   --mode-plain: var(--fg);
+  /*
+   * UX-5 bucket BC2 — colored nicks palette (light theme variant).
+   * Darker, more saturated hues to maintain contrast (~5:1+) against
+   * #ffffff. Mirrors mIRC-default palette aesthetics — deep colors,
+   * never pastel-high (would wash out on white). Same hue ORDER as
+   * the dark variant so the same nick (same djb2 index) reads as a
+   * recognisable hue family across themes (e.g. index 0 = red-ish
+   * everywhere; only the lightness rotates).
+   */
+  --nick-color-0: #c03030; /* deep red */
+  --nick-color-1: #c06020; /* burnt orange */
+  --nick-color-2: #a07000; /* dark gold */
+  --nick-color-3: #607000; /* olive */
+  --nick-color-4: #207020; /* forest */
+  --nick-color-5: #008060; /* teal-green */
+  --nick-color-6: #007080; /* deep cyan */
+  --nick-color-7: #005090; /* navy-blue */
+  --nick-color-8: #2030a0; /* indigo */
+  --nick-color-9: #5020a0; /* royal purple */
+  --nick-color-10: #800070; /* deep magenta */
+  --nick-color-11: #a02060; /* berry */
+  --nick-color-12: #804020; /* sienna */
+  --nick-color-13: #404040; /* graphite */
+  --nick-color-14: #206040; /* moss */
+  --nick-color-15: #806020; /* bronze */
 }
 
 * {
@@ -1180,22 +1234,52 @@ body {
   text-overflow: ellipsis;
 }
 
-.members-pane li.member-op {
+/* UX-5 bucket BC2 — irssi-style two-part nick render. The mode-prefix
+ * glyph takes the existing mode-token color (op/halfop/voiced) so the
+ * tier reads at a glance; the nick text takes the deterministic
+ * djb2-hash palette color (--nick-color-N). Both surfaces — scrollback
+ * sender AND members pane — share this contract.
+ *
+ * Pre-BC2 the members pane painted the WHOLE row (`.member-op` etc.)
+ * with the mode color, which made every op-nick visually identical
+ * (just "red"). Post-BC2 only the `@` prefix is red; nicks differ
+ * per-hash. tier classes (`.member-op` etc.) are still rendered on
+ * the `<li>` for `sortMembers` parity and the JoinBanner reuse, but
+ * the per-tier `color:` cascade moved off — see the deletion below.
+ */
+.nick {
+  display: inline;
+}
+
+.nick-prefix {
+  display: inline;
+  font-weight: bold;
+}
+
+.nick-prefix-op {
   color: var(--mode-op);
 }
 
-.members-pane li.member-halfop {
+.nick-prefix-halfop {
   color: var(--mode-halfop);
 }
 
-.members-pane li.member-voiced {
+.nick-prefix-voiced {
   color: var(--mode-voiced);
 }
 
-.members-pane li.member-plain {
-  color: var(--mode-plain);
+.nick-text {
+  display: inline;
 }
 
+/* Members-pane tier classes retained on the `<li>` for the
+ * sortMembers contract + reviewer-facing diagnosis (op-row IS still
+ * a thing in the DOM) but the per-tier color cascade is gone — color
+ * is now per-nick via NickText's inline `style="color: var(--nick-color-N)"`.
+ * If you need tier-driven cosmetics in the future (background, weight)
+ * keep them on `.members-pane li.member-op` etc. — don't reintroduce
+ * `color:` here or it'll clash with NickText.
+ */
 /* The mode-prefix sigil (@/+/space) is rendered as the first character
  * of the click button's text content via `memberSigil/1` in
  * `lib/memberSigil.ts` — NOT via CSS `::before`. The previous `::before

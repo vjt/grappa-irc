@@ -19,6 +19,7 @@ import {
   SERVER_WINDOW_NAME,
 } from "./lib/windowKinds";
 import { setParted, windowStateByChannel } from "./lib/windowState";
+import NickText from "./NickText";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -474,7 +475,7 @@ const Sidebar: Component<Props> = () => {
                           onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                           class={`sidebar-window-btn${isGreyed(network.slug, qw.targetNick) ? " sidebar-window-greyed" : ""}`}
                         >
-                          <span class="sidebar-channel-name">{qw.targetNick}</span>
+                          <NickText nick={qw.targetNick} extraClass="sidebar-channel-name" />
                           <Show when={(messagesUnread()[key] ?? 0) > 0}>
                             <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
                           </Show>
@@ -540,7 +541,14 @@ const Sidebar: Component<Props> = () => {
                               );
                             }}
                           >
-                            <span class="sidebar-channel-name parted">{entry.target}</span>
+                            {entry.kind === "query" ? (
+                              <NickText
+                                nick={entry.target}
+                                extraClass="sidebar-channel-name parted"
+                              />
+                            ) : (
+                              <span class="sidebar-channel-name parted">{entry.target}</span>
+                            )}
                           </button>
                           <InlineConfirmButton
                             idleLabel="×"

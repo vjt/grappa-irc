@@ -1,5 +1,6 @@
 import { type Component, For } from "solid-js";
 import { matchesWatchlist } from "./lib/mentionMatch";
+import NickText from "./NickText";
 
 // Mentions-while-away window (C8.1 / spec #19).
 //
@@ -101,7 +102,11 @@ const MentionsWindow: Component<Props> = (props) => {
               >
                 <span class="mentions-row-time scrollback-time">{formatMs(row.server_time)}</span>
                 <span class="mentions-row-channel">{row.channel}</span>
-                <span class="mentions-row-sender">&lt;{row.sender_nick}&gt;</span>
+                <span class="mentions-row-sender">
+                  &lt;
+                  <NickText nick={row.sender_nick} />
+                  &gt;
+                </span>
                 <span class="mentions-row-body">{row.body}</span>
               </button>
             );

@@ -5,6 +5,7 @@ import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
 import { setSelectedChannel } from "./lib/selection";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import NickText from "./NickText";
 
 // UX-4 bucket B — first-class `:home` window pinned ABOVE all
 // networks. Two branches off `homeData()`:
@@ -68,7 +69,7 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
     <li class="home-pane-network-row home-pane-network-row-connected">
       <button type="button" class="home-pane-network-btn" onClick={onJump}>
         <span class="home-pane-network-slug">{props.row.slug}</span>
-        <span class="home-pane-network-nick">{props.row.nick}</span>
+        <NickText nick={props.row.nick} extraClass="home-pane-network-nick" />
         <span class="home-pane-network-state">{props.row.connection_state}</span>
       </button>
     </li>
@@ -113,7 +114,7 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
       <div class="home-pane-network-card">
         <div class="home-pane-network-card-row">
           <span class="home-pane-network-slug">{props.row.slug}</span>
-          <span class="home-pane-network-nick">{props.row.nick}</span>
+          <NickText nick={props.row.nick} extraClass="home-pane-network-nick" />
           <span class="home-pane-network-state">{props.row.connection_state}</span>
         </div>
         <Show when={props.row.connection_state_reason}>

@@ -105,6 +105,22 @@ describe("BottomBar", () => {
     expect(screen.getByText("alice")).toBeInTheDocument();
   });
 
+  it("UX-5 BC2: query (DM) tab nick is rendered through NickText (.nick-text span + inline color)", () => {
+    render(() => <BottomBar />);
+    // The DM tab for "alice" mounts the NickText helper, which wraps
+    // the nick in a `.nick-text` span carrying the deterministic
+    // `var(--nick-color-N)` inline style. This pins consistency with
+    // the desktop Sidebar's identical DM-row migration — without this
+    // assertion the mobile bottom bar could silently regress to a bare
+    // `{qw.targetNick}` interpolation (the pre-BC2 shape).
+    const aliceTab = screen.getByText("alice").closest("button");
+    expect(aliceTab).not.toBeNull();
+    const nickText = aliceTab?.querySelector(".nick-text") as HTMLElement | null;
+    expect(nickText).not.toBeNull();
+    expect(nickText?.textContent).toBe("alice");
+    expect(nickText?.style.color).toMatch(/^var\(--nick-color-\d+\)$/);
+  });
+
   it("clicking a channel tab calls setSelectedChannel with correct tuple", () => {
     render(() => <BottomBar />);
     fireEvent.click(screen.getByText("#italia"));

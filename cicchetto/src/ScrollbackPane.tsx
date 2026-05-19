@@ -23,6 +23,7 @@ import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
 import { networks, user } from "./lib/networks";
+import { senderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
 import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
@@ -31,6 +32,7 @@ import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
 import { setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
+import NickText from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
 import UserContextMenu from "./UserContextMenu";
 import WhoisCard from "./WhoisCard";
@@ -258,6 +260,12 @@ type NickHandlers = {
   // is wired by the parent ScrollbackLine, which has access to the
   // active networkSlug + auth token via createScope.
   onJoinChannel: (channel: string) => void;
+  // UX-5 bucket BC2: needed by `prefixFor` inside `renderBody` to
+  // build the channelKey for the per-channel members store lookup.
+  // Threaded as a string (not signal) — `renderBody` is reactive at
+  // the SolidJS render boundary; the parent ScrollbackLine reads
+  // `props.networkSlug` on each row render, so the value is fresh.
+  networkSlug: string;
 };
 
 // No-silent-drops bucket 1 (2026-05-14, B6.1 reshape): pretty-render
@@ -278,7 +286,7 @@ type RawEvent = { raw_verb?: string; raw_sender?: string; raw_params?: string[] 
 const renderRawEvent = (
   raw: RawEvent,
   msg: ScrollbackMessage,
-  senderSpan: (display: string, nick: string) => JSX.Element,
+  senderSpan: (nick: string) => JSX.Element,
   handlers: NickHandlers,
 ): JSX.Element => {
   const verb = raw.raw_verb ?? "?";
@@ -290,20 +298,20 @@ const renderRawEvent = (
     case "WALLOPS":
       return (
         <span class="scrollback-body">
-          *** Wallops from {senderSpan(sender, sender)}: <MircBody body={trailing} />
+          *** Wallops from {senderSpan(sender)}: <MircBody body={trailing} />
         </span>
       );
     case "GLOBOPS":
       return (
         <span class="scrollback-body">
-          *** Globops from {senderSpan(sender, sender)}: <MircBody body={trailing} />
+          *** Globops from {senderSpan(sender)}: <MircBody body={trailing} />
         </span>
       );
     case "KILL": {
       const target = params[0] ?? "?";
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender, sender)} killed {target}
+          *** {senderSpan(sender)} killed {target}
           {trailing && trailing !== target ? ` (${trailing})` : ""}
         </span>
       );
@@ -320,7 +328,7 @@ const renderRawEvent = (
       const newHost = params[1] ?? "?";
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender, sender)} changed host to {newUser}@{newHost}
+          *** {senderSpan(sender)} changed host to {newUser}@{newHost}
         </span>
       );
     }
@@ -340,7 +348,7 @@ const renderRawEvent = (
       if (typeof invitedChannel === "string" && /^[#&+!]/.test(invitedChannel)) {
         return (
           <span class="scrollback-body">
-            *** {senderSpan(sender, sender)} invited you to {invitedChannel}{" "}
+            *** {senderSpan(sender)} invited you to {invitedChannel}{" "}
             <button
               type="button"
               class="scrollback-invite-join"
@@ -354,7 +362,7 @@ const renderRawEvent = (
       // Fall through to default arm if the channel param looks malformed.
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender, sender)} {verb} {params.join(" ")}
+          *** {senderSpan(sender)} {verb} {params.join(" ")}
         </span>
       );
     }
@@ -364,25 +372,60 @@ const renderRawEvent = (
       // above; the default keeps the principle of "no silent drops".
       return (
         <span class="scrollback-body">
-          *** {senderSpan(sender, sender)} {verb} {params.join(" ")}
+          *** {senderSpan(sender)} {verb} {params.join(" ")}
         </span>
       );
   }
 };
 
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
+  // UX-5 bucket BC2: per-message sender prefix glyph (@/%/+) derived
+  // from the LIVE members store keyed by (channel, sender). Scrollback
+  // rows are mode-agnostic on the wire — the prefix is a render-time
+  // join against `membersByChannel()` so re-renders track MODE events.
+  // Returns "" (not " ") for plain / unknown senders — see
+  // `senderPrefix` docstring in `lib/nickColor.ts`.
+  const prefixFor = (nick: string): "@" | "%" | "+" | "" => {
+    if (!msg.channel) return "";
+    const key = channelKey(handlers.networkSlug, msg.channel);
+    return senderPrefix(membersByChannel()[key], nick);
+  };
+
   // C7.6: sender button for content kinds — left-click (→ query) or
   // right-click (→ UserContextMenu). Rendered as <button> to satisfy
   // biome a11y rules (noStaticElementInteractions / useKeyWithClickEvents).
   // Styled via .scrollback-sender.nick-clickable to appear inline.
-  const senderSpan = (label: string, nick: string): JSX.Element => (
+  //
+  // UX-5 BC2: the displayed nick goes through `<NickText>` for the
+  // deterministic palette color + irssi-style prefix glyph. The
+  // bracket pair (`<...>` for privmsg, `-...-` for notice) wraps the
+  // NickText so the entire `<@nick>` reads as one inline unit inside
+  // the brackets.
+  const senderSpan = (bracketLeft: string, bracketRight: string, nick: string): JSX.Element => (
     <button
       type="button"
       class="scrollback-sender nick-clickable"
       onClick={() => handlers.onNickClick(nick)}
       onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
     >
-      {label}
+      {bracketLeft}
+      <NickText nick={nick} prefix={prefixFor(nick)} />
+      {bracketRight}
+    </button>
+  );
+
+  // Variant used by `renderRawEvent` (WALLOPS/GLOBOPS/KILL/CHGHOST/
+  // INVITE) — no surrounding brackets, just the colored nick. Kept as
+  // a separate closure so the bracket-vs-bare distinction is explicit
+  // at the call site (no magic-default-arg).
+  const bareSenderSpan = (nick: string): JSX.Element => (
+    <button
+      type="button"
+      class="scrollback-sender nick-clickable"
+      onClick={() => handlers.onNickClick(nick)}
+      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
+    >
+      <NickText nick={nick} prefix={prefixFor(nick)} />
     </button>
   );
 
@@ -390,7 +433,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "privmsg":
       return (
         <>
-          {senderSpan(`<${msg.sender}>`, msg.sender)}{" "}
+          {senderSpan("<", ">", msg.sender)}{" "}
           <span class="scrollback-body">
             <MircBody body={msg.body ?? ""} />
           </span>
@@ -408,11 +451,11 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       // render takes precedence when raw_verb is present.
       const meta = msg.meta as RawEvent | undefined;
       if (meta && typeof meta.raw_verb === "string") {
-        return renderRawEvent(meta, msg, senderSpan, handlers);
+        return renderRawEvent(meta, msg, bareSenderSpan, handlers);
       }
       return (
         <>
-          {senderSpan(`-${msg.sender}-`, msg.sender)}{" "}
+          {senderSpan("-", "-", msg.sender)}{" "}
           <span class="scrollback-body">
             <MircBody body={msg.body ?? ""} />
           </span>
@@ -423,28 +466,20 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       return (
         <span class="scrollback-body">
           *{"  "}
-          <button
-            type="button"
-            class="scrollback-sender nick-clickable"
-            onClick={() => handlers.onNickClick(msg.sender)}
-            onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(msg.sender, e)}
-          >
-            {msg.sender}
-          </button>{" "}
-          <MircBody body={stripCtcpAction(msg.body)} />
+          {bareSenderSpan(msg.sender)} <MircBody body={stripCtcpAction(msg.body)} />
         </span>
       );
     case "join":
       return (
         <span class="scrollback-body">
-          * {msg.sender} has joined {msg.channel}
+          * {bareSenderSpan(msg.sender)} has joined {msg.channel}
         </span>
       );
     case "part": {
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {msg.sender} has left {msg.channel}
+          * {bareSenderSpan(msg.sender)} has left {msg.channel}
           {reason ? ` (${reason})` : ""}
         </span>
       );
@@ -453,7 +488,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {msg.sender} has quit{reason ? ` (${reason})` : ""}
+          * {bareSenderSpan(msg.sender)} has quit{reason ? ` (${reason})` : ""}
         </span>
       );
     }
@@ -461,7 +496,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const newNick = typeof msg.meta.new_nick === "string" ? msg.meta.new_nick : "?";
       return (
         <span class="scrollback-body">
-          * {msg.sender} is now known as {newNick}
+          * {bareSenderSpan(msg.sender)} is now known as <NickText nick={newNick} />
         </span>
       );
     }
@@ -470,7 +505,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const args = Array.isArray(msg.meta.args) ? ` ${msg.meta.args.join(" ")}` : "";
       return (
         <span class="scrollback-body">
-          * {msg.sender} sets mode {modes}
+          * {bareSenderSpan(msg.sender)} sets mode {modes}
           {args} on {msg.channel}
         </span>
       );
@@ -478,7 +513,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "topic":
       return (
         <span class="scrollback-body">
-          * {msg.sender} changed topic: {msg.body}
+          * {bareSenderSpan(msg.sender)} changed topic: {msg.body}
         </span>
       );
     case "kick": {
@@ -486,7 +521,8 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {msg.sender} kicked {target} from {msg.channel}
+          * {bareSenderSpan(msg.sender)} kicked{" "}
+          <NickText nick={target} prefix={prefixFor(target)} /> from {msg.channel}
           {reason ? ` (${reason})` : ""}
         </span>
       );
@@ -499,13 +535,13 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       // keeps its raw_verb fallback for cold-deploy backfill misses.
       const meta = msg.meta as RawEvent | undefined;
       if (meta && typeof meta.raw_verb === "string") {
-        return renderRawEvent(meta, msg, senderSpan, handlers);
+        return renderRawEvent(meta, msg, bareSenderSpan, handlers);
       }
       // Defensive: a :server_event row with no raw_verb is a server
       // bug, but render the body so it isn't invisible.
       return (
         <span class="scrollback-body">
-          *** {senderSpan(msg.sender, msg.sender)} {msg.body ?? ""}
+          *** {bareSenderSpan(msg.sender)} {msg.body ?? ""}
         </span>
       );
     }
@@ -531,6 +567,7 @@ const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
 const ScrollbackLine: Component<{
   msg: ScrollbackMessage;
   userNick: string | null;
+  networkSlug: string;
   onNickClick: (nick: string) => void;
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
   onJoinChannel: (channel: string) => void;
@@ -549,6 +586,7 @@ const ScrollbackLine: Component<{
     onNickClick: props.onNickClick,
     onNickContextMenu: props.onNickContextMenu,
     onJoinChannel: props.onJoinChannel,
+    networkSlug: props.networkSlug,
   };
 
   return (
@@ -1149,12 +1187,19 @@ const ScrollbackPane: Component<Props> = (props) => {
             <>
               <div class="join-banner-names">
                 <For each={memberList()}>
-                  {(m) => (
-                    <span class="join-banner-nick">
-                      {memberSigil(m.modes)}
-                      {m.nick}
-                    </span>
-                  )}
+                  {(m) => {
+                    const sigil = memberSigil(m.modes);
+                    const prefix = sigil === " " ? "" : sigil;
+                    return (
+                      <span class="join-banner-nick">
+                        <NickText
+                          nick={m.nick}
+                          prefix={prefix}
+                          extraClass="join-banner-nick-text"
+                        />
+                      </span>
+                    );
+                  }}
                 </For>
               </div>
               <div class="join-banner-summary">
@@ -1235,6 +1280,7 @@ const ScrollbackPane: Component<Props> = (props) => {
                 <ScrollbackLine
                   msg={row.msg}
                   userNick={userNick()}
+                  networkSlug={props.networkSlug}
                   onNickClick={handleNickClick}
                   onNickContextMenu={handleNickContextMenu}
                   onJoinChannel={handleJoinChannel}

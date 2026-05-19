@@ -8,6 +8,7 @@ import { nickEquals } from "./lib/nickEquals";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
+import NickText, { type PrefixGlyph } from "./NickText";
 import UserContextMenu from "./UserContextMenu";
 
 // Right-pane member list. Reads from `membersByChannel`; renders each
@@ -51,6 +52,20 @@ const tierClass = (modes: string[]): string => {
   if (modes.includes("%")) return "member-halfop";
   if (modes.includes("+")) return "member-voiced";
   return "member-plain";
+};
+
+// Translate member modes to the NickText prefix glyph contract.
+// memberSigil/1 returns " " for plain (column-alignment in the
+// pre-BC2 single-color render); NickText's PrefixGlyph union treats
+// plain as `""` so the irssi-style two-part nick render doesn't
+// inject a leading whitespace span. The sigil column-alignment
+// concern is moot now that the prefix gets its own bold-colored
+// span (the `@` / `%` / `+` chars are wider than a space anyway, so
+// the pre-existing alignment was approximate; per-mode color makes
+// the tier obvious without the padding).
+const sigilToPrefix = (modes: string[]): PrefixGlyph => {
+  const sigil = memberSigil(modes);
+  return sigil === " " ? "" : sigil;
 };
 
 type MenuFor = { nick: string; x: number; y: number } | null;
@@ -149,8 +164,7 @@ const MembersPane: Component<Props> = (props) => {
                     onClick={() => onClick(m.nick)}
                     onContextMenu={(e) => onContextMenu(e, m.nick)}
                   >
-                    {memberSigil(m.modes)}
-                    {m.nick}
+                    <NickText nick={m.nick} prefix={sigilToPrefix(m.modes)} />
                   </button>
                 </li>
               )}

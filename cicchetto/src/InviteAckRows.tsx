@@ -1,5 +1,6 @@
 import { type Component, For, Show } from "solid-js";
 import { inviteAckBySlug } from "./lib/inviteAck";
+import NickText from "./NickText";
 
 // P-0e + P-0f — invite-ack ephemeral synthetic rows. Renders one
 // inline row per invite_ack event for `networkSlug`, in arrival
@@ -38,7 +39,7 @@ const InviteAckRows: Component<Props> = (props) => {
           <div class="invite-ack-row" data-testid="invite-ack-row">
             <span class="invite-ack-arrow">→</span>
             <span class="invite-ack-text">
-              invited <span class="invite-ack-peer">{entry.peer}</span> to{" "}
+              invited <NickText nick={entry.peer} extraClass="invite-ack-peer" /> to{" "}
               <span class="invite-ack-channel">{entry.channel}</span>
             </span>
           </div>

@@ -1,5 +1,6 @@
 import { type Component, Show } from "solid-js";
 import { dismissPeerAway, peerAwayBySlug } from "./lib/peerAway";
+import NickText from "./NickText";
 
 // P-0b — peer-away banner. Renders inline at the top of the scrollback
 // pane when:
@@ -31,7 +32,7 @@ const PeerAwayBanner: Component<Props> = (props) => {
       {(msg) => (
         <div class="peer-away-banner" data-testid="peer-away-banner">
           <span class="peer-away-banner-label">
-            <span class="peer-away-banner-peer">{props.peer}</span> is away:{" "}
+            <NickText nick={props.peer} extraClass="peer-away-banner-peer" /> is away:{" "}
             <span class="peer-away-banner-message">{msg()}</span>
           </span>
           <button
