@@ -29,6 +29,8 @@ vi.mock("../lib/selection", () => ({
 
 vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({ "freenode #italia": 2, "freenode $server": 3 }),
+  bumpMention: vi.fn(),
+  clearMentionsForKey: vi.fn(),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -170,7 +172,11 @@ describe("BottomBar", () => {
       messagesUnread: () => ({}),
       eventsUnread: () => ({}),
     }));
-    vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
+    vi.doMock("../lib/mentions", () => ({
+      mentionCounts: () => ({}),
+      bumpMention: vi.fn(),
+      clearMentionsForKey: vi.fn(),
+    }));
     vi.doMock("../lib/channelKey", () => ({
       channelKey: (slug: string, name: string) => `${slug} ${name}`,
     }));

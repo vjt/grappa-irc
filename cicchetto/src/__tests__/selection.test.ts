@@ -1088,4 +1088,190 @@ describe("selection store", () => {
       expect(sel.selectedChannel()?.kind).toBe("query");
     });
   });
+
+  // UX-5 bucket BU — unread state machine: single "is operator reading?"
+  // gate drives all three sinks (messagesUnread / eventsUnread /
+  // mentionCounts). Before BU, mentionCounts cleared on selection only —
+  // browser-blur arrivals on the selected window were left as a stale red
+  // badge after focus regain. setSelectedChannel was also not idempotent
+  // on identical (slug, name, kind) — re-clicking the active channel
+  // re-fired the selection effect, which cleared mentions (legitimately,
+  // but also crossed the marker-injection invariant by triggering
+  // sessionTopId recapture in ScrollbackPane). The fix consolidates the
+  // mention clear into `clearBadgesForWindow` and adds an idempotency
+  // guard at the setter boundary so the active-channel re-click is a
+  // pure no-op.
+  describe("UX-5 bucket BU — mention badge symmetry + idempotent setter", () => {
+    it("setSelectedChannel is idempotent on identical (slug, name, kind)", async () => {
+      // BU bug-2 root cause: re-clicking the active sidebar row passed a
+      // new object literal, which re-fired the on(selectedChannel) effect
+      // because Solid's === default compared by identity. The setter now
+      // short-circuits before the signal write so no downstream effect
+      // observes a non-transition.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
+      const selection = await import("../lib/selection");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      await Promise.resolve();
+      vi.mocked(readCursor.setReadCursor).mockClear();
+      // Re-click the SAME channel.
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      // No cursor write — the effect didn't re-fire (no leave occurred).
+      await Promise.resolve();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
+    });
+
+    it("setSelectedChannel STILL fires the leave-arm when (slug, name, kind) differ", async () => {
+      // Anti-spec guard: idempotency MUST be exact-tuple-match. A change in
+      // any one of slug/name/kind is a real transition and the effect
+      // chain runs normally — the leave-arm fires its cursor-set for the
+      // OLD selection.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const readCursor = await import("../lib/readCursor");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const aKey = channelKey("freenode", "#grappa");
+      scrollback.appendToScrollback(aKey, {
+        id: 99,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1_700_000_000_000,
+        kind: "privmsg",
+        sender: "alice",
+        body: "hi",
+        meta: {},
+      });
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      vi.mocked(readCursor.setReadCursor).mockClear();
+      // Different channel name on same network → real transition.
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#cicchetto",
+        kind: "channel",
+      });
+      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 99);
+    });
+
+    it("setSelectedChannel(null) on already-null is a no-op (no effect re-fire)", async () => {
+      // Mirror of the active-channel re-click guard for the null case.
+      // Module-load default is null; calling setSelectedChannel(null) here
+      // must not perturb the signal.
+      localStorage.setItem("grappa-token", "tok");
+      const readCursor = await import("../lib/readCursor");
+      const selection = await import("../lib/selection");
+      expect(selection.selectedChannel()).toBeNull();
+      selection.setSelectedChannel(null);
+      await Promise.resolve();
+      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
+    });
+
+    it("selecting a channel clears its accumulated mentionCounts", async () => {
+      // BU bug-1 prerequisite: selection clear must include mentions
+      // (was the case in pre-BU mentions.ts; verify still works after
+      // moving the clear into selection.ts's clearBadgesForWindow).
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const key = channelKey("freenode", "#grappa");
+      mentions.bumpMention(key);
+      mentions.bumpMention(key);
+      expect(mentions.mentionCounts()[key]).toBe(2);
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      expect(mentions.mentionCounts()[key]).toBeUndefined();
+    });
+
+    it("browser-focus-regain clears mentionCounts for the selected window (BU bug-1 fix)", async () => {
+      // BU bug-1 root: visibility-regain cleared unread/messages/events
+      // but NOT mentions. After fix: the same arm clears all four.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const key = channelKey("freenode", "#grappa");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      // Simulate the subscribe.ts blurred-arrival path: mention bumped
+      // because effective-focus was false (selected but tab hidden).
+      mentions.bumpMention(key);
+      expect(mentions.mentionCounts()[key]).toBe(1);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      // Mention badge clears alongside the other three sinks — single
+      // unified "is operator reading?" gate.
+      expect(mentions.mentionCounts()[key]).toBeUndefined();
+    });
+
+    it("focus-regain does NOT clear mentionCounts for OTHER windows", async () => {
+      // Symmetric anti-spec guard: focus-regain only clears the SELECTED
+      // window's badges (all four sinks).
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const selKey = channelKey("freenode", "#grappa");
+      const otherKey = channelKey("freenode", "#cicchetto");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      mentions.bumpMention(selKey);
+      mentions.bumpMention(otherKey);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
+      expect(mentions.mentionCounts()[otherKey]).toBe(1);
+    });
+
+    it("focus-regain with no selected window does NOT clear any mentionCounts", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      // Importing selection registers its on(isDocumentVisible) effect
+      // — even though we never call setSelectedChannel here.
+      await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const key = channelKey("freenode", "#grappa");
+      // No setSelectedChannel — selection is null.
+      mentions.bumpMention(key);
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      setVisibilityForTest(true);
+      await Promise.resolve();
+      expect(mentions.mentionCounts()[key]).toBe(1);
+    });
+  });
 });

@@ -67,6 +67,8 @@ vi.mock("../lib/selection", () => ({
 
 vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({ "freenode #italia": 2, "freenode $server": 1 }),
+  bumpMention: vi.fn(),
+  clearMentionsForKey: vi.fn(),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -246,7 +248,11 @@ describe("Sidebar", () => {
       messagesUnread: () => ({}),
       eventsUnread: () => ({}),
     }));
-    vi.doMock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
+    vi.doMock("../lib/mentions", () => ({
+      mentionCounts: () => ({}),
+      bumpMention: vi.fn(),
+      clearMentionsForKey: vi.fn(),
+    }));
     vi.doMock("../lib/queryWindows", () => ({
       queryWindowsByNetwork: () => ({}),
       closeQueryWindowState: vi.fn(),

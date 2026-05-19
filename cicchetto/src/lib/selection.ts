@@ -3,6 +3,7 @@ import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
+import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
@@ -64,12 +65,44 @@ const exports = identityScopedStore((onIdentityChange) => {
   const [unreadCounts, setUnreadCounts] = createSignal<Record<ChannelKey, number>>({});
   const [messagesUnread, setMessagesUnread] = createSignal<Record<ChannelKey, number>>({});
   const [eventsUnread, setEventsUnread] = createSignal<Record<ChannelKey, number>>({});
-  const [selectedChannel, setSelectedChannel] = createSignal<SelectedChannel>(null);
+  const [selectedChannel, setSelectedChannelRaw] = createSignal<SelectedChannel>(null);
 
   onIdentityChange(() => setUnreadCounts({}));
   onIdentityChange(() => setMessagesUnread({}));
   onIdentityChange(() => setEventsUnread({}));
-  onIdentityChange(() => setSelectedChannel(null));
+  onIdentityChange(() => setSelectedChannelRaw(null));
+
+  // UX-5 bucket BU (2026-05-19): idempotent setter. Re-clicking an
+  // already-active sidebar row passed a new object literal to the raw
+  // setter, which made Solid's `===` equality compare by identity and
+  // re-fired the on(selectedChannel) consumer in `mentions.ts` (a
+  // standalone `on(selectedChannel)` effect that cleared mentionCounts
+  // on every fire). The leave-arm below + ScrollbackPane's on(key, …)
+  // already guarded on string-key equality and were safe; only the
+  // mentions arm crossed the invariant. Operator perception: clicking
+  // the open channel "did something" (red badge cleared without the
+  // operator having read anything new). Post-BU the mentions clear is
+  // consolidated into clearBadgesForWindow (gated by the visibility +
+  // selection arms in this file), AND the setter short-circuits at
+  // its boundary so no observer sees a non-transition.
+  //
+  // Exact-tuple equality: any change in slug, name, or kind is a real
+  // transition. null vs non-null is also a transition (covers logout +
+  // identity reset paths).
+  const setSelectedChannel = (next: SelectedChannel): void => {
+    const cur = untrack(selectedChannel);
+    if (cur === null && next === null) return;
+    if (
+      cur !== null &&
+      next !== null &&
+      cur.networkSlug === next.networkSlug &&
+      cur.channelName === next.channelName &&
+      cur.kind === next.kind
+    ) {
+      return;
+    }
+    setSelectedChannelRaw(next);
+  };
 
   const bumpUnread = (key: ChannelKey) => {
     setUnreadCounts((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
@@ -112,7 +145,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   // (focus arrives via selection change) and the browser-focus-regain arm
   // (focus arrives via visibility transition). Same semantic: "user is now
   // actively reading this window; nothing should be unread." Wipes all
-  // three badge stores for the (slug, channel) pair.
+  // four badge stores for the (slug, channel) pair.
+  //
+  // UX-5 bucket BU (2026-05-19): mentionCounts joined the unified clear.
+  // Prior shape had `mentions.ts`'s own `on(selectedChannel)` effect doing
+  // the mention clear — but that arm did NOT fire on visibility-regain,
+  // leaving the red badge stale after blur-then-focus on the selected
+  // window. Now ALL FOUR sinks derive from the same "is operator reading?"
+  // gate (selected AND tab visible+focused).
   const clearBadgesForWindow = (networkSlug: string, channelName: string): void => {
     const key = channelKey(networkSlug, channelName);
     setUnreadCounts((prev) => {
@@ -130,6 +170,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       const { [key]: _drop, ...rest } = prev;
       return rest;
     });
+    clearMentionsForKey(key);
   };
 
   createEffect(

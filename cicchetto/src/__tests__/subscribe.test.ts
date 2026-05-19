@@ -110,6 +110,7 @@ vi.mock("../lib/windowState", () => ({
 vi.mock("../lib/mentions", () => ({
   bumpMention: vi.fn(),
   mentionCounts: () => ({}),
+  clearMentionsForKey: vi.fn(),
 }));
 
 vi.mock("../lib/queryWindows", () => ({
@@ -2823,6 +2824,7 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
     vi.doMock("../lib/mentions", () => ({
       bumpMention: vi.fn(),
       mentionCounts: () => ({}),
+      clearMentionsForKey: vi.fn(),
     }));
     vi.doMock("../lib/queryWindows", () => ({
       openQueryWindowState: vi.fn(),

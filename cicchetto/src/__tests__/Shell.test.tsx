@@ -151,6 +151,7 @@ vi.mock("../lib/channelTopic", () => ({
 vi.mock("../lib/mentions", () => ({
   mentionCounts: () => ({}),
   bumpMention: vi.fn(),
+  clearMentionsForKey: vi.fn(),
 }));
 
 vi.mock("../lib/compose", () => ({
