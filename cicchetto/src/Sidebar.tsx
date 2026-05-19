@@ -232,6 +232,9 @@ const Sidebar: Component<Props> = () => {
             class="sidebar-window-btn sidebar-home-btn"
             onClick={() => handleClick(HOME_WINDOW_SLUG, HOME_WINDOW_NAME, "home")}
           >
+            <span class="sidebar-home-emoji" aria-hidden="true">
+              🏠
+            </span>
             <span class="sidebar-channel-name">Home</span>
           </button>
         </li>

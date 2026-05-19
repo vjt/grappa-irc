@@ -2833,6 +2833,17 @@ body {
   flex: 0 0 auto;
 }
 
+/* UX-5 bucket B (2026-05-19) — Home sidebar row emoji icon. Mirrors
+   `.sidebar-network-emoji` + `.sidebar-admin-emoji` treatment so all
+   three identity-scoped row kinds share the same visual slot. Parallel
+   class (not a shared one) matches the established `sidebar-<kind>-emoji`
+   naming the reviewer accepted in UX-4 bucket N. */
+
+.sidebar-home-emoji {
+  margin-right: 0.4rem;
+  flex: 0 0 auto;
+}
+
 .home-pane {
   flex: 1 1 auto;
   overflow-y: auto;

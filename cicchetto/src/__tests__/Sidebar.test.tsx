@@ -728,4 +728,17 @@ describe("Sidebar", () => {
       });
     });
   });
+
+  // UX-5 bucket B — home sidebar row 🏠 emoji icon. Visual parity with
+  // the bucket-C network ⚙️ + bucket-N admin 🔧 treatment so the three
+  // identity-scoped row kinds (home, admin, per-network header) read as
+  // a uniform "iconed row" group. Pre-bucket the home row rendered text
+  // only — the visual outlier.
+  describe("UX-5 bucket B — home row emoji icon", () => {
+    it("home row renders the 🏠 emoji prefix", () => {
+      const { container } = render(() => <Sidebar />);
+      const emoji = container.querySelector(".sidebar-home-section .sidebar-home-emoji");
+      expect(emoji?.textContent?.trim()).toBe("🏠");
+    });
+  });
 });
