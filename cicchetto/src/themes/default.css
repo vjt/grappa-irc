@@ -414,22 +414,18 @@ html.resize-dragging * {
 
 /* Sidebar */
 
-.sidebar-network {
+.sidebar-network-section {
   padding: 0.25rem 0;
-}
-
-.sidebar-network ul {
   list-style: none;
   margin: 0;
-  padding: 0;
 }
 
-.sidebar-network li {
+.sidebar-network-section li {
   display: flex;
   align-items: stretch;
 }
 
-.sidebar-network li .sidebar-window-btn {
+.sidebar-network-section li .sidebar-window-btn {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -445,11 +441,11 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.sidebar-network li .sidebar-window-btn:hover {
+.sidebar-network-section li .sidebar-window-btn:hover {
   background: var(--border);
 }
 
-.sidebar-network li.selected .sidebar-window-btn {
+.sidebar-network-section li.selected .sidebar-window-btn {
   background: var(--border);
   color: var(--accent);
 }
@@ -461,13 +457,13 @@ html.resize-dragging * {
    shallower left padding lets the emoji sit closer to the row edge
    while the channels remain indented underneath.
 
-   Specificity note: this rule co-qualifies `.sidebar-network li` (matching
-   the base `.sidebar-network li .sidebar-window-btn` rule's 0,2,1
-   specificity) so the header-row overrides actually take effect. Without
-   the `li` qualifier the rule scores only (0,2,0) and silently loses to
-   the base rule — same trap as the `.sidebar-network-greyed` cascade
-   below documents. Placed AFTER the base rules per biome
-   `noDescendingSpecificity`.
+   Specificity note: this rule co-qualifies `.sidebar-network-section li`
+   (matching the base `.sidebar-network-section li .sidebar-window-btn`
+   rule's 0,2,1 specificity) so the header-row overrides actually take
+   effect. Without the `li` qualifier the rule scores only (0,2,0) and
+   silently loses to the base rule — same trap as the
+   `.sidebar-network-greyed` cascade below documents. Placed AFTER the
+   base rules per biome `noDescendingSpecificity`.
 
    UX-5 bucket BT (2026-05-19) — `justify-content: flex-start` +
    `gap: 0.4rem` override the base `.sidebar-window-btn` rule's
@@ -477,8 +473,16 @@ html.resize-dragging * {
    read as a header — slug left-anchored against the ⚙️ emoji. The
    slug `<span class="sidebar-channel-name">` itself gets
    `font-weight: bold` (rule below) for visual scannability — the
-   network name is the primary identifier per section. */
-.sidebar-network li.sidebar-network-header .sidebar-window-btn {
+   network name is the primary identifier per section.
+
+   UX-5 bucket BH (2026-05-19) — the legacy `<section class="sidebar-network">`
+   wrapper was killed; the per-network `<ul>` now carries the
+   `.sidebar-network-section` class directly. Selectors renamed
+   `.sidebar-network` → `.sidebar-network-section` throughout.
+   No layout regression: the old `<section>` only set `padding`, now
+   on the `<ul>` itself. The `.sidebar-network ul` reset folded into
+   `.sidebar-network-section` since there's no nested `<ul>` anymore. */
+.sidebar-network-section li.sidebar-network-header .sidebar-window-btn {
   padding-left: 0.75rem;
   color: var(--accent);
   text-transform: lowercase;
@@ -518,7 +522,7 @@ html.resize-dragging * {
    scannability. Placed AFTER the `.sidebar-channel-name` base rule
    so its (0,3,1) specificity stacks on top of the (0,1,0) base
    without tripping biome's `noDescendingSpecificity` check. */
-.sidebar-network li.sidebar-network-header .sidebar-channel-name {
+.sidebar-network-section li.sidebar-network-header .sidebar-channel-name {
   font-weight: bold;
 }
 
@@ -571,17 +575,18 @@ html.resize-dragging * {
    (the per-channel "you've parted" visual) but apply at the row button
    level so the whole row dims. CP19 T32 — `.sidebar-network-greyed` on
    the network header + cascading via the qualified
-   `.sidebar-network.sidebar-network-greyed li .sidebar-window-btn` rule
-   so every channel/query under a parked-or-failed network derives the
-   same dim treatment without duplicating state.
+   `.sidebar-network-section.sidebar-network-greyed li .sidebar-window-btn`
+   rule so every channel/query under a parked-or-failed network derives
+   the same dim treatment without duplicating state.
 
-   Specificity note: the cascading rule co-qualifies `.sidebar-network`
-   to match the existing `.sidebar-network li .sidebar-window-btn` base
-   rule's specificity (0,2,1) and stack the greyed class on top —
-   without the co-qualifier biome flags `noDescendingSpecificity` AND
-   the override silently loses to the base rule. */
+   Specificity note: the cascading rule co-qualifies
+   `.sidebar-network-section` to match the existing
+   `.sidebar-network-section li .sidebar-window-btn` base rule's
+   specificity (0,2,1) and stack the greyed class on top — without
+   the co-qualifier biome flags `noDescendingSpecificity` AND the
+   override silently loses to the base rule. */
 .sidebar-window-greyed,
-.sidebar-network.sidebar-network-greyed li .sidebar-window-btn {
+.sidebar-network-section.sidebar-network-greyed li .sidebar-window-btn {
   color: var(--muted);
   font-style: italic;
 }

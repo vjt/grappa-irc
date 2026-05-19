@@ -55,9 +55,18 @@ test("CP15 B6 — PART → archive → re-join: row moves from active to archive
   // Expand Archive <details> → loadArchive fires on the open
   // transition → archivedBySlug populates → the parted channel
   // appears as a clickable entry.
-  const archiveSection = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
-  }).locator("details.sidebar-archive");
+  //
+  // UX-5 BH (2026-05-19): `.sidebar-network` renamed to
+  // `.sidebar-network-section`; legacy `<h3>` per-network header
+  // dropped in UX-4 bucket C — `.sidebar-network-header` is the
+  // post-C row. Archive `<details>` lifted out of the killed
+  // `<section>` wrapper; it's now a flat sibling of the per-network
+  // `<ul>` inside the `<For>`. Scoped via xpath sibling axis for
+  // forward-compat against multi-network seeds.
+  const networkSection = page.locator(".sidebar-network-section", {
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
+  });
+  const archiveSection = networkSection.locator("xpath=following-sibling::details[@class=\"sidebar-archive\"][1]");
   await archiveSection.locator("summary").click();
   await expect(archiveSection).toHaveAttribute("open", "");
   const archivedEntry = archiveSection.locator("button.sidebar-window-btn", {

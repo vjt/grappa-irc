@@ -56,7 +56,7 @@ test("M12 — MOTD persists into $server channel + cicchetto Server window rende
   // `selectedChannel.kind = "server"`.
   await loginAs(page, vjt);
   const serverEntry = page
-    .locator(".sidebar-network")
+    .locator(".sidebar-network-section")
     .filter({ has: page.locator(".sidebar-network-header").filter({ hasText: "bahamut-test" }) })
     .locator(".sidebar-network-header");
   await expect(serverEntry).toHaveCount(1);

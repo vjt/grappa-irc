@@ -460,25 +460,30 @@ describe("Sidebar", () => {
   // `userTopic.ts`). Per CLAUDE.md "Don't duplicate state — derive it"
   // — the cascade is one conditional in `isGreyed`, not a parallel state
   // map. Symmetric on `:failed` (server-side terminal failure).
+  //
+  // UX-5 BH (2026-05-19): the legacy `<section class="sidebar-network">`
+  // wrapper was killed; the per-network `<ul>` now carries
+  // `.sidebar-network-section` + the `.sidebar-network-greyed` class.
+  // `.closest("section")` is replaced by `.closest(".sidebar-network-section")`.
   describe("CP19 T32 — per-network parked/failed derivation overlay", () => {
     it("network header gets .sidebar-network-greyed when connection_state=parked", () => {
       mockNetworkConnectionState = { freenode: "parked" };
       render(() => <Sidebar />);
-      const header = screen.getByText("freenode").closest("section");
+      const header = screen.getByText("freenode").closest(".sidebar-network-section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
     });
 
     it("network header gets .sidebar-network-greyed when connection_state=failed", () => {
       mockNetworkConnectionState = { freenode: "failed" };
       render(() => <Sidebar />);
-      const header = screen.getByText("freenode").closest("section");
+      const header = screen.getByText("freenode").closest(".sidebar-network-section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(true);
     });
 
     it("network header does NOT get .sidebar-network-greyed when connection_state=connected", () => {
       mockNetworkConnectionState = { freenode: "connected" };
       render(() => <Sidebar />);
-      const header = screen.getByText("freenode").closest("section");
+      const header = screen.getByText("freenode").closest(".sidebar-network-section");
       expect(header?.classList.contains("sidebar-network-greyed")).toBe(false);
     });
 
@@ -681,10 +686,15 @@ describe("Sidebar", () => {
   // UX-4 bucket C — collapsed network+server window with `⚙️ <slug>`
   // prefix. The per-network `<h3>` header is gone; the first `<li>` IS
   // both the network grouping label AND the server-window selector.
+  //
+  // UX-5 BH (2026-05-19): the legacy `<section class="sidebar-network">`
+  // wrapper was killed; the per-network `<ul>` carries
+  // `.sidebar-network-section` directly. The `<h3>`-NOT-present
+  // assertion still holds (UX-4 C dropped it); selector updated.
   describe("UX-4 bucket C — collapsed network header row", () => {
     it("renders NO <h3> per network section (header collapsed into row)", () => {
       const { container } = render(() => <Sidebar />);
-      expect(container.querySelector(".sidebar-network h3")).toBeNull();
+      expect(container.querySelector(".sidebar-network-section h3")).toBeNull();
     });
 
     it("renders the network header row with .sidebar-network-header class + slug", () => {
@@ -731,7 +741,9 @@ describe("Sidebar", () => {
 
     it("channel rows still render as siblings inside the same <ul> as the header", () => {
       const { container } = render(() => <Sidebar />);
-      const ul = container.querySelector(".sidebar-network ul");
+      // UX-5 BH: the per-network `<ul>` now carries `.sidebar-network-section`
+      // directly (no wrapping `<section>` — that was killed in BH).
+      const ul = container.querySelector("ul.sidebar-network-section");
       const headerLi = ul?.querySelector("li.sidebar-network-header");
       const italiaLi = screen.getByText("#italia").closest("li");
       expect(headerLi).not.toBeNull();

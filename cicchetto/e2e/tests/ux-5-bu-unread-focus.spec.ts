@@ -94,12 +94,12 @@ test("focus-regain clears mention badge on selected+blurred window (BU bug-1)", 
     // badges visible after blurred arrival, both clear on focus
     // regain" — exact counts are orthogonal.
     const messageBadge = page
-      .locator(".sidebar-network")
+      .locator(".sidebar-network-section")
       .filter({ has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }) })
       .locator("li", { hasText: CHANNEL })
       .locator(".sidebar-msg-unread");
     const mentionBadge = page
-      .locator(".sidebar-network")
+      .locator(".sidebar-network-section")
       .filter({ has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }) })
       .locator("li", { hasText: CHANNEL })
       .locator(".sidebar-mention");
@@ -159,7 +159,7 @@ test("re-clicking active sidebar row does NOT POST ReadCursor (BU bug-2 idempote
   // setSelectedChannel idempotency guard short-circuits at the setter
   // boundary, so no effect re-fires, no cursor write happens.
   const sidebarRow = page
-    .locator(".sidebar-network")
+    .locator(".sidebar-network-section")
     .filter({ has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }) })
     .locator("li", { hasText: CHANNEL })
     .locator(".sidebar-window-btn");

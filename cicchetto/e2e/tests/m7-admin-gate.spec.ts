@@ -23,7 +23,7 @@
 import { expect, test } from "@playwright/test";
 import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
 
-// admin-vjt has no network bind — loginAs's `.sidebar-network h3`
+// admin-vjt has no network bind — loginAs's `.sidebar-network-section h3`
 // shell-ready selector would time out. Wait on the always-visible
 // settings cog button instead (rendered in the no-network fallback
 // header via `aria-label="open settings"`).

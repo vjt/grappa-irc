@@ -84,7 +84,7 @@ test("UX-5 BK — /join +k without key shows ONE pseudo-row (closeable); × dism
   // doesn't match self-class — the archive row IS the .sidebar-
   // archive-row element, not an ancestor of it.
   const activeRow = page
-    .locator(".sidebar-network", {
+    .locator(".sidebar-network-section", {
       has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
     })
     .locator("li:not(.sidebar-archive-row)", { hasText: KEYED_CHANNEL });
@@ -145,7 +145,7 @@ test("UX-5 BK — /join +k without key shows ONE pseudo-row (closeable); × dism
   ).toBeVisible({ timeout: 10_000 });
 
   const happyRow = page
-    .locator(".sidebar-network", {
+    .locator(".sidebar-network-section", {
       has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
     })
     .locator("li:not(.sidebar-archive-row)", { hasText: HAPPY_CHANNEL });

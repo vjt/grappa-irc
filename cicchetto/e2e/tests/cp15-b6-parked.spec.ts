@@ -101,7 +101,7 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
   await expect(channelRow.locator(".sidebar-window-greyed")).toHaveCount(0);
 
   // Network header section + ComposeBox baseline: not greyed.
-  const networkSection = page.locator(".sidebar-network", {
+  const networkSection = page.locator(".sidebar-network-section", {
     has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   });
   await expect(networkSection).not.toHaveClass(/sidebar-network-greyed/);
@@ -114,7 +114,7 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
   await composeSend(page, `/disconnect ${NETWORK_SLUG} ${PARK_REASON}`);
 
   // Network header gains .sidebar-network-greyed. The cascading CSS
-  // rule (.sidebar-network.sidebar-network-greyed li
+  // rule (.sidebar-network-section.sidebar-network-greyed li
   // .sidebar-window-btn) paints channel rows muted+italic via the
   // network derivation overlay. windowStateByChannel may still hold
   // stale :joined values; the network derivation wins per CLAUDE.md
@@ -132,7 +132,14 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
   // Tooltip on the network header carries the reason text. Implemented
   // as a `title=` attr (zero-bundle-cost; design pass deferred a
   // richer tooltip).
-  const networkHeader = networkSection.locator("h3");
+  //
+  // UX-5 BH (2026-05-19): legacy `<h3>` per-network header was dropped
+  // in UX-4 bucket C; the `title` attr now lives on
+  // `.sidebar-network-header .sidebar-channel-name` (Sidebar.tsx
+  // L319-326).
+  const networkHeader = networkSection.locator(
+    ".sidebar-network-header .sidebar-channel-name",
+  );
   await expect(networkHeader).toHaveAttribute("title", PARK_REASON, { timeout: 5_000 });
 
   // Operator unparks via /connect. Eager SpawnOrchestrator → DB flip

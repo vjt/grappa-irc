@@ -22,7 +22,7 @@
 // BottomBar.tsx + ScrollbackPane.tsx + ComposeBox.tsx):
 //
 //   Desktop sidebar (viewport > 768px — Shell.tsx desktop branch):
-//     .sidebar-network li        — one per sidebar window (server, channel, query)
+//     .sidebar-network-section li — one per sidebar window (server, channel, query)
 //     .sidebar-window-btn        — the clickable name button inside <li>
 //     .sidebar-channel-name      — the visible window name span
 //     .sidebar-msg-unread        — message-unread badge (when > 0)
@@ -47,9 +47,9 @@
 //
 // Channel-bound assertions key off the visible name (`#bofh`,
 // `vjt-peer`). Window items are scoped per-network: desktop via
-// `.sidebar-network` matched by `<h3>` text; mobile via
-// `.bottom-bar-network` matched by `.bottom-bar-network-chip` text.
-// Same uniqueness guarantee holds on both layouts.
+// `.sidebar-network-section` matched by `.sidebar-network-header` text;
+// mobile via `.bottom-bar-network` matched by `.bottom-bar-network-chip`
+// text. Same uniqueness guarantee holds on both layouts.
 //
 // Viewport branching: helpers that need to render against the right
 // layout (loginAs shell-ready, sidebarWindow, selectChannel click)
@@ -104,9 +104,9 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   // desktop renders the collapsed network/server header row
   // (`.sidebar-network-header` since UX-4 bucket C; pre-C was a
   // `<h3>` per network), mobile renders `.bottom-bar-network-chip`
-  // (the `.sidebar-network` DOM is absent entirely in the mobile JSX
-  // branch, so a single OR-style selector would be more brittle than
-  // a viewport-conditioned one).
+  // (the `.sidebar-network-section` DOM is absent entirely in the
+  // mobile JSX branch, so a single OR-style selector would be more
+  // brittle than a viewport-conditioned one).
   const readySelector = isMobileViewport(page)
     ? ".bottom-bar-network-chip"
     : ".sidebar-network-header";
@@ -118,12 +118,12 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
 // Sidebar / bottom-bar accessors ────────────────────────────────────
 
 // One window row by visible name, scoped to a network section.
-// On desktop returns the `<li>` inside `.sidebar-network`; on mobile
-// returns the `.bottom-bar-tab` inside `.bottom-bar-network`. Callers
-// (close button click, badge lookup, count assertions) treat both as
-// "the per-window container" — the badge selectors below mirror the
-// branching so a `.toHaveCount(1)` assertion works identically on
-// either layout.
+// On desktop returns the `<li>` inside `.sidebar-network-section`;
+// on mobile returns the `.bottom-bar-tab` inside `.bottom-bar-network`.
+// Callers (close button click, badge lookup, count assertions) treat
+// both as "the per-window container" — the badge selectors below
+// mirror the branching so a `.toHaveCount(1)` assertion works
+// identically on either layout.
 export function sidebarWindow(page: Page, networkSlug: string, windowName: string) {
   if (isMobileViewport(page)) {
     // BottomBar.tsx: `.bottom-bar-network` group is identified by its
@@ -142,7 +142,11 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
   // row's button-text is `<emoji> <slug>`, so `hasText` matches the
   // slug substring + tolerates the emoji prefix + optional [away]
   // badge suffix.
-  const section = page.locator(".sidebar-network", {
+  //
+  // UX-5 BH (2026-05-19): `.sidebar-network` was renamed to
+  // `.sidebar-network-section` when the legacy `<section>` wrapper was
+  // killed and the per-network `<ul>` took over carrying the class.
+  const section = page.locator(".sidebar-network-section", {
     has: page.locator(".sidebar-network-header", { hasText: networkSlug }),
   });
   return section.locator("li", { hasText: windowName });

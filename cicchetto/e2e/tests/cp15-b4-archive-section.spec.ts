@@ -58,9 +58,22 @@ test("CP15-B4 — PART moves channel to Archive section; click opens scrollback"
   // Expand the per-network Archive <details>. Native `<summary>` click
   // toggles `details.open` AND fires the `toggle` event our handler
   // listens for; loadArchive fires once on the open transition.
-  const archiveSection = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
-  }).locator("details.sidebar-archive");
+  //
+  // UX-5 BH (2026-05-19): `.sidebar-network` renamed to
+  // `.sidebar-network-section`; the legacy `<h3>` per-network header
+  // was dropped in UX-4 bucket C and replaced by `.sidebar-network-header`
+  // (this spec's `<h3>` lookup was pre-existing rot since UX-4 C, fixed
+  // in BH per cluster mandate "Fix root causes, not examples").
+  // Archive `<details>` also lifted out of the killed `<section>`
+  // wrapper; it's now a flat sibling of the per-network `<ul>` inside
+  // the `<For>`. Scoped via xpath sibling axis from the network `<ul>`
+  // for forward-compat against multi-network seeds (single network in
+  // this seed today but the parity matrix is heading toward N>1, and
+  // reviewer-loop MED-1 from BH flagged the multi-network drift risk).
+  const networkSection = page.locator(".sidebar-network-section", {
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
+  });
+  const archiveSection = networkSection.locator("xpath=following-sibling::details[@class=\"sidebar-archive\"][1]");
   await archiveSection.locator("summary").click();
   await expect(archiveSection).toHaveAttribute("open", "");
 

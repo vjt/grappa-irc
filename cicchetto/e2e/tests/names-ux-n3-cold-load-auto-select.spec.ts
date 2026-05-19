@@ -35,8 +35,11 @@ test("/names UX N-3 — cold load auto-selects first joined channel without side
   // Sidebar entry for the autojoin channel transitions to .selected
   // once the auto-select effect fires. Scoped via the network section
   // so a same-named entry on another network would not false-positive.
-  const sidebarSection = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
+  //
+  // UX-5 BH (2026-05-19): pre-bucket `<h3>` per-network header was
+  // dropped in UX-4 bucket C — use `.sidebar-network-header`.
+  const sidebarSection = page.locator(".sidebar-network-section", {
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   });
   const autojoinLi = sidebarSection.locator("li", { hasText: AUTOJOIN_CHAN });
   await expect(autojoinLi).toHaveClass(/\bselected\b/, { timeout: 10_000 });

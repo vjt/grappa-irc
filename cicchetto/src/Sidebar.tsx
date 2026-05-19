@@ -293,10 +293,10 @@ const Sidebar: Component<Props> = () => {
       >
         <For each={networks()}>
           {(network) => (
-            <section
-              class={`sidebar-network${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
-            >
-              <ul>
+            <>
+              <ul
+                class={`sidebar-network-section${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
+              >
                 {/* UX-4 bucket C — network header + server window collapsed
                   into a single row. The old per-network `<h3>` is gone; this
                   row IS both the network grouping label AND the server-window
@@ -503,7 +503,13 @@ const Sidebar: Component<Props> = () => {
               {/* CP15 B4 — Archive section, collapsed by default. Lazy fetch
                 on first expand via the toggle event; entries clickable to
                 set selection. Channel kind keeps the channel-shaped name;
-                query kind opens the DM window for the target nick. */}
+                query kind opens the DM window for the target nick.
+
+                UX-5 BH (2026-05-19) — lifted out of the legacy
+                `<section class="sidebar-network">` wrapper that BH
+                killed; now a flat sibling of the per-network `<ul>`
+                inside the `<For>`. Per-network archive semantics
+                preserved (one `<details>` per network). */}
               <details
                 class="sidebar-archive"
                 onToggle={(e) => {
@@ -565,7 +571,7 @@ const Sidebar: Component<Props> = () => {
                   </For>
                 </ul>
               </details>
-            </section>
+            </>
           )}
         </For>
       </Show>

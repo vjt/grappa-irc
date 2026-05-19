@@ -64,9 +64,14 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
   // /msg opens the query window, focuses it, and sends the PRIVMSG
   // in one compose interaction. The PRIVMSG persists with dm_with =
   // peer so the archive query (run later) finds the entry.
+  //
+  // UX-5 BH (2026-05-19): `.sidebar-network` renamed to
+  // `.sidebar-network-section`; legacy `<h3>` per-network header
+  // dropped in UX-4 bucket C — `.sidebar-network-header` is the
+  // post-C row. Use the post-BH selectors.
   await composeSend(page, `/msg ${PEER_NICK} hello-archive`);
-  const queryRow = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
+  const queryRow = page.locator(".sidebar-network-section", {
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   }).locator("li", { hasText: PEER_NICK });
   await expect(queryRow).toHaveCount(1, { timeout: 5_000 });
 
@@ -90,10 +95,14 @@ test("CP15 B6 — /msg peer + close → archive entry; revive via /msg drops the
 
   // Expand Archive — loadArchive fires on toggle; the per-network
   // archive REST query returns the peer entry (has scrollback row,
-  // not in active query set).
-  const archiveSection = page.locator(".sidebar-network", {
-    has: page.locator("h3", { hasText: NETWORK_SLUG }),
-  }).locator("details.sidebar-archive");
+  // not in active query set). Archive `<details>` lifted out of
+  // the killed `<section>` wrapper in BH; flat sibling of the
+  // per-network `<ul>`. Scoped via xpath sibling axis for forward-
+  // compat against multi-network seeds.
+  const networkSection = page.locator(".sidebar-network-section", {
+    has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
+  });
+  const archiveSection = networkSection.locator("xpath=following-sibling::details[@class=\"sidebar-archive\"][1]");
   await archiveSection.locator("summary").click();
   await expect(archiveSection).toHaveAttribute("open", "");
   const archivedEntry = archiveSection.locator("button.sidebar-window-btn", {

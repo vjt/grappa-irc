@@ -9,7 +9,7 @@
 //
 // **Outcome on Playwright iPhone 15 emulation: GREEN.** Once the
 // page-object grew a mobile-aware `selectChannel` (BottomBar tablist
-// instead of `.sidebar-network`) the spec reaches compose-send and
+// instead of `.sidebar-network-section`) the spec reaches compose-send and
 // the own-msg renders within the 5s window — i.e. the bug does NOT
 // reproduce in headless WebKit + iPhone-15 viewport. The hypothesis
 // surface that *does* reproduce on real hardware (visualViewport

@@ -26,9 +26,12 @@ test("P-0d — /lusers surfaces LusersCard pinned in the $server window", async 
   await loginAs(page, vjt);
 
   // Click the always-present Server sidebar slot.
+  //
+  // UX-5 BH (2026-05-19): pre-bucket `<h3>` per-network header was
+  // dropped in UX-4 bucket C — use `.sidebar-network-header`.
   const serverEntry = page
-    .locator(".sidebar-network")
-    .filter({ has: page.locator("h3").filter({ hasText: NETWORK_SLUG }) })
+    .locator(".sidebar-network-section")
+    .filter({ has: page.locator(".sidebar-network-header").filter({ hasText: NETWORK_SLUG }) })
     .locator("li")
     .filter({ has: page.locator(".sidebar-channel-name").filter({ hasText: /^Server$/ }) });
   await expect(serverEntry).toHaveCount(1);
