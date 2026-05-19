@@ -345,9 +345,7 @@ Typed in the compose box. Parsed client-side; dispatched to REST or IRC dependin
 
 Every channel window pins a header strip showing the topic (single-line, ellipsized — click to expand modal with full topic + setter nick + set-at timestamp) and a compact mode-string like `+nt` (hover for full mode list). Empty topic renders `(no topic set)` so the strip space is constant. Header is channel-only — query, server, and pseudo-windows have no topic strip.
 
-### JOIN-self banner (C3)
-
-When you join a channel, the channel window shows a one-time banner at the top: "You joined #chan", topic line, names list with PREFIX sigils (`@op`, `+voice`, plain), and a "N users, M ops" summary. Renders once per session per channel — switching back to the same channel later does not re-display. Pure render; not persisted as scrollback rows.
+On JOIN, the channel window auto-focuses (own-nick JOIN is a user-action focus shift per the C4 focus rule). Topic + members are already surfaced by the TopicBar and the right-pane MembersPane — there is no extra "you've joined #chan" splash row (a one-time strip with topic + names existed pre-UX-5 BJ; it duplicated both surfaces and stole vertical space on large channels — killed 2026-05-19).
 
 ### DM (query) windows + focus rule (C4)
 

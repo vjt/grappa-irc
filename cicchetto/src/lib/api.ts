@@ -448,6 +448,13 @@ export type WireChannelEvent =
   | { kind: "message"; message: ScrollbackMessage }
   | { kind: "topic_changed"; network: string; channel: string; topic: TopicEntry }
   | { kind: "channel_modes_changed"; network: string; channel: string; modes: ModesEntry }
+  // UX-5 BJ (2026-05-19) — recognized-but-ignored. Pre-BJ the JoinBanner
+  // consumed this via `seedChannelCreated` for the "Channel was created
+  // on …" line. BJ killed the banner; the server still emits the 329
+  // RPL_CREATIONTIME broadcast (server-side reaping would be a separate
+  // bucket). Keep the union arm so `narrowChannelEvent` recognizes the
+  // payload and `subscribe.ts` can no-op explicitly instead of routing
+  // every JOIN through `console.warn("dropped malformed payload")`.
   | { kind: "channel_created"; network: string; channel: string; created_at: string }
   | { kind: "members_seeded"; network: string; channel: string; members: MemberEntry[] }
   // CP15 B5: typed window-state events. Server-side apply_effects arms

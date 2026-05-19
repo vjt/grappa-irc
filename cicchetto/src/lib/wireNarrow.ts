@@ -156,6 +156,12 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
       if (modes === null) return null;
       return { kind: "channel_modes_changed", network: r.network, channel: r.channel, modes };
     }
+    // UX-5 BJ (2026-05-19) — recognized-but-ignored. JoinBanner was the
+    // only consumer; killed in BJ. Server still emits per-channel on
+    // every 329 RPL_CREATIONTIME. Narrow + route to a no-op `case` in
+    // `subscribe.ts` instead of letting it land in the default-null arm,
+    // which would log `[subscribe] dropped malformed payload` on every
+    // JOIN. See `WireChannelEvent` in api.ts for the policy.
     case "channel_created": {
       if (
         typeof r.network !== "string" ||

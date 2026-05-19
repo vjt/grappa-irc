@@ -141,11 +141,9 @@ vi.mock("../lib/members", () => ({
 vi.mock("../lib/channelTopic", () => ({
   topicByChannel: () => ({}),
   modesByChannel: () => ({}),
-  createdByChannel: () => ({}),
   compactModeString: (modes: string[]) => (modes.length > 0 ? `+${modes.join("")}` : ""),
   seedTopic: vi.fn(),
   seedModes: vi.fn(),
-  seedChannelCreated: vi.fn(),
 }));
 
 vi.mock("../lib/mentions", () => ({

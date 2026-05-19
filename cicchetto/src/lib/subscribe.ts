@@ -3,7 +3,7 @@ import { createEffect, createRoot, on, untrack } from "solid-js";
 import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { seedChannelCreated, seedModes, seedTopic } from "./channelTopic";
+import { seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
 import { applyPresenceEvent, seedMembers } from "./members";
 import { mentionsUser } from "./mentionMatch";
@@ -291,8 +291,13 @@ createRoot(() => {
         case "channel_modes_changed":
           seedModes(key, payload.modes);
           return;
+        // UX-5 BJ (2026-05-19) — recognized-but-ignored. JoinBanner was
+        // the only consumer; killed in BJ. Server still emits per-channel
+        // on every 329 RPL_CREATIONTIME. Explicit no-op keeps the
+        // exhaustive switch + assertNever discipline and prevents the
+        // narrower's default-null arm from logging dropped-payload on
+        // every JOIN. Server-side reaping is a separate decision.
         case "channel_created":
-          seedChannelCreated(key, payload.created_at);
           return;
         case "members_seeded":
           // Server's 366 RPL_ENDOFNAMES landed and the broadcast carries

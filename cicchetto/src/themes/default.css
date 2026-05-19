@@ -799,50 +799,6 @@ html.resize-dragging * {
   outline: none;
 }
 
-/* JOIN-self banner (C3.2) */
-
-.join-banner {
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-alt);
-  font-size: 0.85rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.join-banner-heading {
-  color: var(--accent);
-  font-weight: bold;
-}
-
-.join-banner-topic {
-  color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.join-banner-names {
-  color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.75rem;
-}
-
-.join-banner-nick {
-  white-space: nowrap;
-}
-
-.join-banner-members-loading {
-  color: var(--muted);
-  font-style: italic;
-}
-
-.join-banner-summary {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
 /* Scrollback (existing rules — minor additions for mention highlight) */
 
 .scrollback-pane {
@@ -1322,8 +1278,8 @@ html.resize-dragging * {
  * with the mode color, which made every op-nick visually identical
  * (just "red"). Post-BC2 only the `@` prefix is red; nicks differ
  * per-hash. tier classes (`.member-op` etc.) are still rendered on
- * the `<li>` for `sortMembers` parity and the JoinBanner reuse, but
- * the per-tier `color:` cascade moved off — see the deletion below.
+ * the `<li>` for `sortMembers` parity, but the per-tier `color:`
+ * cascade moved off — see the deletion below.
  */
 .nick {
   display: inline;

@@ -182,9 +182,10 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
     });
   });
 
-  // Cluster `channel-created-notice` 2026-05-13 — 329 RPL_CREATIONTIME
-  // surface. created_at is server-projected via DateTime.to_iso8601/1
-  // so the wire shape carries a string; cic parses on demand.
+  // UX-5 BJ (2026-05-19) — JoinBanner was killed but the narrower keeps
+  // recognizing `channel_created` as a recognized-but-ignored arm so the
+  // per-JOIN server emission doesn't log via the default-null path. See
+  // `subscribe.ts` channel handler for the no-op routing.
   describe("kind: channel_created", () => {
     it("narrows a complete envelope", () => {
       const out = narrowChannelEvent({

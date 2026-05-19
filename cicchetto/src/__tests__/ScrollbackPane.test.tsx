@@ -99,14 +99,6 @@ vi.mock("../lib/members", () => ({
   membersByChannel: () => mockMembersByChannel(),
 }));
 
-// C3.1/C3.2: mock channelTopic for topic display in banner
-const mockTopicByChannel = vi.fn(() => ({}));
-const mockCreatedByChannel = vi.fn<() => Record<string, string>>(() => ({}));
-vi.mock("../lib/channelTopic", () => ({
-  topicByChannel: () => mockTopicByChannel(),
-  createdByChannel: () => mockCreatedByChannel(),
-}));
-
 // CP29 R-4: mock readCursor with a SIGNAL-BACKED stand-in mirroring the
 // production module's reactive contract — `last_read_message_id` (int)
 // instead of the pre-flip server_time epoch ms. Reactivity matters
@@ -159,7 +151,7 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-token",
 }));
 
-import ScrollbackPane, { resetShownBannersForTest } from "../ScrollbackPane";
+import ScrollbackPane, { resetAutoFocusedJoinsForTest } from "../ScrollbackPane";
 
 const fixture: ScrollbackMessage[] = [
   {
@@ -200,10 +192,8 @@ beforeEach(() => {
   setUserNick(null);
   setDocVisible(true);
   mockMembersByChannel.mockReturnValue({});
-  mockTopicByChannel.mockReturnValue({});
-  mockCreatedByChannel.mockReturnValue({});
-  // Reset the join-banner shown-set between tests (test seam, see ScrollbackPane.tsx).
-  resetShownBannersForTest();
+  // Reset the C5.0 auto-focus shown-set between tests (test seam, see ScrollbackPane.tsx).
+  resetAutoFocusedJoinsForTest();
   mockSetSelectedChannel.mockClear();
 });
 
@@ -547,333 +537,19 @@ describe("ScrollbackPane", () => {
     });
   });
 
-  describe("JOIN-self banner (C3.2)", () => {
-    // Banner renders when own nick has a JOIN event in scrollback for this channel.
-    it("renders 'You joined #chan' banner when own nick JOIN event is in scrollback", () => {
-      setUserNick("vjt");
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.getByTestId("join-banner")).toBeInTheDocument();
-      expect(screen.getByTestId("join-banner")).toHaveTextContent("You joined #grappa");
-    });
-
-    it("does NOT render banner when the JOIN sender is NOT own nick", () => {
-      setUserNick("vjt");
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "alice",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("join-banner")).toBeNull();
-    });
-
-    it("does NOT render banner when there is no JOIN event in scrollback", () => {
-      setUserNick("vjt");
-      setScrollback({ "freenode #grappa": fixture });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("join-banner")).toBeNull();
-    });
-
-    it("does NOT render banner when user is null (not resolved yet)", () => {
-      setUserNick(null);
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("join-banner")).toBeNull();
-    });
-
-    it("renders topic line in banner when topic is cached", () => {
-      setUserNick("vjt");
-      mockTopicByChannel.mockReturnValue({
-        "freenode #grappa": { text: "Welcome to grappa IRC", set_by: "vjt", set_at: null },
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const banner = screen.getByTestId("join-banner");
-      expect(banner).toHaveTextContent("Welcome to grappa IRC");
-    });
-
-    // Cluster `channel-created-notice` 2026-05-13 — 329 RPL_CREATIONTIME
-    // surfaces in the JoinBanner as an irssi-style "Channel was created
-    // on …" line. Replaces the pre-cluster scrollback noise (Bahamut
-    // emitted the timestamp via 333 RPL_TOPICWHOTIME's trailing param,
-    // which leaked as a `kind: notice` row with body=unix_ts).
-    it("renders 'Channel was created on …' line in banner when 329 cache is seeded", () => {
-      setUserNick("vjt");
-      mockCreatedByChannel.mockReturnValue({
-        "freenode #grappa": "2024-09-22T10:00:00Z",
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const created = screen.getByTestId("join-banner-created");
-      expect(created.textContent).toMatch(/^Channel was created on /);
-      // Don't assert exact locale render — `Date.toLocaleString()` is
-      // env-sensitive. Assert the literal year shows (the parse worked).
-      expect(created).toHaveTextContent("2024");
-    });
-
-    it("does NOT render 'Channel was created' line when 329 cache is empty", () => {
-      setUserNick("vjt");
-      mockCreatedByChannel.mockReturnValue({});
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("join-banner-created")).toBeNull();
-    });
-
-    it("renders 'Topic set by … on …' line when 333 set_by + set_at are cached", () => {
-      setUserNick("vjt");
-      mockTopicByChannel.mockReturnValue({
-        "freenode #grappa": {
-          text: "Welcome",
-          set_by: "ChanServ",
-          set_at: "2026-04-01T12:34:56Z",
-        },
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const topicSet = screen.getByTestId("join-banner-topic-set");
-      expect(topicSet.textContent).toMatch(/^Topic set by ChanServ on /);
-      expect(topicSet).toHaveTextContent("2026");
-    });
-
-    it("does NOT render 'Topic set by' line when set_by is missing", () => {
-      setUserNick("vjt");
-      mockTopicByChannel.mockReturnValue({
-        "freenode #grappa": { text: "Welcome", set_by: null, set_at: null },
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      expect(screen.queryByTestId("join-banner-topic-set")).toBeNull();
-    });
-    it("renders names list from members store in banner", () => {
-      setUserNick("vjt");
-      mockMembersByChannel.mockReturnValue({
-        "freenode #grappa": [
-          { nick: "vjt", modes: ["@"] },
-          { nick: "alice", modes: ["+"] },
-          { nick: "bob", modes: [] },
-        ],
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const banner = screen.getByTestId("join-banner");
-      // @ prefix for ops, + for voiced
-      expect(banner).toHaveTextContent("@vjt");
-      expect(banner).toHaveTextContent("+alice");
-      expect(banner).toHaveTextContent("bob");
-    });
-
-    it("renders member count summary in banner", () => {
-      setUserNick("vjt");
-      mockMembersByChannel.mockReturnValue({
-        "freenode #grappa": [
-          { nick: "vjt", modes: ["@"] },
-          { nick: "alice", modes: [] },
-          { nick: "bob", modes: [] },
-        ],
-      });
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const banner = screen.getByTestId("join-banner");
-      // 3 total users, 1 op
-      expect(banner).toHaveTextContent("3 users");
-      expect(banner).toHaveTextContent("1 op");
-    });
-
-    it("renders '(loading members…)' section when member list is empty", () => {
-      setUserNick("vjt");
-      mockMembersByChannel.mockReturnValue({});
-      setScrollback({
-        "freenode #grappa": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "#grappa",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const banner = screen.getByTestId("join-banner");
-      expect(banner).toHaveTextContent("loading members");
-    });
-
-    it("does NOT render banner for query window kind (channel-only per spec #7)", () => {
-      setUserNick("vjt");
-      setScrollback({
-        "freenode some-nick": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: "some-nick",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="some-nick" kind="query" />);
-      expect(screen.queryByTestId("join-banner")).toBeNull();
-    });
-
-    it("does NOT render banner for server window kind", () => {
-      setUserNick("vjt");
-      setScrollback({
-        "freenode :server": [
-          {
-            id: 1,
-            network: "freenode",
-            channel: ":server",
-            server_time: 1_700_000_000_000,
-            kind: "join",
-            sender: "vjt",
-            body: null,
-            meta: {},
-          },
-        ],
-      });
-      render(() => <ScrollbackPane networkSlug="freenode" channelName=":server" kind="server" />);
-      expect(screen.queryByTestId("join-banner")).toBeNull();
-    });
-
+  describe("C5.0 — own-nick JOIN auto-focus-switch (UX-5 BJ)", () => {
     // C5.0 — JOIN-self auto-focus-switch (spec #7):
     // When own nick's JOIN event appears in scrollback, the pane MUST call
     // setSelectedChannel to switch focus to that channel. This is a user
     // action (the user issued /join) so the cluster-wide focus-only-on-
     // user-action rule is not violated — the focus-rule invariant tests
     // assert that OTHER-user joins do NOT shift focus.
+    //
+    // UX-5 BJ (2026-05-19): pre-BJ this contract was entangled with the
+    // "JOIN-self banner" mount in the same `createEffect`. BJ killed the
+    // banner and the focus side-effect lives on alone via the
+    // `shouldAutoFocusOnOwnJoin` memo + `autoFocusedJoins` Set. The
+    // assertions below pin the surviving contract.
     it("calls setSelectedChannel when own nick JOIN event shows up in scrollback (C5.0)", async () => {
       setUserNick("vjt");
       setScrollback({

@@ -3,12 +3,15 @@
 //   - sidebar gains an entry for the new channel
 //   - cicchetto auto-focuses the new channel (compose.ts /join handler
 //     calls setSelectedChannel client-side immediately after postJoin —
-//     the BUG4 self-JOIN auto-focus path in subscribe.ts:184 races with
+//     the BUG4 self-JOIN auto-focus path in subscribe.ts races with
 //     PubSub late-subscriber drop, so user-intent-driven focus is the
 //     reliable path)
-//   - the join-banner appears in the new channel's scrollback
-//     (ScrollbackPane.tsx:573 — `<div data-testid="join-banner">`,
-//     "You joined #newchan")
+//
+// UX-5 BJ (2026-05-19): the per-channel "join-banner" splash row was
+// killed. Pre-BJ this spec also asserted `[data-testid="join-banner"]`
+// presence (pinned RED via test.fixme — BUG8 — banner didn't re-render
+// for cic-driven /join). With the banner gone the assertion is gone
+// too; banner-absence is asserted directly by `ux-5-bj-no-join-splash`.
 //
 // `/join` is one of the slash-commands compose.ts dispatches; under
 // the hood it sends `JOIN #channel` to grappa, which forwards to the
@@ -46,7 +49,7 @@ test.afterEach(async () => {
   await partChannel(vjt.token, NETWORK_SLUG, NEW_CHANNEL).catch(() => {});
 });
 
-test("M8 — cicchetto /join adds sidebar entry, auto-focuses, shows join-banner", async ({ page }) => {
+test("M8 — cicchetto /join adds sidebar entry + auto-focuses the new channel", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
@@ -72,29 +75,5 @@ test("M8 — cicchetto /join adds sidebar entry, auto-focuses, shows join-banner
   await expect(sidebarWindow(page, NETWORK_SLUG, NEW_CHANNEL)).toHaveClass(/selected/, {
     timeout: 5_000,
   });
-
-  // BUG8 — RED-PIN. Banner does not render on cicchetto-driven /join
-  // for the freshly-created channel. Empirical evidence (in-trace
-  // console instrumentation, since reverted to keep prod clean):
-  // ScrollbackPane runs the `shouldShowBanner` createMemo + visibility
-  // effect for the prior channel (#bofh on initial mount, banner =
-  // visible) but never re-evaluates it for the auto-focused new
-  // channel — no `[BANNER]` log line ever fires for #m8-<suffix>.
-  // Auto-focus DOES work (TopicBar shows new channel, sidebar entry
-  // gets `.selected`, scrollback DOM contains the JOIN row from REST
-  // backfill). The Solid effect-order or memo-staleness on the channel
-  // switch is the suspected culprit but root cause is deferred to a
-  // dedicated session — investigation requires non-trivial Solid
-  // reactivity surgery in ScrollbackPane and is independent of bucket
-  // D's matrix progress.
-  //
-  // Pinning RED via `.fixme` keeps the assertion in the suite as
-  // documentation; flip to a passing `.only` (or remove the .fixme)
-  // when fixing.
-  test.fixme(true, "BUG8 — banner doesn't render on cicchetto-driven /join. See spec body.");
-
-  await expect(page.locator('[data-testid="join-banner"]')).toBeVisible({ timeout: 5_000 });
-  await expect(page.locator('[data-testid="join-banner"]')).toContainText(
-    `You joined ${NEW_CHANNEL}`,
-  );
 });
+

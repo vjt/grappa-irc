@@ -15,10 +15,8 @@ import LusersCard from "./LusersCard";
 import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
-import { createdByChannel, topicByChannel } from "./lib/channelTopic";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { linkify } from "./lib/linkify";
-import { memberSigil } from "./lib/memberSigil";
 import { membersByChannel } from "./lib/members";
 import { matchesWatchlist, mentionsUser } from "./lib/mentionMatch";
 import { MIRC_PALETTE_16, parseMircFormat, type Run } from "./lib/mircFormat";
@@ -55,18 +53,15 @@ import WhowasCard from "./WhowasCard";
 // case-insensitive-matches the operator's own nick get .scrollback-mention
 // class. The matcher reads `networks.user()` for the nick.
 //
-// JOIN-self banner (C3.2): when the own nick's JOIN event appears in the
-// scrollback, render a banner at the top of the pane showing:
-//   - "You joined #chan"
-//   - Topic (from channelTopic store)
-//   - Names list with PREFIX sigils (@op, +voice, plain)
-//   - "N users, M ops" summary
-//
-// The banner shows once per session per channel. `shownBanners` is a
-// module-level Set; once a channel key is added, the banner never
-// re-renders for that channel for the lifetime of the page session.
-// This mirrors the spec: "Subsequent visits to the same channel within
-// the session don't re-render the banner."
+// C5.0 (UX-5 BJ rewrite — 2026-05-19): own-nick JOIN auto-focus.
+// When the operator's own nick has a JOIN row in scrollback for this
+// channel, switch focus to it. This is a user action (the operator
+// issued /join), so the C4.2 cluster-wide focus-only-on-user-action
+// rule is not violated; the rule guards against incoming-traffic
+// focus shifts, not user-initiated ones. Pre-BJ the same effect ALSO
+// gated the "JOIN-self banner" mount; the banner was killed in BJ
+// (vjt 2026-05-19 dogfood — duplicated TopicBar + MembersPane) and
+// the focus side-effect lives on alone via `autoFocusedJoins` Set.
 //
 // C7.1: Day-separator rows — when consecutive messages cross a local-TZ
 // day boundary, render a `── <date> ──` separator row between them.
@@ -118,18 +113,21 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 // cases; this constant only controls when to *try*.
 const LOAD_MORE_THRESHOLD_PX = 200;
 
-// Module-level tracking of which channels have already shown the
-// JOIN-self banner this session. Intentionally not persisted to server
-// or localStorage — ephemeral, per page-load.
+// Module-level tracking of which channels have already auto-focused on
+// own-nick JOIN this session. Intentionally not persisted to server or
+// localStorage — ephemeral, per page-load. Pre-BJ this Set ALSO gated
+// the "JOIN-self banner" mount; the banner died in UX-5 BJ and the Set
+// survives to keep the C5.0 auto-focus side-effect idempotent (one
+// focus-switch per (slug, channel) per page load — repeated session-
+// internal /join cycles for the same channel must not re-snatch focus).
 //
-// Test seam: `resetShownBannersForTest()` lets unit tests wipe the Set
-// between cases without vi.resetModules() gymnastics. Named clearly;
-// never called in production code. Mirrors the `seedFromTest` pattern
-// in members.ts.
-const shownBanners = new Set<string>();
+// Test seam: `resetAutoFocusedJoinsForTest()` lets unit tests wipe the
+// Set between cases without vi.resetModules() gymnastics. Mirrors the
+// `seedFromTest` pattern in members.ts.
+const autoFocusedJoins = new Set<string>();
 
-export function resetShownBannersForTest(): void {
-  shownBanners.clear();
+export function resetAutoFocusedJoinsForTest(): void {
+  autoFocusedJoins.clear();
 }
 
 const formatTime = (epochMs: number): string => {
@@ -611,12 +609,6 @@ const ScrollbackLine: Component<{
   );
 };
 
-// `memberSigil` derives the rendered prefix for a member's modes; it
-// lives in `lib/memberSigil.ts` so MembersPane reuses it (one source of
-// truth for sigil derivation).
-
-type BannerState = "hidden" | "visible";
-
 // C7.1: row types for the mixed separator+message rendering list.
 type SeparatorRow = { type: "separator"; label: string; id: string };
 // C7.3: unread-marker row — distinct variant so JSX render branch is a
@@ -634,7 +626,6 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window resize, visualViewport resize → keyboard open/close).
   // True when scrollback content actually exceeds the viewport.
   const [isOverflowing, setIsOverflowing] = createSignal(false);
-  const [bannerState, setBannerState] = createSignal<BannerState>("hidden");
   // C7.3: track whether we've done the initial scroll-to-marker for this
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
@@ -812,28 +803,29 @@ const ScrollbackPane: Component<Props> = (props) => {
     return result;
   });
 
-  // JOIN-self detection: derive whether own nick has joined this channel
-  // from the scrollback. The memo re-runs when messages change; once the
-  // banner has been shown (key in shownBanners), it stays hidden.
-  // Channel-window-only per spec #7 — query/server/list/mentions windows
-  // have no JOIN concept; gate on kind first.
-  const shouldShowBanner = createMemo((): boolean => {
+  // C5.0 (UX-5 BJ rewrite — 2026-05-19): own-nick JOIN auto-focus-switch.
+  // Derive whether the own nick has a JOIN row for this channel from
+  // the scrollback. Channel-window-only per spec #7 — query/server/list/
+  // mentions windows have no JOIN concept; gate on kind first. The memo
+  // re-runs when messages change; once auto-focus has fired for a key
+  // (key ∈ autoFocusedJoins), it stays false so repeated session-internal
+  // /join cycles for the same channel don't re-snatch focus from a window
+  // the operator has since moved away from.
+  //
+  // Pre-BJ this memo also gated the "JOIN-self banner" mount; BJ killed
+  // the banner (TopicBar + MembersPane already cover topic + members)
+  // and the focus side-effect lives on alone. The Set rename
+  // (`shownBanners` → `autoFocusedJoins`) tracks the semantic shift.
+  const shouldAutoFocusOnOwnJoin = createMemo((): boolean => {
     if (props.kind !== "channel") return false;
     const nick = userNick();
     if (!nick) return false;
-    if (shownBanners.has(key())) return false;
+    if (autoFocusedJoins.has(key())) return false;
     const msgs = messages();
     if (!msgs) return false;
     return msgs.some((m) => m.kind === "join" && nickEquals(m.sender, nick));
   });
 
-  // When shouldShowBanner transitions true → visible, mark the banner
-  // as shown so remounts of this component (channel re-select within
-  // the session) don't re-render it. Also switch focus to this channel
-  // (spec #7: /join-self switches focus automatically). This is a user
-  // action — the user issued /join — so the C4.2 cluster-wide focus-
-  // only-on-user-action rule is not violated; the rule guards against
-  // incoming-traffic focus shifts, not user-initiated ones.
   // UX-3 Z3 R4 — actual-overflow gate. CSS-only fix is impossible:
   // there is no `:has-overflow` selector. `overflow-y: scroll` (R3)
   // didn't help — iOS bubbles `pan-y` to chrome reveal whenever the
@@ -875,11 +867,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   });
 
   createEffect(
-    on(shouldShowBanner, (show) => {
-      if (show && !shownBanners.has(key())) {
-        shownBanners.add(key());
-        setBannerState("visible");
-        // C5.0: auto-focus-switch on own-nick JOIN.
+    on(shouldAutoFocusOnOwnJoin, (shouldFocus) => {
+      if (shouldFocus && !autoFocusedJoins.has(key())) {
+        autoFocusedJoins.add(key());
         setSelectedChannel({
           networkSlug: props.networkSlug,
           channelName: props.channelName,
@@ -889,14 +879,10 @@ const ScrollbackPane: Component<Props> = (props) => {
     }),
   );
 
-  // Reset banner display on channel switch (Solid's <Show> reuses the
-  // ScrollbackPane component instance across selectedChannel changes; the
-  // local `bannerState` signal would otherwise leak the previous channel's
-  // "visible" latch into the new channel's first render). Tracks `key()`
-  // so it re-runs only when (networkSlug, channelName) actually changes —
-  // `defer: true` skips the initial mount run so the shouldShowBanner
-  // effect's first-mount evaluation isn't pre-emptively cleared.
-  // C7.3: also reset markerScrolled so the next channel's unread marker
+  // Channel-switch reset (Solid's <Show> reuses the ScrollbackPane
+  // component instance across selectedChannel changes; per-channel
+  // local state would otherwise leak across).
+  // C7.3: reset markerScrolled so the next channel's unread marker
   // gets its own scroll-to-marker behavior.
   //
   // UX-4 bucket K (2026-05-19) — canonical window-activation scroll.
@@ -953,8 +939,6 @@ const ScrollbackPane: Component<Props> = (props) => {
   // Per-channel pre-work this trigger owns (does NOT belong in
   // `scrollToActivation` because visibility-return on the SAME channel
   // must NOT reset these):
-  //   * bannerState — switching channels disposes the per-channel
-  //     banner state; visibility-return preserves it.
   //   * markerScrolled — latch reset so the new channel's marker
   //     gets its own scroll-to-marker (re-fires for a future window
   //     where the marker shows up only after a delayed REST page).
@@ -968,13 +952,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   //     id present right now) so future arrivals during this session
   //     are "live-read" and never spawn a fresh marker.
   //
-  // `defer: true` skips the initial mount run so the shouldShowBanner
+  // `defer: true` skips the initial mount run so the auto-focus
   // effect's first-mount evaluation isn't pre-emptively cleared.
   createEffect(
     on(
       key,
       () => {
-        setBannerState("hidden");
         setMarkerScrolled(false);
         markerRef = undefined;
         // CP29 R-4: capture the boundary as the highest message id present
@@ -995,9 +978,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // switch) then re-opened. selection.ts owns the cursor settle on
   // false→true (clearBadgesForWindow); this effect owns the scroll
   // settle. NO per-channel pre-work — visibility-return on the SAME
-  // selectedChannel must preserve bannerState / markerScrolled /
-  // markerRef / sessionTopId (the operator hasn't left the window;
-  // only the browser tab lost visibility).
+  // selectedChannel must preserve markerScrolled / markerRef /
+  // sessionTopId (the operator hasn't left the window; only the
+  // browser tab lost visibility).
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
@@ -1120,103 +1103,8 @@ const ScrollbackPane: Component<Props> = (props) => {
     setAtBottom(true);
   };
 
-  // JOIN-self banner render — pure, no scrollback persistence.
-  const JoinBanner: Component = () => {
-    const topic = () => topicByChannel()[key()] ?? null;
-    const createdAt = () => createdByChannel()[key()] ?? null;
-    const members = () => membersByChannel()[key()] ?? null;
-    const opCount = () => members()?.filter((m) => m.modes.includes("@")).length ?? 0;
-    const totalCount = () => members()?.length ?? 0;
-    // Non-empty member list as a derived value for use in <Show> + <For>.
-    // Avoids non-null assertions by returning `undefined` (falsy) when
-    // the list is null or empty, letting <Show> gate cleanly.
-    const nonEmptyMembers = () => {
-      const list = members();
-      return list !== null && list.length > 0 ? list : undefined;
-    };
-
-    // Format a server-emitted ISO 8601 timestamp into the operator's
-    // locale-default human form. Returns null when the input fails to
-    // parse so the <Show> gate can hide the row entirely (rather than
-    // rendering "Invalid Date"). Server contract: `created_at` from
-    // 329 RPL_CREATIONTIME, `set_at` from 333 RPL_TOPICWHOTIME — both
-    // are wire-projected via `DateTime.to_iso8601/1` so the parse path
-    // here only fails on a malformed payload (which `narrowChannelEvent`
-    // already drops, but the defensive null keeps the UI honest).
-    const formatTs = (iso: string | null): string | null => {
-      if (iso === null) return null;
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return null;
-      return d.toLocaleString();
-    };
-
-    const createdLine = () => formatTs(createdAt());
-    const topicSetLine = () => {
-      const t = topic();
-      if (t === null || t.set_by === null || t.set_at === null) return null;
-      const when = formatTs(t.set_at);
-      if (when === null) return null;
-      return `Topic set by ${t.set_by} on ${when}`;
-    };
-
-    return (
-      <div class="join-banner" data-testid="join-banner">
-        <div class="join-banner-heading">You joined {props.channelName}</div>
-        <Show when={createdLine()}>
-          {(when) => (
-            <div class="join-banner-created" data-testid="join-banner-created">
-              Channel was created on {when()}
-            </div>
-          )}
-        </Show>
-        <Show when={topic()?.text}>
-          {(text) => <div class="join-banner-topic">Topic: {text()}</div>}
-        </Show>
-        <Show when={topicSetLine()}>
-          {(line) => (
-            <div class="join-banner-topic-set" data-testid="join-banner-topic-set">
-              {line()}
-            </div>
-          )}
-        </Show>
-        <Show
-          when={nonEmptyMembers()}
-          fallback={<div class="join-banner-members-loading">(loading members…)</div>}
-        >
-          {(memberList) => (
-            <>
-              <div class="join-banner-names">
-                <For each={memberList()}>
-                  {(m) => {
-                    const sigil = memberSigil(m.modes);
-                    const prefix = sigil === " " ? "" : sigil;
-                    return (
-                      <span class="join-banner-nick">
-                        <NickText
-                          nick={m.nick}
-                          prefix={prefix}
-                          extraClass="join-banner-nick-text"
-                        />
-                      </span>
-                    );
-                  }}
-                </For>
-              </div>
-              <div class="join-banner-summary">
-                {totalCount()} users, {opCount()} op{opCount() !== 1 ? "s" : ""}
-              </div>
-            </>
-          )}
-        </Show>
-      </div>
-    );
-  };
-
   return (
     <div class="scrollback-pane">
-      <Show when={bannerState() === "visible"}>
-        <JoinBanner />
-      </Show>
       {/* C2 — WHOIS card renders inline above the scrollback when a
           bundle exists for the selected window's network. The card
           itself short-circuits to null when no bundle is present, but
