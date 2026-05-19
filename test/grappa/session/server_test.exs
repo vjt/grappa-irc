@@ -1733,6 +1733,46 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "473 ERR_INVITEONLYCHAN ALSO broadcasts archive_changed on Topic.user (UX-5 BK)" do
+      # UX-5 bucket BK (2026-05-19): the failure notice persisted into
+      # the channel scrollback qualifies as archive content
+      # (`Scrollback.list_archive/3` filters by `active_keyset`; the
+      # failed channel was never JOINed → absent from the keyset →
+      # archive includes it). Symmetric with
+      # `ArchiveController.delete/2`'s broadcast, the `:join_failed`
+      # apply_effects arm must fire `archive_changed` so cic's
+      # `archivedBySlug` cache refreshes the moment the operator
+      # dismisses the failed pseudo-row via Sidebar ×. Without this
+      # event the pseudo-row would vanish but the archive section
+      # would stay empty until manual archive-section toggle.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#sniffo-bk", nil)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 473 grappa-test #sniffo-bk :Cannot join channel (+i)\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: "archive_changed", network_slug: net_slug}
+                     },
+                     1_000
+
+      assert net_slug == network.slug
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "473 with no in-flight entry does NOT emit join_failed broadcast (regression)" do
       # No-match: the failure numeric arrives without an in-flight tracker
       # (server-emitted, or post-TTL-sweep). EventRouter must NOT emit

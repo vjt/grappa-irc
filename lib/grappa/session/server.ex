@@ -2101,6 +2101,25 @@ defmodule Grappa.Session.Server do
       )
   end
 
+  # UX-5 bucket BK (2026-05-19): every `apply_effects` arm that creates
+  # archive-eligible scrollback content (`:join_failed`, `:kicked`,
+  # `:parted`) calls this so cic's `archivedBySlug` cache refreshes
+  # without waiting for a manual archive-section toggle. Symmetric with
+  # `ArchiveController.broadcast_archive_changed/2`'s envelope; single
+  # source of truth for the broadcast shape. Without this, the operator
+  # dismisses a pseudo-row via the Sidebar × and the archive section
+  # stays empty until they toggle it open. The cic-side handler is
+  # `userTopic.ts`'s `archive_changed` arm — idempotent `loadArchive`
+  # refetch, so redundant broadcasts are cheap.
+  @spec broadcast_archive_changed(t()) :: :ok
+  defp broadcast_archive_changed(state) do
+    :ok =
+      Grappa.PubSub.broadcast_event(
+        Topic.user(state.subject_label),
+        Wire.archive_changed_payload(state.network_slug)
+      )
+  end
+
   @spec persist_last_joined(Grappa.Session.subject(), pos_integer(), [String.t()], last_joined_persister() | nil) :: :ok
   defp persist_last_joined(_, _, _, nil), do: :ok
 
@@ -2312,6 +2331,14 @@ defmodule Grappa.Session.Server do
             Wire.message_payload(message)
           )
 
+        # UX-5 bucket BK (2026-05-19): the persisted notice qualifies
+        # as archive content (`Scrollback.list_archive/3` filters by
+        # `active_keyset`; the failed channel was never JOINed so it's
+        # absent from the keyset → archive includes it). Gated on
+        # `{:ok, _}` so a persist failure doesn't fire a spurious
+        # archive_changed (cic would refetch the unchanged archive set).
+        broadcast_archive_changed(state)
+
       {:error, changeset} ->
         Logger.error("scrollback insert failed for join_failed",
           channel: channel,
@@ -2339,6 +2366,16 @@ defmodule Grappa.Session.Server do
   # as `:archived`. The :persist :part row that ships alongside is the
   # UI feed-line — there is intentionally NO `kind: "parted"` broadcast
   # (absence is the signal).
+  #
+  # No `archive_changed` broadcast here (unlike the BK :join_failed /
+  # :kicked arms): every PART path that reaches this arm is preceded
+  # by `ChannelsController.delete/2`'s eager `broadcast_archive_changed`
+  # at the REST boundary, OR by the eager PartCleanup path that fires
+  # `channels_changed` (which triggers cic to refetch). Broadcasting
+  # again here would double-fire (idempotent on cic but adds noise to
+  # e2e specs that count archive rows post-PART). Phase 6 listener-
+  # facade self-PART (or any future non-REST entry point) will need
+  # its own broadcast at its boundary.
   defp apply_effects([{:parted, channel} | rest], state) do
     state = %{state | window_state: WindowState.set_parted(state.window_state, channel)}
 
@@ -2360,6 +2397,15 @@ defmodule Grappa.Session.Server do
       state,
       SessionWire.kicked(state.network_slug, channel, by, reason)
     )
+
+    # UX-5 bucket BK (2026-05-19): symmetric with `:join_failed` above
+    # — the kick audit row + accumulated channel scrollback land in the
+    # archive once the operator dismisses the pseudo-row via the
+    # Sidebar × button. Pre-BK the kick row was already archive-
+    # eligible (self-KICK drops the channel from state.members so
+    # `Session.list_channels` excludes it), but cic's `archivedBySlug`
+    # was stale until manual archive-section toggle.
+    broadcast_archive_changed(state)
 
     state = %{
       state

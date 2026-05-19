@@ -18,7 +18,7 @@ import {
   HOME_WINDOW_SLUG,
   SERVER_WINDOW_NAME,
 } from "./lib/windowKinds";
-import { windowStateByChannel } from "./lib/windowState";
+import { setParted, windowStateByChannel } from "./lib/windowState";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -181,6 +181,27 @@ const Sidebar: Component<Props> = () => {
 
   const handleCloseQuery = (networkId: number, targetNick: string) => {
     closeQueryWindow(networkId, targetNick);
+  };
+
+  const handleClosePseudo = (slug: string, name: string) => {
+    // UX-5 bucket BK (2026-05-19): × on a pseudo-row (pending/failed/
+    // kicked/parked) drops the windowStateByChannel entry. setParted
+    // is the existing "absence is the projection" verb — all three
+    // sibling maps cleared. After this fires:
+    //   * The pseudo-row vanishes (windowState key gone →
+    //     pseudoChannelsForNetwork no longer emits it).
+    //   * visibleArchiveForNetwork's pseudo-name filter releases, so
+    //     the archive section shows the row (if it carries scrollback;
+    //     pending never has scrollback so it surfaces nowhere — that's
+    //     correct, the operator cancelled a join in flight).
+    // If the closed pseudo-row WAS the selected window, redirect
+    // selection to $server (same shape as own-PART dismiss in
+    // subscribe.ts:347).
+    const sel = selectedChannel();
+    if (sel !== null && sel.networkSlug === slug && sel.channelName === name) {
+      setSelectedChannel({ networkSlug: slug, channelName: SERVER_WINDOW_NAME, kind: "server" });
+    }
+    setParted(channelKey(slug, name));
   };
 
   // UX-4 bucket D — close the server window for a network. Routes
@@ -419,6 +440,24 @@ const Sidebar: Component<Props> = () => {
                         >
                           {row.name}
                         </span>
+                      </button>
+                      {/* UX-5 bucket BK (2026-05-19): × on every pseudo-row.
+                        Pre-BK pseudo-rows were uncloseable — a failed JOIN
+                        left a sticky greyed row + a duplicate archive
+                        entry (visibleArchiveForNetwork filtered only live
+                        channelsBySlug/queryWindowsByNetwork, not
+                        windowStateByChannel). Now × calls setParted →
+                        drops the windowState key → row vanishes;
+                        visibleArchiveForNetwork's pseudo-name filter
+                        releases so the archive section shows the row
+                        instead (single surface per window). */}
+                      <button
+                        type="button"
+                        class="sidebar-close"
+                        aria-label={`Close ${row.name}`}
+                        onClick={() => handleClosePseudo(network.slug, row.name)}
+                      >
+                        ×
                       </button>
                     </li>
                   )}

@@ -17,6 +17,10 @@ vi.mock("../lib/queryWindows", () => ({
   queryWindowsByNetwork: () => ({}),
 }));
 
+vi.mock("../lib/windowState", () => ({
+  windowStateByChannel: () => ({}),
+}));
+
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
@@ -136,6 +140,9 @@ describe("archive.visibleArchiveForNetwork", () => {
     vi.doMock("../lib/queryWindows", () => ({
       queryWindowsByNetwork: () => ({}),
     }));
+    vi.doMock("../lib/windowState", () => ({
+      windowStateByChannel: () => ({}),
+    }));
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.listArchive).mockResolvedValue([
@@ -160,6 +167,9 @@ describe("archive.visibleArchiveForNetwork", () => {
         1: [{ targetNick: "vjt-peer", openedAt: "2026-05-04T10:00:00Z" }],
       }),
     }));
+    vi.doMock("../lib/windowState", () => ({
+      windowStateByChannel: () => ({}),
+    }));
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     vi.mocked(api.listArchive).mockResolvedValue([
@@ -172,6 +182,68 @@ describe("archive.visibleArchiveForNetwork", () => {
 
     expect(archive.visibleArchiveForNetwork("freenode", 1)).toEqual([
       { target: "alice-peer", kind: "query", last_activity: 100, row_count: 4 },
+    ]);
+  });
+
+  // UX-5 bucket BK (2026-05-19) — pseudo-row dedup: any (slug, name) in
+  // windowStateByChannel renders as a Sidebar pseudo-row (pending /
+  // failed / kicked / parked); the matching archive entry MUST be
+  // suppressed so the same window doesn't appear in both surfaces.
+  // Operator clicks × on the pseudo-row → setParted drops the
+  // windowState key → this filter releases → archive shows the row.
+  it("filters out archive entries whose target is in windowStateByChannel for the slug", async () => {
+    vi.doMock("../lib/networks", () => ({
+      channelsBySlug: () => ({ freenode: [] }),
+    }));
+    vi.doMock("../lib/queryWindows", () => ({
+      queryWindowsByNetwork: () => ({}),
+    }));
+    vi.doMock("../lib/windowState", () => ({
+      windowStateByChannel: () => ({
+        "freenode #it-opers": "failed",
+        "freenode #kicked-from": "kicked",
+      }),
+    }));
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listArchive).mockResolvedValue([
+      { target: "#it-opers", kind: "channel", last_activity: 300, row_count: 1 },
+      { target: "#kicked-from", kind: "channel", last_activity: 200, row_count: 5 },
+      { target: "#old-chan", kind: "channel", last_activity: 100, row_count: 12 },
+    ]);
+
+    const archive = await import("../lib/archive");
+    await archive.loadArchive("freenode");
+
+    expect(archive.visibleArchiveForNetwork("freenode", 1)).toEqual([
+      { target: "#old-chan", kind: "channel", last_activity: 100, row_count: 12 },
+    ]);
+  });
+
+  // BK regression: windowStateByChannel keys for OTHER networks must NOT
+  // affect this network's archive view. The pseudoNames Set is scoped
+  // by slug via decodeChannelKey.
+  it("does NOT filter when the windowStateByChannel key belongs to a different slug", async () => {
+    vi.doMock("../lib/networks", () => ({
+      channelsBySlug: () => ({ freenode: [] }),
+    }));
+    vi.doMock("../lib/queryWindows", () => ({
+      queryWindowsByNetwork: () => ({}),
+    }));
+    vi.doMock("../lib/windowState", () => ({
+      windowStateByChannel: () => ({ "libera #it-opers": "failed" }),
+    }));
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listArchive).mockResolvedValue([
+      { target: "#it-opers", kind: "channel", last_activity: 100, row_count: 1 },
+    ]);
+
+    const archive = await import("../lib/archive");
+    await archive.loadArchive("freenode");
+
+    expect(archive.visibleArchiveForNetwork("freenode", 1)).toEqual([
+      { target: "#it-opers", kind: "channel", last_activity: 100, row_count: 1 },
     ]);
   });
 

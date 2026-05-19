@@ -142,8 +142,11 @@ vi.mock("../lib/awayStatus", () => ({
 
 let mockWindowState: Record<string, string> = {};
 
+const setPartedMock = vi.fn();
+
 vi.mock("../lib/windowState", () => ({
   windowStateByChannel: () => mockWindowState,
+  setParted: (...args: unknown[]) => setPartedMock(...args),
 }));
 
 import * as apiMod from "../lib/api";
@@ -589,6 +592,78 @@ describe("Sidebar", () => {
       render(() => <Sidebar />);
       const matches = screen.getAllByText("#italia");
       expect(matches.length).toBe(1);
+    });
+  });
+
+  // UX-5 bucket BK (2026-05-19) — pseudo-rows are closeable via ×.
+  // Pre-BK the pseudo-row was uncloseable + the same window also showed
+  // in archive (one window, two surfaces — vjt dogfood bug).
+  // Post-BK: × fires setParted (drops windowStateByChannel key) →
+  // row vanishes; visibleArchiveForNetwork's pseudo-name filter releases
+  // and the archive section shows the row. If the closed pseudo-row WAS
+  // the selected window, selection redirects to $server.
+  describe("UX-5 bucket BK — pseudo-row × button", () => {
+    it("renders an aria-labeled × button on a failed pseudo-row", () => {
+      mockWindowState = { "freenode #it-opers": "failed" };
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #it-opers");
+      expect(closeBtn).toBeInTheDocument();
+    });
+
+    it("renders an aria-labeled × button on a kicked pseudo-row", () => {
+      mockWindowState = { "freenode #kicked-from": "kicked" };
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #kicked-from");
+      expect(closeBtn).toBeInTheDocument();
+    });
+
+    it("renders an aria-labeled × button on a pending pseudo-row (operator can cancel)", () => {
+      mockWindowState = { "freenode #new-room": "pending" };
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #new-room");
+      expect(closeBtn).toBeInTheDocument();
+    });
+
+    it("clicking × on a failed pseudo-row calls setParted with the channelKey", () => {
+      mockWindowState = { "freenode #it-opers": "failed" };
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #it-opers");
+      fireEvent.click(closeBtn);
+      expect(setPartedMock).toHaveBeenCalledWith("freenode #it-opers");
+    });
+
+    it("clicking × on the selected pseudo-row redirects selection to $server", () => {
+      mockWindowState = { "freenode #it-opers": "failed" };
+      vi.spyOn(selMod, "selectedChannel").mockReturnValue({
+        networkSlug: "freenode",
+        channelName: "#it-opers",
+        kind: "channel",
+      });
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #it-opers");
+      fireEvent.click(closeBtn);
+      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "$server",
+        kind: "server",
+      });
+      expect(setPartedMock).toHaveBeenCalledWith("freenode #it-opers");
+    });
+
+    it("clicking × on a non-selected pseudo-row does NOT redirect selection", () => {
+      mockWindowState = { "freenode #it-opers": "failed" };
+      // Default selectedChannel mock returns null. Re-mock to a DIFFERENT
+      // selection so we can assert setSelectedChannel is NOT called.
+      vi.spyOn(selMod, "selectedChannel").mockReturnValue({
+        networkSlug: "freenode",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      render(() => <Sidebar />);
+      const closeBtn = screen.getByLabelText("Close #it-opers");
+      fireEvent.click(closeBtn);
+      expect(selMod.setSelectedChannel).not.toHaveBeenCalled();
+      expect(setPartedMock).toHaveBeenCalledWith("freenode #it-opers");
     });
   });
 

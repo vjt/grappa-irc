@@ -1,9 +1,11 @@
 import { createSignal } from "solid-js";
 import { type ArchiveEntry, listArchive } from "./api";
 import { token } from "./auth";
+import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { channelsBySlug } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
+import { windowStateByChannel } from "./windowState";
 
 // Per-network archive store. Source-of-truth for cic's per-network
 // Archive collapsed-section in the Sidebar (CP15 B4).
@@ -86,6 +88,17 @@ export const setArchiveModalNetwork = exports_.setArchiveModalNetwork;
 // does the same exclusion via active_keyset, but the client-side cache
 // survives JOIN echoes; re-JOIN of an archived channel would otherwise
 // dup the row in active + archive sections.
+//
+// UX-5 bucket BK (2026-05-19): ALSO exclude anything in
+// `windowStateByChannel` for the slug. Pseudo-rows (pending/failed/
+// kicked/parked rendered via Sidebar.pseudoChannelsForNetwork) carry
+// scrollback persisted by Session.Server's `:join_failed` arm, so
+// without this filter a failed JOIN appears in BOTH the active sidebar
+// (pseudo-row) AND the archive section (notice row qualifies as
+// archived because the channel isn't in Session.list_channels). One
+// window, one surface. Operator clicks × on the pseudo-row → setParted
+// drops the windowState key → this filter releases → archive shows
+// the row.
 export function visibleArchiveForNetwork(slug: string, networkId: number): ArchiveEntry[] {
   const entries = archivedBySlug()[slug] ?? [];
   if (entries.length === 0) return entries;
@@ -93,7 +106,14 @@ export function visibleArchiveForNetwork(slug: string, networkId: number): Archi
   const liveQueries = new Set(
     (queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick),
   );
+  const pseudoNames = new Set<string>();
+  for (const key of Object.keys(windowStateByChannel())) {
+    const decoded = decodeChannelKey(key as ChannelKey);
+    if (decoded === null || decoded.slug !== slug) continue;
+    pseudoNames.add(decoded.name);
+  }
   return entries.filter((entry) => {
+    if (pseudoNames.has(entry.target)) return false;
     if (entry.kind === "channel") return !liveChannels.has(entry.target);
     return !liveQueries.has(entry.target);
   });
