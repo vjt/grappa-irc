@@ -25,6 +25,7 @@ import { isActiveChannelJoined } from "./lib/windowState";
 import MembersPane from "./MembersPane";
 import MentionsWindow from "./MentionsWindow";
 import PrivacyModal from "./PrivacyModal";
+import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
 import ShellChrome, { ChromeButtons } from "./ShellChrome";
@@ -325,6 +326,12 @@ const Shell: Component = () => {
           <PrivacyModal />
           <aside class="shell-sidebar">
             <Sidebar />
+            {/* UX-5 bucket BS — drag handle on the inner edge of the
+                left sidebar. Desktop-only (mobile branch never mounts
+                it). Width persists to localStorage via
+                lib/sidebarWidths.ts; CSS var --sidebar-width drives the
+                .shell grid template. */}
+            <ResizeHandle side="left" />
           </aside>
 
           <Show when={membersOpen()}>
@@ -431,6 +438,12 @@ const Shell: Component = () => {
           </section>
 
           <aside class="shell-members" classList={{ open: membersOpen() }}>
+            {/* UX-5 bucket BS — drag handle on the inner edge of the
+                right (members) sidebar. Mounted unconditionally even
+                when isActiveChannelJoined() is false (the column
+                collapses via .shell-no-members in CSS); the handle is
+                inside the aside so it's hidden together. */}
+            <ResizeHandle side="right" />
             <Show when={isActiveChannelJoined() && selectedChannel()}>
               {(sel) => (
                 <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />

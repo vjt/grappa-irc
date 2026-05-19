@@ -235,9 +235,13 @@ body {
 
 /* Three-pane shell (P4-1) */
 
+/* UX-5 bucket BS — sidebar widths driven by CSS custom properties on
+   <html>, set by lib/sidebarWidths.ts at boot AND on drag. The fallbacks
+   (16rem / 14rem) match the pre-bucket literal values, so a fresh
+   visitor without localStorage gets the original layout. */
 .shell {
   display: grid;
-  grid-template-columns: 16rem 1fr 14rem;
+  grid-template-columns: var(--sidebar-width, 16rem) 1fr var(--members-width, 14rem);
   grid-template-rows: 1fr;
   height: 100vh;
   min-height: 0;
@@ -250,7 +254,7 @@ body {
    pane fills the screen instead of showing a 14rem void. Mobile-only
    .shell-mobile is single-column so the modifier is a no-op there. */
 .shell.shell-no-members {
-  grid-template-columns: 16rem 1fr;
+  grid-template-columns: var(--sidebar-width, 16rem) 1fr;
 }
 
 .shell-sidebar {
@@ -259,6 +263,9 @@ body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* UX-5 BS: relative positioning so .resize-handle (absolute, inner-edge)
+     anchors against this aside. */
+  position: relative;
 }
 
 .shell-main {
@@ -276,6 +283,64 @@ body {
      both notch and home-indicator regions need clearance. */
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
+  /* UX-5 BS: relative positioning so .resize-handle (absolute, inner-edge)
+     anchors against this aside. */
+  position: relative;
+}
+
+/* UX-5 bucket BS — drag handles on the inner edge of each sidebar.
+   Positioned absolutely INSIDE the owning aside. The aside parents have
+   `overflow-y: auto` which clips x-axis overflow, so the handle MUST
+   sit fully inside the aside box (not negative-offset). 6px hit area
+   is large enough for mouse + finger without crowding content. Subtle
+   by default; brightens on hover so the affordance is discoverable. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s ease;
+  /* Block selection during drag (browser default would highlight text
+     across both sidebars as the pointer moves). */
+  user-select: none;
+  touch-action: none;
+}
+
+.resize-handle-left {
+  /* Inner (right) edge of the left sidebar. */
+  right: 0;
+}
+
+.resize-handle-right {
+  /* Inner (left) edge of the members aside. */
+  left: 0;
+}
+
+.resize-handle:hover,
+html.resize-dragging .resize-handle {
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+/* While dragging, kill text selection EVERYWHERE — the pointer moves
+   fast across multiple panes and would otherwise highlight scrollback
+   text en route. */
+html.resize-dragging,
+html.resize-dragging * {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
+/* Mobile suppression: drag handles are desktop-only. Shell.tsx's
+   mobile branch never mounts them, but this is defense-in-depth in
+   case a stray instance lands inside a mobile branch later. */
+@media (max-width: 768px) {
+  .resize-handle {
+    display: none;
+  }
 }
 
 /* SocketHealthBanner — fixed-position alert at the top of the viewport,

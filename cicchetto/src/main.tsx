@@ -14,6 +14,7 @@ import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
+import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
 import { installScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
@@ -30,6 +31,11 @@ applyTheme();
 // BEFORE render() so the first frame already has the user's preferred
 // size. iOS-4 default = "M" (14px = current behavior).
 applyFontSizeFromStorage();
+
+// UX-5 bucket BS — pre-paint sidebar widths from localStorage so the
+// first frame already has the operator's preferred grid template. No
+// flash from default 16rem/14rem → stored values as Shell mounts.
+applySidebarWidthsFromStorage();
 
 // UX-3 PENT — VisualViewport-driven height tracking. Writes
 // `--viewport-height: <px>` on <html> and re-writes on every
