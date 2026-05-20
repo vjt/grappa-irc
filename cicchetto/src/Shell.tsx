@@ -610,7 +610,11 @@ const Shell: Component = () => {
         <aside class="shell-members" classList={{ open: membersOpen() }}>
           <Show when={isActiveChannelJoined() && selectedChannel()}>
             {(sel) => (
-              <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
+              <MembersPane
+                networkSlug={sel().networkSlug}
+                channelName={sel().channelName}
+                onMemberSelect={() => setMembersOpen(false)}
+              />
             )}
           </Show>
           {/* UX-5 bucket BM (2026-05-20) — bottom-fixed launcher row

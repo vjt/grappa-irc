@@ -184,6 +184,54 @@ describe("MembersPane", () => {
     });
   });
 
+  // UX-5 bucket BV (2026-05-20) — mobile members drawer auto-close on
+  // member-tap. The mobile Shell mounts MembersPane with `onMemberSelect`
+  // wired to `setMembersOpen(false)` so tapping a nick opens the query
+  // AND dismisses the drawer (pre-BV the drawer stayed open, blocking
+  // the new query's ComposeBox under the keyboard overlay on iOS).
+  // Desktop mounts omit the prop — drawer behavior unchanged.
+  it("calls onMemberSelect after left-click opens a query (BV mobile auto-close)", async () => {
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [{ nick: "alice", modes: ["+"] }],
+    };
+    const onMemberSelect = vi.fn();
+    render(() => (
+      <MembersPane networkSlug="freenode" channelName="#italia" onMemberSelect={onMemberSelect} />
+    ));
+    const aliceBtn = document.querySelector(".member-voiced .member-name") as HTMLElement;
+    fireEvent.click(aliceBtn);
+    expect(onMemberSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("left-click without onMemberSelect prop still works (desktop mount, no auto-close)", async () => {
+    const qw = await import("../lib/queryWindows");
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = {
+      "freenode #italia": [{ nick: "alice", modes: ["+"] }],
+    };
+    render(() => <MembersPane networkSlug="freenode" channelName="#italia" />);
+    const aliceBtn = document.querySelector(".member-voiced .member-name") as HTMLElement;
+    expect(() => fireEvent.click(aliceBtn)).not.toThrow();
+    expect(qw.openQueryWindowState).toHaveBeenCalled();
+  });
+
+  it("onMemberSelect is NOT called when network is unresolved (early-return short-circuits the side-effect chain)", async () => {
+    const { networks } = await import("../lib/networks");
+    vi.mocked(networks).mockReturnValueOnce([] as never);
+    mockWindowState = { "freenode #italia": "joined" };
+    mockMembers = { "freenode #italia": [{ nick: "alice", modes: [] }] };
+    const onMemberSelect = vi.fn();
+    render(() => (
+      <MembersPane networkSlug="freenode" channelName="#italia" onMemberSelect={onMemberSelect} />
+    ));
+    const btn = document.querySelector(".member-plain .member-name") as HTMLElement;
+    fireEvent.click(btn);
+    // Network unresolved → entire onClick aborts BEFORE onMemberSelect fires.
+    // Drawer stays open; user sees no state change.
+    expect(onMemberSelect).not.toHaveBeenCalled();
+  });
+
   it("left-click is a no-op when network is unresolved (race: list arrives before networks)", async () => {
     const { networks } = await import("../lib/networks");
     // Cast: the mock factory above types `networks` as a `vi.fn(() => [...])`

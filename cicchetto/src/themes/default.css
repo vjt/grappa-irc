@@ -1186,6 +1186,12 @@ html.resize-dragging * {
   border: 1px solid var(--border);
   padding: 1.5rem;
   max-width: 28rem;
+  /* UX-5 bucket BV (2026-05-20) — defensive keyboard-react cap.
+     Modal centers inside fixed backdrop (~:1173) so it CAN grow past
+     viewport on iOS. Cap pinned here as contract-shape; the cap only
+     becomes load-bearing the day someone grows the modal past
+     viewport AND adds `overflow-y: auto` — both in the same change. */
+  max-height: var(--viewport-height, 100dvh);
   font-family: var(--font-mono);
   font-size: var(--font-size);
   /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
@@ -1359,7 +1365,16 @@ html.resize-dragging * {
      rem-relative width without spilling horizontally. The 100vw
      ceiling stays for very narrow viewports (iPhone SE class). */
   max-width: min(28rem, 100vw);
-  height: 100vh;
+  /* UX-5 bucket BV (2026-05-20) — keyboard-react via VisualViewport.
+     Pre-BV: `height: 100vh`. SettingsDrawer is full-viewport-height
+     with focusable inputs near the bottom (nicks-only filter text box,
+     done/logout buttons). On iOS the keyboard overlays the viewport
+     so inputs near the bottom were rendered UNDER the keyboard. The
+     drawer is BOTH mobile + desktop (a single declaration here, no
+     `@media` split — desktop's visualViewport.height never shrinks
+     under keyboard so the var stays at full height harmlessly). See
+     `.shell-mobile` comment ~:2120 for the full UX-3 PENT rationale. */
+  height: var(--viewport-height, 100dvh);
   background: var(--bg-alt);
   border-left: 1px solid var(--border);
   /* iOS-2: top + bottom insets — drawer is full-viewport-height; max()
@@ -1506,6 +1521,8 @@ html.resize-dragging * {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* UX-5 BV — defensive keyboard-react cap (see `.home-pane` ~:3046). */
+  max-height: var(--viewport-height, 100dvh);
   width: 100%;
   padding: 1rem;
   overflow-y: auto;
@@ -1584,6 +1601,8 @@ html.resize-dragging * {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* UX-5 BV — defensive keyboard-react cap (see `.home-pane` ~:3046). */
+  max-height: var(--viewport-height, 100dvh);
   /* UX-5 BO (2026-05-19): nested scroll authority inside `.admin-pane`
      (which itself re-asserts `pan-y`); without this the gesture is
      routed by the parent and the nested tab content doesn't scroll
@@ -2186,7 +2205,20 @@ html.resize-dragging * {
   .shell-members {
     position: fixed;
     top: 0;
-    height: 100vh;
+    /* UX-5 bucket BV (2026-05-20) — VisualViewport keyboard-react.
+       Pre-BV: `height: 100vh`. On iOS Safari the on-screen keyboard
+       overlays the viewport without resizing CSS units (100vh/100dvh/
+       100svh all lie about visible-area height while the keyboard is
+       up), so the drawer's `.mobile-panel-actions` launcher footer
+       (BM, ~:2238) ended up rendered under the keyboard whenever the
+       operator focused an input in a query/channel opened from the
+       drawer. `--viewport-height` is written from
+       `visualViewport.height` by `lib/viewportHeight.ts` (UX-3 PENT)
+       and shrinks in lockstep with the keyboard. Fallback chain:
+       `100dvh` for the brief boot window before the JS sets the var
+       OR browsers without VisualViewport. Mirrors `.shell-mobile`
+       (~:2120). */
+    height: var(--viewport-height, 100dvh);
     width: 80vw;
     max-width: 18rem;
     z-index: 90;
@@ -2447,6 +2479,14 @@ html.resize-dragging * {
   border: 1px solid var(--border);
   width: 100%;
   max-width: 32rem;
+  /* UX-5 bucket BV (2026-05-20) — keyboard-react via VisualViewport.
+     Pre-BV: no `max-height` — modal stretched to fill backdrop
+     (`.archive-modal-backdrop { align-items: stretch }` ~:2471) which
+     on iOS Safari is the full layout viewport (keyboard-blind). Cap
+     at the live visible viewport so the modal's bottom inset padding
+     doesn't end up under the keyboard if the modal ever grows an
+     input surface (today it's list-only but the contract is uniform). */
+  max-height: var(--viewport-height, 100dvh);
   padding: max(0.75rem, env(safe-area-inset-top)) 1rem max(0.75rem, env(safe-area-inset-bottom));
   font-family: var(--font-mono);
   font-size: var(--font-size);
@@ -3051,6 +3091,13 @@ html.resize-dragging * {
   font-size: var(--font-size);
   color: var(--fg);
   min-height: 0;
+  /* UX-5 bucket BV (2026-05-20) — defensive keyboard-react cap.
+     `.home-pane` is a flex child of `.shell-mobile` so it already
+     inherits the right height via the parent's `var(--viewport-height)`,
+     but a future refactor that pulls it out of flex (or into a fixed
+     overlay context) would silently break the keyboard contract. The
+     explicit max-height pins the contract here. */
+  max-height: var(--viewport-height, 100dvh);
   /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
      `.settings-drawer` (see comment there). The home pane sits inside
      `.shell-main` → `.shell-mobile` and is tall on iPhone (network

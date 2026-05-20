@@ -45,6 +45,17 @@ import UserContextMenu from "./UserContextMenu";
 export type Props = {
   networkSlug: string;
   channelName: string;
+  // UX-5 bucket BV (2026-05-20) — optional hook fired after the
+  // query-window opens on left-click. Mobile Shell wires this to
+  // `setMembersOpen(false)` so tapping a nick dismisses the members
+  // drawer (pre-BV the drawer stayed open over the new query's
+  // ComposeBox, blocking input focus through the iOS keyboard
+  // overlay). Desktop omits the prop — the desktop drawer is
+  // a permanent column, not a transient overlay. Race-safe: only
+  // fires AFTER the query verb pair succeeds, so a network-unresolved
+  // no-op leaves the drawer open (mirrors selection.setSelectedChannel
+  // not firing in the same branch).
+  onMemberSelect?: () => void;
 };
 
 const tierClass = (modes: string[]): string => {
@@ -143,6 +154,10 @@ const MembersPane: Component<Props> = (props) => {
       channelName: canonical,
       kind: "query",
     });
+    // UX-5 BV — fire AFTER the query verbs succeed so a network-
+    // unresolved no-op above leaves the drawer untouched (mirrors
+    // selection's no-op in the same branch).
+    props.onMemberSelect?.();
   };
 
   const closeMenu = (): void => {
