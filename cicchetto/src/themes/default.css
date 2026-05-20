@@ -1373,8 +1373,20 @@ html.resize-dragging * {
   width: 100%;
 }
 
-.members-pane li .member-name:hover {
-  text-decoration: underline;
+/* UX-6 bucket A v2 (2026-05-20) — gate :hover on hover-capable input.
+   Mobile Safari synthesizes a :hover state on tap-release that PERSISTS
+   until another tap clears it. With the descendant pan-y carve-out
+   (~:2273) making drag-from-nick-row work, a drag-and-lift over a
+   `.member-name` was still synthesizing :hover → operator saw a
+   spurious underline on the nick under the finger after release. The
+   `(hover: hover)` media query confines the rule to true-hover devices
+   (mouse, trackpad). Touch-only and touch-primary devices skip it
+   cleanly; touch+mouse hybrids (Surface, iPad+trackpad) honor it
+   correctly because (hover: hover) tests the PRIMARY input. */
+@media (hover: hover) {
+  .members-pane li .member-name:hover {
+    text-decoration: underline;
+  }
 }
 
 /* SettingsDrawer (positioned overlay) */
@@ -2294,12 +2306,37 @@ html.resize-dragging * {
      rejected the pan, escalated to document, `installScrollPin`
      snap-yanked `window.scrollTo(0, 0)` — operator-visible flicker +
      body-leak. Mirror `.settings-drawer` (~:1417) / `.archive-modal`
-     (~:2524): pair lives on the scroller. */
+     (~:2524): pair lives on the scroller.
+
+     UX-6 bucket A v2 (2026-05-20) — touch-action is NOT inherited (CSS
+     UI L4). Setting `pan-y` on `.members-pane` alone left descendants
+     `<ul>`, `<li>`, and `<button.member-name>` at the default
+     `touch-action: auto`. When the operator drags from a region whose
+     hit-test target is an `<li>` (or its `<button>` child — most of the
+     row), iOS uses the descendant's `auto` to route the gesture to a
+     non-root scroll ancestor; with the keyboard up that ancestor is
+     `<body>` (focused-input layout shift made it scrollable). `pan-y`
+     on the scroller never fires because the gesture origin elects a
+     different consumer. The universal-selector descendant carve-out
+     forces the entire subtree to share the scroller's gesture
+     authority. Drag from anywhere inside the members list now lands on
+     `.members-pane`'s pan-y.
+
+     Specificity guard: the descendant carve-out is `(0,3,0)`. If a
+     future contributor adds a horizontal-swipe gesture inside the
+     members list (e.g., a swipe-to-kick row), the override MUST be
+     MORE specific than `.shell-mobile .shell-members .members-pane *`
+     — e.g., `.shell-mobile .shell-members .members-pane li.swipeable`.
+     Reviewer NIT-2 from this bucket's loop. */
+  .shell-mobile .shell-members .members-pane,
+  .shell-mobile .shell-members .members-pane * {
+    touch-action: pan-y;
+  }
+
   .shell-mobile .shell-members .members-pane {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    touch-action: pan-y;
     overscroll-behavior: contain;
   }
 

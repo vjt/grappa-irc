@@ -39,6 +39,18 @@ export type NickTextProps = {
   nick: string;
   prefix?: PrefixGlyph;
   extraClass?: string;
+  /**
+   * UX-6 bucket A v2 (2026-05-20) — opt out of per-nick hash color on
+   * the `<span class="nick-text">`. Used by the mobile members pane
+   * where every row's hue made the list visually noisy; vjt's call:
+   * keep the mode-prefix sigil colored (op/halfop/voiced reads at a
+   * glance) but render the nick text in the inherited `--fg`. The
+   * mode-prefix `<span>` still picks up its dedicated color via
+   * `.nick-prefix-{op|halfop|voiced}` — only the nick text is
+   * affected. Scrollback senders + DM headers + WHOIS keep the hash
+   * color (default).
+   */
+  noColor?: boolean;
 };
 
 const prefixClass = (prefix: PrefixGlyph): string => {
@@ -57,10 +69,11 @@ const prefixClass = (prefix: PrefixGlyph): string => {
 const NickText: Component<NickTextProps> = (props) => {
   const cls = () => (props.extraClass ? `nick ${props.extraClass}` : "nick");
   const prefix = (): PrefixGlyph => props.prefix ?? "";
+  const nickTextStyle = () => (props.noColor ? undefined : { color: nickColorVar(props.nick) });
   return (
     <span class={cls()}>
       {prefix() !== "" && <span class={prefixClass(prefix())}>{prefix()}</span>}
-      <span class="nick-text" style={{ color: nickColorVar(props.nick) }}>
+      <span class="nick-text" style={nickTextStyle()}>
         {props.nick}
       </span>
     </span>

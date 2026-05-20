@@ -179,7 +179,7 @@ const MembersPane: Component<Props> = (props) => {
                     onClick={() => onClick(m.nick)}
                     onContextMenu={(e) => onContextMenu(e, m.nick)}
                   >
-                    <NickText nick={m.nick} prefix={sigilToPrefix(m.modes)} />
+                    <NickText nick={m.nick} prefix={sigilToPrefix(m.modes)} noColor />
                   </button>
                 </li>
               )}

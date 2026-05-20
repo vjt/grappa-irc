@@ -128,3 +128,120 @@ test("@webkit ux-6-a — html.overlay-open suspends root touch-action so gesture
   expect(ta).toBe("none");
   await page.evaluate(() => document.documentElement.classList.remove("overlay-open"));
 });
+
+test("@webkit ux-6-a v2 — descendants of .members-pane share the scroller's touch-action: pan-y (universal-selector carve-out)", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+
+  // Repro of the keyboard-up scroll-leak: when the operator drags
+  // from over an `<li>` or `<button.member-name>` (most of the row
+  // surface area), iOS hit-tests that descendant — which inherits
+  // `touch-action: auto` (the property does NOT inherit per CSS UI
+  // L4) — and routes the gesture to a non-root scroll ancestor
+  // (with keyboard up, that's `<body>`). The scroller's own pan-y
+  // never fires.
+  //
+  // Fix: universal-selector descendant carve-out at default.css ~:2273
+  // (`.shell-mobile .shell-members .members-pane *`) forces the
+  // whole subtree to share the scroller's gesture authority.
+  //
+  // This assertion pins the contract on the deepest interactive
+  // descendant — `.member-name` inside an `<li>` inside the `<ul>`.
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  // Wait for at least one member row to render.
+  await expect(
+    page.locator(".shell-mobile .shell-members .members-pane li .member-name").first(),
+  ).toBeVisible({ timeout: 5_000 });
+
+  const memberNameTouchAction = await page
+    .locator(".shell-mobile .shell-members .members-pane li .member-name")
+    .first()
+    .evaluate((el) => getComputedStyle(el).touchAction);
+  expect(memberNameTouchAction).toBe("pan-y");
+
+  const ulTouchAction = await page
+    .locator(".shell-mobile .shell-members .members-pane ul")
+    .first()
+    .evaluate((el) => getComputedStyle(el).touchAction);
+  expect(ulTouchAction).toBe("pan-y");
+});
+
+test("@webkit ux-6-a v2 — members-pane nick-text renders with no inline color (sigil keeps mode color)", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+
+  // vjt 2026-05-20: per-nick hash color on every members-pane row
+  // made the list visually noisy; only the mode-prefix sigil
+  // (op/halfop/voiced) should be colored. NickText now takes a
+  // `noColor` prop that skips the inline `style="color: var(...)"`;
+  // MembersPane passes it. Assert the `.nick-text` span has NO
+  // inline `style` color (the `.nick-prefix-{op|halfop|voiced}`
+  // classes on the sigil still apply their dedicated color via
+  // CSS class, unaffected).
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  await expect(
+    page.locator(".shell-mobile .shell-members .members-pane li .nick-text").first(),
+  ).toBeVisible({ timeout: 5_000 });
+
+  // Inline style.color check — the `noColor` opt-out makes the
+  // component skip the style prop entirely; the `<span>` reads its
+  // color from inherited `--fg`. Empty string from `el.style.color`
+  // means no inline color set.
+  const inlineColor = await page
+    .locator(".shell-mobile .shell-members .members-pane li .nick-text")
+    .first()
+    .evaluate((el) => (el as HTMLElement).style.color);
+  expect(inlineColor).toBe("");
+});
+
+test("@webkit ux-6-a v2 — .member-name:hover underline is gated on (hover: hover) — no spurious underline on touch-only viewports", async ({
+  page,
+}) => {
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+
+  // Mobile Safari synthesizes :hover on tap-release that PERSISTS.
+  // Pre-fix: `.members-pane li .member-name:hover { text-decoration:
+  // underline }` fired on tap-release, leaving the underline on the
+  // nick under the finger after a drag. Fix: wrap the rule in
+  // `@media (hover: hover)` so it only applies on hover-capable
+  // input (mouse/trackpad). On webkit-iphone-15 emulation (touch-
+  // primary), the media query evaluates false → rule doesn't apply
+  // → no underline regardless of synthetic hover state.
+  //
+  // Asserted via getComputedStyle: matchMedia("(hover: hover)")
+  // should be false on the iPhone profile; the rule should not
+  // apply. We can't synthesize a hover via Playwright (would
+  // bypass the media query); the deterministic guard is "the rule
+  // is gated correctly so the media query controls it."
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  await expect(
+    page.locator(".shell-mobile .shell-members .members-pane li .member-name").first(),
+  ).toBeVisible({ timeout: 5_000 });
+
+  // The iPhone 15 webkit profile has touch-primary; hover-capable
+  // is false. Assert the media query state matches.
+  const hoverCapable = await page.evaluate(() => matchMedia("(hover: hover)").matches);
+  expect(hoverCapable).toBe(false);
+
+  // Hover the locator via Playwright; on a touch-primary device the
+  // :hover rule MUST NOT apply, so text-decoration stays "none".
+  const memberName = page
+    .locator(".shell-mobile .shell-members .members-pane li .member-name")
+    .first();
+  await memberName.hover();
+  const decoration = await memberName.evaluate(
+    (el) => getComputedStyle(el).textDecorationLine,
+  );
+  expect(decoration).toBe("none");
+});
