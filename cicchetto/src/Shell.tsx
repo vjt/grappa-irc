@@ -73,40 +73,60 @@ const Shell: Component = () => {
   // the two surfaces whose open state lives here. The lock only
   // engages on mobile (`isMobile()`) since desktop has fixed-grid
   // layouts that don't suffer the iOS gesture-escalation class.
+  //
+  // v4: scroll-lock target is the actual scroller — `.members-pane`
+  // for members drawer, `.admin-pane` for admin window. Looked up
+  // via queueMicrotask so SolidJS commits the render-effects of the
+  // signal change before we hand the element to
+  // body-scroll-lock-upgrade.
   let wasMembersOpen = false;
+  let membersLockedEl: HTMLElement | null = null;
   createEffect(() => {
     const open = isMobile() && membersOpen();
     if (open && !wasMembersOpen) {
       wasMembersOpen = true;
-      pushOverlay();
+      queueMicrotask(() => {
+        membersLockedEl = document.querySelector<HTMLElement>(
+          ".shell-mobile .shell-members .members-pane",
+        );
+        pushOverlay(membersLockedEl);
+      });
     } else if (!open && wasMembersOpen) {
       wasMembersOpen = false;
-      popOverlay();
+      popOverlay(membersLockedEl);
+      membersLockedEl = null;
     }
   });
   onCleanup(() => {
     if (wasMembersOpen) {
       wasMembersOpen = false;
-      popOverlay();
+      popOverlay(membersLockedEl);
+      membersLockedEl = null;
     }
   });
 
   let wasAdminOpen = false;
+  let adminLockedEl: HTMLElement | null = null;
   createEffect(() => {
     const sel = selectedChannel();
     const open = isMobile() && isAdmin() && sel?.kind === "admin";
     if (open && !wasAdminOpen) {
       wasAdminOpen = true;
-      pushOverlay();
+      queueMicrotask(() => {
+        adminLockedEl = document.querySelector<HTMLElement>(".admin-pane");
+        pushOverlay(adminLockedEl);
+      });
     } else if (!open && wasAdminOpen) {
       wasAdminOpen = false;
-      popOverlay();
+      popOverlay(adminLockedEl);
+      adminLockedEl = null;
     }
   });
   onCleanup(() => {
     if (wasAdminOpen) {
       wasAdminOpen = false;
-      popOverlay();
+      popOverlay(adminLockedEl);
+      adminLockedEl = null;
     }
   });
 

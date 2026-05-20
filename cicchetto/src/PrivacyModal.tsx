@@ -19,23 +19,32 @@ import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 const PrivacyModal: Component = () => {
   const [remember, setRemember] = createSignal(false);
 
-  // UX-6 bucket A — refcounted overlay scroll-lock. `privacyModalState().open`
-  // is the open signal; edge-triggered push/pop via wasOpen closure.
+  // UX-6 bucket A — refcounted overlay scroll-lock.
+  // `privacyModalState().open` is the open signal; edge-triggered
+  // push/pop via wasOpen closure. v4: scroll-lock targets the
+  // .image-upload-modal element (rendered inside `<Show keyed>`),
+  // looked up via queueMicrotask after Solid commits the render.
   let wasOpen = false;
+  let lockedEl: HTMLElement | null = null;
   createEffect(() => {
     const open = privacyModalState().open;
     if (open && !wasOpen) {
       wasOpen = true;
-      pushOverlay();
+      queueMicrotask(() => {
+        lockedEl = document.querySelector<HTMLElement>(".image-upload-modal");
+        pushOverlay(lockedEl);
+      });
     } else if (!open && wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(lockedEl);
+      lockedEl = null;
     }
   });
   onCleanup(() => {
     if (wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(lockedEl);
+      lockedEl = null;
     }
   });
 

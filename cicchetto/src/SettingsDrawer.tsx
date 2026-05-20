@@ -140,26 +140,31 @@ const SettingsDrawer: Component<Props> = (props) => {
 
   // UX-6 bucket A — refcounted overlay scroll-lock. Push on open,
   // pop on close so `<html>` carries `.overlay-open` while any
-  // overlay is up. Tracks the parent-owned `props.open` accessor;
-  // the prior-value closure ensures one push per open transition
-  // and one pop per close transition (no leaks if `open` re-renders
-  // with the same value). onCleanup pops on unmount if still open
-  // so a route-change mid-open doesn't leave the refcount stuck.
+  // overlay is up. v4: the scroll-lock targets the .settings-drawer
+  // aside itself (its own `overflow-y: auto` is the legitimate scroll
+  // surface body-scroll-lock-upgrade allows; touchmove on everything
+  // else is preventDefaulted). Tracks the parent-owned `props.open`
+  // accessor; the prior-value closure ensures one push per open
+  // transition and one pop per close transition (no leaks if `open`
+  // re-renders with the same value). onCleanup pops on unmount if
+  // still open so a route-change mid-open doesn't leave the refcount
+  // stuck.
+  let drawerEl: HTMLElement | undefined;
   let wasOpen = false;
   createEffect(() => {
     const o = props.open;
     if (o && !wasOpen) {
       wasOpen = true;
-      pushOverlay();
+      pushOverlay(drawerEl ?? null);
     } else if (!o && wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(drawerEl ?? null);
     }
   });
   onCleanup(() => {
     if (wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(drawerEl ?? null);
     }
   });
 
@@ -295,6 +300,7 @@ const SettingsDrawer: Component<Props> = (props) => {
         data-testid="settings-drawer-backdrop"
       />
       <aside
+        ref={drawerEl}
         class="settings-drawer"
         classList={{ open: props.open }}
         role="dialog"

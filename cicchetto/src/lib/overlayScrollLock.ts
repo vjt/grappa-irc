@@ -1,50 +1,49 @@
-// Refcounted overlay scroll-lock — toggles `html.overlay-open` while
+// Refcounted overlay scroll-lock — locks iOS scroll/rubber-band while
 // ANY mobile overlay is open (members drawer, settings drawer, archive
-// modal, image-upload privacy modal, admin pane).
+// modal, image-upload privacy modal, admin pane on mobile).
 //
-// Why this exists (UX-6 bucket A, 2026-05-20).
+// Why this exists (UX-6 bucket A, v1→v4, 2026-05-20).
 //
-// vjt 2026-05-20 iPhone dogfood: opening members drawer or archive
-// modal STILL allowed background app chrome to scroll underneath.
-// UX-5 BO (`03a08f5`) added `touch-action: pan-y` +
-// `overscroll-behavior: contain` to 6 `.shell-mobile` descendants
-// (settings, archive, image-upload, home, admin, admin-tab-panel).
-// That CSS contract is correct AND already in place on all the
-// failing surfaces. The gesture-routing pair only protects the
-// PRIMARY scroll path though — the touch-drag inside the overlay.
+// vjt 2026-05-20 iPhone PWA dogfood: keyboard-up + open overlay + drag
+// from inside overlay → entire viewport visually shifts during the
+// drag and snaps back on release. iOS Safari PWA rubber-band on a
+// touch whose hit-test element has no scrollable ancestor in the drag
+// direction. UIKit's UIScrollView claims the gesture at touchstart;
+// CSS `touch-action` / `overscroll-behavior` are irrelevant once
+// UIKit owns it. v1 (CSS `html.overlay-open { touch-action: none }`),
+// v2 (descendant pan-y carve-out), v3 (lock body + #root + Solid
+// wrapper chain) all failed for this exact reason. v4 is the only
+// mechanism that works: non-passive touchmove preventDefault, scoped
+// to genuinely-scrollable descendants only.
 //
-// The leak vjt sees is the OTHER path: iOS Safari's PROGRAMMATIC
-// scroll attempts (auto-scroll-to-focused-input, gesture
-// escalation after the inner scroller reaches its edge, etc).
-// `lib/viewportHeight.ts:installScrollPin` was the original UX-3
-// defense — capture `window.scroll` events, snap `scrollTo(0, 0)`
-// to kill the symptom. But the snap-yank IS the operator-visible
-// flicker on short-content overlays (members list with <5 nicks,
-// empty archive, etc): the pan-y carve-out has nothing to consume
-// the gesture, iOS escalates, installScrollPin fires, the visible
-// effect is "the whole app flickered."
+// Implementation via body-scroll-lock-upgrade (~3KB, no transitive
+// deps, maintained fork of body-scroll-lock). Library handles the
+// document-level touchmove listener + the target-ancestor walk that
+// distinguishes "drag a scrollable list" (allow) from "drag a
+// non-scrollable region" (preventDefault).
 //
-// The fix: while ANY overlay is open, treat that as the only
-// scroll surface the user can interact with. Tag `<html>` with
-// `.overlay-open`; CSS pins the root document to fully-fixed
-// (no scrollable surface left for iOS to escalate to). When the
-// last overlay closes, the class drops and installScrollPin's
-// defensive snap resumes normal duties.
+// Refcount semantics: multiple overlays can overlap during
+// transitions (archive opens before members closes). Each surface
+// passes the SCROLLABLE element inside its overlay (the actual
+// container with overflow: auto). The lib tracks which elements are
+// "allowed to scroll" — touchmove on those propagates; everywhere
+// else is preventDefaulted.
 //
-// Refcount semantics: multiple overlays may briefly overlap during
-// transitions (e.g. archive modal opens before members drawer
-// finishes closing). Push on open, pop on close, drop the class
-// only when the count hits zero.
+// `html.overlay-open` class remains as a CSS sentinel (CSS UI hook
+// for any future selector that needs to know "an overlay is up" — it
+// is no longer load-bearing for the rubber-band fix but is harmless
+// + cheap, and the e2e suite asserts it).
 //
-// Test surface: pure module-singleton state + DOM side-effect.
-// `__resetForTest()` re-initializes the count + clears the class
-// for vitest. Call sites pass an `isOpen()` accessor and the
-// helper handles the `createEffect`-style edge detection.
-//
-// No SolidJS imports here on purpose: the helper is reactive-agnostic
-// (call from createEffect or onMount/onCleanup either way). Keeps
-// the test surface a plain numeric refcount with no JSDOM-vs-real-
-// DOM reactive-context wrangling.
+// Test surface: pure module-singleton refcount + DOM class side-
+// effect + lib delegation. `__resetForTest()` clears refcount + class
+// + calls clearAllBodyScrollLocks() so vitest order doesn't leak
+// state across tests.
+
+import {
+  clearAllBodyScrollLocks,
+  disableBodyScroll,
+  enableBodyScroll,
+} from "body-scroll-lock-upgrade";
 
 const CLASS_NAME = "overlay-open";
 
@@ -55,7 +54,7 @@ function root(): HTMLElement | null {
   return document.documentElement;
 }
 
-function apply(): void {
+function applyClass(): void {
   const el = root();
   if (el === null) return;
   if (count > 0) {
@@ -65,16 +64,32 @@ function apply(): void {
   }
 }
 
-/** Increment refcount. Idempotent across callers; pair with `popOverlay()`. */
-export function pushOverlay(): void {
+/**
+ * Push an overlay onto the lock stack. Pair with `popOverlay(target)`
+ * using the SAME element. `target` is the scrollable container inside
+ * the overlay (the element with `overflow: auto`) — the lib allows
+ * touchmove to scroll it natively and prevents touchmove everywhere
+ * else.
+ *
+ * Idempotent for null `target` (no element available yet) — refcount
+ * still bumps, CSS class still applies, but no lib lock is attached
+ * (vitest jsdom path).
+ */
+export function pushOverlay(target: HTMLElement | null): void {
   count += 1;
-  apply();
+  applyClass();
+  if (target !== null) disableBodyScroll(target);
 }
 
-/** Decrement refcount. Pops below zero are clamped to 0 (defensive). */
-export function popOverlay(): void {
+/**
+ * Pop an overlay off the lock stack. Pair `target` with the same
+ * element passed to `pushOverlay`. Pops below zero are clamped (no
+ * negative refcount). Releasing a non-pushed element is a lib no-op.
+ */
+export function popOverlay(target: HTMLElement | null): void {
   count = Math.max(0, count - 1);
-  apply();
+  applyClass();
+  if (target !== null) enableBodyScroll(target);
 }
 
 /** Current refcount — exposed for vitest assertions. */
@@ -82,9 +97,10 @@ export function overlayCount(): number {
   return count;
 }
 
-/** Test reset — clears refcount + DOM class. */
+/** Test reset — clears refcount, DOM class, and all lib locks. */
 export function __resetForTest(): void {
   count = 0;
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
+  clearAllBodyScrollLocks();
 }

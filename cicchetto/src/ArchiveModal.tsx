@@ -47,21 +47,33 @@ const ArchiveModal: Component = () => {
   // push. onCleanup pops if still open on unmount (defensive — the
   // ArchiveModal component lives at Shell root so unmount only on
   // route nav-away, where the leak would persist across sessions).
+  //
+  // v4: scroll-lock targets the .archive-modal element (the actual
+  // scroller). Since .archive-modal is rendered inside `<Show keyed>`
+  // (mounts when open, unmounts when closed), we look it up via
+  // querySelector in queueMicrotask to let SolidJS commit the render
+  // before we hand the element to body-scroll-lock-upgrade.
   let wasOpen = false;
+  let lockedEl: HTMLElement | null = null;
   createEffect(() => {
     const open = archiveModalNetwork() !== null;
     if (open && !wasOpen) {
       wasOpen = true;
-      pushOverlay();
+      queueMicrotask(() => {
+        lockedEl = document.querySelector<HTMLElement>(".archive-modal");
+        pushOverlay(lockedEl);
+      });
     } else if (!open && wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(lockedEl);
+      lockedEl = null;
     }
   });
   onCleanup(() => {
     if (wasOpen) {
       wasOpen = false;
-      popOverlay();
+      popOverlay(lockedEl);
+      lockedEl = null;
     }
   });
 
