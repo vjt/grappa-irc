@@ -71,6 +71,16 @@ function applyClass(): void {
  * touchmove to scroll it natively and prevents touchmove everywhere
  * else.
  *
+ * `allowTouchMove` lets touches INSIDE the target through unmodified,
+ * including the native iOS rubber-band bounce at scroll edges. The
+ * lib's default behavior preventDefaults at the scrollable's top/
+ * bottom edge to stop the page rubber-banding; with our v3 CSS lock
+ * chain (`html.overlay-open` cascade in default.css ~:170) the page
+ * already can't rubber-band, so the edge-detection is overkill AND
+ * kills the operator-expected inner bounce. vjt 2026-05-20 noted
+ * "scrolling to bottom doesn't bounce anymore" — this `allowTouchMove`
+ * restores the natural bounce inside the overlay.
+ *
  * Idempotent for null `target` (no element available yet) — refcount
  * still bumps, CSS class still applies, but no lib lock is attached
  * (vitest jsdom path).
@@ -78,7 +88,11 @@ function applyClass(): void {
 export function pushOverlay(target: HTMLElement | null): void {
   count += 1;
   applyClass();
-  if (target !== null) disableBodyScroll(target);
+  if (target !== null) {
+    disableBodyScroll(target, {
+      allowTouchMove: (el) => target.contains(el as Node),
+    });
+  }
 }
 
 /**
