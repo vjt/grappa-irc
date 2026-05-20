@@ -10,6 +10,100 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-B1 LANDED 2026-05-20.** Commit `61269eb` (server stack) +
+`4b3d1ac` (CI workflow CVE-ignore fix). Pushed to main, COLD-deployed
+via `scripts/deploy.sh --force-cold` (auto-detect MISSED the new
+migration — see "deploy.sh preflight gap" below). Healthcheck green
+at https://irc.sniffo.org/healthz. New REST surface live:
+`POST /api/uploads`, `GET /uploads/:slug` (public, 128-bit base32
+slug = access token), `GET /api/server-settings` (authn),
+`GET/PUT /admin/settings`, `GET /admin/uploads`,
+`DELETE /admin/uploads/:id`. New tables: `uploads` +
+`server_settings` (k/v admin config). New supervised child:
+`Grappa.Uploads.Reaper` (60s tick, unlinks file BEFORE row soft-
+delete to avoid race). 95 new tests + 0 Dialyzer + 0 Credo +
+0 Sobelow + doctor green. Plan:
+`docs/plans/2026-05-20-ux-6-b-embedded-uploader.md`.
+
+**UX-6-B2 PENDING — cic embeddedHost adapter + admin Settings tab.**
+Server is ready; cic needs:
+1. `cicchetto/src/lib/image-upload.ts` — add `embeddedHost: ImageHost`
+   (POSTs `/api/uploads`, parses JSON `{slug, url, expires_at}`,
+   reads from same-origin so `supportsProgress: true`).
+2. `cicchetto/src/lib/serverSettings.ts` — NEW reactive signal
+   sourced from `GET /api/server-settings` + WS-pushed
+   `server_settings_changed` events.
+3. `activeHost()` rewrite to read `serverSettings().uploadActiveHost`.
+4. `availableHosts: [embeddedHost, litterboxHost]` (embedded first;
+   catbox stays as alternate).
+5. AdminPane: 5th tab "Settings" + `AdminSettingsTab.tsx` (host
+   pick dropdown + per-file cap MB input + global cap GB input +
+   Save button → PUT `/admin/settings`).
+6. AdminChannel: subscribe to `Grappa.ServerSettings.topic/0` + push
+   `server_settings_changed` over admin socket; ALSO public-broadcast
+   subset over user-rooted topic so cic's reactive layer auto-flips
+   without an admin reload.
+
+**UX-6-B3 PENDING — e2e + reviewer-loop + deploy + memory.**
+Per-bucket cadence; mandatory Playwright spec
+`ux-6-b-embedded-upload.spec.ts` (visitor drag-drops PNG, asserts
+URL POSTed back + PRIVMSG `📸 https://...` shape + GET on URL
+returns bytes). Then `ux-6-b-admin-settings.spec.ts` (admin flips
+host to litterbox + verifies cic ComposeBox targets the new
+endpoint). Reviewer-loop agent. CDP smoke on live tab. Memory
+entry + MEMORY.md pointer.
+
+**UX-6 cluster — remaining buckets after B closes:**
+
+- **UX-6-C** — admin button in mobile drawer footer (Bug 3).
+- **UX-6-D** — BottomBar virtual-keyboard padding (Bug 5).
+- **UX-6-E** — BottomBar server tab collapse (Bug 6).
+- **UX-6-F** — send button → arrow glyph (Bug 7).
+- **UX-6-G** — admin horizontal scroll on mobile (was original B).
+- **UX-6-H** — scrollback doesn't follow viewport-shrink on keyboard open.
+- **UX-6-I** — cic refresh banner needs 3 presses after deploy.
+- **UX-6-J** — push notif tap doesn't open source window.
+- **UX-6-K (NEW 2026-05-20)** — PM unread-marker doesn't clear on
+  focus (channels work correctly; PMs require user to send message
+  to peer before marker clears). Dedupe to unified focus-clears
+  semantics. vjt 2026-05-20 confirmed UX-6 scope.
+- **UX-6-L (NEW 2026-05-20)** — foreground push → in-app beep
+  (SW-suppress option B per vjt 2026-05-20). On push receipt SW
+  calls `clients.matchAll({type:'window'})` + checks
+  `visibilityState === 'visible'`; if yes return without
+  `showNotification`. Cic page beeps via WS-msg arrival hook
+  (independent of push path). Document caveat in DESIGN_NOTES +
+  UX-6-L bucket plan: server still sends every push (~50% wasted
+  when foreground); iOS APNs quota tax acceptable at current scale;
+  follow-up if quota bites = hybrid (server WSPresence + visibility-
+  heartbeat fast-path skip with SW defensive re-check).
+- **UX-6-Z** — docs sweep.
+
+**deploy.sh preflight GAP (discovered 2026-05-20 during B1 deploy).**
+Auto-detect classified B1 as HOT despite new migration. Per
+CLAUDE.md "Cluster with new migration MUST cold-deploy" the preflight
+SHOULD have flagged `priv/repo/migrations/*` as COLD. Verify the
+regex matches the new migration filename shape + add `Grappa.Uploads`
++ `Grappa.ServerSettings` to whatever marker-line tracking the
+script uses for "new context introduced." Park as follow-up — not
+blocking B2/B3.
+
+**Workflow change 2026-05-20 (vjt orchestrator-mandated).**
+- `/tmp/orchestrate-next.txt` is fragile across multi-session /clear
+  cycles. The AUTHORITATIVE pending-work backlog is THIS file
+  (`docs/todo.md`).
+- BEFORE starting any work: commit current `docs/todo.md` state
+  (snapshot intent).
+- DURING work: edit `docs/todo.md` as you learn — mark in-progress,
+  add discovered subtasks, etc.
+- BEFORE clearing: commit `docs/todo.md` again (final snapshot so
+  the post-/clear pickup reads the right backlog).
+- `/tmp/orchestrate-next.txt` still carries the precise first-action
+  paragraph for the post-clear pickup, but todo.md is the SOURCE
+  OF TRUTH.
+
+---
+
 **CP17 server-side-pending CLOSED 2026-05-08.** Theme 2 of the
 2026-05-08 architecture review shipped: `:pending` window-state
 origination moved from cic (`compose.ts:210 setPending(...)` workaround)
