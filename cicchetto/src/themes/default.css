@@ -142,6 +142,20 @@ body {
   overscroll-behavior: none;
 }
 
+/* UX-6 bucket A (2026-05-20) — overlay scroll-lock sentinel. The class
+   `overlay-open` lands on `<html>` (root) whenever any mobile overlay
+   is open (members drawer, settings drawer, archive modal, image-upload
+   modal, AdminPane on mobile). Wired via refcounted `lib/overlayScrollLock.ts`
+   push/pop in each surface. `touch-action: none` on the root kills the
+   gesture-escalation path for short-content overlays: even when the
+   inner scroller has nothing to consume the pan, iOS no longer escalates
+   to a root-level gesture (which would trip installScrollPin's snap-yank
+   producing the visible flicker). The overlay's own `touch-action: pan-y`
+   carve-out re-enables vertical pan inside itself; the root stays locked. */
+html.overlay-open {
+  touch-action: none;
+}
+
 #root {
   /* UX-3 UNDEC: bind to <body> (height:100%, i.e. visual viewport),
      NOT 100vh. `100vh` resolves to the LAYOUT viewport on iOS Safari
@@ -2269,11 +2283,24 @@ html.resize-dragging * {
   /* UX-5 bucket BM (2026-05-20) — MembersPane inside the mobile drawer
      fills the available vertical space and owns the scrolling. Desktop
      `.shell-members` keeps the base `overflow-y: auto` (aside-level
-     scroll) — only mobile shifts the scroll onto the inner pane. */
+     scroll) — only mobile shifts the scroll onto the inner pane.
+
+     UX-6 bucket A (2026-05-20) — gesture-routing carve-out MUST live on
+     the actual scrolling element, not the wrapper. BM moved
+     `overflow-y: auto` here but left BO's `touch-action: pan-y` +
+     `overscroll-behavior: contain` on the wrapper `.shell-members`
+     (now `overflow-y: visible`). Result: members pane inherited
+     `touch-action: none` from `.shell-mobile` (UX-3 PENT ~:2144), iOS
+     rejected the pan, escalated to document, `installScrollPin`
+     snap-yanked `window.scrollTo(0, 0)` — operator-visible flicker +
+     body-leak. Mirror `.settings-drawer` (~:1417) / `.archive-modal`
+     (~:2524): pair lives on the scroller. */
   .shell-mobile .shell-members .members-pane {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
   }
 
   /* UX-5 bucket BM — bottom-fixed launcher footer inside the mobile

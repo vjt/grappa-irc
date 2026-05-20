@@ -1,9 +1,10 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
 import {
   acknowledgePrivacy,
   dismissUpload,
   privacyModalState,
 } from "./lib/imageUploadOrchestrator";
+import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 
 // First-upload privacy modal — images cluster I-2 (2026-05-15).
 //
@@ -17,6 +18,26 @@ import {
 
 const PrivacyModal: Component = () => {
   const [remember, setRemember] = createSignal(false);
+
+  // UX-6 bucket A — refcounted overlay scroll-lock. `privacyModalState().open`
+  // is the open signal; edge-triggered push/pop via wasOpen closure.
+  let wasOpen = false;
+  createEffect(() => {
+    const open = privacyModalState().open;
+    if (open && !wasOpen) {
+      wasOpen = true;
+      pushOverlay();
+    } else if (!open && wasOpen) {
+      wasOpen = false;
+      popOverlay();
+    }
+  });
+  onCleanup(() => {
+    if (wasOpen) {
+      wasOpen = false;
+      popOverlay();
+    }
+  });
 
   const onContinue = () => {
     acknowledgePrivacy(remember());

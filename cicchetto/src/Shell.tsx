@@ -15,6 +15,7 @@ import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { openArchivePanel, openSettingsPanel, toggleMembersPanel } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
+import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
 import {
@@ -64,6 +65,50 @@ import TopicBar from "./TopicBar";
 const Shell: Component = () => {
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  // UX-6 bucket A — refcounted overlay scroll-lock for the two
+  // Shell-owned mobile overlays (members drawer + AdminPane). The
+  // settings drawer + archive modal + image-upload modal manage
+  // their own push/pop inside their components — Shell only handles
+  // the two surfaces whose open state lives here. The lock only
+  // engages on mobile (`isMobile()`) since desktop has fixed-grid
+  // layouts that don't suffer the iOS gesture-escalation class.
+  let wasMembersOpen = false;
+  createEffect(() => {
+    const open = isMobile() && membersOpen();
+    if (open && !wasMembersOpen) {
+      wasMembersOpen = true;
+      pushOverlay();
+    } else if (!open && wasMembersOpen) {
+      wasMembersOpen = false;
+      popOverlay();
+    }
+  });
+  onCleanup(() => {
+    if (wasMembersOpen) {
+      wasMembersOpen = false;
+      popOverlay();
+    }
+  });
+
+  let wasAdminOpen = false;
+  createEffect(() => {
+    const sel = selectedChannel();
+    const open = isMobile() && isAdmin() && sel?.kind === "admin";
+    if (open && !wasAdminOpen) {
+      wasAdminOpen = true;
+      pushOverlay();
+    } else if (!open && wasAdminOpen) {
+      wasAdminOpen = false;
+      popOverlay();
+    }
+  });
+  onCleanup(() => {
+    if (wasAdminOpen) {
+      wasAdminOpen = false;
+      popOverlay();
+    }
+  });
 
   // UX-4 bucket N — admin pane lifecycle is now selection-driven.
   // `selectedChannel.kind === "admin"` is the SINGLE source of truth

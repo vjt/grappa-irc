@@ -1,5 +1,13 @@
 import { useNavigate } from "@solidjs/router";
-import { type Component, createSignal, For, onMount, Show } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { activeHost } from "./lib/image-upload";
@@ -9,6 +17,7 @@ import {
   uploadTtlSecondsValue,
 } from "./lib/imageUploadOrchestrator";
 import { isAdmin } from "./lib/networks";
+import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   disablePush,
   type EnablePushResult,
@@ -126,6 +135,31 @@ const SettingsDrawer: Component<Props> = (props) => {
       // fieldset's `<select>` reflects the server value before the
       // first user interaction.
       void loadUploadTtlSeconds(t);
+    }
+  });
+
+  // UX-6 bucket A — refcounted overlay scroll-lock. Push on open,
+  // pop on close so `<html>` carries `.overlay-open` while any
+  // overlay is up. Tracks the parent-owned `props.open` accessor;
+  // the prior-value closure ensures one push per open transition
+  // and one pop per close transition (no leaks if `open` re-renders
+  // with the same value). onCleanup pops on unmount if still open
+  // so a route-change mid-open doesn't leave the refcount stuck.
+  let wasOpen = false;
+  createEffect(() => {
+    const o = props.open;
+    if (o && !wasOpen) {
+      wasOpen = true;
+      pushOverlay();
+    } else if (!o && wasOpen) {
+      wasOpen = false;
+      popOverlay();
+    }
+  });
+  onCleanup(() => {
+    if (wasOpen) {
+      wasOpen = false;
+      popOverlay();
     }
   });
 

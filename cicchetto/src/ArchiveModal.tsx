@@ -1,4 +1,4 @@
-import { type Component, createSignal, For, Show } from "solid-js";
+import { type Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { deleteArchiveEntry } from "./lib/api";
 import {
@@ -8,6 +8,7 @@ import {
 } from "./lib/archive";
 import { token } from "./lib/auth";
 import { networks } from "./lib/networks";
+import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import NickText from "./NickText";
@@ -38,6 +39,31 @@ import NickText from "./NickText";
 const ArchiveModal: Component = () => {
   const [armedKey, setArmedKey] = createSignal<string | null>(null);
   const archiveKey = (slug: string, target: string) => `${slug} ${target}`;
+
+  // UX-6 bucket A — refcounted overlay scroll-lock. Tracks
+  // `archiveModalNetwork()` (the "is the modal open?" signal — null
+  // when closed, slug when open). Edge-triggered push/pop via
+  // wasOpen closure so re-renders with the same value don't double-
+  // push. onCleanup pops if still open on unmount (defensive — the
+  // ArchiveModal component lives at Shell root so unmount only on
+  // route nav-away, where the leak would persist across sessions).
+  let wasOpen = false;
+  createEffect(() => {
+    const open = archiveModalNetwork() !== null;
+    if (open && !wasOpen) {
+      wasOpen = true;
+      pushOverlay();
+    } else if (!open && wasOpen) {
+      wasOpen = false;
+      popOverlay();
+    }
+  });
+  onCleanup(() => {
+    if (wasOpen) {
+      wasOpen = false;
+      popOverlay();
+    }
+  });
 
   const close = () => {
     setArchiveModalNetwork(null);
