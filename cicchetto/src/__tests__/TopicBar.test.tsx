@@ -190,33 +190,9 @@ describe("TopicBar", () => {
     });
   });
 
-  // UX-5 bucket BT (2026-05-19) — TopicBar exposes an optional
-  // `inlineChromeSlot` JSX slot that renders after the members
-  // hamburger. Shell.tsx mobile-channel branch passes
-  // <ChromeButtons /> (archive + cog) through this slot so chrome
-  // buttons sit on the SAME row as channel/topic/modes/count —
-  // dropping the standalone .shell-chrome row that wasted ~32px
-  // above the scrollback area on iPhone. Desktop branch passes no
-  // slot; the standalone .shell-chrome row stays for desktop layout.
-  describe("UX-5 bucket BT — inlineChromeSlot", () => {
-    it("renders the slot content when inlineChromeSlot is provided", () => {
-      render(() => (
-        <TopicBar
-          {...baseProps()}
-          inlineChromeSlot={
-            <button type="button" data-testid="bt-slot">
-              x
-            </button>
-          }
-        />
-      ));
-      expect(screen.getByTestId("bt-slot")).toBeInTheDocument();
-    });
-
-    it("does NOT render an inline slot wrapper when prop is omitted", () => {
-      const { container } = render(() => <TopicBar {...baseProps()} />);
-      // No leftover wrapper element when prop absent.
-      expect(container.querySelector(".topic-bar-inline-chrome")).toBeNull();
-    });
-  });
+  // UX-5 bucket BM (2026-05-20) — `inlineChromeSlot` prop dropped.
+  // BT inlined archive + cog into the topic-bar via this slot; BM
+  // moves them into the mobile members drawer footer as launchers, so
+  // the slot no longer has a caller. The tests that exercised the
+  // slot were dropped with the prop.
 });

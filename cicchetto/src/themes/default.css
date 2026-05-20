@@ -2199,10 +2199,51 @@ html.resize-dragging * {
        horizontal drag (back-swipe gesture) doesn't reveal chrome. */
     touch-action: pan-y;
     overscroll-behavior: contain;
+    /* UX-5 bucket BM (2026-05-20) — flex column so the
+       `.mobile-panel-actions` launcher footer pushes to the bottom of
+       the drawer while the inner `.members-pane` takes the remaining
+       vertical space. `overflow-y: auto` (base rule) is moved off the
+       aside onto `.members-pane` itself so the footer stays pinned
+       even when the members list is long enough to scroll. */
+    display: flex;
+    flex-direction: column;
+    overflow-y: visible;
   }
 
   .shell-members.open {
     transform: translateX(0);
+  }
+
+  /* UX-5 bucket BM (2026-05-20) — MembersPane inside the mobile drawer
+     fills the available vertical space and owns the scrolling. Desktop
+     `.shell-members` keeps the base `overflow-y: auto` (aside-level
+     scroll) — only mobile shifts the scroll onto the inner pane. */
+  .shell-mobile .shell-members .members-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* UX-5 bucket BM — bottom-fixed launcher footer inside the mobile
+     members drawer. Hosts archive + settings buttons that replace the
+     two UX-5 BT inline-into-topic-bar buttons (now dropped). The
+     buttons themselves reuse `.shell-chrome-btn` so their visual
+     treatment matches the standalone chrome row on mobile-non-channel
+     windows (same emoji glyphs, same hit area). The base
+     `.shell-members` rule already applies
+     `padding-bottom: env(safe-area-inset-bottom)` on the aside, so
+     the footer relies on the aside's bottom inset for iPhone home-
+     indicator clearance — adding an extra `env(...)` here would
+     double-pad on notched devices (reviewer H1). */
+  .shell-mobile .mobile-panel-actions {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    border-top: 1px solid var(--border);
+    background: var(--bg-alt);
+    flex-shrink: 0;
   }
 
   .shell-drawer-backdrop {

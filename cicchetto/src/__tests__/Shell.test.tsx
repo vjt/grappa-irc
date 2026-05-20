@@ -676,15 +676,20 @@ describe("Shell — mobile layout (isMobile = true)", () => {
   });
 
   // UX-5 bucket BT (2026-05-19) — narrow-mode chrome+topic compression.
-  // The standalone `.shell-chrome` row is dropped on mobile WHEN a
-  // TopicBar is mounted (channel window only); the archive + cog
-  // buttons render INLINE inside the topic-bar via the
-  // `inlineChromeSlot` prop. Non-channel mobile windows (home /
-  // mentions / admin / server) keep the standalone `.shell-chrome` row
-  // since they have no TopicBar to host the buttons. Desktop is
-  // unchanged on every window kind.
-  describe("UX-5 bucket BT — narrow-mode chrome+topic compression", () => {
-    it("mobile channel window: NO standalone .shell-chrome row; cog renders INSIDE .topic-bar", async () => {
+  // BT inlined archive + cog into the TopicBar via `inlineChromeSlot`,
+  // dropping the standalone `.shell-chrome` row on mobile-channel.
+  //
+  // UX-5 bucket BM (2026-05-20) — three buttons on a narrow row was
+  // still crowded (vjt 2026-05-19 dogfood). BM compresses again:
+  // archive + cog move OUT of the topic-bar and into a bottom-fixed
+  // launcher footer inside the mobile members drawer. The topic-bar's
+  // right edge now hosts ONLY the hamburger. Mutex `members | settings
+  // | archive | none` enforced via lib/mobilePanel.ts. Non-channel
+  // mobile windows (home / mentions / admin / server) STILL keep the
+  // standalone `.shell-chrome` row (no members drawer to host the
+  // launchers). Desktop is unchanged on every window kind.
+  describe("UX-5 buckets BT + BM — narrow-mode chrome+topic compression", () => {
+    it("mobile channel window: NO standalone .shell-chrome row; topic-bar hosts ONLY hamburger (no cog, no archive inline)", async () => {
       mobileState.value = true;
       selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
       const { container } = render(() => <Shell />);
@@ -693,23 +698,26 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       });
       // Standalone chrome row is NOT mounted in the channel-window branch.
       expect(container.querySelector(".shell-chrome")).toBeNull();
-      // Cog still reachable — rendered inline inside the topic-bar.
-      const cog = container.querySelector(".topic-bar [data-testid='shell-chrome-cog']");
-      expect(cog).not.toBeNull();
+      // BM: cog + archive are NO LONGER inline in the topic-bar.
+      expect(container.querySelector(".topic-bar [data-testid='shell-chrome-cog']")).toBeNull();
+      expect(container.querySelector(".topic-bar [data-testid='shell-chrome-archive']")).toBeNull();
+      // Only the hamburger survives on the topic-bar's right edge.
+      expect(container.querySelector(".topic-bar .topic-bar-hamburger")).not.toBeNull();
     });
 
-    it("mobile channel window: archive button renders INSIDE .topic-bar (network context present)", async () => {
+    it("mobile channel window: launcher footer in .shell-members hosts settings + archive launchers (network context present)", async () => {
       mobileState.value = true;
       selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
       const { container } = render(() => <Shell />);
       await waitFor(() => {
-        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+        expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeInTheDocument();
       });
-      const archive = container.querySelector(".topic-bar [data-testid='shell-chrome-archive']");
-      expect(archive).not.toBeNull();
+      const footer = container.querySelector(".shell-members .mobile-panel-actions");
+      expect(footer?.querySelector("[data-testid='mobile-panel-settings']")).not.toBeNull();
+      expect(footer?.querySelector("[data-testid='mobile-panel-archive']")).not.toBeNull();
     });
 
-    it("mobile home window: standalone .shell-chrome row STAYS (no TopicBar to absorb buttons)", async () => {
+    it("mobile home window: standalone .shell-chrome row STAYS (no TopicBar / drawer to absorb buttons)", async () => {
       mobileState.value = true;
       selectionState.setSelSig({ networkSlug: "$home", channelName: "$home", kind: "home" });
       const { container } = render(() => <Shell />);
@@ -720,7 +728,7 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector(".topic-bar")).toBeNull();
     });
 
-    it("desktop channel window: standalone .shell-chrome row STAYS (compression is narrow-mode only)", async () => {
+    it("desktop channel window: standalone .shell-chrome row STAYS; NO launcher footer inside members aside", async () => {
       mobileState.value = false;
       selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
       const { container } = render(() => <Shell />);
@@ -729,8 +737,9 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       });
       expect(container.querySelector(".shell-chrome")).not.toBeNull();
       // Desktop topic-bar must NOT inline the chrome buttons.
-      const inlineCog = container.querySelector(".topic-bar [data-testid='shell-chrome-cog']");
-      expect(inlineCog).toBeNull();
+      expect(container.querySelector(".topic-bar [data-testid='shell-chrome-cog']")).toBeNull();
+      // BM: desktop members aside has NO launcher footer (mobile-only).
+      expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeNull();
     });
   });
 });

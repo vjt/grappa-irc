@@ -25,8 +25,13 @@ test("@webkit iOS-4 — font-size selector persists across reload", async ({ pag
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Open the settings drawer via TopicBar ⚙ button.
-  await page.getByRole("button", { name: "open settings" }).tap();
+  // Open the settings drawer via the standalone .shell-chrome cog.
+  // UX-5 bucket BM (2026-05-20) — `getByRole("button", { name: "open
+  // settings" })` is ambiguous on mobile because the BM members drawer
+  // footer also exposes an `aria-label="open settings"` launcher.
+  // Pin to the chrome cog testid (cold-load lands on home; the
+  // standalone chrome row is the canonical settings path there).
+  await page.locator('[data-testid="shell-chrome-cog"]').tap();
 
   const drawer = page.locator(".settings-drawer.open");
   await expect(drawer).toBeVisible({ timeout: 5_000 });
@@ -48,7 +53,8 @@ test("@webkit iOS-4 — font-size selector persists across reload", async ({ pag
 
   // localStorage persistence verified via reload.
   await page.reload();
-  await page.getByRole("button", { name: "open settings" }).tap();
+  // Same BM ambiguity fix as above.
+  await page.locator('[data-testid="shell-chrome-cog"]').tap();
   await expect(page.locator(".settings-drawer.open")).toBeVisible({ timeout: 5_000 });
   await expect(page.locator('[data-testid="font-size-XL"]')).toBeChecked();
 

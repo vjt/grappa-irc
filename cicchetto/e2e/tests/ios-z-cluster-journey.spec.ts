@@ -99,8 +99,16 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
     await closeBtn.tap();
     await expect(tab).not.toBeVisible({ timeout: 10_000 });
 
-    // iOS-4 — font-size XL persists across reload.
-    await page.getByRole("button", { name: "open settings" }).tap();
+    // iOS-4 — font-size XL persists across reload. UX-5 bucket BM
+    // (2026-05-20) — the mobile members drawer also has an
+    // `aria-label="open settings"` launcher button now, so the
+    // role-based selector `getByRole('button', { name: 'open settings' })`
+    // is ambiguous across the chrome cog + drawer launcher. Scope
+    // explicitly to the chrome cog via its data-testid — the closeBtn
+    // tap above just removed the active channel tab, so the operator
+    // is on a non-channel window where the standalone .shell-chrome
+    // row is the only path to settings anyway.
+    await page.locator('[data-testid="shell-chrome-cog"]').tap();
     await expect(page.locator(".settings-drawer.open")).toBeVisible({
       timeout: 5_000,
     });
@@ -115,7 +123,9 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
     expect(xlSize).toBe("18px");
 
     await page.reload();
-    await page.getByRole("button", { name: "open settings" }).tap();
+    // BM scope adjustment — same rationale as line 103, pin to chrome
+    // cog testid to avoid ambiguity with the drawer launcher.
+    await page.locator('[data-testid="shell-chrome-cog"]').tap();
     await expect(page.locator(".settings-drawer.open")).toBeVisible({
       timeout: 5_000,
     });

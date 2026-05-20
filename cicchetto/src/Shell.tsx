@@ -6,12 +6,14 @@ import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
 import HomePane from "./HomePane";
 import { ownNickForNetwork } from "./lib/api";
+import { archiveSlugForSelection } from "./lib/archiveContext";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
+import { openArchivePanel, openSettingsPanel, toggleMembersPanel } from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
 import { isMobile } from "./lib/theme";
@@ -28,7 +30,7 @@ import PrivacyModal from "./PrivacyModal";
 import ResizeHandle from "./ResizeHandle";
 import ScrollbackPane from "./ScrollbackPane";
 import SettingsDrawer from "./SettingsDrawer";
-import ShellChrome, { ChromeButtons } from "./ShellChrome";
+import ShellChrome from "./ShellChrome";
 import Sidebar from "./Sidebar";
 import SocketHealthBanner from "./SocketHealthBanner";
 import TopicBar from "./TopicBar";
@@ -127,8 +129,12 @@ const Shell: Component = () => {
     return ownNickForNetwork(net, me);
   };
 
+  // UX-5 bucket BM (2026-05-20) — archive-launcher visibility in the
+  // mobile members drawer footer mirrors ShellChrome's archive gate
+  // (no archive on home / mentions / admin / pre-select). Predicate
+  // lives in `lib/archiveContext.ts` so both surfaces edit one rule.
+
   // C8.2 — click-to-context handler for MentionsWindow rows.
-  //
   // CP29 R-4: previously this called `setReadCursor(slug, ch, serverTime-1)`
   // to position the unread-marker just before the clicked message. The
   // server-side cursor model (id-based, forward-only, validated against
@@ -490,18 +496,14 @@ const Shell: Component = () => {
         </Show>
 
         <section class="shell-main">
-          {/* UX-4 bucket L — ShellChrome always visible on mobile too.
-              UX-5 bucket A (2026-05-19) — hamburger prop dropped.
-              TopicBar's own `.topic-bar-hamburger` (channel-window-
-              only, CSS-visible on mobile) owns the members-drawer
-              toggle; ShellChrome's hamburger was a duplicate.
-              UX-5 bucket BT (2026-05-19) — on mobile-channel, the
-              standalone .shell-chrome row is dropped and ChromeButtons
-              render INSIDE the TopicBar instead, reclaiming the ~32px
-              the chrome row stole above the scrollback area on iPhone.
-              Non-channel mobile windows (home / mentions / admin /
-              server) keep the standalone row since they have no
-              TopicBar to absorb the buttons. */}
+          {/* Mobile-non-channel windows (home / mentions / admin /
+              server) render the standalone .shell-chrome row for
+              archive + cog. Mobile-channel suppresses this row
+              entirely — UX-5 bucket BM moved the archive + cog to the
+              members drawer footer below (see `.shell-members` aside),
+              so the channel scrollback reclaims the ~32px the chrome
+              row used to steal above. Earlier history of this surface
+              in the bucket commits (UX-4 L, UX-5 A, UX-5 BT, UX-5 BM). */}
           <Show when={selectedChannel()?.kind !== "channel"}>
             <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
           </Show>
@@ -517,15 +519,23 @@ const Shell: Component = () => {
                           members-drawer toggle on mobile (CSS-hidden
                           on desktop via @media). ShellChrome above no
                           longer renders its own hamburger.
-                          UX-5 bucket BT (2026-05-19) — inline chrome
-                          slot absorbs archive + cog from the dropped
-                          standalone .shell-chrome row. */}
+                          UX-5 bucket BM (2026-05-20) — `inlineChromeSlot`
+                          dropped on mobile-channel: archive + cog
+                          buttons moved INTO the members drawer footer
+                          (see below). TopicBar's right edge now hosts
+                          ONLY the hamburger. onToggleMembers routes
+                          through `toggleMembersPanel` to enforce the
+                          members | settings | archive | none mutex —
+                          opening members closes the sibling surfaces. */}
                       <TopicBar
                         networkSlug={sel().networkSlug}
                         channelName={sel().channelName}
-                        onToggleMembers={() => setMembersOpen((v) => !v)}
-                        inlineChromeSlot={
-                          <ChromeButtons onOpenSettings={() => setSettingsOpen(true)} />
+                        onToggleMembers={() =>
+                          toggleMembersPanel({
+                            membersOpen,
+                            setMembersOpen,
+                            setSettingsOpen,
+                          })
                         }
                       />
                     </Show>
@@ -603,6 +613,44 @@ const Shell: Component = () => {
               <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
             )}
           </Show>
+          {/* UX-5 bucket BM (2026-05-20) — bottom-fixed launcher row
+              inside the mobile members drawer. Replaces the archive +
+              cog buttons that UX-5 BT inlined into the TopicBar; with
+              three affordances on a narrow row the chrome was getting
+              crowded (vjt 2026-05-19 dogfood). Mutex enforced via
+              lib/mobilePanel.ts: tapping settings/archive closes the
+              drawer before opening the launched surface, and the
+              hamburger's own toggle (toggleMembersPanel above) closes
+              the launched surfaces before opening the drawer.
+              Archive launcher renders only when there's a network
+              context — same `archiveSlugForSelection()` rule that
+              gates the standalone ShellChrome archive button. */}
+          <footer class="mobile-panel-actions">
+            <Show when={archiveSlugForSelection()}>
+              {(slug) => (
+                <button
+                  type="button"
+                  class="shell-chrome-btn shell-chrome-archive"
+                  aria-label="open archive"
+                  data-testid="mobile-panel-archive"
+                  onClick={() =>
+                    openArchivePanel({ membersOpen, setMembersOpen, setSettingsOpen }, slug())
+                  }
+                >
+                  {"\u{1F4C2}"}
+                </button>
+              )}
+            </Show>
+            <button
+              type="button"
+              class="shell-chrome-btn shell-chrome-cog"
+              aria-label="open settings"
+              data-testid="mobile-panel-settings"
+              onClick={() => openSettingsPanel({ membersOpen, setMembersOpen, setSettingsOpen })}
+            >
+              ⚙
+            </button>
+          </footer>
         </aside>
 
         <SettingsDrawer

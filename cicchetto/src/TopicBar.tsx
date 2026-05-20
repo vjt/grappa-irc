@@ -1,4 +1,4 @@
-import { type Component, createSignal, type JSX, Show } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
 import { channelKey } from "./lib/channelKey";
 import { compactModeString, modesByChannel, topicByChannel } from "./lib/channelTopic";
 import { windowIsJoined } from "./lib/windowState";
@@ -11,13 +11,6 @@ import { windowIsJoined } from "./lib/windowState";
 //  * compact mode-string (e.g. "+nt") with hover tooltip listing modes.
 //    Rendered only when modes are cached and non-empty (C3.1).
 //  * right ☰ hamburger — opens members drawer (desktop + mobile)
-//  * optional `inlineChromeSlot` (UX-5 bucket BT, 2026-05-19) — JSX
-//    children rendered after the hamburger. Shell.tsx mobile-channel
-//    branch passes <ChromeButtons /> here so the archive + cog buttons
-//    sit on the SAME row as the topic, dropping the standalone
-//    .shell-chrome row that wasted ~32px above the scrollback area on
-//    iPhone. Desktop branch passes no slot; the standalone .shell-chrome
-//    row stays for the unchanged desktop layout.
 //
 // UX-4 bucket L (2026-05-19): the settings cog AND the left channel-
 // sidebar hamburger moved out of TopicBar into the cluster-wide
@@ -33,6 +26,14 @@ import { windowIsJoined } from "./lib/windowState";
 // need a duplicate, and dropping it tightens the row on narrow
 // viewports where every pixel matters.
 //
+// UX-5 bucket BM (2026-05-20): the optional `inlineChromeSlot` prop
+// that BT introduced (mobile-channel rendered ChromeButtons inline
+// here to absorb archive + cog from the dropped standalone chrome
+// row) was dropped — BM moves archive + cog into the mobile members
+// drawer footer as launchers, so the topic-bar's right edge holds
+// ONLY the hamburger again. Three buttons on a narrow row was
+// crowded; one button + drawer-as-panel is the new shape.
+//
 // Modal state uses `"closed" | "open"` string-literal union per the
 // closed-set rule (CLAUDE.md).
 //
@@ -43,13 +44,6 @@ export type Props = {
   networkSlug: string;
   channelName: string;
   onToggleMembers: () => void;
-  /**
-   * UX-5 bucket BT — optional inline JSX slot rendered after the
-   * members hamburger. Used by Shell.tsx's mobile-channel branch to
-   * absorb ShellChrome's archive + cog buttons into the topic-bar
-   * row, dropping the standalone chrome row on iPhone.
-   */
-  inlineChromeSlot?: JSX.Element;
 };
 
 type ModalState = "closed" | "open";
@@ -125,14 +119,6 @@ const TopicBar: Component<Props> = (props) => {
           ☰
         </button>
       </Show>
-
-      {/* UX-5 bucket BT (2026-05-19) — optional inline chrome slot.
-          Shell.tsx mobile-channel branch passes <ChromeButtons /> here
-          so the archive + cog sit on the SAME row as the topic strip
-          instead of a separate .shell-chrome row stacked above. Slot
-          is omitted on desktop + mobile-non-channel paths; those
-          branches keep the standalone .shell-chrome row. */}
-      {props.inlineChromeSlot}
 
       {/* Topic modal — opens on topic strip click; shows full topic, setter, timestamp */}
       <Show when={modalState() === "open"}>

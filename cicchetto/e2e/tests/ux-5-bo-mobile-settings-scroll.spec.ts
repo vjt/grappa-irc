@@ -65,7 +65,13 @@ test("@webkit ux-5-bo — settings drawer asserts touch-action: pan-y + overscro
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  await page.getByRole("button", { name: "open settings" }).tap();
+  // UX-5 bucket BM (2026-05-20) — `getByRole("button", { name: "open
+  // settings" })` is ambiguous because the BM mobile members drawer
+  // footer also has an `aria-label="open settings"` launcher button.
+  // Pin to the chrome cog testid — this test runs on home (no channel
+  // selected), where the standalone .shell-chrome row is the canonical
+  // path to settings.
+  await page.locator('[data-testid="shell-chrome-cog"]').tap();
   const drawer = page.locator(".settings-drawer.open");
   await expect(drawer).toBeVisible({ timeout: 5_000 });
 
@@ -87,7 +93,8 @@ test("@webkit ux-5-bo — settings drawer has an internal scroll authority (over
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  await page.getByRole("button", { name: "open settings" }).tap();
+  // Same BM ambiguity fix as above — pin to chrome cog testid.
+  await page.locator('[data-testid="shell-chrome-cog"]').tap();
   const drawer = page.locator(".settings-drawer.open");
   await expect(drawer).toBeVisible({ timeout: 5_000 });
 
@@ -118,8 +125,20 @@ test("@webkit ux-5-bo — archive modal asserts touch-action: pan-y + overscroll
   // focused (ShellChrome's `archiveSlug()` returns null on home /
   // mentions / admin). Select the autojoin channel so the chrome
   // archive button surfaces.
+  //
+  // UX-5 bucket BM (2026-05-20) — on mobile-channel the archive button
+  // is no longer inline in the topic-bar (UX-5 BT inlined it; BM
+  // moved it again into the members drawer footer as a launcher).
+  // Open the drawer first via the hamburger, then tap the launcher.
+  // Mutex side-effect: tapping the archive launcher closes the
+  // drawer, which is precisely the post-tap state the test cares
+  // about (we want the archive modal open, not the drawer).
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-  await page.getByRole("button", { name: "open archive" }).tap();
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  await page
+    .locator(".shell-members.open [data-testid='mobile-panel-archive']")
+    .tap();
   const modal = page.locator(".archive-modal");
   await expect(modal).toBeVisible({ timeout: 5_000 });
 

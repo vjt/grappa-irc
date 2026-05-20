@@ -11,6 +11,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // that duplicated TopicBar's `.topic-bar-hamburger` on mobile and
 // toggled a no-op `.open` class on desktop. Hamburger-related tests
 // moved out; only the cog + archive-button surfaces remain.
+//
+// UX-5 bucket BM (2026-05-20) — the `ChromeButtons` named export was
+// dropped (BT introduced it for the mobile-channel `inlineChromeSlot`
+// path; BM moved that surface into the members drawer footer, so the
+// only consumer is gone and the export folded back into the default
+// ShellChrome body). The `describe("ChromeButtons inline export")`
+// block was deleted with the export.
 
 const mockSetArchiveModalNetwork = vi.fn();
 vi.mock("../lib/archive", () => ({
@@ -27,7 +34,7 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => mockSelected,
 }));
 
-import ShellChrome, { ChromeButtons } from "../ShellChrome";
+import ShellChrome from "../ShellChrome";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -99,41 +106,6 @@ describe("ShellChrome (bucket L)", () => {
       render(() => <ShellChrome onOpenSettings={vi.fn()} />);
       fireEvent.click(screen.getByTestId("shell-chrome-archive"));
       expect(mockSetArchiveModalNetwork).toHaveBeenCalledWith("freenode");
-    });
-  });
-
-  // UX-5 bucket BT (2026-05-19) — ChromeButtons named export. Re-uses
-  // the same archive + cog buttons (same visibility rules, same
-  // onOpenSettings + setArchiveModalNetwork wiring) WITHOUT the outer
-  // .shell-chrome wrapper. Lets Shell.tsx's mobile-channel branch pass
-  // these buttons through TopicBar's `inlineChromeSlot` prop, so the
-  // chrome row collapses into the topic row on iPhone — one fewer
-  // ~32px-tall row above the scrollback area.
-  describe("UX-5 bucket BT — ChromeButtons inline export", () => {
-    it("renders the cog (no .shell-chrome wrapper)", () => {
-      const onOpenSettings = vi.fn();
-      const { container } = render(() => <ChromeButtons onOpenSettings={onOpenSettings} />);
-      expect(screen.getByTestId("shell-chrome-cog")).toBeInTheDocument();
-      expect(container.querySelector(".shell-chrome")).toBeNull();
-    });
-
-    it("clicking the cog fires onOpenSettings", () => {
-      const onOpenSettings = vi.fn();
-      render(() => <ChromeButtons onOpenSettings={onOpenSettings} />);
-      fireEvent.click(screen.getByTestId("shell-chrome-cog"));
-      expect(onOpenSettings).toHaveBeenCalled();
-    });
-
-    it("hides archive button when no window has network context (home)", () => {
-      mockSelected = { networkSlug: "home", channelName: "home", kind: "home" };
-      render(() => <ChromeButtons onOpenSettings={vi.fn()} />);
-      expect(screen.queryByTestId("shell-chrome-archive")).not.toBeInTheDocument();
-    });
-
-    it("shows archive button when a channel window is selected", () => {
-      mockSelected = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
-      render(() => <ChromeButtons onOpenSettings={vi.fn()} />);
-      expect(screen.getByTestId("shell-chrome-archive")).toBeInTheDocument();
     });
   });
 });

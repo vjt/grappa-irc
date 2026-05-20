@@ -1,6 +1,6 @@
 import { type Component, Show } from "solid-js";
 import { setArchiveModalNetwork } from "./lib/archive";
-import { selectedChannel } from "./lib/selection";
+import { archiveSlugForSelection } from "./lib/archiveContext";
 
 // UX-4 bucket L (2026-05-19) — sticky chrome bar at the top of
 // `.shell-main`. Always rendered, regardless of selected window kind
@@ -13,29 +13,23 @@ import { selectedChannel } from "./lib/selection";
 //   * Spacer — pushes the right group to the far right.
 //   * Archive button (📂) — opens ArchiveModal for the currently-
 //     selected window's network. Hidden when no network context
-//     (home / mentions / pre-select).
+//     (home / mentions / pre-select). Visibility predicate lives in
+//     `lib/archiveContext.ts` so the mobile members-drawer launcher
+//     (Shell.tsx) uses the SAME rule.
 //   * Settings cog (⚙) — opens SettingsDrawer. Always visible.
 //
 // UX-5 bucket A (2026-05-19) — the left hamburger slot was dropped.
-// The desktop sidebar is always visible (no toggle needed); the
-// mobile members drawer is toggled by TopicBar's `.topic-bar-hamburger`
-// (channel-window-only, CSS-hidden on desktop). Pre-bucket the chrome
-// also rendered its own hamburger — duplicating the members-drawer
-// toggle on mobile and adding a useless top-left button on desktop
-// (the `sidebarOpen` signal it toggled had no DOM effect anywhere
-// since UX-4 bucket L dropped the mobile sidebar branch and the
-// desktop sidebar has no `.open` CSS rule). Removed end-to-end:
-// `sidebarOpen` state is gone from Shell.tsx too.
 //
-// UX-5 bucket BT (2026-05-19) — extracted `ChromeButtons` named
-// export: same archive + cog with identical visibility rules, but
-// WITHOUT the outer `<header class="shell-chrome">` wrapper. Shell.tsx
-// mobile-channel branch passes <ChromeButtons /> through TopicBar's
-// `inlineChromeSlot` prop so the chrome buttons render INSIDE the
-// topic-bar row — dropping the standalone `.shell-chrome` row that
-// wasted ~32px above the scrollback area on iPhone. Default export
-// (`<header class="shell-chrome">` wrapper) stays the desktop +
-// mobile-non-channel substrate.
+// UX-5 bucket BT (2026-05-19) — a `ChromeButtons` named export
+// briefly existed to let Shell.tsx mobile-channel branch render
+// archive + cog inline inside TopicBar via an `inlineChromeSlot`
+// prop, dropping the standalone `.shell-chrome` row on iPhone.
+//
+// UX-5 bucket BM (2026-05-20) — `ChromeButtons` named export DROPPED.
+// BM moved the mobile-channel archive + cog into the members drawer
+// footer as launchers (Shell.tsx mounts its own JSX, doesn't reuse
+// chrome buttons). The wrapper default export is the only consumer
+// of the archive/cog rendering today; folded back inline.
 
 export type Props = {
   /**
@@ -44,25 +38,11 @@ export type Props = {
   onOpenSettings: () => void;
 };
 
-// UX-5 bucket BT — inner buttons-only render. Reuses the same archive
-// visibility rule and the same cog wiring as the wrapper default
-// export. Caller hosts the layout (`<header class="shell-chrome">` for
-// the standalone bar, or `.topic-bar` for the inline mobile-channel
-// path). Exported separately so the wire-truth contract stays in ONE
-// component — `archiveSlug()` resolution + onOpenSettings prop shape
-// + data-testid markers ("shell-chrome-archive", "shell-chrome-cog")
-// are not duplicated.
-export const ChromeButtons: Component<Props> = (props) => {
-  const archiveSlug = (): string | null => {
-    const sel = selectedChannel();
-    if (sel === null) return null;
-    if (sel.kind === "home" || sel.kind === "mentions" || sel.kind === "admin") return null;
-    return sel.networkSlug;
-  };
-
+const ShellChrome: Component<Props> = (props) => {
   return (
-    <>
-      <Show when={archiveSlug()}>
+    <header class="shell-chrome" data-testid="shell-chrome">
+      <span class="shell-chrome-spacer" />
+      <Show when={archiveSlugForSelection()}>
         {(slug) => (
           <button
             type="button"
@@ -84,15 +64,6 @@ export const ChromeButtons: Component<Props> = (props) => {
       >
         ⚙
       </button>
-    </>
-  );
-};
-
-const ShellChrome: Component<Props> = (props) => {
-  return (
-    <header class="shell-chrome" data-testid="shell-chrome">
-      <span class="shell-chrome-spacer" />
-      <ChromeButtons onOpenSettings={props.onOpenSettings} />
     </header>
   );
 };

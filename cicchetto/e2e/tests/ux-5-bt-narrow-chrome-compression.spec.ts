@@ -24,6 +24,16 @@
 //     `font-weight: bold` + the header `.sidebar-window-btn` uses
 //     `justify-content: flex-start` so the slug is left-anchored.
 //
+// UX-5 bucket BM (2026-05-20) — three buttons on the narrow row was
+// still crowded (vjt 2026-05-19 dogfood, follow-up). BM moved archive
+// + cog OUT of the topic-bar inline slot and into a bottom-fixed
+// launcher footer inside the mobile members drawer. The mobile arm
+// below pins the BM post-state: cog + archive NOT inline anymore;
+// only the hamburger survives on the topic-bar's right edge. The
+// "no standalone .shell-chrome row on mobile-channel" contract from
+// BT still holds — that part is BT's reclamation, BM moved buttons
+// elsewhere without bringing the chrome row back.
+//
 // jsdom doesn't compute layout / cascade `@media` — per
 // `feedback_cicchetto_browser_smoke` this CSS-driven layout fix MUST
 // ship a Playwright e2e. Mobile arm pins the inline-vs-standalone
@@ -34,7 +44,7 @@
 // Parity matrix per `feedback_e2e_user_class_parity_matrix`: UI shape
 // contract, subject-shape-agnostic. Registered seed suffices.
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -59,7 +69,8 @@ test("ux-5-bt desktop — chrome row + topic-bar SEPARATE; sidebar network-name 
   await expect(page.locator(".shell-chrome")).toHaveCount(1);
   await expect(page.locator(".topic-bar")).toHaveCount(1);
   // Cog must NOT be inside .topic-bar on desktop — keeps the two-row
-  // layout. Inline cog is mobile-channel-only.
+  // layout. Inline cog was mobile-channel-only pre-BM; BM dropped it
+  // entirely (now lives in the mobile members drawer footer).
   await expect(page.locator(".topic-bar [data-testid='shell-chrome-cog']")).toHaveCount(0);
 
   // Sidebar network-name nit: header span computed weight is bold +
@@ -78,7 +89,7 @@ test("ux-5-bt desktop — chrome row + topic-bar SEPARATE; sidebar network-name 
   expect(headerBtnJustify).toBe("flex-start");
 });
 
-test("@webkit ux-5-bt mobile — channel: NO standalone .shell-chrome row; cog INSIDE .topic-bar", async ({
+test("@webkit ux-5-bt mobile — channel: NO standalone .shell-chrome row (BM moved chrome buttons into members drawer footer)", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -94,18 +105,24 @@ test("@webkit ux-5-bt mobile — channel: NO standalone .shell-chrome row; cog I
   // tap path internally).
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  // Compression contract: .shell-chrome row NOT mounted in the
-  // mobile-channel branch; .topic-bar IS, with the cog inline.
+  // BT compression contract: .shell-chrome row NOT mounted in the
+  // mobile-channel branch; .topic-bar IS mounted.
   await expect(page.locator(".topic-bar")).toHaveCount(1);
   await expect(page.locator(".shell-chrome")).toHaveCount(0);
-  await expect(page.locator(".topic-bar [data-testid='shell-chrome-cog']")).toHaveCount(1);
-  await expect(page.locator(".topic-bar [data-testid='shell-chrome-cog']")).toBeVisible();
-  // Archive button (network context present) ALSO inline.
-  await expect(page.locator(".topic-bar [data-testid='shell-chrome-archive']")).toHaveCount(1);
+  // BM contract: cog + archive NO LONGER inline in .topic-bar —
+  // they live in the members drawer footer as launchers now.
+  await expect(page.locator(".topic-bar [data-testid='shell-chrome-cog']")).toHaveCount(0);
+  await expect(page.locator(".topic-bar [data-testid='shell-chrome-archive']")).toHaveCount(0);
+  // Launchers exist inside the members drawer (see ux-5-bm spec for
+  // the full mutex contract). Verified here as a sanity link between
+  // the BT reclamation and the BM relocation.
+  await expect(
+    page.locator(".shell-members [data-testid='mobile-panel-settings']"),
+  ).toHaveCount(1);
 
   // Per `feedback_e2e_visitor_members_list` — UI-shape spec is
   // registered-class today; satisfy the rule by asserting the members
-  // drawer populates after a tap on the inline TopicBar hamburger.
+  // drawer populates after a tap on the TopicBar hamburger.
   await page.getByLabel(/open members sidebar/i).tap();
   const drawer = page.locator(".shell-members.open");
   await expect(drawer).toBeVisible({ timeout: 5_000 });
