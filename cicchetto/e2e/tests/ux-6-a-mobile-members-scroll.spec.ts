@@ -115,17 +115,27 @@ test("@webkit ux-6-a — html.overlay-open suspends root touch-action so gesture
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // The CSS contract for `html.overlay-open { touch-action: none }`
-  // (default.css ~:145). This is the root-level escalation killer:
-  // when any overlay is open, root touch-action goes to `none` so
-  // iOS can't escalate the gesture past the overlay's own `pan-y`
-  // carve-out. Asserted by toggling the class manually + reading
-  // computed style — Playwright webkit can't faithfully reproduce
-  // the gesture escalation itself (BO's caveat); the CSS contract
-  // is the deterministic regression guard.
+  // UX-6 bucket A v3 (2026-05-20) — the lock chain is `html + body +
+  // #root + #root > div` (Solid's anonymous wrapper). touch-action
+  // does NOT inherit (CSS UI L4) so each ancestor needs its own
+  // declaration. v1+v2 only locked <html> — body + #root were still
+  // at `touch-action: auto`, letting iOS pick a non-aside ancestor
+  // when keyboard-up made the layout document-tall. v3 locks the
+  // whole chain; the overlay's own pan-y carve-out still wins via
+  // higher selector specificity inside its subtree.
   await page.evaluate(() => document.documentElement.classList.add("overlay-open"));
-  const ta = await page.evaluate(() => getComputedStyle(document.documentElement).touchAction);
-  expect(ta).toBe("none");
+  const chain = await page.evaluate(() => ({
+    html: getComputedStyle(document.documentElement).touchAction,
+    body: getComputedStyle(document.body).touchAction,
+    root: getComputedStyle(document.getElementById("root") ?? document.body).touchAction,
+    rootChild: getComputedStyle(
+      document.querySelector("#root > div") ?? document.body,
+    ).touchAction,
+  }));
+  expect(chain.html).toBe("none");
+  expect(chain.body).toBe("none");
+  expect(chain.root).toBe("none");
+  expect(chain.rootChild).toBe("none");
   await page.evaluate(() => document.documentElement.classList.remove("overlay-open"));
 });
 

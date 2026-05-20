@@ -146,16 +146,39 @@ body {
    `overlay-open` lands on `<html>` (root) whenever any mobile overlay
    is open (members drawer, settings drawer, archive modal, image-upload
    modal, AdminPane on mobile). Wired via refcounted `lib/overlayScrollLock.ts`
-   push/pop in each surface. `touch-action: none` on the root kills the
-   gesture-escalation path for short-content overlays: even when the
-   inner scroller has nothing to consume the pan, iOS no longer escalates
-   to a root-level gesture (which would trip installScrollPin's snap-yank
-   producing the visible flicker). The overlay's own `touch-action: pan-y`
-   carve-out re-enables vertical pan inside itself; the root stays locked. */
-html.overlay-open {
+   push/pop in each surface.
+
+   UX-6 bucket A v3 (2026-05-20) — touch-action does NOT inherit (CSS UI
+   L4). v1+v2 set it only on `<html>`, but live CDP probe of the
+   ancestor chain showed `<body>` and `<div id="root">` (and Solid's
+   anonymous wrapper `<div>`) defaulted to `touch-action: auto`. When
+   the iOS keyboard pushes layout up, the focused-input auto-scroll
+   path hits-test ANY ancestor with `auto` and pans the document
+   visually. `installScrollPin` (`lib/viewportHeight.ts:95-108`) only
+   counters `window.scroll` events; iOS's visual-shift on focused-input
+   under keyboard does NOT fire that. The fix is to lock the entire
+   ancestor chain (html + body + root + Shell's outer divs) while any
+   overlay is up. Each overlay still carves out `pan-y` on its own
+   scroller for legitimate internal scrolling.
+
+   Universal-selector descendant carve-out at the root: while
+   `.overlay-open` is on `<html>`, every element gets `touch-action:
+   none` UNLESS it's an overlay surface or descendant of one.
+   Specificity guard: overlay surfaces use higher-specificity selectors
+   (e.g., `.shell-mobile .shell-members .members-pane *`) so their
+   `pan-y` carve-out wins over this catch-all. */
+html.overlay-open,
+html.overlay-open body,
+html.overlay-open #root,
+html.overlay-open #root > div {
   touch-action: none;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: the `html.overlay-open
+   #root` rule above has higher specificity (1,1,1) than `#root` (1,0,0)
+   so it correctly overrides only when an overlay is open; cascade order
+   is irrelevant when specificity differs. Biome lint catches an
+   anti-pattern that doesn't apply here. */
 #root {
   /* UX-3 UNDEC: bind to <body> (height:100%, i.e. visual viewport),
      NOT 100vh. `100vh` resolves to the LAYOUT viewport on iOS Safari
