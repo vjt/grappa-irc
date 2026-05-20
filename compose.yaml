@@ -94,6 +94,11 @@ services:
       # raises in prod if this is unset or equals the sentinel below.
       # See .env.example for the threat model + rotation guidance.
       RELEASE_COOKIE: ${RELEASE_COOKIE:-grappa-dev-cookie-do-not-use-in-prod}
+      # UX-6-B1 (2026-05-20): embedded image uploader storage dir.
+      # Defaults to `runtime/uploads` (under the bind-mounted runtime/
+      # so the existing host volume covers it). Override only if
+      # disk-policy requires a separate volume.
+      UPLOADS_STORAGE_ROOT: ${UPLOADS_STORAGE_ROOT:-/app/runtime/uploads}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/healthz || exit 1"]
       interval: 5s

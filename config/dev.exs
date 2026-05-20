@@ -9,6 +9,11 @@ config :grappa, Grappa.Repo,
   busy_timeout: 30_000,
   show_sensitive_data_on_connection_error: true
 
+# UX-6-B1 (2026-05-20): embedded image uploader storage dir. Sibling
+# of the sqlite DB under `runtime/` so the existing host bind-mount
+# covers both.
+config :grappa, :uploads_storage_root, Path.expand("../runtime/uploads_dev", __DIR__)
+
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: 4000],
   check_origin: false,

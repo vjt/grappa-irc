@@ -51,6 +51,8 @@ defmodule Grappa.AdminEvents.Wire do
           | :visitor_deleted
           | :visitor_reaped
           | :reaper_swept
+          | :upload_reaped
+          | :uploads_swept
           | :session_disconnected
           | :session_terminated
           | :network_caps_updated
@@ -104,6 +106,21 @@ defmodule Grappa.AdminEvents.Wire do
 
   @type reaper_swept_event :: %{
           kind: :reaper_swept,
+          count: non_neg_integer(),
+          at: String.t()
+        }
+
+  @type upload_reaped_event :: %{
+          kind: :upload_reaped,
+          upload_id: String.t(),
+          slug: String.t(),
+          subject_kind: :user | :visitor,
+          subject_id: String.t(),
+          at: String.t()
+        }
+
+  @type uploads_swept_event :: %{
+          kind: :uploads_swept,
           count: non_neg_integer(),
           at: String.t()
         }
@@ -169,6 +186,8 @@ defmodule Grappa.AdminEvents.Wire do
           | visitor_deleted_event()
           | visitor_reaped_event()
           | reaper_swept_event()
+          | upload_reaped_event()
+          | uploads_swept_event()
           | session_disconnected_event()
           | session_terminated_event()
           | network_caps_updated_event()
@@ -273,6 +292,28 @@ defmodule Grappa.AdminEvents.Wire do
   @spec reaper_swept(non_neg_integer()) :: reaper_swept_event()
   def reaper_swept(count) when is_integer(count) and count >= 0 do
     %{kind: :reaper_swept, count: count, at: now()}
+  end
+
+  @doc false
+  @spec upload_reaped(String.t(), String.t(), :user | :visitor, String.t()) ::
+          upload_reaped_event()
+  def upload_reaped(upload_id, slug, subject_kind, subject_id)
+      when is_binary(upload_id) and is_binary(slug) and subject_kind in [:user, :visitor] and
+             is_binary(subject_id) do
+    %{
+      kind: :upload_reaped,
+      upload_id: upload_id,
+      slug: slug,
+      subject_kind: subject_kind,
+      subject_id: subject_id,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec uploads_swept(non_neg_integer()) :: uploads_swept_event()
+  def uploads_swept(count) when is_integer(count) and count >= 0 do
+    %{kind: :uploads_swept, count: count, at: now()}
   end
 
   @doc false

@@ -1,6 +1,12 @@
 [
   verbose: true,
   exit: "Medium",
+  # `skip: true` honors `@sobelow_skip ["Check.Name"]` module
+  # attributes on individual functions. Used to suppress
+  # false-positive traversal findings in the embedded-uploader
+  # controllers (slug is base32-validated; tmp paths come from
+  # Plug.Parsers :multipart).
+  skip: true,
   # Phase 5 (hardening) re-enables HTTPS enforcement on the Phoenix
   # Endpoint. See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
   ignore: ["Config.HTTPS"]

@@ -57,6 +57,10 @@ defmodule GrappaWeb.FallbackController do
            | :invalid_message
            | :nick_in_use
            | :cannot_disconnect_self
+           | :insufficient_storage
+           | :unsupported_media_type
+           | {:invalid_setting, String.t()}
+           | {:file_too_large, pos_integer()}
            | {:anon_collision, non_neg_integer()}
            | Grappa.Admission.error()
            | Ecto.Changeset.t()}
@@ -99,6 +103,52 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:request_entity_too_large)
     |> json(%{error: "body_too_large", limit: GrappaWeb.BodyLimit.max_body_bytes()})
+  end
+
+  # UX-6-B1: `POST /api/uploads` size policing — admin-configurable
+  # per-file cap (default 10 MiB) read at request time from
+  # `Grappa.ServerSettings.get_upload_per_file_cap_bytes/0`. Distinct
+  # from `:body_too_large` (the JSON-payload cap on text endpoints)
+  # because the cap value is dynamic, surfaced inline in the wire
+  # body so cic can render the actionable threshold.
+  def call(conn, {:error, {:file_too_large, max_bytes}}) when is_integer(max_bytes) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "file_too_large", max_bytes: max_bytes})
+  end
+
+  # UX-6-B1: global-disk cap on the embedded uploader. Operator
+  # tunes the ceiling via `Grappa.ServerSettings.put_upload_global_
+  # cap_bytes/1`. 507 carries the dedicated semantics for "store is
+  # at capacity" (RFC 4918, originally WebDAV but widely understood);
+  # cic surfaces the same admin-action affordance as
+  # `:network_busy` (talk to your admin).
+  def call(conn, {:error, :insufficient_storage}) do
+    conn
+    |> put_status(:insufficient_storage)
+    |> json(%{error: "insufficient_storage"})
+  end
+
+  # UX-6-B1: MIME rejected at the `POST /api/uploads` boundary.
+  # Allowed list lives in `GrappaWeb.UploadsController.@allowed_mimes`
+  # and mirrors the cic-side `embeddedHost.acceptedMimeTypes`. 415
+  # signals "shape is valid, type unsupported" — cic gates the
+  # picker `accept=` attribute on the same list so this 415 is
+  # belt-and-braces against a bypass.
+  def call(conn, {:error, :unsupported_media_type}) do
+    conn
+    |> put_status(:unsupported_media_type)
+    |> json(%{error: "unsupported_media_type"})
+  end
+
+  # UX-6-B1: admin attempted `PUT /admin/settings` with an
+  # out-of-shape value (non-positive cap, unknown active_host
+  # string). Carries the offending field path for cic to highlight
+  # in the AdminSettingsTab form.
+  def call(conn, {:error, {:invalid_setting, field}}) when is_binary(field) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_setting", field: field})
   end
 
   def call(conn, {:error, :not_found}) do

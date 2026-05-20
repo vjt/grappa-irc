@@ -54,7 +54,14 @@ defmodule Grappa.MixProject do
       sobelow: [
         verbose: true,
         exit: "Medium",
-        skip: false,
+        # `skip: true` honors `@sobelow_skip ["Check.Name"]` module
+        # attributes on individual functions — used to suppress
+        # false-positive traversal findings in `GrappaWeb.UploadsController`
+        # + `GrappaWeb.Admin.UploadsController` where the path source
+        # is base32-validated by `Grappa.Uploads.storage_path/2` or
+        # synthesized by `Plug.Parsers :multipart`. Justification
+        # comments live alongside each `@sobelow_skip` attribute.
+        skip: true,
         # Phase 5 (hardening) re-enables HTTPS enforcement.
         # See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
         ignore: ["Config.HTTPS"]

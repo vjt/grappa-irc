@@ -184,6 +184,11 @@ config :logger, :console,
     :numeric,
     :sasl_user,
     :nick,
+    # UX-6-B1 (2026-05-20): embedded image uploader reaper failure
+    # log lines carry the upload row id + slug so operator can grep
+    # per-upload across the reaper + GET surface.
+    :upload_id,
+    :slug,
     # Numeric severity (CP13 server-window cluster): :ok for 1xx/2xx/3xx,
     # :error for 4xx/5xx — rides the :notice persist for routed numerics
     # so log lines are color-greppable. Mirrors Scrollback.Meta.@known_keys

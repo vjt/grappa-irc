@@ -10,6 +10,8 @@ defmodule Grappa.Application do
       Grappa.PubSub,
       Grappa.Repo,
       Grappa.Session,
+      Grappa.Uploads,
+      Grappa.Uploads.Reaper,
       Grappa.Vault,
       Grappa.Visitors.Reaper,
       Grappa.WSPresence,
@@ -26,6 +28,12 @@ defmodule Grappa.Application do
     # :admission keyspace. See spec decision A in
     # docs/superpowers/specs/2026-05-03-t31-cleanup-design.md.
     :ok = Grappa.Admission.Config.boot()
+
+    # UX-6-B1: stash the uploads storage root in `:persistent_term` so
+    # the UploadsController + Uploads.Reaper read it lock-free at
+    # runtime. Boot-time read of `Application.get_env/2` is the
+    # CLAUDE.md-designated boundary (mirrors Admission.Config.boot/0).
+    :ok = Grappa.Uploads.boot(uploads_storage_root())
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
@@ -130,7 +138,19 @@ defmodule Grappa.Application do
         # than boot, so the first sweep waits anyway — ordering is
         # belt-and-braces. Reaper consumes Grappa.Visitors; the
         # Application boundary has it listed in deps for that reason.
-        Grappa.Visitors.Reaper
+        Grappa.Visitors.Reaper,
+
+        # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
+        # rationale as Visitors.Reaper for the ordering: after Repo
+        # (it queries `uploads`) + after Endpoint (so the GET surface
+        # is up before sweeps remove rows + files clients might be
+        # reaching for). The Reaper also mkdir_p's the storage_root
+        # in `init/1` so a fresh deploy needs no separate bootstrap.
+        # `:storage_root` is read from `:grappa, :uploads_storage_root`
+        # at THIS boot-time boundary — the controller + Reaper read
+        # from `:persistent_term` thereafter (CLAUDE.md
+        # "Application.{put,get}_env: boot-time only").
+        {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()}
 
         # Bootstrap is appended LAST below: it depends on Registry +
         # SessionSupervisor existing so it can spawn sessions. Conditional
@@ -151,6 +171,15 @@ defmodule Grappa.Application do
     else
       []
     end
+  end
+
+  # UX-6-B1: storage_root for the embedded image uploader. Configured
+  # via `:grappa, :uploads_storage_root` in `config/runtime.exs` (prod)
+  # / `config/dev.exs` (dev) / `config/test.exs` (test). Read at boot
+  # only (here + via `Grappa.Uploads.boot/1`); the runtime hot path
+  # reads from `:persistent_term`.
+  defp uploads_storage_root do
+    Application.fetch_env!(:grappa, :uploads_storage_root)
   end
 
   # M-11 telemetry-attach gating. False in test env (set in

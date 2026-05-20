@@ -65,6 +65,19 @@ config :ex_unit, max_cases: 1
 # try to connect to real upstream IRC servers during `mix test`.
 config :grappa, :start_bootstrap, false
 
+# UX-6-B1 (2026-05-20): embedded image uploader storage dir for
+# `mix test`. The Reaper child in the application supervisor mkdir_p's
+# this at boot; per-test isolation comes from `start_supervised`-ing
+# a fresh Reaper with a per-test temp dir, not from the global one.
+# `MIX_TEST_PARTITION` partitions the global dir per test run so
+# parallel CI shards don't collide.
+config :grappa,
+       :uploads_storage_root,
+       Path.expand(
+         "../runtime/uploads_test#{System.get_env("MIX_TEST_PARTITION")}",
+         __DIR__
+       )
+
 # M-11 — AdminEvents telemetry attach disabled in test env. The global
 # `:telemetry.attach_many/4` handler routes every admission event from
 # every async test pid to the AdminEvents singleton; the singleton's

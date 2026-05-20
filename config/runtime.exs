@@ -19,6 +19,15 @@ if config_env() == :prod do
     System.get_env("DATABASE_PATH") ||
       raise "environment variable DATABASE_PATH is missing"
 
+  # UX-6-B1 (2026-05-20): embedded image uploader storage dir. Read
+  # at boot, stashed in :persistent_term via Grappa.Uploads.boot/1.
+  # Defaults to `runtime/uploads` (the sibling of the sqlite DB) so
+  # the existing bind-mount covers it without a compose.yaml edit.
+  uploads_storage_root =
+    System.get_env("UPLOADS_STORAGE_ROOT") || "runtime/uploads"
+
+  config :grappa, :uploads_storage_root, uploads_storage_root
+
   config :grappa, Grappa.Repo,
     database: database_path,
     # SQLite is single-writer at the file level. `pool_size: 10` is a

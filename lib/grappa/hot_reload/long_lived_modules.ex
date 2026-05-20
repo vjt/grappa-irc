@@ -89,7 +89,8 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.Server,
     Grappa.IRC.Client,
     Grappa.IRC.AuthFSM,
-    Grappa.Visitors.Reaper
+    Grappa.Visitors.Reaper,
+    Grappa.Uploads.Reaper
   ]
 
   # Helper struct modules whose defstruct is a *field* of one of the
@@ -117,6 +118,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.IRC.Client
           | Grappa.IRC.AuthFSM
           | Grappa.Visitors.Reaper
+          | Grappa.Uploads.Reaper
 
   @typedoc """
   One of the helper struct modules whose `defstruct` is a field of a

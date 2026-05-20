@@ -120,6 +120,15 @@ defmodule GrappaWeb.Router do
     patch "/users/:id", UsersController, :update
     get "/credentials", CredentialsController, :index
     patch "/credentials/:user_id/:network_id", CredentialsController, :update
+
+    # UX-6-B1 (2026-05-20): admin server-settings + uploads registry.
+    # Settings cover the embedded image uploader (active_host pick +
+    # per-file cap + global cap); uploads list/delete give the
+    # operator disk-budget visibility + emergency removal.
+    get "/settings", SettingsController, :index
+    put "/settings", SettingsController, :update
+    get "/uploads", UploadsController, :index
+    delete "/uploads/:id", UploadsController, :delete
   end
 
   scope "/auth", GrappaWeb do
@@ -173,6 +182,26 @@ defmodule GrappaWeb.Router do
     get "/push/subscriptions", PushSubscriptionController, :index
     post "/push/subscriptions", PushSubscriptionController, :create
     delete "/push/subscriptions/:id", PushSubscriptionController, :delete
+
+    # UX-6-B1 (2026-05-20): embedded image uploader — authenticated
+    # POST + operator-visible settings snapshot. Visitor OR user
+    # subject can upload; the cic ComposeBox triggers this from the
+    # same picker/drag-drop/paste paths as litterbox.
+    post "/api/uploads", UploadsController, :create
+    get "/api/server-settings", ServerSettingsController, :show
+  end
+
+  # UX-6-B1 (2026-05-20): public file-fetch surface for embedded
+  # uploads. NO `:authn` — the 26-char base32 slug carries 128 bits of
+  # entropy and IS the access token (same model as litterbox.catbox.moe
+  # public URLs). Slug-shape validation + soft-delete + expiry checks
+  # collapse every miss to a uniform 404 with no oracle. Lives at
+  # the top level (not `/api/`) so the URL is short + clean for
+  # PRIVMSG bodies (`📸 https://host/uploads/<slug>`).
+  scope "/", GrappaWeb do
+    pipe_through [:api]
+
+    get "/uploads/:slug", UploadsController, :show
   end
 
   scope "/networks/:network_id", GrappaWeb do
