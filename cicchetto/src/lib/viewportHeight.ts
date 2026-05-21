@@ -30,6 +30,22 @@
 // Setting the CSS var on desktop is harmless: `.shell` (desktop
 // grid) uses `100vh` and ignores the var entirely.
 //
+// UX-6 bucket D v2 (2026-05-21) — `installScrollPin` removed. It
+// was a UX-3 OCT workaround for iOS auto-scrolling the page when
+// compose was focused under the keyboard (the page was at full
+// height with compose at the bottom; iOS lifted the page up to keep
+// the input visible). With D1's `:has(:focus)` collapsing the
+// safe-area inset AND D2's `min-height: 0` letting `.scrollback`
+// shrink with the shell, the shell itself shrinks to
+// visualViewport.height (894 → 570 on iPhone 15 keyboard-up) and
+// iOS no longer needs to auto-scroll. The pin then became hostile:
+// every touch fired a scroll event, the pin yanked window.scrollY
+// back to 0, the user's drag gesture got cancelled, and the last
+// message ended up rendered below the focused textarea (vjt
+// 2026-05-21 iPhone PWA report). Diagnostic confirmed the layout
+// chain was correct (shellmobile 570, scrollback 354) — only the
+// scroll pin needed to go.
+//
 // Mock surface for vitest: `installViewportHeightTracker` accepts an
 // optional viewport argument so unit tests can pass a fake
 // `VisualViewport`-shaped object with a controllable height +
@@ -70,39 +86,4 @@ export function installViewportHeightTracker(
   vp.addEventListener("resize", () => {
     writeViewportHeight(vp.height);
   });
-}
-
-/**
- * Pins window scroll to (0, 0) whenever something tries to scroll
- * the document. iOS Safari auto-scrolls the page to "center" the
- * focused input on keyboard open, even when the input is already
- * visible — this is a PROGRAMMATIC scroll path (scroll-into-view),
- * distinct from the touch-drag path which is now handled at the
- * layout layer via `#root { height: 100% }` (UX-3 UNDEC — body and
- * root match exactly, no overflow, nothing for iOS to drag).
- *
- * Listening for the `scroll` event + immediately scrolling back to
- * (0, 0) kills the programmatic-scroll symptom at the source. The
- * user sees the page hold still; iOS sees what it asked for and
- * stops escalating.
- *
- * Passive listener — `scroll` doesn't honor preventDefault anyway;
- * scrollTo(0, 0) is the corrective action.
- *
- * Idempotent like `installViewportHeightTracker` — called once from
- * main.tsx.
- */
-export function installScrollPin(
-  target: Window | undefined = typeof window !== "undefined" ? window : undefined,
-): void {
-  if (!target) return;
-  target.addEventListener(
-    "scroll",
-    () => {
-      if (target.scrollX !== 0 || target.scrollY !== 0) {
-        target.scrollTo(0, 0);
-      }
-    },
-    { passive: true },
-  );
 }

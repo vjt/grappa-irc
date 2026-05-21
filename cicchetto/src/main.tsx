@@ -17,7 +17,7 @@ import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
-import { installScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
+import { installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -46,12 +46,16 @@ applySidebarWidthsFromStorage();
 // of view. Boot-time so the first frame already has the var.
 installViewportHeightTracker();
 
-// UX-3 OCT — pin window scroll. iOS auto-scrolls on input focus
-// even when the input is already visible (the scroll-into-view path
-// is programmatic, bypassing body { overflow: hidden }). The
-// listener catches every scroll attempt and snaps back to (0, 0)
-// before paint, so the app chrome never drifts.
-installScrollPin();
+// UX-3 OCT (installScrollPin) REMOVED 2026-05-21 by UX-6 bucket D v2.
+// With D1's `.shell-mobile:has(:focus) { padding-bottom: 0 }` AND
+// D2's `.scrollback { min-height: 0 }`, the shell itself shrinks to
+// visualViewport.height when the keyboard opens — iOS no longer
+// needs to auto-scroll the page to keep compose visible. The scroll
+// pin became hostile: every touch fired a scroll event, the pin
+// yanked window.scrollY back to 0, the user's drag was cancelled,
+// and the last message rendered below the focused textarea (vjt
+// iPhone PWA dogfood). The full UX-3 OCT rationale is preserved in
+// lib/viewportHeight.ts's removal comment for future-Claude.
 
 // UX-3 preserve-keyboard — single document-level capture listener.
 // When compose <input> has focus and the user taps anywhere that
