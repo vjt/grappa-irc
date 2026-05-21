@@ -2363,6 +2363,35 @@ html.resize-dragging * {
     padding-bottom: 0;
   }
 
+  /* UX-6 D11b (2026-05-21) — anchor shell-mobile to the BOTTOM of
+     the layout viewport on iOS, not the top. Per-frame diag probe
+     proved that during the keyboard slide-in animation, vvOT and
+     window.scrollY both REPORT 0 — yet topbar visibly moves up
+     as the keyboard rises. iOS animates the WKWebView visual-
+     viewport shift at the compositor layer BELOW JS visibility
+     (research: _zoomToFocusRect runs at UIKit, not web platform).
+     We can't observe it or pin against it.
+
+     Pinning the shell to bottom of layout viewport flips the
+     anchor: as `vv.height` shrinks (kb opens) and `.shell-mobile`
+     height shrinks with `--viewport-height`, the shell's TOP edge
+     moves DOWN (toward bottom of layout viewport, away from the
+     top of the viewport). But iOS's keyboard occupies the bottom
+     of layout viewport, so visually the shell-bottom-anchored-
+     in-layout coincides with shell-top-anchored-to-keyboard-top.
+     Topbar lands at the top of visible area whether vvH=894 or
+     vvH=570 — STABLE across the animation.
+
+     iOS-only (html.is-ios) so Android/desktop don't get fixed-
+     positioned shell (their layout viewport responds to keyboard
+     differently). */
+  html.is-ios .shell-mobile {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+  }
+
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
      `var()` resolves to its fallback `100dvh`; on those browsers that
      declaration is invalid and the whole property gets discarded, so
