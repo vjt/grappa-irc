@@ -856,6 +856,24 @@ html.resize-dragging * {
 
 .scrollback {
   flex: 1;
+  /* UX-6 bucket D v2 (2026-05-21) — iOS WebKit flex-min-content quirk.
+     The scroll-pane chain is `.shell-mobile > .shell-main >
+     .scrollback-pane > .scrollback`; every ancestor declares
+     `min-height: 0` so the grid/flex chain shrinks correctly when
+     `--viewport-height` drops (visualViewport.height shrinks on
+     keyboard open per UX-3 PENT; on-device diag confirmed the var
+     updates 894→570 on vjt's iPhone PWA). `.scrollback` itself was
+     missing the override: a flex item with `overflow-y: scroll` and
+     the default `min-height: auto` resolves min-content to its
+     scrollHeight, refusing to shrink below the full rendered
+     message list. Desktop Chromium tolerates this; iOS WebKit clamps
+     the pane at the content's natural height — shell shrinks,
+     BottomBar moves up, but the painted scrollback area keeps its
+     pre-keyboard height and last messages hide behind BottomBar
+     (vjt iPhone-dogfood Bug 5 / D2; merged from former UX-6-H).
+     Setting `min-height: 0` here lets the flex shrink propagate all
+     the way down to the scroll container. */
+  min-height: 0;
   /* UX-3 Z3 R3+R4: `overflow-y: scroll` declares the container as
      always-scrollable for layout purposes (browsers auto-hide the
      indicator on iOS / macOS Safari / Firefox so no permanent UI
@@ -2287,6 +2305,33 @@ html.resize-dragging * {
        not added to it. */
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* UX-6 bucket D v2 (2026-05-21) — keyboard-open inset collapse via
+     `:has(:focus)` instead of JS-driven class. v1 attempted to
+     compute keyboard state from `window.innerHeight -
+     visualViewport.height > 150` and toggle `html.keyboard-open`,
+     but on-device diagnostic data from vjt's iPhone PWA standalone
+     showed `window.innerHeight === visualViewport.height` (both
+     track together; Δ stays 0). The threshold approach was
+     structurally impossible to trigger on PWA standalone.
+
+     `:has()` matches synchronously off the actual focus state —
+     no resize listeners, no class flicker during keyboard slide-in,
+     no event handlers in the hot path. When the operator focuses
+     a textarea or input inside `.shell-mobile`, iOS shows the
+     keyboard AND this selector matches AND padding-bottom
+     collapses to 0 so BottomBar sits flush against the keyboard
+     top. When focus leaves, selector stops matching, inset
+     returns. Pure CSS, single state-source.
+
+     iOS Safari 15.4+ ships `:has()`; baseline target for the
+     mobile PWA. Selectors enumerate `textarea` + `input` so
+     compose box (textarea) AND any future text input under
+     `.shell-mobile` (settings inputs, image-upload filename, etc.)
+     all close the gap when the keyboard appears for them. */
+  .shell-mobile:has(textarea:focus, input:focus) {
+    padding-bottom: 0;
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
