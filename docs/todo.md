@@ -10,6 +10,54 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-D PARTIAL-LANDED 2026-05-21.** Five attempts (v1-v5);
+ultimately only D1 + D2 helped on vjt's iPhone PWA. v3 (html/body/#
+root position:fixed), v4 (.shell-mobile position:fixed), and v5 (JS
+pre-lift via lib/keyboardLift.ts) all had zero effect or made things
+worse — REVERTED (d4282d6 + 81e582f + bfb10ee + 0bf854f).
+
+KEPT (from v2 commit 08a0389):
+- **D1**: `.shell-mobile:has(textarea:focus, input:focus) {
+  padding-bottom: 0 }`. Collapses the ~34px home-indicator inset
+  when compose is focused. vjt confirmed working.
+- **D2**: `.scrollback { min-height: 0 }`. iOS WebKit flex-min-
+  content quirk fix. Scrollback height cascade verified correct via
+  on-device diag (shellmobile=570 → shellmain=466 → scrollback-pane=
+  354 → scrollback=354/1689 with content scrollHeight 1689).
+
+RESTORED (was removed in 0c20008, restoration in 0bf854f revert):
+- `installScrollPin` (UX-3 OCT). Yanks `window.scrollTo(0,0)` on
+  any non-zero scroll event. Original pre-D behavior. vjt explicit
+  ask via AskUserQuestion to keep this as the "least worst" option
+  given iOS PWA's residual quirk.
+
+KEPT (ea5a038 + 199261a):
+- Viewport diagnostic panel in SettingsDrawer.tsx (window+
+  visualViewport+element-chain heights, focusin/focusout/vv.scroll
+  ring buffer). vjt explicit ask to retain for future investigation.
+
+**Residual iOS PWA quirk (known limitation).** iOS PWA standalone
+shifts the visualViewport coordinate origin within the layout
+viewport on input focus: `window.innerHeight` stays at 894,
+`visualViewport.height` shrinks to 570, `visualViewport.offsetTop`
+grows. `vv.scroll` events fire (not `window.scroll`). `position:
+fixed` does NOT help because fixed-relative-to-layout-viewport
+moves with the shift. `interactive-widget=resizes-content` is
+Chrome-Android only — WebKit ignores it. The pre-lift JS technique
+(translate shell BEFORE focus via mousedown handler with
+localStorage-cached keyboard height — Crscristi28/ios-pwa-keyboard-
+fix reference impl) made vjt's iPhone WORSE (compose ended up at
+TOP of screen instead of pinned to keyboard). User-visible symptom
+that remains: app chrome shifts up on focus, gap appears between
+compose and keyboard top, intermittent drag-cancel scroll-lock on
+scrollback (the original pre-D behavior — installScrollPin's
+trade-off). Accepted as iOS PWA limitation pending Apple fix to
+WebKit Bug #297779 or `interactive-widget=resizes-content` support.
+
+Gates: 1529 vitest passed + biome exit-0 (16 baseline warnings) +
+scripts/check.sh exit-0. Deploy: HOT (cic-only — bundle redeploy
+via scripts/deploy-cic.sh after the 4 revert commits).
+
 **UX-6-G LANDED 2026-05-21.** Admin pane horizontal scroll on
 mobile (vjt iPhone-dogfood: "horiz content there is a scrollbar but
 the content doesn't move"). Root cause: `.admin-pane` carried
@@ -252,23 +300,11 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 **UX-6 cluster — remaining buckets after B closes:**
 
 - **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-D — UNPARKED 2026-05-21 (vjt clarified).** Two symptoms,
-  both keyboard-related (no home-indicator angle):
-  (D1) Gap between top of keyboard and BottomBar — visible blank
-       strip while compose is focused. BottomBar should sit flush
-       against keyboard top edge.
-  (D2) Messages content does NOT shrink when keyboard opens — the
-       window-height reduction pushes BottomBar up but scrollback
-       area stays full-height, so the last N messages get hidden
-       BEHIND the BottomBar. As vjt sees it: tapping compose
-       pushes BottomBar up but messages content doesn't get pushed
-       up correspondingly. **Note**: D2 is the same bug as UX-6-H
-       ("scrollback doesn't follow viewport-shrink on keyboard
-       open") — merge H into D when starting this bucket.
-  Fix scope: revisit `--viewport-height` infra (UX-3 PENT + UX-5 BV);
-  verify the height var actually drives the scrollback panel's max
-  height, not just the overlay container. May need `100dvh` /
-  `visualViewport` API; iOS Safari quirks likely.
+- **UX-6-D — PARTIAL-LANDED 2026-05-21.** See PARTIAL-LANDED block
+  above. D1 + D2 shipped; v3/v4/v5 reverted. Residual iOS PWA
+  visualViewport-shift quirk documented as known limitation. Re-open
+  if/when Apple ships interactive-widget=resizes-content in WebKit
+  or fixes WebKit Bug #297779.
 - **UX-6-E — UNPARKED 2026-05-21 (vjt clarified).** On wide screens
   the Server window is reached by clicking the network's emoji + name
   in the sidebar (no separate "Server" tab — the network header IS
