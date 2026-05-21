@@ -2278,6 +2278,25 @@ html.resize-dragging * {
     display: grid;
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
+    /* UX-6 bucket D v4 (2026-05-21) — pin the shell to the visual
+       viewport. Pre-v4 the shell was an in-flow grid sized by
+       --viewport-height inside a fixed html/body/#root substrate
+       (D v3). v3 stopped html-level scroll but iOS PWA still shifts
+       the VISUAL viewport itself within the layout viewport
+       (vv.offsetTop grows when keyboard opens, vv.scroll events
+       fire — vjt on-device data: vv.h=570 win.h=894, Δ=324 → 324px
+       of body BELOW shell is scroll runway iOS keeps pulling up).
+
+       Position: fixed pins the shell to (0,0) in the visual viewport
+       coordinate system. iOS CANNOT scroll a fixed element relative
+       to anything — it's anchored. Height continues to track
+       --viewport-height so the shell shrinks under keyboard via
+       UX-3 PENT, but its top is locked. Sidesteps the entire
+       layout-vs-visual viewport mismatch on iOS PWA. */
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
     /* UX-3 PENT: height driven by VisualViewport API via lib/viewportHeight.ts.
        `--viewport-height` tracks `window.visualViewport.height`, which
        SHRINKS when the iOS on-screen keyboard opens (unlike `100dvh`,
