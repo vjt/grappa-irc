@@ -449,7 +449,11 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   per UX-4-K's `scrollToActivation`), but the per-channel scroll
   position isn't being persisted/restored on switch. Investigate
   next session.
-- **UX-6-Z** — docs sweep.
+- **UX-6-Z — LANDED 2026-05-22.** Docs sweep: README "Closed
+  clusters" section backfilled with UX-5 + UX-6 entries (per-bucket
+  update miss per `feedback_readme_currency`); DESIGN_NOTES
+  cluster-close entry appended with meta-lessons + carry-forwards;
+  CP37 closed, CP38 opened. **UX-6 cluster CLOSED.**
 
 **deploy.sh preflight GAP (discovered 2026-05-20 during B1 deploy).**
 Auto-detect classified B1 as HOT despite new migration. Per

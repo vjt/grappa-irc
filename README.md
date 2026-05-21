@@ -554,6 +554,136 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **UX-6 — second iPhone-dogfooding wave** (closed 2026-05-22). 11
+  production buckets shipped in autopilot mode across three days. No
+  formal plan-doc — each bucket scoped from a vjt iPhone PWA bug-list
+  and shipped per-bucket-deploy-cadence. **A** (`57cd88b` →
+  `eeb551d`, six iterations v1-v6) mobile overlay scroll-leak +
+  iOS PWA rubber-band — the v1-v3 CSS-only attempts all failed
+  because `touch-action` is non-inheriting, v4 introduced
+  `body-scroll-lock-upgrade` to kill iOS bounce at scroll edges,
+  v5 regressed the leak, v6 (`eeb551d`) shipped a custom 30-LOC
+  touchmove handler that walks the ancestor chain and `preventDefault`s
+  only when no scrollable ancestor exists; closes the lesson at
+  `feedback_research_before_attempt_9`. **B** (`61269eb` server +
+  `1b2687f` cic) embedded image uploader server stack — new
+  `uploads` + `server_settings` tables (sqlite XOR inline-CHECK
+  for `embeddedHost`-or-`null`), `POST /api/uploads` +
+  `GET /uploads/:slug` byte server, admin Settings tab (5th
+  admin tab), `Grappa.ServerSettings.Wire.upload_view/1`
+  single-source between REST + WS, per-user-topic fan-out on
+  PUT (parity with `cic-bundle-changed` precedent), Visitors
+  Reaper extended with 60s `uploads`-sweep tick. **C**
+  (`31932b9`) admin button on mobile drawer footer — selection-
+  driven dispatch reuses Sidebar admin handler via new
+  `lib/mobilePanel.ts openAdminPanel` mutex helper. **D**
+  (`e53000c`, the close of an 11-attempt + 4-research-agent saga
+  D1-D12 in commits `128fc95`..`e53000c`) iOS PWA keyboard
+  saga — converged on Telegram Web K pattern shipped atomically:
+  `html.is-ios { position: fixed }` + body `calc(--vh*100)` +
+  smart-pin (touch-gated `window.scrollTo(0,0)` with 50ms
+  post-touchend grace) + viewport-meta `interactive-widget`
+  unsupported on Safari. Atomic-CSS-pattern adoption lesson
+  (`feedback_atomic_css_pattern`) born here. **E** (`0867944`)
+  narrow-mode BottomBar Server-tab dedup — passive chip-span +
+  standalone "Server" tab collapsed into one
+  `.bottom-bar-network-header` button matching wide-mode parity;
+  `data-network-slug` stable e2e contract. **F** (`91cbc32`)
+  send button text "send" → inline SVG paper-plane glyph with
+  `aria-label="send message"`; SVG over Unicode ➤ to dodge
+  desktop --font-mono Dingbats-tofu. **G** (`a2de04e`) admin
+  pane horizontal scroll on mobile — 2-rule CSS fix
+  (`.admin-pane` + `.admin-tab-panel` `touch-action: pan-x
+  pan-y` + `overflow-x: auto`); ancestor-INTERSECTION clamp
+  was the root cause. **H** merged into D2 (same bug:
+  scrollback doesn't follow viewport-shrink on keyboard open).
+  **I** (`22ce80e`) cic refresh-banner single-press fix —
+  `performRefresh` now `registration.update()` →
+  `SKIP_WAITING` → await `controllerchange` (2s ceiling) →
+  `caches.keys()` purge → reload, replacing bare
+  `window.location.reload()` that needed THREE presses to pick
+  up a new bundle. `__refreshProbe` test seam lets e2e observe
+  the chain without navigating. **J** (`7625e13`) push notif
+  tap opens source window — B5 (2026-05-14) carry-debt close;
+  SW `notificationclick` now posts `{type: "navigate", url}`
+  to focused client + NEW `lib/pushTarget.ts` parses URL via
+  `parsePushTargetUrl` and routes via `setSelectedChannel`
+  (same code path as sidebar click). Cold-path reader in
+  `main.tsx` wrapped in `createRoot` (Solid silent-footgun
+  fix) + URL cleaned via `history.replaceState` post-apply.
+  Discriminating test seam `window.__cicPushTargetApplied`.
+  **K** (`dae54b8`) PM unread-marker advances on focus —
+  server-side cursor-write validator predicate divergence;
+  promoted `Grappa.Scrollback.channel_or_dm_where/3` from
+  `defp` to `def` so `ReadCursor.message_belongs?/4` uses the
+  same OR-shape as `Scrollback.fetch/6`, fixing the 422 cursor
+  rejection on inbound DMs persisted at `channel = own_nick`.
+  **L** (`eb07e4b`) foreground push → in-app beep
+  (SW-suppress Option B per vjt) — SW broadened gate via new
+  `lib/pushDedup.ts` extracted predicate + WS-driven
+  `lib/beep.ts` Web Audio 440Hz wired in `subscribe.ts` at 3
+  sites; new `effectivelyFocused()` single-source predicate.
+  APNs/FCM quota tax accepted (DESIGN_NOTES 2026-05-21).
+  **Z** is THIS docs sweep — backfilling UX-5 + UX-6 into
+  README's `Closed clusters` section in lockstep, per
+  `feedback_readme_currency`. Two accepted residuals (do
+  not chase): (1) visible iOS keyboard slide-in animation
+  ~250ms — WKWebView compositor below JS, unfixable in pure
+  PWA; (2) UX-6-M (channel scroll position interference on
+  switch) parked pending vjt repro pattern. Parked follow-up
+  UX-6-I.2: real-bundle-swap e2e fixture (current e2e stubs
+  `getRegistration` + `caches` via the probe seam — proves
+  WIRING but not REAL SW + REAL precache behavior).
+- **UX-5 — iPhone-dogfooding mobile-polish wave** (closed
+  2026-05-20). 15 production buckets shipped autopilot under
+  per-bucket-deploy cadence, no formal plan-doc. **A**
+  (`205262d`) drop duplicate top-left hamburger — ShellChrome
+  hamburger slot dropped end-to-end (BottomBar already
+  surfaces the drawer launcher on mobile). **B** (`98b27da`)
+  home sidebar row 🏠 emoji — visual parity with admin 🔧 +
+  network ⚙️. **BC** (`9da4845`) cap-on-park fix —
+  Admission's `requesting_subject` self-exclusion unblocks
+  T32 X→/connect; opens BR. **BR** (`a61098a`) Home pane
+  `[Reconnect]` chip + inline error for disconnected
+  networks — reuses BC server admission. **BK** (`b9b38d6`)
+  channel-key JOIN-fail dupe-window fix — pseudo-row × +
+  `windowState` archive filter + server `archive_changed`
+  broadcast. **BT** (`a015e2c`) narrow-mode chrome+topic
+  compression (mobile-channel only) + sidebar nick
+  bold/left-align + drop "X nicks". **BC2** (`f8d2ccf`)
+  colored nicks (djb2 hash → 16-slot palette) + irssi
+  mode-prefix glyph via new `NickText` helper. **BU**
+  (`5fcfc71`) unread badge symmetry — focus-regain clears
+  mention + `setSelectedChannel` idempotency. **BS**
+  (`641aa7d`) desktop drag-resize for both sidebars —
+  CSS-var grid template + localStorage persistence;
+  reusable `ResizeHandle` component. **BO** (`03a08f5`)
+  mobile scroll-leak fix — `touch-action: pan-y` on 6
+  `.shell-mobile` descendants (3 modals + home/admin
+  panes); CSS-only. **BH** (`0bd943a`) sidebar HTML
+  cleanup — drop `<section>` wrapper, lift `<details>`
+  archive alongside per-network `<ul.sidebar-network-section>`.
+  **BJ** (`fdea3b6`) kill "you've joined #channel"
+  splash row — duplicated TopicBar + MembersPane content
+  and stole vertical space on large channels; net −444
+  LOC. **BM** (`dd01dba`) mobile hamburger compress —
+  3 top-right buttons → 1 drawer-launcher trio; mutex
+  via setter-wrapping helpers in `lib/mobilePanel.ts`;
+  paired with security CVE bump `f003169` (bandit +
+  cowboy). **BV** (`4959c92`) mobile virtual-keyboard
+  react — extend UX-3 PENT `--viewport-height` to 7
+  mobile overlay surfaces + auto-close members drawer on
+  member-tap; recovers BM carry-debt by extending
+  existing primitive rather than introducing new lib.
+  **BD** (`38dc283`) uniform `max(1.5rem,
+  env(safe-area-inset-bottom))` floor across 4 mobile
+  overlay surfaces (settings + archive + image-upload +
+  members drawer); CSS-only. Cluster theme: mobile
+  polish for iPhone PWA dogfooding wave, with the
+  recurring meta-lesson that touch-action does NOT
+  inherit and CSS-only fixes for iOS rubber-band are
+  systematically broken — set up for the UX-6-A v1-v6
+  saga that finally landed a JS-handler solution.
 - **UX-4 — post-iPhone-dogfooding bug-hunt cluster** (closed
   2026-05-19). 14 production buckets A-N + Z (E2E backfill + docs).
   Plan-doc: `docs/plans/2026-05-18-ux-4-cluster.md`. Cluster theme:

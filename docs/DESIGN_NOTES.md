@@ -7190,6 +7190,125 @@ HOT cic-only — no Elixir touched. Bundle deploy via
 
 ---
 
+## 2026-05-22 — UX-6 cluster CLOSED + UX-5 backfill (UX-6-Z docs sweep)
+
+UX-6 ships in 11 production buckets (A–L minus H which merged into
+D2; plus Z this docs sweep) across `57cd88b`→`7625e13` (chronological)
+under autopilot mandate. UX-5 had closed two days
+earlier (15 buckets, `205262d`→`38dc283`) but its README entry was
+never written — per-bucket-update miss that the safety-net Z sweep
+is exactly for (lesson `feedback_readme_currency`). This entry
+documents (a) the cluster summary that README's "Closed clusters"
+section now carries, and (b) the cross-cluster meta-lessons that
+emerged.
+
+### UX-6 bucket inventory
+
+| Bucket | Commit | One-line |
+|--------|--------|----------|
+| A v1-v6 | `eeb551d` | mobile overlay scroll-leak + iOS PWA rubber-band — six iterations, final shape is custom 30-LOC touchmove handler walking ancestor chain |
+| B1 + B2 | `61269eb` + `1b2687f` | embedded image uploader (server stack + cic adapter + admin Settings tab) |
+| C | `31932b9` | admin button on mobile drawer footer |
+| D1-D12 | `e53000c` | iOS PWA keyboard saga — Telegram Web K pattern (`html.is-ios position: fixed` + body `calc(--vh*100)` + smart-pin); 11 attempts + 4 research agents |
+| E | `0867944` | narrow-mode BottomBar Server-tab dedup |
+| F | `91cbc32` | send button → SVG paper-plane glyph |
+| G | `a2de04e` | admin pane pan-x on mobile |
+| H | (merged into D2) | scrollback follows viewport-shrink |
+| I | `22ce80e` | cic refresh-banner single-press SW + caches saga |
+| J | `7625e13` | push notif tap opens source window (B5 carry-debt close) |
+| K | `dae54b8` | PM unread-marker advances on focus (cursor-validator divergence fix) |
+| L | `eb07e4b` | foreground push → in-app beep (SW-suppress Option B) |
+| Z | (this entry) | docs sweep + UX-5 backfill |
+
+### Meta-lessons surfaced cluster-wide
+
+1. **CSS-only iOS rubber-band fixes are systematically broken.**
+   UX-5-BO + UX-6-A v1+v2+v3 all attempted `touch-action`-only
+   solutions; all failed because `touch-action` is **non-inheriting**
+   (CSS UI L4 gotcha). The chain bit three iterations before
+   v4 introduced a JS layer (`body-scroll-lock-upgrade`); v6
+   converged on a custom 30-LOC touchmove handler that walks the
+   ancestor chain via DOM traversal. Lesson recorded:
+   `feedback_research_before_attempt_9` — after 3+ failed
+   iterations on platform-boundary bugs, STOP iterating and
+   dispatch parallel research agents.
+
+2. **Telegram Web K's iOS keyboard pattern works only when shipped
+   atomically.** UX-6-D had eleven attempts; the eight failed
+   variants partially adopted the Telegram pattern (e.g., `--vh`
+   without `html.is-ios`, smart-pin without touch gating). v9
+   `479b77d` adopted ALL pieces in one commit and the keyboard
+   stopped fighting compose-focus. Lesson:
+   `feedback_atomic_css_pattern` — Telegram-style patterns must
+   ship ALL pieces in ONE commit; partial adoption catastrophic.
+
+3. **B5 push deep-link carry-debt — half-shipped features hide in
+   moduledocs.** UX-6-J's root cause was an honest moduledoc in
+   `lib/grappa/push/payload.ex` that admitted "cic itself does NOT
+   parse `?network` / `?channel` on cold-load yet — B5 adds the SW
+   notificationclick handler + the main.tsx URL-param reader
+   together. Until then the URL ships in the payload but clicking
+   the OS notification just opens `/`." J finally shipped the
+   other half. Lesson: a TODO in a moduledoc is a cluster
+   candidate; file it immediately or it rots.
+
+4. **Server-side predicate divergence is invisible until something
+   reads BOTH paths.** UX-6-K root-caused a 422 on cursor write
+   when inbound DMs were persisted at `channel = own_nick, dm_with
+   = peer` (CP14-B3 shape). `Scrollback.fetch/6` used the OR-shape;
+   `ReadCursor.message_belongs?/4` used the literal `channel`
+   match. Fix: promote `channel_or_dm_where/3` from `defp` to
+   `def` and delegate. Per CLAUDE.md "Implement once, reuse
+   everywhere" — the duplication was the bug.
+
+5. **APNs quota tax is the right tradeoff at current scale.**
+   UX-6-L SW-suppress Option B (per vjt) sends every push even
+   when foreground; SW just suppresses display when
+   `visibilityState === 'visible'`. ~50% wasted at present;
+   acceptable. Hybrid follow-up (server-side
+   `WSPresence`-driven skip) NOT parked as TODO — re-evaluate if
+   push volume justifies engineering.
+
+### UX-5 backfill (15 buckets, closed 2026-05-20)
+
+Mobile-polish wave on iPhone PWA. See README "Closed clusters"
+entry for the per-bucket breakdown. The wave seeded UX-6: its
+final two buckets (BV `4959c92` extending UX-3 PENT viewport
+primitive; BD `38dc283` uniform safe-area-inset floor) tilled
+the soil for UX-6-A's overlay scroll-leak universal fix.
+
+### Carry-forwards (still open)
+
+- **UX-6-M (channel scroll position interference on switch)** —
+  parked pending vjt repro pattern. Likely related to
+  `ScrollbackPane` being reused via Solid `<Show>` non-keyed
+  across `selectedChannel` changes — `listRef.scrollTop`
+  survives the switch (intentional per UX-4-K's
+  `scrollToActivation`), but per-channel scroll position isn't
+  persisted/restored.
+- **UX-6-I.2 (real-bundle-swap e2e)** — current e2e stubs
+  `getRegistration` + `caches` and uses the `__refreshProbe`
+  seam; proves WIRING but not REAL SW + REAL precache behavior.
+  Meaningful e2e would deploy a 2nd bundle hash mid-session via
+  `compose run cicchetto-build` + `POST /admin/cic-bundle-changed`
+  and assert single-press convergence. Out of scope for I.
+- **Pre-existing baseline e2e failures** — `ux-4-z-cluster-journey:141`
+  (members-pane intercepts backdrop tap on webkit-iphone-15) and
+  `ux-z-cluster-journey:86` (archive `#bofh` row never renders).
+  Reproduce on `e53000c` baseline before any UX-6-E edits; both
+  flag mobile drawer + archive paths that may need a fix unrelated
+  to the originating buckets. Surface for the next investigation
+  pass.
+
+### Two accepted residuals (do NOT chase)
+
+1. Visible iOS keyboard slide-in animation (~250ms) — WKWebView
+   compositor below JS, unfixable in pure PWA. Capacitor escape
+   if priority rises.
+2. UX-6-M parked above pending vjt repro.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
