@@ -1580,6 +1580,13 @@ html.resize-dragging * {
   padding: 0.1rem 0;
 }
 
+.settings-diag-elems {
+  margin: 0.5rem 0 0;
+  font-size: 0.7rem;
+  word-break: break-all;
+  color: var(--accent);
+}
+
 .settings-drawer h2 {
   font-size: 1rem;
   font-weight: normal;

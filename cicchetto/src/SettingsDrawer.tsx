@@ -158,6 +158,14 @@ const SettingsDrawer: Component<Props> = (props) => {
   const [diagEventTick, setDiagEventTick] = createSignal(0);
   const [diagLastEvent, setDiagLastEvent] = createSignal<string>("(none)");
   const [diagFocusedTag, setDiagFocusedTag] = createSignal<string>("(none)");
+  // Element-height probes — added 2026-05-21 after v2 D2 fix failed
+  // on iPhone PWA. min-height:0 should let .scrollback shrink with
+  // the shell, but vjt reports it still doesn't. We need to see
+  // which element in the chain refuses to shrink: shellMobile,
+  // shellMain, scrollbackPane, or scrollback itself. Reading
+  // clientHeight + scrollHeight + computed minHeight reveals the
+  // exact stuck-point.
+  const [diagElems, setDiagElems] = createSignal<string>("(none)");
   // Ring buffer of recent (event, vv.h, win.h, delta) so transient
   // keyboard-slide oscillations are visible after-the-fact instead of
   // disappearing when the next event overwrites the latest snapshot.
@@ -196,10 +204,32 @@ const SettingsDrawer: Component<Props> = (props) => {
           }`
         : "(none)",
     );
+    // Probe the layout chain so we can see which element refuses to
+    // shrink when vv.height drops. Format: short tag = clientH
+    // (scrollH if different) [minH from computed style].
+    const probe = (sel: string): string => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) return `${sel}=∅`;
+      const cs = getComputedStyle(el);
+      const ch = el.clientHeight;
+      const sh = el.scrollHeight;
+      const tag = sel.replace(/[.#]/g, "").replace(/-/g, "").slice(0, 4);
+      const shStr = sh !== ch ? `/${sh}` : "";
+      return `${tag}=${ch}${shStr}[${cs.minHeight}]`;
+    };
+    const elemSummary = [
+      probe(".shell-mobile"),
+      probe(".shell-mobile .shell-main"),
+      probe(".scrollback-pane"),
+      probe(".scrollback"),
+      probe(".compose-box"),
+      probe(".bottom-bar"),
+    ].join(" ");
+    setDiagElems(elemSummary);
     const delta = winH - vvH;
     const line = `${eventName} vv=${Math.round(vvH)} win=${Math.round(winH)} Δ=${Math.round(
       delta,
-    )} cssVar=${document.documentElement.style.getPropertyValue("--viewport-height") || "(unset)"}`;
+    )} ${elemSummary}`;
     setDiagLog((prev) => [line, ...prev].slice(0, 20));
   };
 
@@ -720,6 +750,12 @@ const SettingsDrawer: Component<Props> = (props) => {
             <span>last event</span>
             <code data-testid="diag-last-event">{diagLastEvent()}</code>
           </div>
+          <details open>
+            <summary>element chain heights (clientH/scrollH [minH])</summary>
+            <p class="settings-diag-elems">
+              <code data-testid="diag-elems">{diagElems()}</code>
+            </p>
+          </details>
           <details>
             <summary>recent events (newest first)</summary>
             <ol class="settings-diag-log">
