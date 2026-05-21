@@ -1599,8 +1599,15 @@ html.resize-dragging * {
   /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
      `.settings-drawer` (see comment there). `.admin-pane` is mounted
      inside `.shell-main` → `.shell-mobile`; without re-asserting
-     `pan-y` here the admin tabs don't scroll on iPhone. */
-  touch-action: pan-y;
+     `pan-y` here the admin tabs don't scroll on iPhone.
+     UX-6-G (2026-05-21) — extended to `pan-x pan-y`. Admin tables
+     overflow viewport on narrow screens (sessions 656px, networks
+     631px, visitors 517px at iPhone 15 width 393px). The scrollbar
+     was rendered but the pan-x gesture was rejected by the ancestor's
+     `pan-y`-only declaration (touch-action is the cross-ancestor
+     INTERSECTION). Allowing pan-x here lets the operator swipe wide
+     admin tables sideways to read all columns. */
+  touch-action: pan-x pan-y;
   overscroll-behavior: contain;
 }
 
@@ -1670,13 +1677,25 @@ html.resize-dragging * {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* UX-6-G (2026-05-21) — admin tables (sessions 656px, networks 631px,
+     visitors 517px) exceed iPhone 15 content width (361px). Without
+     intra-panel `overflow-x: auto` the table widens the panel +
+     ancestors past viewport; with it, the table scrolls inside the
+     panel and pane chrome stays put. Pairs with `pan-x` in the
+     `touch-action` declaration below so the iOS pan-x gesture
+     actually moves the table sideways (browser-renders the scrollbar
+     either way; without `pan-x` upstream the gesture is rejected). */
+  overflow-x: auto;
   /* UX-5 BV — defensive keyboard-react cap (see `.home-pane` ~:3046). */
   max-height: var(--viewport-height, 100dvh);
   /* UX-5 BO (2026-05-19): nested scroll authority inside `.admin-pane`
      (which itself re-asserts `pan-y`); without this the gesture is
      routed by the parent and the nested tab content doesn't scroll
-     independently on iOS. */
-  touch-action: pan-y;
+     independently on iOS. UX-6-G (2026-05-21) — adds `pan-x` so wide
+     tables can be panned sideways; `.admin-pane` upstream was also
+     widened to `pan-x pan-y` so the cross-ancestor INTERSECTION
+     permits horizontal pan. */
+  touch-action: pan-x pan-y;
   overscroll-behavior: contain;
 }
 

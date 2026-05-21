@@ -10,6 +10,50 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-G LANDED 2026-05-21.** Admin pane horizontal scroll on
+mobile (vjt iPhone-dogfood: "horiz content there is a scrollbar but
+the content doesn't move"). Root cause: `.admin-pane` carried
+`touch-action: pan-y` (UX-5 BO defensive carve-out vs UX-3 PENT
+`.shell-mobile { touch-action: none }`). CSS spec: touch-action is
+the cross-ancestor INTERSECTION — even when a descendant declares
+`pan-x pan-y`, an ancestor `pan-y` clamps it back. Admin tables
+exceed iPhone 15 content width (sessions 656px, networks 631px,
+visitors 517px at 361px content area) — browser rendered the
+scrollbar but iOS rejected the pan-x gesture.
+
+Fix (CSS-only, 2 surfaces):
+- `.admin-pane` touch-action: `pan-y` → `pan-x pan-y` (relaxes the
+  ancestor ceiling so descendant pan-x can take effect).
+- `.admin-tab-panel` adds `overflow-x: auto` + touch-action
+  `pan-y` → `pan-x pan-y` (table scrolls inside the panel, not the
+  page; the panel owns gesture authority for pan-x).
+
+Cross-surface audit (per reviewer-loop NON-FINDING): settings-drawer,
+archive-modal, image-upload-modal, members-pane all retain pan-y-only
+because none carry wide tables — "Total consistency" means same
+problem → same solution, not blanket pan-x pan-y everywhere.
+
+Per `feedback_e2e_user_class_parity_matrix`: admin-gated EXEMPT.
+Spec runs the admin arm only; vjt is_admin promoted via PATCH /admin/
+users/:id (admin-vjt bearer) in beforeAll, reverted in afterEach —
+same shape as UX-6-C.
+
+Gates: 1529 vitest (88 files, no diff vs baseline — CSS-only) +
+scripts/check.sh exit-0 (8 doctests + 32 properties + 2312 tests +
+0 failures + 0 Dialyzer errors + Sobelow done + bats 23/23) + biome
+exit-0 (16 baseline warnings, my diff adds zero) + 3/3 ux-6-g
+Playwright (touch-action pan-x assertion on pane + each wide-table
+panel + positive-twin scrollW > clientW on networks + programmatic
+scrollLeft round-trip + negative-twin pan-y preserved).
+
+Reviewer-loop (general-purpose agent): SHIP-READY, 0 CRIT/HIGH/MED,
+2 LOW (uneven loop value-density + test 3's negative-twin is
+string-shape rather than behavioral — "polish, not blockers").
+
+Deploy: **HOT** (cic-only — no mix.lock / application.ex / migrations
+/ nginx / Dockerfile / long-lived GenServer state touched). Bundle
+deploy via `scripts/deploy-cic.sh`.
+
 **UX-6-F LANDED 2026-05-21.** Send button reshape: text "send" →
 inline SVG paper-plane glyph + `aria-label="send message"` (vjt
 iPhone-dogfood Bug 7). Mirrors modern messenger UX + frees ~30px
@@ -236,7 +280,7 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   tab on narrow. (This corresponds to interpretation (1) of the
   original 4-option PARK note.)
 - **UX-6-F — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-G** — admin horizontal scroll on mobile (was original B).
+- **UX-6-G — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-H** — MERGED INTO UX-6-D (D2 = "scrollback doesn't follow viewport-shrink on keyboard open"; same bug).
 - **UX-6-I** — cic refresh banner needs 3 presses after deploy.
 - **UX-6-J** — push notif tap doesn't open source window.
