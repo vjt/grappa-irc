@@ -25,9 +25,15 @@
 //   - B2 (2026-05-14): push + notificationclick listeners, dedup
 //     via clients.matchAll when a window is focused on the source
 //     URL.
+//   - UX-6-L (2026-05-20): broaden suppression gate to any visible
+//     window (drop focused-AND-URL-match). Foreground alerting is
+//     covered by an in-app beep wired in `lib/subscribe.ts`; this
+//     keeps the OS notification silent whenever cic is foreground,
+//     regardless of which channel is selected.
 
 import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
+import { shouldSuppressPush } from "./lib/pushDedup";
 import { narrowPushPayload, type PushPayload, urlMatches } from "./lib/pushPayload";
 
 declare const self: ServiceWorkerGlobalScope & {
@@ -86,24 +92,27 @@ self.addEventListener("push", (event: PushEvent) => {
 });
 
 async function handlePush(payload: PushPayload): Promise<void> {
-  // Dedup: if any window client is currently focused AND its URL
-  // matches the deep-link target (same pathname + query), suppress
-  // the OS notification and post a message into the page so cic can
-  // render an in-app badge instead. matchAll across all windows
-  // (includeUncontrolled: true) so a tab opened before the SW
-  // activated still counts.
+  // Dedup gate — UX-6-L (2026-05-20): if ANY window client is
+  // currently visible (focused tab in the foreground, regardless of
+  // which channel is selected), suppress the OS notification. The
+  // in-app beep wired in `lib/subscribe.ts` covers the foreground
+  // alert side, and a parallel OS notification on top would be
+  // noise.
+  //
+  // matchAll across all windows (includeUncontrolled: true) so a tab
+  // opened before the SW activated still counts.
+  //
+  // Per spec — server still sends every push (~50% wasted when
+  // foreground); APNs quota tax acceptable at current scale. Hybrid
+  // follow-up (server-side WSPresence + visibility-heartbeat
+  // fast-path skip with SW defensive re-check) parked until quota
+  // bites.
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,
   });
 
-  const matchingFocused = clients.find((client) => {
-    if (!client.focused) return false;
-    return urlMatches(client.url, payload.url);
-  });
-
-  if (matchingFocused) {
-    matchingFocused.postMessage({ type: "push.suppressed", payload });
+  if (shouldSuppressPush(clients)) {
     return;
   }
 

@@ -113,6 +113,10 @@ vi.mock("../lib/mentions", () => ({
   clearMentionsForKey: vi.fn(),
 }));
 
+vi.mock("../lib/beep", () => ({
+  playBeep: vi.fn(),
+}));
+
 vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: vi.fn(),
   closeQueryWindowState: vi.fn(),
@@ -2850,5 +2854,259 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
         expect.any(Function),
       );
     });
+  });
+});
+
+// UX-6-L (2026-05-20) — foreground push → in-app beep.
+//
+// `lib/beep.ts` is the audio surface. `subscribe.ts` calls
+// `playBeep()` at two sites: channel mention path (after
+// `bumpMention`'s gate) and DM-listener PRIVMSG/ACTION arrivals
+// (call-site BEFORE `routeMessage` so DM-routing logic doesn't
+// need to know about audio). Both sites are gated on
+// `!isEffectivelyFocused` so a selected+visible window doesn't beep.
+//
+// Negative cases mirror the existing mention-bump gates so a
+// regression in either path surfaces here first.
+describe("subscribe — UX-6-L foreground beep wiring", () => {
+  it("PRIVMSG mentioning own nick on non-selected channel calls playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 300, kind: "privmsg", body: "alice ping" });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("PRIVMSG without nick mention does NOT call playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 301, kind: "privmsg", body: "no mention here" });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  it("mention on the SELECTED+VISIBLE channel does NOT call playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 302, kind: "privmsg", body: "alice are you here" });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  it("presence event (join) does NOT call playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 303, kind: "join", sender: "carol", body: "" });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  it("own outbound PRIVMSG echo does NOT call playBeep (sender === ownNick gate)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    // Own PRIVMSG echo arriving on a non-selected channel. body
+    // contains own nick — mentionsUser would normally match — but
+    // own-echo + own-presence guards must keep playBeep silent.
+    fireMessageEvent("#grappa", {
+      id: 304,
+      kind: "privmsg",
+      sender: "alice",
+      body: "alice typed this",
+    });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  it("inbound DM via DM-listener calls playBeep (operator-targeted by definition)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    // Wait for the DM-listener subscription to land. The own-nick
+    // topic is the unambiguous identifier; index-into-mock-calls is
+    // fragile across other tests that leak module-state into
+    // windowStateByChannel / queryWindowsByNetwork (pending-channel
+    // loop adds a "#new-room" subscription as a 4th join).
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    // Find the DM-listener handler by matching its joinChannel call
+    // (own-nick topic = "freenode/alice"). The handler installed via
+    // phx.on("event", ...) for that channel is the DM-listener.
+    // Index-into-on.calls is order-dependent across the channels-loop /
+    // dm-listener-loop / $server-loop, so anchor on the joinChannel
+    // call order instead.
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 305,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "hey",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("self-msg echo on DM-listener (sender === ownNick) does NOT call playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    const api = await import("../lib/api");
+    vi.mocked(api.listNetworks).mockResolvedValue([
+      { id: 1, slug: "freenode", nick: "alice", inserted_at: "x", updated_at: "y" },
+    ]);
+    vi.mocked(api.listChannels).mockResolvedValue([
+      { name: "#grappa", joined: true, source: "autojoin" },
+    ]);
+    vi.mocked(api.me).mockResolvedValue({
+      kind: "user",
+      id: "u1",
+      name: "alice",
+      is_admin: false,
+      inserted_at: "x",
+    });
+    vi.mocked(api.listMessages).mockResolvedValue([]);
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    // Operator typed `/msg alice ...` — server echoes the self-msg on
+    // the own-nick topic. Sender === ownNick: must not beep (own action).
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 306,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "alice",
+        body: "talking to myself",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
   });
 });

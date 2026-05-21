@@ -6603,6 +6603,100 @@ on the original cluster prefix. Open the next cluster fresh only
 once docs catch up and a new bug-class emerges. The cluster ID is
 about narrative coherence, not commit count.
 
+## 2026-05-21 — UX-6-L: foreground push → in-app beep (SW-suppress Option B)
+
+Push notifications shipped in B2 (2026-05-14) with a focused-AND-URL-match
+dedup in the service worker: when cic was foreground AND on the exact
+deep-link target, the SW would suppress the OS notification and post a
+`push.suppressed` message to the page. In practice cic never wired a
+listener for that message — the suppression existed, but the page had
+no replacement signal that a mention/DM had arrived. Operators on
+iOS, accustomed to a sound cue from native chat apps, found the
+foreground experience eerily silent: the badge updated but nothing
+audibly confirmed it.
+
+vjt's decision (2026-05-20 iPhone dogfood wave): broaden the SW gate
+to suppress whenever **any** window is visible, regardless of URL,
+and surface the foreground alert as an **in-app beep** wired off the
+existing WS event stream rather than the push path.
+
+**Why decouple beep from push:**
+- The OS push path is best-effort + vendor-dependent; the WS path is
+  always-live when cic is foreground. Using the WS as the alert
+  trigger means the beep is independent of APNs/FCM latency,
+  vendor-side dedup, or quota-bound delivery delays.
+- The same `routeMessage` body that bumps the unread badge can fire
+  the beep — one gate, one source. No second policy layer to drift
+  from the badge gate (`feedback_silent_retry_anti_pattern` lesson:
+  parallel state machines diverge).
+
+**Surface 1 — SW broadened gate** (`lib/pushDedup.ts` +
+`service-worker.ts`). New pure predicate
+`shouldSuppressPush(clients): boolean` returning
+`clients.some(c => c.visibilityState === 'visible')`. Extracted into
+`lib/pushDedup.ts` so vitest can exercise it without instantiating
+the SW global scope — same boundary precedent as `lib/pushPayload.ts`
+(B2). Dropped the `push.suppressed` postMessage (dead letter, YAGNI
+per CLAUDE.md "Don't design for hypothetical future requirements").
+Kept `urlMatches` import because the `notificationclick`
+handler's `focusOrOpen` still uses it.
+
+**Surface 2 — WS-driven beep** (`lib/beep.ts` + wired in
+`lib/subscribe.ts`). New `playBeep()` using Web Audio
+`AudioContext` + `OscillatorNode` (sine 440Hz, 80ms, 0.1 gain).
+Lazy-init the context, guard for SSR/older browsers, swallow
+audio-context exceptions (non-fatal — the badge bump still surfaces
+the event). Wired at three call sites:
+- channel-mention path in `routeMessage` (after `bumpMention`),
+  gated additionally on `sender !== ownNick` so own-sent self-echoes
+  don't beep;
+- DM-listener PRIVMSG/ACTION arm (before `routeMessage`), gated on
+  `sender !== ownNick && !effectivelyFocused(slug, peer)`;
+- DM-listener peer NOTICE arm (same gate; `sender !== ownNick` is
+  already required by the surrounding branch).
+
+The focus predicate `effectivelyFocused(slug, windowName)` is
+extracted as a single source so the badge gate (in `routeMessage`)
+and the beep dispatch (DM-listener call sites) read the same rule.
+If the rule evolves (page-frozen check, last-seen-window heuristic,
+etc.) it changes in one place.
+
+**APNs/FCM quota caveat — accepted:** server still sends every push
+(~50% wasted when foreground; the SW just suppresses display).
+Acceptable at current scale; iOS APNs quota is generous and our
+user count is low. **Follow-up if quota bites:** hybrid (server
+consults WSPresence + a visibility-heartbeat fast-path skip when the
+client is foreground; SW retains the defensive visibility re-check
+as backstop in case server signal is stale). Not parked as a TODO —
+re-evaluate when push volume justifies the engineering. This is
+documented here in DESIGN_NOTES (not docs/todo.md) because it's a
+deliberate design accept, not a pending task.
+
+**e2e seam — `window.__cic_dmListenerReady` (Set\<string\>).**
+Stamped in the DM-listener `onJoinOk` callback after successful
+`phx.join()` ack. Added because the ux-6-l Playwright spec hit a
+~20% flake where the peer's PRIVMSG arrived server-side BEFORE cic's
+DM-listener subscription on the own-nick topic completed — server
+broadcast landed at a topic nobody was subscribed to, silently
+dropped, sidebar never auto-opened. The seam lets Playwright
+`waitForFunction(...)` deterministically on the WS subscription
+state. Same shape as `socket.ts:__cic_dropSocketForTests`.
+Production never reads it. Aligns with
+`feedback_silent_retry_anti_pattern`: surface internal state, don't
+mask races with timeouts.
+
+**Apply** (general lesson):
+- Foreground alerts in PWAs should NOT ride the OS-push path. WS-
+  driven beeps decouple from APNs/FCM and stay snappy regardless of
+  push vendor latency.
+- When a push surface drops a postMessage that has no listener,
+  delete the postMessage — don't preserve "in case someone wires it
+  later." Dead letters mask the design gap (the listener was never
+  the plan; the WS path was).
+- E2E specs against async WS subscriptions need an explicit
+  readiness seam. DOM signals are unreliable proxies for "the
+  socket join roundtrip completed."
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

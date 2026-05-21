@@ -2,6 +2,7 @@ import type { Channel } from "phoenix";
 import { createEffect, createRoot, on, untrack } from "solid-js";
 import { assertNever, type ChannelEvent, displayNick, ownNickForNetwork } from "./api";
 import { socketUserName, token } from "./auth";
+import { playBeep } from "./beep";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
@@ -122,6 +123,24 @@ createRoot(() => {
     }),
   );
 
+  // Effective focus = cicchetto-selected AND browser-tab visible+focused.
+  // A selected window in a hidden/blurred tab is NOT being read live —
+  // arrivals must accumulate as unread so the marker surfaces on return.
+  // Single source for the focus predicate so `routeMessage` (mention
+  // path) and the DM-listener call sites (beep dispatch) read the same
+  // rule — per CLAUDE.md "Implement once, reuse everywhere". If the
+  // rule evolves (page-frozen check, last-seen-window heuristic, etc.)
+  // it changes here only.
+  const effectivelyFocused = (slug: string, windowName: string): boolean => {
+    const sel = untrack(selectedChannel);
+    return (
+      sel !== null &&
+      sel.networkSlug === slug &&
+      sel.channelName === windowName &&
+      isDocumentVisible()
+    );
+  };
+
   // Shared message-routing body. Given a slug + the rendered window's
   // (key, displayName), drives every downstream side-effect for a
   // `kind: "message"` payload: scrollback append, presence apply,
@@ -196,13 +215,10 @@ createRoot(() => {
     // sidebar badge gate and the in-pane unread-marker stay aligned.
     if (isOperatorActionEcho(message)) return;
 
-    const sel = untrack(selectedChannel);
-    const isSelected = sel !== null && sel.networkSlug === slug && sel.channelName === displayName;
-    // Effective focus = cicchetto-selected AND browser-tab visible+focused.
-    // A selected window in a hidden/blurred tab is NOT being read live —
-    // arrivals must accumulate as unread so the marker surfaces on return.
-    const isEffectivelyFocused = isSelected && isDocumentVisible();
-    if (isEffectivelyFocused) {
+    // `effectivelyFocused` is the SINGLE source for the focus rule —
+    // see helper docblock at top of createRoot. The DM-listener call
+    // sites read the same predicate.
+    if (effectivelyFocused(slug, displayName)) {
       // No badge bump — the user is reading this window right now.
       // Cursor settling is owned by `selection.ts`'s focus-leave arm
       // (and the browser-blur arm); the WS handler doesn't touch the
@@ -223,10 +239,21 @@ createRoot(() => {
     // incoming mentions on the OPEN+focused channel don't double-signal (the
     // line itself gets .scrollback-mention highlight). A selected-but-
     // blurred window still bumps mentions — the user IS away.
+    //
+    // UX-6-L (2026-05-20): same gate fires the in-app beep — the
+    // foreground alert path complements the SW's visibility-anywhere
+    // OS-notification suppression (`lib/pushDedup.ts`). Diverges from
+    // `bumpMention` on ONE rule: beep is gated additionally on
+    // `sender !== ownNick`. Bumping unread for an own-sent echo
+    // (you switched windows mid-/msg) is correct semantically; an
+    // audible alert for your own typing would be annoying.
     if (message.kind === "privmsg") {
       const u = untrack(user);
       if (u && mentionsUser(message.body, displayNick(u))) {
         bumpMention(key);
+        if (!nickEquals(message.sender, ownNick)) {
+          playBeep();
+        }
       }
     }
   };
@@ -432,6 +459,22 @@ createRoot(() => {
             // for inbound (sender = other), it lands in sender's window.
             openQueryWindowState(networkId, message.sender, new Date().toISOString());
             const senderKey = channelKey(slug, message.sender);
+            // UX-6-L (2026-05-20) — inbound DM is operator-targeted by
+            // definition; beep at the call site so routeMessage's
+            // signature stays narrow (DM-specific audio policy is a
+            // DM-listener concern, not a shared-routing concern).
+            // `effectivelyFocused` is the single-source focus predicate
+            // (see helper at top of createRoot); anchor on the peer's
+            // window name (= message.sender for DMs).
+            //
+            // sender !== ownNick gate: own self-msg echoes ride this
+            // topic too; suppress the audible alert for own typing.
+            if (
+              !nickEquals(message.sender, ownNick) &&
+              !effectivelyFocused(slug, message.sender)
+            ) {
+              playBeep();
+            }
             routeMessage(slug, senderKey, message.sender, message, ownNick);
             return;
           }
@@ -454,6 +497,11 @@ createRoot(() => {
             // not the own-nick channel.
             openQueryWindowState(networkId, message.sender, new Date().toISOString());
             const senderKey = channelKey(slug, message.sender);
+            // UX-6-L (2026-05-20): peer NOTICEs are inbound DM-shaped
+            // traffic — same beep policy as the PRIVMSG/ACTION arm.
+            // The sender !== ownNick check above already gates this
+            // branch.
+            if (!effectivelyFocused(slug, message.sender)) playBeep();
             routeMessage(slug, senderKey, message.sender, message, ownNick);
             return;
           }
@@ -673,6 +721,22 @@ createRoot(() => {
         // existed yet) are not recovered by this design — deferred
         // edge case, documented here for traceability.
         void refreshScrollback(net.slug, ownNick);
+        // UX-6-L e2e seam: stamp the per-slug DM-listener ready set
+        // on window after a successful phx.join() ack. Playwright
+        // polls `__cic_dmListenerReady?.has(slug)` to await the
+        // subscription before driving a peer DM — eliminates the
+        // peer-arrives-before-cic-subscribed race (silent broadcast
+        // drop) that flaked the ux-6-l e2e ~20% in suite. Production
+        // never reads the property; same seam shape as
+        // `socket.ts:__cic_dropSocketForTests`. Mirrored in the
+        // channels-loop / query-window / $server loops would be
+        // overkill — only the DM-listener path has no other live
+        // DOM signal a test can latch onto pre-event.
+        if (typeof window !== "undefined") {
+          const w = window as Window & { __cic_dmListenerReady?: Set<string> };
+          if (!w.__cic_dmListenerReady) w.__cic_dmListenerReady = new Set();
+          w.__cic_dmListenerReady.add(net.slug);
+        }
       });
       installDmListenerHandler(phx, net.slug, net.id, ownNick);
       joined.set(key, phx);

@@ -10,6 +10,58 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-L LANDED 2026-05-21.** Foreground push → in-app beep
+(SW-suppress Option B per vjt 2026-05-20). Two surfaces:
+
+- **SW broadened gate** (`lib/pushDedup.ts` extracted as testable
+  predicate + `service-worker.ts:handlePush`). Suppresses OS
+  notification when any window is `visibilityState === 'visible'`,
+  dropping the pre-L focused-AND-URL-match dedup. Dropped the dead-
+  letter `push.suppressed` postMessage (no cic-side listener; YAGNI
+  per CLAUDE.md). Kept `urlMatches` for `focusOrOpen`.
+- **WS-driven in-app beep** (`lib/beep.ts` — Web Audio sine 440Hz,
+  80ms, 0.1 gain; lazy ctx + graceful no-op on unsupported envs).
+  Wired in `lib/subscribe.ts` at 3 sites:
+  - channel-mention path in `routeMessage` (after `bumpMention`,
+    additionally gated on `sender !== ownNick`);
+  - DM-listener PRIVMSG/ACTION arm (before `routeMessage`, gated
+    on `sender !== ownNick && !effectivelyFocused(slug, peer)`);
+  - DM-listener peer NOTICE arm (sender !== ownNick already
+    gated by surrounding branch).
+  Single-source focus predicate `effectivelyFocused(slug, name)`
+  extracted from `routeMessage` so badge gate + beep dispatch share
+  one rule.
+
+**E2E test seam** `window.__cic_dmListenerReady` (Set\<string\>)
+stamped in DM-listener `onJoinOk` after successful `phx.join()` ack.
+Eliminates ~20% flake where peer.privmsg landed server-side before
+cic's DM-listener subscription completed (silent broadcast drop).
+Production never reads it (same shape as
+`socket.ts:__cic_dropSocketForTests`).
+
+**APNs/FCM quota caveat** (DESIGN_NOTES 2026-05-21 entry): server
+still sends every push; SW just suppresses display when foreground.
+~50% wasted when foreground; acceptable at current scale. Hybrid
+follow-up (server WSPresence + visibility-heartbeat fast-path skip,
+SW defensive re-check) NOT parked as TODO — re-evaluate if push
+volume justifies engineering.
+
+Reviewer-loop: SHIP-READY. Findings addressed inline: MED-1
+(extracted `effectivelyFocused` single-source helper), MED-2
+(DESIGN_NOTES caveat entry), LOW-2 (renamed misleading test
+description). LOW-1 (3-site beep call multiplication) ruled
+non-actionable — each gate is genuinely different.
+
+Gates: 1523 vitest (1511 baseline + 12 new: 5 pushDedup + 7
+subscribe beep) + scripts/check.sh exit-0 + biome (16 pre-existing
+warnings + 2 pre-existing errors in BottomBar.test.tsx; my diff
+adds zero) + 3/3 ux-6-l Playwright × 5/5 consecutive runs (was
+4/5 BEFORE the `__cic_dmListenerReady` seam; 5/5 AFTER).
+
+Deploy: cic-only bundle (`scripts/deploy.sh` auto-classifies HOT +
+`scripts/deploy-cic.sh` for bundle hash broadcast). Server stays
+untouched.
+
 **UX-6-K LANDED 2026-05-21.** Server-side cursor-write validator
 predicate divergence from read-path. `Grappa.ReadCursor.message_belongs?/4`
 filtered `m.channel == ^channel` literal while `Grappa.Scrollback.fetch/6`
@@ -85,16 +137,7 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 - **UX-6-I** — cic refresh banner needs 3 presses after deploy.
 - **UX-6-J** — push notif tap doesn't open source window.
 - **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-L (NEW 2026-05-20)** — foreground push → in-app beep
-  (SW-suppress option B per vjt 2026-05-20). On push receipt SW
-  calls `clients.matchAll({type:'window'})` + checks
-  `visibilityState === 'visible'`; if yes return without
-  `showNotification`. Cic page beeps via WS-msg arrival hook
-  (independent of push path). Document caveat in DESIGN_NOTES +
-  UX-6-L bucket plan: server still sends every push (~50% wasted
-  when foreground); iOS APNs quota tax acceptable at current scale;
-  follow-up if quota bites = hybrid (server WSPresence + visibility-
-  heartbeat fast-path skip with SW defensive re-check).
+- **UX-6-L (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-Z** — docs sweep.
 
 **deploy.sh preflight GAP (discovered 2026-05-20 during B1 deploy).**
