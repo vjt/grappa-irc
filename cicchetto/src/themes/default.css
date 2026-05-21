@@ -2529,17 +2529,17 @@ html.resize-dragging * {
   }
 }
 
-/* UX-6 D9 floating diag overlay — bottom-right, fixed, click-through.
+/* UX-6 D11 floating diag overlay — top-right, fixed, click-through.
    Renders OUTSIDE the shell-mobile transform so its position tracks
    the layout viewport (deliberate — we want it visible above the
    on-screen keyboard for live convergence probing). Flag-gated via
    localStorage.cic_diag === "1" (toggle in SettingsDrawer).
-   Bottom-right (D9 move) since keyboard-open will obscure it
-   anyway; bottom-right is more naturally visible when keyboard
-   is closed. */
+   Top-right (D11 move back from D9's bottom-right) so the per-frame
+   probe log lines are visible while keyboard is open — bottom-right
+   was obscured by the keyboard. */
 .diag-float {
   position: fixed;
-  bottom: max(0.5rem, env(safe-area-inset-bottom));
+  top: max(0.5rem, env(safe-area-inset-top));
   right: 0.5rem;
   z-index: 99999;
   background: rgba(0, 0, 0, 0.85);
