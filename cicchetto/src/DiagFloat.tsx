@@ -141,6 +141,16 @@ const DiagFloat: Component = () => {
           vvH=<strong>{vvH()}</strong> winH={winH()} vvOT={vvOT()}
         </div>
         <div class="diag-float-line">
+          is-ios=
+          <strong>
+            {typeof document !== "undefined" &&
+            document.documentElement.classList.contains("is-ios")
+              ? "YES"
+              : "NO"}
+          </strong>{" "}
+          ua={typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 60) : "?"}
+        </div>
+        <div class="diag-float-line">
           --vh={cssOT()} ev={lastEv()} #{tick()}
         </div>
         <div class="diag-float-log">
