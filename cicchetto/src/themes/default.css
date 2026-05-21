@@ -2347,17 +2347,21 @@ html.resize-dragging * {
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  /* UX-6 bucket D v2 / D9 (2026-05-21) — D1 `:has(:focus){padding-
-     bottom:0}` REMOVED. With UX-6 D9's `html.is-ios { position:
-     fixed }` + `body { height: calc(var(--vh)*100) }` pinning the
-     layout viewport to visualViewport.height (which already
-     excludes the keyboard), collapsing safe-area inset on focus
-     double-counts: vv.height = visible-area-excluding-keyboard
-     ALREADY accounts for the keyboard occluding the bottom inset
-     region. With the rule in place, BottomBar would slide into
-     the area where the safe-area inset used to keep it above
-     non-keyboard home-indicator land. Lesson cost: see
-     docs/DESIGN_NOTES.md UX-6-D arc. */
+  /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
+     was wrong. Research claim "double-counts with position:fixed
+     html" was speculation; live diag from vjt's iPhone PWA 18.7
+     showed gap between BottomBar and keyboard top remained ~34px
+     (= env(safe-area-inset-bottom) home indicator inset) because
+     iOS doesn't shrink the safe-area inset when keyboard is up —
+     it reports a value relative to the device, not the visible
+     viewport. With `vv.height = visible-excluding-keyboard` AND
+     `padding-bottom: env(safe-area-inset-bottom)` together, we
+     reserved 34px above what was already correctly shrunken.
+     Collapsing the padding when a text input is focused
+     (`:has(textarea:focus, input:focus)`) closes the gap. */
+  .shell-mobile:has(textarea:focus, input:focus) {
+    padding-bottom: 0;
+  }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
      `var()` resolves to its fallback `100dvh`; on those browsers that
