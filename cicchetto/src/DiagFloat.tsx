@@ -29,12 +29,21 @@ export function setDiagEnabled(on: boolean): void {
 
 interface Snapshot {
   ev: string;
+  tgt: string;
   vvH: number;
   vvOT: number;
   winH: number;
   winY: number;
   dseT: number;
   sbT: number;
+  htmlSH: number;
+  htmlCH: number;
+  bodySH: number;
+  bodyCH: number;
+  rootSH: number;
+  rootCH: number;
+  posHtml: string;
+  posBody: string;
   cssOT: string;
   t: number;
 }
@@ -50,7 +59,7 @@ const DiagFloat: Component = () => {
   const [log, setLog] = createSignal<Snapshot[]>([]);
   const t0 = performance.now();
 
-  const snap = (ev: string): void => {
+  const snap = (ev: string, tgt = ""): void => {
     const vv = window.visualViewport;
     const h = vv?.height ?? 0;
     const ot = vv?.offsetTop ?? 0;
@@ -58,6 +67,11 @@ const DiagFloat: Component = () => {
     const wy = window.scrollY;
     const dse = document.scrollingElement?.scrollTop ?? -1;
     const cv = document.documentElement.style.getPropertyValue("--vh") || "(unset)";
+    const html = document.documentElement;
+    const body = document.body;
+    const root = document.getElementById("root");
+    const htmlCS = getComputedStyle(html);
+    const bodyCS = getComputedStyle(body);
     setVvH(h);
     setVvOT(ot);
     setWinH(wh);
@@ -68,12 +82,21 @@ const DiagFloat: Component = () => {
       [
         {
           ev,
+          tgt,
           vvH: h,
           vvOT: ot,
           winH: wh,
           winY: wy,
           dseT: dse,
           sbT: -1,
+          htmlSH: html.scrollHeight,
+          htmlCH: html.clientHeight,
+          bodySH: body.scrollHeight,
+          bodyCH: body.clientHeight,
+          rootSH: root?.scrollHeight ?? -1,
+          rootCH: root?.clientHeight ?? -1,
+          posHtml: htmlCS.position,
+          posBody: bodyCS.position,
           cssOT: cv,
           t: Math.round(performance.now() - t0),
         },
@@ -96,7 +119,12 @@ const DiagFloat: Component = () => {
     const onResize = () => snap("win.resize");
     const onVvResize = () => snap("vv.resize");
     const onVvScroll = () => snap("vv.scroll");
-    const onFocusIn = () => snap("focusin");
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase() ?? "?";
+      const cls = t?.className ? `.${String(t.className).slice(0, 20)}` : "";
+      snap("focusin", `${tag}${cls}`);
+    };
     const onFocusOut = () => snap("focusout");
     // UX-6 D8 (2026-05-21) — instrument window.scroll for the 1-3s
     // scroll-lock investigation. vjt reports a freeze on drag-to-
@@ -157,7 +185,12 @@ const DiagFloat: Component = () => {
           <For each={log()}>
             {(s) => (
               <div>
-                {s.t}ms {s.ev} vvH={s.vvH} vvOT={s.vvOT} wy={s.winY} dseT={s.dseT}
+                {s.t}ms {s.ev}
+                {s.tgt ? `[${s.tgt}]` : ""} vvH={s.vvH} vvOT={s.vvOT} wy={s.winY} dseT={s.dseT}
+                {" | "}html=
+                <strong>{s.posHtml}</strong>
+                {s.htmlSH}/{s.htmlCH} body={s.posBody}
+                {s.bodySH}/{s.bodyCH} root={s.rootSH}/{s.rootCH}
               </div>
             )}
           </For>

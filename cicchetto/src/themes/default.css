@@ -2545,7 +2545,7 @@ html.resize-dragging * {
   font-family: var(--font-mono);
   font-size: 0.7rem;
   line-height: 1.2;
-  max-width: 18rem;
+  max-width: 24rem;
   pointer-events: none;
   user-select: none;
 }
