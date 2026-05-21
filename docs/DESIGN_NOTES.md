@@ -7030,6 +7030,166 @@ Parked as UX-6-I.2; out of scope for I.
    in a recovery action defeats the recovery — `console.warn` gives
    the operator something to grep for when the bug reappears.
 
+---
+
+## 2026-05-22 — UX-6-J: push notif tap opens source window (B5 carry-debt close)
+
+vjt iPhone-dogfood Bug 10: tapping an OS push notification on the
+home screen / lock screen opened cic to the LAST-viewed window rather
+than the channel/DM the push referenced.
+
+### Root cause
+
+Push cluster B4 (2026-05-14) built the deep-link URL into push
+payloads — `Grappa.Push.Payload.build_url/2` writes
+`/?network=<slug>&channel=<percent-encoded>` and the SW carries it
+through to `notificationclick`. B5 then half-shipped the cic side:
+the SW handler ran `existing.navigate(url)` on the focused client,
+but cic is an SPA — every route resolves to `index.html`, selection
+state lives in the `selectedChannel` signal (NOT the router), so
+`navigate(url)` reloaded the SPA at `/` and the deep-link query
+params were dropped on the floor.
+
+The payload.ex moduledoc actually admits the gap at lines 38-50:
+> "cic itself does NOT parse `?network` / `?channel` on cold-load yet
+> — B5 adds the SW notificationclick handler + the main.tsx URL-param
+> reader together. Until then the URL ships in the payload but
+> clicking the OS notification just opens `/`."
+
+J finishes the other half.
+
+### Fix — Option A (SW postMessage to focused client)
+
+Two architectural choices were considered:
+
+**A — postMessage SW→client.** SW posts the payload's target to the
+focused client; cic listens on `navigator.serviceWorker` for
+`message` events and routes through `setSelectedChannel`. SPA
+architecture preserved; one extra global subscription.
+
+**B — URL becomes the source of truth for deep links.** Boot-time
+`location.pathname` parser feeds `setSelectedChannel`. Cleaner
+long-term shape; bigger refactor, couples selection to history API.
+
+A picked for J as minimum-surface, principle-aligned with the rest
+of the UX-6 cluster. B remains a future Y/Z cleanup if richer
+URL-driven navigation is ever needed.
+
+### Implementation
+
+* `service-worker.ts notificationclick`: after `existing.focus()`,
+  call `existing.postMessage({type: "navigate", url})` instead of
+  `existing.navigate(url)`. The dedup-by-URL check (`urlMatches`)
+  becomes dead code (the postMessage IS the navigation) and is
+  deleted with its vitest coverage.
+
+* NEW `lib/pushTarget.ts`:
+  - `parsePushTargetUrl` (in `pushPayload.ts`) extracts
+    `{networkSlug, channelName, kind}` from the URL. `kind` follows
+    RFC 2812 chanstring sigils `#&!+` → `"channel"`, otherwise →
+    `"query"` (DM target). Mirrors `Grappa.Push.Payload.build_url/2`
+    + `Grappa.IRC.Identifier.canonical_channel/1` on the server.
+  - `applyPushTarget(rawUrl)` parses + calls existing
+    `setSelectedChannel`. Same code path as a sidebar click — UX-4
+    bucket D / E reactivity + UX-5 BU tuple-equality + subscribe.ts
+    join effects all fire automatically off the signal. Parse
+    failures `console.warn` per `feedback_no_silent_drops_*`.
+  - `installPushTargetListener()` wires the SW → client `message`
+    channel (warm path: cic was already running). Defensive against
+    non-SW envs (vitest, privacy modes).
+  - `applyPushTargetFromUrl()` cold path: when the SW called
+    `openWindow(url)` on a not-yet-running client, the URL ships the
+    deep-link params but there's no message handshake (page hasn't
+    installed the listener yet). Reads `location.href` at boot, defers
+    via `createEffect(on(networks, ...))` so `setSelectedChannel`
+    doesn't fire against an empty store. Wrapped in `createRoot`
+    because `main.tsx` calls it BEFORE `render()` — Solid warns +
+    never disposes on `createEffect` outside a reactive owner. Cleans
+    the URL via `history.replaceState({}, "", "/")` after apply so
+    refresh doesn't re-trigger.
+  - Test seam `window.__cicPushTargetApplied` lets the e2e cold-path
+    spec prove the new reader fired (rather than a session-restore
+    code path coincidentally landing the same channel).
+
+* `main.tsx`: `installPushTargetListener()` + `applyPushTargetFromUrl()`
+  at boot, alongside the other `applyXFromStorage` pre-render hooks.
+
+### Reviewer-loop
+
+General-purpose agent: SHIP-READY, 0 CRIT/HIGH. Four findings fixed
+inline before commit:
+
+* **M1 (createRoot wrap).** `createEffect` outside a reactive owner
+  warns + never disposes. `main.tsx` calls `applyPushTargetFromUrl`
+  before `render()`, so the cold-path effect was orphaned. Wrapped
+  in `createRoot(() => createEffect(...))` — the root is intentionally
+  never disposed since the cold-path is module-singleton and one-shot.
+* **M2 (discriminating cold-path probe).** Without the
+  `__cicPushTargetApplied` flag, the cold-path e2e could pass for
+  the wrong reason (session restore lands on the same channel). The
+  probe lets the spec `waitForFunction` on the flag, proving the
+  new reader fired.
+* **L1 (silent-swallow on parse fail).** Per
+  `feedback_no_silent_drops_*`, added `console.warn` on
+  `applyPushTarget(rawUrl)` parse failures. Future malformed-payload
+  bug surfaces in devtools instead of degrading to "click did
+  nothing."
+* **L2 (URL residual).** `history.replaceState({}, "", "/")` after
+  successful cold-path apply. Refresh doesn't re-trigger the cold-path
+  read; URL stays clean for share-link ergonomics.
+
+NON-FINDINGS covered placeholder URL base idiom, postMessage spoofing
+(SW message channel is same-origin per spec), DM-kind discriminator
+matching `Push.Payload.build/3`'s DM branch, `clients[0]` vs the
+pre-J `urlMatches`-find regression risk (cic is PWA-shape, one tab
+per UA; even multi-tab, focus-then-post routes selection identically),
+and e2e `dispatchEvent` vs real-SW-post (`navigator.serviceWorker`
+is an EventTarget — `dispatchEvent(new MessageEvent('message', …))`
+exercises the same handler).
+
+### Gates
+
+* 1560 vitest passed (1542 baseline + 12 pushTarget + 11
+  parsePushTargetUrl - 5 urlMatches dropped). Covers happy / malformed
+  / missing-param paths + listener message filter + console.warn
+  no-silent-drop discipline.
+* `scripts/check.sh` EXIT=0 (2312 ExUnit + 0 Dialyzer/Credo/Sobelow +
+  doctor green + bats 23/23 + 8 doctests + 32 properties).
+* biome 21 warnings (baseline, diff adds zero) + 0 errors.
+* 3/3 ux-6-j Playwright on chromium-desktop: warm-path postMessage
+  flips selection, warm-path malformed URL is a safe no-op, cold-path
+  goto with deep-link routes selection + cleans URL + sets probe flag.
+
+### Deploy
+
+HOT cic-only — no Elixir touched. Bundle deploy via
+`scripts/deploy-cic.sh`.
+
+### Lessons
+
+1. **Half-shipped clusters bite later.** B4 + B5 (2026-05-14) shipped
+   the server-side payload + the SW handler skeleton but stopped
+   short of the cic URL reader. The moduledoc honestly flagged the
+   gap, but the gap was easy to forget until vjt actually tapped a
+   notification on iPhone. Cluster review discipline: when a moduledoc
+   says "X is coming in a later sub-task", make sure the later
+   sub-task actually lands before the cluster closes.
+2. **SPA navigation state ≠ URL state.** cic is a route-less SPA —
+   the selection signal IS navigation. Any push / deep-link /
+   share-link feature has to either feed the signal directly OR
+   pivot the architecture to URL-as-truth. The B5 SW handler tried
+   to do URL-as-truth without committing to it; the result was a
+   silent no-op. UX-6-J went with signal-as-truth + URL-as-input
+   for the same reason BR + BC + BK in the UX-5 cluster did:
+   minimum surface, principle alignment, no router refactor.
+3. **`createEffect` outside `createRoot` is a silent footgun.** Solid
+   warns, but the warning landed in our cold-path test pass because
+   the e2e was loose enough to be non-discriminating. The reviewer
+   probe pattern — explicit window-flag assertion — is reusable for
+   any boot-time effect that conditionally fires.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

@@ -402,36 +402,41 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   (`compose run cicchetto-build` + `POST /admin/cic-bundle-changed`)
   and assert single-press convergence. Out of scope for I; file as a
   cluster follow-up.
-- **UX-6-J — IN PROGRESS 2026-05-22** — push notif tap doesn't open
-  source window. Root cause confirmed by reading
-  `lib/grappa/push/payload.ex` moduledoc lines 38-50: "cic itself does
-  NOT parse `?network` / `?channel` on cold-load yet — B5 adds the SW
-  notificationclick handler + the main.tsx URL-param reader together.
-  Until then the URL ships in the payload but clicking the OS
-  notification just opens `/`." B5 shipped only HALF: SW handler runs
-  `existing.navigate(url)` (full SPA reload to `/`) but cic never
-  parses the URL. Option A pre-blessed by orchestrator (postMessage
-  SW→client). Plan:
-  - `lib/pushPayload.ts` gains `parsePushTargetUrl/1` → returns
-    `{networkSlug, channelName, kind}` where kind = "channel" if
-    name starts with `#`/`&`/`!`/`+` else "query". Verified with
-    extended vitest in `__tests__/pushPayload.test.ts`.
-  - NEW `lib/pushTarget.ts` — warm-path listener
-    (`installPushTargetListener`) wires `navigator.serviceWorker.
-    addEventListener('message', ...)` → dispatches typed
-    `{type: 'navigate', url}` messages to `applyPushTarget`. Cold-path
-    `applyPushTargetFromUrl` reads `location.search` at boot, defers
-    `setSelectedChannel` until networks() seed (one-shot effect).
-  - `service-worker.ts notificationclick` → post `{type: 'navigate',
-    url}` to focused client AFTER `existing.focus()`. Drop the broken
-    `existing.navigate(url)` call. openWindow path unchanged — URL
-    carries the params; cic's cold-path reader picks them up.
-  - `main.tsx` adds `installPushTargetListener()` + `applyPushTargetFromUrl()`
-    at boot.
-  - vitest + 1 e2e (warm-path postMessage simulation via
-    `__cic_simulatePushNavigate` test seam OR direct dispatch on
-    navigator.serviceWorker if feasible) + 1 e2e (cold-path
-    location.search reader).
+- **UX-6-J — LANDED 2026-05-22.** Push notif tap opens source window.
+  Root cause was a B5 (2026-05-14) carry-debt: SW notificationclick
+  ran `existing.navigate(url)` on the focused client, but cic is an
+  SPA so `navigate(url)` reloaded the SPA at `/` and dropped the
+  deep-link query params. Server has been building correct URLs
+  (`/?network=<slug>&channel=<percent-encoded>`) since B4; the cic
+  URL reader simply never shipped.
+
+  Fix (Option A — postMessage SW→client):
+  - `service-worker.ts notificationclick`: after `existing.focus()`,
+    call `existing.postMessage({type: "navigate", url})`. Drops the
+    broken `existing.navigate(url)` + the now-dead `urlMatches`
+    dedup-by-URL check.
+  - NEW `lib/pushTarget.ts`: `applyPushTarget` parses URL →
+    `setSelectedChannel` (same code path as a sidebar click);
+    `installPushTargetListener` wires the SW→client message channel
+    (warm path); `applyPushTargetFromUrl` reads `location.href` at
+    boot, defers via `createRoot(createEffect(on(networks, ...)))`
+    so selection doesn't fire against an empty store (cold path).
+    Cleans the URL via `history.replaceState` after apply.
+  - NEW `parsePushTargetUrl` in `pushPayload.ts`: extracts
+    `{networkSlug, channelName, kind}`. `kind` follows RFC 2812
+    sigils `#&!+` → `"channel"` else `"query"` (DM).
+  - `main.tsx`: boot-wires both listeners pre-render.
+  - Test seam `window.__cicPushTargetApplied` for e2e
+    discriminating cold-path probe.
+
+  Reviewer-loop: SHIP-READY, 0 CRIT/HIGH. M1 (createRoot wrap) + M2
+  (cold-path probe) + L1 (console.warn on parse fail) + L2
+  (history.replaceState URL cleanup) all fixed inline.
+
+  Gates: 1560 vitest passed + biome exit-0 (21 baseline warnings + 0
+  errors) + scripts/check.sh exit-0 (2312 ExUnit + 0 Dialyzer/Credo/
+  Sobelow + doctor green + 8 doctests + 32 properties + bats 23/23) +
+  3/3 ux-6-j Playwright chromium-desktop. Deploy: HOT cic-only.
 - **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-L (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-M (NEW 2026-05-21, post-D close)** — channel scroll
