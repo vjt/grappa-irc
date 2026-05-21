@@ -70,8 +70,9 @@ test("@webkit BUG7 — own message visible in scrollback after iOS-shaped compos
   await ta.pressSequentially(MESSAGE_BODY, { delay: 20 });
 
   // Submit. On iOS the user taps a "send" button (no Enter on virtual
-  // keyboard); locate the button by its accessible label and tap it.
-  const sendButton = page.locator(".compose-box button", { hasText: /^send$/i });
+  // keyboard); locate by accessible name (UX-6-F replaced text label
+  // with ➤ glyph but kept aria-label="send message").
+  const sendButton = page.getByRole("button", { name: /send message/i });
   await sendButton.tap();
 
   // Compose box clears on successful submit (compose.ts post-send draft

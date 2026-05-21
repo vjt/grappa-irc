@@ -230,8 +230,32 @@ const ComposeBox: Component<Props> = (props) => {
           rows={1}
           aria-label="compose message"
         />
-        <button type="submit" disabled={sending() || getDraft(key()).trim() === ""}>
-          send
+        {/* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
+            preserve a11y + byRole queries. SVG (not Unicode ➤) so the
+            glyph survives Linux/Windows font-stack fallback — `.compose-box
+            button` inherits `--font-mono` whose Consolas/Liberation/DejaVu
+            members lack Dingbats-block codepoints. Matches the camera-
+            icon SVG precedent on the sibling picker button. */}
+        <button
+          type="submit"
+          aria-label="send message"
+          disabled={sending() || getDraft(key()).trim() === ""}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            data-testid="compose-send-glyph"
+          >
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
         </button>
       </form>
       <Show when={uploadState(key())}>

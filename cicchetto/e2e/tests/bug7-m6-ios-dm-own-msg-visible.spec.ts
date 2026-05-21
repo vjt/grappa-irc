@@ -47,7 +47,7 @@ test("@webkit BUG7-M6 — cicchetto /msg DM own-msg visible on iOS-shaped input"
     await ta.tap();
     await ta.pressSequentially(`/msg ${PEER_NICK} ${MESSAGE_BODY}`, { delay: 20 });
 
-    const sendButton = page.locator(".compose-box button", { hasText: /^send$/i });
+    const sendButton = page.getByRole("button", { name: /send message/i });
     await sendButton.tap();
     await expect(ta).toHaveValue("", { timeout: 5_000 });
 

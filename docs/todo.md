@@ -10,6 +10,44 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-F LANDED 2026-05-21.** Send button reshape: text "send" →
+inline SVG paper-plane glyph + `aria-label="send message"` (vjt
+iPhone-dogfood Bug 7). Mirrors modern messenger UX + frees ~30px
+horizontal on the crowded compose row.
+
+SVG (not Unicode codepoint) chosen post-reviewer MED-1: `.compose-box
+button` inherits `--font-mono` (ui-monospace, SF Mono, Menlo,
+Consolas, Liberation Mono, monospace) whose Linux/Windows members
+lack Dingbats-block coverage. U+27A4 (➤) would tofu on those OSes
+silently — `textContent` assertions only see the source codepoint,
+not the rendered glyph. SVG with `stroke="currentColor"` matches the
+sibling camera-icon precedent at ComposeBox.tsx:209-222 — same 24x24
+viewBox + 16x16 box + Feather-style attrs. Theme-agnostic.
+
+a11y: pre-bucket the button had no aria-label — `byRole({name: /send/i})`
+resolved via "send" textContent. Post-bucket aria-label preserves
+screen-reader name + Playwright `getByRole({name})` matching. Two
+existing e2e specs (bug7-ios-own-msg-visible, bug7-m6-ios-dm-own-msg-visible)
+switched from `hasText: /^send$/i` to `getByRole({name: /send message/i})`.
+
+Gates: 2312 ExUnit + 0 Dialyzer/Credo/Sobelow + doctor green + 1529
+vitest (1528 baseline + 1 new UX-6-F glyph case) + biome exit-0
+(16 baseline warnings) + 3/3 e2e (1 ux-6-f @webkit + 2 bug7 regression
+re-runs) + bats 23/23.
+
+Reviewer-loop (general-purpose agent): re-review APPROVE 0/0/0/0
+after SVG swap. First pass flagged MED-1 (font-tofu) + MED-2 (vitest
+permissive) + LOW-1/2/3 (over-comment + redundant desktop e2e + dead
+title=) — all 5 resolved inline before commit. Hard lesson: the
+reviewer caught a font-fallback class that `textContent` e2e
+assertions couldn't see — `feedback_cicchetto_browser_smoke` covers
+layout but NOT rendered-glyph fidelity. Pre-reviewer single-codepoint
+e2e was green AND broken.
+
+Deploy: **HOT** (cic-only — no mix.lock / application.ex / migrations
+/ nginx / Dockerfile / long-lived GenServer state touched). Bundle
+deploy via scripts/deploy-cic.sh.
+
 **UX-6-C LANDED 2026-05-21.** Admin button in mobile drawer footer
 (vjt iPhone-dogfood Bug 3). Pre-bucket the mobile launcher footer
 (UX-5 BM) hosted only settings + archive; admins had to open the
@@ -188,7 +226,7 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   CDP confirms 73px Server tab eats real horizontal width on mobile
   (393px viewport, 5+ tabs per network), but the FIX SHAPE differs
   5x across interpretations. Halt-for-Q rather than guess.
-- **UX-6-F** — send button → arrow glyph (Bug 7).
+- **UX-6-F — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-G** — admin horizontal scroll on mobile (was original B).
 - **UX-6-H** — scrollback doesn't follow viewport-shrink on keyboard open.
 - **UX-6-I** — cic refresh banner needs 3 presses after deploy.

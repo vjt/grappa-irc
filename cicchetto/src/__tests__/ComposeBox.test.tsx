@@ -80,6 +80,21 @@ describe("ComposeBox", () => {
     expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
   });
 
+  // UX-6 bucket F (2026-05-21) — send button reshaped: aria-label +
+  // SVG paper-plane glyph (vjt iPhone-dogfood Bug 7). SVG (not a
+  // Unicode codepoint) so the glyph survives Linux/Windows monospace
+  // font-stack fallback — `.compose-box button` inherits `--font-mono`
+  // whose Consolas/Liberation/DejaVu members lack Dingbats glyphs.
+  it("UX-6-F — send button uses SVG glyph + aria-label, NOT literal 'send' text", () => {
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const btn = screen.getByRole("button", { name: /send message/i });
+    expect(btn.getAttribute("aria-label")).toMatch(/send message/i);
+    // Visible label is the SVG glyph, not text. Pre-bucket textContent
+    // was "send"; post-bucket it's empty (SVG children carry no text).
+    expect(btn.textContent?.trim()).toBe("");
+    expect(btn.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+  });
+
   it("typing fires compose.setDraft", async () => {
     const compose = await import("../lib/compose");
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
