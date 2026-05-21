@@ -14,10 +14,11 @@ import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
+import { applyIosClass } from "./lib/platform";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
-import { installScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
+import { installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -37,6 +38,13 @@ applyFontSizeFromStorage();
 // flash from default 16rem/14rem → stored values as Shell mounts.
 applySidebarWidthsFromStorage();
 
+// UX-6 D9 — apply `html.is-ios` class so default.css's
+// iOS-specific rules (`html.is-ios { position: fixed }` etc.) match.
+// Pre-render so the first frame has the correct layout — without
+// the pre-paint, iOS shell briefly renders in non-fixed layout
+// then reflows.
+applyIosClass();
+
 // UX-3 PENT — VisualViewport-driven height tracking. Writes
 // `--viewport-height: <px>` on <html> and re-writes on every
 // visualViewport.resize event. `.shell.shell-mobile` reads the var
@@ -46,14 +54,17 @@ applySidebarWidthsFromStorage();
 // of view. Boot-time so the first frame already has the var.
 installViewportHeightTracker();
 
-// UX-3 OCT — pin window scroll. iOS auto-scrolls on input focus
-// even when the input is already visible (the scroll-into-view path
-// is programmatic, bypassing body { overflow: hidden }). The
-// listener catches every scroll attempt and snaps back to (0, 0)
-// before paint, so the app chrome never drifts. UX-6 D7 dropped
-// this on a wrong hypothesis; D8 restored after vjt saw
-// vvOffsetTop > 0 the moment it was missing.
-installScrollPin();
+// UX-6 D9 (2026-05-21) — `installScrollPin` removed for good. After 8
+// failed CSS+JS iterations on this surface, parallel research
+// confirmed `window.scrollTo(0,0)` on every scroll event is the
+// direct cause of the 1-3s scroll lock vjt was reporting (WebKit
+// bug #226689 — during momentum scroll, scrollTo retriggers scroll
+// events, iOS quarantines further scroll for 1-3s as a fight-
+// detection heuristic). The platform-correct primitive is
+// `html.is-ios { position: fixed }` PAIRED with
+// `body { height: calc(var(--vh)*100) }` in default.css — pins
+// the layout viewport so iOS cannot scroll the chrome out of view
+// without any JS scroll-pin.
 
 // UX-3 preserve-keyboard — single document-level capture listener.
 // When compose <input> has focus and the user taps anywhere that

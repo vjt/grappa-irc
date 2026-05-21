@@ -57,10 +57,7 @@ const DiagFloat: Component = () => {
     const wh = window.innerHeight;
     const wy = window.scrollY;
     const dse = document.scrollingElement?.scrollTop ?? -1;
-    const sb =
-      (window as unknown as { __cic_scrollback?: HTMLDivElement }).__cic_scrollback?.scrollTop ??
-      -1;
-    const cv = document.documentElement.style.getPropertyValue("--vv-offset-top") || "(unset)";
+    const cv = document.documentElement.style.getPropertyValue("--vh") || "(unset)";
     setVvH(h);
     setVvOT(ot);
     setWinH(wh);
@@ -76,7 +73,7 @@ const DiagFloat: Component = () => {
           winH: wh,
           winY: wy,
           dseT: dse,
-          sbT: sb,
+          sbT: -1,
           cssOT: cv,
           t: Math.round(performance.now() - t0),
         },
@@ -141,16 +138,16 @@ const DiagFloat: Component = () => {
     <Show when={enabled()}>
       <div class="diag-float" data-testid="diag-float">
         <div class="diag-float-headline">
-          vvOT=<strong>{vvOT()}</strong> vvH={vvH()} winH={winH()}
+          vvH=<strong>{vvH()}</strong> winH={winH()} vvOT={vvOT()}
         </div>
         <div class="diag-float-line">
-          css={cssOT()} ev={lastEv()} #{tick()}
+          --vh={cssOT()} ev={lastEv()} #{tick()}
         </div>
         <div class="diag-float-log">
           <For each={log()}>
             {(s) => (
               <div>
-                {s.t}ms {s.ev} vvOT={s.vvOT} vvH={s.vvH} wy={s.winY} dseT={s.dseT} sbT={s.sbT}
+                {s.t}ms {s.ev} vvH={s.vvH} vvOT={s.vvOT} wy={s.winY} dseT={s.dseT}
               </div>
             )}
           </For>

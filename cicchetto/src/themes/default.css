@@ -142,6 +142,39 @@ body {
   overscroll-behavior: none;
 }
 
+/* UX-6 D9 (2026-05-21) — iOS-only layout-viewport pin. This is the
+   Telegram Web K pattern (https://github.com/morethanwords/tweb
+   src/scss/base.scss) for keeping the iOS on-screen keyboard from
+   scrolling app chrome out of view. `position: fixed` on <html>
+   pins the layout viewport so iOS's focused-input auto-scroll path
+   has nothing to scroll. Paired with `body { height: calc(var(--vh)
+   * 100) }` where `--vh` is `visualViewport.height * 0.01` (px),
+   updated on every vv.resize by lib/viewportHeight.ts.
+
+   ATOMIC RULE: both pieces ship together. `position: fixed` on
+   <html> alone leaves the page with no defined height (body's
+   100% resolves against fixed html's 0px) and breaks. The --vh
+   driven body height is the height source of truth on iOS.
+
+   Scope to iOS via `html.is-ios` (applied at boot by
+   lib/platform.ts) — applying these rules on Android Chrome /
+   desktop where the keyboard ALREADY resizes the layout viewport
+   would double-shrink the body and produce a gap. iOS is the only
+   platform where layout-viewport doesn't react to keyboard.
+
+   Lesson cost: 8 iterations (UX-6-D v1-v8). See docs/DESIGN_NOTES.md
+   for the catastrophe-and-redemption arc. */
+html.is-ios {
+  position: fixed;
+  inset: 0;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html.is-ios body {
+  height: calc(var(--vh, 1vh) * 100);
+}
+
 /* UX-6 bucket A (2026-05-20) — overlay scroll-lock sentinel. The class
    `overlay-open` lands on `<html>` (root) whenever any mobile overlay
    is open (members drawer, settings drawer, archive modal, image-upload
@@ -2314,32 +2347,17 @@ html.resize-dragging * {
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  /* UX-6 bucket D v2 (2026-05-21) — keyboard-open inset collapse via
-     `:has(:focus)` instead of JS-driven class. v1 attempted to
-     compute keyboard state from `window.innerHeight -
-     visualViewport.height > 150` and toggle `html.keyboard-open`,
-     but on-device diagnostic data from vjt's iPhone PWA standalone
-     showed `window.innerHeight === visualViewport.height` (both
-     track together; Δ stays 0). The threshold approach was
-     structurally impossible to trigger on PWA standalone.
-
-     `:has()` matches synchronously off the actual focus state —
-     no resize listeners, no class flicker during keyboard slide-in,
-     no event handlers in the hot path. When the operator focuses
-     a textarea or input inside `.shell-mobile`, iOS shows the
-     keyboard AND this selector matches AND padding-bottom
-     collapses to 0 so BottomBar sits flush against the keyboard
-     top. When focus leaves, selector stops matching, inset
-     returns. Pure CSS, single state-source.
-
-     iOS Safari 15.4+ ships `:has()`; baseline target for the
-     mobile PWA. Selectors enumerate `textarea` + `input` so
-     compose box (textarea) AND any future text input under
-     `.shell-mobile` (settings inputs, image-upload filename, etc.)
-     all close the gap when the keyboard appears for them. */
-  .shell-mobile:has(textarea:focus, input:focus) {
-    padding-bottom: 0;
-  }
+  /* UX-6 bucket D v2 / D9 (2026-05-21) — D1 `:has(:focus){padding-
+     bottom:0}` REMOVED. With UX-6 D9's `html.is-ios { position:
+     fixed }` + `body { height: calc(var(--vh)*100) }` pinning the
+     layout viewport to visualViewport.height (which already
+     excludes the keyboard), collapsing safe-area inset on focus
+     double-counts: vv.height = visible-area-excluding-keyboard
+     ALREADY accounts for the keyboard occluding the bottom inset
+     region. With the rule in place, BottomBar would slide into
+     the area where the safe-area inset used to keep it above
+     non-keyboard home-indicator land. Lesson cost: see
+     docs/DESIGN_NOTES.md UX-6-D arc. */
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
      `var()` resolves to its fallback `100dvh`; on those browsers that

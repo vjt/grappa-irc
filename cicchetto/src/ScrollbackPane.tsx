@@ -841,62 +841,24 @@ const ScrollbackPane: Component<Props> = (props) => {
   // (keyboard open/close shrinks the scrollback). Measured in a
   // microtask after the layout settles via queueMicrotask.
   //
-  // UX-6 D8 (2026-05-21) — preserve-distance-from-bottom across a
-  // resize-driven layout shift. Replaces D7's re-pin-to-bottom which
-  // CLOBBERED the unread-marker case: vjt focused compose at the
-  // unread marker (mid-history) and D7 yanked the scroll to tail
-  // because atBottom() was a too-coarse trigger.
-  //
-  // The math:
-  //
-  //   distBefore = scrollHeight - scrollTop - clientHeight
-  //   (read BEFORE the layout shift — clientHeight is pre-shrink)
-  //
-  //   newScrollTop = scrollHeight - clientHeight - distBefore
-  //   (computed AFTER the layout shift via queueMicrotask —
-  //    clientHeight is post-shrink, scrollHeight unchanged since
-  //    content didn't change)
-  //
-  // For at-tail (dist=0): newScrollTop = scrollHeight - clientHeight
-  // (= tail, still follows). For mid-history (dist=N): the apparent
-  // distance from the bottom edge of the visible region stays N px,
-  // so the marker (or whatever the operator was reading) doesn't
-  // visually move relative to the compose box pinned just below.
-  //
-  // rAF coalesce: iOS keyboard slide-in fires multiple vv.resize
-  // events at intermediate heights over ~200-300ms. Without the
-  // latch, each fire queues a microtask — invariant chains but
-  // wastes work and risks judder if microtask runs interleaved with
-  // browser layout. The latch ensures one preserve pass per
-  // animation frame.
-  //
-  // ONLY for resize. Append-driven measurement uses `measureOverflow`
-  // which leaves scroll position alone — the existing post-append
-  // effect (~:1062) handles tail-follow via the `atBottom()` signal.
-  //
-  // The `markerScrolled() || !markerRef` guard mirrors the post-
-  // append effect's C7.3 precedence so cold-mount marker scroll
-  // wins.
-  let rafPending = false;
-  const preserveScrollOffsetThroughResize = (): void => {
-    if (!listRef) return;
-    if (rafPending) return;
-    const distBefore = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-    const markerCleared = markerScrolled() || !markerRef;
-    rafPending = true;
-    requestAnimationFrame(() => {
-      rafPending = false;
-      if (!listRef) return;
-      setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
-      if (markerCleared) {
-        listRef.scrollTop = Math.max(0, listRef.scrollHeight - listRef.clientHeight - distBefore);
-      }
-    });
-  };
-
   // Append-time + initial-mount measurement: overflow class only,
   // never touches scrollTop. Scroll position is owned by the
   // post-append effect (~:1062) or by `scrollToActivation`.
+  //
+  // UX-6 D9 (2026-05-21) — resize-driven scroll restoration is
+  // delegated to the existing `scrollToActivation` routine (see
+  // ~:976, the canonical UX-4-K marker-or-tail path). D7's
+  // re-pin-to-bottom + D8's preserve-distance-from-bottom math
+  // both reinvented behavior that scrollToActivation already
+  // encodes correctly: marker present → scroll-into-view({block:
+  // "center"}); no marker → scroll to scrollHeight. One source
+  // of truth, no new math, no rAF-coalesce primitive.
+  //
+  // The same routine fires on channel switch + visibility-return
+  // + (D9) every vv.resize. iOS keyboard slide-in's intermediate
+  // resize fires are tolerated naturally — each microtask reads
+  // current scrollHeight + clientHeight, ends at the right place.
+  // Eight failed attempts cost: see docs/DESIGN_NOTES.md UX-6-D.
   const measureOverflow = (): void => {
     if (!listRef) return;
     queueMicrotask(() => {
@@ -914,18 +876,24 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   onMount(() => {
     measureOverflow();
-    // UX-6 D8 — expose listRef as a window-global so DiagFloat can
-    // probe scrollback.scrollTop without component coupling. Cleared
-    // on unmount to avoid stale-ref reads after channel switch.
-    (window as unknown as { __cic_scrollback?: HTMLDivElement }).__cic_scrollback = listRef;
-    const onResize = () => preserveScrollOffsetThroughResize();
+    // UX-6 D9 — every vv.resize (keyboard open OR close, orientation
+    // change, browser zoom) re-runs the canonical scroll routine so
+    // the visible content stays anchored to what the operator was
+    // reading. scrollToActivation is defined below at ~:976 (closure
+    // resolves at call time, not registration time). Symmetric for
+    // open + close — vjt accepted yank-on-close in the D9 plan
+    // ("we can start with symmetry and then reset scroll marker
+    // later"). Future: marker-reset-on-scroll so close-side preserve
+    // is finer-grained.
+    //
+    // window.resize is also wired — desktop window resize, devtools,
+    // browser zoom — same canonical behavior.
+    const onResize = () => scrollToActivation();
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
-      const w = window as unknown as { __cic_scrollback?: HTMLDivElement };
-      if (w.__cic_scrollback === listRef) w.__cic_scrollback = undefined;
     });
   });
 

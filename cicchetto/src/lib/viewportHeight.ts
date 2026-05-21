@@ -1,34 +1,46 @@
-// Viewport-height tracker — writes the visible viewport height to a
-// CSS custom property (`--viewport-height`) so layout containers
-// (`.shell.shell-mobile`) can use a height that reflects what the
-// user actually sees.
+// Viewport-height tracker — writes the visible viewport height to
+// CSS custom properties (`--vh` and `--viewport-height`) so layout
+// containers can use a height that reflects what the user actually
+// sees.
 //
 // Why this exists.
 //
 // On iOS Safari, opening the on-screen keyboard does NOT change the
 // layout viewport (the thing CSS `100vh` resolves against). Even
 // `100dvh` ("dynamic viewport height") only tracks the browser's UI
-// chrome (the address bar), not the keyboard. So `height: 100dvh`
-// stays full-screen while the keyboard is open, and iOS reacts by
-// scrolling the page up to keep the focused input visible — pushing
-// the top bar out of view (vjt's 2026-05-17 keyboard-hides-top-bar
-// report).
+// chrome (the address bar), not the keyboard — by CSS spec, the
+// on-screen keyboard is explicitly excluded from viewport units.
+// So `height: 100dvh` stays full-screen while the keyboard is open,
+// and iOS reacts by scrolling the page up to keep the focused input
+// visible — pushing the top bar out of view.
 //
 // VisualViewport is the W3C-standard API that DOES track the visible
 // area. `window.visualViewport.height` shrinks when the keyboard
 // opens; it shrinks more when the user pinches in; etc. Listening
-// for `resize` events lets us update a CSS var in lockstep, and
-// `.shell.shell-mobile { height: var(--viewport-height, 100dvh) }`
-// becomes the actual visible-area-tracking layout.
+// for `resize` events lets us update CSS vars in lockstep.
 //
-// The dvh fallback handles the brief window between page boot and
-// the first `resize` event (the CSS var is unset on the very first
-// frame). Default = 100dvh, then we update as soon as we know better.
+// UX-6 D9 (2026-05-21) — final pass adopting the Telegram Web K
+// pattern. After 8 failed CSS+JS iterations on this surface,
+// research (4 parallel agents, see docs/DESIGN_NOTES.md UX-6-D)
+// converged: read ONLY `vv.height`, never `vv.offsetTop`
+// (WebKit bug #297779 — `offsetTop` gets stuck at 24px after
+// keyboard dismiss, "appears to be a bug in a system component"
+// per Apple). Drop the scroll-pin pattern entirely (WebKit bug
+// #226689 — `window.scrollTo(0,0)` during momentum causes the
+// 1-3s scroll lock iOS quarantines further scroll for). The
+// platform-correct primitive is `html.is-ios { position: fixed }`
+// PAIRED with `body { height: calc(var(--vh)*100) }` (atomic —
+// neither works alone; see default.css).
 //
-// Desktop browsers fire `visualViewport.resize` only on real viewport
-// changes (window resize, devtools open/close) — no keyboard impact.
-// Setting the CSS var on desktop is harmless: `.shell` (desktop
-// grid) uses `100vh` and ignores the var entirely.
+// CSS vars written:
+//   --vh           = (vv.height * 0.01) in px, for Telegram-style
+//                    `calc(var(--vh) * 100)` consumers.
+//   --viewport-height = vv.height in px, for legacy consumers
+//                       (`.shell-mobile { height: var(--viewport-
+//                       height, 100dvh) }`). Eventually subsumed by
+//                       the `body { height: calc(var(--vh)*100) }`
+//                       rule but kept for now to avoid touching
+//                       every mobile-overlay surface.
 //
 // Mock surface for vitest: `installViewportHeightTracker` accepts an
 // optional viewport argument so unit tests can pass a fake
@@ -37,47 +49,28 @@
 
 export interface VisualViewportLike {
   height: number;
-  offsetTop: number;
-  addEventListener(event: "resize" | "scroll", handler: () => void): void;
+  addEventListener(event: "resize", handler: () => void): void;
 }
 
 const HEIGHT_VAR = "--viewport-height";
-const OFFSET_VAR = "--vv-offset-top";
+const VH_VAR = "--vh";
 
 function writeViewport(vp: VisualViewportLike): void {
   const style = document.documentElement.style;
   style.setProperty(HEIGHT_VAR, `${vp.height}px`);
-  style.setProperty(OFFSET_VAR, `${vp.offsetTop}px`);
+  style.setProperty(VH_VAR, `${(vp.height * 0.01).toFixed(2)}px`);
 }
 
 /**
- * Boot-time entry. Writes `--viewport-height` AND `--vv-offset-top`
- * from `window.visualViewport`, then re-writes on every resize and
- * scroll event.
- *
- * `--viewport-height` (height tracking) is the original UX-3 PENT
- * fix: `.shell-mobile` reads it so the layout shrinks in lockstep
- * with the iOS on-screen keyboard.
- *
- * `--vv-offset-top` (UX-6 D6, 2026-05-21) cancels iOS PWA's
- * layout-viewport shift on focus. When the keyboard opens, iOS
- * scrolls the LAYOUT viewport up by `vv.offsetTop` so the focused
- * input stays in the VISUAL viewport. Layout-positioned elements
- * (shell-mobile at layout y=0) end up ABOVE the visual viewport;
- * chrome disappears, gap opens between compose and keyboard top.
- * CSS uses the var as `transform: translateY(var(--vv-offset-top))`
- * on `.shell-mobile` to push the shell back DOWN by the same
- * amount — the layout shift is mechanically inverted, shell stays
- * pinned to the visible area.
- *
- * Both vars update on the SAME handler — `vv.scroll` fires when
- * iOS shifts the layout viewport (focus, keyboard open/close,
- * scroll-into-view); `vv.resize` fires when the visual height
- * itself changes (keyboard appears/disappears). Writing both vars
- * on both events keeps them consistent regardless of which fires
- * first.
+ * Boot-time entry. Writes `--vh` (Telegram pattern) AND
+ * `--viewport-height` (legacy pattern) from `window.visualViewport`,
+ * then re-writes on every resize event.
  *
  * Idempotent — main.tsx invokes once.
+ *
+ * Returns void on browsers that don't expose `window.visualViewport`
+ * (every modern browser does, but the typedef is optional). The CSS
+ * vars stay unset; consumers fall back to their var() defaults.
  */
 export function installViewportHeightTracker(
   vp: VisualViewportLike | undefined = typeof window !== "undefined"
@@ -85,55 +78,6 @@ export function installViewportHeightTracker(
     : undefined,
 ): void {
   if (!vp) return;
-  const update = () => writeViewport(vp);
-  update();
-  vp.addEventListener("resize", update);
-  vp.addEventListener("scroll", update);
-}
-
-/**
- * Pins window scroll to (0, 0) whenever something tries to scroll
- * the document. iOS Safari auto-scrolls the page to "center" the
- * focused input on keyboard open, even when the input is already
- * visible — this is a PROGRAMMATIC scroll path (scroll-into-view),
- * distinct from the touch-drag path which is now handled at the
- * layout layer via `#root { height: 100% }` (UX-3 UNDEC — body and
- * root match exactly, no overflow, nothing for iOS to drag).
- *
- * Listening for the `scroll` event + immediately scrolling back to
- * (0, 0) kills the programmatic-scroll symptom at the source. The
- * user sees the page hold still; iOS sees what it asked for and
- * stops escalating.
- *
- * UX-6 D8 (2026-05-21) — proved load-bearing the hard way. D7
- * dropped this on the diag-says-window.scroll-never-fires logic;
- * vjt reported vvOffsetTop > 0 immediately after deploy. The pin's
- * corrective force was the reason vvOffsetTop READ 0 in the
- * pre-D7 diag — steady state with pin active, not steady state
- * absolute. iOS shifts the LAYOUT viewport (window.scrollY > 0)
- * separately from the VISUAL viewport (vv.offsetTop > 0); they
- * track together on PWA but read on different event surfaces, so
- * the diag's "no window.scroll event" was misleading — the layout
- * viewport WAS shifting, the event just doesn't fire (or fires
- * before our handler sees it; the pin still catches it).
- *
- * Passive listener — `scroll` doesn't honor preventDefault anyway;
- * scrollTo(0, 0) is the corrective action.
- *
- * Idempotent like `installViewportHeightTracker` — called once from
- * main.tsx.
- */
-export function installScrollPin(
-  target: Window | undefined = typeof window !== "undefined" ? window : undefined,
-): void {
-  if (!target) return;
-  target.addEventListener(
-    "scroll",
-    () => {
-      if (target.scrollX !== 0 || target.scrollY !== 0) {
-        target.scrollTo(0, 0);
-      }
-    },
-    { passive: true },
-  );
+  writeViewport(vp);
+  vp.addEventListener("resize", () => writeViewport(vp));
 }

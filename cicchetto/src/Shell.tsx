@@ -293,7 +293,14 @@ const Shell: Component = () => {
       setDraft(key, next);
       const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
       if (!ta) return;
-      ta.focus();
+      // UX-6 D9 — `preventScroll: true` short-circuits iOS Safari's
+      // "scroll the focused input into view" auto-scroll path
+      // (WebKit `_zoomToFocusRect` in WKContentView). Baseline since
+      // iOS Safari 15.5 (mid-2022); no fallback needed for our PWA
+      // target. Without this, iOS shifts the layout viewport up by
+      // ~vv.offsetTop to "center" the textarea — which is the
+      // root cause of UX-6-D bugs 1+2 we chased for 8 iterations.
+      ta.focus({ preventScroll: true });
       // Solid signal write doesn't immediately reflect in the textarea;
       // schedule the caret placement on the next microtask so the value
       // update has flushed.
