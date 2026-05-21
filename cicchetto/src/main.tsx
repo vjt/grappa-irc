@@ -18,7 +18,7 @@ import { applyIosClass } from "./lib/platform";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
-import { installViewportHeightTracker } from "./lib/viewportHeight";
+import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -54,17 +54,17 @@ applyIosClass();
 // of view. Boot-time so the first frame already has the var.
 installViewportHeightTracker();
 
-// UX-6 D9 (2026-05-21) — `installScrollPin` removed for good. After 8
-// failed CSS+JS iterations on this surface, parallel research
-// confirmed `window.scrollTo(0,0)` on every scroll event is the
-// direct cause of the 1-3s scroll lock vjt was reporting (WebKit
-// bug #226689 — during momentum scroll, scrollTo retriggers scroll
-// events, iOS quarantines further scroll for 1-3s as a fight-
-// detection heuristic). The platform-correct primitive is
-// `html.is-ios { position: fixed }` PAIRED with
-// `body { height: calc(var(--vh)*100) }` in default.css — pins
-// the layout viewport so iOS cannot scroll the chrome out of view
-// without any JS scroll-pin.
+// UX-6 D10 (2026-05-21) — smart-pin window scroll. iOS PWA 18.7
+// shifts the visual viewport at the WKWebView UIScrollView layer
+// even with html { position: fixed } (no DOM element overflows —
+// diag confirmed html/body/root scrollHeight === clientHeight,
+// yet window.scrollY=324). The only counter-measure is the original
+// UX-3 OCT snap-window-back trick. D7 dropped this on a wrong
+// hypothesis (claimed pin caused the 1-3s scroll lock); D10 brings
+// it back but gates on touch-state so user drag-momentum doesn't
+// fight the pin (which WAS the cause of the lock).
+
+installSmartScrollPin();
 
 // UX-3 preserve-keyboard — single document-level capture listener.
 // When compose <input> has focus and the user taps anywhere that

@@ -81,3 +81,80 @@ export function installViewportHeightTracker(
   writeViewport(vp);
   vp.addEventListener("resize", () => writeViewport(vp));
 }
+
+/**
+ * Smart-pinned window scroll. When `window.scroll` fires and we're
+ * NOT in (or recently exited) a touch gesture, snap window back to
+ * (0, 0). When we ARE touching (or were within `TOUCH_GRACE_MS`),
+ * leave it alone — that's user-driven scroll/momentum.
+ *
+ * UX-6 D10 (2026-05-21) — restored as smart-pin after D9 diag
+ * proved iOS PWA 18.7 STILL shifts the visual viewport (window.
+ * scrollY=324, vvOT=324) despite html { position: fixed } pinning
+ * the layout viewport. No DOM element overflows (html=894/894,
+ * body=570/570, root=570/570 per diag), so the scroll is at the
+ * WKWebView UIScrollView layer BELOW the document — the only
+ * counter-measure is the snap-window-back trick that
+ * `installScrollPin` (UX-3 OCT) shipped originally.
+ *
+ * D7 dropped the pin claiming it caused vjt's 1-3s scroll lock
+ * after drag-to-bottom (WebKit bug #226689 — scrollTo during
+ * momentum re-triggers scroll, iOS quarantines further scroll
+ * for 1-3s as fight-detection). D9 confirmed test 2 passed
+ * without pin → causality real.
+ *
+ * D10 smart-pin: gate the snap on touch-state. iOS's focus-driven
+ * shift is PROGRAMMATIC (no touch in flight) → pin fires + snaps.
+ * User drag-to-bottom → touch in flight → pin no-ops →
+ * no fight with momentum → no 1-3s lock. The 500ms grace catches
+ * the post-touchend momentum window.
+ *
+ * Touch state is module-private; the listeners attach at boot in
+ * `installSmartScrollPin`. No public read API since no consumer
+ * needs it.
+ */
+
+const TOUCH_GRACE_MS = 500;
+
+export function installSmartScrollPin(
+  target: Window | undefined = typeof window !== "undefined" ? window : undefined,
+  doc: Document | undefined = typeof document !== "undefined" ? document : undefined,
+): void {
+  if (!target || !doc) return;
+  let touchActive = false;
+  let lastTouchEndAt = -Infinity;
+  doc.addEventListener(
+    "touchstart",
+    () => {
+      touchActive = true;
+    },
+    { passive: true },
+  );
+  doc.addEventListener(
+    "touchend",
+    () => {
+      touchActive = false;
+      lastTouchEndAt = performance.now();
+    },
+    { passive: true },
+  );
+  doc.addEventListener(
+    "touchcancel",
+    () => {
+      touchActive = false;
+      lastTouchEndAt = performance.now();
+    },
+    { passive: true },
+  );
+  target.addEventListener(
+    "scroll",
+    () => {
+      if (touchActive) return;
+      if (performance.now() - lastTouchEndAt < TOUCH_GRACE_MS) return;
+      if (target.scrollX !== 0 || target.scrollY !== 0) {
+        target.scrollTo(0, 0);
+      }
+    },
+    { passive: true },
+  );
+}
