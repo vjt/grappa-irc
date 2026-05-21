@@ -10,6 +10,45 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-K LANDED 2026-05-21.** Server-side cursor-write validator
+predicate divergence from read-path. `Grappa.ReadCursor.message_belongs?/4`
+filtered `m.channel == ^channel` literal while `Grappa.Scrollback.fetch/6`
+used the OR-shape `m.channel == ^chan OR m.dm_with == ^chan`. Inbound
+DMs (persisted at `channel = own_nick, dm_with = peer` per CP14-B3)
+failed validation → 422 → cic's `setReadCursor` `console.warn`'d
+silently → in-pane unread-marker never advanced. Outbound DMs
+(`channel = peer`) passed the literal match → "sending a message to
+peer cleared the marker" was the precise repro signature.
+
+Fix: promoted `Grappa.Scrollback.channel_or_dm_where/3` from `defp`
+to `def` (single-sourced predicate per CLAUDE.md "Implement once,
+reuse everywhere"). `ReadCursor.message_belongs?/4` now delegates with
+`own_nick: nil` (cursor write doesn't carry own_nick; existence check
+is symmetric for either direction; over-match analysis verified safe).
+
+Scope flip: K was initially scoped cic-only in docs/todo.md; diagnosis
+revealed server-side root cause. vjt sign-off granted via AskUserQuestion.
+
+Gates: 2312 ExUnit (8 doctests + 32 properties + 4 new K cases) + 0
+Dialyzer + 0 Credo + format-check exit-0 + 1511 vitest (1506 baseline
++ 5 new K symmetry cases) + biome exit-0 + 1/1 ux-6-k Playwright + 12/
+12 full Playwright suite (background run exit-0). Pre-existing
+`Grappa.AdminEventsTest:197` + `GrappaWeb.GrappaChannelTest:1408`
+`assert_receive` flakes observed in 2/5 check.sh runs — neither
+touches read_cursor or scrollback paths.
+
+Reviewer-loop (general-purpose agent): SHIP-READY, 1 LOW (e2e
+under-specific assertion `not.toBeNull` → tightened to
+`toBeGreaterThan(0)`). NON-FINDINGs covered correctness +
+discipline + test fidelity + risk + side-effects + anti-pattern
+closure.
+
+Deploy: **COLD** (server context change — `Grappa.Scrollback`
+public surface gained `channel_or_dm_where/3` + `Grappa.ReadCursor`
+behavior changed; sessions don't carry shape-state so HOT *would*
+work, but new public surface on Scrollback is the kind of thing
+preflight could miss).
+
 **UX-6-B LANDED 2026-05-21.** Full B-cluster (B1 server stack +
 B2 cic adapter + admin Settings tab + B3 e2e + reviewer-loop)
 ready. B1 commit `61269eb` (server stack) + `4b3d1ac` (CI workflow
@@ -45,10 +84,7 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 - **UX-6-H** — scrollback doesn't follow viewport-shrink on keyboard open.
 - **UX-6-I** — cic refresh banner needs 3 presses after deploy.
 - **UX-6-J** — push notif tap doesn't open source window.
-- **UX-6-K (NEW 2026-05-20)** — PM unread-marker doesn't clear on
-  focus (channels work correctly; PMs require user to send message
-  to peer before marker clears). Dedupe to unified focus-clears
-  semantics. vjt 2026-05-20 confirmed UX-6 scope.
+- **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-L (NEW 2026-05-20)** — foreground push → in-app beep
   (SW-suppress option B per vjt 2026-05-20). On push receipt SW
   calls `clients.matchAll({type:'window'})` + checks

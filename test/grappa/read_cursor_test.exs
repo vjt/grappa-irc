@@ -230,6 +230,118 @@ defmodule Grappa.ReadCursorTest do
       assert {:error, :invalid_message} =
                ReadCursor.set({:user, bob.id}, net.id, "#x", msg.id)
     end
+
+    # UX-6 bucket K — PM cursor accepts inbound DM rows stored under
+    # `channel = own_nick, dm_with = peer`.
+    #
+    # Production bug (vjt 2026-05-20): in-pane unread-marker for a peer
+    # query window did NOT clear on focus; cic's POST to
+    # `/networks/:slug/channels/:peer/read-cursor` 422'd because
+    # `message_belongs?/4` filtered on `m.channel == ^peer` alone — but
+    # inbound DMs from `peer` land at `channel = own_nick, dm_with = peer`
+    # (CP14-B3 derivation, see lib/grappa/scrollback.ex moduledoc). The
+    # validator's predicate diverged from `Scrollback.fetch/6`'s
+    # `channel_or_dm_where/3` (peer-DM aggregation `m.channel == ^peer OR
+    # m.dm_with == ^peer`). One predicate now both reads + writes the
+    # cursor — the divergence WAS the bug.
+    #
+    # Outbound DMs (`channel = peer, dm_with = peer`) already worked
+    # because the literal `m.channel == ^peer` match passed. That's why
+    # "sending a message to peer cleared the marker" — only outbound
+    # passed the validator. K closes the inbound case.
+    test "accepts an inbound DM whose channel is own_nick and dm_with is peer" do
+      user = user_fixture()
+      net = network_fixture()
+      own_nick = "vjt-grappa"
+      peer = "cristobot"
+
+      # Inbound DM as persisted by EventRouter: channel = own_nick,
+      # dm_with = peer. cic POSTs the cursor for the peer's query
+      # window (channel-URL-segment = peer); the validator MUST find
+      # this row via the same OR-shape Scrollback.fetch uses.
+      {:ok, msg} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: own_nick,
+          dm_with: peer,
+          server_time: 1,
+          kind: :privmsg,
+          sender: peer,
+          body: "hi"
+        })
+
+      assert {:ok, cursor} = ReadCursor.set({:user, user.id}, net.id, peer, msg.id)
+      assert cursor.last_read_message_id == msg.id
+      # Cursor row stores the peer (the operator-facing window
+      # identity), NOT the own_nick storage key.
+      assert cursor.channel == peer
+    end
+
+    test "accepts an outbound DM (channel = peer, dm_with = peer) under peer-window cursor" do
+      # Anti-spec guard: the new OR-shape must not regress the outbound
+      # path. Outbound DMs land at `channel = peer, dm_with = peer` and
+      # were already valid under the old literal predicate; they MUST
+      # remain valid under the new disjunction.
+      user = user_fixture()
+      net = network_fixture()
+      peer = "cristobot"
+
+      {:ok, msg} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: peer,
+          dm_with: peer,
+          server_time: 1,
+          kind: :privmsg,
+          sender: "vjt-grappa",
+          body: "yo"
+        })
+
+      assert {:ok, cursor} = ReadCursor.set({:user, user.id}, net.id, peer, msg.id)
+      assert cursor.last_read_message_id == msg.id
+    end
+
+    test "still rejects a channel row when the cursor URL segment is a different channel" do
+      # Anti-spec guard: the DM aggregation MUST only apply to
+      # nick-shaped (DM-eligible) cursor targets. A channel-shaped
+      # cursor (`#x`) must NOT match a different channel's row even
+      # if dm_with happened to match by accident — channel rows always
+      # store `dm_with = nil` per `validate_dm_with_for_kind` so this
+      # is a paranoid guard against future schema drift.
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(%{user_id: user.id}, net.id, "#a", 1)
+
+      assert {:error, :invalid_message} =
+               ReadCursor.set({:user, user.id}, net.id, "#b", msg.id)
+    end
+
+    test "DM validator does NOT cross-leak rows between different peers" do
+      # Anti-spec guard: a DM row with dm_with = peerA MUST NOT validate
+      # a cursor for peerB. The OR-shape narrows to a single peer.
+      user = user_fixture()
+      net = network_fixture()
+      own_nick = "vjt-grappa"
+      peer_a = "alice"
+      peer_b = "bob"
+
+      {:ok, msg} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: net.id,
+          channel: own_nick,
+          dm_with: peer_a,
+          server_time: 1,
+          kind: :privmsg,
+          sender: peer_a,
+          body: "from alice"
+        })
+
+      assert {:error, :invalid_message} =
+               ReadCursor.set({:user, user.id}, net.id, peer_b, msg.id)
+    end
   end
 
   # ---------------------------------------------------------------------------

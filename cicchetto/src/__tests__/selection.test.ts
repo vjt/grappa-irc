@@ -1274,4 +1274,139 @@ describe("selection store", () => {
       expect(mentions.mentionCounts()[key]).toBe(1);
     });
   });
+
+  // UX-6 bucket K — PM (query) unread-marker symmetry. Bug as filed by
+  // vjt 2026-05-20: channels clear their unread/mention badge on focus,
+  // PMs DON'T. Channel-side path was settled in UX-5 bucket BU; this
+  // bucket asserts the symmetric behaviour for `kind: "query"` so any
+  // future kind-discriminator regression that selectively skips PMs
+  // fails loudly here instead of needing an e2e.
+  //
+  // Key invariants under test:
+  //   * `setSelectedChannel({kind: "query"})` clears messagesUnread +
+  //     eventsUnread + unreadCounts + mentionCounts for the PM key.
+  //   * Browser-focus-regain on a selected query window clears the same
+  //     four sinks (symmetric with the channel case).
+  //   * Focus-regain leaves OTHER PM windows' badges alone.
+  describe("UX-6 bucket K — PM (query) unread + mention badge symmetry", () => {
+    it("selecting a query window clears its accumulated mentionCounts", async () => {
+      // Symmetric counterpart of UX-5 BU's "selecting a channel clears
+      // its accumulated mentionCounts" — same shape, kind: "query".
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const key = channelKey("freenode", "vjt");
+      mentions.bumpMention(key);
+      mentions.bumpMention(key);
+      expect(mentions.mentionCounts()[key]).toBe(2);
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "vjt",
+        kind: "query",
+      });
+      expect(mentions.mentionCounts()[key]).toBeUndefined();
+    });
+
+    it("selecting a query window clears messagesUnread + eventsUnread + unreadCounts", async () => {
+      // Symmetric counterpart of C7.5 "setSelectedChannel clears both
+      // messagesUnread and eventsUnread" — kind: "query".
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "vjt");
+      selection.bumpUnread(key);
+      selection.bumpMessageUnread(key);
+      selection.bumpEventUnread(key);
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "vjt",
+        kind: "query",
+      });
+      expect(selection.unreadCounts()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+
+    it("browser-focus-regain clears mentionCounts for the selected query window", async () => {
+      // Symmetric counterpart of UX-5 BU bug-1 fix — kind: "query".
+      // Pre-regression (channel path) cleared mentions on focus-regain;
+      // K asserts the PM path does too.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const key = channelKey("freenode", "vjt");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "vjt",
+        kind: "query",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      mentions.bumpMention(key);
+      expect(mentions.mentionCounts()[key]).toBe(1);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(mentions.mentionCounts()[key]).toBeUndefined();
+    });
+
+    it("browser-focus-regain clears messagesUnread + eventsUnread + unreadCounts for the selected query window", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "vjt");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "vjt",
+        kind: "query",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      selection.bumpUnread(key);
+      selection.bumpMessageUnread(key);
+      selection.bumpEventUnread(key);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(selection.unreadCounts()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.eventsUnread()[key]).toBeUndefined();
+    });
+
+    it("focus-regain on selected query window does NOT clear OTHER PM windows' badges", async () => {
+      // Anti-spec guard: focus-regain only clears the SELECTED window's
+      // badges. Mention sitting on a different DM peer must remain visibly
+      // unread until the operator navigates there.
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const mentions = await import("../lib/mentions");
+      const selKey = channelKey("freenode", "vjt");
+      const otherKey = channelKey("freenode", "bob");
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "vjt",
+        kind: "query",
+      });
+      setVisibilityForTest(false);
+      await Promise.resolve();
+      mentions.bumpMention(selKey);
+      mentions.bumpMention(otherKey);
+
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
+      expect(mentions.mentionCounts()[selKey]).toBeUndefined();
+      expect(mentions.mentionCounts()[otherKey]).toBe(1);
+    });
+  });
 });

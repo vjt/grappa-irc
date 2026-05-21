@@ -244,9 +244,28 @@ defmodule Grappa.ReadCursor do
 
   @spec message_belongs?(subject(), integer(), String.t(), pos_integer()) :: boolean()
   defp message_belongs?(subject, network_id, channel, message_id) do
+    # UX-6 bucket K (2026-05-21) — share `Scrollback.channel_or_dm_where/3`
+    # with the read path so cursor validation and scrollback fetch agree
+    # on the "what counts as a row in this window" predicate. Pre-K this
+    # function used a literal `m.channel == ^channel` filter; inbound
+    # DMs (`channel = own_nick, dm_with = peer`) failed validation when
+    # cic POSTed the cursor for the peer's query window, so the in-pane
+    # unread-marker never cleared on focus. Outbound DMs (`channel = peer`)
+    # passed, which is why "sending a message to the peer cleared the
+    # marker." Single shared predicate closes the divergence class.
+    #
+    # `own_nick: nil` — cic's `POST /networks/:slug/channels/:chan/read-cursor`
+    # doesn't carry own_nick (it would be redundant since the row
+    # existence check is symmetric for either direction). For an own-nick
+    # query window, the OR-shape over-matches every peer DM whose
+    # `dm_with == own_nick`, but `Repo.exists?` only needs ONE matching
+    # row from the same subject to validate the cursor — the precise
+    # narrowing is a read-time concern (scrollback display), not a
+    # write-time concern (cursor validity).
     Message
     |> subject_filter(subject)
-    |> where([m], m.id == ^message_id and m.network_id == ^network_id and m.channel == ^channel)
+    |> where([m], m.id == ^message_id and m.network_id == ^network_id)
+    |> Grappa.Scrollback.channel_or_dm_where(channel, nil)
     |> Repo.exists?()
   end
 

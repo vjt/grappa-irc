@@ -482,27 +482,49 @@ defmodule Grappa.Scrollback do
 
   def target_kind(name) when is_binary(name), do: :query
 
-  # CP14 B3 — channel-vs-DM dispatch.
-  #
-  # Channel-shaped names (#chan, &local, !local, +mode) and the
-  # synthetic "$server" pseudo-channel resolve to a pure
-  # `channel == ^name` filter — these can never be DM rows, so the
-  # `:dm_with` index is irrelevant.
-  #
-  # Peer-shaped names (anything else, i.e. nick-shaped) resolve to
-  # the union of `(channel == ^name) OR (dm_with == ^name)` so a DM
-  # window for `peer` returns both:
-  #   * outbound — own_nick → peer (channel = peer)
-  #   * inbound — peer → own_nick (channel = own_nick, dm_with = peer
-  #     populated at persist by EventRouter).
-  #
-  # Includes pre-CP14-B3 inbound rows where dm_with is nil — those
-  # never pulled in via this branch (pre-existing inbound history for
-  # peers fetched as own_nick keeps showing under the own-nick
-  # window). Backfill in the migration covers as many historical
-  # rows as the current credential's nick can identify; the
-  # write-time path covers everything from CP14 B3 forward.
-  defp channel_or_dm_where(query, channel, own_nick) when is_binary(channel) do
+  @doc """
+  Adds the channel-vs-DM dispatch `WHERE` clause to a `Message`-bound
+  query (a query already-bound to `Message` so the implicit `[m]`
+  binding resolves).
+
+  Public surface: shared with `Grappa.ReadCursor.message_belongs?/4`
+  so the read paths (`fetch/6` + friends) and the cursor-write
+  validator agree on the same "what counts as a row in this window"
+  predicate. UX-6 bucket K (2026-05-21): pre-K the validator used a
+  literal `m.channel == ^channel` filter while reads used this
+  OR-shape. The divergence rejected inbound DMs (`channel = own_nick,
+  dm_with = peer`) as `:invalid_message` whenever the cursor target
+  was the peer's nick — sole cause of the "PM unread-marker doesn't
+  clear on focus" bug. One predicate, one rule, both paths.
+
+  Channel-shaped names (#chan, &local, !local, +mode) and the
+  synthetic "$server" pseudo-channel resolve to a pure
+  `channel == ^name` filter — these can never be DM rows, so the
+  `:dm_with` index is irrelevant.
+
+  Peer-shaped names (anything else, i.e. nick-shaped) resolve to
+  the union of `(channel == ^name) OR (dm_with == ^name)` so a DM
+  window for `peer` returns both:
+
+    * outbound — own_nick → peer (channel = peer)
+    * inbound — peer → own_nick (channel = own_nick, dm_with = peer
+      populated at persist by EventRouter).
+
+  Own-nick query window narrowing: when `own_nick` matches `channel`
+  (case-insensitive), the filter restricts to self-msgs (rows where
+  both channel + dm_with = own_nick). The peer-DM OR-shape would
+  otherwise pull every inbound DM the user ever received because the
+  server stores inbound at `channel = own_nick, dm_with = peer`.
+
+  Includes pre-CP14-B3 inbound rows where dm_with is nil — those
+  never pulled in via this branch (pre-existing inbound history for
+  peers fetched as own_nick keeps showing under the own-nick
+  window). Backfill in the migration covers as many historical
+  rows as the current credential's nick can identify; the
+  write-time path covers everything from CP14 B3 forward.
+  """
+  @spec channel_or_dm_where(Ecto.Query.t(), String.t(), String.t() | nil) :: Ecto.Query.t()
+  def channel_or_dm_where(query, channel, own_nick) when is_binary(channel) do
     # UX-4 bucket A: canonicalise the channel param at the read
     # boundary so case-insensitive lookups land on the canonical
     # lowercase row regardless of how the REST URL path-segment was

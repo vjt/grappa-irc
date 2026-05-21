@@ -267,3 +267,30 @@ export async function patchNetworkConnectionState(
     );
   }
 }
+
+// Fetch `/me` and return the read-cursor for `(networkSlug, channel)`,
+// or `null` if no cursor has been set yet. Used by UX-6-K to assert
+// that cic's cursor POST landed server-side after focus-leave.
+//
+// `/me` is the authoritative cold-load source per
+// `lib/grappa/read_cursor.ex` (`bulk_for_subject/1`); the e2e probes
+// it directly rather than tailing the WS broadcast because the post-
+// fix code path is `cic POST → server set → server broadcast → cic
+// applyReadCursorSet`. Reading `/me` shortcuts the loop and confirms
+// the persist-side state without depending on WS timing.
+export async function getReadCursor(
+  token: string,
+  networkSlug: string,
+  channel: string,
+): Promise<number | null> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/me`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`getReadCursor: /me → ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as {
+    read_cursors: Record<string, Record<string, number>>;
+  };
+  return body.read_cursors?.[networkSlug]?.[channel] ?? null;
+}
