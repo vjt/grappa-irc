@@ -33,7 +33,10 @@
 // Mock surface for vitest: `installViewportHeightTracker` accepts an
 // optional viewport argument so unit tests can pass a fake
 // `VisualViewport`-shaped object with a controllable height +
-// addEventListener.
+// addEventListener. A second optional argument (`windowHeightFn`) lets
+// tests control the layout-viewport reference value used by the
+// keyboard-open class toggle (UX-6 bucket D); production reads
+// `window.innerHeight` lazily so DPR / orientation changes are honored.
 
 export interface VisualViewportLike {
   height: number;
@@ -42,9 +45,39 @@ export interface VisualViewportLike {
 
 const CSS_VAR = "--viewport-height";
 
+// UX-6 bucket D — `<html>` class toggled when visualViewport.height is
+// meaningfully smaller than window.innerHeight (i.e. the soft keyboard
+// is up). CSS uses it to drop `.shell-mobile`'s
+// `padding-bottom: env(safe-area-inset-bottom)` while the keyboard
+// overlays the home-indicator region — the inset would otherwise leave
+// a ~34px transparent strip between BottomBar and the keyboard's top
+// edge on notched iPhones (vjt iPhone-dogfood Bug 5 / D1).
+const KEYBOARD_CLASS = "keyboard-open";
+
+// Empirical threshold — keyboard-up vs ordinary chrome shrink. iOS
+// Safari address-bar reveal/hide moves visualViewport.height by
+// ~80–100px; soft-keyboard delta is ~270–340px on iPhone 13–15. 150px
+// sits cleanly between the two; the lib only flips
+// `html.keyboard-open` when the delta is firmly in keyboard territory
+// so address-bar fidgeting doesn't strobe the class.
+const KEYBOARD_OPEN_DELTA_PX = 150;
+
 /** Writes `height` (in px) to the `--viewport-height` CSS var on <html>. */
 function writeViewportHeight(height: number): void {
   document.documentElement.style.setProperty(CSS_VAR, `${height}px`);
+}
+
+/**
+ * Toggles `html.keyboard-open` based on the gap between
+ * `visualViewport.height` and the layout-viewport reference height
+ * (`window.innerHeight` in production). Above the
+ * `KEYBOARD_OPEN_DELTA_PX` threshold → keyboard is up; below → keyboard
+ * is dismissed (or never appeared). Idempotent; harmless to call when
+ * the class is already in its target state.
+ */
+function syncKeyboardOpenClass(vvHeight: number, layoutHeight: number): void {
+  const keyboardUp = layoutHeight - vvHeight > KEYBOARD_OPEN_DELTA_PX;
+  document.documentElement.classList.toggle(KEYBOARD_CLASS, keyboardUp);
 }
 
 /**
@@ -59,16 +92,23 @@ function writeViewportHeight(height: number): void {
  * (every modern browser does, but the typedef is optional). The CSS
  * var stays unset; the `var(..., 100dvh)` fallback in default.css
  * takes over.
+ *
+ * `windowHeightFn` defaults to `() => window.innerHeight` (read every
+ * call so orientation flips stay accurate); tests pass a closure they
+ * control.
  */
 export function installViewportHeightTracker(
   vp: VisualViewportLike | undefined = typeof window !== "undefined"
     ? (window.visualViewport ?? undefined)
     : undefined,
+  windowHeightFn: () => number = () => window.innerHeight,
 ): void {
   if (!vp) return;
   writeViewportHeight(vp.height);
+  syncKeyboardOpenClass(vp.height, windowHeightFn());
   vp.addEventListener("resize", () => {
     writeViewportHeight(vp.height);
+    syncKeyboardOpenClass(vp.height, windowHeightFn());
   });
 }
 

@@ -10,6 +10,74 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-D LANDED 2026-05-21.** iPhone PWA keyboard-open layout fixes
+(vjt iPhone-dogfood Bug 5; the former UX-6-H was MERGED INTO D2 per
+vjt's 2026-05-21 clarification — single underlying layout failure).
+Two sub-symptoms:
+
+**D1 — Gap between BottomBar and keyboard top (~34px).** Root cause:
+`.shell-mobile { padding-bottom: env(safe-area-inset-bottom) }` keeps
+its ~34px inset on notched iPhones even when iOS masks the home
+indicator with the keyboard. The inset is consumed FROM the shell
+height (border-box) → bottom 34px of the shell is empty transparent
+strip below BottomBar but above keyboard top.
+
+Fix: `lib/viewportHeight.ts` toggles `html.keyboard-open` class when
+`window.innerHeight - visualViewport.height > 150px` (firmly
+keyboard-sized — sits between Safari address-bar fidget ~80-100px and
+iPhone soft-keyboard delta ~270-340px). CSS consumer:
+`html.keyboard-open .shell-mobile { padding-bottom: 0 }`.
+
+**D2 — Scrollback area does NOT shrink with the shell.** Vjt
+confirmed via AskUserQuestion: "BottomBar moved up cleanly;
+scrollback's painted area still extends DOWN behind BottomBar." Root
+cause: `.scrollback` is a flex item with `overflow-y: scroll`; its
+default `min-height: auto` resolves to `min-content` = the full
+rendered scrollHeight. iOS WebKit refuses to shrink below this
+without explicit `min-height: 0`. Desktop Chromium tolerates the
+default (CDP probe confirmed cascade WORKS at desktop with synthetic
+`--viewport-height: 429px`); iOS WebKit clamps the pane at content's
+natural height, hiding last messages behind BottomBar.
+
+Fix: ONE CSS line — `min-height: 0` on `.scrollback`. Lightweight per
+CLAUDE.md.
+
+CDP probe data (desktop @ 729x729 emulating mobile branch):
+- Pre-fix baseline: `.shell-mobile h=729, .shell-main h=687,
+  .scrollback h=575, .bottom-bar h=42`.
+- Simulated `--viewport-height: 429px`: cascade worked correctly on
+  desktop Chromium → bug is iOS WebKit-specific (`min-height: auto`
+  evaluating to `min-content` for `overflow:scroll` flex items).
+- Vjt's direct symptom report was the definitive diagnosis.
+
+Per `feedback_e2e_user_class_parity_matrix`: CSS-layer shape +
+JS-mounted side-effect bucket. Keyboard-open path doesn't differ by
+user class — single visitor login justified in moduledoc.
+
+Gates: 1534 vitest (1529 baseline + 5 new D cases on viewportHeight
+class-toggle) + scripts/check.sh exit-0 (8 doctests + 32 properties
++ 2312 tests + 0 failures + 0 Dialyzer + Sobelow + bats 23/23) +
+biome exit-0 (16 baseline warnings, my diff adds zero) + 4/4 ux-6-d
+Playwright @webkit-iphone-15 (declared min-height rule + declared
+keyboard-open CSS rule + runtime cascade via inline `!important`
+override + simulated keyboard-open layout assertions + negative twin
+preserving env(safe-area-inset-bottom)).
+
+Reviewer-loop (general-purpose agent): SHIP-READY, 0 CRIT/HIGH/MED.
+2 LOW + 5 NIT addressed inline: LOW-1 (D1 e2e on emulator was
+trivially-passing — replaced with declared-rule walker + inline
+`!important` cascade-overrides), LOW-2 (`waitForTimeout(50)`
+replaced with deterministic double-rAF settle). NON-FINDINGs covered
+cross-surface audit (other overlays don't carry the home-indicator
+inset shape), specificity check (0,2,1 vs 0,1,0 wins), threshold
+robustness across iPhone/iPad portrait/landscape matrix, regression
+risk on desktop chain (none — `.scrollback-pane` ancestor chain
+already requires `min-height: 0`).
+
+Deploy: **HOT** (cic-only — no mix.lock / application.ex / migrations
+/ nginx / Dockerfile / long-lived GenServer state touched). Bundle
+deploy via `scripts/deploy-cic.sh` for hash broadcast.
+
 **UX-6-G LANDED 2026-05-21.** Admin pane horizontal scroll on
 mobile (vjt iPhone-dogfood: "horiz content there is a scrollbar but
 the content doesn't move"). Root cause: `.admin-pane` carried
@@ -252,23 +320,8 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 **UX-6 cluster — remaining buckets after B closes:**
 
 - **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-D — UNPARKED 2026-05-21 (vjt clarified).** Two symptoms,
-  both keyboard-related (no home-indicator angle):
-  (D1) Gap between top of keyboard and BottomBar — visible blank
-       strip while compose is focused. BottomBar should sit flush
-       against keyboard top edge.
-  (D2) Messages content does NOT shrink when keyboard opens — the
-       window-height reduction pushes BottomBar up but scrollback
-       area stays full-height, so the last N messages get hidden
-       BEHIND the BottomBar. As vjt sees it: tapping compose
-       pushes BottomBar up but messages content doesn't get pushed
-       up correspondingly. **Note**: D2 is the same bug as UX-6-H
-       ("scrollback doesn't follow viewport-shrink on keyboard
-       open") — merge H into D when starting this bucket.
-  Fix scope: revisit `--viewport-height` infra (UX-3 PENT + UX-5 BV);
-  verify the height var actually drives the scrollback panel's max
-  height, not just the overlay container. May need `100dvh` /
-  `visualViewport` API; iOS Safari quirks likely.
+- **UX-6-D — LANDED 2026-05-21.** See LANDED block above (D1 +
+  D2/H merged).
 - **UX-6-E — UNPARKED 2026-05-21 (vjt clarified).** On wide screens
   the Server window is reached by clicking the network's emoji + name
   in the sidebar (no separate "Server" tab — the network header IS

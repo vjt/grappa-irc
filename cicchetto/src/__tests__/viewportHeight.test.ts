@@ -38,6 +38,7 @@ function makeFakeVp(initialHeight: number): {
 describe("viewportHeight module", () => {
   beforeEach(() => {
     document.documentElement.style.removeProperty("--viewport-height");
+    document.documentElement.classList.remove("keyboard-open");
   });
 
   it("writes the current viewport height on boot", () => {
@@ -67,6 +68,50 @@ describe("viewportHeight module", () => {
     installViewportHeightTracker(vp);
     expect(addEventListener).toHaveBeenCalledTimes(1);
     expect(addEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
+  });
+
+  // UX-6 bucket D — html.keyboard-open class drives the
+  // padding-bottom inset collapse on `.shell-mobile`. Toggles ON when
+  // `window.innerHeight - visualViewport.height > 150` (keyboard sized,
+  // beyond mere address-bar fidgeting), OFF otherwise.
+
+  it("does NOT add html.keyboard-open at boot when viewport matches window", () => {
+    const { vp } = makeFakeVp(852);
+    installViewportHeightTracker(vp, () => 852);
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(false);
+  });
+
+  it("adds html.keyboard-open at boot when viewport is already keyboard-shrunk", () => {
+    // iOS sometimes mounts the page with the keyboard already up
+    // (re-focusing after a system dialog dismiss).
+    const { vp } = makeFakeVp(516);
+    installViewportHeightTracker(vp, () => 852);
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(true);
+  });
+
+  it("toggles html.keyboard-open ON when delta crosses the keyboard threshold", () => {
+    const { vp, fireResize } = makeFakeVp(852);
+    installViewportHeightTracker(vp, () => 852);
+    fireResize(516); // iPhone 15 keyboard up
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(true);
+  });
+
+  it("toggles html.keyboard-open OFF when viewport restores", () => {
+    const { vp, fireResize } = makeFakeVp(516);
+    installViewportHeightTracker(vp, () => 852);
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(true);
+    fireResize(852);
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(false);
+  });
+
+  it("does NOT add html.keyboard-open for sub-threshold deltas (address bar reveal/hide)", () => {
+    // Safari address bar reveal moves visualViewport by ~80px; must
+    // NOT trip the keyboard-open class or `.shell-mobile` loses its
+    // home-indicator inset while the operator is just scrolling.
+    const { vp, fireResize } = makeFakeVp(852);
+    installViewportHeightTracker(vp, () => 852);
+    fireResize(770); // 82px delta — address-bar territory
+    expect(document.documentElement.classList.contains("keyboard-open")).toBe(false);
   });
 });
 
