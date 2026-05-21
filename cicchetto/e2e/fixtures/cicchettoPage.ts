@@ -34,10 +34,12 @@
 //   replaces the sidebar entirely with <BottomBar />):
 //     .bottom-bar                — role="tablist" container
 //     .bottom-bar-network        — per-network grouping
-//     .bottom-bar-network-chip   — network slug label inside the group
+//     .bottom-bar-network-header — clickable server-window entry (emoji + slug)
+//                                  carrying data-network-slug="<slug>"
 //     .bottom-bar-tab + .bottom-bar-close — flat siblings (channel/query tab + ×)
-//     .bottom-bar-tab            — clickable window button (server/channel/query)
-//     .bottom-bar-close          — × close button (channel + query only; iOS-3)
+//     .bottom-bar-tab            — clickable window button (server-header/channel/query)
+//     .bottom-bar-close          — × close button (iOS-3 channel/query + UX-4-D
+//                                  disconnect × sibling of the server-header)
 //     .bottom-bar-msg-unread / -events-unread / -mention — badges
 //
 //   Shared:
@@ -48,8 +50,9 @@
 // Channel-bound assertions key off the visible name (`#bofh`,
 // `vjt-peer`). Window items are scoped per-network: desktop via
 // `.sidebar-network-section` matched by `.sidebar-network-header` text;
-// mobile via `.bottom-bar-network` matched by `.bottom-bar-network-chip`
-// text. Same uniqueness guarantee holds on both layouts.
+// mobile via `.bottom-bar-network` matched by
+// `.bottom-bar-network-header[data-network-slug=...]`. Same uniqueness
+// guarantee holds on both layouts.
 //
 // Viewport branching: helpers that need to render against the right
 // layout (loginAs shell-ready, sidebarWindow, selectChannel click)
@@ -103,12 +106,14 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   // `networks()` resource resolves. Selector differs by layout —
   // desktop renders the collapsed network/server header row
   // (`.sidebar-network-header` since UX-4 bucket C; pre-C was a
-  // `<h3>` per network), mobile renders `.bottom-bar-network-chip`
-  // (the `.sidebar-network-section` DOM is absent entirely in the
-  // mobile JSX branch, so a single OR-style selector would be more
-  // brittle than a viewport-conditioned one).
+  // `<h3>` per network), mobile renders `.bottom-bar-network-header`
+  // (UX-6-E merged the old chip + standalone Server tab; the header
+  // IS the server-window entry now). The `.sidebar-network-section`
+  // DOM is absent entirely in the mobile JSX branch, so a single
+  // OR-style selector would be more brittle than a viewport-
+  // conditioned one.
   const readySelector = isMobileViewport(page)
-    ? ".bottom-bar-network-chip"
+    ? ".bottom-bar-network-header"
     : ".sidebar-network-header";
   await expect(page.locator(readySelector).first()).toBeVisible({
     timeout: SHELL_READY_TIMEOUT_MS,
@@ -127,14 +132,26 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
 export function sidebarWindow(page: Page, networkSlug: string, windowName: string) {
   if (isMobileViewport(page)) {
     // BottomBar.tsx: `.bottom-bar-network` group is identified by its
-    // `.bottom-bar-network-chip` text child. Tabs inside have visible
-    // text matching the window name (`Server` for $server, `#bofh` for
-    // channels, raw nick for queries). filter+hasText is the only
-    // robust way — no per-tab data attribute exists yet.
+    // `.bottom-bar-network-header[data-network-slug=...]` child
+    // (UX-6-E merged the old chip span + standalone Server tab into
+    // ONE clickable header that IS the server-window entry).
     const section = page.locator(".bottom-bar-network", {
-      has: page.locator(".bottom-bar-network-chip", { hasText: networkSlug }),
+      has: page.locator(`.bottom-bar-network-header[data-network-slug="${networkSlug}"]`),
     });
-    return section.locator(".bottom-bar-tab", { hasText: windowName });
+    // The header's visible text is the slug + ⚙️ + badges, NOT the
+    // literal word "Server". Callers passing windowName="Server"
+    // (legacy ergonomics from pre-UX-6-E) want the header itself.
+    if (windowName === "Server") {
+      return section.locator(
+        `.bottom-bar-network-header[data-network-slug="${networkSlug}"]`,
+      );
+    }
+    // Channel + query tabs match by visible text. Exclude the header
+    // so a channel name that happens to share a substring with the
+    // slug doesn't double-match.
+    return section.locator(".bottom-bar-tab:not(.bottom-bar-network-header)", {
+      hasText: windowName,
+    });
   }
   // Desktop: scope to the section whose collapsed network header
   // row (UX-4 bucket C `.sidebar-network-header` row, replacing the
@@ -178,7 +195,7 @@ export function sidebarMentionBadge(page: Page, networkSlug: string, windowName:
 export function sidebarCloseButton(page: Page, networkSlug: string, windowName: string) {
   if (isMobileViewport(page)) {
     const section = page.locator(".bottom-bar-network", {
-      has: page.locator(".bottom-bar-network-chip", { hasText: networkSlug }),
+      has: page.locator(`.bottom-bar-network-header[data-network-slug="${networkSlug}"]`),
     });
     // The tab + close are now flat siblings; locate the tab by text,
     // then walk to the next sibling close × via xpath following-sibling.

@@ -306,16 +306,55 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   (1) visible iOS keyboard slide-in animation (compositor-layer,
   unfixable in pure PWA); (2) channel scroll position interference
   on switch — pending UX-6-M below.
-- **UX-6-E — UNPARKED 2026-05-21 (vjt clarified).** On wide screens
-  the Server window is reached by clicking the network's emoji + name
-  in the sidebar (no separate "Server" tab — the network header IS
-  the server window entry). On narrow screens we currently render
-  the network name AND THEN a literal "Server" tab as a separate
-  child row, which is inconsistent with wide. Fix: narrow mode
-  should match wide — emoji + network name in the BottomBar acts as
-  the clickable Server-window entry; drop the standalone "Server"
-  tab on narrow. (This corresponds to interpretation (1) of the
-  original 4-option PARK note.)
+- **UX-6-E — LANDED 2026-05-22.** Narrow-mode (mobile) BottomBar
+  per-network shape now matches wide-mode sidebar: the network header
+  IS the server-window entry. Pre-fix narrow rendered TWO entries —
+  a passive `.bottom-bar-network-chip` span + a standalone
+  `.bottom-bar-tab` labelled "Server". Post-fix one clickable
+  `.bottom-bar-network-header` button per network (emoji ⚙️ + slug +
+  badges), with a sibling disconnect × mirroring the wide-mode UX-4-D
+  affordance (visitor = quit-all / registered = park-one).
+  - `cicchetto/src/BottomBar.tsx` — JSX rewrite; old chip+Server-tab
+    pair → single clickable header.
+  - `cicchetto/src/themes/default.css` — `.bottom-bar-network-chip`
+    rules dropped; `.bottom-bar-network-header` / `-emoji` / `-name`
+    new block. Selection feedback (background-only flip on header)
+    is intentional design parity with desktop's
+    `.sidebar-network-header.selected` — comment in CSS warns "don't
+    fix".
+  - `cicchetto/src/__tests__/BottomBar.test.tsx` — 21 tests, all pass.
+    Belt-and-braces "no legacy chip span AND no standalone Server tab".
+  - `cicchetto/e2e/fixtures/cicchettoPage.ts` — selector update;
+    `sidebarWindow(slug, "Server")` legacy ergonomics special-case
+    returns the header (callers in ux-2, ux-4-z, ux-z journey specs
+    unchanged at call site).
+  - `cicchetto/e2e/tests/ios-3-bottom-bar-close.spec.ts` — Server-tab
+    NO-close test rewritten to assert "no `aria-label='Close Server'`"
+    invariant against the new header shape.
+  - `cicchetto/e2e/tests/ux-4-z-cluster-journey.spec.ts` — selector
+    update (line 282).
+  - `cicchetto/e2e/tests/ux-6-e-narrow-server-dedup.spec.ts` — NEW
+    spec, 3 @webkit-iphone-15 tests (header-as-entry, click→select,
+    disconnect × sibling). All pass.
+
+  Gates: 1534 vitest passed + biome exit-0 (16 baseline warnings) +
+  scripts/check.sh exit 0 + 3/3 ux-6-e webkit-iphone-15 e2e + 2/2
+  ios-3 webkit + 1/1 ux-2 archive webkit. Reviewer pass: SHIP, MED-1
+  documented inline (selection no-op color), LOW-1+L2 tightened
+  (closeServerBtn aria-label clarity + belt-and-braces vitest).
+  Deploy: HOT cic-only (no Elixir touched). Bundle: pending.
+
+  **Pre-existing e2e baseline failures discovered during smoke** (NOT
+  caused by UX-6-E — reproduce on `e53000c` main HEAD without these
+  edits in 2 consecutive runs):
+  - `ux-4-z-cluster-journey.spec.ts:141` (UX-4-Z parity matrix)
+    `members-pane` from `aside.shell-members.open` subtree intercepts
+    pointer events when test taps `.shell-drawer-backdrop.open`. Drawer
+    doesn't actually close on backdrop tap on webkit-iphone-15.
+  - `ux-z-cluster-journey.spec.ts:86` (UX-Z journey) archive modal
+    `#bofh` row never renders (`toHaveCount(1)` got 0 after 5s).
+  Park as separate investigation — both flag mobile drawer + archive
+  paths that may need a fix unrelated to BottomBar.
 - **UX-6-F — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-G — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-H** — MERGED INTO UX-6-D (D2 = "scrollback doesn't follow viewport-shrink on keyboard open"; same bug).

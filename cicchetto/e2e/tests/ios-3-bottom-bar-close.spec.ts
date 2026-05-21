@@ -49,18 +49,26 @@ test("@webkit iOS-3 — bottom-bar Server tab has NO close × button", async ({ 
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Server tab is always-present and non-closeable. Post-UX-3-DEC the
-  // wrapper <span> is gone — Server tab must not have an adjacent
-  // .bottom-bar-close sibling. Assert via `+ .bottom-bar-close` selector.
+  // UX-6-E: the server-window entry is now the network header itself
+  // (`.bottom-bar-network-header`, replacing the old chip+Server-tab
+  // pair). It DOES have a sibling × — but that × disconnects the
+  // network (mirrors the wide-mode UX-4-D affordance), not "close the
+  // server window." iOS-3's invariant — "server window itself is not
+  // closeable via a tab × the way channels/queries are" — still holds:
+  // no `bottom-bar-close` element is `aria-label="Close <something>"`
+  // for the Server tab. The disconnect × is `aria-label="Disconnect
+  // <slug>"` and is asserted by ux-6-e-narrow-server-dedup.spec.ts.
   const section = page.locator(".bottom-bar-network", {
-    has: page.locator(".bottom-bar-network-chip", { hasText: NETWORK_SLUG }),
+    has: page.locator(`.bottom-bar-network-header[data-network-slug="${NETWORK_SLUG}"]`),
   });
-  const serverTab = section.locator(".bottom-bar-tab", { hasText: /^Server/ });
-  await expect(serverTab).toBeVisible({ timeout: 10_000 });
-
-  // Following-sibling close × must NOT exist for the Server tab.
-  const serverCloseSibling = section.locator(
-    '.bottom-bar-tab:has-text("Server") + .bottom-bar-close',
+  const header = section.locator(
+    `.bottom-bar-network-header[data-network-slug="${NETWORK_SLUG}"]`,
   );
-  await expect(serverCloseSibling).toHaveCount(0);
+  await expect(header).toBeVisible({ timeout: 10_000 });
+
+  // No "Close Server" affordance exists — direct aria-label assertion
+  // for clarity. The disconnect × on the header is aria-label="Disconnect
+  // <slug>", a separate invariant (see ux-6-e-narrow-server-dedup).
+  const closeServerBtn = section.locator('.bottom-bar-close[aria-label="Close Server"]');
+  await expect(closeServerBtn).toHaveCount(0);
 });

@@ -4,7 +4,7 @@ import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, selectedChannel, setSelectedChannel } from "./lib/selection";
-import { closeChannelWindow, closeQueryWindow } from "./lib/windowClose";
+import { closeChannelWindow, closeQueryWindow, disconnectNetwork } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -12,17 +12,21 @@ import NickText from "./NickText";
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
 //
 // Spec #10 mobile layout. Horizontally scrollable strip with per-network
-// sections. Ordering within each network: server → channels → queries.
-// (Mentions/list pseudo-windows are C5 spec gap #4 — not wired yet; they
-// don't appear in BottomBar for C6. Documented.)
+// sections. Ordering within each network: server (header) → channels →
+// queries. Reuses the same data stores as Sidebar (networks(),
+// channelsBySlug(), queryWindowsByNetwork()) and the same selection verb
+// (setSelectedChannel). One feature, one code path — total consistency.
+// Close × helpers are shared with Sidebar via lib/windowClose.ts.
 //
-// Reuses the same data stores as Sidebar (networks(), channelsBySlug(),
-// queryWindowsByNetwork()) and the same selection verb (setSelectedChannel).
-// One feature, one code path — total consistency. Close × helpers are
-// shared with Sidebar via lib/windowClose.ts (iOS-3 added the mobile
-// affordance; previous mobile-only X-button omission reversed).
-//
-// Server window has NO close × — always-present per network.
+// UX-6-E (2026-05-21) — the per-network header IS the server-window
+// entry. Pre-fix narrow rendered TWO entries per network: a passive
+// `.bottom-bar-network-chip` span + a standalone `.bottom-bar-tab`
+// labelled "Server". That diverged from wide mode, where the
+// `.sidebar-network-header` row carries the emoji ⚙️ + slug AND is the
+// clickable server-window selector (kind = "server"). Narrow now mirrors
+// wide: one clickable `.bottom-bar-network-header` per network. The
+// disconnect × sibling matches the wide-mode UX-4-D affordance (visitor
+// = quit-all / registered = park-one).
 //
 // Horizontal scroll: overflow-x: auto on .bottom-bar; native touch
 // momentum via the browser default. Active-tab auto-scroll-into-view
@@ -64,137 +68,131 @@ const BottomBar: Component<Props> = (props) => {
     }),
   );
 
-  // UX-2 (2026-05-17) — eager-load archive per network on mobile so
-  // the chip can decide visibility. Desktop's `<details>` lazy-loads
-  // on user expand; the mobile bottom-bar has no expand affordance
-  // (the chip IS the trigger), so the only way to know "should I
-  // render this chip?" is to fetch the list up-front. `loadArchive`
-  // is idempotent + cheap (server returns an empty list when there's
-  // nothing archived), and the result is cached per identity rotation.
-  //
-  // UX-4 bucket L (2026-05-19) — archive chip moved out of BottomBar
-  // into the always-visible ShellChrome bar (top-right). BottomBar
-  // pre-fix eagerly loaded archive per network to gate chip visibility;
-  // ShellChrome resolves the archive target by reading the currently-
-  // selected window's network slug + opens the ArchiveModal on click.
-  // The per-network sidebar `<details>` archive section (desktop) still
-  // lazy-loads on user expand.
-
   return (
     <div class="bottom-bar" role="tablist" ref={navRef}>
       <For each={networks()}>
-        {(network) => (
-          <div class="bottom-bar-network">
-            <span class="bottom-bar-network-chip">{network.slug}</span>
+        {(network) => {
+          const headerKey = channelKey(network.slug, SERVER_WINDOW_NAME);
+          return (
+            <div class="bottom-bar-network">
+              {/* Network header = clickable server-window entry.
+                  Mirrors `.sidebar-network-header` on desktop: emoji + slug
+                  + unread/event/mention badges. The chip itself is now a
+                  button (the standalone "Server" tab is gone). */}
+              <button
+                type="button"
+                role="tab"
+                class="bottom-bar-tab bottom-bar-network-header"
+                classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
+                data-network-slug={network.slug}
+                onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
+              >
+                <span class="bottom-bar-network-emoji" aria-hidden="true">
+                  ⚙️
+                </span>
+                <span class="bottom-bar-network-name">{network.slug}</span>
+                <Show when={(messagesUnread()[headerKey] ?? 0) > 0}>
+                  <span class="bottom-bar-msg-unread">{messagesUnread()[headerKey]}</span>
+                </Show>
+                <Show when={(eventsUnread()[headerKey] ?? 0) > 0}>
+                  <span class="bottom-bar-events-unread">{eventsUnread()[headerKey]}</span>
+                </Show>
+                <Show when={(mentionCounts()[headerKey] ?? 0) > 0}>
+                  <span class="bottom-bar-mention">@{mentionCounts()[headerKey]}</span>
+                </Show>
+              </button>
+              {/* Disconnect × — sibling of the header, same flat-flex
+                  discipline as channel/query closes (post-UX-3-DEC).
+                  Routes through disconnectNetwork → quitAll for visitors,
+                  PATCH-one for registered users. */}
+              <button
+                type="button"
+                class="bottom-bar-close"
+                aria-label={`Disconnect ${network.slug}`}
+                onClick={() => disconnectNetwork(network.slug)}
+              >
+                ×
+              </button>
 
-            {/* Server window — always present per network */}
-            <button
-              type="button"
-              role="tab"
-              class="bottom-bar-tab"
-              classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
-              onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
-            >
-              Server
-              {/* CP13 — server-window receives :notice rows for server-routed
-                  numerics + NickServ + MOTD + ChanServ-fallback. Same badge
-                  treatment as channels so unread counts surface uniformly. */}
-              {(() => {
-                const key = channelKey(network.slug, SERVER_WINDOW_NAME);
-                return (
-                  <>
-                    <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                    </Show>
-                    <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                    </Show>
-                    <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                      <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                    </Show>
-                  </>
-                );
-              })()}
-            </button>
+              {/* Channel windows */}
+              <For each={channelsBySlug()?.[network.slug] ?? []}>
+                {(channel) => {
+                  const key = channelKey(network.slug, channel.name);
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        role="tab"
+                        class="bottom-bar-tab bottom-bar-tab-with-close"
+                        classList={{
+                          selected: isSelected(network.slug, channel.name),
+                          parted: !channel.joined,
+                        }}
+                        onClick={() => handleClick(network.slug, channel.name, "channel")}
+                      >
+                        {channel.name}
+                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                        </Show>
+                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
+                        </Show>
+                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
+                        </Show>
+                      </button>
+                      <button
+                        type="button"
+                        class="bottom-bar-close"
+                        aria-label={`Close ${channel.name}`}
+                        onClick={() => closeChannelWindow(network.slug, channel.name)}
+                      >
+                        ×
+                      </button>
+                    </>
+                  );
+                }}
+              </For>
 
-            {/* Channel windows */}
-            <For each={channelsBySlug()?.[network.slug] ?? []}>
-              {(channel) => {
-                const key = channelKey(network.slug, channel.name);
-                return (
-                  <>
-                    <button
-                      type="button"
-                      role="tab"
-                      class="bottom-bar-tab bottom-bar-tab-with-close"
-                      classList={{
-                        selected: isSelected(network.slug, channel.name),
-                        parted: !channel.joined,
-                      }}
-                      onClick={() => handleClick(network.slug, channel.name, "channel")}
-                    >
-                      {channel.name}
-                      <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                      </Show>
-                      <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                      </Show>
-                      <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                      </Show>
-                    </button>
-                    <button
-                      type="button"
-                      class="bottom-bar-close"
-                      aria-label={`Close ${channel.name}`}
-                      onClick={() => closeChannelWindow(network.slug, channel.name)}
-                    >
-                      ×
-                    </button>
-                  </>
-                );
-              }}
-            </For>
-
-            {/* Query (DM) windows */}
-            <For each={queryWindowsByNetwork()[network.id] ?? []}>
-              {(qw) => {
-                const key = channelKey(network.slug, qw.targetNick);
-                return (
-                  <>
-                    <button
-                      type="button"
-                      role="tab"
-                      class="bottom-bar-tab bottom-bar-tab-with-close"
-                      classList={{ selected: isSelected(network.slug, qw.targetNick) }}
-                      onClick={() => handleClick(network.slug, qw.targetNick, "query")}
-                    >
-                      <NickText nick={qw.targetNick} extraClass="bottom-bar-tab-nick" />
-                      <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                      </Show>
-                      <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                      </Show>
-                      <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                        <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                      </Show>
-                    </button>
-                    <button
-                      type="button"
-                      class="bottom-bar-close"
-                      aria-label={`Close DM with ${qw.targetNick}`}
-                      onClick={() => closeQueryWindow(network.id, qw.targetNick)}
-                    >
-                      ×
-                    </button>
-                  </>
-                );
-              }}
-            </For>
-          </div>
-        )}
+              {/* Query (DM) windows */}
+              <For each={queryWindowsByNetwork()[network.id] ?? []}>
+                {(qw) => {
+                  const key = channelKey(network.slug, qw.targetNick);
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        role="tab"
+                        class="bottom-bar-tab bottom-bar-tab-with-close"
+                        classList={{ selected: isSelected(network.slug, qw.targetNick) }}
+                        onClick={() => handleClick(network.slug, qw.targetNick, "query")}
+                      >
+                        <NickText nick={qw.targetNick} extraClass="bottom-bar-tab-nick" />
+                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
+                        </Show>
+                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
+                        </Show>
+                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
+                          <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
+                        </Show>
+                      </button>
+                      <button
+                        type="button"
+                        class="bottom-bar-close"
+                        aria-label={`Close DM with ${qw.targetNick}`}
+                        onClick={() => closeQueryWindow(network.id, qw.targetNick)}
+                      >
+                        ×
+                      </button>
+                    </>
+                  );
+                }}
+              </For>
+            </div>
+          );
+        }}
       </For>
     </div>
   );

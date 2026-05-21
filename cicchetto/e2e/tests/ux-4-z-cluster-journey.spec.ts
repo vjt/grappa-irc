@@ -273,15 +273,16 @@ test("@webkit UX-4-Z cluster — case-fix + home + sidebar collapse + close-fall
     // ─── Bucket C — sidebar header collapse + ShellChrome archive ─────
     // BottomBar renders ONE "Server" tab per network (no duplicate
     // network-name header + server-row pair). On mobile the sidebar
-    // is absent entirely; the assertion mirror is: exactly one
-    // `.bottom-bar-network-chip` per network section with text =
-    // network slug. Bucket C's collapse + bucket L's ShellChrome
-    // chain together: selecting the server window resolves the
-    // archive button slug to the network.
-    const networkChip = page.locator(".bottom-bar-network-chip", {
-      hasText: NETWORK_SLUG,
-    });
-    await expect(networkChip).toHaveCount(1);
+    // is absent entirely; the assertion mirror post-UX-6-E is: exactly
+    // one `.bottom-bar-network-header[data-network-slug=...]` per
+    // network section (the chip + standalone Server tab pair merged
+    // into one clickable header). Bucket C's collapse + bucket L's
+    // ShellChrome chain together: selecting the server window resolves
+    // the archive button slug to the network.
+    const networkHeader = page.locator(
+      `.bottom-bar-network-header[data-network-slug="${NETWORK_SLUG}"]`,
+    );
+    await expect(networkHeader).toHaveCount(1);
 
     // ─── Bucket K — scroll-on-activate canonical ─────────────────────
     // Switch from channel → server → channel; assert the channel

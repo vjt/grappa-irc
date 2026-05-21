@@ -2623,15 +2623,37 @@ html.resize-dragging * {
   border-right: 1px solid var(--border);
 }
 
-.bottom-bar-network-chip {
+/* UX-6-E (2026-05-21) — `.bottom-bar-network-header` IS the
+   server-window tab. Pre-fix the network slug rendered as a passive
+   `.bottom-bar-network-chip` span sitting next to a standalone `Server`
+   tab. The chip styling is preserved (accent color, smaller font,
+   stretch height) but it's now a button: clickable, selectable,
+   gets the badge children. The disconnect × is its sibling — mirrors
+   `.sidebar-network-header` on desktop.
+
+   Selection feedback note: `.bottom-bar-tab.selected` (rule below at
+   .bottom-bar-tab.selected) flips background to var(--border) AND sets
+   color: var(--accent). The header baseline is already accent — so
+   the color change is a deliberate no-op; only the background shifts.
+   This matches desktop's `.sidebar-network-section li.selected
+   .sidebar-window-btn` selection feedback exactly. Don't "fix" it. */
+.bottom-bar-network-header {
   font-size: 0.75rem;
   color: var(--accent);
   padding: 0 0.5rem;
   white-space: nowrap;
-  border-right: 1px solid var(--border);
-  align-self: stretch;
   display: flex;
   align-items: center;
+  gap: 0.25rem;
+}
+
+.bottom-bar-network-emoji {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.bottom-bar-network-name {
+  font-weight: bold;
 }
 
 .bottom-bar-tab {
