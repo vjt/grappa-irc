@@ -62,3 +62,19 @@ export function openArchivePanel(setters: MobilePanelSetters, slug: string): voi
   setters.setSettingsOpen(false);
   setArchiveModalNetwork(slug);
 }
+
+// UX-6 bucket C (2026-05-21) — admin launcher in the mobile drawer
+// footer (vjt iPhone-dogfood Bug 3). Unlike settings/archive, admin
+// navigation is selection-driven (Shell mounts AdminPane on
+// `selectedChannel.kind === "admin"` — single source of truth shared
+// with Sidebar admin row + SettingsDrawer admin entry). The helper's
+// job here is the SAME mutex shape as openSettingsPanel/openArchivePanel
+// — close the three sibling surfaces before navigating — and then
+// delegate the selection change via the `navigate` thunk. No new
+// `adminOpen` signal: the selection store already carries this state.
+export function openAdminPanel(setters: MobilePanelSetters, navigate: () => void): void {
+  setters.setMembersOpen(false);
+  setters.setSettingsOpen(false);
+  setArchiveModalNetwork(null);
+  navigate();
+}

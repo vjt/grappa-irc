@@ -469,10 +469,7 @@ createRoot(() => {
             //
             // sender !== ownNick gate: own self-msg echoes ride this
             // topic too; suppress the audible alert for own typing.
-            if (
-              !nickEquals(message.sender, ownNick) &&
-              !effectivelyFocused(slug, message.sender)
-            ) {
+            if (!nickEquals(message.sender, ownNick) && !effectivelyFocused(slug, message.sender)) {
               playBeep();
             }
             routeMessage(slug, senderKey, message.sender, message, ownNick);

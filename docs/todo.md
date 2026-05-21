@@ -10,6 +10,47 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-C LANDED 2026-05-21.** Admin button in mobile drawer footer
+(vjt iPhone-dogfood Bug 3). Pre-bucket the mobile launcher footer
+(UX-5 BM) hosted only settings + archive; admins had to open the
+LEFT sidebar drawer and scroll to the 🔧 sidebar admin row to reach
+AdminPane — one extra step over desktop. Bucket adds a 4th launcher
+button gated on `isAdmin()` (single source of truth shared with
+Sidebar admin row + SettingsDrawer admin entry); tap dispatches the
+same `setSelectedChannel({kind: "admin", ...ADMIN_*})` that the
+Sidebar handler uses (selection-driven model, no parallel
+`adminOpen` signal).
+
+`lib/mobilePanel.ts` gains `openAdminPanel({setters}, navigate)` —
+SAME mutex shape as `openSettingsPanel`/`openArchivePanel` (close
+members + settings + archive then engage self) scaled by one
+sibling. Thunk indirection keeps the mutex co-located with siblings
+while the selection target stays in the selection store.
+
+Gates: 2312 ExUnit + 0 Dialyzer + 0 Credo + 0 Sobelow + doctor green
++ 1528 vitest (1523 baseline + 4 new Shell UX-6-C cases + 1 new
+mobilePanel openAdminPanel test) + biome exit-0 (16 baseline
+warnings — BottomBar.test rot + 2 default.css `!important`, NOT
+this bucket) + 3/3 ux-6-c Playwright (1 chromium desktop + 2
+@webkit-iphone-15 admin & non-admin) + bats 23/23.
+
+Reviewer-loop (general-purpose agent): APPROVE, 0 CRIT/HIGH/MED,
+2 LOW (LOW-1 glyph-escape style pre-existing inconsistency in
+ShellChrome — wrench escape vs literal `⚙`; LOW-2 redundant PATCH
+in non-admin afterEach — defensive shape kept intentionally).
+NON-FINDINGs covered Q1/Q2 design decisions + reactivity + mutex
+ordering + diff scope.
+
+Deploy: **HOT** (cic-only — no mix.lock / application.ex / migrations
+/ nginx / Dockerfile / long-lived GenServer state touched). Bundle
+deploy via `scripts/deploy-cic.sh` for hash broadcast.
+
+Also includes carry-debt biome-format fixes from UX-6-L commit
+eb07e4b (3 files: pushDedup.test.ts + beep.ts + subscribe.ts) that
+`scripts/bun.sh run check:fix` auto-resolved this turn — per
+`feedback_check_sh_working_tree_trap`, must ship in this commit or
+CI diverges from local.
+
 **UX-6-L LANDED 2026-05-21.** Foreground push → in-app beep
 (SW-suppress Option B per vjt 2026-05-20). Two surfaces:
 
@@ -128,7 +169,7 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 
 **UX-6 cluster — remaining buckets after B closes:**
 
-- **UX-6-C** — admin button in mobile drawer footer (Bug 3).
+- **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-D** — BottomBar virtual-keyboard padding (Bug 5).
 - **UX-6-E** — BottomBar server tab collapse (Bug 6).
 - **UX-6-F** — send button → arrow glyph (Bug 7).

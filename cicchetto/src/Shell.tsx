@@ -13,7 +13,12 @@ import { getDraft, setDraft, tabComplete } from "./lib/compose";
 import { loadUploadTtlSeconds } from "./lib/imageUploadOrchestrator";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
-import { openArchivePanel, openSettingsPanel, toggleMembersPanel } from "./lib/mobilePanel";
+import {
+  openAdminPanel,
+  openArchivePanel,
+  openSettingsPanel,
+  toggleMembersPanel,
+} from "./lib/mobilePanel";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import { selectedChannel, setSelectedChannel, unreadCounts } from "./lib/selection";
@@ -719,6 +724,34 @@ const Shell: Component = () => {
             >
               ⚙
             </button>
+            {/* UX-6 bucket C (2026-05-21) — 4th launcher: admin
+                console. Visible only when `isAdmin()` is true (single
+                source of truth shared with Sidebar admin row +
+                SettingsDrawer admin entry). Selection-driven dispatch
+                mirrors the Sidebar handler — Shell mounts AdminPane on
+                `selectedChannel.kind === "admin"`. Mutex via
+                openAdminPanel: closes members/settings/archive before
+                navigating, same shape as openSettingsPanel /
+                openArchivePanel. */}
+            <Show when={isAdmin()}>
+              <button
+                type="button"
+                class="shell-chrome-btn shell-chrome-admin"
+                aria-label="open admin"
+                data-testid="mobile-panel-admin"
+                onClick={() =>
+                  openAdminPanel({ membersOpen, setMembersOpen, setSettingsOpen }, () =>
+                    setSelectedChannel({
+                      networkSlug: ADMIN_WINDOW_SLUG,
+                      channelName: ADMIN_WINDOW_NAME,
+                      kind: "admin",
+                    }),
+                  )
+                }
+              >
+                {"\u{1F527}"}
+              </button>
+            </Show>
           </footer>
         </aside>
 

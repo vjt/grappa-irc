@@ -82,3 +82,30 @@ describe("openArchivePanel", () => {
     expect(archive.setArchiveModalNetwork).toHaveBeenCalledWith("freenode");
   });
 });
+
+// UX-6 bucket C (2026-05-21) — admin launcher mutex helper. Selection
+// dispatch lives in the caller (Shell.tsx setSelectedChannel with
+// $admin/$admin/admin); helper's job is the SAME shape as
+// openSettingsPanel / openArchivePanel — close members + settings +
+// archive — then invoke the caller-supplied navigate thunk.
+describe("openAdminPanel", () => {
+  it("closes members + settings + archive then calls navigate", async () => {
+    const archive = await import("../lib/archive");
+    const { openAdminPanel } = await import("../lib/mobilePanel");
+    const setMembersOpen = vi.fn();
+    const setSettingsOpen = vi.fn();
+    const navigate = vi.fn();
+    openAdminPanel(
+      {
+        membersOpen: () => true,
+        setMembersOpen,
+        setSettingsOpen,
+      },
+      navigate,
+    );
+    expect(setMembersOpen).toHaveBeenCalledWith(false);
+    expect(setSettingsOpen).toHaveBeenCalledWith(false);
+    expect(archive.setArchiveModalNetwork).toHaveBeenCalledWith(null);
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+});

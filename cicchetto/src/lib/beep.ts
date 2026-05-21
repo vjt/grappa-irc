@@ -33,7 +33,8 @@ declare global {
 export function playBeep(): void {
   if (typeof window === "undefined") return;
   const Ctor =
-    window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!Ctor) return;
 
   try {

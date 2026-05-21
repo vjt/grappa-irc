@@ -33,10 +33,7 @@ describe("shouldSuppressPush", () => {
   });
 
   it("does NOT suppress when every window is hidden", () => {
-    const clients: ClientLike[] = [
-      { visibilityState: "hidden" },
-      { visibilityState: "hidden" },
-    ];
+    const clients: ClientLike[] = [{ visibilityState: "hidden" }, { visibilityState: "hidden" }];
     expect(shouldSuppressPush(clients)).toBe(false);
   });
 

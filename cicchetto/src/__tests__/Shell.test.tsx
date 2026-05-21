@@ -742,6 +742,111 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeNull();
     });
   });
+
+  // UX-6 bucket C (2026-05-21) — admin button in mobile drawer footer
+  // (vjt iPhone-dogfood Bug 3). Pre-bucket the mobile launcher footer
+  // hosted only settings + archive; admins had to open the LEFT
+  // sidebar drawer and scroll to the 🔧 row to reach AdminPane on
+  // mobile. Bucket adds a 4th launcher button gated on `isAdmin()`
+  // mirroring the Sidebar admin row gate (single source of truth).
+  // Tap dispatches the same selection-driven admin window navigation
+  // that Sidebar + SettingsDrawer entries use ($admin/$admin/admin).
+  describe("UX-6 bucket C — admin launcher button in mobile drawer footer", () => {
+    it("admin user: launcher footer hosts admin button alongside settings + archive", async () => {
+      mobileState.value = true;
+      userHolder.current = {
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: true,
+        inserted_at: "x",
+      };
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeInTheDocument();
+      });
+      const footer = container.querySelector(".shell-members .mobile-panel-actions");
+      expect(footer?.querySelector("[data-testid='mobile-panel-admin']")).not.toBeNull();
+    });
+
+    it("non-admin user: launcher footer does NOT render the admin button", async () => {
+      mobileState.value = true;
+      userHolder.current = {
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: false,
+        inserted_at: "x",
+      };
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeInTheDocument();
+      });
+      const footer = container.querySelector(".shell-members .mobile-panel-actions");
+      expect(footer?.querySelector("[data-testid='mobile-panel-admin']")).toBeNull();
+    });
+
+    it("admin tap: dispatches selection to $admin window (same handler as Sidebar admin row)", async () => {
+      mobileState.value = true;
+      userHolder.current = {
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: true,
+        inserted_at: "x",
+      };
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      const btn = await waitFor(() => {
+        const b = container.querySelector<HTMLButtonElement>(
+          ".shell-members .mobile-panel-actions [data-testid='mobile-panel-admin']",
+        );
+        expect(b).not.toBeNull();
+        return b as HTMLButtonElement;
+      });
+      fireEvent.click(btn);
+      expect(selectionState.setSelectedChannelMock).toHaveBeenCalledWith({
+        networkSlug: "$admin",
+        channelName: "$admin",
+        kind: "admin",
+      });
+    });
+
+    it("admin tap: closes the members drawer (mutex with settings/archive)", async () => {
+      mobileState.value = true;
+      userHolder.current = {
+        kind: "user",
+        id: "u1",
+        name: "vjt",
+        is_admin: true,
+        inserted_at: "x",
+      };
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      const { container } = render(() => <Shell />);
+      // Open the drawer first via TopicBar hamburger (BM mutex).
+      const hamburger = await waitFor(() => {
+        const h = container.querySelector<HTMLButtonElement>(".topic-bar .topic-bar-hamburger");
+        expect(h).not.toBeNull();
+        return h as HTMLButtonElement;
+      });
+      fireEvent.click(hamburger);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members.open")).not.toBeNull();
+      });
+      const btn = container.querySelector<HTMLButtonElement>(
+        ".shell-members .mobile-panel-actions [data-testid='mobile-panel-admin']",
+      );
+      expect(btn).not.toBeNull();
+      fireEvent.click(btn as HTMLButtonElement);
+      // Same mutex shape as openSettingsPanel — drawer closes before
+      // navigating to the launched surface.
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members.open")).toBeNull();
+      });
+    });
+  });
 });
 
 // M-cluster M-7 — admin pane lifecycle on Shell. The drawer entry +
