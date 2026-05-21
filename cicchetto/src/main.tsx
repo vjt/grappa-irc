@@ -14,7 +14,6 @@ import "./lib/subscribe";
 import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
-import { installKeyboardLift } from "./lib/keyboardLift";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
@@ -46,18 +45,6 @@ applySidebarWidthsFromStorage();
 // body to keep focused inputs visible and pushes the top bar out
 // of view. Boot-time so the first frame already has the var.
 installViewportHeightTracker();
-
-// UX-6 bucket D v5 (2026-05-21) — iOS PWA keyboard pre-lift. iOS
-// scrolls the layout viewport up BEFORE the focus event fires when
-// the about-to-be-focused input isn't visible enough. CSS-only
-// fixes (D v2 / v3 / v4) couldn't address the origin shift. Pre-lift
-// applies `transform: translateY(-cachedKeyboardHeight)` to the
-// shell on pointerdown, so iOS's pre-focus visibility check sees the
-// input already in the safe zone and skips the auto-scroll. First
-// keyboard show learns the height; localStorage persists it across
-// PWA restarts so subsequent focuses are pre-lifted from the very
-// first tap.
-installKeyboardLift();
 
 // UX-3 OCT (installScrollPin) REMOVED 2026-05-21 by UX-6 bucket D v2.
 // With D1's `.shell-mobile:has(:focus) { padding-bottom: 0 }` AND
