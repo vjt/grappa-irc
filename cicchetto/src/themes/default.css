@@ -1529,6 +1529,39 @@ html.resize-dragging * {
   margin-top: auto;
 }
 
+/* UX-6 bucket D diagnostic readout (post-revert 2026-05-21). Two-column
+   grid: label + value. Compact font, dim labels, accent on values so
+   the eye locks on the numbers vjt needs to read aloud. Will be
+   removed alongside the diagnostic block in SettingsDrawer.tsx once
+   D is fixed for real. */
+.settings-diag-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.settings-diag-grid > span {
+  color: var(--muted);
+}
+
+.settings-diag-grid > code {
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+.settings-diag-log {
+  margin: 0.5rem 0 0;
+  padding: 0 0 0 1.25rem;
+  font-size: 0.75rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.settings-diag-log li {
+  padding: 0.1rem 0;
+}
+
 .settings-drawer h2 {
   font-size: 1rem;
   font-weight: normal;

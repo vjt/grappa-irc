@@ -138,6 +138,92 @@ const SettingsDrawer: Component<Props> = (props) => {
     }
   });
 
+  // UX-6 bucket D diagnostic readout (post-revert 2026-05-21). The
+  // first D attempt shipped fixes that didn't actually help on vjt's
+  // iPhone PWA + introduced an intermittent compose-tap scroll-lock
+  // regression. Root cause is unknown: the CDP-on-desktop probe
+  // validated the cascade but couldn't reproduce iOS PWA standalone
+  // behavior. This panel surfaces live values from window +
+  // visualViewport + lib/viewportHeight.ts so vjt can READ on his
+  // device what the JS actually observes during keyboard open/close.
+  // No production impact: read-only DOM probes, no side effects.
+  const [diagWinH, setDiagWinH] = createSignal(0);
+  const [diagWinW, setDiagWinW] = createSignal(0);
+  const [diagVvH, setDiagVvH] = createSignal(0);
+  const [diagVvW, setDiagVvW] = createSignal(0);
+  const [diagVvScale, setDiagVvScale] = createSignal(1);
+  const [diagVvOffsetTop, setDiagVvOffsetTop] = createSignal(0);
+  const [diagCssVar, setDiagCssVar] = createSignal("");
+  const [diagKbdClass, setDiagKbdClass] = createSignal(false);
+  const [diagEventTick, setDiagEventTick] = createSignal(0);
+  const [diagLastEvent, setDiagLastEvent] = createSignal<string>("(none)");
+  const [diagFocusedTag, setDiagFocusedTag] = createSignal<string>("(none)");
+  // Ring buffer of recent (event, vv.h, win.h, delta) so transient
+  // keyboard-slide oscillations are visible after-the-fact instead of
+  // disappearing when the next event overwrites the latest snapshot.
+  const [diagLog, setDiagLog] = createSignal<string[]>([]);
+
+  const snapshotDiag = (eventName: string): void => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    const winH = typeof window !== "undefined" ? window.innerHeight : 0;
+    const winW = typeof window !== "undefined" ? window.innerWidth : 0;
+    const vvH = vv?.height ?? 0;
+    const vvW = vv?.width ?? 0;
+    setDiagWinH(winH);
+    setDiagWinW(winW);
+    setDiagVvH(vvH);
+    setDiagVvW(vvW);
+    setDiagVvScale(vv?.scale ?? 1);
+    setDiagVvOffsetTop(vv?.offsetTop ?? 0);
+    setDiagCssVar(
+      typeof document !== "undefined"
+        ? document.documentElement.style.getPropertyValue("--viewport-height") || "(unset)"
+        : "(no document)",
+    );
+    setDiagKbdClass(
+      typeof document !== "undefined"
+        ? document.documentElement.classList.contains("keyboard-open")
+        : false,
+    );
+    setDiagEventTick((n) => n + 1);
+    setDiagLastEvent(eventName);
+    setDiagFocusedTag(
+      typeof document !== "undefined" && document.activeElement
+        ? `${document.activeElement.tagName}${
+            (document.activeElement as HTMLElement).id
+              ? `#${(document.activeElement as HTMLElement).id}`
+              : ""
+          }`
+        : "(none)",
+    );
+    const delta = winH - vvH;
+    const line = `${eventName} vv=${Math.round(vvH)} win=${Math.round(winH)} Δ=${Math.round(
+      delta,
+    )} cssVar=${document.documentElement.style.getPropertyValue("--viewport-height") || "(unset)"}`;
+    setDiagLog((prev) => [line, ...prev].slice(0, 20));
+  };
+
+  onMount(() => {
+    snapshotDiag("mount");
+    const onResize = () => snapshotDiag("resize");
+    const onVvResize = () => snapshotDiag("vv.resize");
+    const onVvScroll = () => snapshotDiag("vv.scroll");
+    const onFocusIn = () => snapshotDiag("focusin");
+    const onFocusOut = () => snapshotDiag("focusout");
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onVvResize);
+    window.visualViewport?.addEventListener("scroll", onVvScroll);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onVvResize);
+      window.visualViewport?.removeEventListener("scroll", onVvScroll);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+    });
+  });
+
   // UX-6 bucket A — refcounted overlay scroll-lock. Push on open,
   // pop on close so `<html>` carries `.overlay-open` while any
   // overlay is up. v4: the scroll-lock targets the .settings-drawer
@@ -598,6 +684,55 @@ const SettingsDrawer: Component<Props> = (props) => {
         >
           log out
         </button>
+
+        {/* UX-6 bucket D diagnostic readout (post-revert
+            2026-05-21). Surfaces live values from window +
+            visualViewport + lib/viewportHeight.ts so vjt can READ
+            on his iPhone what the JS observes during keyboard
+            open/close. Read-only DOM probes, zero side effects on
+            production paths. Will be removed once D is fixed for
+            real and the underlying iOS PWA behavior is understood. */}
+        <fieldset class="settings-fieldset settings-diag">
+          <legend>viewport diagnostics (debug)</legend>
+          <div class="settings-diag-grid">
+            <span>vv.height</span>
+            <code data-testid="diag-vv-h">{Math.round(diagVvH())}</code>
+            <span>vv.width</span>
+            <code data-testid="diag-vv-w">{Math.round(diagVvW())}</code>
+            <span>window.innerHeight</span>
+            <code data-testid="diag-win-h">{Math.round(diagWinH())}</code>
+            <span>window.innerWidth</span>
+            <code data-testid="diag-win-w">{Math.round(diagWinW())}</code>
+            <span>Δ (winH − vvH)</span>
+            <code data-testid="diag-delta">{Math.round(diagWinH() - diagVvH())}</code>
+            <span>vv.scale</span>
+            <code>{diagVvScale().toFixed(2)}</code>
+            <span>vv.offsetTop</span>
+            <code>{Math.round(diagVvOffsetTop())}</code>
+            <span>--viewport-height</span>
+            <code data-testid="diag-css-var">{diagCssVar()}</code>
+            <span>html.keyboard-open</span>
+            <code data-testid="diag-kbd-class">{diagKbdClass() ? "true" : "false"}</code>
+            <span>active element</span>
+            <code data-testid="diag-focus">{diagFocusedTag()}</code>
+            <span>event tick</span>
+            <code data-testid="diag-event-tick">{diagEventTick()}</code>
+            <span>last event</span>
+            <code data-testid="diag-last-event">{diagLastEvent()}</code>
+          </div>
+          <details>
+            <summary>recent events (newest first)</summary>
+            <ol class="settings-diag-log">
+              <For each={diagLog()}>
+                {(line) => (
+                  <li>
+                    <code>{line}</code>
+                  </li>
+                )}
+              </For>
+            </ol>
+          </details>
+        </fieldset>
 
         {/* UX-4 bucket L — bottom "done" button. Same close verb as
             the top × — mobile thumb-reach surface. Sits below logout
