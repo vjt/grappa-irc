@@ -179,7 +179,15 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   `padding-bottom: env(safe-area-inset-bottom)` already cover some
   shapes; fix scope hinges on the actual symptom. Halt-for-Q
   rather than guess.
-- **UX-6-E** — BottomBar server tab collapse (Bug 6).
+- **UX-6-E — PARKED 2026-05-21.** Awaiting vjt symptom pick (Bug 6
+  has 4 plausible "collapse" semantics): (1) merge per-network chip
+  + Server tab — click chip lands on server window, drops standalone
+  Server button; (2) hide Server tab when unread=0 — surface back on
+  activity; (3) truncate label "Server" → icon glyph; (4) Server tab
+  literally broken/collapsing visually on real iPhone (layout bug).
+  CDP confirms 73px Server tab eats real horizontal width on mobile
+  (393px viewport, 5+ tabs per network), but the FIX SHAPE differs
+  5x across interpretations. Halt-for-Q rather than guess.
 - **UX-6-F** — send button → arrow glyph (Bug 7).
 - **UX-6-G** — admin horizontal scroll on mobile (was original B).
 - **UX-6-H** — scrollback doesn't follow viewport-shrink on keyboard open.
