@@ -170,7 +170,15 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 **UX-6 cluster — remaining buckets after B closes:**
 
 - **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-D** — BottomBar virtual-keyboard padding (Bug 5).
+- **UX-6-D — PARKED 2026-05-21.** Awaiting vjt symptom pick (Bug 5
+  has 4 plausible surfaces): (1) BottomBar hidden by keyboard;
+  (2) BottomBar pushed above keyboard leaving a gap; (3) BottomBar
+  overlaps compose/scrollback when viewport shrinks; (4) home-
+  indicator drawing over BottomBar absent any keyboard. Existing
+  `--viewport-height` infra (UX-3 PENT + UX-5 BV) + shell-mobile
+  `padding-bottom: env(safe-area-inset-bottom)` already cover some
+  shapes; fix scope hinges on the actual symptom. Halt-for-Q
+  rather than guess.
 - **UX-6-E** — BottomBar server tab collapse (Bug 6).
 - **UX-6-F** — send button → arrow glyph (Bug 7).
 - **UX-6-G** — admin horizontal scroll on mobile (was original B).
