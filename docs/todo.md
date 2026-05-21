@@ -10,53 +10,51 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**UX-6-D PARTIAL-LANDED 2026-05-21.** Five attempts (v1-v5);
-ultimately only D1 + D2 helped on vjt's iPhone PWA. v3 (html/body/#
-root position:fixed), v4 (.shell-mobile position:fixed), and v5 (JS
-pre-lift via lib/keyboardLift.ts) all had zero effect or made things
-worse — REVERTED (d4282d6 + 81e582f + bfb10ee + 0bf854f).
+**UX-6-D LANDED 2026-05-21.** 11 attempts (D1-D12) + 4 parallel
+research agents converged on Telegram Web K pattern. See
+docs/DESIGN_NOTES.md UX-6-D entry for the full catastrophe-and-
+redemption arc.
 
-KEPT (from v2 commit 08a0389):
-- **D1**: `.shell-mobile:has(textarea:focus, input:focus) {
-  padding-bottom: 0 }`. Collapses the ~34px home-indicator inset
-  when compose is focused. vjt confirmed working.
-- **D2**: `.scrollback { min-height: 0 }`. iOS WebKit flex-min-
-  content quirk fix. Scrollback height cascade verified correct via
-  on-device diag (shellmobile=570 → shellmain=466 → scrollback-pane=
-  354 → scrollback=354/1689 with content scrollHeight 1689).
+LANDED surfaces:
+- `lib/viewportHeight.ts` — `installViewportHeightTracker` writes
+  `--vh` (Telegram pattern, vv.height*0.01 px) + `--viewport-height`
+  (legacy). `installSmartScrollPin` snaps window scroll to (0,0)
+  gated on touch-state (50ms post-touchend grace).
+- `lib/platform.ts` — `isIos()` UA detection + `applyIosClass()`
+  applies `html.is-ios` class at boot pre-render.
+- `themes/default.css` — `html.is-ios { position: fixed; inset: 0 }`
+  + `html.is-ios body { height: calc(var(--vh, 1vh) * 100) }`
+  ATOMIC. `.shell-mobile:has(textarea:focus, input:focus)
+  { padding-bottom: 0 }` (D1). `.scrollback { min-height: 0 }` (D2).
+- `Shell.tsx` — keybinding compose focus uses
+  `focus({preventScroll: true})`.
+- `ScrollbackPane.tsx` — `vv.resize` → `scrollToActivation()`
+  (canonical marker-or-tail routine).
+- `DiagFloat.tsx` — flag-gated floating overlay via Portal.
+- `AdminDebugTab.tsx` — Admin → Debug tab hosts diag readouts +
+  DiagFloat toggle (moved from SettingsDrawer where it competed
+  with the focus-state under investigation).
+- `e2e/tests/ux-6-d-keyboard-pattern.spec.ts` — @webkit-iphone-15
+  spec covering JS+CSS contracts (a) html.is-ios on iPhone UA,
+  (b) --vh CSS var, (c) --viewport-height legacy var, (d) D1 :has
+  rule effectiveness, (e) smart-pin scroll snap, (f) Admin Debug
+  tab + DiagFloat toggle.
 
-RESTORED (was removed in 0c20008, restoration in 0bf854f revert):
-- `installScrollPin` (UX-3 OCT). Yanks `window.scrollTo(0,0)` on
-  any non-zero scroll event. Original pre-D behavior. vjt explicit
-  ask via AskUserQuestion to keep this as the "least worst" option
-  given iOS PWA's residual quirk.
+**Accepted residuals:**
+- Visible topbar slide during iOS keyboard open (~250ms animation).
+  Per-frame rAF diag during D11 proved vvOT=0 + wy=0 throughout —
+  the motion is at the WKWebView compositor BELOW JS visibility
+  (WebKit `_zoomToFocusRect` in `WKContentView`). Not fixable in
+  pure PWA. Escape via Capacitor (Tier B from research) if priority
+  rises; documented research in DESIGN_NOTES.
+- Channel scroll position interference — DEFERRED to next session
+  (vjt 2026-05-21: "still happening but we tackle that in the next
+  session"). See "## Immediate" section below for the pending item.
 
-KEPT (ea5a038 + 199261a):
-- Viewport diagnostic panel in SettingsDrawer.tsx (window+
-  visualViewport+element-chain heights, focusin/focusout/vv.scroll
-  ring buffer). vjt explicit ask to retain for future investigation.
-
-**Residual iOS PWA quirk (known limitation).** iOS PWA standalone
-shifts the visualViewport coordinate origin within the layout
-viewport on input focus: `window.innerHeight` stays at 894,
-`visualViewport.height` shrinks to 570, `visualViewport.offsetTop`
-grows. `vv.scroll` events fire (not `window.scroll`). `position:
-fixed` does NOT help because fixed-relative-to-layout-viewport
-moves with the shift. `interactive-widget=resizes-content` is
-Chrome-Android only — WebKit ignores it. The pre-lift JS technique
-(translate shell BEFORE focus via mousedown handler with
-localStorage-cached keyboard height — Crscristi28/ios-pwa-keyboard-
-fix reference impl) made vjt's iPhone WORSE (compose ended up at
-TOP of screen instead of pinned to keyboard). User-visible symptom
-that remains: app chrome shifts up on focus, gap appears between
-compose and keyboard top, intermittent drag-cancel scroll-lock on
-scrollback (the original pre-D behavior — installScrollPin's
-trade-off). Accepted as iOS PWA limitation pending Apple fix to
-WebKit Bug #297779 or `interactive-widget=resizes-content` support.
-
-Gates: 1529 vitest passed + biome exit-0 (16 baseline warnings) +
-scripts/check.sh exit-0. Deploy: HOT (cic-only — bundle redeploy
-via scripts/deploy-cic.sh after the 4 revert commits).
+Gates: 1532 vitest passed + biome exit-0 (16 baseline warnings) +
+scripts/check.sh exit 0 (2312 elixir tests, 0 failures —
+pre-existing AdminEventsTest assert_receive flake on first run per
+documented variance, clean on retest).
 
 **UX-6-G LANDED 2026-05-21.** Admin pane horizontal scroll on
 mobile (vjt iPhone-dogfood: "horiz content there is a scrollbar but
@@ -300,11 +298,14 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 **UX-6 cluster — remaining buckets after B closes:**
 
 - **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-D — PARTIAL-LANDED 2026-05-21.** See PARTIAL-LANDED block
-  above. D1 + D2 shipped; v3/v4/v5 reverted. Residual iOS PWA
-  visualViewport-shift quirk documented as known limitation. Re-open
-  if/when Apple ships interactive-widget=resizes-content in WebKit
-  or fixes WebKit Bug #297779.
+- **UX-6-D — LANDED 2026-05-21.** 11 attempts + 4 research agents.
+  Telegram Web K pattern atomically (`html.is-ios position:fixed`
+  + body `calc(--vh*100)` + `--vh` JS) + smart-pin (touch-gated
+  window.scrollTo(0,0)) + D1 padding-collapse + AdminDebugTab.
+  See DESIGN_NOTES.md UX-6-D entry. Two accepted residuals:
+  (1) visible iOS keyboard slide-in animation (compositor-layer,
+  unfixable in pure PWA); (2) channel scroll position interference
+  on switch — pending UX-6-M below.
 - **UX-6-E — UNPARKED 2026-05-21 (vjt clarified).** On wide screens
   the Server window is reached by clicking the network's emoji + name
   in the sidebar (no separate "Server" tab — the network header IS
@@ -322,6 +323,16 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 - **UX-6-J** — push notif tap doesn't open source window.
 - **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-L (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
+- **UX-6-M (NEW 2026-05-21, post-D close)** — channel scroll
+  position interference. Switching between channels shows the
+  WRONG scroll position (scroll state of channel A leaks into
+  channel B, or A position lost on round-trip — vjt repro pattern
+  TBD in next session). Likely related to ScrollbackPane being
+  reused via Solid `<Show>` non-keyed across selectedChannel
+  changes — `listRef.scrollTop` survives the switch (intentional
+  per UX-4-K's `scrollToActivation`), but the per-channel scroll
+  position isn't being persisted/restored on switch. Investigate
+  next session.
 - **UX-6-Z** — docs sweep.
 
 **deploy.sh preflight GAP (discovered 2026-05-20 during B1 deploy).**

@@ -1,4 +1,5 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import AdminDebugTab from "./AdminDebugTab";
 import AdminEventsTab from "./AdminEventsTab";
 import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
@@ -38,7 +39,7 @@ export type Props = {
   onClose: () => void;
 };
 
-type TabKey = "visitors" | "sessions" | "networks" | "events" | "settings";
+type TabKey = "visitors" | "sessions" | "networks" | "events" | "settings" | "debug";
 
 const AdminPane: Component<Props> = (props) => {
   const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
@@ -133,6 +134,18 @@ const AdminPane: Component<Props> = (props) => {
         >
           Settings
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("debug")}
+          aria-controls="admin-tab-debug"
+          id="admin-tab-debug-handle"
+          data-testid="admin-tab-debug"
+          onClick={() => setCurrentTab("debug")}
+        >
+          Debug
+        </button>
       </div>
       <Show when={isActive("visitors")}>
         <div
@@ -182,6 +195,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminSettingsTab />
+        </div>
+      </Show>
+      <Show when={isActive("debug")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-debug"
+          aria-labelledby="admin-tab-debug-handle"
+          class="admin-tab-panel"
+        >
+          <AdminDebugTab />
         </div>
       </Show>
     </section>

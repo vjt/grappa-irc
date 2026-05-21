@@ -8,7 +8,6 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import { isDiagEnabled, setDiagEnabled } from "./DiagFloat";
 import { logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { activeHost } from "./lib/image-upload";
@@ -139,123 +138,14 @@ const SettingsDrawer: Component<Props> = (props) => {
     }
   });
 
-  // UX-6 bucket D diagnostic readout (post-revert 2026-05-21). The
-  // first D attempt shipped fixes that didn't actually help on vjt's
-  // iPhone PWA + introduced an intermittent compose-tap scroll-lock
-  // regression. Root cause is unknown: the CDP-on-desktop probe
-  // validated the cascade but couldn't reproduce iOS PWA standalone
-  // behavior. This panel surfaces live values from window +
-  // visualViewport + lib/viewportHeight.ts so vjt can READ on his
-  // device what the JS actually observes during keyboard open/close.
-  // No production impact: read-only DOM probes, no side effects.
-  const [diagWinH, setDiagWinH] = createSignal(0);
-  const [diagWinW, setDiagWinW] = createSignal(0);
-  const [diagVvH, setDiagVvH] = createSignal(0);
-  const [diagVvW, setDiagVvW] = createSignal(0);
-  const [diagVvScale, setDiagVvScale] = createSignal(1);
-  const [diagVvOffsetTop, setDiagVvOffsetTop] = createSignal(0);
-  const [diagCssVar, setDiagCssVar] = createSignal("");
-  const [diagKbdClass, setDiagKbdClass] = createSignal(false);
-  const [diagEventTick, setDiagEventTick] = createSignal(0);
-  const [diagLastEvent, setDiagLastEvent] = createSignal<string>("(none)");
-  const [diagFocusedTag, setDiagFocusedTag] = createSignal<string>("(none)");
-  // Element-height probes — added 2026-05-21 after v2 D2 fix failed
-  // on iPhone PWA. min-height:0 should let .scrollback shrink with
-  // the shell, but vjt reports it still doesn't. We need to see
-  // which element in the chain refuses to shrink: shellMobile,
-  // shellMain, scrollbackPane, or scrollback itself. Reading
-  // clientHeight + scrollHeight + computed minHeight reveals the
-  // exact stuck-point.
-  const [diagElems, setDiagElems] = createSignal<string>("(none)");
-  // Ring buffer of recent (event, vv.h, win.h, delta) so transient
-  // keyboard-slide oscillations are visible after-the-fact instead of
-  // disappearing when the next event overwrites the latest snapshot.
-  const [diagLog, setDiagLog] = createSignal<string[]>([]);
-
-  const [diagFloatOn, setDiagFloatOn] = createSignal(isDiagEnabled());
-
-  const snapshotDiag = (eventName: string): void => {
-    const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    const winH = typeof window !== "undefined" ? window.innerHeight : 0;
-    const winW = typeof window !== "undefined" ? window.innerWidth : 0;
-    const vvH = vv?.height ?? 0;
-    const vvW = vv?.width ?? 0;
-    setDiagWinH(winH);
-    setDiagWinW(winW);
-    setDiagVvH(vvH);
-    setDiagVvW(vvW);
-    setDiagVvScale(vv?.scale ?? 1);
-    setDiagVvOffsetTop(vv?.offsetTop ?? 0);
-    setDiagCssVar(
-      typeof document !== "undefined"
-        ? document.documentElement.style.getPropertyValue("--viewport-height") || "(unset)"
-        : "(no document)",
-    );
-    setDiagKbdClass(
-      typeof document !== "undefined"
-        ? document.documentElement.classList.contains("keyboard-open")
-        : false,
-    );
-    setDiagEventTick((n) => n + 1);
-    setDiagLastEvent(eventName);
-    setDiagFocusedTag(
-      typeof document !== "undefined" && document.activeElement
-        ? `${document.activeElement.tagName}${
-            (document.activeElement as HTMLElement).id
-              ? `#${(document.activeElement as HTMLElement).id}`
-              : ""
-          }`
-        : "(none)",
-    );
-    // Probe the layout chain so we can see which element refuses to
-    // shrink when vv.height drops. Format: short tag = clientH
-    // (scrollH if different) [minH from computed style].
-    const probe = (sel: string): string => {
-      const el = document.querySelector(sel) as HTMLElement | null;
-      if (!el) return `${sel}=∅`;
-      const cs = getComputedStyle(el);
-      const ch = el.clientHeight;
-      const sh = el.scrollHeight;
-      const tag = sel.replace(/[.#]/g, "").replace(/-/g, "").slice(0, 4);
-      const shStr = sh !== ch ? `/${sh}` : "";
-      return `${tag}=${ch}${shStr}[${cs.minHeight}]`;
-    };
-    const elemSummary = [
-      probe(".shell-mobile"),
-      probe(".shell-mobile .shell-main"),
-      probe(".scrollback-pane"),
-      probe(".scrollback"),
-      probe(".compose-box"),
-      probe(".bottom-bar"),
-    ].join(" ");
-    setDiagElems(elemSummary);
-    const delta = winH - vvH;
-    const line = `${eventName} vv=${Math.round(vvH)} win=${Math.round(winH)} Δ=${Math.round(
-      delta,
-    )} ${elemSummary}`;
-    setDiagLog((prev) => [line, ...prev].slice(0, 20));
-  };
-
-  onMount(() => {
-    snapshotDiag("mount");
-    const onResize = () => snapshotDiag("resize");
-    const onVvResize = () => snapshotDiag("vv.resize");
-    const onVvScroll = () => snapshotDiag("vv.scroll");
-    const onFocusIn = () => snapshotDiag("focusin");
-    const onFocusOut = () => snapshotDiag("focusout");
-    window.addEventListener("resize", onResize);
-    window.visualViewport?.addEventListener("resize", onVvResize);
-    window.visualViewport?.addEventListener("scroll", onVvScroll);
-    document.addEventListener("focusin", onFocusIn);
-    document.addEventListener("focusout", onFocusOut);
-    onCleanup(() => {
-      window.removeEventListener("resize", onResize);
-      window.visualViewport?.removeEventListener("resize", onVvResize);
-      window.visualViewport?.removeEventListener("scroll", onVvScroll);
-      document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("focusout", onFocusOut);
-    });
-  });
+  // UX-6 D12 (2026-05-21) — viewport diagnostics moved to AdminPane
+  // Debug tab. The fieldset lived here through the UX-6-D 11-attempt
+  // cluster; with the cluster closed and the diag now most useful
+  // from a stable admin surface (closing settings to test the
+  // keyboard hid the very diag you needed), the readouts + the
+  // DiagFloat toggle live in `AdminDebugTab.tsx`. The floating
+  // overlay itself (`DiagFloat.tsx`) is unchanged — mounted via
+  // Portal in Shell, flag-gated via localStorage.cic_diag.
 
   // UX-6 bucket A — refcounted overlay scroll-lock. Push on open,
   // pop on close so `<html>` carries `.overlay-open` while any
@@ -718,73 +608,8 @@ const SettingsDrawer: Component<Props> = (props) => {
           log out
         </button>
 
-        {/* UX-6 bucket D diagnostic readout (post-revert
-            2026-05-21). Surfaces live values from window +
-            visualViewport + lib/viewportHeight.ts so vjt can READ
-            on his iPhone what the JS observes during keyboard
-            open/close. Read-only DOM probes, zero side effects on
-            production paths. Will be removed once D is fixed for
-            real and the underlying iOS PWA behavior is understood. */}
-        <fieldset class="settings-fieldset settings-diag">
-          <legend>viewport diagnostics (debug)</legend>
-          <label class="settings-row">
-            <span>floating diag overlay (top-right, live during keyboard)</span>
-            <input
-              type="checkbox"
-              checked={diagFloatOn()}
-              onChange={(e) => {
-                const v = e.currentTarget.checked;
-                setDiagEnabled(v);
-                setDiagFloatOn(v);
-              }}
-              data-testid="diag-float-toggle"
-            />
-          </label>
-          <div class="settings-diag-grid">
-            <span>vv.height</span>
-            <code data-testid="diag-vv-h">{Math.round(diagVvH())}</code>
-            <span>vv.width</span>
-            <code data-testid="diag-vv-w">{Math.round(diagVvW())}</code>
-            <span>window.innerHeight</span>
-            <code data-testid="diag-win-h">{Math.round(diagWinH())}</code>
-            <span>window.innerWidth</span>
-            <code data-testid="diag-win-w">{Math.round(diagWinW())}</code>
-            <span>Δ (winH − vvH)</span>
-            <code data-testid="diag-delta">{Math.round(diagWinH() - diagVvH())}</code>
-            <span>vv.scale</span>
-            <code>{diagVvScale().toFixed(2)}</code>
-            <span>vv.offsetTop</span>
-            <code>{Math.round(diagVvOffsetTop())}</code>
-            <span>--viewport-height</span>
-            <code data-testid="diag-css-var">{diagCssVar()}</code>
-            <span>html.keyboard-open</span>
-            <code data-testid="diag-kbd-class">{diagKbdClass() ? "true" : "false"}</code>
-            <span>active element</span>
-            <code data-testid="diag-focus">{diagFocusedTag()}</code>
-            <span>event tick</span>
-            <code data-testid="diag-event-tick">{diagEventTick()}</code>
-            <span>last event</span>
-            <code data-testid="diag-last-event">{diagLastEvent()}</code>
-          </div>
-          <details open>
-            <summary>element chain heights (clientH/scrollH [minH])</summary>
-            <p class="settings-diag-elems">
-              <code data-testid="diag-elems">{diagElems()}</code>
-            </p>
-          </details>
-          <details>
-            <summary>recent events (newest first)</summary>
-            <ol class="settings-diag-log">
-              <For each={diagLog()}>
-                {(line) => (
-                  <li>
-                    <code>{line}</code>
-                  </li>
-                )}
-              </For>
-            </ol>
-          </details>
-        </fieldset>
+        {/* UX-6 D12 — viewport diagnostics fieldset moved to AdminPane
+            Debug tab. See AdminDebugTab.tsx. */}
 
         {/* UX-4 bucket L — bottom "done" button. Same close verb as
             the top × — mobile thumb-reach surface. Sits below logout

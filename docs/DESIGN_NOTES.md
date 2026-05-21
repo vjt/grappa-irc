@@ -6697,6 +6697,186 @@ mask races with timeouts.
   readiness seam. DOM signals are unreliable proxies for "the
   socket join roundtrip completed."
 
+## 2026-05-21 — UX-6-D CLOSED: iOS PWA keyboard saga (11 attempts, 4 research agents)
+
+The cluster spans 11 iterations (D1-D12) over a single day and the
+deepest research dive we've done. vjt's iPhone 15 PWA standalone
+mode reported, after focusing the compose textarea: the topbar
+scrolls out of view, the BottomBar floats away from the keyboard
+top, scrollback content scrolls to a wrong position, and dragging
+the scrollback to bottom locks for 1-3 seconds.
+
+The first 8 attempts were CSS+JS band-aids that each missed because
+the team kept reasoning about iOS keyboard behavior from inside the
+web platform, not from the platform reality. Every fix worked in the
+desktop CDP probe; none survived the iPhone.
+
+After attempt 8 (D8), vjt said: "we are not there yet" + asked
+"can we do research and rethink the entire thing?"
+
+**Four parallel research agents** (real-world chat PWAs / WebKit
+internals / interactive-widget status / Capacitor escape) returned
+convergent ground truth:
+
+1. **`visualViewport.offsetTop` is unreliable** — WebKit bug #297779,
+   "appears to be a bug in a system component" per Apple engineer
+   Wenson Hsieh. Gets stuck at 24px after keyboard dismiss.
+2. **`installScrollPin` (window.scrollTo(0,0) on every scroll event)
+   DOES cause the 1-3s scroll lock** — WebKit bug #226689 pattern:
+   scrollTo during momentum re-triggers scroll, iOS quarantines
+   further scroll for 1-3s as fight-detection. BUT: the pin is also
+   load-bearing for clamping the visual viewport shift on focused
+   input — proven by D9 (no pin → vvOT > 0 immediately) and D10's
+   restoration.
+3. **`interactive-widget=resizes-content` is NOT implemented in
+   WebKit** — bug #259770 NEW unassigned, not on Interop 2026.
+   Confirmed across iOS Safari, iOS PWA, all WebKit surfaces.
+4. **`100dvh` ignores the on-screen keyboard by CSS spec.** Chrome
+   violates spec for usability; iOS honors it.
+5. **`focus({preventScroll: true})` has been baseline since iOS
+   Safari 15.5** (mid-2022) — we'd never used it.
+6. **WebKit's `_zoomToFocusRect` (the focused-input auto-scroll
+   algorithm) runs at the UIKit layer BELOW the web platform** —
+   the page is never asked; `focus({preventScroll: true})` doesn't
+   propagate; the algorithm cannot be opted out of for tap-focus.
+7. **Telegram Web K (tweb) is the ONLY production chat PWA that
+   works on iOS PWA standalone**. Their pattern (in
+   `src/scss/base.scss`):
+   ```css
+   html.is-ios { position: fixed; }
+   body { height: calc(var(--vh) * 100); }
+   ```
+   where `--vh = visualViewport.height * 0.01` (px), updated on
+   every `vv.resize` by JS. This is one ATOMIC change — neither
+   piece works alone. They explicitly disabled their advanced
+   tricks (`IS_STICKY_INPUT_BUGGED = false`, 100+ lines of scroll-
+   sync code commented out). The rest of the chat ecosystem
+   (Element, IRCCloud, WhatsApp, Slack, Signal, Threads, Discord)
+   all punt to native iOS apps.
+8. **The escape hatch is Capacitor** (or any native wrapper). Same
+   WebKit engine, but UIKit `keyboardWillShow` notifications give
+   exact pixel height + animation curve + duration; a native shell
+   resizes the WKWebView frame directly. The web bug doesn't go
+   away, but the native layer routes around it.
+
+**The 11-attempt arc** (catastrophe → redemption):
+
+- **D1** `:has(textarea:focus, input:focus) { padding-bottom: 0 }` —
+  collapses safe-area inset when keyboard up, closes BottomBar gap.
+  **LANDED** in D-partial. Removed in D9, restored in D11 after
+  research speculation about double-counting proved wrong.
+- **D2** `.scrollback { min-height: 0 }` — iOS WebKit flex-min-content
+  fix. **LANDED**.
+- **D3-D5** — `position: fixed` on html/body/#root variants,
+  `translateY` pre-lift via cached keyboard height. All FAILED
+  catastrophically. Reverted.
+- **D6** — diag probe + `translateY(var(--vv-offset-top))` plan
+  (cancel iOS layout shift). Held by reviewer on convergence
+  question. Diag deployed; translateY held.
+- **D7** — `installScrollPin` dropped on wrong hypothesis (claimed
+  pin caused 1-3s lock, half-right but the pin was load-bearing
+  for vvOT clamping). Reverted by D10.
+- **D8** — `--vv-offset-top` CSS var + translateY cancel + preserve-
+  distance-from-bottom scroll math. Catastrophic: broke layout in
+  4 new ways. Reverted by D9.
+- **D9** — adopted Telegram Web K pattern atomically after 4-agent
+  research. `html.is-ios { position: fixed }` + body
+  `calc(var(--vh)*100)` + `--vh` from vv.height. PARTIAL fix —
+  test 2 (scroll lock) passed, but vvOT > 0 returned (no pin).
+- **D10** — restored `installScrollPin` as smart-pin gated on
+  touch-state. iOS programmatic shift (no touch) → snap; user
+  drag-momentum (touch active or recently ended) → no-op.
+  500ms grace shrunk to 50ms in D10b after diag proved iOS fires
+  shift at +110ms post-touchend (inside the wider grace).
+- **D11** — restored D1 (`:has(:focus){padding-bottom:0}`),
+  added pre-emptive focusin snap + 300ms rAF burst. D1 fixed the
+  BottomBar gap (test #1).
+- **D11b** — `position: fixed; bottom: 0` on `.shell-mobile` to
+  fix the visible topbar slide. Put shell UNDER the keyboard.
+  Reverted in 5 minutes.
+- **D11** per-frame rAF diag probe (focusin → 600ms 60Hz snapshot
+  of vvOT/wy/dseT) **proved the visible topbar slide is iOS
+  compositor animation BELOW JS visibility**: vvOT=0 + wy=0
+  throughout the 250ms slide. We can't see it, we can't reach it.
+  Accepted as iOS PWA limitation.
+- **D12** — cleanup + Admin → Debug tab move (diag fieldset out
+  of SettingsDrawer where it competed with the focus-state under
+  investigation) + ux-6-d-keyboard-pattern.spec.ts e2e covering
+  JS+CSS contracts + this DESIGN_NOTES entry.
+
+**Final landed surfaces:**
+- `lib/viewportHeight.ts` — `installViewportHeightTracker` writes
+  both `--vh` and `--viewport-height` from `vv.height` on resize.
+  `installSmartScrollPin` snaps window.scrollTo(0,0) on scroll
+  events, gated on touch-state (no-snap if touch active or within
+  50ms post-touchend grace).
+- `lib/platform.ts` — `isIos()` UA detection + `applyIosClass()`
+  applies `html.is-ios` class at boot pre-render.
+- `themes/default.css` — `html.is-ios { position: fixed; inset: 0 }`
+  + `html.is-ios body { height: calc(var(--vh, 1vh) * 100) }`
+  PAIRED atomically. `.shell-mobile:has(textarea:focus, input:focus)
+  { padding-bottom: 0 }`. `.scrollback { min-height: 0 }`.
+- `ScrollbackPane.tsx` — `vv.resize` + `window.resize` →
+  `scrollToActivation()` (reuses canonical UX-4-K marker-or-tail
+  routine).
+- `Shell.tsx` — keybinding-driven compose focus uses
+  `focus({preventScroll: true})`.
+- `DiagFloat.tsx` — flag-gated floating overlay via
+  `localStorage.cic_diag`. Mounted via Portal to body so it
+  escapes any shell transform.
+- `AdminDebugTab.tsx` — Admin → Debug tab hosting the DiagFloat
+  toggle + inline diag readouts. New 6th tab in AdminPane.
+- `e2e/tests/ux-6-d-keyboard-pattern.spec.ts` — @webkit-iphone-15
+  spec asserting the JS+CSS contracts (a-f).
+
+**Accepted residuals:**
+- The visible topbar slide during keyboard open is an iOS
+  compositor animation below JS visibility. Not fixable in pure
+  PWA. Escape via Capacitor (Tier B) if it ever becomes priority;
+  documented research is in this entry.
+- Scroll position interference between channels — deferred to
+  next session (vjt 2026-05-21: "still happening but we tackle
+  that in the next session").
+
+**Apply** (general lessons that survive the cluster):
+
+1. **When research contradicts an existing assumption, RE-READ the
+   assumption.** D7's "pin causes the lock" claim was half-right but
+   the wrong half got acted on. D9 dropped the pin entirely on the
+   same wrong half. The whole half-right→catastrophe arc cost 4
+   iterations.
+
+2. **Telegram-style "atomic CSS pattern" means ALL pieces ship in
+   the SAME commit.** D1-D8 piecemeal failed because each iteration
+   broke a different ancestor in the cascade. The Telegram pattern
+   only WORKS when html-position-fixed AND body-height-calc-vh AND
+   --vh-write all land together. Partial adoption = catastrophe.
+
+3. **Per-frame rAF diag panel is the right primitive when the bug
+   may be an animation.** Snapshotting at 60Hz for ~600ms post-
+   trigger reveals whether iOS animates gradually or jumps. Without
+   this, you can't distinguish "iOS shifts the LAYOUT viewport
+   visibly over 250ms" from "iOS shifts the COMPOSITOR layer
+   invisibly to JS". D11's per-frame probe ended the saga — proved
+   the visible motion was below JS, accepted as unfixable.
+
+4. **DiagFloat must render OUTSIDE any focusable surface** — it
+   moved out of SettingsDrawer (closed when keyboard was up) into
+   AdminPane Debug tab. The diag readout must be reachable from
+   a stable surface that doesn't compete with the focus-state of
+   the investigation.
+
+5. **Honor research evidence over speculation.** vjt's "let's do
+   research" pivot after attempt 8 was the unlock. Four parallel
+   agents returned 30+ citations with WebKit source paths, bug
+   numbers, Apple engineer quotes, and Telegram source LOC. That
+   evidence shaped D9-D12 and capped further iterations at four.
+
+6. **Accept what cannot be fixed.** The visible topbar slide is
+   iOS WebKit behavior we have no API for. Documenting the
+   acceptance + the Capacitor escape route is more honest than
+   shipping a 12th band-aid.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

@@ -101,7 +101,7 @@ const DiagFloat: Component = () => {
           t: Math.round(performance.now() - t0),
         },
         ...prev,
-      ].slice(0, 60),
+      ].slice(0, 30),
     );
   };
 
@@ -119,25 +119,11 @@ const DiagFloat: Component = () => {
     const onResize = () => snap("win.resize");
     const onVvResize = () => snap("vv.resize");
     const onVvScroll = () => snap("vv.scroll");
-    // UX-6 D11 — per-frame probe armed on focusin so we can see if
-    // iOS animates the visual viewport shift (gradual) or jumps
-    // (instant). 600ms window = covers iOS's ~250ms keyboard slide-
-    // in animation + buffer. Each frame snaps once into the log so
-    // we get a frame-by-frame trace of wy / vvOT / vvH during the
-    // shift.
-    let frameProbeUntil = 0;
-    const frameProbe = (): void => {
-      if (performance.now() >= frameProbeUntil) return;
-      snap("rAF");
-      requestAnimationFrame(frameProbe);
-    };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName?.toLowerCase() ?? "?";
       const cls = t?.className ? `.${String(t.className).slice(0, 20)}` : "";
       snap("focusin", `${tag}${cls}`);
-      frameProbeUntil = performance.now() + 600;
-      requestAnimationFrame(frameProbe);
     };
     const onFocusOut = () => snap("focusout");
     // UX-6 D8 (2026-05-21) — instrument window.scroll for the 1-3s

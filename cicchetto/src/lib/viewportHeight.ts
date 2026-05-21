@@ -135,39 +135,6 @@ export function installSmartScrollPin(
       target.scrollTo(0, 0);
     }
   };
-  // UX-6 D11 (2026-05-21) — pre-emptive snap on focusin + rAF burst.
-  // Reactive scroll-handler-only pin was visibly bouncy: iOS animates
-  // the focus-induced visual viewport shift over ~250ms, so by the
-  // time `window.scroll` fires the top bar has already moved up
-  // before we snap back. Snapping ON focusin (BEFORE iOS's
-  // animation starts) AND for ~300ms after on every rAF tick keeps
-  // the layout viewport at 0 throughout the keyboard slide-in so
-  // there's nothing to visibly bounce. Cheap — rAF for ~18 frames,
-  // each frame is one number compare + maybe a scrollTo(0,0).
-  let focusBurstUntil = 0;
-  const burstLoop = (): void => {
-    if (performance.now() >= focusBurstUntil) return;
-    snap();
-    requestAnimationFrame(burstLoop);
-  };
-  doc.addEventListener(
-    "focusin",
-    () => {
-      snap();
-      focusBurstUntil = performance.now() + 300;
-      requestAnimationFrame(burstLoop);
-    },
-    { passive: true },
-  );
-  doc.addEventListener(
-    "focusout",
-    () => {
-      snap();
-      focusBurstUntil = performance.now() + 300;
-      requestAnimationFrame(burstLoop);
-    },
-    { passive: true },
-  );
   doc.addEventListener(
     "touchstart",
     () => {
