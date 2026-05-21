@@ -106,15 +106,22 @@ export function installViewportHeightTracker(
  * D10 smart-pin: gate the snap on touch-state. iOS's focus-driven
  * shift is PROGRAMMATIC (no touch in flight) → pin fires + snaps.
  * User drag-to-bottom → touch in flight → pin no-ops →
- * no fight with momentum → no 1-3s lock. The 500ms grace catches
- * the post-touchend momentum window.
+ * no fight with momentum → no 1-3s lock.
+ *
+ * D10b grace tuning (2026-05-21): initial 500ms grace was too wide
+ * — diag proved iOS fires its keyboard-open shift ~110ms after
+ * touchend (touchend at 2909ms → vv.resize at 3025ms inside the
+ * grace, pin no-ops, vvOT stuck at 324). Shrunk to 50ms which is
+ * tight enough to let iOS's post-focus shift through (>110ms) but
+ * still catches any same-frame scroll burst that a touchend
+ * immediately triggers.
  *
  * Touch state is module-private; the listeners attach at boot in
  * `installSmartScrollPin`. No public read API since no consumer
  * needs it.
  */
 
-const TOUCH_GRACE_MS = 500;
+const TOUCH_GRACE_MS = 50;
 
 export function installSmartScrollPin(
   target: Window | undefined = typeof window !== "undefined" ? window : undefined,

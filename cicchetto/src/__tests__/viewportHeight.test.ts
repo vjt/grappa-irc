@@ -139,7 +139,7 @@ describe("installSmartScrollPin (UX-6 D10)", () => {
     expect(scrollTo).not.toHaveBeenCalled();
   });
 
-  it("does NOT snap within 500ms grace after touchend (catches momentum)", () => {
+  it("does NOT snap within 50ms grace after touchend (catches momentum)", () => {
     const { win, doc, scrollTo, fireScroll, fireTouchStart, fireTouchEnd } = makeFakes(100);
     installSmartScrollPin(win, doc);
     fireTouchStart();
