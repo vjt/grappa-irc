@@ -840,11 +840,33 @@ const ScrollbackPane: Component<Props> = (props) => {
   // Triggers: messages count, window resize, visualViewport resize
   // (keyboard open/close shrinks the scrollback). Measured in a
   // microtask after the layout settles via queueMicrotask.
+  //
+  // UX-6 D7 (2026-05-21) — on resize, ALSO re-pin to bottom if the
+  // operator was at the tail before the layout shift. Without this,
+  // opening the iOS keyboard shrinks the scrollback container but
+  // leaves `scrollTop` at its pre-shrink value, effectively scrolling
+  // the visible region UP relative to content — vjt reports seeing
+  // mid-history instead of the latest message + their compose box
+  // after focusing the textarea. We check atBottom() OUTSIDE the
+  // microtask (the pre-shrink reading) so a still-tail operator gets
+  // pinned forward; a scrolled-up operator's position is preserved.
+  //
+  // The `markerScrolled() || !markerRef` guard mirrors the post-append
+  // effect (~:1046) so the marker-on-mount C7.3 scroll-to-marker
+  // wins when present: on cold mount with an unread marker, a
+  // re-pin would clobber the marker scroll before the operator sees
+  // it. We re-pin ONLY after markerScrolled latches (or when there's
+  // no marker at all).
   const measureOverflow = (): void => {
     if (!listRef) return;
+    const wasAtBottom = atBottom();
+    const markerCleared = markerScrolled() || !markerRef;
     queueMicrotask(() => {
       if (!listRef) return;
       setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
+      if (wasAtBottom && markerCleared) {
+        listRef.scrollTop = listRef.scrollHeight;
+      }
     });
   };
 
