@@ -32,6 +32,9 @@ interface Snapshot {
   vvH: number;
   vvOT: number;
   winH: number;
+  winY: number;
+  dseT: number;
+  sbT: number;
   cssOT: string;
   t: number;
 }
@@ -52,6 +55,11 @@ const DiagFloat: Component = () => {
     const h = vv?.height ?? 0;
     const ot = vv?.offsetTop ?? 0;
     const wh = window.innerHeight;
+    const wy = window.scrollY;
+    const dse = document.scrollingElement?.scrollTop ?? -1;
+    const sb =
+      (window as unknown as { __cic_scrollback?: HTMLDivElement }).__cic_scrollback?.scrollTop ??
+      -1;
     const cv = document.documentElement.style.getPropertyValue("--vv-offset-top") || "(unset)";
     setVvH(h);
     setVvOT(ot);
@@ -61,9 +69,19 @@ const DiagFloat: Component = () => {
     setTick((n) => n + 1);
     setLog((prev) =>
       [
-        { ev, vvH: h, vvOT: ot, winH: wh, cssOT: cv, t: Math.round(performance.now() - t0) },
+        {
+          ev,
+          vvH: h,
+          vvOT: ot,
+          winH: wh,
+          winY: wy,
+          dseT: dse,
+          sbT: sb,
+          cssOT: cv,
+          t: Math.round(performance.now() - t0),
+        },
         ...prev,
-      ].slice(0, 12),
+      ].slice(0, 30),
     );
   };
 
@@ -83,17 +101,39 @@ const DiagFloat: Component = () => {
     const onVvScroll = () => snap("vv.scroll");
     const onFocusIn = () => snap("focusin");
     const onFocusOut = () => snap("focusout");
+    // UX-6 D8 (2026-05-21) — instrument window.scroll for the 1-3s
+    // scroll-lock investigation. vjt reports a freeze on drag-to-
+    // bottom; D7 hypothesised installScrollPin was the cause but
+    // the freeze persists with the pin removed (D7) AND restored
+    // (D8), so the cause is elsewhere. Logging here captures every
+    // window.scroll firing with timestamp so we can correlate the
+    // 1-3s window with what's actually scrolling.
+    const onWinScroll = () => snap(`win.scroll@y${window.scrollY}`);
+    // Touch events bracket the scroll-lock — start (drag begin),
+    // move (drag ongoing — heavy, but we need the cadence to see
+    // if scroll-lock is "touchmoves stop firing" or "touchmoves
+    // fire but scroll doesn't follow"), end (drag release →
+    // momentum begins). Tagged separately so we can tell them
+    // apart in the log.
+    const onTouchStart = () => snap("touch.start");
+    const onTouchEnd = () => snap("touch.end");
     window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onWinScroll);
     window.visualViewport?.addEventListener("resize", onVvResize);
     window.visualViewport?.addEventListener("scroll", onVvScroll);
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchend", onTouchEnd, { passive: true });
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onWinScroll);
       window.visualViewport?.removeEventListener("resize", onVvResize);
       window.visualViewport?.removeEventListener("scroll", onVvScroll);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
+      document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("touchend", onTouchEnd);
     });
   });
 
@@ -110,7 +150,7 @@ const DiagFloat: Component = () => {
           <For each={log()}>
             {(s) => (
               <div>
-                {s.t}ms {s.ev} vvOT={s.vvOT} vvH={s.vvH}
+                {s.t}ms {s.ev} vvOT={s.vvOT} vvH={s.vvH} wy={s.winY} dseT={s.dseT} sbT={s.sbT}
               </div>
             )}
           </For>

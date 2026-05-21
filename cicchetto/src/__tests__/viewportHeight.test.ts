@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { installViewportHeightTracker, type VisualViewportLike } from "../lib/viewportHeight";
+import {
+  installScrollPin,
+  installViewportHeightTracker,
+  type VisualViewportLike,
+} from "../lib/viewportHeight";
 
 // Per `feedback_e2e_user_class_parity_matrix`: this is a CSS-layer
 // shape bucket — single helper, single CSS var. Unit coverage proves
@@ -93,5 +97,43 @@ describe("viewportHeight module", () => {
     expect(addEventListener).toHaveBeenCalledTimes(2);
     expect(addEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
     expect(addEventListener).toHaveBeenCalledWith("scroll", expect.any(Function));
+  });
+});
+
+describe("installScrollPin", () => {
+  function makeFakeWindow(scrollY: number): {
+    win: Window;
+    scrollTo: ReturnType<typeof vi.fn>;
+    fire: () => void;
+  } {
+    const scrollTo = vi.fn();
+    const handlerBox: { fn: (() => void) | null } = { fn: null };
+    const win = {
+      scrollX: 0,
+      scrollY,
+      scrollTo,
+      addEventListener(event: string, h: () => void) {
+        if (event === "scroll") handlerBox.fn = h;
+      },
+    } as unknown as Window;
+    return { win, scrollTo, fire: () => handlerBox.fn?.() };
+  }
+
+  it("snaps window back to (0, 0) when a scroll fires at non-zero", () => {
+    const { win, scrollTo, fire } = makeFakeWindow(100);
+    installScrollPin(win);
+    fire();
+    expect(scrollTo).toHaveBeenCalledWith(0, 0);
+  });
+
+  it("does NOT call scrollTo when already at (0, 0)", () => {
+    const { win, scrollTo, fire } = makeFakeWindow(0);
+    installScrollPin(win);
+    fire();
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op when target is undefined", () => {
+    expect(() => installScrollPin(undefined)).not.toThrow();
   });
 });

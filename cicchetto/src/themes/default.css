@@ -2546,7 +2546,7 @@ html.resize-dragging * {
   margin-top: 0.3rem;
   border-top: 1px solid #1f1f1f;
   padding-top: 0.2rem;
-  max-height: 12rem;
+  max-height: 18rem;
   overflow: hidden;
   font-size: 0.65rem;
   color: #909090;

@@ -90,3 +90,50 @@ export function installViewportHeightTracker(
   vp.addEventListener("resize", update);
   vp.addEventListener("scroll", update);
 }
+
+/**
+ * Pins window scroll to (0, 0) whenever something tries to scroll
+ * the document. iOS Safari auto-scrolls the page to "center" the
+ * focused input on keyboard open, even when the input is already
+ * visible — this is a PROGRAMMATIC scroll path (scroll-into-view),
+ * distinct from the touch-drag path which is now handled at the
+ * layout layer via `#root { height: 100% }` (UX-3 UNDEC — body and
+ * root match exactly, no overflow, nothing for iOS to drag).
+ *
+ * Listening for the `scroll` event + immediately scrolling back to
+ * (0, 0) kills the programmatic-scroll symptom at the source. The
+ * user sees the page hold still; iOS sees what it asked for and
+ * stops escalating.
+ *
+ * UX-6 D8 (2026-05-21) — proved load-bearing the hard way. D7
+ * dropped this on the diag-says-window.scroll-never-fires logic;
+ * vjt reported vvOffsetTop > 0 immediately after deploy. The pin's
+ * corrective force was the reason vvOffsetTop READ 0 in the
+ * pre-D7 diag — steady state with pin active, not steady state
+ * absolute. iOS shifts the LAYOUT viewport (window.scrollY > 0)
+ * separately from the VISUAL viewport (vv.offsetTop > 0); they
+ * track together on PWA but read on different event surfaces, so
+ * the diag's "no window.scroll event" was misleading — the layout
+ * viewport WAS shifting, the event just doesn't fire (or fires
+ * before our handler sees it; the pin still catches it).
+ *
+ * Passive listener — `scroll` doesn't honor preventDefault anyway;
+ * scrollTo(0, 0) is the corrective action.
+ *
+ * Idempotent like `installViewportHeightTracker` — called once from
+ * main.tsx.
+ */
+export function installScrollPin(
+  target: Window | undefined = typeof window !== "undefined" ? window : undefined,
+): void {
+  if (!target) return;
+  target.addEventListener(
+    "scroll",
+    () => {
+      if (target.scrollX !== 0 || target.scrollY !== 0) {
+        target.scrollTo(0, 0);
+      }
+    },
+    { passive: true },
+  );
+}
