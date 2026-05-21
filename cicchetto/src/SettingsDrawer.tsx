@@ -8,6 +8,7 @@ import {
   onMount,
   Show,
 } from "solid-js";
+import { isDiagEnabled, setDiagEnabled } from "./DiagFloat";
 import { logout, token } from "./lib/auth";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { activeHost } from "./lib/image-upload";
@@ -170,6 +171,8 @@ const SettingsDrawer: Component<Props> = (props) => {
   // keyboard-slide oscillations are visible after-the-fact instead of
   // disappearing when the next event overwrites the latest snapshot.
   const [diagLog, setDiagLog] = createSignal<string[]>([]);
+
+  const [diagFloatOn, setDiagFloatOn] = createSignal(isDiagEnabled());
 
   const snapshotDiag = (eventName: string): void => {
     const vv = typeof window !== "undefined" ? window.visualViewport : null;
@@ -724,6 +727,19 @@ const SettingsDrawer: Component<Props> = (props) => {
             real and the underlying iOS PWA behavior is understood. */}
         <fieldset class="settings-fieldset settings-diag">
           <legend>viewport diagnostics (debug)</legend>
+          <label class="settings-row">
+            <span>floating diag overlay (top-right, live during keyboard)</span>
+            <input
+              type="checkbox"
+              checked={diagFloatOn()}
+              onChange={(e) => {
+                const v = e.currentTarget.checked;
+                setDiagEnabled(v);
+                setDiagFloatOn(v);
+              }}
+              data-testid="diag-float-toggle"
+            />
+          </label>
           <div class="settings-diag-grid">
             <span>vv.height</span>
             <code data-testid="diag-vv-h">{Math.round(diagVvH())}</code>

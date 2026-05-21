@@ -1,9 +1,11 @@
 import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import { Portal } from "solid-js/web";
 import AdminPane from "./AdminPane";
 import ArchiveModal from "./ArchiveModal";
 import BottomBar from "./BottomBar";
 import BundleRefreshBanner from "./BundleRefreshBanner";
 import ComposeBox from "./ComposeBox";
+import DiagFloat from "./DiagFloat";
 import HomePane from "./HomePane";
 import { ownNickForNetwork } from "./lib/api";
 import { archiveSlugForSelection } from "./lib/archiveContext";
@@ -554,6 +556,13 @@ const Shell: Component = () => {
           not a CSS-display toggle, so the sidebar DOM is absent entirely.
       */}
       <div class="shell shell-mobile">
+        {/* UX-6 D6 — DiagFloat lives in a Portal mounted on document.body
+            so it escapes `.shell-mobile`'s transform containing-block
+            and stays anchored to the layout viewport (visible above
+            the on-screen keyboard during convergence probing). */}
+        <Portal>
+          <DiagFloat />
+        </Portal>
         <SocketHealthBanner />
         <BundleRefreshBanner />
         <PrivacyModal />

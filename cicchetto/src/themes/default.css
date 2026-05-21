@@ -2507,6 +2507,51 @@ html.resize-dragging * {
   }
 }
 
+/* UX-6 D6 floating diag overlay — top-right, fixed, click-through.
+   Renders OUTSIDE the shell-mobile transform so its position tracks
+   the layout viewport (deliberate — we want it visible ABOVE the
+   on-screen keyboard for live convergence probing). Flag-gated via
+   localStorage.cic_diag === "1" (toggle in SettingsDrawer). */
+.diag-float {
+  position: fixed;
+  top: max(0.5rem, env(safe-area-inset-top));
+  right: 0.5rem;
+  z-index: 99999;
+  background: rgba(0, 0, 0, 0.85);
+  color: #5fafd7;
+  border: 1px solid #5fafd7;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.2;
+  max-width: 18rem;
+  pointer-events: none;
+  user-select: none;
+}
+
+.diag-float-headline {
+  font-size: 0.85rem;
+}
+
+.diag-float-headline strong {
+  color: #ff8c8c;
+}
+
+.diag-float-line {
+  color: #707070;
+  margin-top: 0.15rem;
+}
+
+.diag-float-log {
+  margin-top: 0.3rem;
+  border-top: 1px solid #1f1f1f;
+  padding-top: 0.2rem;
+  max-height: 12rem;
+  overflow: hidden;
+  font-size: 0.65rem;
+  color: #909090;
+}
+
 /* BottomBar — mobile-only window picker (spec #10).
    Rendered only inside the mobile JSX branch of Shell.tsx.
    Always-present CSS: desktop consumers never see .bottom-bar in the DOM,

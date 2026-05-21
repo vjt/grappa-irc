@@ -12,25 +12,37 @@ import {
 // keyboard behaviour is verified by vjt on iPhone (Playwright doesn't
 // emulate the OS keyboard); these tests are the mechanical contract.
 
-function makeFakeVp(initialHeight: number): {
+function makeFakeVp(
+  initialHeight: number,
+  initialOffsetTop = 0,
+): {
   vp: VisualViewportLike;
   fireResize: (h: number) => void;
+  fireScroll: (offsetTop: number) => void;
 } {
-  let handler: (() => void) | null = null;
+  const handlers: Record<string, (() => void) | null> = { resize: null, scroll: null };
   let height = initialHeight;
+  let offsetTop = initialOffsetTop;
   const vp: VisualViewportLike = {
     get height() {
       return height;
     },
+    get offsetTop() {
+      return offsetTop;
+    },
     addEventListener(event, h) {
-      if (event === "resize") handler = h;
+      handlers[event] = h;
     },
   } as VisualViewportLike;
   return {
     vp,
     fireResize: (h: number) => {
       height = h;
-      handler?.();
+      handlers.resize?.();
+    },
+    fireScroll: (o: number) => {
+      offsetTop = o;
+      handlers.scroll?.();
     },
   };
 }
@@ -38,12 +50,19 @@ function makeFakeVp(initialHeight: number): {
 describe("viewportHeight module", () => {
   beforeEach(() => {
     document.documentElement.style.removeProperty("--viewport-height");
+    document.documentElement.style.removeProperty("--vv-offset-top");
   });
 
   it("writes the current viewport height on boot", () => {
     const { vp } = makeFakeVp(852);
     installViewportHeightTracker(vp);
     expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("852px");
+  });
+
+  it("writes --vv-offset-top on boot (UX-6 D6 iOS layout-shift cancel)", () => {
+    const { vp } = makeFakeVp(852, 0);
+    installViewportHeightTracker(vp);
+    expect(document.documentElement.style.getPropertyValue("--vv-offset-top")).toBe("0px");
   });
 
   it("updates the CSS var on every resize event", () => {
@@ -55,18 +74,29 @@ describe("viewportHeight module", () => {
     expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("852px");
   });
 
-  it("is a no-op when the viewport argument is undefined", () => {
-    installViewportHeightTracker(undefined);
-    // CSS var stays unset; .shell-mobile falls back to 100dvh.
-    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("");
+  it("updates --vv-offset-top on vv.scroll (iOS layout-viewport shift)", () => {
+    const { vp, fireScroll } = makeFakeVp(852, 0);
+    installViewportHeightTracker(vp);
+    fireScroll(120); // iOS scrolls layout viewport up on focus
+    expect(document.documentElement.style.getPropertyValue("--vv-offset-top")).toBe("120px");
+    fireScroll(0); // keyboard dismisses — layout viewport restores
+    expect(document.documentElement.style.getPropertyValue("--vv-offset-top")).toBe("0px");
   });
 
-  it("subscribes to the resize event (not scroll or other)", () => {
+  it("is a no-op when the viewport argument is undefined", () => {
+    installViewportHeightTracker(undefined);
+    // CSS vars stay unset; .shell-mobile falls back to 100dvh + 0px translateY.
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("");
+    expect(document.documentElement.style.getPropertyValue("--vv-offset-top")).toBe("");
+  });
+
+  it("subscribes to both resize and scroll events", () => {
     const addEventListener = vi.fn();
-    const vp: VisualViewportLike = { height: 800, addEventListener };
+    const vp: VisualViewportLike = { height: 800, offsetTop: 0, addEventListener };
     installViewportHeightTracker(vp);
-    expect(addEventListener).toHaveBeenCalledTimes(1);
+    expect(addEventListener).toHaveBeenCalledTimes(2);
     expect(addEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
+    expect(addEventListener).toHaveBeenCalledWith("scroll", expect.any(Function));
   });
 });
 

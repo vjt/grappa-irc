@@ -37,28 +37,47 @@
 
 export interface VisualViewportLike {
   height: number;
-  addEventListener(event: "resize", handler: () => void): void;
+  offsetTop: number;
+  addEventListener(event: "resize" | "scroll", handler: () => void): void;
 }
 
-const CSS_VAR = "--viewport-height";
+const HEIGHT_VAR = "--viewport-height";
+const OFFSET_VAR = "--vv-offset-top";
 
-/** Writes `height` (in px) to the `--viewport-height` CSS var on <html>. */
-function writeViewportHeight(height: number): void {
-  document.documentElement.style.setProperty(CSS_VAR, `${height}px`);
+function writeViewport(vp: VisualViewportLike): void {
+  const style = document.documentElement.style;
+  style.setProperty(HEIGHT_VAR, `${vp.height}px`);
+  style.setProperty(OFFSET_VAR, `${vp.offsetTop}px`);
 }
 
 /**
- * Boot-time entry. Reads the current visualViewport height, writes
- * it to the CSS var, and subscribes to subsequent resize events.
+ * Boot-time entry. Writes `--viewport-height` AND `--vv-offset-top`
+ * from `window.visualViewport`, then re-writes on every resize and
+ * scroll event.
  *
- * Idempotent — calling twice attaches two listeners (no internal
- * guard since main.tsx only invokes once). If a future need arises
- * to re-arm after teardown, return a `dispose` function from here.
+ * `--viewport-height` (height tracking) is the original UX-3 PENT
+ * fix: `.shell-mobile` reads it so the layout shrinks in lockstep
+ * with the iOS on-screen keyboard.
  *
- * Returns void on browsers that don't expose `window.visualViewport`
- * (every modern browser does, but the typedef is optional). The CSS
- * var stays unset; the `var(..., 100dvh)` fallback in default.css
- * takes over.
+ * `--vv-offset-top` (UX-6 D6, 2026-05-21) cancels iOS PWA's
+ * layout-viewport shift on focus. When the keyboard opens, iOS
+ * scrolls the LAYOUT viewport up by `vv.offsetTop` so the focused
+ * input stays in the VISUAL viewport. Layout-positioned elements
+ * (shell-mobile at layout y=0) end up ABOVE the visual viewport;
+ * chrome disappears, gap opens between compose and keyboard top.
+ * CSS uses the var as `transform: translateY(var(--vv-offset-top))`
+ * on `.shell-mobile` to push the shell back DOWN by the same
+ * amount — the layout shift is mechanically inverted, shell stays
+ * pinned to the visible area.
+ *
+ * Both vars update on the SAME handler — `vv.scroll` fires when
+ * iOS shifts the layout viewport (focus, keyboard open/close,
+ * scroll-into-view); `vv.resize` fires when the visual height
+ * itself changes (keyboard appears/disappears). Writing both vars
+ * on both events keeps them consistent regardless of which fires
+ * first.
+ *
+ * Idempotent — main.tsx invokes once.
  */
 export function installViewportHeightTracker(
   vp: VisualViewportLike | undefined = typeof window !== "undefined"
@@ -66,10 +85,10 @@ export function installViewportHeightTracker(
     : undefined,
 ): void {
   if (!vp) return;
-  writeViewportHeight(vp.height);
-  vp.addEventListener("resize", () => {
-    writeViewportHeight(vp.height);
-  });
+  const update = () => writeViewport(vp);
+  update();
+  vp.addEventListener("resize", update);
+  vp.addEventListener("scroll", update);
 }
 
 /**
