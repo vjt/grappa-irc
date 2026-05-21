@@ -2,7 +2,8 @@
 //
 // Defines an `ImageHost` interface that abstracts the multipart upload
 // to a public image-hosting service, and ships the litterbox.catbox.moe
-// implementation (`litterboxHost`) as the first concrete provider.
+// implementation (`litterboxHost`) + the embedded grappa-serves-it
+// implementation (`embeddedHost`, UX-6-B2 2026-05-21).
 //
 // Why an interface (not just a litterbox-specific helper). litterbox's
 // API differs in shape from every other plausible provider (imgur
@@ -35,6 +36,8 @@
 // progress listener is NOT attached and uploads use the simple CORS
 // path. UI falls back to indeterminate progress (`<progress>` with
 // no value attribute renders as indeterminate per HTML spec).
+
+import { serverSettings } from "./serverSettings";
 
 export type UploadProgress = { loaded: number; total: number };
 
@@ -242,15 +245,150 @@ export const litterboxHost: ImageHost = {
 };
 
 // --------------------------------------------------------------------
-// Registry + active host selector.
+// Embedded — grappa itself serves the file (UX-6 bucket B, 2026-05-20).
 //
-// Module-level for now. A future SettingsDrawer "image upload host"
-// dropdown can write the operator's pick to localStorage and have
-// `activeHost()` read it; until then, litterbox is the only choice.
+// Same-origin POST to `/api/uploads` with `Authorization: Bearer
+// <token>`. The server returns `{slug, url, expires_at}` with `url`
+// already absolute (Endpoint.url() + slug), so the per-host
+// retention copy reflects the grappa server itself rather than a
+// public-temp host.
+//
+// `supportsProgress: true` — same-origin requests have no CORS
+// preflight surface; `xhr.upload.addEventListener("progress")` works
+// natively without the OPTIONS gotcha that the catbox path documents.
+//
+// `maxFileSizeBytes` is a dynamic lookup against the reactive
+// `serverSettings()` signal so an admin-tuned per-file cap takes
+// effect in ComposeBox's pre-check without a page reload. Pre-
+// snapshot fallback: the 10MB server-side default (mirrors
+// `Grappa.ServerSettings.@default_upload_per_file_cap_bytes`).
+//
+// ## Authorization vs the litterbox shape
+//
+// `token()` (from auth.ts) is the operator's bearer; visitor + user
+// subjects both carry one. The server's `:authn` pipeline gates
+// `/api/uploads` so an unauthenticated upload returns 401 without
+// touching disk — same authz model as every other authn'd REST verb.
+//
+// ## Response shape
+//
+// `201 {slug, url, expires_at}`. We resolve with `url`; cic ignores
+// `slug`/`expires_at` for now (the URL is the only thing that lands
+// in the PRIVMSG body). Adding a future image-pin / image-extend
+// surface would parse these from a richer wire shape; for B2 the
+// existing `Promise<string>` contract is sufficient.
 // --------------------------------------------------------------------
 
-export const availableHosts: ReadonlyArray<ImageHost> = [litterboxHost];
+const EMBEDDED_ENDPOINT = "/api/uploads";
+
+type EmbeddedSuccessResponse = {
+  slug: string;
+  url: string;
+  expires_at: string;
+};
+
+function parseEmbeddedResponse(status: number, body: string): string | UploadError {
+  if (status < 200 || status >= 300) {
+    return { kind: "http", status, body };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { kind: "invalid_response", body };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { kind: "invalid_response", body };
+  }
+  const p = parsed as Partial<EmbeddedSuccessResponse>;
+  if (typeof p.url !== "string" || !URL_PATTERN.test(p.url)) {
+    return { kind: "invalid_response", body };
+  }
+  return p.url;
+}
+
+export const embeddedHost: ImageHost = {
+  id: "embedded",
+  displayName: "this grappa server",
+  retentionStatement:
+    "this grappa server. The URL is public — anyone with it can view the file for the chosen lifetime.",
+  ttlOptions: [
+    { value: "3600", label: "1 hour", seconds: 3600 },
+    { value: "43200", label: "12 hours", seconds: 43_200 },
+    { value: "86400", label: "24 hours", seconds: 86_400 },
+    { value: "259200", label: "72 hours", seconds: 259_200 },
+  ],
+  defaultTtl: "86400",
+  acceptedMimeTypes: ["image/png", "image/jpeg", "image/gif", "image/webp", "image/apng"],
+  // Pre-snapshot fallback mirrors the server-side default
+  // (`Grappa.ServerSettings.@default_upload_per_file_cap_bytes`). The
+  // reactive lookup in ComposeBox / SettingsDrawer reads
+  // `serverSettings()?.uploadPerFileCapBytes` directly when admin has
+  // tuned the cap; this literal is the cold-start fallback only.
+  maxFileSizeBytes: 10 * 1024 * 1024,
+  // Same-origin POST — no CORS preflight. Real progress bar works.
+  supportsProgress: true,
+  upload: (file, options, onProgress, signal) => {
+    const ttl = options.ttl ?? embeddedHost.defaultTtl ?? "86400";
+    const body = new FormData();
+    body.append("file", file);
+    body.append("expire", ttl);
+    const bearer = readToken();
+    return xhrUpload({
+      url: EMBEDDED_ENDPOINT,
+      body,
+      headers: bearer ? { authorization: `Bearer ${bearer}` } : undefined,
+      onProgress,
+      signal,
+      parseResponse: parseEmbeddedResponse,
+      supportsProgress: embeddedHost.supportsProgress,
+    });
+  },
+};
+
+// Token reader extracted so tests can inject without hauling in the
+// whole `auth.ts` module graph (vitest jsdom + localStorage is the
+// canonical bearer storage; production reads via `token()` accessor
+// from auth.ts). Same shape as `archive.ts`'s `loadArchive` token
+// peek. Test-only override via `__setImageUploadToken` lives below.
+let _tokenReader: () => string | null = () => {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage.getItem("grappa-token");
+};
+
+function readToken(): string | null {
+  return _tokenReader();
+}
+
+// Test seam — vitest sets / clears the reader per test. Production
+// never calls this. Mirrors `bundleHash.ts`'s `__resetBundleHashForTests`
+// pattern.
+export function __setImageUploadTokenReader(fn: (() => string | null) | null): void {
+  _tokenReader =
+    fn ??
+    (() => {
+      if (typeof localStorage === "undefined") return null;
+      return localStorage.getItem("grappa-token");
+    });
+}
+
+// --------------------------------------------------------------------
+// Registry + active host selector.
+//
+// UX-6-B2 (2026-05-21): `availableHosts` lists embedded FIRST so it's
+// the default pick whenever the reactive `serverSettings()` signal is
+// null (pre-snapshot, or admin hasn't explicitly set the host).
+// `activeHost()` reads the signal reactively — admin flips host →
+// fan-out broadcast lands in cic → `applyServerSettings/1` writes the
+// signal → `activeHost()` re-evaluates → ComposeBox + SettingsDrawer
+// re-render with the new host's TTL ladder + retention copy.
+// --------------------------------------------------------------------
+
+export const availableHosts: ReadonlyArray<ImageHost> = [embeddedHost, litterboxHost];
 
 export function activeHost(): ImageHost {
-  return litterboxHost;
+  const view = serverSettings();
+  if (view?.uploadActiveHost === "litterbox") return litterboxHost;
+  // Default + explicit "embedded" both land on embeddedHost.
+  return embeddedHost;
 }

@@ -189,6 +189,10 @@ config :logger, :console,
     # per-upload across the reaper + GET surface.
     :upload_id,
     :slug,
+    # UX-6-B2 (2026-05-21): admin PUT /settings unknown-key warn line
+    # carries the offending key so an admin typo (`globalcap_bytes`)
+    # surfaces in the log without dumping the whole body.
+    :setting_key,
     # Numeric severity (CP13 server-window cluster): :ok for 1xx/2xx/3xx,
     # :error for 4xx/5xx — rides the :notice persist for routed numerics
     # so log lines are color-greppable. Mirrors Scrollback.Meta.@known_keys

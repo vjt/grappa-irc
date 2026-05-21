@@ -10,48 +10,30 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**UX-6-B1 LANDED 2026-05-20.** Commit `61269eb` (server stack) +
-`4b3d1ac` (CI workflow CVE-ignore fix). Pushed to main, COLD-deployed
-via `scripts/deploy.sh --force-cold` (auto-detect MISSED the new
-migration — see "deploy.sh preflight gap" below). Healthcheck green
-at https://irc.sniffo.org/healthz. New REST surface live:
-`POST /api/uploads`, `GET /uploads/:slug` (public, 128-bit base32
-slug = access token), `GET /api/server-settings` (authn),
-`GET/PUT /admin/settings`, `GET /admin/uploads`,
-`DELETE /admin/uploads/:id`. New tables: `uploads` +
-`server_settings` (k/v admin config). New supervised child:
-`Grappa.Uploads.Reaper` (60s tick, unlinks file BEFORE row soft-
-delete to avoid race). 95 new tests + 0 Dialyzer + 0 Credo +
-0 Sobelow + doctor green. Plan:
-`docs/plans/2026-05-20-ux-6-b-embedded-uploader.md`.
-
-**UX-6-B2 PENDING — cic embeddedHost adapter + admin Settings tab.**
-Server is ready; cic needs:
-1. `cicchetto/src/lib/image-upload.ts` — add `embeddedHost: ImageHost`
-   (POSTs `/api/uploads`, parses JSON `{slug, url, expires_at}`,
-   reads from same-origin so `supportsProgress: true`).
-2. `cicchetto/src/lib/serverSettings.ts` — NEW reactive signal
-   sourced from `GET /api/server-settings` + WS-pushed
-   `server_settings_changed` events.
-3. `activeHost()` rewrite to read `serverSettings().uploadActiveHost`.
-4. `availableHosts: [embeddedHost, litterboxHost]` (embedded first;
-   catbox stays as alternate).
-5. AdminPane: 5th tab "Settings" + `AdminSettingsTab.tsx` (host
-   pick dropdown + per-file cap MB input + global cap GB input +
-   Save button → PUT `/admin/settings`).
-6. AdminChannel: subscribe to `Grappa.ServerSettings.topic/0` + push
-   `server_settings_changed` over admin socket; ALSO public-broadcast
-   subset over user-rooted topic so cic's reactive layer auto-flips
-   without an admin reload.
-
-**UX-6-B3 PENDING — e2e + reviewer-loop + deploy + memory.**
-Per-bucket cadence; mandatory Playwright spec
-`ux-6-b-embedded-upload.spec.ts` (visitor drag-drops PNG, asserts
-URL POSTed back + PRIVMSG `📸 https://...` shape + GET on URL
-returns bytes). Then `ux-6-b-admin-settings.spec.ts` (admin flips
-host to litterbox + verifies cic ComposeBox targets the new
-endpoint). Reviewer-loop agent. CDP smoke on live tab. Memory
-entry + MEMORY.md pointer.
+**UX-6-B LANDED 2026-05-21.** Full B-cluster (B1 server stack +
+B2 cic adapter + admin Settings tab + B3 e2e + reviewer-loop)
+ready. B1 commit `61269eb` (server stack) + `4b3d1ac` (CI workflow
+CVE-ignore) + `3c17808` (todo.md snapshot). B2 lands cic
+`embeddedHost: ImageHost`, reactive `serverSettings()` signal
+(identity-scoped), `activeHost()` reactive flip, NEW
+`AdminSettingsTab.tsx` (5th admin tab) + REST helpers, server
+`Grappa.ServerSettings.Wire` module + `Admin.SettingsController`
+per-user-topic fan-out (parity with `AdminController.cic_bundle_changed/2`
+precedent — no new channel), `GrappaChannel.push_server_settings/1`
+after-join snapshot (parity with `push_bundle_hash/1`). B3 ships
+Playwright `ux-6-b-embedded-upload.spec.ts` (full vertical:
+picker → modal → POST → IRC echo → linkify → GET serves bytes)
++ `ux-6-b-admin-settings.spec.ts` (render, 422 inline error,
+PUT round-trip with after-each reset). Reviewer-loop addressed
+HIGH-1 (stale docstring drop), HIGH-2 (shared `upload_view/1`
+wire helper between REST + WS), HIGH-3 (`applyServerSettings`
+callsite destructure to drop `kind`), MED-1 (Logger.warning on
+unknown admin PUT key + `setting_key` allowlist add). Doctor
+fix: added `@doc` to all 6 `ServerSettings` accessors (pre-
+existing tech debt from B1; doctor was already failing on main
+HEAD pre-B2). Gates: 2308 ExUnit + 0 Dialyzer + 0 Credo + 0
+Sobelow + doctor green + 1506 vitest + 4/4 ux-6-b Playwright +
+bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 
 **UX-6 cluster — remaining buckets after B closes:**
 

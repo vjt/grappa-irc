@@ -24,18 +24,12 @@ defmodule GrappaWeb.ServerSettingsController do
   use GrappaWeb, :controller
 
   alias Grappa.ServerSettings
+  alias Grappa.ServerSettings.Wire, as: SettingsWire
 
   @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, _) do
     %{upload: u} = ServerSettings.public_view()
-
-    json(conn, %{
-      upload: %{
-        active_host: Atom.to_string(u.active_host),
-        per_file_cap_bytes: u.per_file_cap_bytes,
-        global_cap_bytes: u.global_cap_bytes
-      }
-    })
+    json(conn, %{upload: SettingsWire.upload_view(u)})
   end
 end

@@ -27,9 +27,12 @@ defmodule Grappa.ServerSettings do
   ## PubSub broadcast on change
 
   `put_*/1` broadcasts `:server_settings_changed` on the
-  `"grappa:server_settings"` topic so cic's reactive layer can update
-  `activeHost()` without a poll. Subscribers receive
-  `{:server_settings_changed, public_view()}`.
+  `"grappa:server_settings"` topic — retained as an in-process signal
+  for tests + any future internal subscriber. The cic fan-out path
+  lives at `GrappaWeb.Admin.SettingsController.update/2` (mirrors
+  `AdminController.cic_bundle_changed/2`'s per-user-topic broadcast
+  via `WSPresence.list_user_names/0`); subscribers on this topic
+  receive `{:server_settings_changed, public_view()}`.
 
   ## Why direct Repo reads vs cache
 
@@ -76,6 +79,7 @@ defmodule Grappa.ServerSettings do
 
   # ---- upload.active_host ------------------------------------------
 
+  @doc "Returns the configured upload host (`:embedded` default)."
   @spec get_upload_active_host() :: upload_host()
   def get_upload_active_host do
     case get_raw(@key_upload_active_host) do
@@ -85,6 +89,7 @@ defmodule Grappa.ServerSettings do
     end
   end
 
+  @doc "Pins the upload host. Validates the value at the boundary."
   @spec put_upload_active_host(upload_host()) :: :ok | {:error, :invalid_value}
   def put_upload_active_host(host) when host in [:embedded, :litterbox] do
     put_raw(@key_upload_active_host, Atom.to_string(host))
@@ -94,6 +99,7 @@ defmodule Grappa.ServerSettings do
 
   # ---- upload.per_file_cap_bytes -----------------------------------
 
+  @doc "Returns the per-file upload byte cap (default 10 MiB)."
   @spec get_upload_per_file_cap_bytes() :: pos_integer()
   def get_upload_per_file_cap_bytes do
     case decode_pos_int(get_raw(@key_upload_per_file_cap_bytes)) do
@@ -102,6 +108,7 @@ defmodule Grappa.ServerSettings do
     end
   end
 
+  @doc "Pins the per-file upload byte cap. Must be a positive integer."
   @spec put_upload_per_file_cap_bytes(pos_integer()) :: :ok | {:error, :invalid_value}
   def put_upload_per_file_cap_bytes(n) when is_integer(n) and n > 0 do
     put_raw(@key_upload_per_file_cap_bytes, Integer.to_string(n))
@@ -111,6 +118,7 @@ defmodule Grappa.ServerSettings do
 
   # ---- upload.global_cap_bytes -------------------------------------
 
+  @doc "Returns the global disk-budget byte ceiling (default 10 GiB)."
   @spec get_upload_global_cap_bytes() :: pos_integer()
   def get_upload_global_cap_bytes do
     case decode_pos_int(get_raw(@key_upload_global_cap_bytes)) do
@@ -119,6 +127,7 @@ defmodule Grappa.ServerSettings do
     end
   end
 
+  @doc "Pins the global disk-budget byte ceiling. Must be a positive integer."
   @spec put_upload_global_cap_bytes(pos_integer()) :: :ok | {:error, :invalid_value}
   def put_upload_global_cap_bytes(n) when is_integer(n) and n > 0 do
     put_raw(@key_upload_global_cap_bytes, Integer.to_string(n))
@@ -128,6 +137,7 @@ defmodule Grappa.ServerSettings do
 
   # ---- Public projection -------------------------------------------
 
+  @doc "Returns the operator-visible subset for cic + admin REST surfaces."
   @spec public_view() :: public_view()
   def public_view do
     %{

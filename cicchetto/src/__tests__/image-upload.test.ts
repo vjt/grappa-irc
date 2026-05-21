@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  __setImageUploadTokenReader,
   activeHost,
   availableHosts,
+  embeddedHost,
   type ImageHost,
   litterboxHost,
   type UploadProgress,
   xhrUpload,
 } from "../lib/image-upload";
+import { applyServerSettings } from "../lib/serverSettings";
 
 // --------------------------------------------------------------
 // MockXMLHttpRequest — minimal stand-in for jsdom's XHR.
@@ -48,6 +51,7 @@ class MockXMLHttpRequest {
   upload = new MockUpload();
   readyState = 0;
   aborted = false;
+  headers: Record<string, string> = {};
 
   listeners = new Map<string, Set<() => void>>();
   onload: (() => void) | null = null;
@@ -65,6 +69,10 @@ class MockXMLHttpRequest {
 
   send(body: unknown): void {
     this.body = body;
+  }
+
+  setRequestHeader(name: string, value: string): void {
+    this.headers[name.toLowerCase()] = value;
   }
 
   abort(): void {
@@ -437,12 +445,37 @@ describe("supportsProgress=true (synthetic CORS-friendly host)", () => {
 // ----- Registry + active host ------------------------------------
 
 describe("availableHosts + activeHost", () => {
-  it("registers litterboxHost as an available host", () => {
-    expect(availableHosts).toContain(litterboxHost);
+  it("registers embeddedHost FIRST then litterboxHost (default = embedded)", () => {
+    expect(availableHosts[0]).toBe(embeddedHost);
+    expect(availableHosts[1]).toBe(litterboxHost);
   });
 
-  it("returns litterboxHost from activeHost() by default", () => {
+  it("returns embeddedHost from activeHost() when signal is null (pre-snapshot)", () => {
+    // identityScopedStore: the only safe way to push `null` in a test
+    // is to apply a value then rely on a fresh token rotation. Simpler:
+    // assert the signal-driven branch (litterbox) flips back to
+    // embedded when set explicitly.
+    applyServerSettings({
+      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
+    });
+    expect(activeHost()).toBe(embeddedHost);
+  });
+
+  it("returns litterboxHost from activeHost() when admin pinned litterbox", () => {
+    applyServerSettings({
+      upload: { active_host: "litterbox", per_file_cap_bytes: 1, global_cap_bytes: 2 },
+    });
     expect(activeHost()).toBe(litterboxHost);
+  });
+
+  it("returns embeddedHost when admin flips back to embedded", () => {
+    applyServerSettings({
+      upload: { active_host: "litterbox", per_file_cap_bytes: 1, global_cap_bytes: 2 },
+    });
+    applyServerSettings({
+      upload: { active_host: "embedded", per_file_cap_bytes: 1, global_cap_bytes: 2 },
+    });
+    expect(activeHost()).toBe(embeddedHost);
   });
 });
 
@@ -474,5 +507,397 @@ describe("ImageHost interface — second-impl exemplar", () => {
   it("ttlOptions may be empty (host with no TTL choice)", () => {
     expect(mockHost.ttlOptions).toEqual([]);
     expect(mockHost.defaultTtl).toBeNull();
+  });
+});
+
+// ----- embeddedHost (UX-6-B2 2026-05-21) ------------------------------
+
+describe("embeddedHost — metadata", () => {
+  it("identifies as embedded", () => {
+    expect(embeddedHost.id).toBe("embedded");
+  });
+
+  it("exposes a friendly display name", () => {
+    expect(typeof embeddedHost.displayName).toBe("string");
+    expect(embeddedHost.displayName.length).toBeGreaterThan(0);
+  });
+
+  it("retentionStatement names the host + lifetime + public-URL audience", () => {
+    expect(embeddedHost.retentionStatement).toMatch(/grappa/i);
+    expect(embeddedHost.retentionStatement).toMatch(/public/i);
+    expect(embeddedHost.retentionStatement).toMatch(/anyone with/i);
+  });
+
+  it("ttlOptions cover 1h/12h/24h/72h with integer-seconds values", () => {
+    const values = embeddedHost.ttlOptions.map((o) => o.value);
+    expect(values).toEqual(["3600", "43200", "86400", "259200"]);
+    const secs = embeddedHost.ttlOptions.map((o) => o.seconds);
+    expect(secs).toEqual([3600, 43_200, 86_400, 259_200]);
+  });
+
+  it("defaults TTL to 24h (86400s) per cluster spec", () => {
+    expect(embeddedHost.defaultTtl).toBe("86400");
+  });
+
+  it("acceptedMimeTypes lists the 5 image suffixes", () => {
+    expect(embeddedHost.acceptedMimeTypes).toEqual([
+      "image/png",
+      "image/jpeg",
+      "image/gif",
+      "image/webp",
+      "image/apng",
+    ]);
+  });
+
+  it("declares supportsProgress=true (same-origin, no CORS preflight)", () => {
+    expect(embeddedHost.supportsProgress).toBe(true);
+  });
+
+  it("declares a fallback maxFileSizeBytes (10 MiB, mirrors server-side default)", () => {
+    expect(embeddedHost.maxFileSizeBytes).toBe(10 * 1024 * 1024);
+  });
+});
+
+describe("embeddedHost.upload — wire shape", () => {
+  beforeEach(() => {
+    __setImageUploadTokenReader(() => "test-bearer");
+  });
+
+  afterEach(() => {
+    __setImageUploadTokenReader(null);
+  });
+
+  it("POSTs multipart to /api/uploads (same-origin)", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR instance");
+
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe("/api/uploads");
+
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "abc",
+        url: "https://grappa.test/uploads/abc",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+  });
+
+  it("includes file + expire fields", async () => {
+    const file = sampleFile();
+    const upload = embeddedHost.upload(
+      file,
+      { ttl: "3600" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR instance");
+
+    const fields = formDataEntries(xhr.body);
+    expect(fields.file).toBeInstanceOf(File);
+    expect((fields.file as File).name).toBe("screenshot.png");
+    expect(fields.expire).toBe("3600");
+
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "x",
+        url: "https://grappa.test/uploads/x",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+  });
+
+  it("attaches Authorization: Bearer header from the token reader", async () => {
+    __setImageUploadTokenReader(() => "abc-token-123");
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    expect(xhr.headers.authorization).toBe("Bearer abc-token-123");
+
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "x",
+        url: "https://grappa.test/uploads/x",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+  });
+
+  it("omits Authorization header when token is null", async () => {
+    __setImageUploadTokenReader(() => null);
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    expect(xhr.headers.authorization).toBeUndefined();
+
+    // Server would 401; verify by triggering a 401 and asserting rejection.
+    xhr.triggerLoad(401, '{"error":"unauthorized"}');
+    await expect(upload).rejects.toEqual({
+      kind: "http",
+      status: 401,
+      body: '{"error":"unauthorized"}',
+    });
+  });
+
+  it.each([
+    "3600",
+    "43200",
+    "86400",
+    "259200",
+  ])("wires TTL %s into the expire= field", async (ttl) => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    expect(formDataEntries(xhr.body).expire).toBe(ttl);
+
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "x",
+        url: "https://grappa.test/uploads/x",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+  });
+
+  it("falls back to defaultTtl when no ttl supplied", async () => {
+    const upload = embeddedHost.upload(sampleFile(), {}, () => {}, new AbortController().signal);
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    expect(formDataEntries(xhr.body).expire).toBe(embeddedHost.defaultTtl);
+
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "x",
+        url: "https://grappa.test/uploads/x",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+  });
+});
+
+describe("embeddedHost.upload — resolution + error mapping", () => {
+  beforeEach(() => {
+    __setImageUploadTokenReader(() => "test-bearer");
+  });
+
+  afterEach(() => {
+    __setImageUploadTokenReader(null);
+  });
+
+  it("resolves with the JSON response url field", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "abc",
+        url: "https://grappa.test/uploads/abc",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+
+    await expect(upload).resolves.toBe("https://grappa.test/uploads/abc");
+  });
+
+  it("rejects with {kind: network} on transport error", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerError();
+
+    await expect(upload).rejects.toEqual({ kind: "network" });
+  });
+
+  it("rejects with {kind: http, status, body} on 413 file_too_large", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(413, '{"error":"file_too_large","max_bytes":10485760}');
+
+    await expect(upload).rejects.toEqual({
+      kind: "http",
+      status: 413,
+      body: '{"error":"file_too_large","max_bytes":10485760}',
+    });
+  });
+
+  it("rejects with {kind: http, status, body} on 507 insufficient_storage", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(507, '{"error":"insufficient_storage"}');
+
+    await expect(upload).rejects.toEqual({
+      kind: "http",
+      status: 507,
+      body: '{"error":"insufficient_storage"}',
+    });
+  });
+
+  it("rejects with {kind: invalid_response} when body is not JSON", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(201, "not-json");
+
+    await expect(upload).rejects.toEqual({ kind: "invalid_response", body: "not-json" });
+  });
+
+  it("rejects with {kind: invalid_response} when url field is missing", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(201, '{"slug":"abc","expires_at":"2026-05-22T00:00:00Z"}');
+
+    await expect(upload).rejects.toEqual({
+      kind: "invalid_response",
+      body: '{"slug":"abc","expires_at":"2026-05-22T00:00:00Z"}',
+    });
+  });
+
+  it("rejects with {kind: invalid_response} when url is not a URL", async () => {
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      () => {},
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+    xhr.triggerLoad(201, '{"slug":"x","url":"not a url","expires_at":"x"}');
+
+    await expect(upload).rejects.toEqual({
+      kind: "invalid_response",
+      body: '{"slug":"x","url":"not a url","expires_at":"x"}',
+    });
+  });
+});
+
+describe("embeddedHost.upload — abort", () => {
+  beforeEach(() => {
+    __setImageUploadTokenReader(() => "test-bearer");
+  });
+
+  afterEach(() => {
+    __setImageUploadTokenReader(null);
+  });
+
+  it("aborts the XHR when the AbortSignal fires + rejects with {kind: abort}", async () => {
+    const ctrl = new AbortController();
+    const upload = embeddedHost.upload(sampleFile(), { ttl: "86400" }, () => {}, ctrl.signal);
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    ctrl.abort();
+    expect(xhr.aborted).toBe(true);
+
+    await expect(upload).rejects.toEqual({ kind: "abort" });
+  });
+});
+
+describe("embeddedHost.upload — progress callback", () => {
+  beforeEach(() => {
+    __setImageUploadTokenReader(() => "test-bearer");
+  });
+
+  afterEach(() => {
+    __setImageUploadTokenReader(null);
+  });
+
+  it("DOES attach an upload progress listener (same-origin, no preflight)", async () => {
+    const events: UploadProgress[] = [];
+    const upload = embeddedHost.upload(
+      sampleFile(),
+      { ttl: "86400" },
+      (p) => events.push(p),
+      new AbortController().signal,
+    );
+    const xhr = MockXMLHttpRequest.instances[0];
+    if (!xhr) throw new Error("expected XHR");
+
+    xhr.triggerUploadProgress(512, 2048);
+    xhr.triggerUploadProgress(2048, 2048);
+    xhr.triggerLoad(
+      201,
+      JSON.stringify({
+        slug: "x",
+        url: "https://grappa.test/uploads/x",
+        expires_at: "2026-05-22T00:00:00Z",
+      }),
+    );
+    await upload;
+
+    expect(events).toEqual([
+      { loaded: 512, total: 2048 },
+      { loaded: 2048, total: 2048 },
+    ]);
+    expect(xhr.upload.listeners.has("progress")).toBe(true);
   });
 });

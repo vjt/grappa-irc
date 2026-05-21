@@ -3,7 +3,8 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.ServerSettings
+  alias Grappa.PubSub.Topic
+  alias Grappa.{ServerSettings, WSPresence}
 
   describe "GET /admin/settings — gate" do
     test "401 without bearer", %{conn: conn} do
@@ -142,6 +143,124 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
                "error" => "invalid_setting",
                "field" => "upload.per_file_cap_bytes"
              }
+    end
+  end
+
+  describe "PUT /admin/settings — fan-out (UX-6-B2)" do
+    setup do
+      {_, session} = user_and_session(is_admin: true)
+      %{session: session}
+    end
+
+    test "broadcasts server_settings_changed to subscribed user-topics", %{
+      conn: conn,
+      session: session
+    } do
+      # Same shape as `AdminControllerTest`'s cic_bundle_changed
+      # broadcast assertion: register a fake socket pid so
+      # `WSPresence.list_user_names/0` returns this user, then
+      # subscribe a test process to the user-topic so we can observe
+      # the fan-out.
+      user_name = "settingsbcast-#{System.unique_integer([:positive])}"
+      :ok = WSPresence.register(user_name, self())
+
+      topic = Topic.user(user_name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"active_host" => "litterbox"}})
+
+      assert json_response(conn, 200)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{
+          kind: "server_settings_changed",
+          upload: %{active_host: "litterbox"}
+        }
+      }
+    end
+
+    test "broadcasts to VISITOR user-topics too (visitor cic also reads upload settings)",
+         %{conn: conn, session: session} do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      :ok = WSPresence.register(visitor_name, self())
+
+      topic = Topic.user(visitor_name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"per_file_cap_bytes" => 4_000_000}})
+
+      assert json_response(conn, 200)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{
+          kind: "server_settings_changed",
+          upload: %{per_file_cap_bytes: 4_000_000}
+        }
+      }
+    end
+
+    test "emits [:grappa, :admin, :server_settings_fanout] telemetry", %{
+      conn: conn,
+      session: session
+    } do
+      handler_id = "test-server-settings-fanout-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:grappa, :admin, :server_settings_fanout],
+        fn event, measurements, metadata, _ ->
+          send(parent, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      try do
+        user_name = "fanout-set-tel-#{System.unique_integer([:positive])}"
+        :ok = WSPresence.register(user_name, self())
+
+        conn =
+          conn
+          |> put_bearer(session.id)
+          |> put("/admin/settings", %{"upload" => %{"global_cap_bytes" => 88_888}})
+
+        assert json_response(conn, 200)
+
+        assert_receive {:telemetry, [:grappa, :admin, :server_settings_fanout],
+                        %{attempted: attempted, succeeded: succeeded, failed: failed}, _}
+
+        assert is_integer(attempted)
+        assert is_integer(succeeded)
+        assert is_integer(failed)
+        assert attempted >= 1
+        assert succeeded + failed == attempted
+      after
+        :telemetry.detach(handler_id)
+      end
+    end
+
+    test "does NOT fan out on validation failure", %{conn: conn, session: session} do
+      user_name = "settingsbcast-novfail-#{System.unique_integer([:positive])}"
+      :ok = WSPresence.register(user_name, self())
+
+      topic = Topic.user(user_name)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"active_host" => "imgbb"}})
+
+      assert json_response(conn, 422)
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
     end
   end
 end

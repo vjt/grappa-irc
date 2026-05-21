@@ -642,6 +642,53 @@ defmodule GrappaWeb.GrappaChannelTest do
       end
     end
 
+    # UX-6-B2 (2026-05-21) — `server_settings_changed` after-join push.
+    # Cold-WS-subscribe parity with the put-time fan-out emitted by
+    # `Admin.SettingsController.update/2`: cic's reactive
+    # `serverSettings()` signal is populated before the first
+    # ComposeBox render reads `activeHost()`. Parity-with-bundle_hash
+    # test pattern.
+    test "after-join snapshot: pushes server_settings_changed for user socket" do
+      user_name = "settingssnap-#{System.unique_integer([:positive])}"
+      user_fixture(name: user_name)
+      topic = Topic.user(user_name)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "server_settings_changed",
+        upload: %{
+          active_host: active_host,
+          per_file_cap_bytes: per_file_cap_bytes,
+          global_cap_bytes: global_cap_bytes
+        }
+      })
+
+      assert active_host in ["embedded", "litterbox"]
+      assert is_integer(per_file_cap_bytes) and per_file_cap_bytes > 0
+      assert is_integer(global_cap_bytes) and global_cap_bytes > 0
+    end
+
+    test "after-join snapshot: pushes server_settings_changed for visitor socket" do
+      visitor_name = "visitor:#{Ecto.UUID.generate()}"
+      topic = Topic.user(visitor_name)
+
+      {:ok, _, _} =
+        visitor_name
+        |> build_socket()
+        |> subscribe_and_join(topic, %{})
+
+      assert_push("event", %{
+        kind: "server_settings_changed",
+        upload: %{active_host: active_host}
+      })
+
+      assert active_host in ["embedded", "litterbox"]
+    end
+
     test "after-join snapshot: query_windows_list payload is JSON-serializable (regression)" do
       # Regression: the prod bug raised Protocol.UndefinedError for
       # Jason.Encoder on %QueryWindows.Window{} structs because the schema

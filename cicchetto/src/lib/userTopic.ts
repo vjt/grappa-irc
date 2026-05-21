@@ -18,6 +18,7 @@ import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks"
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
 import { selectedChannel, setSelectedChannel } from "./selection";
+import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhowasBundle } from "./whowasCard";
@@ -283,6 +284,32 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "bundle_hash":
       if (typeof r.hash !== "string" || r.hash === "") return null;
       return { kind: "bundle_hash", hash: r.hash };
+    case "server_settings_changed": {
+      // UX-6-B2 (2026-05-21) — operator-visible server-settings push.
+      // Wire shape mirrors `Grappa.ServerSettings.Wire.server_settings_
+      // changed/1` (atoms-out). Per-field narrowing rejects any
+      // server bug / proxy mangling at the boundary; a malformed
+      // payload drops without corrupting the cache.
+      const up = r.upload;
+      if (typeof up !== "object" || up === null) return null;
+      const u = up as Record<string, unknown>;
+      if (
+        (u.active_host !== "embedded" && u.active_host !== "litterbox") ||
+        typeof u.per_file_cap_bytes !== "number" ||
+        u.per_file_cap_bytes <= 0 ||
+        typeof u.global_cap_bytes !== "number" ||
+        u.global_cap_bytes <= 0
+      )
+        return null;
+      return {
+        kind: "server_settings_changed",
+        upload: {
+          active_host: u.active_host,
+          per_file_cap_bytes: u.per_file_cap_bytes,
+          global_cap_bytes: u.global_cap_bytes,
+        },
+      };
+    }
     case "peer_away":
       // P-0b — standalone 301 RPL_AWAY. cic dm-listener routes by
       // `peer:` field; banner renders inline at the top of the
@@ -574,6 +601,21 @@ createRoot(() => {
           // baked into the page the browser loaded); mismatch shows the
           // refresh banner. No focus change — banner is a passive cue.
           setServerBundleHash(payload.hash);
+          return;
+
+        case "server_settings_changed":
+          // UX-6-B2 (2026-05-21) — operator-visible server-settings
+          // push. Hydrates the reactive `serverSettings()` signal so
+          // ComposeBox / SettingsDrawer / PrivacyModal pick up the
+          // new active host + caps without a page reload. After-join
+          // snapshot AND admin-PUT fan-out both ride this arm — same
+          // setter applies in both directions (last-write-wins,
+          // idempotent). Destructure to drop the `kind` discriminator
+          // — `applyServerSettings` takes the `ServerSettingsWirePayload`
+          // shape (upload subtree only) so structural-typing drift
+          // (e.g. a future log site reading `raw.kind`) can't surprise
+          // the REST call site whose response has no `kind`.
+          applyServerSettings({ upload: payload.upload });
           return;
 
         case "peer_away":

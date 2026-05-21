@@ -2,6 +2,7 @@ import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js
 import AdminEventsTab from "./AdminEventsTab";
 import AdminNetworksTab from "./AdminNetworksTab";
 import AdminSessionsTab from "./AdminSessionsTab";
+import AdminSettingsTab from "./AdminSettingsTab";
 import AdminVisitorsTab from "./AdminVisitorsTab";
 import { startAdminEventsSubscription, uninstallAdminEvents } from "./lib/adminEvents";
 
@@ -37,7 +38,7 @@ export type Props = {
   onClose: () => void;
 };
 
-type TabKey = "visitors" | "sessions" | "networks" | "events";
+type TabKey = "visitors" | "sessions" | "networks" | "events" | "settings";
 
 const AdminPane: Component<Props> = (props) => {
   const [currentTab, setCurrentTab] = createSignal<TabKey>("visitors");
@@ -120,6 +121,18 @@ const AdminPane: Component<Props> = (props) => {
         >
           Events
         </button>
+        <button
+          type="button"
+          role="tab"
+          class="admin-tab"
+          aria-selected={isActive("settings")}
+          aria-controls="admin-tab-settings"
+          id="admin-tab-settings-handle"
+          data-testid="admin-tab-settings"
+          onClick={() => setCurrentTab("settings")}
+        >
+          Settings
+        </button>
       </div>
       <Show when={isActive("visitors")}>
         <div
@@ -159,6 +172,16 @@ const AdminPane: Component<Props> = (props) => {
           class="admin-tab-panel"
         >
           <AdminEventsTab />
+        </div>
+      </Show>
+      <Show when={isActive("settings")}>
+        <div
+          role="tabpanel"
+          id="admin-tab-settings"
+          aria-labelledby="admin-tab-settings-handle"
+          class="admin-tab-panel"
+        >
+          <AdminSettingsTab />
         </div>
       </Show>
     </section>

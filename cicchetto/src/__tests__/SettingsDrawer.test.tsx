@@ -373,10 +373,13 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
     const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
     expect(select).toBeInTheDocument();
     const opts = Array.from(select.querySelectorAll("option")).map((o) => o.value);
-    // "" = use site default; rest mirror litterboxHost.ttlOptions.
+    // "" = use site default; rest mirror activeHost().ttlOptions.
+    // UX-6-B2 (2026-05-21): activeHost() defaults to embeddedHost
+    // (values: "3600" | "43200" | "86400" | "259200" — integer
+    // seconds strings). Pre-B2 default was litterboxHost ("1h" etc).
     expect(opts).toContain("");
-    expect(opts).toContain("1h");
-    expect(opts).toContain("24h");
+    expect(opts).toContain("3600");
+    expect(opts).toContain("86400");
   });
 
   it("loads the server preference on mount", async () => {
@@ -388,18 +391,21 @@ describe("SettingsDrawer (bucket M — upload-TTL fieldset)", () => {
   });
 
   it("reflects the cached preference in the select value", () => {
-    // 86_400 matches litterboxHost's "24h" entry.
+    // 86_400 = 24h. UX-6-B2: embeddedHost's "24h" entry has
+    // `value: "86400"` (integer-seconds string, mirrors server-side
+    // allowed_ttl_seconds whitelist).
     uploadTtlHolder.current = 86_400;
     wrap(true);
     const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
-    expect(select.value).toBe("24h");
+    expect(select.value).toBe("86400");
   });
 
   it("selecting an option PUTs the matching seconds", async () => {
     const orch = await import("../lib/imageUploadOrchestrator");
     wrap(true);
     const select = screen.getByTestId("upload-ttl-select") as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "1h" } });
+    // UX-6-B2: embeddedHost option value is "3600" (integer-seconds).
+    fireEvent.change(select, { target: { value: "3600" } });
     await waitFor(() => {
       expect(orch.saveUploadTtlSeconds).toHaveBeenCalledWith("test-bearer", 3600);
     });

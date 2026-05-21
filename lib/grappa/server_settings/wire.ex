@@ -1,0 +1,91 @@
+defmodule Grappa.ServerSettings.Wire do
+  @moduledoc """
+  Single source of truth for the public JSON wire shape of the
+  `server_settings_changed` push and the matching after-join snapshot.
+
+  UX-6-B2 (2026-05-21). Two doors emit this contract:
+
+    * `GrappaWeb.GrappaChannel` after-join — `push_server_settings/1`
+      private helper, parity with `push_bundle_hash/1`.
+    * `GrappaWeb.Admin.SettingsController.update/2` — after a
+      successful `PUT /admin/settings`, iterates
+      `Grappa.WSPresence.list_user_names/0` + broadcasts on every live
+      `Topic.user(name)`. Same fanout pattern as
+      `AdminController.cic_bundle_changed/2` (cluster `cic-bundle-
+      changed`, CP23 S4 B5).
+
+  ## Why per-user-topic re-broadcast (not a dedicated channel)
+
+  Per CLAUDE.md "implement once, reuse everywhere": the
+  `bundle_hash` precedent already wires server-originated state every
+  operator needs to mirror through the user-topic. Reusing that
+  carrier means no new channel module, no new cic-side
+  `socket.channel(...).join()`, and an existing snapshot site for
+  cold WS subscribe parity.
+
+  ## Wire shape — atoms-out
+
+  `Grappa.ServerSettings.public_view/0` returns the upload subtree
+  with the host as an atom (`:embedded | :litterbox`). Wire shape
+  flattens to the string the cic side reads (mirrors
+  `GrappaWeb.ServerSettingsController.show/2`). Adding a field to
+  the upload subtree is one edit here + one mirror in the cic-side
+  narrower; no second wire-shape definition to keep in sync.
+  """
+
+  use Boundary, top_level?: true, deps: []
+
+  @typedoc """
+  Wire projection of the upload subtree — atoms-out. Shared between
+  the WS broadcast (`server_settings_changed/1` below) and the REST
+  surfaces (`GrappaWeb.ServerSettingsController.show/2` +
+  `GrappaWeb.Admin.SettingsController.render_view/1`). Adding a 4th
+  `upload.*` field is one edit here, not three.
+  """
+  @type upload_view :: %{
+          active_host: String.t(),
+          per_file_cap_bytes: pos_integer(),
+          global_cap_bytes: pos_integer()
+        }
+
+  @typedoc """
+  Wire shape pushed on the user-topic when admin updates server
+  settings, OR observed at after-join (snapshot push).
+  """
+  @type changed_payload :: %{
+          kind: String.t(),
+          upload: upload_view()
+        }
+
+  @doc """
+  Renders the `upload` subtree of `Grappa.ServerSettings.public_view/0`
+  to its public wire shape. Atoms-out: `:embedded` / `:litterbox` →
+  string. Shared by every wire-emitter to keep the field set
+  single-source.
+  """
+  @spec upload_view(%{
+          active_host: atom(),
+          per_file_cap_bytes: pos_integer(),
+          global_cap_bytes: pos_integer()
+        }) :: upload_view()
+  def upload_view(%{} = upload) do
+    %{
+      active_host: Atom.to_string(upload.active_host),
+      per_file_cap_bytes: upload.per_file_cap_bytes,
+      global_cap_bytes: upload.global_cap_bytes
+    }
+  end
+
+  @doc """
+  Renders a `Grappa.ServerSettings.public_view/0` map to its public
+  wire shape for the `server_settings_changed` event push. Delegates
+  the `upload` subtree projection to `upload_view/1`.
+  """
+  @spec server_settings_changed(Grappa.ServerSettings.public_view()) :: changed_payload()
+  def server_settings_changed(%{upload: %{} = upload}) do
+    %{
+      kind: "server_settings_changed",
+      upload: upload_view(upload)
+    }
+  end
+end

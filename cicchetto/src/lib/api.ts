@@ -710,6 +710,19 @@ export type WireUserEvent =
       reason: string | null;
     }
   | { kind: "bundle_hash"; hash: string }
+  // UX-6-B2 (2026-05-21) — operator-visible server-settings reactive
+  // signal. Fired on `Admin.SettingsController.update/2` fan-out AND
+  // on after-join snapshot from `GrappaChannel.push_server_settings/1`
+  // (parity with `bundle_hash`). Wire shape mirrors
+  // `Grappa.ServerSettings.Wire.server_settings_changed/1` (atoms-out).
+  | {
+      kind: "server_settings_changed";
+      upload: {
+        active_host: "embedded" | "litterbox";
+        per_file_cap_bytes: number;
+        global_cap_bytes: number;
+      };
+    }
   | { kind: "archive_changed"; network_slug: string }
   // UX-4 bucket B — per-row patch for the HomePane's networks list.
   // Co-emitted by `Networks.broadcast_state_change/4` alongside the
@@ -1172,6 +1185,55 @@ export async function adminResetCircuit(
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as AdminCircuitResetResponse;
+}
+
+// UX-6-B2 (2026-05-21) — admin Settings tab REST wire types.
+// Mirror of `GrappaWeb.Admin.SettingsController` GET / PUT
+// `/admin/settings`. Wire shape is the `Grappa.ServerSettings.
+// public_view/0` re-shaped (atoms-out — active_host is the string
+// `"embedded" | "litterbox"`).
+export type AdminSettingsView = {
+  upload: {
+    active_host: "embedded" | "litterbox";
+    per_file_cap_bytes: number;
+    global_cap_bytes: number;
+  };
+};
+
+export type AdminSettingsResponse = { settings: AdminSettingsView };
+
+// PUT body shape — every key in `upload` is optional. Controller
+// upserts only present keys (`apply_updates/1` per-key dispatch).
+// Cic sends the full subtree on save to keep the payload trivial;
+// the controller's tolerance keeps backward-compat with partial
+// payloads.
+export type AdminSettingsUpdate = {
+  upload?: {
+    active_host?: "embedded" | "litterbox";
+    per_file_cap_bytes?: number;
+    global_cap_bytes?: number;
+  };
+};
+
+export async function adminGetSettings(token: string): Promise<AdminSettingsView> {
+  const res = await fetch("/admin/settings", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AdminSettingsResponse;
+  return body.settings;
+}
+
+export async function adminPutSettings(
+  token: string,
+  body: AdminSettingsUpdate,
+): Promise<AdminSettingsView> {
+  const res = await fetch("/admin/settings", {
+    method: "PUT",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res);
+  const respBody = (await res.json()) as AdminSettingsResponse;
+  return respBody.settings;
 }
 
 export async function logout(token: string): Promise<void> {

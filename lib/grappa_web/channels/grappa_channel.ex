@@ -153,6 +153,8 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire, as: ScrollbackWire
+  alias Grappa.ServerSettings
+  alias Grappa.ServerSettings.Wire, as: ServerSettingsWire
   alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.BodyLimit
 
@@ -834,6 +836,7 @@ defmodule GrappaWeb.GrappaChannel do
   @spec push_user_snapshot(String.t(), Phoenix.Socket.t()) :: :ok
   defp push_user_snapshot(user_name, socket) do
     push_bundle_hash(socket)
+    push_server_settings(socket)
 
     case resolve_subject(user_name) do
       {:ok, subject} -> push_query_windows_list(subject, socket)
@@ -853,6 +856,21 @@ defmodule GrappaWeb.GrappaChannel do
       nil -> :ok
       hash -> push(socket, "event", CicWire.bundle_hash(hash))
     end
+  end
+
+  # UX-6-B2 (2026-05-21) — push the current operator-visible server
+  # settings on user-topic join so cic's reactive
+  # `serverSettings()` signal is populated before the first
+  # ComposeBox render reads `activeHost()`. Parity with
+  # `push_bundle_hash/1`: same after-join slot, same wire-module-
+  # owned payload shape, same fan-out target (per-user topic).
+  # Cold-WS-subscribe parity with the put-time fan-out from
+  # `Admin.SettingsController.update/2`.
+  @spec push_server_settings(Phoenix.Socket.t()) :: :ok
+  defp push_server_settings(socket) do
+    payload = ServerSettingsWire.server_settings_changed(ServerSettings.public_view())
+    push(socket, "event", payload)
+    :ok
   end
 
   # Pushes cached topic_changed + channel_modes_changed for a single channel.
