@@ -6877,6 +6877,64 @@ convergent ground truth:
    acceptance + the Capacitor escape route is more honest than
    shipping a 12th band-aid.
 
+## 2026-05-22 — UX-6-E: narrow-mode BottomBar Server-tab dedup
+
+vjt iPhone dogfood wave 2 noted the asymmetry: on wide screens the
+network header IS the server-window entry (one clickable row per
+network with emoji ⚙️ + slug + badges); on narrow the BottomBar
+rendered TWO entries per network — a passive `.bottom-bar-network-chip`
+text span sitting next to a standalone `.bottom-bar-tab` labelled
+literally "Server". One-feature-one-code-path: narrow now mirrors
+wide. The header IS the tab.
+
+### What shipped
+
+`.bottom-bar-network-chip` (span) + standalone `.bottom-bar-tab>Server`
+(button) → single `.bottom-bar-network-header` button per network.
+Same badge cells (server-window unread/event/mention), same selection
+discriminator (`(slug, $server)` from `SERVER_WINDOW_NAME`), same
+disconnect × affordance now mirrored as a sibling (was wide-only via
+UX-4-D's `.sidebar-close` next to `.sidebar-network-header`).
+
+`data-network-slug="<slug>"` on the header is the new stable e2e
+contract — `hasText` filtering on the chip's bare text was
+substring-fragile. The fixture's `sidebarWindow(slug, "Server")`
+special-case routes legacy callers (ux-2 archive, ux-4-z journey,
+ux-z journey) to the header without forcing a rename at every
+call-site — ergonomics over purity, comment in the fixture explains.
+
+### Selection feedback no-op-is-the-design
+
+`.bottom-bar-tab.selected` flips `background: var(--border)` AND
+`color: var(--accent)`. The header's baseline is already accent,
+so only background shifts on selection. Identical shape to desktop's
+`.sidebar-network-section li.selected .sidebar-window-btn` —
+intentional parity. CSS comment warns "don't fix the color no-op."
+
+### Pre-existing failures discovered during smoke
+
+Both reproduced on `e53000c` baseline before any UX-6-E edits in 2
+consecutive runs; NOT UX-6-E regressions but flagged in todo.md so
+they don't keep eating reviewer attention every bucket:
+- `ux-4-z-cluster-journey:141` — `members-pane` from
+  `aside.shell-members.open` subtree intercepts pointer events when
+  spec taps `.shell-drawer-backdrop.open`. Drawer doesn't actually
+  close on backdrop tap on webkit-iphone-15.
+- `ux-z-cluster-journey:86` — archive modal `#bofh` row never
+  renders (`toHaveCount(1)` got 0 after 5s).
+
+### Lessons
+
+1. **Per-bucket discoveries belong in todo.md, not silently in
+   commit messages.** Two pre-existing flakes surfaced; documenting
+   them here AND in todo lets the next bucket pick them up without
+   re-rediscovering. Origin: `feedback_no_silent_drops_closed`.
+2. **`sidebarWindow` legacy-ergonomics shortcuts age fast.** The
+   `"Server"` string-literal special-case is fine for one cluster,
+   but the codebase has `SERVER_WINDOW_NAME = "$server"` as the
+   single source. Migrating callers to import the constant is a
+   small future-pass cleanup — flagged as L1 in reviewer notes.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
