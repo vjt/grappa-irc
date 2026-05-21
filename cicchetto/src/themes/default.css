@@ -124,44 +124,22 @@
   box-sizing: border-box;
 }
 
-/* UX-6 bucket D v3 (2026-05-21) — pin html/body/#root to the visual
-   viewport so iOS can NEVER scroll the page. The pre-D2-v3 chain was
-   `html, body { height: 100%; overflow: hidden }` + `#root { height:
-   100% }`, where "100%" meant body height = layout viewport. When the
-   keyboard opens iOS still tries to auto-scroll the document to
-   center the focused input, and even with `overflow: hidden` on body
-   the document SHIFTS visually. `installScrollPin` (UX-3 OCT) tried
-   to yank it back to (0,0) on every scroll event but became hostile
-   to user drag gestures (vjt 2026-05-21 iPhone PWA dogfood — last
-   message hidden under textarea + intermittent scroll-lock).
-
-   v3 fix: `position: fixed; inset: 0` literally makes the elements
-   non-scrollable. iOS has nothing it can shift because there's no
-   scroll context — fixed elements don't participate in document
-   scroll. The mobile shell (`.shell-mobile { height:
-   var(--viewport-height) }`, UX-3 PENT) shrinks correctly under the
-   keyboard via the existing viewportHeight.ts machinery; the rest of
-   the chain just needs to stop being a scrollable substrate.
-
-   Replaces: UX-3 UNDEC (#root height: 100%), iOS-1 (body overflow:
-   hidden), UX-3 OCT (installScrollPin — removed in commit 0c20008).
-   This is a single mental model: html/body/#root are a fixed
-   substrate; only the shell + its descendants own viewport-aware
-   sizing. */
 html,
-body,
-#root {
-  position: fixed;
-  inset: 0;
+body {
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  overscroll-behavior: none;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
+  /* iOS-1: lock viewport. Pinch-zoom disabled via meta viewport;
+     overflow:hidden prevents page-level scroll (scrollback handles its
+     own); overscroll-behavior:none kills rubber-band bounce on iOS
+     Safari. Acts like a native app. */
+  overflow: hidden;
+  height: 100%;
+  overscroll-behavior: none;
 }
 
 /* UX-6 bucket A (2026-05-20) — overlay scroll-lock sentinel. The class
@@ -196,12 +174,24 @@ html.overlay-open #root > div {
   touch-action: none;
 }
 
-/* UX-6 bucket D v3 (2026-05-21) — the dedicated `#root { height: 100% }`
-   rule was folded into the combined `html, body, #root { position:
-   fixed; inset: 0 }` block at the top of the sheet. The pre-D2-v3
-   UX-3 UNDEC rationale (bind to body, not 100vh) is now structurally
-   moot — fixed positioning makes the layout viewport mismatch
-   irrelevant because nothing reads from it. */
+/* biome-ignore lint/style/noDescendingSpecificity: the `html.overlay-open
+   #root` rule above has higher specificity (1,1,1) than `#root` (1,0,0)
+   so it correctly overrides only when an overlay is open; cascade order
+   is irrelevant when specificity differs. Biome lint catches an
+   anti-pattern that doesn't apply here. */
+#root {
+  /* UX-3 UNDEC: bind to <body> (height:100%, i.e. visual viewport),
+     NOT 100vh. `100vh` resolves to the LAYOUT viewport on iOS Safari
+     (URL-bar-hidden, taller than the visible area when URL bar is
+     present), so `min-height: 100vh` made #root overflow <body>.
+     `body { overflow: hidden }` does NOT prevent iOS from scrolling
+     the document by touch — the gesture still drags the entire app
+     chrome (vjt 2026-05-18). With `height: 100%`, #root matches body
+     exactly, no overflow exists, no drag is possible. .shell / .login
+     manage their own viewport-aware heights (`100vh`, `100dvh`,
+     `--viewport-height`) inside this fixed-size frame. */
+  height: 100%;
+}
 
 .muted {
   color: var(--muted);
