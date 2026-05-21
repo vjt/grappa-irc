@@ -34,7 +34,7 @@
 import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { shouldSuppressPush } from "./lib/pushDedup";
-import { narrowPushPayload, type PushPayload, urlMatches } from "./lib/pushPayload";
+import { narrowPushPayload, type PushPayload } from "./lib/pushPayload";
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
@@ -137,19 +137,27 @@ async function focusOrOpen(url: string): Promise<void> {
   // Prefer focusing an existing client over opening a new window —
   // mobile browsers in particular handle openWindow inconsistently
   // when an instance is already running.
+  //
+  // UX-6-J (2026-05-22): warm-path uses postMessage to tell the
+  // focused client which deep-link to navigate to. Pre-J this called
+  // `existing.navigate(url)` directly, but cic is an SPA — every
+  // route resolves to index.html and selection state lives in the
+  // `selectedChannel` signal, not the router. `navigate(url)`
+  // reloaded the SPA at `/` and the deep-link params were dropped.
+  // postMessage hands the URL to `lib/pushTarget.ts` which calls
+  // `setSelectedChannel` via the same signal-driven path a sidebar
+  // click would use. Cold-path (`openWindow`) still ships the URL
+  // through location.href — `applyPushTargetFromUrl` reads it at
+  // boot.
   const clients = await self.clients.matchAll({
     type: "window",
     includeUncontrolled: true,
   });
 
-  const existing = clients.find((client) => urlMatches(client.url, url));
+  const existing = clients[0];
   if (existing) {
     await existing.focus();
-    // Navigate the focused client if its current URL doesn't match
-    // (e.g. user was on a different channel when the push arrived).
-    if (!urlMatches(existing.url, url) && "navigate" in existing) {
-      await existing.navigate(url);
-    }
+    existing.postMessage({ type: "navigate", url });
     return;
   }
 

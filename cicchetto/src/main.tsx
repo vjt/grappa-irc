@@ -15,6 +15,7 @@ import "./lib/userTopic";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applyIosClass } from "./lib/platform";
+import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing } from "./lib/socket";
 import { applyTheme } from "./lib/theme";
@@ -94,6 +95,17 @@ window.addEventListener("beforeinstallprompt", (e) => {
 // `auth.ts > bootstrapAuth` for the rationale behind the explicit
 // bootstrap point.
 bootstrapAuth();
+
+// UX-6-J (2026-05-22) — push notification deep-link routing.
+// Warm-path: SW posts `{type: "navigate", url}` to the focused client
+// from its `notificationclick` handler; this listener parses the URL
+// and routes `setSelectedChannel`. Cold-path: when SW opens a fresh
+// window via `openWindow(url)`, the URL carries the deep-link params;
+// `applyPushTargetFromUrl` reads them at boot and defers selection
+// until `networks()` seeds. Pre-J, the SW's `existing.navigate(url)`
+// reloaded the SPA at `/` and dropped the deep-link entirely.
+installPushTargetListener();
+applyPushTargetFromUrl();
 
 // S3.3 — pagehide immediate-away hint.
 //

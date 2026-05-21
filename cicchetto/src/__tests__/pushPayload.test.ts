@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowPushPayload, urlMatches } from "../lib/pushPayload";
+import { narrowPushPayload, parsePushTargetUrl } from "../lib/pushPayload";
 
 // Push notifications cluster B2 (2026-05-14) — pushPayload helpers.
 //
@@ -47,41 +47,78 @@ describe("narrowPushPayload", () => {
   });
 });
 
-describe("urlMatches", () => {
-  it("matches identical pathname + search", () => {
-    expect(
-      urlMatches(
-        "https://cic.example.org/?network=libera&channel=%23sbiffo",
-        "/?network=libera&channel=%23sbiffo",
-      ),
-    ).toBe(true);
+describe("parsePushTargetUrl", () => {
+  // UX-6-J: extracts deep-link target from the push payload's URL
+  // shape (Grappa.Push.Payload.build_url/2 →
+  // "/?network=<slug>&channel=<percent-encoded>"). Returns null on any
+  // shape mismatch so callers route to a no-op fallback (selection
+  // stays put) rather than crashing.
+
+  it("parses a channel target (# sigil → channel kind)", () => {
+    expect(parsePushTargetUrl("/?network=libera&channel=%23sniffo")).toEqual({
+      networkSlug: "libera",
+      channelName: "#sniffo",
+      kind: "channel",
+    });
   });
 
-  it("rejects mismatched pathname", () => {
-    expect(urlMatches("https://cic.example.org/login", "/?network=libera&channel=%23sbiffo")).toBe(
-      false,
+  it("parses an &-prefixed channel as kind=channel", () => {
+    expect(parsePushTargetUrl("/?network=ircnet&channel=%26local")).toEqual({
+      networkSlug: "ircnet",
+      channelName: "&local",
+      kind: "channel",
+    });
+  });
+
+  it("parses a query target (no sigil → query kind)", () => {
+    expect(parsePushTargetUrl("/?network=azzurra&channel=nextime")).toEqual({
+      networkSlug: "azzurra",
+      channelName: "nextime",
+      kind: "query",
+    });
+  });
+
+  it("accepts both `+` and `%20` for spaces (URLSearchParams)", () => {
+    // Defensive — IRC channel names cannot contain space, but the
+    // parser shouldn't blow up on either encoding.
+    expect(parsePushTargetUrl("/?network=foo+bar&channel=%23chan")).toEqual({
+      networkSlug: "foo bar",
+      channelName: "#chan",
+      kind: "channel",
+    });
+  });
+
+  it("accepts an absolute URL with origin", () => {
+    expect(parsePushTargetUrl("https://cic.example.org/?network=libera&channel=%23sniffo")).toEqual(
+      {
+        networkSlug: "libera",
+        channelName: "#sniffo",
+        kind: "channel",
+      },
     );
   });
 
-  it("rejects mismatched query", () => {
-    expect(
-      urlMatches(
-        "https://cic.example.org/?network=libera&channel=%23other",
-        "/?network=libera&channel=%23sbiffo",
-      ),
-    ).toBe(false);
+  it("returns null when network is missing", () => {
+    expect(parsePushTargetUrl("/?channel=%23sniffo")).toBeNull();
   });
 
-  it("ignores fragment differences (only path + search compared)", () => {
-    expect(
-      urlMatches(
-        "https://cic.example.org/?network=libera&channel=%23sbiffo#scrollback-bottom",
-        "/?network=libera&channel=%23sbiffo",
-      ),
-    ).toBe(true);
+  it("returns null when channel is missing", () => {
+    expect(parsePushTargetUrl("/?network=libera")).toBeNull();
   });
 
-  it("returns false on malformed client URL", () => {
-    expect(urlMatches("not a url", "/?foo=bar")).toBe(false);
+  it("returns null on root path with no params", () => {
+    expect(parsePushTargetUrl("/")).toBeNull();
+  });
+
+  it("returns null on empty channel value", () => {
+    expect(parsePushTargetUrl("/?network=libera&channel=")).toBeNull();
+  });
+
+  it("returns null on empty network value", () => {
+    expect(parsePushTargetUrl("/?network=&channel=%23foo")).toBeNull();
+  });
+
+  it("returns null on malformed URL", () => {
+    expect(parsePushTargetUrl("not a url at all")).toBeNull();
   });
 });

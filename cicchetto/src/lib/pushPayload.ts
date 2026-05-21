@@ -50,20 +50,48 @@ export function narrowPushPayload(raw: unknown): PushPayload | null {
 }
 
 /**
- * Compares just the path + search of an SW client URL against the
- * payload deep link, ignoring host (same-origin guaranteed by SW
- * scope). The payload URL is server-built as a relative path like
- * `/?network=libera&channel=%23sbiffo`.
+ * UX-6-J — deep-link target parser.
  *
- * Returns false on any URL parse error — defensive for the case
- * where the client URL is somehow malformed.
+ * Extracts the (networkSlug, channelName, kind) tuple from the URL
+ * shape that `Grappa.Push.Payload.build_url/2` writes:
+ * `/?network=<slug>&channel=<percent-encoded>`. Accepts either an
+ * absolute URL (the SW client.url shape) or a relative path (the
+ * payload.url shape stored in the notification data).
+ *
+ * `kind` discriminator follows RFC 2812 channel-name sigils
+ * `#`, `&`, `!`, `+` (`canonicalChannel` in lib/channelKey.ts) —
+ * starts-with-sigil ⇒ `"channel"`, otherwise ⇒ `"query"` (DM target).
+ * Server / list / mentions / home / admin pseudo-windows never carry
+ * push payloads.
+ *
+ * Returns null on any shape mismatch (missing param, empty value,
+ * unparseable URL). Callers route to a no-op fallback so a stale SW
+ * or future payload format change degrades to "click does nothing"
+ * rather than crashing the SPA.
  */
-export function urlMatches(clientUrl: string, payloadUrl: string): boolean {
+export type PushTarget = {
+  networkSlug: string;
+  channelName: string;
+  kind: "channel" | "query";
+};
+
+export function parsePushTargetUrl(rawUrl: string): PushTarget | null {
+  let url: URL;
   try {
-    const client = new URL(clientUrl);
-    const payload = new URL(payloadUrl, client.origin);
-    return client.pathname === payload.pathname && client.search === payload.search;
+    url = new URL(rawUrl, "https://placeholder.invalid");
   } catch {
-    return false;
+    return null;
   }
+  const networkSlug = url.searchParams.get("network");
+  const channelName = url.searchParams.get("channel");
+  if (networkSlug === null || networkSlug.length === 0) return null;
+  if (channelName === null || channelName.length === 0) return null;
+  const first = channelName.charCodeAt(0);
+  // 0x23 #, 0x26 &, 0x21 !, 0x2B + — RFC 2812 chanstring sigils.
+  const isChannel = first === 0x23 || first === 0x26 || first === 0x21 || first === 0x2b;
+  return {
+    networkSlug,
+    channelName,
+    kind: isChannel ? "channel" : "query",
+  };
 }
