@@ -23,7 +23,7 @@ const BundleRefreshBanner: Component = () => {
       <div class="bundle-refresh-banner" role="alert">
         <strong>New version available</strong>
         <span>{" — a fresh cicchetto build was deployed. "}</span>
-        <button type="button" onClick={performRefresh}>
+        <button type="button" onClick={() => void performRefresh()}>
           Refresh
         </button>
       </div>

@@ -358,7 +358,50 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 - **UX-6-F — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-G — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-H** — MERGED INTO UX-6-D (D2 = "scrollback doesn't follow viewport-shrink on keyboard open"; same bug).
-- **UX-6-I** — cic refresh banner needs 3 presses after deploy.
+- **UX-6-I — LANDED 2026-05-22.** Pre-fix `BundleRefreshBanner`
+  click → bare `window.location.reload()`; vjt iPhone PWA observed
+  THREE presses needed to actually pick up a new bundle. Root cause:
+  SW's `precacheAndRoute` navigation handler serves the OLD precached
+  `index.html` (with OLD bundle-hash `<script src>` tag) until the
+  new SW finishes install + activate + claim. Fix: `performRefresh`
+  now (1) `await registration.update()`, (2) posts `SKIP_WAITING` to
+  whichever new-SW state is observable (waiting OR installing — L1
+  reviewer fix), (3) awaits `controllerchange` with 2s ceiling (H1
+  reviewer fix — without this the cache purge raced activation and
+  workbox served stale on the next navigate "by accident"), (4)
+  purges ALL caches via `caches.keys()` + `caches.delete()`, (5)
+  reloads. Failure modes are `console.warn`-logged (H2 reviewer fix —
+  silent swallow was the original bug we were fixing).
+  `__cic_bundleHash.__refreshProbe` test seam lets e2e observe the
+  chain without navigating out of the page (location.reload is
+  non-configurable on chromium so prototype patches are silently
+  ignored).
+  - `cicchetto/src/lib/bundleHash.ts` — `performRefresh` rewrite +
+    `__refreshProbe` seam declaration.
+  - `cicchetto/src/BundleRefreshBanner.tsx` — `onClick={() => void
+    performRefresh()}` (async wrapper).
+  - `cicchetto/src/__tests__/bundleHash.test.ts` — 8 new vitest:
+    no-SW fallback, no-registration fallback, update-called,
+    waiting-skip-message, installing-skip-message (L1), caches-purge,
+    update-rejection-warn (H2), controllerchange-timeout (H1).
+  - `cicchetto/e2e/tests/bundle-refresh-banner.spec.ts` — new third
+    spec instruments `getRegistration` + `caches.keys/delete` +
+    `__refreshProbe` to verify the chain runs end-to-end.
+
+  Gates: 1542 vitest passed + biome exit-0 (16 baseline lint
+  warnings + 3 explicit biome-ignore directives = 19 total) +
+  scripts/check.sh exit 0 + 3/3 bundle-refresh-banner e2e on
+  chromium. Reviewer pass: H1 + H2 + L1 + N3 fixed inline; M2 (real-
+  bundle-swap e2e fixture rather than stubs) parked as follow-up.
+  Deploy: HOT cic-only (no Elixir touched).
+
+  **UX-6-I.2 follow-up (parked from reviewer M2):** current e2e
+  stubs `getRegistration` + `caches` + uses the probe seam — proves
+  the chain WIRING but not that the REAL SW + REAL precache behave.
+  A meaningful e2e would deploy a 2nd bundle hash mid-session
+  (`compose run cicchetto-build` + `POST /admin/cic-bundle-changed`)
+  and assert single-press convergence. Out of scope for I; file as a
+  cluster follow-up.
 - **UX-6-J** — push notif tap doesn't open source window.
 - **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-L (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
