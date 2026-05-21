@@ -6935,6 +6935,101 @@ they don't keep eating reviewer attention every bucket:
    single source. Migrating callers to import the constant is a
    small future-pass cleanup — flagged as L1 in reviewer notes.
 
+## 2026-05-22 — UX-6-I: cic refresh banner single-press fix
+
+vjt iPhone PWA dogfooding noted the cic bundle refresh banner needed
+THREE button presses to actually pick up a new bundle. The CP23 S4
+B5 ship of the banner solved the "operator manually DMs everyone"
+problem but the click-handler itself was naively `window.location
+.reload()`.
+
+### Root cause
+
+The SW (`cicchetto/src/service-worker.ts`) runs in `injectManifest`
+mode and registers `precacheAndRoute(self.__WB_MANIFEST)` for
+shell-only assets. The `NavigationRoute` it installs serves a
+*precached* `index.html` for `request.mode === "navigate"` —
+including the very reload triggered by clicking the refresh button.
+The precached `index.html` still pointed at the OLD bundle-hash
+`<script src="/assets/index-OLDHASH.js">` tag, so even though the
+network had a NEW `index.html` ready, the SW intercepted the
+navigate and returned the stale shell from cache.
+
+The new SW (built by `compose run cicchetto-build`) eventually
+installs + activates + claims, but only AFTER one full navigate
+cycle finishes. So the empirical pattern was:
+- Press 1 — OLD SW serves OLD index.html. Boot hash still matches
+  what was loaded before. Banner re-renders.
+- Press 2 — NEW SW now controller, but its precache hasn't been
+  purged. May serve OLD or NEW depending on workbox internals.
+- Press 3 — finally fresh.
+
+### Fix
+
+`performRefresh()` now (in order):
+1. `await navigator.serviceWorker.getRegistration()`
+2. `await reg.update()` — fetch new SW byte stream
+3. Post `SKIP_WAITING` to `reg.waiting ?? reg.installing`
+4. Await `controllerchange` with 2s ceiling
+5. Purge ALL caches via `caches.keys()` + `Promise.all(caches.delete)`
+6. `window.location.reload()`
+
+Failure modes `console.warn`-logged so devtools captures evidence
+when 3-press behavior reappears. The chain still proceeds best-effort
+— a noted failure doesn't block the reload.
+
+### Test-seam design
+
+`window.__cic_bundleHash.__refreshProbe?: () => void` is the new
+e2e seam. When set (only by Playwright), `performRefresh` calls the
+probe instead of `location.reload()`. Reason: `location.reload` is
+non-configurable on chromium so a prototype-patch is silently
+ignored; the probe is the supported substitute. Production never
+sets it. Mirrors `__cic_socketHealth`'s established hook pattern.
+
+### Reviewer findings honored inline
+
+- **H1** — original sequence purged caches BEFORE the new SW
+  activated, relying on workbox's precache-miss network-fallback "by
+  accident." Added `controllerchange` await with 2s ceiling so the
+  activation contract is explicit.
+- **H2** — silent swallow of `update()` rejection violated
+  `feedback_silent_retry_anti_pattern`. Replaced with
+  `console.warn`.
+- **L1** — original `reg.waiting?.postMessage` was a no-op when
+  install was still in flight (the new SW is in `installing` state
+  at that point). Now `reg.waiting ?? reg.installing` covers both.
+- **N3** — duplicate `Window.__cic_bundleHash` interface declaration
+  in the e2e spec; replaced with a re-declaration that mirrors the
+  prod type + adds `__refreshProbe`.
+
+### Parked follow-up (reviewer M2)
+
+The current e2e stubs `getRegistration` + `caches` + the probe seam
+— proves the chain WIRING but not that the REAL SW + REAL precache
+behave correctly. A meaningful e2e would deploy a 2nd bundle hash
+mid-session (`compose run cicchetto-build` + `POST
+/admin/cic-bundle-changed`) and assert single-press convergence.
+Parked as UX-6-I.2; out of scope for I.
+
+### Lessons
+
+1. **Service workers are an invisible navigation layer.** The
+   precache `NavigationRoute` is correct for offline shell-only
+   apps but turns "user explicitly clicked Refresh" into a SW-
+   mediated request that needs explicit invalidation. Future cic
+   features that need a hard reset (clear local state, dev tools)
+   should follow the same SW + caches discipline.
+2. **Awaiting `controllerchange` is the right primitive** when
+   sequencing actions that depend on a SW handoff. The
+   `serviceWorker.ready` promise resolves on the FIRST registration
+   activation but doesn't re-resolve on subsequent activations, so
+   `controllerchange` is the right event for "wait for the NEW SW
+   to take over."
+3. **Surface failures even from best-effort chains.** `try`/swallow
+   in a recovery action defeats the recovery — `console.warn` gives
+   the operator something to grep for when the bug reappears.
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
