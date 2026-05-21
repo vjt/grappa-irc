@@ -208,27 +208,36 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
 **UX-6 cluster — remaining buckets after B closes:**
 
 - **UX-6-C — LANDED 2026-05-21.** See LANDED block above.
-- **UX-6-D — PARKED 2026-05-21.** Awaiting vjt symptom pick (Bug 5
-  has 4 plausible surfaces): (1) BottomBar hidden by keyboard;
-  (2) BottomBar pushed above keyboard leaving a gap; (3) BottomBar
-  overlaps compose/scrollback when viewport shrinks; (4) home-
-  indicator drawing over BottomBar absent any keyboard. Existing
-  `--viewport-height` infra (UX-3 PENT + UX-5 BV) + shell-mobile
-  `padding-bottom: env(safe-area-inset-bottom)` already cover some
-  shapes; fix scope hinges on the actual symptom. Halt-for-Q
-  rather than guess.
-- **UX-6-E — PARKED 2026-05-21.** Awaiting vjt symptom pick (Bug 6
-  has 4 plausible "collapse" semantics): (1) merge per-network chip
-  + Server tab — click chip lands on server window, drops standalone
-  Server button; (2) hide Server tab when unread=0 — surface back on
-  activity; (3) truncate label "Server" → icon glyph; (4) Server tab
-  literally broken/collapsing visually on real iPhone (layout bug).
-  CDP confirms 73px Server tab eats real horizontal width on mobile
-  (393px viewport, 5+ tabs per network), but the FIX SHAPE differs
-  5x across interpretations. Halt-for-Q rather than guess.
+- **UX-6-D — UNPARKED 2026-05-21 (vjt clarified).** Two symptoms,
+  both keyboard-related (no home-indicator angle):
+  (D1) Gap between top of keyboard and BottomBar — visible blank
+       strip while compose is focused. BottomBar should sit flush
+       against keyboard top edge.
+  (D2) Messages content does NOT shrink when keyboard opens — the
+       window-height reduction pushes BottomBar up but scrollback
+       area stays full-height, so the last N messages get hidden
+       BEHIND the BottomBar. As vjt sees it: tapping compose
+       pushes BottomBar up but messages content doesn't get pushed
+       up correspondingly. **Note**: D2 is the same bug as UX-6-H
+       ("scrollback doesn't follow viewport-shrink on keyboard
+       open") — merge H into D when starting this bucket.
+  Fix scope: revisit `--viewport-height` infra (UX-3 PENT + UX-5 BV);
+  verify the height var actually drives the scrollback panel's max
+  height, not just the overlay container. May need `100dvh` /
+  `visualViewport` API; iOS Safari quirks likely.
+- **UX-6-E — UNPARKED 2026-05-21 (vjt clarified).** On wide screens
+  the Server window is reached by clicking the network's emoji + name
+  in the sidebar (no separate "Server" tab — the network header IS
+  the server window entry). On narrow screens we currently render
+  the network name AND THEN a literal "Server" tab as a separate
+  child row, which is inconsistent with wide. Fix: narrow mode
+  should match wide — emoji + network name in the BottomBar acts as
+  the clickable Server-window entry; drop the standalone "Server"
+  tab on narrow. (This corresponds to interpretation (1) of the
+  original 4-option PARK note.)
 - **UX-6-F — LANDED 2026-05-21.** See LANDED block above.
 - **UX-6-G** — admin horizontal scroll on mobile (was original B).
-- **UX-6-H** — scrollback doesn't follow viewport-shrink on keyboard open.
+- **UX-6-H** — MERGED INTO UX-6-D (D2 = "scrollback doesn't follow viewport-shrink on keyboard open"; same bug).
 - **UX-6-I** — cic refresh banner needs 3 presses after deploy.
 - **UX-6-J** — push notif tap doesn't open source window.
 - **UX-6-K (NEW 2026-05-20) — LANDED 2026-05-21.** See LANDED block above.
