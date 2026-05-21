@@ -77,22 +77,16 @@ test("@webkit UX-3 OCT — installViewportHeightTracker writes --viewport-height
   expect(Math.abs(px - vpHeight)).toBeLessThan(1);
 });
 
-test("@webkit UX-3 OCT — installScrollPin REMOVED (UX-6 bucket D v2): window scroll is NOT yanked back to 0", async ({
+test("@webkit UX-3 OCT — installScrollPin snaps window back to (0, 0) on programmatic scroll", async ({
   page,
 }) => {
-  // UX-6 bucket D v2 (2026-05-21) removed `installScrollPin`. With
-  // D1's `.shell-mobile:has(:focus) { padding-bottom: 0 }` AND D2's
-  // `.scrollback { min-height: 0 }`, the shell shrinks to
-  // visualViewport.height when the keyboard opens — iOS no longer
-  // needs to auto-scroll the page to keep compose visible. The pin
-  // had become hostile: it cancelled user drag gestures by yanking
-  // scrollY back to 0 on every touch (vjt iPhone PWA dogfood). This
-  // test asserts the new contract — programmatic scrolls are
-  // preserved, not snapped.
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Force the document tall enough to scroll.
+  // Force the document to be taller than the viewport so scrollTo
+  // has somewhere to scroll TO. With body { overflow: hidden } we
+  // need to temporarily release it; the scroll-pin should still
+  // catch the resulting scroll event and snap back.
   await page.evaluate(() => {
     document.body.style.overflow = "auto";
     const pad = document.createElement("div");
@@ -101,16 +95,18 @@ test("@webkit UX-3 OCT — installScrollPin REMOVED (UX-6 bucket D v2): window s
     document.body.appendChild(pad);
   });
 
+  // Programmatic scroll fires a `scroll` event; installScrollPin's
+  // listener should immediately scrollTo(0, 0). The post-condition
+  // is scrollY === 0.
   const finalScrollY = await page.evaluate(async () => {
     window.scrollTo(0, 500);
+    // Yield to the event loop so the scroll listener fires + corrects.
     await new Promise((r) => setTimeout(r, 50));
     return window.scrollY;
   });
-  // Pre-removal: pin yanked to 0. Post-removal: scroll is preserved.
-  // Even if browsers can't honor 500 exactly in a custom test layout,
-  // the asserttion is "scroll wasn't forced to 0".
-  expect(finalScrollY).toBeGreaterThan(0);
+  expect(finalScrollY).toBe(0);
 
+  // Teardown — leave the page in a clean state for subsequent specs.
   await page.evaluate(() => {
     document.body.style.overflow = "";
     document.getElementById("ux-3-oct-scroll-probe")?.remove();
