@@ -871,23 +871,6 @@ html.resize-dragging * {
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
-  /* UX-6 bucket D — iOS Safari flex-min-content quirk. The
-     scroll-pane chain is `.shell-mobile > .shell-main > .scrollback-pane
-     > .scrollback`; every ancestor declares `min-height: 0` so the
-     grid/flex chain shrinks correctly when `--viewport-height` drops
-     (visualViewport.height shrinks on keyboard open per UX-3 PENT).
-     `.scrollback` itself was missing the override: a flex item with
-     `overflow-y: scroll` and the default `min-height: auto` resolves
-     min-content to its scrollHeight, refusing to shrink below the
-     full rendered message list. Desktop Chromium tolerates this in
-     some configurations, but iOS WebKit clamps the pane at the
-     content's natural height — so on keyboard open the shell shrunk,
-     BottomBar moved up, but the painted scrollback area kept its
-     pre-keyboard height and the last messages ended up hidden behind
-     BottomBar (vjt iPhone-dogfood Bug 5 / D2; merged from former
-     UX-6-H). Setting `min-height: 0` here lets the flex shrink
-     propagate all the way down to the scroll container. */
-  min-height: 0;
   /* UX-3 UNDEC R2: kill scroll-chain to the document root via
      `overscroll-behavior: contain`. iOS bubbles `pan-y` to chrome
      animation when overscroll is not contained, even with `pan-y`
@@ -2271,22 +2254,6 @@ html.resize-dragging * {
        not added to it. */
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
-  }
-
-  /* UX-6 bucket D — keyboard-open inset collapse. When iOS lifts the
-     soft keyboard, the home-indicator region is HIDDEN beneath it but
-     `env(safe-area-inset-bottom)` still resolves to ~34px on notched
-     iPhones, leaving a transparent strip between BottomBar's bottom
-     edge and the keyboard top (vjt iPhone-dogfood Bug 5 / D1).
-     `html.keyboard-open` is toggled by `lib/viewportHeight.ts` when
-     `visualViewport.height` is meaningfully smaller than
-     `window.innerHeight` (KEYBOARD_OPEN_DELTA_PX = 150). Zero the
-     inset while the keyboard masks the home-indicator so BottomBar
-     sits flush against the keyboard top. The top inset stays
-     untouched — the Dynamic Island doesn't move when the keyboard
-     comes up. */
-  html.keyboard-open .shell-mobile {
-    padding-bottom: 0;
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
