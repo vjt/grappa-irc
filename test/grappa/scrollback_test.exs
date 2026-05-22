@@ -391,7 +391,7 @@ defmodule Grappa.ScrollbackTest do
 
       assert inserted.meta == %{target: "alice"}
 
-      [fetched] = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10)
+      [fetched] = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10, nil)
       assert fetched.meta == %{target: "alice"}
     end
 
@@ -439,7 +439,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 3)
+      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 3, nil)
 
       assert length(page) == 3
       assert Enum.map(page, & &1.body) == ["msg 4", "msg 3", "msg 2"]
@@ -449,8 +449,8 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      [_, last_of_first_page] = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 2)
-      next_page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", last_of_first_page.id, 2)
+      [_, last_of_first_page] = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 2, nil)
+      next_page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", last_of_first_page.id, 2, nil)
 
       assert Enum.map(next_page, & &1.body) == ["msg 2", "msg 1"]
     end
@@ -462,7 +462,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{channel: "#b"}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{channel: "#a"}))
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "#a", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "#a", nil, 10, nil)
       assert length(page) == 1
       assert hd(page).channel == "#a"
     end
@@ -477,17 +477,17 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(vjt, net, 0, %{sender: "vjt", body: "vjt-msg"}))
       {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 1, %{sender: "alice", body: "alice-msg"}))
 
-      vjt_page = Scrollback.fetch({:user, vjt.id}, net.id, "#sniffo", nil, 10)
+      vjt_page = Scrollback.fetch({:user, vjt.id}, net.id, "#sniffo", nil, 10, nil)
       assert length(vjt_page) == 1
       assert hd(vjt_page).body == "vjt-msg"
 
-      alice_page = Scrollback.fetch({:user, alice.id}, net.id, "#sniffo", nil, 10)
+      alice_page = Scrollback.fetch({:user, alice.id}, net.id, "#sniffo", nil, 10, nil)
       assert length(alice_page) == 1
       assert hd(alice_page).body == "alice-msg"
     end
 
     test "returns [] when nothing matches", %{user: user, network: net} do
-      assert Scrollback.fetch({:user, user.id}, net.id, "#empty", nil, 10) == []
+      assert Scrollback.fetch({:user, user.id}, net.id, "#empty", nil, 10, nil) == []
     end
 
     # B5.4 L-pers-2: an unknown subject discriminator was previously a
@@ -499,13 +499,13 @@ defmodule Grappa.ScrollbackTest do
     # surface with actionable diagnostics.
     test "raises ArgumentError on unknown subject discriminator", %{network: net} do
       assert_raise ArgumentError, ~r/unknown subject:/, fn ->
-        Scrollback.fetch({:typo, "x"}, net.id, "#sniffo", nil, 10)
+        Scrollback.fetch({:typo, "x"}, net.id, "#sniffo", nil, 10, nil)
       end
     end
 
     test "raises ArgumentError on subject where the discriminator is nil", %{network: net} do
       assert_raise ArgumentError, ~r/unknown subject:/, fn ->
-        Scrollback.fetch(nil, net.id, "#sniffo", nil, 10)
+        Scrollback.fetch(nil, net.id, "#sniffo", nil, 10, nil)
       end
     end
 
@@ -519,7 +519,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10, nil)
 
       assert length(page) == 3
 
@@ -535,13 +535,13 @@ defmodule Grappa.ScrollbackTest do
 
       for i <- 0..(cap + 4), do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, cap + 1_000)
+      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, cap + 1_000, nil)
       assert length(page) == cap
     end
 
     test "raises FunctionClauseError on non-positive limit", %{user: user, network: net} do
       assert_raise FunctionClauseError, fn ->
-        Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 0)
+        Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 0, nil)
       end
     end
   end
@@ -565,7 +565,7 @@ defmodule Grappa.ScrollbackTest do
 
       [_, _, m2 | _] = rows
 
-      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m2.id, 10)
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m2.id, 10, nil)
 
       assert Enum.map(page, & &1.body) == ["msg 3", "msg 4"]
     end
@@ -578,14 +578,14 @@ defmodule Grappa.ScrollbackTest do
         end
         |> List.last()
 
-      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", latest.id, 10) == []
+      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", latest.id, 10, nil) == []
     end
 
     test "returns [] when after_id is greater than the newest row id",
          %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 999_999_999, 10) == []
+      assert Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 999_999_999, 10, nil) == []
     end
 
     test "after_id of a deleted/non-existent row still returns rows with id > that value",
@@ -606,7 +606,7 @@ defmodule Grappa.ScrollbackTest do
       gap_id = m0.id + 1
       Repo.delete!(Enum.at(rows, 1))
 
-      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", gap_id, 10)
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", gap_id, 10, nil)
       assert Enum.map(page, & &1.id) == [m2.id, m3.id]
     end
 
@@ -620,7 +620,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{body: "wrong-net"}))
       {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 3, %{sender: "alice", body: "wrong-user"}))
 
-      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", mine.id - 1, 10)
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", mine.id - 1, 10, nil)
       assert Enum.map(page, & &1.body) == ["mine"]
     end
 
@@ -634,13 +634,13 @@ defmodule Grappa.ScrollbackTest do
         end
         |> hd()
 
-      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", first_id_seed.id - 1, cap + 1_000)
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", first_id_seed.id - 1, cap + 1_000, nil)
       assert length(page) == cap
     end
 
     test "raises FunctionClauseError on non-positive limit", %{user: user, network: net} do
       assert_raise FunctionClauseError, fn ->
-        Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 1, 0)
+        Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 1, 0, nil)
       end
     end
 
@@ -649,7 +649,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, m0} = ScrollbackHelpers.insert(sample(user, net, 0))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1))
 
-      [row | _] = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10)
+      [row | _] = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10, nil)
       assert %Network{id: id, slug: slug} = row.network
       assert id == net.id
       assert slug == net.slug
@@ -729,7 +729,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, m0} = ScrollbackHelpers.insert(sample(user, net, 0))
       {:ok, m1} = ScrollbackHelpers.insert(sample(user, net, 1))
 
-      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10)
+      page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", m0.id, 10, nil)
       assert Enum.map(page, & &1.id) == [m1.id]
     end
   end
@@ -794,7 +794,7 @@ defmodule Grappa.ScrollbackTest do
 
       # Fetch for the DM window for vjt-peer — both directions present,
       # sorted desc by server_time.
-      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-peer", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-peer", nil, 10, nil)
       assert Enum.map(page, &{&1.server_time, &1.body}) == [{200, "ehi"}, {100, "ciao"}]
     end
 
@@ -828,10 +828,10 @@ defmodule Grappa.ScrollbackTest do
           dm_with: "peer-b"
         })
 
-      page_a = Scrollback.fetch({:user, user.id}, net.id, "peer-a", nil, 10)
+      page_a = Scrollback.fetch({:user, user.id}, net.id, "peer-a", nil, 10, nil)
       assert Enum.map(page_a, & &1.body) == ["from A"]
 
-      page_b = Scrollback.fetch({:user, user.id}, net.id, "peer-b", nil, 10)
+      page_b = Scrollback.fetch({:user, user.id}, net.id, "peer-b", nil, 10, nil)
       assert Enum.map(page_b, & &1.body) == ["from B"]
     end
 
@@ -867,7 +867,7 @@ defmodule Grappa.ScrollbackTest do
           dm_with: "#sniffo"
         })
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "#sniffo", nil, 10, nil)
       assert Enum.map(page, & &1.body) == ["channel msg"]
     end
 
@@ -886,7 +886,7 @@ defmodule Grappa.ScrollbackTest do
           dm_with: nil
         })
 
-      page = Scrollback.fetch({:user, user.id}, net.id, "$server", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "$server", nil, 10, nil)
       assert Enum.map(page, & &1.body) == ["MOTD line"]
     end
 
@@ -1012,7 +1012,7 @@ defmodule Grappa.ScrollbackTest do
 
       # Without own_nick, the legacy OR shape includes the inbound row
       # because channel == "vjt-grappa" matches.
-      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10)
+      page = Scrollback.fetch({:user, user.id}, net.id, "vjt-grappa", nil, 10, nil)
       assert Enum.map(page, & &1.body) == ["inbound"]
     end
 
@@ -1051,10 +1051,10 @@ defmodule Grappa.ScrollbackTest do
           dm_with: "common-peer"
         })
 
-      vjt_page = Scrollback.fetch({:user, vjt.id}, net.id, "common-peer", nil, 10)
+      vjt_page = Scrollback.fetch({:user, vjt.id}, net.id, "common-peer", nil, 10, nil)
       assert Enum.map(vjt_page, & &1.body) == ["to vjt"]
 
-      alice_page = Scrollback.fetch({:user, alice.id}, net.id, "common-peer", nil, 10)
+      alice_page = Scrollback.fetch({:user, alice.id}, net.id, "common-peer", nil, 10, nil)
       assert Enum.map(alice_page, & &1.body) == ["to alice"]
     end
 

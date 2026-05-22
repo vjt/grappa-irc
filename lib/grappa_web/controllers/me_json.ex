@@ -31,10 +31,10 @@ defmodule GrappaWeb.MeJSON do
   ## home_data envelope (UX-4 bucket B)
 
   Either `%{networks: [home_network_row, ...]}` (user) or `nil`
-  (visitor). Per-row shape matches the
-  `home_network_state_changed` typed event payload's `:network` key
-  exactly, so cic patches `home_data.networks` slots in-place from
-  live updates without re-fetching `GET /me`.
+  (visitor). Per-row shape matches the `connection_state_changed`
+  typed event payload's `:network` key exactly (REV-J M15 fold),
+  so cic patches `home_data.networks` slots in-place from live
+  updates without re-fetching `GET /me`.
   """
   alias Grappa.Accounts.{User, Wire}
   alias Grappa.Networks.Wire, as: NetworksWire

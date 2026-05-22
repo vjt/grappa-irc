@@ -181,8 +181,17 @@ defmodule GrappaWeb.UploadsController do
 
   defp disposition_header(%{original_filename: filename}) when is_binary(filename) do
     # RFC 5987 ext-value: ASCII-quoted filename + filename* with
-    # URL-encoded UTF-8 fallback. Browsers honour the encoded form.
-    encoded = URI.encode_www_form(filename)
+    # percent-encoded UTF-8 fallback. Browsers honour the encoded form.
+    #
+    # REV-J M18: pre-fix this used `URI.encode_www_form/1` which is
+    # form-URL-encoded (space → `+`, plus-sign → `%2B`). RFC 5987
+    # `ext-value` (used inside `filename*=UTF-8''...`) requires
+    # percent-encoded UTF-8 per RFC 3986 `pct-encoded` — space MUST
+    # be `%20`, not `+`. Strict-spec browsers receive the wrong
+    # filename when given the form-encoded shape. `URI.encode/2`
+    # with the RFC 3986 unreserved-char predicate produces the
+    # correct shape.
+    encoded = URI.encode(filename, &URI.char_unreserved?/1)
     ~s|inline; filename="#{ascii_safe(filename)}"; filename*=UTF-8''#{encoded}|
   end
 

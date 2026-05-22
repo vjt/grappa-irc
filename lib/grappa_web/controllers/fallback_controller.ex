@@ -331,6 +331,19 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "welcome_timeout"})
   end
 
+  # REV-J M14: post-call_session/3 consolidation, every REST IRC-verb
+  # path can now surface `{:error, :timeout}` for an upstream-stuck
+  # Session.Server (mailbox blocked on a slow upstream numeric, or a
+  # 1s `Client.send_quit` synchronous call inside terminate/2). Pre-fix
+  # call_session/3 raised on the implicit-5s timeout; the typed shape
+  # is the consistent FallbackController contract.
+  def call(conn, {:error, :timeout}) do
+    conn
+    |> put_resp_header("retry-after", "10")
+    |> put_status(:gateway_timeout)
+    |> json(%{error: "session_timeout"})
+  end
+
   def call(conn, {:error, :probe_timeout}) do
     conn
     |> put_status(:internal_server_error)

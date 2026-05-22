@@ -106,9 +106,10 @@ export type ConnectionState = "connected" | "parked" | "failed";
 // UX-4 bucket B — one row in the `home_data.networks` array, returned
 // from `GET /me` for user subjects. Mirror of server-side
 // `Grappa.Networks.Wire.home_network_row/0`. Identical shape to the
-// `:network` field of `home_network_state_changed` typed events so
-// HomePane can patch slots in-place from live updates without
-// re-derivation.
+// `:network` field of `connection_state_changed` typed events
+// (REV-J M15 folded the prior `home_network_state_changed` arm into
+// that payload) so HomePane can patch slots in-place from live updates
+// without re-derivation.
 //
 // Strict subset of `UserNetwork` (no `id`, no `kind`, no timestamps):
 // the home pane is a UI view, not a network mirror. cic's
@@ -645,6 +646,12 @@ export type WireUserEvent =
       to: ConnectionState;
       reason: string | null;
       at: string | null;
+      // REV-J M15: the prior standalone `home_network_state_changed`
+      // arm folded into this payload as the `:network` field. HomePane
+      // patches its row from this; Sidebar / query-window store keep
+      // reading the wider top-level fields. One logical event, one wire
+      // payload, one broadcast.
+      network: HomeNetworkRow;
     }
   | ({ kind: "whois_bundle" } & WhoisBundle)
   | {
@@ -744,15 +751,7 @@ export type WireUserEvent =
   // event ALSO invalidates the in-memory `scrollbackByChannel[key]` for
   // the target so cic doesn't ghost the pre-delete rows on re-JOIN. See
   // `Wire.archive_purged_payload/2` moduledoc for the bug history.
-  | { kind: "archive_purged"; network_slug: string; target: string }
-  // UX-4 bucket B — per-row patch for the HomePane's networks list.
-  // Co-emitted by `Networks.broadcast_state_change/4` alongside the
-  // wider `connection_state_changed` arm so HomePane patches its
-  // `home_data.networks` slot in-place without re-deriving from the
-  // wider payload. The shape of `network` is the SAME `HomeNetworkRow`
-  // /me delivers in `home_data.networks[*]` (single shared server-side
-  // builder `Wire.home_network_row/2`).
-  | { kind: "home_network_state_changed"; network: HomeNetworkRow };
+  | { kind: "archive_purged"; network_slug: string; target: string };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits

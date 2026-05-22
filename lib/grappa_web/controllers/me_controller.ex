@@ -54,9 +54,11 @@ defmodule GrappaWeb.MeController do
   visitor home is cic-only help text by design (no server roundtrip,
   per the no-localized-strings-server-side rule).
 
-  Live updates land via the `home_network_state_changed` typed event
-  on `Topic.user/1`, co-emitted with `connection_state_changed`
-  from `Networks.broadcast_state_change/4`.
+  Live updates land via the `connection_state_changed` typed event
+  on `Topic.user/1` (REV-J M15 folded the prior
+  `home_network_state_changed` arm into this payload's `:network`
+  field, eliminating the temporal window where two separate events
+  carried half-views of the same transition).
   """
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :unauthorized}
   def show(conn, _) do

@@ -177,6 +177,8 @@ defmodule Grappa.Scrollback do
   defp nick_shaped?("$server"), do: false
   defp nick_shaped?(name) when is_binary(name), do: target_kind(name) == :query
 
+  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
+
   @doc """
   Fetches up to `limit` messages for `(subject, network_id, channel)`,
   ordered by `server_time` DESC then `id` DESC (stable inside same-ms
@@ -203,16 +205,8 @@ defmodule Grappa.Scrollback do
   on `%Network{slug: _}` and crashes on unloaded assoc). Single
   network query per page (Ecto deduplicates the `IN (...)` lookup);
   identical wire-shape contract as `persist_event/1` (A4 + A26).
-  """
-  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
 
-  @spec fetch(subject(), integer(), String.t(), integer() | nil, pos_integer()) ::
-          [Message.t()]
-  def fetch(subject, network_id, channel, before, limit),
-    do: fetch(subject, network_id, channel, before, limit, nil)
-
-  @doc """
-  Fetch with explicit `own_nick` for own-nick query window narrowing.
+  ## `own_nick`
 
   When `own_nick` matches the requested `channel` (case-insensitive), the
   fetch restricts to self-msgs only — rows where both `channel` and
@@ -224,13 +218,22 @@ defmodule Grappa.Scrollback do
 
   Pass `nil` for `own_nick` when the caller doesn't have it (channel-
   shaped target fetches don't need it; tests with synthetic data don't
-  either). The 5-arity `fetch/5` is a thin wrapper that passes `nil`.
+  either) — the nil-ness becomes a deliberate decision at the call site
+  rather than a silent default from a wrapper arity.
 
   Origin: 2026-05-10 — vjt observed CristoBOT replies (and every other
   peer's DMs) showing up in the `grappa` (own-nick) query window. Bug
   shipped in CP14-B3 (commit 47866bc, 2026-05-07): the `:dm_with` field
   + bidirectional fetch landed without the own-nick narrowing, so the
   own-nick query window's REST fetch returned every inbound DM ever.
+
+  REV-J M12: previously a 5-arity wrapper auto-passed `nil` for
+  `own_nick`. The wrapper was an open footgun — a future controller
+  forgetting to thread `own_nick` could silently re-introduce the
+  CP14-B3 leak. Per CLAUDE.md "No default arguments via `\\`" — the
+  rule extends to "no wrapper arities that default a load-bearing
+  parameter." Callers now state nil explicitly when they have no
+  session.
   """
   @spec fetch(
           subject(),
@@ -287,19 +290,16 @@ defmodule Grappa.Scrollback do
 
   `:network` is preloaded — same wire-shape-ready contract as
   `fetch/6` (A26).
-  """
-  @spec fetch_after(subject(), integer(), String.t(), integer(), pos_integer()) :: [Message.t()]
-  def fetch_after(subject, network_id, channel, after_id, limit),
-    do: fetch_after(subject, network_id, channel, after_id, limit, nil)
 
-  @doc """
-  6-arity variant of `fetch_after/5` with explicit `own_nick` for own-nick
-  query window narrowing — symmetric with `fetch/6` (CP14 B3 narrowing
-  rule). When `own_nick` matches `channel` (case-insensitive), the fetch
-  restricts to self-msgs (rows where channel == dm_with == own_nick),
-  preventing every inbound DM from leaking into the own-nick window's
-  backfill page. Pass `nil` when the caller doesn't have a session
-  (the channel-shape default applies).
+  ## `own_nick`
+
+  Symmetric with `fetch/6` (CP14 B3 narrowing rule). When `own_nick`
+  matches `channel` (case-insensitive), the fetch restricts to
+  self-msgs (rows where channel == dm_with == own_nick), preventing
+  every inbound DM from leaking into the own-nick window's backfill
+  page. Pass `nil` when the caller doesn't have a session (the
+  channel-shape default applies) — the nil-ness is a deliberate
+  decision at the call site (REV-J M12, same rule as `fetch/6`).
   """
   @spec fetch_after(
           subject(),

@@ -87,9 +87,11 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
     setPending(true);
     try {
       await patchNetwork(t, props.row.slug, { connection_state: "connected" });
-      // Server emits home_network_state_changed; userTopic.ts patches
-      // homeData() in place. The row will re-render as connected and
-      // this sub-component will unmount — no local state cleanup needed.
+      // Server emits connection_state_changed (REV-J M15 folded the
+      // prior home_network_state_changed arm into it); userTopic.ts
+      // patches homeData() in place. The row will re-render as
+      // connected and this sub-component will unmount — no local state
+      // cleanup needed.
     } catch (err) {
       // feedback_silent_retry_anti_pattern: errors MUST surface above
       // the threshold. friendlyApiError maps known cap/admission codes

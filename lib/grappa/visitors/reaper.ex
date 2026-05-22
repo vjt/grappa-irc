@@ -107,6 +107,17 @@ defmodule Grappa.Visitors.Reaper do
 
   @impl GenServer
   def handle_info(:tick, state) do
+    # REV-J M9: schedule the next tick BEFORE running the sweep so the
+    # cadence is interval-fixed, not "interval + sweep_duration". Pre-fix
+    # the schedule call lived after `sweep/0` returned; a slow Cloak
+    # decrypt or a backlog of expired rows (each delete CASCADEs across
+    # 7 dependent tables) could realistically take seconds, drifting
+    # the wall-clock cadence under load. With the scheduling first,
+    # sweep duration is consumed within the interval rather than
+    # extending it — if a sweep ever exceeds the interval, the next
+    # `:tick` message piles up in the mailbox and runs back-to-back,
+    # which is the right shape ("never less frequent than configured").
+    schedule_tick(state.interval_ms)
     {:ok, n} = sweep()
 
     # M-11: scheduled-tick :reaper_swept summary — actor is nil
@@ -125,7 +136,6 @@ defmodule Grappa.Visitors.Reaper do
         :ok = AdminEvents.record(AdminWire.reaper_swept(n))
     end
 
-    schedule_tick(state.interval_ms)
     {:noreply, state}
   end
 

@@ -263,10 +263,14 @@ defmodule Grappa.Operator do
         {:error, :not_found}
 
       network ->
-        :ok = NetworkCircuit.reset(network_id)
-        # Drain the cast through the NetworkCircuit mailbox so the
-        # post-reset ETS snapshot reflects the operator verb.
-        _ = :sys.get_state(NetworkCircuit)
+        # REV-J M10: synchronous reset via the public verb. Pre-fix this
+        # used `NetworkCircuit.reset/1` (cast) + `:sys.get_state/1` to
+        # drain the mailbox — a debug primitive that coupled Operator
+        # to NetworkCircuit's GenServer-backed-by-ETS internals. The
+        # snapshot below now reflects the operator verb because
+        # `reset_sync/1` only returns after the ETS delete + telemetry
+        # have fired.
+        :ok = NetworkCircuit.reset_sync(network_id)
 
         post = Enum.find(NetworkCircuit.entries(), &match?({^network_id, _, _, _, _}, &1))
 
@@ -332,10 +336,21 @@ defmodule Grappa.Operator do
     # 404 instead of leaking "network exists" via 422 vs 404 differ-
     # entiation. dispatch_user_session returns `{:error, :not_found}`
     # when no credential row matches the (user_id, network_id) pair.
+    #
+    # REV-J M11: gate `:session_disconnected` emission on the actual
+    # `:connected → :parked` transition having occurred. Pre-fix the
+    # event fired whenever `disconnect_user_session` returned `:ok`,
+    # including the already-`:parked|:failed` no-op branch — the
+    # admin events ring buffer falsely claimed "the operator
+    # disconnected this session" when nothing happened. Symmetric
+    # with the visitor branch which already gates on `Session.whereis/2`.
     with {:ok, %{connection_state: _}} <- Credentials.get_credential_by_ids(user_id, network_id),
          :ok <- guard_not_self(user_id, actor_user_id),
-         :ok <- disconnect_user_session(subject, network_id, actor_user_id) do
-      :ok = emit_session_disconnected(:user, user_id, network_id, actor)
+         {:ok, outcome} <- disconnect_user_session(subject, network_id, actor_user_id) do
+      if outcome == :transitioned do
+        :ok = emit_session_disconnected(:user, user_id, network_id, actor)
+      end
+
       :ok
     end
   end
@@ -370,6 +385,8 @@ defmodule Grappa.Operator do
 
   defp guard_not_self(_, _), do: :ok
 
+  @spec disconnect_user_session(Session.subject(), integer(), Ecto.UUID.t() | nil) ::
+          {:ok, :transitioned | :noop} | {:error, :not_found}
   defp disconnect_user_session({:user, user_id} = subject, network_id, actor_user_id) do
     case Credentials.get_credential_by_ids(user_id, network_id) do
       {:ok, %{connection_state: :connected} = cred} ->
@@ -386,7 +403,7 @@ defmodule Grappa.Operator do
             "actor_user_id=#{inspect(actor_user_id)})"
         )
 
-        :ok
+        {:ok, :transitioned}
 
       {:ok, %{connection_state: state}} when state in [:parked, :failed] ->
         Logger.info(
@@ -395,7 +412,7 @@ defmodule Grappa.Operator do
             "state=#{state} actor_user_id=#{inspect(actor_user_id)})"
         )
 
-        :ok
+        {:ok, :noop}
 
       {:error, :not_found} ->
         {:error, :not_found}

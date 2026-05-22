@@ -212,10 +212,29 @@ defmodule Grappa.Admission.NetworkCircuit do
   transition). The operator verb is "I asked, you did it" — every
   invocation fires telemetry for audit, so the operator dashboard
   shows the reset even when the circuit happened to be already-clean.
+
+  Async (`cast`) — for tests / callers that need the post-reset ETS
+  snapshot to reflect the operator verb, use `reset_sync/1`.
   """
   @spec reset(integer()) :: :ok
   def reset(network_id) when is_integer(network_id) do
     GenServer.cast(__MODULE__, {:reset, network_id})
+  end
+
+  @doc """
+  REV-J M10: synchronous variant of `reset/1`. Returns `:ok` only after
+  the mailbox has processed the reset (the ETS row is gone + the
+  `:circuit_close` telemetry has fired). Pre-fix the operator surface
+  (`Grappa.Operator.reset_circuit/2`) reached behind the public API
+  and called `:sys.get_state/1` to drain the cast — a debug primitive
+  that coupled Operator to the GenServer-backed-by-ETS shape. A
+  future refactor to a Registry / `:persistent_term` / different
+  process would silently break that drain and the operator would
+  observe stale post-reset rows with no error.
+  """
+  @spec reset_sync(integer()) :: :ok
+  def reset_sync(network_id) when is_integer(network_id) do
+    GenServer.call(__MODULE__, {:reset, network_id})
   end
 
   ## GenServer
@@ -291,8 +310,7 @@ defmodule Grappa.Admission.NetworkCircuit do
     # prior :open state to avoid spurious :close events; operator
     # intent is "I asked, you did it" — emit every time so the
     # operator dashboard reflects the explicit verb.
-    :ets.delete(@table, network_id)
-    Telemetry.circuit_close(network_id, :operator_reset)
+    do_reset(network_id)
     {:noreply, state}
   end
 
@@ -317,6 +335,21 @@ defmodule Grappa.Admission.NetworkCircuit do
     end
 
     {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_call({:reset, network_id}, _, state) do
+    # REV-J M10: synchronous variant of the operator reset cast. Same
+    # post-condition as the cast; the explicit reply is the drain so
+    # callers (Operator.reset_circuit/2) observe the post-reset ETS
+    # snapshot without poking at `:sys.get_state/1`.
+    do_reset(network_id)
+    {:reply, :ok, state}
+  end
+
+  defp do_reset(network_id) do
+    :ets.delete(@table, network_id)
+    Telemetry.circuit_close(network_id, :operator_reset)
   end
 
   # Apply the count/window/threshold transition for a :closed (or equivalent

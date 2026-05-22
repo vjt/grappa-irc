@@ -172,12 +172,13 @@ defmodule GrappaWeb.MeControllerTest do
     end
   end
 
-  # UX-4 bucket B (2026-05-18) — home_data envelope for users with
-  # bound credentials. Pins both the projection shape AND the
-  # parity contract: the row shape in `home_data.networks[*]` must
-  # be structurally identical to the typed
-  # `home_network_state_changed` event's `:network` field, so a
-  # future field add can't drift the two consumers.
+  # UX-4 bucket B (2026-05-18); REV-J M15 (2026-05-22) — home_data
+  # envelope for users with bound credentials. Pins both the projection
+  # shape AND the parity contract: the row shape in
+  # `home_data.networks[*]` must be structurally identical to the
+  # `:network` field of the `connection_state_changed` typed event
+  # (REV-J M15 folded the prior `home_network_state_changed` arm into
+  # that payload), so a future field add can't drift the two consumers.
   describe "GET /me — home_data envelope" do
     test "user with bound credentials gets one home_data row per credential",
          %{conn: conn} do
@@ -208,10 +209,11 @@ defmodule GrappaWeb.MeControllerTest do
     end
 
     # Wire-parity invariant: the JSON shape of one row in `home_data.networks`
-    # must equal the JSON shape of `home_network_state_changed.network`.
-    # Both flow through `Networks.Wire.home_network_row/2`, so a future
-    # field addition lands in both consumers atomically. A regression that
-    # builds one inline would surface here as a key/value mismatch.
+    # must equal the JSON shape of `connection_state_changed.network`
+    # (REV-J M15 fold). Both flow through `Networks.Wire.home_network_row/2`,
+    # so a future field addition lands in both consumers atomically. A
+    # regression that builds one inline would surface here as a key/value
+    # mismatch.
     test "envelope row JSON keys are structurally identical to the typed event's :network",
          %{conn: conn} do
       {user, session} = user_and_session()
@@ -232,7 +234,15 @@ defmodule GrappaWeb.MeControllerTest do
         |> hd()
 
       nick = Grappa.Networks.resolve_network_nick(user.id, cred)
-      event = Grappa.Networks.Wire.home_network_state_changed_event(cred, nick)
+
+      event =
+        Grappa.Networks.Wire.connection_state_changed_event(
+          cred,
+          :connected,
+          :connected,
+          nil,
+          nick
+        )
 
       # Both producers must yield the same map structure once Jason-encoded.
       assert row == event.network |> Jason.encode!() |> Jason.decode!()

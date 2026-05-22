@@ -115,7 +115,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert {:ok, "PRIVMSG #sniffo :ciao raga\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"), 1_000)
 
-      [row] = Scrollback.fetch({:user, vjt.id}, network.id, "#sniffo", nil, 10)
+      [row] = Scrollback.fetch({:user, vjt.id}, network.id, "#sniffo", nil, 10, nil)
       assert row.body == "ciao raga"
       assert row.sender == "grappa-test"
       assert row.kind == :privmsg
@@ -388,7 +388,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
                )
 
       # No scrollback row persisted (credential never lands in DB).
-      assert [] = Scrollback.fetch({:user, vjt.id}, network.id, "NickServ", nil, 10)
+      assert [] = Scrollback.fetch({:user, vjt.id}, network.id, "NickServ", nil, 10, nil)
 
       # No PubSub broadcast on the NickServ topic (no row, no fanout).
       refute_received %Phoenix.Socket.Broadcast{event: "event", payload: _}

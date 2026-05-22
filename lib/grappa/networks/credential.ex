@@ -284,6 +284,37 @@ defmodule Grappa.Networks.Credential do
       else: [{field, "must be a valid IRC nickname"}]
   end
 
+  @doc """
+  Narrow changeset for `connection_state` transitions.
+
+  REV-J M13: pre-fix `Networks.transition!/3` cast via raw
+  `Ecto.Changeset.change/2`, which skipped every changeset rule
+  including the `safe_line_token` guard on `:connection_state_reason`.
+  Reasons come from controlled internal sources today
+  (`Networks.disconnect/2` callers gate user input upstream), so this
+  is defense-in-depth rather than a live bug — but a future caller
+  threading an unvalidated string through `transition!/3` would land
+  CR/LF in the column, splitting log lines on any downstream
+  log-shipping consumer and confusing the operator-visible error
+  trail.
+
+  Same shape as `Accounts.User.admin_changeset/2`: cast only the
+  fields the verb owns; run only the validations that apply to those
+  fields. The closed-set `connection_state` Ecto.Enum cast still fires
+  via `cast/3` so a bogus atom raises at the changeset level.
+  """
+  @spec connection_state_changeset(t(), map()) :: Ecto.Changeset.t()
+  def connection_state_changeset(credential, attrs) do
+    credential
+    |> cast(attrs, [
+      :connection_state,
+      :connection_state_reason,
+      :connection_state_changed_at
+    ])
+    |> validate_required([:connection_state, :connection_state_changed_at])
+    |> validate_change(:connection_state_reason, &validate_safe_line_token/2)
+  end
+
   defp validate_safe_line_token(field, value) when is_binary(value) do
     if Identifier.safe_line_token?(value),
       do: [],

@@ -702,14 +702,16 @@ defmodule Grappa.NetworksTest do
     end
   end
 
-  # UX-4 bucket B (2026-05-18). Every credential `connection_state`
-  # transition co-emits a narrow `home_network_state_changed` payload on
-  # the SAME user-topic alongside the wider `connection_state_changed`
-  # event. HomePane patches `home_data.networks` in-place from this; the
-  # Sidebar greyed-cascade + query-window store keep reading the wider
-  # event. Two events, one transition, zero parallel state.
-  describe "broadcast_state_change — UX-4 B home co-emit" do
-    test "connect/1 from :parked also emits home_network_state_changed" do
+  # UX-4 bucket B (2026-05-18); REV-J M15 (2026-05-22). Every credential
+  # `connection_state` transition emits a single `connection_state_changed`
+  # payload on the user-topic. Pre-REV-J this was two events
+  # (`connection_state_changed` + `home_network_state_changed`); the
+  # narrow home payload is now folded into the wider event's `:network`
+  # field so HomePane patches `home_data.networks` in-place from the
+  # same payload Sidebar / query-window store consume. One logical
+  # event, one wire payload, one broadcast.
+  describe "broadcast_state_change — folded home payload (REV-J M15)" do
+    test "connect/1 from :parked emits connection_state_changed with folded :network" do
       user = user_fixture()
       net = network_fixture()
 
@@ -730,27 +732,19 @@ defmodule Grappa.NetworksTest do
 
       slug = net.slug
 
-      # Drain both co-emitted broadcasts. Order is connection_state_changed
-      # first, home_network_state_changed second — pinned by
-      # `broadcast_state_change/4` so cic's discriminated dispatch
-      # consumes them in the order they fire.
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{kind: "connection_state_changed"}
-                     },
-                     1_000
-
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "home_network_state_changed",
+                         kind: "connection_state_changed",
+                         from: :parked,
+                         to: :connected,
                          network: %{slug: ^slug, connection_state: :connected, nick: "vjt"}
                        }
                      },
                      1_000
     end
 
-    test "disconnect/2 from :connected also emits home_network_state_changed" do
+    test "disconnect/2 from :connected emits connection_state_changed with folded :network" do
       user = user_fixture()
       net = network_fixture()
 
@@ -771,14 +765,11 @@ defmodule Grappa.NetworksTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "connection_state_changed"}
-                     },
-                     1_000
-
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
                        payload: %{
-                         kind: "home_network_state_changed",
+                         kind: "connection_state_changed",
+                         from: :connected,
+                         to: :parked,
+                         reason: ^reason,
                          network: %{
                            slug: ^slug,
                            connection_state: :parked,
@@ -790,12 +781,8 @@ defmodule Grappa.NetworksTest do
     end
 
     # Idempotency carry: `connect/1` on a row already at `:connected`
-    # is a no-op (no DB write, no broadcast). The home co-emit MUST
-    # follow the same contract — otherwise a duplicate PATCH /connect
-    # under U-0's concurrent-safety semantics would fan out a phantom
-    # `home_network_state_changed` event and cic would render a
-    # spurious "row patched" log line.
-    test "idempotent connect/1 (already :connected) emits NEITHER event" do
+    # is a no-op (no DB write, no broadcast).
+    test "idempotent connect/1 (already :connected) emits NO event" do
       user = user_fixture()
       net = network_fixture()
 
@@ -814,7 +801,6 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Networks.connect(cred)
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "connection_state_changed"}}, 100
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "home_network_state_changed"}}, 100
     end
   end
 

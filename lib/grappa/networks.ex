@@ -536,19 +536,23 @@ defmodule Grappa.Networks do
     end
   end
 
-  # Direct-write changeset for connection-state transitions only.
-  # `Credential.changeset/2` runs the full validate_required + password
-  # + safe-line-token gauntlet, which is wrong for in-place state
-  # writes — we already have a row that passed those rules at bind
-  # time. `Ecto.Changeset.change/2` skips them; the closed-set
-  # Ecto.Enum cast at the schema field still rejects bogus atoms.
+  # REV-J M13: routes through `Credential.connection_state_changeset/2`
+  # so the same `safe_line_token` guard that protects `realname`,
+  # `sasl_user`, `password`, and `auth_command_template` from CR/LF/NUL
+  # bytes also covers `connection_state_reason`. Pre-fix this used
+  # `Ecto.Changeset.change/2` which skipped every changeset rule; today
+  # reasons come from controlled internal sources so the gap was
+  # defense-in-depth, but the bypass meant a future schema validation
+  # (e.g. "auth_method MUST be compatible with current connection_state")
+  # would silently NOT fire here. The narrow changeset is the consistent
+  # shape with `Accounts.User.admin_changeset/2`.
   @spec transition!(Credential.t(), Credential.connection_state(), String.t() | nil) ::
           Credential.t()
   defp transition!(%Credential{} = cred, new_state, reason) do
     now = DateTime.truncate(DateTime.utc_now(), :second)
 
     cred
-    |> Ecto.Changeset.change(%{
+    |> Credential.connection_state_changeset(%{
       connection_state: new_state,
       connection_state_reason: reason,
       connection_state_changed_at: now
@@ -624,18 +628,16 @@ defmodule Grappa.Networks do
     topic = Topic.user(user_name)
     nick = resolve_network_nick(user_id, cred)
 
-    # UX-4 bucket B: co-emit the narrow home-pane patch alongside the
-    # wider connection_state_changed event. Two events, one transition,
-    # zero parallel state — cic's HomePane mirrors `home_data.networks`
-    # in-place from the per-row payload, the Sidebar greyed-cascade +
-    # query-window store keep reading `connection_state_changed`.
-    # Distinct payloads so neither consumer is forced to depend on the
-    # other's wider shape; the shared row builder
-    # (`Wire.home_network_row/2`) keeps them structurally aligned.
-    state_payload = Wire.connection_state_changed_event(cred, from, to, reason)
-    home_payload = Wire.home_network_state_changed_event(cred, nick)
-
-    :ok = Grappa.PubSub.broadcast_event(topic, state_payload)
-    :ok = Grappa.PubSub.broadcast_event(topic, home_payload)
+    # REV-J M15: pre-fix this co-emitted two events per transition —
+    # the wider `connection_state_changed` and a narrow
+    # `home_network_state_changed`. Subscribers seeing both arms
+    # observed a temporal window where the first event reflected the
+    # new state and the second hadn't landed. Folded into one payload
+    # carrying both the wide fields (consumed by Sidebar greyed-cascade
+    # + query-window store) and the `:network` `home_network_row` shape
+    # HomePane patches in-place. One logical event, one wire payload,
+    # one broadcast.
+    payload = Wire.connection_state_changed_event(cred, from, to, reason, nick)
+    :ok = Grappa.PubSub.broadcast_event(topic, payload)
   end
 end

@@ -1424,14 +1424,20 @@ defmodule Grappa.Session.Server do
     {:stop, :normal, %{state | client: nil}}
   end
 
-  # Supervisor-issued shutdown of a non-Client linked process — propagate
-  # without recording a failure. Currently unreachable in production
-  # (Client is the only linked spawn per init/1), but kept as a defensive
-  # catchall so a future linked-process addition doesn't accidentally
-  # surface in the Logger.warning catchall below.
-  def handle_info({:EXIT, _, reason}, state)
+  # REV-J M7: pre-fix this catch-all matched ANY non-Client linked
+  # process's clean exit and propagated it as a Session-wide stop. Client
+  # is the only `Process.link/1` site in `init/1` today, so it was
+  # unreachable in production — but the comment was the only defense.
+  # A future handler that links a Task or sibling process (e.g. an
+  # async upstream probe) would silently take the whole Session down
+  # on the linked process's normal exit. Now raises so any future
+  # linked-spawn that escapes the design rule surfaces at the
+  # supervisor immediately instead of masquerading as a planned park.
+  def handle_info({:EXIT, pid, reason}, _)
       when reason == :shutdown or reason == :normal do
-    {:stop, reason, state}
+    raise "unexpected :EXIT from non-Client linked process #{inspect(pid)} (reason=#{inspect(reason)}). " <>
+            "Session.Server links Client only; any additional Process.link/1 " <>
+            "must add an explicit handler before this clause."
   end
 
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
@@ -2850,6 +2856,14 @@ defmodule Grappa.Session.Server do
   # ghost-recovery timeout) shares this exact shape and the only way to
   # cover the post-fire branch deterministically is to drive a real timer
   # from the test process.
+  # REV-J M8: pre-fix the drain was a single-shot `receive ... after 0`
+  # which assumed an invariant — "at most one stale message of each
+  # kind in the mailbox at a time" — that was only as strong as the
+  # call sites enforcing it. A future handler that armed a fresh timer
+  # without canceling the prior ref could queue two `:auto_away_debounce_fire`
+  # messages; the single-shot drain would leak one. Constant overhead
+  # in the steady state (queue empty), zero correctness obligation on
+  # call sites.
   @spec cancel_and_drain(reference() | nil, atom()) :: :ok
   def cancel_and_drain(nil, _), do: :ok
 
@@ -2859,11 +2873,15 @@ defmodule Grappa.Session.Server do
         :ok
 
       false ->
-        receive do
-          ^msg -> :ok
-        after
-          0 -> :ok
-        end
+        drain_all(msg)
+    end
+  end
+
+  defp drain_all(msg) do
+    receive do
+      ^msg -> drain_all(msg)
+    after
+      0 -> :ok
     end
   end
 

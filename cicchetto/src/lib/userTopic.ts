@@ -184,7 +184,13 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         channel: r.channel,
         state: "pending",
       };
-    case "connection_state_changed":
+    case "connection_state_changed": {
+      // REV-J M15: pre-fix this arm carried only the wider transition
+      // fields and HomePane patched its row from a separate
+      // `home_network_state_changed` event. Folded — the `network`
+      // field carries the same `HomeNetworkRow` HomePane consumed
+      // before. One logical event, one wire payload, one broadcast.
+      const net = r.network;
       if (
         typeof r.user_id !== "string" ||
         typeof r.network_id !== "number" ||
@@ -192,7 +198,19 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         !isConnectionState(r.from) ||
         !isConnectionState(r.to) ||
         (r.reason !== null && typeof r.reason !== "string") ||
-        (r.at !== null && typeof r.at !== "string")
+        (r.at !== null && typeof r.at !== "string") ||
+        typeof net !== "object" ||
+        net === null
+      )
+        return null;
+      const n = net as Record<string, unknown>;
+      if (
+        typeof n.slug !== "string" ||
+        typeof n.nick !== "string" ||
+        !isConnectionState(n.connection_state) ||
+        (n.connection_state_reason !== null && typeof n.connection_state_reason !== "string") ||
+        (n.connection_state_changed_at !== null &&
+          typeof n.connection_state_changed_at !== "string")
       )
         return null;
       return {
@@ -204,7 +222,15 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         to: r.to,
         reason: r.reason as string | null,
         at: r.at as string | null,
+        network: {
+          slug: n.slug,
+          nick: n.nick,
+          connection_state: n.connection_state,
+          connection_state_reason: n.connection_state_reason as string | null,
+          connection_state_changed_at: n.connection_state_changed_at as string | null,
+        },
       };
+    }
     case "whois_bundle": {
       // C2 — every numeric-derived field is nullable; only network +
       // target are required. is_operator + channels also tolerate
@@ -419,36 +445,6 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // is past every deleted row, masking the gap without the purge).
       if (typeof r.network_slug !== "string" || typeof r.target !== "string") return null;
       return { kind: "archive_purged", network_slug: r.network_slug, target: r.target };
-    case "home_network_state_changed": {
-      // UX-4 bucket B — per-row patch for the HomePane's networks list.
-      // Co-emitted by `Networks.broadcast_state_change/4` alongside the
-      // wider `connection_state_changed` arm so HomePane can patch its
-      // `home_data.networks` slot in-place from the narrow payload
-      // (no /me refetch). Same shape as `home_data.networks[*]` —
-      // single shared server-side builder `Wire.home_network_row/2`.
-      const net = r.network;
-      if (typeof net !== "object" || net === null) return null;
-      const n = net as Record<string, unknown>;
-      if (
-        typeof n.slug !== "string" ||
-        typeof n.nick !== "string" ||
-        !isConnectionState(n.connection_state) ||
-        (n.connection_state_reason !== null && typeof n.connection_state_reason !== "string") ||
-        (n.connection_state_changed_at !== null &&
-          typeof n.connection_state_changed_at !== "string")
-      )
-        return null;
-      return {
-        kind: "home_network_state_changed",
-        network: {
-          slug: n.slug,
-          nick: n.nick,
-          connection_state: n.connection_state,
-          connection_state_reason: n.connection_state_reason as string | null,
-          connection_state_changed_at: n.connection_state_changed_at as string | null,
-        },
-      };
-    }
     default:
       return null;
   }
@@ -556,6 +552,12 @@ createRoot(() => {
           // `connection_state_changed_at` fields immediately on the
           // initiating tab AND on any sibling tab logged in to the
           // same account.
+          //
+          // REV-J M15: the prior standalone `home_network_state_changed`
+          // arm folded into this payload as `:network`. HomePane patches
+          // its row from the same event, eliminating the temporal window
+          // where Sidebar saw the new state but HomePane hadn't yet.
+          patchHomeNetwork(payload.network);
           refetchNetworks();
           return;
 
@@ -719,13 +721,6 @@ createRoot(() => {
             clearSeen(key);
             void loadArchive(payload.network_slug);
           }
-          return;
-
-        case "home_network_state_changed":
-          // UX-4 bucket B — per-row patch into the HomePane signal.
-          // Co-emitted with `connection_state_changed`; HomePane
-          // patches in-place without a /me refetch.
-          patchHomeNetwork(payload.network);
           return;
 
         default:

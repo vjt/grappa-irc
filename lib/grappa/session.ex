@@ -1041,12 +1041,16 @@ defmodule Grappa.Session do
   @spec put_subject_id(map(), subject()) :: map()
   def put_subject_id(attrs, subject), do: Grappa.Subject.put_subject_id(attrs, subject)
 
-  defp call_session(subject, network_id, request) do
-    case whereis(subject, network_id) do
-      nil -> {:error, :no_session}
-      pid -> GenServer.call(pid, request)
-    end
-  end
+  # REV-J M14: call_session/3 used to do a bare `GenServer.call/2` with
+  # the implicit 5s timeout, surfacing `{:exit, {:timeout, _}}` as a
+  # Phoenix 500 with no typed envelope. The sibling call_session/4
+  # already had the `try/catch :exit, {:timeout, _} -> {:error, :timeout}`
+  # wrapper; pre-fix the two sibling functions created inconsistent
+  # caller behaviour. Now /3 delegates to /4 with the GenServer default
+  # 5_000ms so every REST verb gets the same `{:error, :timeout}` shape
+  # for FallbackController to render.
+  defp call_session(subject, network_id, request),
+    do: call_session(subject, network_id, request, 5_000)
 
   defp call_session(subject, network_id, request, timeout_ms) do
     case whereis(subject, network_id) do
