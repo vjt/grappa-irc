@@ -102,12 +102,22 @@ if config_env() == :prod do
       :ok
   end
 
-  # Note: SECRET_SIGNING_SALT is read at COMPILE time via config.exs
-  # (Plug.Session's @session_options module-attribute is compile-time;
-  # `Application.compile_env!/2` validates compile == runtime so the
-  # value MUST come from the build env). Operator sets the var in .env
-  # BEFORE scripts/deploy.sh; the value bakes into the prod release.
-  # Rotation = bump value + scripts/deploy.sh full rebuild.
+  # SECRET_SIGNING_SALT: salt for signing the Plug.Session cookie.
+  # Pre-REV-C this was read at COMPILE TIME in config.exs — operator
+  # rotation via `.env` + auto-deploy was silently broken (review
+  # H21). Runtime read + first-request `:persistent_term` cache in
+  # `GrappaWeb.Endpoint` makes rotation a normal COLD-deploy bump
+  # like SECRET_KEY_BASE. Phase 5: when an auth surface starts using
+  # the cookie (PushVapidController? Future REST auth?) this becomes
+  # load-bearing for real.
+  secret_signing_salt =
+    System.get_env("SECRET_SIGNING_SALT") ||
+      raise """
+      environment variable SECRET_SIGNING_SALT is missing.
+      Generate one with: scripts/mix.sh phx.gen.secret 64
+      """
+
+  config :grappa, GrappaWeb.Endpoint, session_signing_salt: secret_signing_salt
 
   port = String.to_integer(System.get_env("PORT") || "4000")
 

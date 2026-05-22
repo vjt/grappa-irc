@@ -70,6 +70,18 @@ echo "Pulling latest main..."
 git pull --ff-only
 
 # ---- Preflight: classify diff as hot-safe or cold-required ----
+#
+# Source of truth: `lib/grappa/deploy/preflight.ex`. The Elixir module
+# owns ALL path classification rules + long-lived-module state-shape
+# diffing. This shell function is a thin invoker — every rule lives
+# in Elixir so the script + docs + Dialyzer cannot drift (CLAUDE.md
+# "Implement once, reuse everywhere").
+#
+# Pre-REV-C this script carried duplicate bash regex rules + a brittle
+# `grep -E '^\s+Grappa\.X' …` parse of the LongLivedModules SoT (CP28
+# regression class, review C4) + an awk helper for state-block
+# extraction. All three deleted; the SoT is consulted directly via
+# `Grappa.HotReload.LongLivedModules.all/0`.
 preflight() {
     local from="$1" to="$2"
 
@@ -90,123 +102,20 @@ preflight() {
     echo "Changed files since $from:"
     echo "$changed" | sed 's/^/  /'
 
-    # Class 1: dep / build config changes — require deps re-fetch +
-    # fresh boot to pick up the new compiled artifacts.
-    if echo "$changed" | grep -qE '^(mix\.lock|mix\.exs)$'; then
-        echo "  → mix.lock/mix.exs changed → COLD"
-        return 1
-    fi
-
-    # Class 2: supervision tree changes — Application callback runs
-    # only at boot; new children never start, restart strategy
-    # changes never apply.
-    if echo "$changed" | grep -qE '^lib/grappa/application\.ex$'; then
-        echo "  → application.ex changed → COLD"
-        return 1
-    fi
-
-    # Class 3: state-shape changes in long-lived GenServer modules.
-    # The authoritative module list lives in
-    # `lib/grappa/hot_reload/long_lived_modules.ex` (so docs +
-    # script + Dialyzer cannot drift). We parse the `@modules` and
-    # `@state_helpers` attributes out of that file with a stable
-    # one-module-per-line shape, then translate
-    # `Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex` and grep each
-    # touched file for unsafe shape markers.
+    # Delegate the entire classification to Grappa.Deploy.Preflight via
+    # a oneshot mix run. The module's `cli/1` prints "→ <kind>: <files>"
+    # lines for each cold class triggered (or "→ no unsafe markers →
+    # HOT" if all green), then halts with exit 0 (HOT) or 1 (COLD).
     #
-    # Markers, any one is fatal:
-    #   - `defstruct` line added/removed
-    #   - `@type t :: %{` line added/removed (bare-map state shape)
-    #   - `init(...) do` body added/removed (map-literal init for
-    #     bare-map modules)
-    #
-    # Conservative bias: in doubt, COLD. False positives just trigger
-    # a (~30s) cold deploy; false negatives produce a silent deferred
-    # shape-mismatch crash hours later.
-    local sot_file="lib/grappa/hot_reload/long_lived_modules.ex"
-    local module_atoms long_lived_files
-    module_atoms="$(grep -E '^\s+Grappa\.[A-Za-z_.0-9]+,?$' "$sot_file" | sed -E 's/[ ,]//g')"
-    if [ -z "$module_atoms" ]; then
-        die "preflight: failed to parse module list from $sot_file. Is the @modules / @state_helpers shape still 'one Grappa.X.Y per line'?"
-    fi
-    long_lived_files="$(echo "$module_atoms" \
-        | sed -E 's/^Grappa\.//; s/\./\//g' \
-        | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g; s/([A-Z]+)([A-Z][a-z])/\1_\2/g' \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's|^|lib/grappa/|; s|$|.ex|')"
-
-    local touched_long_lived
-    touched_long_lived="$(echo "$changed" | grep -Fxf <(echo "$long_lived_files") || true)"
-    if [ -n "$touched_long_lived" ]; then
-        for f in $touched_long_lived; do
-            if git diff "$from..$to" -- "$f" | grep -qE '^[+-]\s*(defstruct|@type t ::\s*%\{|def init\()'; then
-                echo "  → state-shape marker changed in $f → COLD"
-                return 1
-            fi
-            # B6.5 HIGH-27 (no-silent-drops 2026-05-14): field-additions
-            # AST oracle. The marker-line regex above only fires when the
-            # `defstruct` / `@type t :: %{` / `def init(` line ITSELF is
-            # added or removed. A field added INSIDE an existing
-            # `@type t :: %{...}` block silently classifies HOT —
-            # CP28 incident root cause (per
-            # `feedback_deploy_sh_preflight_field_addition_gap`).
-            #
-            # Per CLAUDE.md "Fix root causes, not examples": this oracle
-            # extracts the balanced `@type t :: %{...}` block (or the
-            # `defstruct ...` block — both have the same disease shape)
-            # from the `from` and `to` revisions of the touched file,
-            # normalizes whitespace, and diffs. Differences → COLD.
-            #
-            # Brace-matching is delegated to awk because regex can't
-            # match balanced delimiters — and HIGH-27's whole point is
-            # that regex is exactly the bug class. The awk helper lives
-            # at `scripts/_extract_state_block.awk`.
-            local awk_helper
-            awk_helper="$(dirname "$0")/_extract_state_block.awk"
-            if [ -x "$(command -v awk)" ] && [ -f "$awk_helper" ]; then
-                local from_block to_block
-                from_block="$(git show "$from:$f" 2>/dev/null | awk -f "$awk_helper" || true)"
-                to_block="$(git show "$to:$f" 2>/dev/null | awk -f "$awk_helper" || true)"
-                if [ "$from_block" != "$to_block" ]; then
-                    echo "  → @type t :: %{...} or defstruct field-set changed in $f → COLD"
-                    return 1
-                fi
-            fi
-        done
-    fi
-
-    # Class 4: Dockerfile / compose / build scripts — image rebuild
-    # required, can't hot-swap a docker image.
-    if echo "$changed" | grep -qE '^(Dockerfile|compose\.yaml|bin/start\.sh)$'; then
-        echo "  → image substrate changed → COLD"
+    # ~2-3s mix-boot cost is invisible — the cold path already does a
+    # multi-minute container-rebuild + cicchetto-build oneshot.
+    if docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps \
+        -e MIX_ENV=dev grappa \
+        mix run --no-start -e "Grappa.Deploy.Preflight.cli([\"$from\", \"$to\"])"; then
+        return 0
+    else
         return 1
     fi
-
-    # Class 5 (B6.5 HIGH-28): new/edited migration files. The hot path
-    # POSTs /admin/reload — modules reload but `mix ecto.migrate`
-    # never runs. First query against the new column/table 500s; if
-    # Bootstrap reads it at next supervision-tree restart, BEAM
-    # crash-loops. Per `feedback_cluster_with_migration_must_cold`
-    # (CP29 R-Z lesson): cluster with migration MUST cold-deploy.
-    if echo "$changed" | grep -qE '^priv/repo/migrations/'; then
-        echo "  → new/edited migration → COLD"
-        return 1
-    fi
-
-    # Class 6 (B6.5 HIGH-29): nginx config + security-headers edits.
-    # Hot path doesn't reload nginx (it's a separate container under
-    # `--profile prod`). CSP allowlist drift is particularly bad —
-    # adding a captcha provider to the allowlist won't take effect,
-    # cic widgets 404 under CSP. Cold deploy recreates nginx with
-    # the new config.
-    if echo "$changed" | grep -qE '^infra/(nginx\.conf|snippets/)'; then
-        echo "  → nginx config changed → COLD"
-        return 1
-    fi
-
-    # Default: hot-safe.
-    echo "  → no unsafe markers → HOT"
-    return 0
 }
 
 if [ "$mode" = "auto" ]; then

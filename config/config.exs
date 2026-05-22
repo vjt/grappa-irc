@@ -88,18 +88,19 @@ config :grappa, GrappaWeb.Endpoint,
     formats: [json: GrappaWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: Grappa.PubSub,
-  # codebase audit web W10 + cross-infra L7. Read at COMPILE time (this
-  # file IS the compile config). Why compile-and-not-runtime: Phoenix's
-  # `@session_options` module attribute is evaluated when endpoint.ex is
-  # compiled — `Application.compile_env!/2` validates compile == runtime
-  # at boot, so runtime.exs CAN'T be the sole authority (mismatch crashes
-  # boot). The salt is baked into the prod release at build time.
-  # Operator workflow: set SECRET_SIGNING_SALT in .env BEFORE running
-  # scripts/deploy.sh; the build picks it up here. Rotation = bump value
-  # + scripts/deploy.sh (full rebuild). dev.exs + test.exs override with
-  # their own per-env values for the dev container + test runs.
-  session_signing_salt: System.get_env("SECRET_SIGNING_SALT") || "build-time-placeholder-not-prod-safe"
+  pubsub_server: Grappa.PubSub
+
+# Note: `session_signing_salt` is NOT set here. Pre-REV-C it was a
+# compile-time read (`System.get_env("SECRET_SIGNING_SALT") ||
+# "build-time-placeholder-not-prod-safe"`) baked into the endpoint
+# module's `@session_options` attribute. That broke `.env`-rotation +
+# auto-deploy semantics — the new value never reached the running
+# BEAM until a full image rebuild (review H21). H21 moved the prod
+# read to `config/runtime.exs` alongside `SECRET_KEY_BASE`; the dev +
+# test values still come from `config/{dev,test}.exs`. The Endpoint
+# module reads via `Application.fetch_env!/2` at first-request time
+# (cached in `:persistent_term`); see `lib/grappa_web/endpoint.ex`
+# for the runtime plug shape.
 
 config :phoenix, :json_library, Jason
 

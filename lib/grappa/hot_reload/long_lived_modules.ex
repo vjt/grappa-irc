@@ -16,13 +16,19 @@ defmodule Grappa.HotReload.LongLivedModules do
 
   `scripts/deploy.sh` runs a git-diff preflight before every deploy
   to refuse hot-deploy when this class of change is detected. The
-  preflight greps:
+  preflight delegates to `Grappa.Deploy.Preflight.classify/4` (REV-C,
+  closes review C4) which:
 
-    1. `defstruct` line touched in any of these modules
-    2. `@type t :: %{...}` shape changed (for modules that hold
-       state as a bare map rather than a struct)
-    3. `init/1` literal map keys added/removed (also for bare-map
-       modules)
+    1. reads this module's `all/0` to enumerate the tracked module
+       set — single-sourced, no string parsing of this file's
+       attribute blocks;
+    2. translates each module to its source-file path
+       (`Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex`);
+    3. for each touched long-lived file, extracts the `@type t :: %{...}`
+       and `defstruct ...` blocks at both revs via
+       `Code.string_to_quoted/1` (Elixir's tokenizer is the authority
+       on syntax — no regex);
+    4. classifies COLD if the normalized block strings differ.
 
   CLAUDE.md "Hot vs cold deploy" cites this module by name as the
   authoritative enumeration so the script and the docs cannot drift.
@@ -54,12 +60,11 @@ defmodule Grappa.HotReload.LongLivedModules do
   When introducing a new long-lived `GenServer`:
 
     1. Add the module atom to `@modules` here.
-    2. If it has a `defstruct`, the existing `defstruct`-line grep
-       in `scripts/deploy.sh` catches its shape changes.
-    3. If it stores state as a bare map, ALSO add a `@type t :: %{
-       ...}` declaration so the type-shape grep catches it. (Adding
-       a `defstruct` is preferred — it gives Dialyzer something to
-       check too.)
+    2. If it has a `defstruct`, `Grappa.Deploy.Preflight` extracts
+       its shape via the Elixir tokenizer — covers field-additions,
+       removals, and rearrangements.
+    3. Same for `@type t :: %{...}` bare-map shapes. (A `defstruct`
+       is preferred — it gives Dialyzer something to check too.)
 
   ## Invariants
 
@@ -71,16 +76,13 @@ defmodule Grappa.HotReload.LongLivedModules do
 
   use Boundary, top_level?: true, deps: [], exports: []
 
-  # Long-lived GenServer modules — supervised, stateful.
-  #
-  # ⚠️  This list is parsed by `scripts/deploy.sh` via a stable
-  # `grep` pattern. KEEP one module per line, fully-qualified, no
-  # trailing comments on the same line. The script's regex is:
-  #
-  #     ^\s+Grappa\.[A-Za-z_.0-9]+,?$
-  #
-  # Anything that breaks that shape will silently drop modules from
-  # the preflight check.
+  # Long-lived GenServer modules — supervised, stateful. Consumed by
+  # `Grappa.Deploy.Preflight.long_lived_module_files/0` to populate the
+  # deploy-preflight state-shape check set. Coupling is via the Elixir
+  # reference `LongLivedModules.all/0`; no string parsing of this file
+  # (pre-REV-C the bash preflight regex-parsed the @modules block and
+  # would silently false-COLD when typespec union lines matched the
+  # shape — review C4 / CP28 incident class).
   @modules [
     Grappa.Session.Backoff,
     Grappa.WSPresence,
@@ -96,8 +98,6 @@ defmodule Grappa.HotReload.LongLivedModules do
   # Helper struct modules whose defstruct is a *field* of one of the
   # `@modules` above. A `defstruct` change here is just as
   # hot-reload-unsafe as a change to the parent's own defstruct.
-  #
-  # Same parsing-shape rules as `@modules` above.
   @state_helpers [
     Grappa.Session.AwayState,
     Grappa.Session.GhostRecovery,

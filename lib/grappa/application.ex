@@ -7,6 +7,7 @@ defmodule Grappa.Application do
       Grappa.Admission,
       Grappa.AdminEvents,
       Grappa.Bootstrap,
+      Grappa.Health,
       Grappa.PubSub,
       Grappa.Repo,
       Grappa.Session,
@@ -158,7 +159,21 @@ defmodule Grappa.Application do
       ] ++ bootstrap_child()
 
     opts = [strategy: :one_for_one, name: Grappa.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    case Supervisor.start_link(children, opts) do
+      {:ok, _} = result ->
+        # H26 (review 2026-05-22): flip the substrate-readiness flag
+        # so `/healthz` returns 200 (vs the default 503-on-not-ready).
+        # `:persistent_term` write — survives the start callback's
+        # caller pid; surfaces wedge state if the supervisor restart-
+        # loops (the flag stays `true` from the last successful boot,
+        # but Repo + ETS checks in the controller catch the wedge).
+        :ok = Grappa.Health.mark_ready()
+        result
+
+      other ->
+        other
+    end
   end
 
   # Bootstrap is opt-in via the `:start_bootstrap` flag (true in dev/prod,
