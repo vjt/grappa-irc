@@ -930,8 +930,15 @@ export class ApiError extends Error {
 // `ApiError`. The Channel error envelope is `{:error, %{error: "<token>"}}`
 // — same `error:` key as the REST `FallbackController` shape — so cic
 // has one envelope to extract from. `code` carries the wire token
-// (`"invalid_channel"`, `"upstream_unavailable"`, etc.) callers can
-// branch on; `info` captures any sibling fields the server may add.
+// (`"invalid_channel"`, `"upstream_unavailable"`, etc.); `info` captures
+// the full server reply so callers can read sibling fields.
+//
+// Branching on `code` is the FUTURE consumer pattern (mirroring
+// `friendlyApiError(e: ApiError)` for REST); current consumers
+// (compose.ts) fall through to a generic "send failed" string. The
+// typed class is the SHAPE that enables future branching without
+// re-touching the push helpers — keeping the unification at the
+// boundary where the envelope is decoded.
 //
 // Use `channelPushError/1` at `.receive("error", ...)` to convert the
 // opaque `unknown` reply into a typed `Error` for the rejecting

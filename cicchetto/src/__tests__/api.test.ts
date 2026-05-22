@@ -645,3 +645,42 @@ describe("REV-A C2 — capacity_reject.flow superset of server Admission.flow/0"
     expect(SERVER_ADMISSION_FLOWS.length).toBe(5);
   });
 });
+
+describe("REV-K M20 — channelPushError extractor", () => {
+  // The WS Channel error envelope is `%{error: "<token>"}` post-REV-K
+  // (was `%{reason: "<token>"}` pre-REV-K). channelPushError/1 lifts
+  // the opaque `unknown` reply into a typed `ChannelPushError` so
+  // push helpers can reject with `.code` available for branching.
+
+  it("extracts `code` from {error: '<token>'} envelope", () => {
+    const e = api.channelPushError({ error: "invalid_channel" });
+    expect(e).toBeInstanceOf(api.ChannelPushError);
+    expect(e.code).toBe("invalid_channel");
+    expect(e.info).toEqual({ error: "invalid_channel" });
+  });
+
+  it("preserves sibling fields in `info` for callers", () => {
+    const e = api.channelPushError({ error: "body_too_large", limit: 4096 });
+    expect(e.code).toBe("body_too_large");
+    expect(e.info).toEqual({ error: "body_too_large", limit: 4096 });
+  });
+
+  it("falls back to stringified raw when object lacks `error` key", () => {
+    const e = api.channelPushError({ unknown_shape: true });
+    expect(e.code).toBe("[object Object]");
+    expect(e.info).toEqual({ unknown_shape: true });
+  });
+
+  it("handles non-object payloads via String() fallback", () => {
+    expect(api.channelPushError("raw_string").code).toBe("raw_string");
+    expect(api.channelPushError(null).code).toBe("null");
+    expect(api.channelPushError(undefined).code).toBe("undefined");
+  });
+
+  it("ChannelPushError is a real Error subclass with descriptive message", () => {
+    const e = api.channelPushError({ error: "no_session" });
+    expect(e).toBeInstanceOf(Error);
+    expect(e.name).toBe("ChannelPushError");
+    expect(e.message).toContain("no_session");
+  });
+});
