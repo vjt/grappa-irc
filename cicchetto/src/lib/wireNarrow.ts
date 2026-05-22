@@ -123,6 +123,92 @@ function narrowMembers(raw: unknown): MemberEntry[] | null {
   return out;
 }
 
+// REV-A H1 — shared narrower for the three window-state terminal-event
+// arms (joined / join_failed / kicked). F1 (visitor-parity 2026-05-15)
+// added a user-topic dual-broadcast of these three arms to close a
+// subscribe-then-broadcast race, leaving the byte-identical shape
+// narrowing duplicated across `narrowChannelEvent` here and
+// `narrowUserEvent` in `userTopic.ts`. A future server-side field add
+// to e.g. `Session.Wire.kicked/4` would land at one site and silently
+// drift at the other.
+//
+// Reuses the verb (single source for the wire shape), not the noun:
+// the dispatch — routing to `setJoined / setFailed / setKicked` in
+// `lib/windowState.ts` — stays at each call site (subscribe.ts +
+// userTopic.ts) because the two narrowers feed different store keys
+// (per-channel key vs user-topic key carrying the same payload).
+//
+// Returns the typed window-state union variant on success, `null` on
+// any shape mismatch. Caller is expected to early-return on `null`
+// (matches the surrounding `narrowChannelEvent` / `narrowUserEvent`
+// convention).
+export type WireWindowStateEvent =
+  | { kind: "joined"; network: string; channel: string; state: "joined" }
+  | {
+      kind: "join_failed";
+      network: string;
+      channel: string;
+      state: "failed";
+      reason: string | null;
+      numeric: number;
+    }
+  | {
+      kind: "kicked";
+      network: string;
+      channel: string;
+      state: "kicked";
+      by: string | null;
+      reason: string | null;
+    };
+
+export function narrowWindowStateEvent(raw: unknown): WireWindowStateEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== "string") return null;
+  switch (r.kind) {
+    case "joined":
+      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "joined")
+        return null;
+      return { kind: "joined", network: r.network, channel: r.channel, state: "joined" };
+    case "join_failed":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        r.state !== "failed" ||
+        (r.reason !== null && typeof r.reason !== "string") ||
+        typeof r.numeric !== "number"
+      )
+        return null;
+      return {
+        kind: "join_failed",
+        network: r.network,
+        channel: r.channel,
+        state: "failed",
+        reason: r.reason as string | null,
+        numeric: r.numeric,
+      };
+    case "kicked":
+      if (
+        typeof r.network !== "string" ||
+        typeof r.channel !== "string" ||
+        r.state !== "kicked" ||
+        (r.by !== null && typeof r.by !== "string") ||
+        (r.reason !== null && typeof r.reason !== "string")
+      )
+        return null;
+      return {
+        kind: "kicked",
+        network: r.network,
+        channel: r.channel,
+        state: "kicked",
+        by: r.by as string | null,
+        reason: r.reason as string | null,
+      };
+    default:
+      return null;
+  }
+}
+
 /**
  * Runtime narrower for per-channel WS events (`WireChannelEvent`
  * arms). Consumes the raw payload Phoenix.js delivers as `unknown`-
@@ -183,43 +269,11 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
       return { kind: "members_seeded", network: r.network, channel: r.channel, members };
     }
     case "joined":
-      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "joined")
-        return null;
-      return { kind: "joined", network: r.network, channel: r.channel, state: "joined" };
     case "join_failed":
-      if (
-        typeof r.network !== "string" ||
-        typeof r.channel !== "string" ||
-        r.state !== "failed" ||
-        (r.reason !== null && typeof r.reason !== "string") ||
-        typeof r.numeric !== "number"
-      )
-        return null;
-      return {
-        kind: "join_failed",
-        network: r.network,
-        channel: r.channel,
-        state: "failed",
-        reason: r.reason as string | null,
-        numeric: r.numeric,
-      };
     case "kicked":
-      if (
-        typeof r.network !== "string" ||
-        typeof r.channel !== "string" ||
-        r.state !== "kicked" ||
-        (r.by !== null && typeof r.by !== "string") ||
-        (r.reason !== null && typeof r.reason !== "string")
-      )
-        return null;
-      return {
-        kind: "kicked",
-        network: r.network,
-        channel: r.channel,
-        state: "kicked",
-        by: r.by as string | null,
-        reason: r.reason as string | null,
-      };
+      // REV-A H1 — shared narrower across per-channel topic + user-topic
+      // dual-broadcast (see `narrowWindowStateEvent` moduledoc above).
+      return narrowWindowStateEvent(r);
     case "read_cursor_set":
       if (typeof r.last_read_message_id !== "number") return null;
       return {

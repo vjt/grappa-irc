@@ -81,6 +81,8 @@ function ingest(ev: WireAdminEvent): void {
     case "visitor_deleted":
     case "visitor_reaped":
     case "reaper_swept":
+    case "upload_reaped":
+    case "uploads_swept":
     case "session_disconnected":
     case "session_terminated":
     case "network_caps_updated":

@@ -282,3 +282,67 @@ describe("adminEvents — cap_counts_changed live projection (U-5)", () => {
     expect(liveCountsByNetworkId()).toEqual({});
   });
 });
+
+describe("adminEvents — REV-A C1 upload_reaped + uploads_swept ingestion", () => {
+  // Pre-REV-A the cic union was missing both arms; an upload-reaper
+  // sweep on a deployment with active uploads crashed `ingest()` via
+  // `assertNever`. These tests pin the ingestion shape so the cic
+  // mirror of `Grappa.AdminEvents.Wire.upload_reaped/4` +
+  // `uploads_swept/1` cannot regress.
+
+  it("routes upload_reaped into the events ring (per-record reap)", () => {
+    const fake = makeFakeChannel();
+    installAdminEvents(fake.channel);
+
+    fake.fireEvent({
+      kind: "upload_reaped",
+      upload_id: "up_abc",
+      slug: "abc123",
+      subject_kind: "user",
+      subject_id: "u1",
+      at: "2026-05-22T12:00:00Z",
+    } as WireAdminEvent);
+
+    const list = adminEvents();
+    expect(list.length).toBe(1);
+    expect(list[0]?.kind).toBe("upload_reaped");
+  });
+
+  it("routes uploads_swept into the events ring (sweep summary)", () => {
+    const fake = makeFakeChannel();
+    installAdminEvents(fake.channel);
+
+    fake.fireEvent({
+      kind: "uploads_swept",
+      count: 3,
+      at: "2026-05-22T12:00:01Z",
+    } as WireAdminEvent);
+
+    const list = adminEvents();
+    expect(list.length).toBe(1);
+    expect(list[0]?.kind).toBe("uploads_swept");
+    expect((list[0] as { count: number }).count).toBe(3);
+  });
+
+  it("interleaves upload events with other audit-ring kinds (newest-first)", () => {
+    const fake = makeFakeChannel();
+    installAdminEvents(fake.channel);
+
+    fake.fireEvent({ kind: "reaper_swept", count: 1, at: "t1" } as WireAdminEvent);
+    fake.fireEvent({
+      kind: "upload_reaped",
+      upload_id: "u",
+      slug: "s",
+      subject_kind: "visitor",
+      subject_id: "v1",
+      at: "t2",
+    } as WireAdminEvent);
+    fake.fireEvent({ kind: "uploads_swept", count: 1, at: "t3" } as WireAdminEvent);
+
+    const list = adminEvents();
+    expect(list.length).toBe(3);
+    expect(list[0]?.kind).toBe("uploads_swept");
+    expect(list[1]?.kind).toBe("upload_reaped");
+    expect(list[2]?.kind).toBe("reaper_swept");
+  });
+});

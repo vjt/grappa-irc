@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowChannelEvent } from "../lib/wireNarrow";
+import { narrowChannelEvent, narrowWindowStateEvent } from "../lib/wireNarrow";
 
 // Bucket G H4+U3 — runtime narrower for per-channel WS events.
 // Mirror of `narrowUserEvent` (cic M1) on the per-channel boundary.
@@ -409,5 +409,96 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
         }),
       ).toBeNull();
     });
+  });
+});
+
+// REV-A H1 (codebase-review-2026-05-22) — shared narrower for
+// joined/join_failed/kicked. Pre-REV-A the byte-identical shape
+// narrowing lived inline in BOTH narrowChannelEvent (above) AND
+// narrowUserEvent (userTopic.ts). The extraction here pins the
+// single-source contract; the existing narrowChannelEvent arm tests
+// above implicitly exercise this code path. These tests give the
+// helper direct coverage so a future caller (e.g. a per-arm test
+// for narrowUserEvent's user-topic dual-broadcast routing) can
+// reuse the assertions.
+describe("narrowWindowStateEvent (REV-A H1)", () => {
+  it("narrows a valid joined arm", () => {
+    expect(
+      narrowWindowStateEvent({
+        kind: "joined",
+        network: "azzurra",
+        channel: "#italia",
+        state: "joined",
+      }),
+    ).toEqual({ kind: "joined", network: "azzurra", channel: "#italia", state: "joined" });
+  });
+
+  it("narrows a valid join_failed arm", () => {
+    expect(
+      narrowWindowStateEvent({
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#sekrit",
+        state: "failed",
+        reason: "channel key required",
+        numeric: 475,
+      }),
+    ).toEqual({
+      kind: "join_failed",
+      network: "azzurra",
+      channel: "#sekrit",
+      state: "failed",
+      reason: "channel key required",
+      numeric: 475,
+    });
+  });
+
+  it("narrows a valid kicked arm with null reason", () => {
+    expect(
+      narrowWindowStateEvent({
+        kind: "kicked",
+        network: "azzurra",
+        channel: "#italia",
+        state: "kicked",
+        by: "moderator",
+        reason: null,
+      }),
+    ).toEqual({
+      kind: "kicked",
+      network: "azzurra",
+      channel: "#italia",
+      state: "kicked",
+      by: "moderator",
+      reason: null,
+    });
+  });
+
+  it("returns null on unknown kind", () => {
+    expect(narrowWindowStateEvent({ kind: "totally_new" })).toBeNull();
+  });
+
+  it("returns null on shape mismatch (joined with non-string network)", () => {
+    expect(
+      narrowWindowStateEvent({ kind: "joined", network: 1, channel: "#x", state: "joined" }),
+    ).toBeNull();
+  });
+
+  it("returns null on shape mismatch (join_failed with non-number numeric)", () => {
+    expect(
+      narrowWindowStateEvent({
+        kind: "join_failed",
+        network: "azzurra",
+        channel: "#x",
+        state: "failed",
+        reason: null,
+        numeric: "475",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null on null/non-object input", () => {
+    expect(narrowWindowStateEvent(null)).toBeNull();
+    expect(narrowWindowStateEvent("kicked")).toBeNull();
+    expect(narrowWindowStateEvent(undefined)).toBeNull();
   });
 });

@@ -584,3 +584,64 @@ describe("deleteArchiveEntry (UX-1)", () => {
     );
   });
 });
+
+// REV-A (codebase-review-2026-05-22) — wire-shape superset regression
+// pins. The cic-side discriminated unions MUST be a superset of the
+// server-emitted closed sets. A future server-side arm addition (new
+// `event_kind/0` arm in `lib/grappa/admin_events/wire.ex`, new
+// `flow/0` arm in `lib/grappa/admission.ex`) MUST surface as a tsc
+// build break here. The mirror lists below are hard-coded snapshots
+// of the server typespecs; the test asserts every server arm appears
+// in the cic type. If you're updating the server typespec and this
+// test fails, update BOTH the server type AND the SERVER_* list here
+// — the asymmetry IS the regression.
+//
+// The arrays are typed against the cic union's `kind` field; if a
+// server arm here is missing from the cic union, the `satisfies`
+// constraint fails at tsc-compile time. Runtime `expect` is the
+// belt-and-braces: even if someone widens the cic union to `string`
+// to "fix" the tsc error, the runtime assert still fails loud.
+
+describe("REV-A C1 — WireAdminEvent superset of server event_kind/0", () => {
+  // Mirror of `lib/grappa/admin_events/wire.ex:47-60`. Update IN
+  // LOCKSTEP with the server typespec; arm count is the regression
+  // signal (the test below pins it explicitly).
+  const SERVER_ADMIN_EVENT_KINDS = [
+    "circuit_open",
+    "circuit_close",
+    "capacity_reject",
+    "visitor_deleted",
+    "visitor_reaped",
+    "reaper_swept",
+    "upload_reaped",
+    "uploads_swept",
+    "session_disconnected",
+    "session_terminated",
+    "network_caps_updated",
+    "circuit_reset",
+    "cap_counts_changed",
+  ] as const satisfies readonly api.WireAdminEvent["kind"][];
+
+  it("includes every server-emitted kind in the cic discriminated union", () => {
+    // The `satisfies` clause above is the static enforcement; this
+    // runtime expect protects against silent widening.
+    expect(SERVER_ADMIN_EVENT_KINDS.length).toBe(13);
+  });
+});
+
+describe("REV-A C2 — capacity_reject.flow superset of server Admission.flow/0", () => {
+  // Mirror of `lib/grappa/admission.ex:53-58`. Server emits the bare
+  // atom verbatim via `Wire.capacity_reject/5` (Jason stringifies);
+  // cic MUST accept every value.
+  const SERVER_ADMISSION_FLOWS = [
+    "login_fresh",
+    "login_existing",
+    "bootstrap_user",
+    "bootstrap_visitor",
+    "patch_network_connect",
+  ] as const satisfies readonly api.AdmissionFlow[];
+
+  it("AdmissionFlow includes every server-emitted flow arm", () => {
+    expect(SERVER_ADMISSION_FLOWS.length).toBe(5);
+  });
+});

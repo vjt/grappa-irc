@@ -25,6 +25,7 @@ import { joinUser } from "./socket";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhowasBundle } from "./whowasCard";
 import { setFailed, setJoined, setKicked, setPending } from "./windowState";
+import { narrowWindowStateEvent } from "./wireNarrow";
 
 // Per-user PubSub topic subscriber. Module-singleton side-effect:
 // imports for effect, exports nothing public. `main.tsx` imports this
@@ -374,49 +375,19 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         not_found: r.not_found,
       };
     case "joined":
+    case "join_failed":
+    case "kicked":
       // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
       // window-state terminal events dual-broadcast on user-topic by
       // `Session.Server.broadcast_window_state_dual/3` to close the
-      // subscribe-then-broadcast race. Same wire shape as
-      // `narrowChannelEvent`'s `joined` arm; dispatcher routes to the
-      // same `setJoined` setter (last-write-wins idempotent).
-      if (typeof r.network !== "string" || typeof r.channel !== "string" || r.state !== "joined")
-        return null;
-      return { kind: "joined", network: r.network, channel: r.channel, state: "joined" };
-    case "join_failed":
-      if (
-        typeof r.network !== "string" ||
-        typeof r.channel !== "string" ||
-        r.state !== "failed" ||
-        (r.reason !== null && typeof r.reason !== "string") ||
-        typeof r.numeric !== "number"
-      )
-        return null;
-      return {
-        kind: "join_failed",
-        network: r.network,
-        channel: r.channel,
-        state: "failed",
-        reason: r.reason as string | null,
-        numeric: r.numeric,
-      };
-    case "kicked":
-      if (
-        typeof r.network !== "string" ||
-        typeof r.channel !== "string" ||
-        r.state !== "kicked" ||
-        (r.by !== null && typeof r.by !== "string") ||
-        (r.reason !== null && typeof r.reason !== "string")
-      )
-        return null;
-      return {
-        kind: "kicked",
-        network: r.network,
-        channel: r.channel,
-        state: "kicked",
-        by: r.by as string | null,
-        reason: r.reason as string | null,
-      };
+      // subscribe-then-broadcast race. REV-A H1 (2026-05-22) — shape
+      // narrowing extracted to shared `narrowWindowStateEvent` so any
+      // future server-side field add to e.g. `Session.Wire.kicked/4`
+      // lands once at the helper. Dispatcher routes the typed result to
+      // the per-store setters (setJoined/setFailed/setKicked) at the
+      // call-site switch below (different store keys per topic boundary
+      // → "reuses the verb, not the noun").
+      return narrowWindowStateEvent(r);
     case "archive_changed":
       // UX-1 (2026-05-17) — server broadcasts after a successful PART
       // (channel moves into archive list). Single-field envelope: cic

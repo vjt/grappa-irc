@@ -753,6 +753,20 @@ export type WireUserEvent =
 // distinct topic (`grappa:admin:events`) with its own authz gate
 // (`is_admin: true`); folding onto WireUserEvent would tie the admin
 // stream to the per-user routing.
+// REV-A C2 — closed union mirroring server-side `Grappa.Admission.flow/0`
+// (lib/grappa/admission.ex:53-58). Pre-REV-A this surface lived inline on
+// the `capacity_reject` arm as `"user" | "visitor"` — a type lie: server
+// emits the bare atom verbatim (Jason stringifies → 5 possible string
+// values) so cic was tsc-blind to 3 of 5. A 5-arm regression pin lives
+// in `__tests__/api.test.ts` to fail loudly if server's `flow/0` grows
+// a 6th arm.
+export type AdmissionFlow =
+  | "login_fresh"
+  | "login_existing"
+  | "bootstrap_user"
+  | "bootstrap_visitor"
+  | "patch_network_connect";
+
 export type WireAdminEvent =
   | {
       kind: "circuit_open";
@@ -771,7 +785,7 @@ export type WireAdminEvent =
     }
   | {
       kind: "capacity_reject";
-      flow: "user" | "visitor";
+      flow: AdmissionFlow;
       error: string;
       network_id: number;
       network_slug: string | null;
@@ -795,6 +809,24 @@ export type WireAdminEvent =
       at: string;
     }
   | { kind: "reaper_swept"; count: number; at: string }
+  // REV-A C1 — per-upload reap event. Mirror of
+  // `Grappa.AdminEvents.Wire.upload_reaped/4` (wire.ex:113-127). Emitted
+  // by `Grappa.Uploads.Reaper` on every TTL-expired upload row. Pre-REV-A
+  // this kind was missing from the cic union; an upload sweep crashed
+  // `ingest()` via `assertNever` (every TTL tick on a deployment with
+  // active uploads).
+  | {
+      kind: "upload_reaped";
+      upload_id: string;
+      slug: string;
+      subject_kind: "user" | "visitor";
+      subject_id: string;
+      at: string;
+    }
+  // REV-A C1 — end-of-sweep summary. Mirror of
+  // `Grappa.AdminEvents.Wire.uploads_swept/1` (wire.ex:122-126). Fires
+  // once per non-empty Reaper tick + every operator-triggered sweep.
+  | { kind: "uploads_swept"; count: number; at: string }
   | {
       kind: "session_disconnected";
       subject_kind: "user" | "visitor";

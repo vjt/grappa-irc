@@ -50,6 +50,10 @@ function renderEvent(ev: WireAdminEvent): string {
       return `${visitorLabel(ev.visitor_nick, ev.visitor_id)} reaped (TTL expired)`;
     case "reaper_swept":
       return `reaper swept ${ev.count} visitor(s)`;
+    case "upload_reaped":
+      return `upload ${ev.slug} reaped (${ev.subject_kind}:${ev.subject_id})`;
+    case "uploads_swept":
+      return `uploads reaper swept ${ev.count} upload(s)`;
     case "session_disconnected":
       return `${ev.subject_kind}:${ev.subject_id} @ ${networkLabel(ev.network_slug, ev.network_id)} disconnected${actorSuffix(ev.actor_user_name)}`;
     case "session_terminated":
