@@ -7812,6 +7812,162 @@ race.
 
 ---
 
+## 2026-05-22 — REV-E: `:ok = Client.send_*` strict-bind regression sweep (H11)
+
+REV-E (bucket 5 of 11 in the post-2026-05-22-codebase-review REV
+cluster). Closes the lone HIGH from the review's "Theme B —
+`:ok = match` regressions" — eight+ bare `:ok = Client.send_*`
+matches in `Session.Server` would crash the session on dead socket,
+inverting the post-U-cluster boundary fix at `IRC.Client.send_line`
+that widened the return shape from `:ok` to `:ok | {:error,
+:no_socket | :closed | :inet.posix()}`.
+
+The strict-bind matches predated the U-cluster fix and had been
+silently incompatible since the day that fix landed — the only
+reason they weren't crashing in production was that no live
+session had actually hit a dead-socket SEND between the U-cluster
+landing and the 2026-05-22 review noticing them.
+
+Fix: replace every `:ok = Client.send_*` match with case-match
+mirroring the post-U-cluster pattern at server.ex:1849-1859. Two
+shapes emerged:
+
+- **Propagate-path** (raw `:send_mode` handle_call + chunked-mode
+  emission): convert to recursive `flush_mode_chunks/3`
+  halt-on-first-error helper per CLAUDE.md collect-or-bail
+  pattern. The pre-fix `Enum.each` over chunks ignored returns;
+  post-fix the recursion returns `{:error, _}` on first failure
+  so the caller's `with` chain surfaces it.
+
+- **Fire-and-forget path** (apply_effects `:reply` arm,
+  `flush_lines` ghost-recovery, 5 AWAY-internal sites): single
+  consolidated `maybe_log_send_failure/2` helper.
+  `Logger.warning` with structured metadata; no propagation
+  because the caller is in the middle of a state mutation that
+  must commit regardless (e.g. AWAY-state flip in
+  `EventRouter.apply_effects/2`).
+
+Reviewer round 1 caught a HIGH (`dispatch_ops_verb/3`'s
+`with`/`else` was non-exhaustive — `{:error, :no_socket}` etc.
+would have raised `WithClauseError` in the Channel pid post-
+sweep, relocating the crash class from `Session.Server` to
+`GrappaWeb.GrappaChannel`) + 3 MEDs (Session.send_* spec drift,
+apply_effects reply/persist ordering comment lie, AwayState
+recovery overstated — operator must re-issue `/away` post-
+reconnect because Session crash wipes AwayState).
+
+All fixed in commit `1980035` (over base sweep `b457efc`). New
+typed public API: `Grappa.Session.send_transport_error/0`
+typedoc'd union (`:no_socket | :closed | :inet.posix()`); all 22
+`Session.send_*` wrappers widened to include it.
+`dispatch_ops_verb/3` gains catch-all `{:error, reason}` arm
+with `Logger.warning` + typed `upstream_unavailable` cic reply.
+
+HOT-deployed via `Phoenix.CodeReloader.reload/1` (Path 2 manual
+preflight against deployed SHA `4b33ae6` BEFORE running
+`scripts/deploy.sh` to defuse the FALSE-HOT empty-diff trap).
+Live-verified post-deploy via grep on `/app/lib/...`.
+
+## 2026-05-22 — REV-F: IRC SASL combined-REQ fallback + dispatch_subject_verb catch-all (H9 + H10)
+
+REV-F (bucket 6 of 11). Two-finding bucket, both server-side, neither
+touches state-shape. Single-round APPROVE-clean reviewer pass.
+
+### H9 — AuthFSM combined `CAP REQ :sasl labeled-response` fallback on NAK
+
+The S4.2 cluster (early 2026-05) extended `Grappa.IRC.AuthFSM` to
+request `labeled-response` opportunistically alongside `sasl` —
+when CAP LS advertised both caps, the FSM emitted a single combined
+`CAP REQ :sasl labeled-response\r\n`. Saves a round-trip and keeps
+both caps coupled to the SASL handshake. Worked against IRCv3-
+compliant ircd.
+
+Bahamut and some Solanum variants advertise `labeled-response` in
+their CAP LS output but NAK the combined REQ blob — they ACK `:sasl`
+alone but not the combined form. Pre-REV-F a `:sasl`-required
+credential against such a server saw the combined-NAK, declared
+`:sasl_unavailable` immediately (line 438 `{:stop,
+:sasl_unavailable, ...}`), and restart-looped permanently against
+the exponential backoff ladder. The bug was latent for the duration
+of S4.2's deployment — only surfaced because the codebase review
+walked the auth FSM by hand and noticed the missing fallback shape.
+
+Fix: split the post-REQ wait phase per-shape so the NAK clause can
+discriminate.
+
+- `:awaiting_cap_ack` — reserved for standalone REQs (`:sasl` alone
+  OR `:labeled-response` alone). NAK on this phase still declares
+  `:sasl_unavailable` immediately — there's nothing to fall back
+  FROM (no labeled-response was bundled to be the offender).
+- `:awaiting_cap_ack_combined` (new) — combined REQ in flight. NAK
+  triggers the fallback: emit `CAP REQ :sasl\r\n` alone, transition
+  to `:awaiting_cap_ack_sasl_only`.
+- `:awaiting_cap_ack_sasl_only` (new) — fallback REQ in flight. NAK
+  here genuinely means the server doesn't support SASL → existing
+  `cap_unavailable/1` path (`:stop :sasl_unavailable` for `:sasl`
+  auth; `:cont` PASS-handoff for `:auto`). ACK proceeds normally
+  to AUTHENTICATE PLAIN.
+
+ACK clause guard widened to match all three awaiting-ACK phases
+— semantics are identical across them (SASL ACK → AUTHENTICATE
+PLAIN + `:sasl_pending`; non-SASL ACK → `cap_unavailable`).
+`maybe_send_cap_end/1` extended to recognise both new phases for
+explicit teardown. `leave_cap_negotiation/2` docstring updated
+with the new transition table; the
+`AWAIT_COMBINED → AWAIT_SASL_ONLY` transition deliberately does
+NOT route through `leave_cap_negotiation/2` because `caps_buffer`
+was already cleared at the LS boundary.
+
+`:auto` auth method also benefits as a side effect: pre-fix
+`:auto` combined-NAK fell through to `cap_unavailable/1`'s
+non-`:sasl` clause (PASS-handoff, no `:stop`), silently losing
+SASL eligibility even when the server actually supported SASL
+alone. Post-fix `:auto` exercises the fallback REQ first; only
+the second NAK (genuine no-SASL) drops back to PASS-handoff.
+
+C1 phase pin invariant preserved: the "SASL PLAIN reply only
+legitimate in `:sasl_pending`" clause stays exclusively pinned
+to `:sasl_pending`; new phases NOT included → no credential leak
+via the new states. The C1 catch-all absorbs stray AUTHENTICATE
+in the new phases silently.
+
+### H10 — `GrappaWeb.GrappaChannel.dispatch_subject_verb/3` catch-all
+
+Sister of `dispatch_ops_verb/3`. REV-E HIGH-1 added a catch-all
+`{:error, reason}` arm to `dispatch_ops_verb/3` after the H11
+sweep widened `Session.send_*`'s return shape with
+`Session.send_transport_error()`. The sibling subject-verb helper
+— routing `whois`/`who`/`names`/`banlist` (the read-only verbs
+visitors are entitled to issue) — wasn't audited at the same time
+and still had the un-exhaustive `with`/`else`. Pre-REV-F a dead-
+socket SEND from `Session.send_whois/3` (etc.) post-U-cluster
+boundary fix would raise `WithClauseError` in the channel pid —
+same crash class REV-E HIGH-1 closed at the ops sibling,
+relocated to the subject-verb path. Consistency drift between
+sibling helpers — the root cause REV-E HIGH-1 itself was.
+
+Fix: verbatim mirror of REV-E HIGH-1's catch-all. Logger.warning
+with `reason: inspect(reason)` + typed
+`{:reply, {:error, %{reason: "upstream_unavailable"}}, socket}`.
+Only the log message string differs (`"subject verb"` vs
+`"ops verb"`, intentional). Comment cross-references REV-E HIGH-1
+explicitly so a future audit knows the parity invariant.
+
+### Procedural carry-forward
+
+REV-F's reviewer pass was APPROVE-clean in a single round (no
+fix-up needed). REV-E's was APPROVE only after round 1 caught a
+HIGH + 3 MEDs. Both rounds had identical brief language —
+"reviewer MUST run check.sh + dialyzer.sh directly and paste
+literal gate-tail per `feedback_reviewer_gate_evidence`." The
+literal-paste mandate is what distinguishes "real APPROVE" from
+"implied APPROVE on trust." Standing rule for the rest of the
+REV cluster (and every cluster after): every reviewer brief
+specifies the literal-paste requirement explicitly, regardless
+of how "small" the bucket looks.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

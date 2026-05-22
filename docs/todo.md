@@ -10,38 +10,54 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 5 of 11 closed (REV-E LANDED 2026-05-22, 1980035).**
-Full close-out in `docs/checkpoints/2026-05-22-cp40.md`. Closes 1 HIGH from the
+**REV cluster autopilot — bucket 6 of 11 closed (REV-F LANDED 2026-05-22, `6574f0e`).**
+Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S1). Closes 2 HIGH from the
 2026-05-22 codebase review:
-- H11 — `:ok = Client.send_*` regression sweep across 9 sites in
-  `lib/grappa/session/server.ex`. Propagate-path (raw `:send_mode` handle_call +
-  `send_chunked_mode` → recursive `flush_mode_chunks` halt-on-first-error per
-  CLAUDE.md collect-or-bail pattern). Fire-and-forget path (apply_effects
-  `:reply` arm + `flush_lines` ghost-recovery + 5 AWAY-internal sites consolidated
-  into `maybe_log_send_failure/2` helper). MED-3 honesty: AwayState mutator
-  flips local state but Session restart wipes it — operator must re-issue
-  `/away` post-reconnect (UX-7 follow-up could surface a hint).
 
-HOT-deployed via `Phoenix.CodeReloader.reload/1` (Path 2 — manual preflight
-verification against deployed SHA `4b33ae6` BEFORE running `scripts/deploy.sh`
-to defuse the FALSE-HOT empty-diff trap per
-`feedback_deploy_preflight_empty_diff_after_merge`). Live-verified post-deploy
-via grep on `/app/lib/...` confirming the new `dispatch_ops_verb` catch-all
-source is loaded.
+- **H9 (irc/S1)** — `Grappa.IRC.AuthFSM` combined `CAP REQ :sasl labeled-response`
+  blob had no fallback when the server NAK'd. Bahamut + some Solanum variants
+  advertise `labeled-response` in CAP LS but NAK the combined REQ while ACKing
+  `:sasl` alone. Pre-fix a `:sasl`-required credential restart-looped permanently.
+  Fix: new `:awaiting_cap_ack_combined` + `:awaiting_cap_ack_sasl_only` phases;
+  combined-NAK falls back to `CAP REQ :sasl` alone before declaring
+  `:sasl_unavailable`. `:auto` also benefits (combined-NAK no longer skips SASL
+  even when server supports it). 7 new ExUnit cases covering the matrix.
 
-Reviewer round 1 (general-purpose agent): HIGH-1 (dispatch_ops_verb non-
-exhaustive with-chain — Channel-side WithClauseError relocation of the same
-crash class) + MED-1 (Session.send_* spec drift — all 22 wrappers widened with
-new typedoc'd `Session.send_transport_error/0` type) + MED-2 (apply_effects
-`:reply` arm comment lied about reply/persist ordering) + MED-3 (AwayState
-recovery overstated). All fixed in commit `1980035`. LOW-1 (CTCP source-grep
-test) + LOW-2 (helper takes String.t() label) deferred as stylistic follow-ups.
-Round 2: APPROVE clean (0/0/0/0).
+- **H10 (web/S1)** — `GrappaWeb.GrappaChannel.dispatch_subject_verb/3` (sister
+  of `dispatch_ops_verb/3`) was missing the catch-all `{:error, reason}` arm
+  REV-E HIGH-1 added to its sibling. `Session.send_whois`, `send_who`,
+  `send_names`, `send_banlist` post-U-cluster CAN return
+  `Session.send_transport_error()` shapes when the socket is dead — pre-fix
+  those crashed the channel pid with `WithClauseError`. Same crash class as
+  REV-E HIGH-1, relocated. Fix: verbatim mirror of REV-E HIGH-1's catch-all
+  (Logger.warning + typed `upstream_unavailable` reply). 1 new ExUnit case
+  mirroring the REV-E HIGH-1 regression test exactly modulo verb swap.
 
-**REV-F staged.** IRC SASL fallback + missing `:invalid_line` arm (H9, H10) — server.
+HOT-deployed 2026-05-22 ~11:55 UTC via `Phoenix.CodeReloader.reload/1`
+(Path 2 — manual preflight against deployed SHA `a4d4b22` BEFORE running
+`scripts/deploy.sh` per `feedback_deploy_preflight_empty_diff_after_merge`).
+Live-verified post-deploy via grep on `/app/lib/...` (9 occurrences of
+`awaiting_cap_ack_combined` + `"subject verb: upstream send failed"` Logger
+message present in container source). Healthcheck `ok`.
 
-**REV cluster — remaining buckets after REV-E:**
-- REV-F — IRC SASL fallback + missing :invalid_line arm (H9, H10) — server
+Reviewer round 1 (general-purpose agent): **APPROVE clean** — reviewer ran
+`scripts/check.sh` + `scripts/dialyzer.sh` directly and pasted literal
+gate-tail output, verified every invariant the brief named (phase union
++ moduledoc accuracy, new phases reaching existing ACK clause via guard
+match without SASL leak via C1 phase pin, `maybe_send_cap_end/1` recognising
+both new phases, `leave_cap_negotiation/2` docstring accuracy, `:auto`
+parity both NAK paths, standalone `:sasl` NAK invariant preserved, H10
+verbatim mirror of REV-E HIGH-1 sibling, test mirrors REV-E HIGH-1
+line 959 exactly, `Session.send_whois/3` spec confirms
+`send_transport_error()` IS real return shape — no over-engineering).
+Single round, no fix-up needed. LOW-1 (labeled-response-only NAK symmetry
+test) + LOW-2 (vertical phase-list style nit) deferred as opportunistic
+polish.
+
+**REV-G staged.** cic SW navigation-route denylist + admin-channel WS payload
+narrower + markerRef `<For>` leak (H22, H23, H24) — cic, HOT cic-only.
+
+**REV cluster — remaining buckets after REV-F:**
 - REV-G — cic SW denylist + adminEvents narrower + markerRef leak (H22, H24, H23) — cic, HOT cic-only
 - REV-H — server-side type tightening Theme A continued (H2-H8, H25) — both, COLD
 - REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD (will re-trigger
@@ -55,39 +71,57 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP40 still active** (~360 lines post-REV-E LANDED). Comfortable headroom
-for REV-F + maybe REV-G before next rotation.
+**CP40 still active** (~430 lines post-REV-F LANDED). Comfortable headroom
+for REV-G before next rotation (REV-G is cic-only, likely small commit).
+
+★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
+`project_post_review_ordering_2026_05_22`): after REV-K + REV-Z LANDED,
+the order is (1) e2e flake triage + fix, (2) wireTypes.ts codegen,
+(3) bastille deploy workstream. Do NOT skip (1) or (2) to fast-track
+bastille — flakes-first because a noisy e2e suite blocks confidence in
+bastille validation; codegen-second because the cic↔server wire boundary
+is the highest-risk drift surface the review identified. Bastille is
+prod-runtime migration; cleaner on a green-suite + structurally-typed-
+boundary substrate.
 
 ---
 
-## Carry-forwards from REV-E
+## Carry-forwards from REV-F
 
-- **HOT-deploy Path 2 procedure worked** — manual preflight against deployed
-  SHA before `scripts/deploy.sh` correctly classified HOT for REV-E and the
-  HOT reload swapped the new modules cleanly without container restart.
-  Procedure proven safe; REV-D's FALSE-HOT empty-diff trap was defused. Real
-  mitigation (preflight should compare against LIVE container SHA, not local
+- **HOT-deploy Path 2 procedure worked** — third consecutive clean use
+  (REV-D introduced, REV-E proven, REV-F third). Manual preflight against
+  deployed SHA defuses the FALSE-HOT empty-diff trap. Real mitigation
+  (preflight should compare against LIVE container SHA, not local
   `prev_sha == HEAD`) still belongs in REV-J or REV-Z.
-- **REV-D's `_build/prod` cleanup procedure** — STILL undocumented in operator
-  runbook (REV-E was HOT so it didn't recur — REV-Z target).
+- **REV-D's `_build/prod` cleanup procedure** — STILL undocumented in
+  operator runbook (REV-E + REV-F were HOT so it didn't recur — REV-Z target).
 - **AwayState reconnect re-issue** — operator must re-issue `/away` post-
   reconnect because Session crash wipes AwayState. UX-7 follow-up could surface
-  a "your AWAY was lost on reconnect" hint via the cic channel. NOT REV-F
+  a "your AWAY was lost on reconnect" hint via the cic channel. NOT REV-G
   scope; backlogged.
 - **CTCP `apply_effects {:reply, line}` runtime regression test** — REV-E's
   test was a source-grep workaround because the IRC.Client recv-loop
-  (`:prim_inet.setopts(nil, ...)`) crashes post-socket-nil. That's a separate
+  (`:prim_inet.setopts(nil, ...)`) crashes post-socket-nil. Separate
   silent-swallow class (handle_info `{:tcp, _, _}` post-socket-nil) — track
   as REV-J or REV-Z candidate.
 - **`Grappa.AdmissionTest` + `AdminEventsTest:197` baseline flakes** — same
   testnet-flake set as `feedback_bahamut_load_flake` + the singleton-class
-  backlog. Pre-REV-E. Defer to a dedicated cluster.
+  backlog. Reproduced again during REV-F first run of check.sh (1 failure
+  of 2412, re-run validated clean). Defer to the post-REV-Z flake-triage
+  cluster.
+- **REV-F reviewer LOW-1 + LOW-2** — opportunistic polish, REV-Z target:
+  - LOW-1: labeled-response-only NAK symmetry test (path exercised
+    indirectly by existing S4.2 tests; explicit test closes the matrix)
+  - LOW-2: `maybe_send_cap_end/1` 5-element vertical phase-list style nit
 - **MED-2 carry-forward from REV-B** still open —
   `validate_target_name/1` runs on pre-canonical `target` in
   ArchiveController. Bytes-equivalent today; minor drift risk.
 - **REV-D reviewer LOW-1** — H14 narrow-window test name vs. behavior.
   Two-line rescue, both nil-get + rescue paths return same typed error.
   Documented; not fixed inline.
+- **REV-E reviewer LOW-1 + LOW-2** — CTCP apply_effects source-grep test
+  (covered above) + `maybe_log_send_failure/2` takes String.t() label
+  could be atom for CLAUDE.md closed-set preference. Trivial REV-Z polish.
 
 ---
 
