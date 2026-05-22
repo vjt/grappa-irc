@@ -8262,6 +8262,184 @@ only.)
 
 ---
 
+## 2026-05-22 — REV-I: infra simplification (H19 + H27 + M3 + M6)
+
+Bucket 9 of 11 in the REV cluster. Infra-only; no `lib/*` or
+cic-side change. Closes 2 HIGH + 2 MEDIUM. The M-cluster triage:
+M2 is SUBSUMED by H19's snippet hoist (same fix); M1 + M5 are
+coupled to a single compose-anonymous-volumes refactor (preserve
+image-baked `_build`/`deps`/cache through the bind-mount, drop the
+180s `start_period` band-aid + the `WORKTREE_VOLUMES` explicit
+include-list) and deferred to REV-J; M4 (compose merge-keyword
+inconsistency `!override` vs `!reset`) is cosmetic + deferred to
+REV-Z polish. The vjt mandate is "most-important MEDs," not "all
+50 MEDs."
+
+### H19 — nginx admin allowlist snippet extraction
+
+The bug class: M-9b (2026-05-16) introduced the convention that
+every new `/admin/<resource>` requires an nginx allowlist regex
+edit. The allowlist lived in **three** places —
+`infra/nginx.conf:136` (prod), `cicchetto/e2e/nginx-test.conf:86`
+(e2e :80), `cicchetto/e2e/nginx-test.conf:153` (e2e :443). The
+review's framing as a duplication issue is correct but understates
+the impact: it's also a **discoverability** issue, because the e2e
+:80 block subtly differed at points across the cluster history
+(`/api` was added to prod first in UX-6-B1, mirror to e2e :80 was
+a separate edit later) and the LLM was the only one tracking the
+mirror.
+
+Fix: hoist the entire location-block surface (not just the admin
+allowlist regex) into `infra/snippets/locations-api.conf` —
+`client_max_body_size`, `root`, `index`, the security-headers
+include, `/socket` WS proxy with its Upgrade/Connection/access-log-
+off shape, REST allowlist, admin allowlist, `/sw.js` cache override
+with re-asserted security headers, SPA fallback. Both prod and e2e
+configs `include /etc/nginx/snippets/locations-api.conf` from each
+server block (1 server block in prod, 2 in e2e — three include
+sites, one source file).
+
+The snippet directory is mounted into both nginx containers via
+`compose.yaml:163` (`./infra/snippets:/etc/nginx/snippets:ro`) and
+`cicchetto/e2e/compose.yaml:299`
+(`../../infra/snippets:/etc/nginx/snippets:ro`) — already in place
+for `security-headers.conf`, no compose surgery needed. The old
+"can't include inside server block" objection in the
+`nginx-test.conf` moduledoc was incorrect; nginx absolutely
+supports `include` inside `server { }`.
+
+The hoist also covers the `:443` server block in e2e — the TLS
+listener gets the same locations as the :80 listener. Same fix as
+M2 (which was the per-protocol e2e duplication), shipped under
+H19's banner.
+
+### H27 — `in_container` replaces bare `docker exec grappa`
+
+Two two-line swaps. The bare `docker exec grappa …` shape in
+`scripts/deploy.sh:144` + `scripts/deploy-cic.sh:48` assumed
+`container_name: grappa` literally, escape-hatch from the
+`_lib.sh` discipline. Both scripts already sourced `_lib.sh`, so
+the swap to `in_container curl …` was mechanical.
+
+`_lib.sh in_container()` (`scripts/_lib.sh:141`) refuses to run
+from a worktree (the live container has main's source mounted, not
+the worktree's, so exec there would run the wrong code). Both
+deploy scripts run from main + `cd $REPO_ROOT` first, so the
+guard is appropriate.
+
+### M3 — `bin/grappa` VERBS single-source-of-truth refactor
+
+Pre-M3 `bin/grappa` enumerated verbs across five surfaces: per-verb
+function defs, per-verb help function defs, dispatch_help switch,
+dispatch switch, help_top heredoc table. The bats suite caught the
+dispatch-switch shape (`grep -q 'mix.sh grappa.create_user'`) but
+not the help-banner drift — adding a verb to dispatch without
+adding to `help_top` would silently leave the verb undiscoverable
+to `bin/grappa help` users.
+
+Fix: single `declare -Ag VERBS` map keyed by kebab-case verb name
+→ tuple `kind|target|group|description`. Three new generic
+dispatchers: `dispatch_boot` (boot verb → mix task), `dispatch_rpc`
+(nullary rpc verb → `Grappa.Operator.fn!()`), `dispatch_help`
+(reads VERBS to pick boot-via-`mix help` vs bespoke
+`verb_help_<snake>`). The `dispatch()` entry point uses a
+`declare -F "verb_${snake}"` probe to **prefer** a bespoke handler
+when one exists, falling back to the generic dispatcher otherwise.
+Adding a future arg-taking RPC verb is ONE VERBS entry + ONE
+`verb_<snake>()` function — no dispatch-table edit. Adding a
+future nullary RPC verb is ONE VERBS entry (no function needed).
+
+Bash 4 limitation: associative-array iteration order is undefined.
+`help_top()` walks an explicit `VERB_DISPLAY_ORDER` array to
+generate the help banner in stable order. This is two-source
+(VERBS map + display order array) rather than one — the comment
+in `help_top()` documents the limitation. No fix without dropping
+bash 4 compatibility (the floor per CLAUDE.md "Bash 4+ required").
+
+LOC delta: `bin/grappa` grew from 378 → 438 (+60). The refactor is
+structural (single source for kind/target/group/description) not
+size-reducing — the per-verb help heredocs + the VERB_DISPLAY_ORDER
+array + the GROUP_HEADERS map account for the increase. The brief
+said "−95 LOC" — that was optimistic; the reviewer caught it and
+this entry corrects the record.
+
+Bats: 24/24 pass (was 23/23 pre-REV-I). New regression test
+`reap-visitors --extra → exit 64` catches the symmetric mistake:
+arg-taking RPC verb added without a bespoke handler falls through
+to `dispatch_rpc` which refuses with a clear "takes no arguments"
+error.
+
+### M6 — `+SDio` floor at BEAM's 10-IO default
+
+`bin/start.sh` defaulted `GRAPPA_DIRTY_SCHEDULERS` to `$(nproc)`,
+which sets BOTH `+SDcpu` (dirty CPU schedulers) and `+SDio` (dirty
+IO schedulers). On a single-core deployment (current Pi 5 is
+4-core, but a future container CPU limit could be `1`) the sqlite
+WAL pool — which uses dirty-IO schedulers along with file watchers
++ any other dirty-IO workload — would serialize.
+
+Fix: floor the default at BEAM's own 10-IO-scheduler default.
+`nproc=1 → default_schedulers=10`; `nproc=20 → default_schedulers=20`.
+`GRAPPA_DIRTY_SCHEDULERS` env var still wins if set explicitly,
+so an operator who knows their workload can over- or under-ride
+both knobs together.
+
+Comment in `bin/start.sh` updated to reflect the new contract
+(was "default: $(nproc)", now "default: max(nproc, 10)" with
+inline rationale citing M6).
+
+### The deploy-preflight false-HOT recurrence
+
+Operator-side lesson, captured because it bit AGAIN in REV-I and
+illustrates the limits of relying on documented memories.
+
+Path: operator merged `rev-i` → `main` locally
+(`git merge --ff-only rev-i`), then ran `scripts/deploy.sh` (no
+flag). The script's `git pull --ff-only` said "Already up to
+date" — `prev_sha == HEAD == 1539292` — so the preflight took the
+same-SHA fast path (return 0, classify HOT). The deploy reloaded
+the BEAM via `Phoenix.CodeReloader`. **nginx.conf was NOT live**;
+the container still served the pre-REV-I config.
+
+Recovery was instant: `scripts/deploy.sh --force-cold` ran the
+full COLD cycle (deps.get → ecto.migrate → image rebuild → grappa
++ nginx recreate). Container IDs new; sessions reset; healthcheck
+`ok`. The container in turn picked up the new nginx.conf via the
+volume mount on the recreated nginx container.
+
+This is exactly `feedback_deploy_preflight_empty_diff_after_merge`
+(documented after V9 incident, 2026-05-15). The memory exists; the
+LLM forgot. The cleanest fix is at the script level — `deploy.sh`
+could detect `same-SHA + recent merge commit` and demand explicit
+`--force-hot` to proceed, but the proposed fix surface is wider
+than REV-I's scope (operator-workflow change, not infra-simplify).
+Carry into REV-J or REV-Z as a script-layer improvement candidate.
+
+What the LLM should have done: **manual preflight FIRST** with
+explicit prev-SHA before running `deploy.sh`:
+```
+scripts/mix.sh run --no-start -e \
+  'Grappa.Deploy.Preflight.cli(["399311b", "HEAD"])'
+```
+This would have returned "Cold-deploy required: nginx,
+image_substrate" and made the `--force-cold` necessity obvious.
+Captured for the REV-J + REV-K + REV-Z briefings.
+
+### What changes about REV-J
+
+REV-J is **cross-cutting smells** — cross-module (M14 +
+`call_session/3` consolidation, M15 + double-broadcast fold),
+lifecycle (M7-M11 EXIT catch-all + cancel_and_drain loop +
+Reaper-tick monotonic-clock + NetworkCircuit.reset_sync +
+session_disconnected gating), persistence (M12 + scrollback fetch
+arity discipline, M13 + transition!/3 changeset routing). Plus
+the deferred M1 + M5 — the compose-anonymous-volumes + start_period
+collapse. Server-only; preflight-detect (likely HOT, M1 + M5 are
+docker-shape so will preflight COLD).
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

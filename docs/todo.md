@@ -10,56 +10,69 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 8 of 11 closed (REV-H LANDED 2026-05-22,
-`f77f46a`).** Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S3).
-Closes 7 HIGH from the 2026-05-22 codebase review:
+**REV cluster autopilot — bucket 9 of 11 closed (REV-I LANDED 2026-05-22,
+`1539292`).** Full close-out in `docs/checkpoints/2026-05-22-cp41.md` (S1).
+Closes 2 HIGH + 2 MEDIUM from the 2026-05-22 codebase review:
 
-- **H2 (cross-surface S6)** — `connection_state_changed.from/to` closed-
-  atom narrowing. Server-side spec was already closed; cic-side narrower
-  validated open string. Added top-level `ConnectionState` type +
-  `isConnectionState` type guard. Collapsed two-spelling drift
-  (`CredentialJson`, `HomeNetworkRow`, `RawNetwork`, `UserNetwork`,
-  `WireUserEvent` all unified on `ConnectionState`).
-- **H3 (cross-surface S4)** — `Wire.away_confirmed/2` accepts atom.
-  Moved `Atom.to_string/1` INTO the wire boundary mirroring
-  `Scrollback.Wire.to_json/1`.
-- **H4 (cross-surface S7)** — `topic_changed.topic` +
-  `channel_modes_changed.modes` typed maps. `Session.Wire` typespecs
-  reference `EventRouter.topic_entry()` / `channel_mode_entry()`. New
-  `topic_entry_wire/1` does explicit `DateTime.to_iso8601/1` for `set_at`
-  mirroring `channel_created/3` pattern.
-- **H5 (cross-surface S3)** — `cap_counts_changed.network_slug` non-null
-  tighten. Server early-returns on nil slug; nullable arm was dead code
-  on both sides. Surgical scope — other admin event arms keep nullable.
-- **H7 (lifecycle S3)** — `Bootstrap.spawn_with_admission` catch-all.
-  Extracted `classify_outcome/3` testable seam. Added `{:error, other}`
-  Logger.error + network_failed bucket so a 5th `Admission.capacity_error_atoms/0`
-  atom no longer crash-loops Bootstrap.
-- **H8 (lifecycle S4)** — `log_web_only_warning` closed-set derivation.
-  Per-state breakdown derived via `Enum.reject(connected/zero) |> map_join`
-  instead of hardcoded `counts.parked + counts.failed`.
-- **H25 (cross-module S2)** — `Grappa.ServerSettings` PubSub bypass.
-  Added `Topic.server_settings/0` + parse-arm. `ServerSettings.broadcast_changed/0`
-  routes through `Grappa.PubSub.broadcast_event/2` with typed wire payload.
+- **H19 (docker S2)** — nginx admin allowlist snippet extraction.
+  Pre-H19 the location-block surface (admin allowlist regex + REST
+  allowlist + /socket WS proxy + /sw.js cache override + security
+  headers + SPA fallback) lived in three places (`infra/nginx.conf`,
+  `cicchetto/e2e/nginx-test.conf` :80 and :443). New
+  `infra/snippets/locations-api.conf` is the single source —
+  `include`d from each server block. Adding a new admin resource is
+  now ONE-FILE edit. Snippet dir already mounted in both nginx
+  containers via `compose.yaml:163` + `cicchetto/e2e/compose.yaml:299`.
+- **H27 (docker S7)** — `_lib.sh in_container` replaces bare
+  `docker exec grappa …` in `scripts/deploy.sh:144` (admin/reload
+  POST) + `scripts/deploy-cic.sh:48` (admin/cic-bundle-changed POST).
+  Robust to compose overrides + multi-host.
+- **M3 (docker S10)** — `bin/grappa` VERBS table single-source-of-
+  truth refactor. Single `declare -Ag VERBS` map +
+  `dispatch_boot`/`dispatch_rpc` generic handlers + `declare -F`
+  prefer-bespoke probe in `dispatch()`. Future arg-taking RPC verb:
+  ONE VERBS entry + ONE `verb_<snake>()` function (no dispatch-table
+  edit). Bats: 24/24 (was 23/23; +1 regression test). Net +60 LOC
+  (structural DRY, not size-reducing).
+- **M6 (docker S13)** — `bin/start.sh` `+SDio` floor at BEAM's 10-IO
+  default. `nproc=1 → default_schedulers=10`; `nproc=20 →
+  default_schedulers=20`. Prevents single-core sqlite WAL pool
+  starvation.
 
-Deployed 2026-05-22 via `scripts/deploy.sh` (HOT, preflight `→ no unsafe
-markers`) + `scripts/deploy-cic.sh` (cic bundle `DpQoKo_g` for H2 + H5
-narrower changes). Sessions preserved, container ID unchanged.
-Healthcheck `ok`.
+M-cluster triage: **M2 SUBSUMED** by H19 (same fix —
+nginx-test :80/:443 dup also collapsed via the snippet hoist).
+**M1+M5 deferred to REV-J** (coupled to compose-anonymous-volumes
+refactor that also drops the 180s start_period band-aid + the
+`WORKTREE_VOLUMES` explicit include-list). **M4 deferred to REV-Z**
+polish (cosmetic `!override` vs `!reset` consistency).
 
-Reviewer (general-purpose agent) round-1 APPROVE clean — 0 findings in
-any severity bucket. All 7 closures verified file:line.
+Deployed 2026-05-22 via `scripts/deploy.sh --force-cold` (operator
+forgot the post-merge preflight trap — `feedback_deploy_preflight_empty_diff_after_merge`
+bit AGAIN; auto-recovered with explicit `--force-cold`; lesson in
+CP41 S1 + DESIGN_NOTES). Container rebuild + recreate. Sessions
+reset. Healthcheck `ok`. Container IDs new. cic bundle `DpQoKo_g`
+(REV-H — unchanged; REV-I touched NO cic code).
 
-**REV-I staged.** Infra simplification — H19 nginx admin allowlist
-snippet extraction (three identical regex edits → one `include`d
-snippet), H27 `deploy.sh:235` + `deploy-cic.sh:48` bare `docker exec
-grappa …` → `_lib.sh`'s `in_container`, M1-M6 `bin/grappa table` +
-docker pattern dedup. Infra-side; COLD because nginx.conf reload
-requires container restart.
+Reviewer round-1 APPROVE + 2 MED. MED-1 (`delete-visitor` hardcode
+in dispatch reintroduces enumeration trap) fixed inline with
+prefer-bespoke `declare -F` rule + regression test. MED-2 (Bash 4
+associative-array iteration order limitation) acknowledged with
+inline comment, shipped as-is. Reviewer also caught the brief's LOC
+overstatement (claimed −95; actual +60). Round-2 APPROVE clean.
 
-**REV cluster — remaining buckets after REV-H:**
-- REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD
-- REV-J — cross-cutting smells (cross-module + lifecycle + persistence MEDs)
+**REV-J staged.** Cross-cutting smells — cross-module (M14
+`call_session/3` consolidation, M15 double-broadcast fold),
+lifecycle (M7-M11 EXIT catch-all + cancel_and_drain loop + Reaper-
+tick monotonic-clock + NetworkCircuit.reset_sync + session_disconnected
+gating), persistence (M12 scrollback fetch arity discipline, M13
+transition!/3 changeset routing). **Plus deferred M1+M5** — compose
+anonymous-volumes for `_build`/`deps`/cache + drop `start_period:
+180s` band-aid + drop `WORKTREE_VOLUMES` explicit include-list.
+Server-side; preflight-detect (likely HOT for the lib changes,
+COLD for the compose changes — probably bundles as COLD).
+
+**REV cluster — remaining buckets after REV-I:**
+- REV-J — cross-cutting smells + M1+M5 — server+infra, COLD (likely)
 - REV-K — cross-surface naming pay-down (M19, M20) — both, COLD
 - REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only
 
@@ -67,9 +80,6 @@ Per `project_post_tmu_full_review_scheduled` (vjt 2026-05-16 night
 mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
-
-**CP40 at ~820 lines — rotation due at REV-I session-start.** Write
-CP41 inheriting REV-G + REV-H + earlier carry-forwards.
 
 ★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
 `project_post_review_ordering_2026_05_22`): after REV-K + REV-Z LANDED,
@@ -82,6 +92,19 @@ prod-runtime migration; cleaner on a green-suite + structurally-typed-
 boundary substrate.
 
 ---
+
+## Carry-forwards from REV-I
+
+- **`feedback_deploy_preflight_empty_diff_after_merge` recurrence** —
+  bit again at REV-I close (operator merged locally before
+  `scripts/deploy.sh`; preflight empty-diff fast-path classified
+  HOT; nginx.conf was NOT live). Auto-recovered via `--force-cold`.
+  Memory exists + is correct; the recurrence is operator
+  forgetfulness, not a code gap. Workflow: **after local merge,
+  manual preflight FIRST** with explicit `["prev_sha", "HEAD"]`
+  before `deploy.sh`. Future-bucket script-level fix candidate
+  (detect same-SHA + recent merge-commit + demand explicit flag)
+  is wider than REV-I scope; flag for REV-J or REV-Z.
 
 ## Carry-forwards from REV-H
 
