@@ -83,16 +83,16 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     events = [
       sample({
         kind: "capacity_reject",
-        flow: "visitor",
+        flow: "bootstrap_visitor",
         error: "network_cap_exceeded",
         network_id: 1,
         network_slug: "azzurra",
         client_id: "abc-123",
-      } as WireAdminEvent),
+      }),
     ];
     render(() => <AdminEventsTab />);
     const row = screen.getByTestId("admin-event-capacity_reject");
-    expect(row.textContent).toContain("visitor flow rejected on azzurra");
+    expect(row.textContent).toContain("bootstrap_visitor flow rejected on azzurra");
     expect(row.textContent).toContain("network_cap_exceeded");
     expect(row.textContent).toContain("client abc-123");
   });
@@ -150,6 +150,30 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     render(() => <AdminEventsTab />);
     expect(screen.getByTestId("admin-event-reaper_swept").textContent).toContain(
       "reaper swept 5 visitor(s)",
+    );
+  });
+
+  it("upload_reaped", () => {
+    events = [
+      sample({
+        kind: "upload_reaped",
+        upload_id: "up_abc",
+        slug: "abc123",
+        subject_kind: "user",
+        subject_id: "u-uuid",
+      } as WireAdminEvent),
+    ];
+    render(() => <AdminEventsTab />);
+    expect(screen.getByTestId("admin-event-upload_reaped").textContent).toContain(
+      "upload abc123 reaped (user:u-uuid)",
+    );
+  });
+
+  it("uploads_swept", () => {
+    events = [sample({ kind: "uploads_swept", count: 3 } as WireAdminEvent)];
+    render(() => <AdminEventsTab />);
+    expect(screen.getByTestId("admin-event-uploads_swept").textContent).toContain(
+      "uploads reaper swept 3 upload(s)",
     );
   });
 
