@@ -192,15 +192,60 @@ it encoded the bug).
 Dockerfile/nginx/long-lived-genserver changes; cic-only). Bundle
 `index-LoF9Lw3p.js` → next bundle hash. Healthcheck ok.
 
-**UX-7-D PENDING.** Remaining baseline-fails cluster work (different
-surface from UX-7-B and UX-7-C — archive sidebar rendering +
-click-to-select propagation):
-- `cp15-b4-archive-section.spec.ts:37` — archive entry click doesn't
-  navigate to scrollback (selectedChannel stays on $server).
-- `cp15-b6-part-archive-rejoin.spec.ts:41` — likely same surface.
-- `cp15-b6-kicked.spec.ts` — kicked-state sidebar greying not visible.
-- `ux-1-archive-delete.spec.ts:44` — archive `<details>` element
-  never renders in sidebar after PART (loadArchive not triggered?).
+**UX-7-D LANDED 2026-05-22.** Spec rot fix for
+`cicchetto/e2e/tests/ux-1-archive-delete.spec.ts:62`. UX-5 BH (commit
+`0bd943a`, 2026-05-19) lifted `<details class="sidebar-archive">` out
+of the killed `<section class="sidebar-network">` wrapper into a flat
+sibling of the per-network `<ul class="sidebar-network-section">`
+inside the `<For each={networks()}>` fragment. ux-1-archive-delete
+spec still used a descendant-of-ul locator
+(`.locator(".sidebar-network-section").locator("details.sidebar-archive")`)
+which returned 0 matches against the post-BH DOM → 30s timeout at
+summary click. Spec was failing baseline silently since 2026-05-19;
+surfaced + fixed under UX-7-D investigation.
+
+**Investigation findings revised initial briefing**: orchestrator
+prompt listed 4 candidate specs as a suspected shared-archive
+cluster. Local repro showed:
+- `cp15-b4-archive-section.spec.ts:37` — already PASSES (uses xpath
+  sibling pattern).
+- `cp15-b6-part-archive-rejoin.spec.ts:41` — already PASSES (uses
+  xpath sibling pattern).
+- `ux-1-archive-delete.spec.ts:44` — FAILED (UX-7-D, locator rot).
+- `cp15-b6-kicked.spec.ts:52` — FAILED (different surface —
+  ComposeBox greyed-class), see UX-7-E pending below.
+- `cp15-b6-parked.spec.ts:90` — ALSO FAILING (orchestrator briefing
+  didn't list it; surfaced when running `--grep "cp15-b6"`), shares
+  ComposeBox greyed-class surface with kicked → folded into UX-7-E.
+
+Fix: switched to the working xpath sibling pattern
+(`xpath=following-sibling::details[@class="sidebar-archive"][1]`)
+mirroring cp15-b4-archive-section.spec.ts:73-76 and
+cp15-b6-part-archive-rejoin.spec.ts:66-69. One feature, one code
+path, including in e2e fixtures.
+
+Reviewer-loop (general-purpose, 1 round): APPROVE clean. LOW-only nit
+on `[@class="..."]` exact-match brittleness is consistent with sister
+specs — cluster-wide concern, out of scope here.
+
+Gates:
+- `scripts/check.sh` exit 0 — 8 doctests, 32 properties, **2314
+  tests, 0 failures**, 0 Dialyzer, 0 Credo, 0 Sobelow, doctor green,
+  bats 23/23.
+- `scripts/bun.sh run check` exit 0 (21 baseline warnings, 0 new).
+- `scripts/bun.sh run test` exit 0 (89 files / **1574 vitest
+  passed** — no diff vs baseline; e2e-fixture-only change).
+- e2e UX-1 spec PASS on two consecutive runs (~900ms each).
+
+Commit `1acfdc6`. Pushed. No deploy needed — e2e-fixture-only change
+(no `lib/` or `cicchetto/src/` edits). Container healthy.
+
+**UX-7-E PENDING.** Shared ComposeBox greyed-class surface:
+- `cp15-b6-kicked.spec.ts:112` — `expect(composeBox).toHaveClass(/compose-box-greyed/)` fails after peer KICK.
+- `cp15-b6-parked.spec.ts:129` — same `toHaveClass(/compose-box-greyed/)` failure after /disconnect cascade.
+
+Both probably driven by the same upstream signal not flowing to
+ComposeBox's greyed-class derivation. Investigation next.
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
