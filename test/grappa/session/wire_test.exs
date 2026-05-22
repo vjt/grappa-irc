@@ -299,7 +299,7 @@ defmodule Grappa.Session.WireTest do
   end
 
   describe "mentions_bundle/5" do
-    test "projects each Message.t() to {server_time, channel, sender_nick, body, kind} per CP15-decision; kind atom→string" do
+    test "projects each Message.t() to {server_time, channel, sender, body, kind} per CP15-decision; kind atom→string" do
       m1 = %Message{
         server_time: 1_700_000_001,
         channel: "#grappa",
@@ -335,14 +335,14 @@ defmodule Grappa.Session.WireTest do
                  %{
                    server_time: 1_700_000_001,
                    channel: "#grappa",
-                   sender_nick: "alice",
+                   sender: "alice",
                    body: "vjt: hey",
                    kind: "privmsg"
                  },
                  %{
                    server_time: 1_700_000_002,
                    channel: "#grappa",
-                   sender_nick: "bob",
+                   sender: "bob",
                    body: "vjt: pong",
                    kind: "action"
                  }

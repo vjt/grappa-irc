@@ -1,5 +1,6 @@
 import { type Channel, Socket } from "phoenix";
 import { createEffect, createRoot, on } from "solid-js";
+import { channelPushError } from "./api";
 import { token } from "./auth";
 import { canonicalChannel } from "./channelKey";
 import { recordSocketClose, recordSocketError, recordSocketOpen } from "./socketHealth";
@@ -153,7 +154,7 @@ export function joinChannel(
 
 // M-11 — join the admin-events channel (`grappa:admin:events`).
 // Authz is `is_admin: true` server-side; non-admin sockets get
-// `{:error, %{reason: "forbidden"}}` and the .receive("error")
+// `{:error, %{error: "forbidden"}}` and the .receive("error")
 // arm fires. AdminPane.tsx gates the join on `me.is_admin`, so
 // the forbidden branch is a defense-in-depth fallback rather
 // than the expected path.
@@ -193,7 +194,9 @@ export function notifyClientClosing(): void {
 // that resolves on "ok" or rejects on "error" (mirrors the `away`
 // handle_in reply shape from GrappaChannel). Callers (compose.ts)
 // await the promise inside the submit try/catch so errors surface
-// as inline compose-box alerts, same as REST failures.
+// as inline compose-box alerts, same as REST failures. Rejects with
+// a typed `ChannelPushError` carrying the wire `code` ("visitor_no_away",
+// "not_explicit", etc.) so callers can branch on the token.
 export function pushAwaySet(network: string, reason: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (_userChannel === null) {
@@ -203,7 +206,7 @@ export function pushAwaySet(network: string, reason: string): Promise<void> {
     _userChannel
       .push("away", { action: "set", network, reason })
       .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(new Error(String(err))));
+      .receive("error", (err: unknown) => reject(channelPushError(err)));
   });
 }
 
@@ -216,7 +219,7 @@ export function pushAwayUnset(network: string): Promise<void> {
     _userChannel
       .push("away", { action: "unset", network })
       .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(new Error(String(err))));
+      .receive("error", (err: unknown) => reject(channelPushError(err)));
   });
 }
 
@@ -401,7 +404,7 @@ export function pushWatchlistAdd(pattern: string): Promise<{ patterns: string[] 
   return new Promise((resolve, reject) => {
     ch.push("watchlist", { action: "add", pattern })
       .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(err))
+      .receive("error", (err: unknown) => reject(channelPushError(err)))
       .receive("timeout", () => reject(new Error("timeout")));
   });
 }
@@ -412,7 +415,7 @@ export function pushWatchlistDel(pattern: string): Promise<{ patterns: string[] 
   return new Promise((resolve, reject) => {
     ch.push("watchlist", { action: "del", pattern })
       .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(err))
+      .receive("error", (err: unknown) => reject(channelPushError(err)))
       .receive("timeout", () => reject(new Error("timeout")));
   });
 }
@@ -423,7 +426,7 @@ export function pushWatchlistList(): Promise<{ patterns: string[] }> {
   return new Promise((resolve, reject) => {
     ch.push("watchlist", { action: "list", pattern: undefined })
       .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(err))
+      .receive("error", (err: unknown) => reject(channelPushError(err)))
       .receive("timeout", () => reject(new Error("timeout")));
   });
 }

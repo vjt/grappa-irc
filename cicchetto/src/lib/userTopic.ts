@@ -91,7 +91,7 @@ function narrowMentionsBundleMessage(raw: unknown): MentionsBundleMessage | null
   if (
     typeof r.server_time !== "number" ||
     typeof r.channel !== "string" ||
-    typeof r.sender_nick !== "string" ||
+    typeof r.sender !== "string" ||
     (r.body !== null && typeof r.body !== "string") ||
     typeof r.kind !== "string"
   )
@@ -99,7 +99,7 @@ function narrowMentionsBundleMessage(raw: unknown): MentionsBundleMessage | null
   return {
     server_time: r.server_time,
     channel: r.channel,
-    sender_nick: r.sender_nick,
+    sender: r.sender,
     body: r.body as string | null,
     kind: r.kind,
   };

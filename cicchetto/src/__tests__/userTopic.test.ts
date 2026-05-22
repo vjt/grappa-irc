@@ -638,7 +638,7 @@ describe("userTopic", () => {
     const goodMessage = {
       server_time: 1_700_000_000,
       channel: "#italia",
-      sender_nick: "alice",
+      sender: "alice",
       body: "ping vjt",
       kind: "privmsg",
     };
@@ -690,10 +690,10 @@ describe("userTopic", () => {
       expect(mw.setMentionsBundle).not.toHaveBeenCalled();
     });
 
-    it("drops bundle when one message is missing `sender_nick`", async () => {
+    it("drops bundle when one message is missing `sender`", async () => {
       const mw = await import("../lib/mentionsWindow");
       const broken = { ...goodMessage } as Partial<typeof goodMessage>;
-      delete broken.sender_nick;
+      delete broken.sender;
       channelMock.fireEvent({
         kind: "mentions_bundle",
         network: "azzurra",

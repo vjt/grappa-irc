@@ -33,7 +33,7 @@ const fixture = (slug: string): MentionsBundle => ({
     {
       server_time: 1,
       channel: "#chan",
-      sender_nick: "alice",
+      sender: "alice",
       body: "hey",
       kind: "privmsg",
     },

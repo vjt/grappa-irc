@@ -84,7 +84,7 @@ defmodule GrappaWeb.UserSocketTest do
 
       {:ok, socket} = connect_with(%{"token" => alice_session.id})
 
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                Phoenix.ChannelTest.subscribe_and_join(socket, Topic.user(vjt_name), %{})
     end
   end

@@ -49,12 +49,12 @@ defmodule Grappa.Session.Wire do
 
   The `mentions_bundle/5` per-message map is a deliberately-stripped
   projection of `Scrollback.Message` — `%{server_time, channel,
-  sender_nick, body, kind}`. The bundle is rendered as a
-  cross-channel summary view that doesn't need id/network/meta;
-  keeping the divergence small but EXPLICIT in one place. Note the
-  `sender_nick:` field name (vs `sender:` in `Scrollback.Wire.t/0`)
-  is the historical bundle shape; a deeper unification is a separate
-  decision deferred to the next channel-client-polish cluster.
+  sender, body, kind}`. The bundle is rendered as a cross-channel
+  summary view that doesn't need id/network/meta; keeping the
+  divergence small but EXPLICIT in one place. REV-K M19 (2026-05-22)
+  paid down the historical `sender_nick:` field name — bundle now
+  uses `sender:` matching `Scrollback.Wire.t/0` so consumers handling
+  both shapes use one field name.
   """
 
   alias Grappa.Scrollback.Message
@@ -208,7 +208,7 @@ defmodule Grappa.Session.Wire do
   @type mentions_bundle_message :: %{
           server_time: integer(),
           channel: String.t(),
-          sender_nick: String.t(),
+          sender: String.t(),
           body: String.t() | nil,
           kind: String.t()
         }
@@ -611,7 +611,7 @@ defmodule Grappa.Session.Wire do
     %{
       server_time: m.server_time,
       channel: m.channel,
-      sender_nick: m.sender,
+      sender: m.sender,
       body: m.body,
       kind: Atom.to_string(m.kind)
     }

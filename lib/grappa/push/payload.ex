@@ -14,7 +14,7 @@ defmodule Grappa.Push.Payload do
 
   ## Title / body
 
-    * **DM** (`channel == own_nick`): `title = sender_nick`, body =
+    * **DM** (`channel == own_nick`): `title = sender`, body =
       message body verbatim. Notification shape mirrors how mobile
       messengers surface a 1:1 chat — sender on top line, content on
       second.

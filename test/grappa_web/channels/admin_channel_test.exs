@@ -66,7 +66,7 @@ defmodule GrappaWeb.AdminChannelTest do
       user = user_fixture(is_admin: false)
       socket = build_socket(user.name, {:user, user.id}, is_admin: false)
 
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                subscribe_and_join(socket, "grappa:admin:events", %{})
     end
 
@@ -77,7 +77,7 @@ defmodule GrappaWeb.AdminChannelTest do
       # `forbidden` path as a non-admin user.
       socket = build_socket("visitor:" <> vid, {:visitor, vid}, is_admin: false)
 
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                subscribe_and_join(socket, "grappa:admin:events", %{})
     end
 
@@ -86,7 +86,7 @@ defmodule GrappaWeb.AdminChannelTest do
       # against a future UserSocket regression that drops the bit.
       socket = socket(UserSocket, "user_socket:bare", %{})
 
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                subscribe_and_join(socket, "grappa:admin:events", %{})
     end
 
@@ -181,7 +181,7 @@ defmodule GrappaWeb.AdminChannelTest do
       {:ok, socket} = Phoenix.ChannelTest.connect(UserSocket, %{"token" => session.id})
       assert socket.assigns.is_admin == false
 
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                subscribe_and_join(socket, "grappa:admin:events", %{})
     end
   end

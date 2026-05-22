@@ -14,7 +14,7 @@ vi.mock("../lib/mentionMatch", () => ({
 const MSG0 = {
   server_time: 1_746_442_200_000,
   channel: "#grappa",
-  sender_nick: "alice",
+  sender: "alice",
   body: "hey vjt, you around?",
   kind: "privmsg",
 } as const;
@@ -22,7 +22,7 @@ const MSG0 = {
 const MSG1 = {
   server_time: 1_746_442_201_000,
   channel: "#irc",
-  sender_nick: "bob",
+  sender: "bob",
   body: "vjt are you back",
   kind: "privmsg",
 } as const;

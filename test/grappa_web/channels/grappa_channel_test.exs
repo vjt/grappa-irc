@@ -720,21 +720,21 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   describe "join authz — cross-user topics are forbidden" do
     test "user-level topic of a different user returns forbidden" do
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join(Topic.user("alice"), %{})
     end
 
     test "network-level topic of a different user returns forbidden" do
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join(Topic.network("alice", "azzurra"), %{})
     end
 
     test "channel-level topic of a different user returns forbidden" do
-      assert {:error, %{reason: "forbidden"}} =
+      assert {:error, %{error: "forbidden"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join(Topic.channel("alice", "azzurra", "#sniffo"), %{})
@@ -953,7 +953,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{reason: "no_session"})
+      assert_reply(ref, :error, %{error: "no_session"})
     end
 
     test "op (REV-E HIGH-1): dead Session.Server socket → typed upstream_unavailable reply, Channel survives",
@@ -985,7 +985,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{reason: "upstream_unavailable"})
+      assert_reply(ref, :error, %{error: "upstream_unavailable"})
       assert Process.alive?(socket_channel_pid), "Channel process must survive dead-socket /op"
       assert Process.alive?(session_pid), "Session.Server must survive dead-socket /op"
     end
@@ -1006,7 +1006,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+      assert_reply(ref, :error, %{error: "visitor_not_allowed"})
     end
 
     test "topic_set: sends TOPIC #chan :text upstream", %{
@@ -1037,7 +1037,7 @@ defmodule GrappaWeb.GrappaChannelTest do
             "text" => evil
           })
 
-        assert_reply(ref, :error, %{reason: "invalid_line"})
+        assert_reply(ref, :error, %{error: "invalid_line"})
       end
     end
 
@@ -1052,7 +1052,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "text" => "ok"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_channel"})
+      assert_reply(ref, :error, %{error: "invalid_channel"})
     end
 
     # CP24 bucket E web/S6: tag-by-source regression. Pre-fix the
@@ -1079,7 +1079,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "text" => "ok"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_channel"})
+      assert_reply(ref, :error, %{error: "invalid_channel"})
     end
 
     test "topic_set: visitor with safe line returns visitor_not_allowed" do
@@ -1098,7 +1098,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "text" => "ok"
         })
 
-      assert_reply(ref, :error, %{reason: "visitor_not_allowed"})
+      assert_reply(ref, :error, %{error: "visitor_not_allowed"})
     end
 
     test "topic_clear: sends TOPIC #chan : (empty trailing) upstream", %{
@@ -1185,7 +1185,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nick" => "alice"
         })
 
-      assert_reply(ref, :error, %{reason: "upstream_unavailable"})
+      assert_reply(ref, :error, %{error: "upstream_unavailable"})
       assert Process.alive?(socket_channel_pid), "Channel process must survive dead-socket /whois"
       assert Process.alive?(session_pid), "Session.Server must survive dead-socket /whois"
     end
@@ -1249,7 +1249,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nick" => "alice"
         })
 
-      assert_reply(ref, :error, %{reason: "no_session"})
+      assert_reply(ref, :error, %{error: "no_session"})
     end
 
     test "visitor socket: whois with malformed nick returns invalid_nick" do
@@ -1277,7 +1277,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nick" => "bad\r\nQUIT"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
   end
 
@@ -1352,7 +1352,7 @@ defmodule GrappaWeb.GrappaChannelTest do
             "channel" => "#test"
           })
 
-        assert_reply(ref, :error, %{reason: "no_session"})
+        assert_reply(ref, :error, %{error: "no_session"})
       end
 
       test "visitor socket: #{@verb} with malformed channel returns invalid_channel" do
@@ -1376,7 +1376,7 @@ defmodule GrappaWeb.GrappaChannelTest do
             "channel" => "#bad\r\nQUIT"
           })
 
-        assert_reply(ref, :error, %{reason: "invalid_channel"})
+        assert_reply(ref, :error, %{error: "invalid_channel"})
       end
     end
   end
@@ -1399,28 +1399,28 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "rejects malformed network suffix" do
-      assert {:error, %{reason: "unknown topic"}} =
+      assert {:error, %{error: "unknown topic"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join("grappa:user:vjt/network:azzurra/wrong:foo", %{})
     end
 
     test "rejects empty network slug after network: prefix" do
-      assert {:error, %{reason: "unknown topic"}} =
+      assert {:error, %{error: "unknown topic"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join("grappa:user:vjt/network:", %{})
     end
 
     test "rejects empty channel name after channel: prefix" do
-      assert {:error, %{reason: "unknown topic"}} =
+      assert {:error, %{error: "unknown topic"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join("grappa:user:vjt/network:azzurra/channel:", %{})
     end
 
     test "rejects empty user segment" do
-      assert {:error, %{reason: "unknown topic"}} =
+      assert {:error, %{error: "unknown topic"}} =
                "vjt"
                |> build_socket()
                |> subscribe_and_join("grappa:user:", %{})
@@ -1666,7 +1666,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
     test "del of missing pattern returns :error :not_found", %{socket: socket} do
       ref = push(socket, "watchlist", %{"action" => "del", "pattern" => "nonexistent"})
-      assert_reply(ref, :error, %{reason: "not_found"})
+      assert_reply(ref, :error, %{error: "not_found"})
     end
 
     test "visitor socket can list/add/del watchlist patterns — visitor-parity V4" do
@@ -1723,7 +1723,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_channel"})
+      assert_reply(ref, :error, %{error: "invalid_channel"})
     end
 
     test "op: malformed nick returns invalid_nick", %{socket: socket, network: network} do
@@ -1734,7 +1734,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => ["bad nick"]
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
 
     test "op: empty nicks list returns invalid_nick", %{socket: socket, network: network} do
@@ -1745,7 +1745,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nicks" => []
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
 
     test "kick: malformed nick returns invalid_nick", %{socket: socket, network: network} do
@@ -1757,7 +1757,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "reason" => "bye"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
 
     test "kick: CRLF reason returns invalid_line", %{socket: socket, network: network} do
@@ -1769,7 +1769,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "reason" => "bye\r\nQUIT :pwn"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{error: "invalid_line"})
     end
 
     test "ban: CRLF mask returns invalid_mask", %{socket: socket, network: network} do
@@ -1780,7 +1780,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "mask" => "*!*@evil.com\r\nQUIT"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_mask"})
+      assert_reply(ref, :error, %{error: "invalid_mask"})
     end
 
     test "ban: empty mask returns invalid_mask", %{socket: socket, network: network} do
@@ -1791,7 +1791,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "mask" => ""
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_mask"})
+      assert_reply(ref, :error, %{error: "invalid_mask"})
     end
 
     test "invite: malformed nick returns invalid_nick", %{socket: socket, network: network} do
@@ -1802,7 +1802,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "nick" => "bad,comma"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
 
     test "open_query_window: malformed nick returns invalid_nick", %{
@@ -1815,7 +1815,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "target_nick" => "bad nick"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_nick"})
+      assert_reply(ref, :error, %{error: "invalid_nick"})
     end
 
     test "mode: CRLF in modes returns invalid_line", %{socket: socket, network: network} do
@@ -1827,7 +1827,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "params" => ["alice"]
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{error: "invalid_line"})
     end
 
     test "mode: CRLF in params returns invalid_line", %{socket: socket, network: network} do
@@ -1839,7 +1839,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "params" => ["alice\r\nQUIT"]
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{error: "invalid_line"})
     end
 
     test "umode: CRLF in modes returns invalid_line", %{socket: socket, network: network} do
@@ -1849,7 +1849,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "modes" => "+i\r\nQUIT"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_line"})
+      assert_reply(ref, :error, %{error: "invalid_line"})
     end
 
     test "topic_clear: malformed channel returns invalid_channel", %{
@@ -1862,7 +1862,7 @@ defmodule GrappaWeb.GrappaChannelTest do
           "channel" => "no-sigil"
         })
 
-      assert_reply(ref, :error, %{reason: "invalid_channel"})
+      assert_reply(ref, :error, %{error: "invalid_channel"})
     end
   end
 end

@@ -14,7 +14,7 @@ defmodule GrappaWeb.AdminChannel do
   `current_subject` tuple bare-id per V4 visitor-parity).
 
   Visitor subjects + non-admin user subjects + missing `is_admin`
-  assign collapse to `{:error, %{reason: "forbidden"}}`.
+  assign collapse to `{:error, %{error: "forbidden"}}`.
 
   ## Snapshot on join
 
@@ -51,11 +51,11 @@ defmodule GrappaWeb.AdminChannel do
         {:ok, socket}
 
       {:error, :forbidden} ->
-        {:error, %{reason: "forbidden"}}
+        {:error, %{error: "forbidden"}}
     end
   end
 
-  def join(_, _, _), do: {:error, %{reason: "unknown topic"}}
+  def join(_, _, _), do: {:error, %{error: "unknown topic"}}
 
   @impl Phoenix.Channel
   def handle_info(:after_join, socket) do

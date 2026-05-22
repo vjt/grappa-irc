@@ -123,7 +123,7 @@ describe("socket singleton", () => {
   });
 
   it("joinChannel registers error + timeout handlers on the join Push (S48)", async () => {
-    // The server can return `{:error, %{reason: "unknown topic" |
+    // The server can return `{:error, %{error: "unknown topic" |
     // "forbidden"}}` from `GrappaChannel.join/3`; without a `.receive`
     // hook these errors used to vanish into the void. Pin that the
     // production call chains both an "error" and a "timeout" hook so a
@@ -207,7 +207,7 @@ describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
     const errCb = h.mockPush.receive.mock.calls.find(([ev]) => ev === "error")?.[1] as (
       e: unknown,
     ) => void;
-    errCb({ reason: "visitor_no_away" });
+    errCb({ error: "visitor_no_away" });
     await expect(promise).rejects.toThrow();
   });
 

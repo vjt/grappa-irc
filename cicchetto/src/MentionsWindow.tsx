@@ -19,7 +19,7 @@ import NickText from "./NickText";
 export type MentionsRow = {
   server_time: number;
   channel: string;
-  sender_nick: string;
+  sender: string;
   body: string | null;
   kind: string;
 };
@@ -104,7 +104,7 @@ const MentionsWindow: Component<Props> = (props) => {
                 <span class="mentions-row-channel">{row.channel}</span>
                 <span class="mentions-row-sender">
                   &lt;
-                  <NickText nick={row.sender_nick} />
+                  <NickText nick={row.sender} />
                   &gt;
                 </span>
                 <span class="mentions-row-body">{row.body}</span>

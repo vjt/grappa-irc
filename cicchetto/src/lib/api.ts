@@ -531,7 +531,7 @@ export type QueryWindowEntry = {
 export type MentionsBundleMessage = {
   server_time: number;
   channel: string;
-  sender_nick: string;
+  sender: string;
   body: string | null;
   kind: string;
 };
@@ -924,6 +924,37 @@ export class ApiError extends Error {
     this.code = code;
     this.info = info;
   }
+}
+
+// REV-K M20 (2026-05-22) — typed WS Channel push error mirroring
+// `ApiError`. The Channel error envelope is `{:error, %{error: "<token>"}}`
+// — same `error:` key as the REST `FallbackController` shape — so cic
+// has one envelope to extract from. `code` carries the wire token
+// (`"invalid_channel"`, `"upstream_unavailable"`, etc.) callers can
+// branch on; `info` captures any sibling fields the server may add.
+//
+// Use `channelPushError/1` at `.receive("error", ...)` to convert the
+// opaque `unknown` reply into a typed `Error` for the rejecting
+// promise.
+export class ChannelPushError extends Error {
+  readonly code: string;
+  readonly info: Record<string, unknown>;
+
+  constructor(code: string, info: Record<string, unknown> = {}) {
+    super(`channel push error: ${code}`);
+    this.name = "ChannelPushError";
+    this.code = code;
+    this.info = info;
+  }
+}
+
+export function channelPushError(raw: unknown): ChannelPushError {
+  if (typeof raw !== "object" || raw === null) {
+    return new ChannelPushError(String(raw));
+  }
+  const r = raw as Record<string, unknown>;
+  const code = typeof r.error === "string" ? r.error : String(raw);
+  return new ChannelPushError(code, r);
 }
 
 // 401-handler registry. `auth.ts` registers a callback at module-load

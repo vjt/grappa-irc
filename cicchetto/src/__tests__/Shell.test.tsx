@@ -204,7 +204,7 @@ vi.mock("../lib/mentionsWindow", () => ({
         {
           server_time: 1_746_442_200_000,
           channel: "#grappa",
-          sender_nick: "alice",
+          sender: "alice",
           body: "hey vjt",
           kind: "privmsg",
         },

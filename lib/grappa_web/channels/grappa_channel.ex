@@ -6,10 +6,10 @@ defmodule GrappaWeb.GrappaChannel do
 
   1. Parse the topic via `Grappa.PubSub.Topic.parse/1`. Unknown
      shapes (including the Phase 1 `grappa:network:...` shape, which
-     sub-task 2h removed) get `{:error, %{reason: "unknown topic"}}`.
+     sub-task 2h removed) get `{:error, %{error: "unknown topic"}}`.
   2. Cross-user authz: every Grappa topic is rooted in a user_name.
      If `socket.assigns.user_name` does not match the topic's
-     embedded user, return `{:error, %{reason: "forbidden"}}`. This
+     embedded user, return `{:error, %{error: "forbidden"}}`. This
      is the LOAD-BEARING check — `Phoenix.PubSub` topics are a
      global namespace, so without this any authn'd socket could
      subscribe to any other user's topic by string-typing it.
@@ -113,7 +113,7 @@ defmodule GrappaWeb.GrappaChannel do
     missing) and broadcasts the updated `query_windows_list` on the user topic.
     Subject-scoped per V2.
 
-  All ops verbs reject visitor sockets and return `{:error, %{reason: "visitor_not_allowed"}}`.
+  All ops verbs reject visitor sockets and return `{:error, %{error: "visitor_not_allowed"}}`.
 
   ## Outbound event shapes
 
@@ -207,8 +207,8 @@ defmodule GrappaWeb.GrappaChannel do
       Process.send_after(self(), {:after_join, parsed}, 0)
       {:ok, join_reply(parsed), socket}
     else
-      :error -> {:error, %{reason: "unknown topic"}}
-      {:error, :forbidden} -> {:error, %{reason: "forbidden"}}
+      :error -> {:error, %{error: "unknown topic"}}
+      {:error, :forbidden} -> {:error, %{error: "forbidden"}}
     end
   end
 
@@ -312,7 +312,7 @@ defmodule GrappaWeb.GrappaChannel do
     user_name = socket.assigns.user_name
 
     if visitor?(user_name) do
-      {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
+      {:reply, {:error, %{error: "visitor_no_away"}}, socket}
     else
       origin_window = Map.get(payload, "origin_window")
       with_body_check(socket, reason, fn -> away_set_dispatch(socket, user_name, slug, reason, origin_window) end)
@@ -322,7 +322,7 @@ defmodule GrappaWeb.GrappaChannel do
   # S3.4 — /away slash-command: unset explicit away.
   #
   # Visitors are rejected with `visitor_no_away`. Returns `{:error,
-  # %{reason: "not_explicit"}}` if the session is not in `:away_explicit` state
+  # %{error: "not_explicit"}}` if the session is not in `:away_explicit` state
   # (mirrors `Session.unset_explicit_away/2`'s `{:error, :not_explicit}` return).
   #
   # S4.3: reads `origin_window` from payload and passes to Session facade.
@@ -331,7 +331,7 @@ defmodule GrappaWeb.GrappaChannel do
     user_name = socket.assigns.user_name
 
     if visitor?(user_name) do
-      {:reply, {:error, %{reason: "visitor_no_away"}}, socket}
+      {:reply, {:error, %{error: "visitor_no_away"}}, socket}
     else
       origin_window = Map.get(payload, "origin_window")
 
@@ -340,10 +340,10 @@ defmodule GrappaWeb.GrappaChannel do
            :ok <- dispatch_unset_away(user, network, origin_window) do
         {:reply, :ok, socket}
       else
-        :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-        {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
-        {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-        {:error, :not_explicit} -> {:reply, {:error, %{reason: "not_explicit"}}, socket}
+        :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
+        {:error, :not_found} -> {:reply, {:error, %{error: "network_not_found"}}, socket}
+        {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
+        {:error, :not_explicit} -> {:reply, {:error, %{error: "not_explicit"}}, socket}
       end
     end
   end
@@ -704,9 +704,9 @@ defmodule GrappaWeb.GrappaChannel do
          {:ok, _} <- QueryWindows.open(subject, network_id, target_nick, user_name) do
       {:reply, :ok, socket}
     else
-      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, _} -> {:reply, {:error, %{reason: "open_failed"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{error: "invalid_nick"}}, socket}
+      :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
+      {:error, _} -> {:reply, {:error, %{error: "open_failed"}}, socket}
     end
   end
 
@@ -750,8 +750,8 @@ defmodule GrappaWeb.GrappaChannel do
 
       {:reply, :ok, socket}
     else
-      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
+      {:error, :invalid_nick} -> {:reply, {:error, %{error: "invalid_nick"}}, socket}
+      :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
     end
   end
 
@@ -764,7 +764,7 @@ defmodule GrappaWeb.GrappaChannel do
   # `Grappa.Subject.t()` tuple lives on the socket as
   # `:current_subject` so each arm dispatches straight to
   # `UserSettings.{get,set}_highlight_patterns/2`. All heads reply with
-  # `{:ok, %{patterns: [...]}}` on success or `{:error, %{reason: ...}}` on
+  # `{:ok, %{patterns: [...]}}` on success or `{:error, %{error: ...}}` on
   # failure, matching the `away` handler's reply-shape convention.
   #
   # Forward-only per spec #19: changing the watchlist does NOT re-aggregate
@@ -801,7 +801,7 @@ defmodule GrappaWeb.GrappaChannel do
 
     case UserSettings.set_highlight_patterns(subject, new_patterns) do
       {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
-      {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
+      {:error, _} -> {:reply, {:error, %{error: "save_failed"}}, socket}
     end
   end
 
@@ -816,10 +816,10 @@ defmodule GrappaWeb.GrappaChannel do
 
       case UserSettings.set_highlight_patterns(subject, new_patterns) do
         {:ok, _} -> {:reply, {:ok, %{patterns: new_patterns}}, socket}
-        {:error, _} -> {:reply, {:error, %{reason: "save_failed"}}, socket}
+        {:error, _} -> {:reply, {:error, %{error: "save_failed"}}, socket}
       end
     else
-      {:reply, {:error, %{reason: "not_found"}}, socket}
+      {:reply, {:error, %{error: "not_found"}}, socket}
     end
   end
 
@@ -1146,25 +1146,25 @@ defmodule GrappaWeb.GrappaChannel do
       {:reply, :ok, socket}
     else
       {:error, :invalid_channel} ->
-        {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+        {:reply, {:error, %{error: "invalid_channel"}}, socket}
 
       {:error, :invalid_nick} ->
-        {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+        {:reply, {:error, %{error: "invalid_nick"}}, socket}
 
       {:error, :invalid_mask} ->
-        {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+        {:reply, {:error, %{error: "invalid_mask"}}, socket}
 
       {:error, :invalid_line} ->
-        {:reply, {:error, %{reason: "invalid_line"}}, socket}
+        {:reply, {:error, %{error: "invalid_line"}}, socket}
 
       {:error, :visitor_not_allowed} ->
-        {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+        {:reply, {:error, %{error: "visitor_not_allowed"}}, socket}
 
       :error ->
-        {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:reply, {:error, %{error: "user_not_found"}}, socket}
 
       {:error, :no_session} ->
-        {:reply, {:error, %{reason: "no_session"}}, socket}
+        {:reply, {:error, %{error: "no_session"}}, socket}
 
       # REV-E (H11) — reviewer HIGH-1: Session.send_* CAN return
       # `{:error, :no_socket | :closed | :inet.posix()}` post-U-cluster
@@ -1181,7 +1181,7 @@ defmodule GrappaWeb.GrappaChannel do
           reason: inspect(reason)
         )
 
-        {:reply, {:error, %{reason: "upstream_unavailable"}}, socket}
+        {:reply, {:error, %{error: "upstream_unavailable"}}, socket}
     end
   end
 
@@ -1203,7 +1203,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp with_body_check(socket, body, dispatch_thunk) when is_binary(body) do
     case BodyLimit.check(body) do
       :ok -> dispatch_thunk.()
-      {:error, :body_too_large} -> {:reply, {:error, %{reason: "body_too_large"}}, socket}
+      {:error, :body_too_large} -> {:reply, {:error, %{error: "body_too_large"}}, socket}
     end
   end
 
@@ -1224,12 +1224,12 @@ defmodule GrappaWeb.GrappaChannel do
          {:ok, _} <- Session.send_topic({:user, user.id}, network_id, channel, text) do
       {:reply, :ok, socket}
     else
-      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, _} -> {:reply, {:error, %{reason: "persist_failed"}}, socket}
+      {:error, :invalid_channel} -> {:reply, {:error, %{error: "invalid_channel"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{error: "invalid_line"}}, socket}
+      {:error, :visitor_not_allowed} -> {:reply, {:error, %{error: "visitor_not_allowed"}}, socket}
+      :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
+      {:error, _} -> {:reply, {:error, %{error: "persist_failed"}}, socket}
     end
   end
 
@@ -1249,10 +1249,10 @@ defmodule GrappaWeb.GrappaChannel do
          :ok <- dispatch_set_away(user, network, reason, origin_window) do
       {:reply, :ok, socket}
     else
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, :not_found} -> {:reply, {:error, %{reason: "network_not_found"}}, socket}
-      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_reason"}}, socket}
+      :error -> {:reply, {:error, %{error: "user_not_found"}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{error: "network_not_found"}}, socket}
+      {:error, :no_session} -> {:reply, {:error, %{error: "no_session"}}, socket}
+      {:error, :invalid_line} -> {:reply, {:error, %{error: "invalid_reason"}}, socket}
     end
   end
 
@@ -1289,22 +1289,22 @@ defmodule GrappaWeb.GrappaChannel do
       {:reply, :ok, socket}
     else
       {:error, :invalid_channel} ->
-        {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+        {:reply, {:error, %{error: "invalid_channel"}}, socket}
 
       {:error, :invalid_nick} ->
-        {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+        {:reply, {:error, %{error: "invalid_nick"}}, socket}
 
       {:error, :invalid_mask} ->
-        {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+        {:reply, {:error, %{error: "invalid_mask"}}, socket}
 
       {:error, :invalid_line} ->
-        {:reply, {:error, %{reason: "invalid_line"}}, socket}
+        {:reply, {:error, %{error: "invalid_line"}}, socket}
 
       :error ->
-        {:reply, {:error, %{reason: "user_not_found"}}, socket}
+        {:reply, {:error, %{error: "user_not_found"}}, socket}
 
       {:error, :no_session} ->
-        {:reply, {:error, %{reason: "no_session"}}, socket}
+        {:reply, {:error, %{error: "no_session"}}, socket}
 
       # REV-F (H10): mirror of REV-E HIGH-1 catch-all on dispatch_ops_verb/3.
       # `Session.send_*` post-U-cluster CAN return `{:error, :no_socket
@@ -1321,7 +1321,7 @@ defmodule GrappaWeb.GrappaChannel do
           reason: inspect(reason)
         )
 
-        {:reply, {:error, %{reason: "upstream_unavailable"}}, socket}
+        {:reply, {:error, %{error: "upstream_unavailable"}}, socket}
     end
   end
 
