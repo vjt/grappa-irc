@@ -1034,8 +1034,7 @@ defmodule Grappa.Session.Server do
         _ -> "MODE #{target} #{modes} #{Enum.join(params, " ")}\r\n"
       end
 
-    :ok = Client.send_line(state.client, line)
-    {:reply, :ok, state}
+    {:reply, Client.send_line(state.client, line), state}
   end
 
   # S5.4: irssi-convention topic clear — sends `TOPIC #chan :` (empty trailing).
@@ -1971,7 +1970,23 @@ defmodule Grappa.Session.Server do
           {:capture, password} -> stage_pending_auth(acc, password)
         end
 
-      :ok = Client.send_line(acc.client, line)
+      # REV-E (H11): pre-fix this strict-bound `:ok =` and MatchError'd
+      # on a dead socket mid-recovery (e.g., NickServ ghost dance racing
+      # an upstream RST). Fire-and-forget + Logger: ghost recovery is
+      # already a fragile rendezvous; a dead socket mid-flow means the
+      # next reconnect will retry GHOST + IDENTIFY from scratch. The
+      # `pending_auth` staging that already happened in `acc` is
+      # discarded harmlessly on terminate/2.
+      case Client.send_line(acc.client, line) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("ghost-recovery flush_lines: send_line failed",
+            reason: inspect(reason)
+          )
+      end
+
       acc
     end)
   end
@@ -2559,7 +2574,23 @@ defmodule Grappa.Session.Server do
   end
 
   defp apply_effects([{:reply, line} | rest], state) do
-    :ok = Client.send_line(state.client, line)
+    # REV-E (H11): EventRouter-emitted outbound (e.g., CTCP VERSION NOTICE
+    # reply). Fire-and-forget: the persist effect that pairs with the reply
+    # already landed in scrollback, and the reply target is the SENDER of
+    # an inbound — if our socket just died we have nothing else to do but
+    # log it and let the supervisor restart drive reconnect. Pre-fix this
+    # strict-bound `:ok =` and MatchError-crashed the Session on dead
+    # socket.
+    case Client.send_line(state.client, line) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("event-router reply dropped: send_line failed",
+          reason: inspect(reason)
+        )
+    end
+
     apply_effects(rest, state)
   end
 
@@ -2854,24 +2885,43 @@ defmodule Grappa.Session.Server do
   # Sends one or more MODE lines for chunked verbs (/op /deop /voice /devoice
   # /ban /unban). Delegates splitting to ModeChunker.chunk/3, then flushes each
   # chunk as a separate MODE line through the Client socket.
-  # Returns {:reply, :ok, state} — no state mutation occurs (MODE state updates
-  # arrive as inbound MODE events processed by EventRouter).
+  #
+  # REV-E (H11): walks chunks one at a time and halts on the first
+  # `{:error, _}` from `Client.send_line/2`. Returns the error from the
+  # failed chunk so the caller (Session.send_op/4 et al.) can surface it.
+  # Pre-fix this strict-bound `:ok =` on each chunk, which post-U-cluster
+  # MatchError'd on a dead socket. Idempotency note: a partial chunk flush
+  # (chunk 0 succeeded, chunk 1 failed mid-burst) leaves the upstream
+  # state ambiguous, but the dead-socket case ends with NO chunks landing
+  # on the wire anyway (transport returns `:no_socket` before bytes go
+  # out). Per-chunk wire failures (`:closed`, `:einval`) are observable
+  # post-fact; the inbound MODE echo via EventRouter is the source of
+  # truth for the actual mode state.
   @spec send_chunked_mode(t(), String.t(), String.t(), [String.t()]) ::
-          {:reply, :ok, t()}
+          {:reply, :ok | {:error, atom()}, t()}
   defp send_chunked_mode(state, channel, mode_str, params) do
     chunks = ModeChunker.chunk(mode_str, params, state.modes_per_chunk)
+    {:reply, flush_mode_chunks(state.client, channel, chunks), state}
+  end
 
-    Enum.each(chunks, fn {modes, chunk_params} ->
-      line =
-        case chunk_params do
-          [] -> "MODE #{channel} #{modes}\r\n"
-          _ -> "MODE #{channel} #{modes} #{Enum.join(chunk_params, " ")}\r\n"
-        end
+  @spec flush_mode_chunks(pid(), String.t(), [{String.t(), [String.t()]}]) ::
+          :ok | {:error, atom()}
+  defp flush_mode_chunks(_, _, []), do: :ok
 
-      :ok = Client.send_line(state.client, line)
-    end)
+  defp flush_mode_chunks(client, channel, [{modes, chunk_params} | rest]) do
+    line =
+      case chunk_params do
+        [] -> "MODE #{channel} #{modes}\r\n"
+        _ -> "MODE #{channel} #{modes} #{Enum.join(chunk_params, " ")}\r\n"
+      end
 
-    {:reply, :ok, state}
+    case Client.send_line(client, line) do
+      :ok ->
+        flush_mode_chunks(client, channel, rest)
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   # Derives a ban mask from a bare nick or passes an explicit mask through.
@@ -2928,13 +2978,17 @@ defmodule Grappa.Session.Server do
   # so the upstream echoes it back on the 305/306 numeric reply.
   @spec set_explicit_away_internal(t(), String.t(), String.t() | nil) :: t()
   defp set_explicit_away_internal(state, reason, nil) when is_binary(reason) do
-    :ok = Client.send_away(state.client, reason)
+    maybe_log_send_failure("set_explicit_away", Client.send_away(state.client, reason))
     %{state | away_state: AwayState.set_explicit_away(state.away_state, reason)}
   end
 
   defp set_explicit_away_internal(state, reason, label)
        when is_binary(reason) and is_binary(label) do
-    :ok = Client.send_line(state.client, "@label=#{label} AWAY :#{reason}\r\n")
+    maybe_log_send_failure(
+      "set_explicit_away_labeled",
+      Client.send_line(state.client, "@label=#{label} AWAY :#{reason}\r\n")
+    )
+
     %{state | away_state: AwayState.set_explicit_away(state.away_state, reason)}
   end
 
@@ -2943,7 +2997,11 @@ defmodule Grappa.Session.Server do
   # wire protocol — see `AwayState.auto_away_reason/0`.
   @spec set_auto_away_internal(t()) :: t()
   defp set_auto_away_internal(state) do
-    :ok = Client.send_away(state.client, AwayState.auto_away_reason())
+    maybe_log_send_failure(
+      "set_auto_away",
+      Client.send_away(state.client, AwayState.auto_away_reason())
+    )
+
     %{state | away_state: AwayState.set_auto_away(state.away_state)}
   end
 
@@ -2963,15 +3021,37 @@ defmodule Grappa.Session.Server do
   # `nil` otherwise.
   @spec unset_away_internal(t(), String.t() | nil) :: t()
   defp unset_away_internal(state, nil) do
-    :ok = Client.send_away_unset(state.client)
+    maybe_log_send_failure("unset_away", Client.send_away_unset(state.client))
     maybe_broadcast_mentions_bundle(state)
     %{state | away_state: AwayState.unset_away(state.away_state)}
   end
 
   defp unset_away_internal(state, label) when is_binary(label) do
-    :ok = Client.send_line(state.client, "@label=#{label} AWAY\r\n")
+    maybe_log_send_failure(
+      "unset_away_labeled",
+      Client.send_line(state.client, "@label=#{label} AWAY\r\n")
+    )
+
     maybe_broadcast_mentions_bundle(state)
     %{state | away_state: AwayState.unset_away(state.away_state)}
+  end
+
+  # REV-E (H11): single fire-and-forget Logger helper for AWAY-internal
+  # send paths. Pre-fix each call site strict-bound `:ok =` and
+  # MatchError-crashed on dead socket. Local AwayState mutation still
+  # happens (next reconnect resends AWAY); the warning is the honest
+  # signal that the wire write didn't land. `:ok` arm returns `:ok` so
+  # callers can ignore the result identically to the strict-bind era.
+  # Error narrowed to `atom()` to mirror IRC.Client's success-typed
+  # send_result (`:invalid_line | :no_socket | :closed | :inet.posix()`
+  # — all atoms; Dialyzer flagged the wider `term()` as supertype).
+  @spec maybe_log_send_failure(String.t(), :ok | {:error, atom()}) :: :ok
+  defp maybe_log_send_failure(_, :ok), do: :ok
+
+  defp maybe_log_send_failure(label, {:error, reason}) do
+    Logger.warning("#{label}: Client.send failed",
+      reason: inspect(reason)
+    )
   end
 
   # C8: aggregate mentions during the away interval and broadcast
