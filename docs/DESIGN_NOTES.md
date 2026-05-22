@@ -8134,6 +8134,134 @@ worker assumed would work.
 
 ---
 
+## 2026-05-22 — REV-H: server-side type tightening Theme A + ServerSettings PubSub single-source (H2-H8 + H25)
+
+Bucket 8 of 11 in the post-2026-05-22-codebase-review REV cluster.
+Closes 7 HIGH findings — six wire-shape typespec tightenings
+(H2, H3, H4, H5, H7, H8) + one cross-module PubSub single-source
+restoration (H25).
+
+### The pattern
+
+Three findings (H3, H4, H8) share the same shape at the macro
+level: the wire boundary received the post-converted-to-
+presentation-shape value (string for atom, already-encoded ISO8601
+for DateTime, hardcoded `parked + failed` sum for a closed-set
+count breakdown) when the wire boundary SHOULD have received the
+in-process value + done the conversion itself. The fixes move the
+conversion INTO the Wire fn (or its derivation pipeline) mirroring
+the proof-of-pattern that already existed elsewhere:
+`Scrollback.Wire.to_json/1`'s `Atom.to_string(m.kind)` for H3,
+`Session.Wire.channel_created/3`'s explicit `DateTime.to_iso8601/1`
+for H4. Adding a 4th state to a closed-set atom union is now a
+single-edit operation on both sides (server enum + cic
+discriminator) instead of a hunt across N call sites.
+
+Two findings (H2 + H5) are pure closed-set discipline at the
+boundary: H2 introduces a top-level `ConnectionState` type union
+in cic that mirrors the server's `Credential.connection_state()`
+atom set, and an `isConnectionState` runtime narrower that's
+applied to every arm that carries a connection-state value (both
+the `connection_state_changed` user-event arm AND the
+`home_network_state_changed` sibling arm). H5 tightens
+`cap_counts_changed.network_slug` from `String.t() | nil` to
+`String.t()` because the broadcaster already early-returns on a
+missing network row — the nullable arm was dead code on both
+sides. Surgical scope on H5: other admin event arms
+(`circuit_open`, `capacity_reject`, `session_terminated`) keep
+nullable slugs because the deleted-network race CAN reach those
+paths.
+
+H7 closes a different class — a `case` dispatch that hardcodes a
+subset of a closed enum. `Bootstrap.spawn_with_admission` matched
+3 specific capacity-error atoms + a `:network_circuit_open` tuple
+without a catch-all clause. A 5th atom added to
+`Admission.capacity_error_atoms/0` would crash-loop Bootstrap on
+every boot via `CaseClauseError`. Fix is the standard
+"`{:error, other} ->` + Logger.error + bucket as 'investigate'"
+pattern: extracted `classify_outcome/3` as `@doc false` testable
+seam so the regression tests can iterate
+`Admission.capacity_error_atoms/0` and assert every CURRENT atom
+routes to a known bucket + a fake atom lands in the catch-all
+without crash.
+
+### H25 — PubSub single-source restoration
+
+The discrete cross-module finding. Pre-H25
+`Grappa.ServerSettings` defined a private `@topic
+"grappa:server_settings"` + called raw `Phoenix.PubSub.broadcast/3`
+with a 2-tuple `{:server_settings_changed, view}` payload. This
+predated the `broadcast_event/2` + `Grappa.PubSub.Topic` invariant
+that landed for the channel-events surface (CLAUDE.md PubSub
+section + the no-silent-drops B6 cluster). The topic was invisible
+to `Topic.parse/1`'s grammar enumeration, so any tooling that
+walks the documented topic surface (future codegen, future audit)
+would miss it.
+
+Fix:
+- `Grappa.PubSub.Topic.server_settings/0` builder + `:server_settings`
+  arm in `Topic.parsed`/`parse/1`. Grammar now enumerates the topic.
+- `ServerSettings.broadcast_changed/0` routes through
+  `Grappa.PubSub.broadcast_event/2` with the typed
+  `Wire.server_settings_changed/1` payload (single source — the
+  REST surface + the after-join push + the per-user-topic
+  re-broadcast ALL use this Wire fn).
+- Boundary `deps:` extended for `Grappa.PubSub` +
+  `Grappa.ServerSettings.Wire` aliases.
+- Test shapes flipped from the 2-tuple to
+  `%Phoenix.Socket.Broadcast{event: "event", payload: %{kind:
+  "server_settings_changed", ...}}` — matches every other
+  context's WS-edge fan-out shape.
+
+### The Elixir 1.19 set-theoretic-checker × FunctionClauseError-regression collision
+
+Worth noting because it bit four times mid-implementation.
+Tightening the typespec on a Wire fn from `map()` to a typed map
+means intentionally-bad-literal tests (the `assert_raise
+FunctionClauseError, fn -> Wire.channel_modes_changed("net",
+"#c", %{}) end` pattern) now compile-fail under Elixir 1.19's
+set-theoretic type checker:
+
+```
+warning: incompatible types given to Grappa.Session.Wire.channel_modes_changed/3:
+   Grappa.Session.Wire.channel_modes_changed("azzurra", "#grappa", %{})
+given types: binary(), binary(), -empty_map()-
+but expected one of: dynamic(), dynamic(), dynamic(%{..., modes: term(), params: term()})
+```
+
+The compiler is correct — the call IS statically wrong. But the
+test is pinning the RUNTIME boundary, which is exactly the
+contract that needs to be tested. Workaround: `apply(M, :f,
+[args])` defeats the static check (the function arity is opaque
+to the type analyzer through `apply/3`). The runtime
+`FunctionClauseError` is still the assertion.
+
+Pattern recurred 4 times across REV-H (H3 string-input rejection,
+H4 empty-map + bad-set_at rejection, H5 nil-slug rejection,
+channel_modes_changed empty-map rejection). If it bites a 3rd
+unrelated bucket it earns a `feedback_apply_3_*` memory and a
+CLAUDE.md "Testing Standards" addition.
+
+### Deploy classification — first server-side REV bucket auto-HOT
+
+`Grappa.Deploy.Preflight.cli` returned `→ no unsafe markers →
+HOT` for REV-H. The preflight's "unsafe markers" list (defstruct
+/ @type t / migrations / mix.lock / application.ex / Dockerfile)
+didn't fire — REV-H touched function bodies + typespecs +
+moduledoc + new tests, none of which are state-shape changes.
+`Session.Server` IS in `hot_reload/long_lived_modules.ex` but
+the edit was `apply_effects/2` body only.
+
+Validates the preflight's discrimination — REV-H is exactly the
+class of server-side change that Phoenix.CodeReloader handles
+cleanly. Future Theme A-style typespec tightenings can follow the
+same path. (REV-I + REV-K + REV-Z are different — REV-I touches
+nginx.conf which needs container restart, REV-K likely touches
+cross-surface naming which may shift wire-shape, REV-Z is docs
+only.)
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

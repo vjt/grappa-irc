@@ -10,65 +10,55 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 7 of 11 closed (REV-G LANDED 2026-05-22,
-`99256ed`).** Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S2).
-Closes 3 HIGH from the 2026-05-22 codebase review:
+**REV cluster autopilot — bucket 8 of 11 closed (REV-H LANDED 2026-05-22,
+`f77f46a`).** Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S3).
+Closes 7 HIGH from the 2026-05-22 codebase review:
 
-- **H22 (cicchetto/S3)** — PWA SW NavigationRoute denylist missed `/api`,
-  `/admin`, `/uploads`. Tapping a `📸 host/uploads/<slug>` URL in a new
-  tab fetched the SPA shell instead of image bytes. Same failure mode for
-  direct `/admin/*` operator-console URLs + `/api/*` REST surfaces. Fix:
-  broaden denylist to include the 3 missing prefixes (`/healthz` omitted
-  — single GET, SPA shell harmless). Plus
-  `test/grappa_web/router_sw_denylist_test.exs` walking
-  `GrappaWeb.Router.__routes__/0` + parsing the SW source, asserts SW ⊇
-  router-prefix-set modulo `{/, /healthz}`. M-9b-style boundary discipline.
+- **H2 (cross-surface S6)** — `connection_state_changed.from/to` closed-
+  atom narrowing. Server-side spec was already closed; cic-side narrower
+  validated open string. Added top-level `ConnectionState` type +
+  `isConnectionState` type guard. Collapsed two-spelling drift
+  (`CredentialJson`, `HomeNetworkRow`, `RawNetwork`, `UserNetwork`,
+  `WireUserEvent` all unified on `ConnectionState`).
+- **H3 (cross-surface S4)** — `Wire.away_confirmed/2` accepts atom.
+  Moved `Atom.to_string/1` INTO the wire boundary mirroring
+  `Scrollback.Wire.to_json/1`.
+- **H4 (cross-surface S7)** — `topic_changed.topic` +
+  `channel_modes_changed.modes` typed maps. `Session.Wire` typespecs
+  reference `EventRouter.topic_entry()` / `channel_mode_entry()`. New
+  `topic_entry_wire/1` does explicit `DateTime.to_iso8601/1` for `set_at`
+  mirroring `channel_created/3` pattern.
+- **H5 (cross-surface S3)** — `cap_counts_changed.network_slug` non-null
+  tighten. Server early-returns on nil slug; nullable arm was dead code
+  on both sides. Surgical scope — other admin event arms keep nullable.
+- **H7 (lifecycle S3)** — `Bootstrap.spawn_with_admission` catch-all.
+  Extracted `classify_outcome/3` testable seam. Added `{:error, other}`
+  Logger.error + network_failed bucket so a 5th `Admission.capacity_error_atoms/0`
+  atom no longer crash-loops Bootstrap.
+- **H8 (lifecycle S4)** — `log_web_only_warning` closed-set derivation.
+  Per-state breakdown derived via `Enum.reject(connected/zero) |> map_join`
+  instead of hardcoded `counts.parked + counts.failed`.
+- **H25 (cross-module S2)** — `Grappa.ServerSettings` PubSub bypass.
+  Added `Topic.server_settings/0` + parse-arm. `ServerSettings.broadcast_changed/0`
+  routes through `Grappa.PubSub.broadcast_event/2` with typed wire payload.
 
-- **H23 (cicchetto/S4)** — `markerRef` `let`-bound ref in
-  `ScrollbackPane.tsx` leaked across `<For>` mid-channel removal (cursor
-  advance staying on the same window). Round-1 attempted `createSignal`
-  function-ref + assumed React-style auto-null on unmount — **wrong
-  assumption**: SolidJS function-refs are mount-only. Reviewer round-1
-  caught the test-pin-quality issue; investigation under MED-1 exposed
-  the incomplete fix. Round-2 wires `onCleanup(() => setMarkerRef(undefined))`
-  inside the marker JSX ref function. Test pin upgraded to
-  `Element.prototype.scrollIntoView` spy regression that genuinely
-  discriminates pre-fix from post-fix code.
+Deployed 2026-05-22 via `scripts/deploy.sh` (HOT, preflight `→ no unsafe
+markers`) + `scripts/deploy-cic.sh` (cic bundle `DpQoKo_g` for H2 + H5
+narrower changes). Sessions preserved, container ID unchanged.
+Healthcheck `ok`.
 
-- **H24 (cicchetto/S2)** — admin-channel `snapshot` + `event` handlers
-  cast WS payloads directly without runtime narrowing (sibling channels
-  adopted `narrowChannelEvent` / `narrowUserEvent`; admin path was
-  missed). Malformed payload crashed `ingest()` or silently corrupted
-  `liveCountsByNetworkId`. Fix: add `narrowAdminEvent` +
-  `narrowAdminSnapshot` to `cicchetto/src/lib/wireNarrow.ts` covering all
-  13 `WireAdminEvent` arms + atomic snapshot validation. Route both
-  `channel.on` arms through narrowers; `console.warn` + drop on shape
-  mismatch (no silent swallow per `feedback_no_silent_drops_closed`).
+Reviewer (general-purpose agent) round-1 APPROVE clean — 0 findings in
+any severity bucket. All 7 closures verified file:line.
 
-Deployed 2026-05-22 ~13:11 UTC via `scripts/deploy-cic.sh` — cic bundle
-hash `D49vAsv9` broadcast to every live user-topic. No server restart
-(cic-only HOT). Healthcheck `ok`. Live SW source verified via
-`docker compose exec` grep on `/app/runtime/cicchetto-dist/service-worker.js`
-— 8-prefix denylist present.
+**REV-I staged.** Infra simplification — H19 nginx admin allowlist
+snippet extraction (three identical regex edits → one `include`d
+snippet), H27 `deploy.sh:235` + `deploy-cic.sh:48` bare `docker exec
+grappa …` → `_lib.sh`'s `in_container`, M1-M6 `bin/grappa table` +
+docker pattern dedup. Infra-side; COLD because nginx.conf reload
+requires container restart.
 
-Reviewer rounds: 1 fix-up cycle. Round 1 (general-purpose agent) APPROVE
-with MEDIUM-1 (test-pin quality on H23); round 2 APPROVE clean, 0
-findings. Strong validation that the literal-paste reviewer discipline
-catches incomplete-fix-disguised-as-weak-test cases.
-
-**REV-H staged.** Server-side type-tightening Theme A continued (H2-H8,
-H25) — tightens wire-shape typespecs for the structs cic narrows. COLD
-deploy (typespec changes may touch long-lived GenServer state shapes;
-preflight `Grappa.Deploy.Preflight.cli` will auto-classify but manual
-check warranted). Feeds the post-REV-Z `wireTypes.ts` codegen work
-(codegen consumes the tightened typespecs as input source). REV-H
-ordering preserved — codegen comes LATER, after the REV cluster
-closes.
-
-**REV cluster — remaining buckets after REV-G:**
-- REV-H — server-side type tightening Theme A continued (H2-H8, H25) — both, COLD
-- REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD (will re-trigger
-  the meta first-deploy-after-script-change cycle — `--force-cold` mandate)
+**REV cluster — remaining buckets after REV-H:**
+- REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD
 - REV-J — cross-cutting smells (cross-module + lifecycle + persistence MEDs)
 - REV-K — cross-surface naming pay-down (M19, M20) — both, COLD
 - REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only
@@ -78,9 +68,8 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP40 still active** (post-REV-G ~620 lines). Rotation likely at REV-H
-LANDED (REV-H is server-side COLD with multi-module wire-typespec
-changes — bigger entry than the cic-only REV-G).
+**CP40 at ~820 lines — rotation due at REV-I session-start.** Write
+CP41 inheriting REV-G + REV-H + earlier carry-forwards.
 
 ★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
 `project_post_review_ordering_2026_05_22`): after REV-K + REV-Z LANDED,
@@ -91,6 +80,21 @@ bastille validation; codegen-second because the cic↔server wire boundary
 is the highest-risk drift surface the review identified. Bastille is
 prod-runtime migration; cleaner on a green-suite + structurally-typed-
 boundary substrate.
+
+---
+
+## Carry-forwards from REV-H
+
+- **`apply/3` test pattern for the Elixir 1.19 set-theoretic type
+  checker.** Tests that call a function with intentionally-bad literals
+  (FunctionClauseError regression) compile-fail under the new checker
+  if called directly. Use `apply(M, :f, [args])` to defeat the static
+  analysis; the runtime `FunctionClauseError` is the contract. Earns a
+  feedback memory if it bites a 3rd time.
+- **HOT-deploy path proven for server-side typespec tightening** —
+  REV-H is the first server-side REV bucket that auto-classified HOT.
+  Future Theme A buckets (none expected this cluster) can use the same
+  path.
 
 ---
 
