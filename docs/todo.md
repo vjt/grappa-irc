@@ -10,38 +10,37 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 4 of 11 closed (REV-D LANDED 2026-05-22, fc5d221).**
-Full close-out in `docs/checkpoints/2026-05-22-cp39.md`. Closes 5 HIGH + 2
-gating MEDs from the 2026-05-22 codebase review:
-- H12 — `Backoff.record_failure` funneled into `Session.Server.terminate/2`
-  abnormal-reason clause; single funnel for every crash class
-- H13 — `Visitor.touch_changeset/2` monotonicity guard + new
-  `expire_changeset/2` for `mark_failed/2`'s forced-expiry semantic
-- H14 — `Visitors.commit_password/2` + `Visitors.update_nick/2` wrap
-  `Repo.update` in `try/rescue Ecto.StaleEntryError` → `{:error, :not_found}`
-- H15 — `last_joined_channels` cap hoisted to schema; `Credential.last_joined_channels_max/0`
-  is SoT; `validate_length/3` enforces the bound at the changeset boundary
-- H16 — `Grappa.Push.boot/0` + `vapid_public_key/0` (`:persistent_term`-backed)
-  closes the lone runtime `Application.fetch_env!/2` violation
-- M16 — `ChannelsController.delete/2` propagates autojoin-removal errors via
-  `with` → FallbackController (was silent 202 + log line)
-- M17 — `ArchiveController.delete/2` strict-bind → `with` arm; extracted
-  `delete_for_target/3` helper
+**REV cluster autopilot — bucket 5 of 11 closed (REV-E LANDED 2026-05-22, 1980035).**
+Full close-out in `docs/checkpoints/2026-05-22-cp40.md`. Closes 1 HIGH from the
+2026-05-22 codebase review:
+- H11 — `:ok = Client.send_*` regression sweep across 9 sites in
+  `lib/grappa/session/server.ex`. Propagate-path (raw `:send_mode` handle_call +
+  `send_chunked_mode` → recursive `flush_mode_chunks` halt-on-first-error per
+  CLAUDE.md collect-or-bail pattern). Fire-and-forget path (apply_effects
+  `:reply` arm + `flush_lines` ghost-recovery + 5 AWAY-internal sites consolidated
+  into `maybe_log_send_failure/2` helper). MED-3 honesty: AwayState mutator
+  flips local state but Session restart wipes it — operator must re-issue
+  `/away` post-reconnect (UX-7 follow-up could surface a hint).
 
-COLD deploy applied (with `_build/prod` cleanup per `feedback_hot_deploy_corrupts_build_prod`
-— **4th repro** of preflight FALSE-HOT after local merge per
-`feedback_deploy_preflight_empty_diff_after_merge`). All 7 findings live-verified
-post-deploy (healthcheck ok + H16 `:persistent_term` smoke confirmed live).
-Reviewer round 1 → APPROVE with 2 LOWs (LOW-2 spec narrowing applied inline;
-LOW-1 documented).
+HOT-deployed via `Phoenix.CodeReloader.reload/1` (Path 2 — manual preflight
+verification against deployed SHA `4b33ae6` BEFORE running `scripts/deploy.sh`
+to defuse the FALSE-HOT empty-diff trap per
+`feedback_deploy_preflight_empty_diff_after_merge`). Live-verified post-deploy
+via grep on `/app/lib/...` confirming the new `dispatch_ops_verb` catch-all
+source is loaded.
 
-**REV-E staged.** `:ok = Client.send_*` regression sweep (H11) across 8+ sites
-where strict-bind on `IRC.Client.send_*` returns crashes the caller once the
-U-cluster boundary fix returns `{:error, :no_socket}` on dead socket. Server-only,
-likely HOT.
+Reviewer round 1 (general-purpose agent): HIGH-1 (dispatch_ops_verb non-
+exhaustive with-chain — Channel-side WithClauseError relocation of the same
+crash class) + MED-1 (Session.send_* spec drift — all 22 wrappers widened with
+new typedoc'd `Session.send_transport_error/0` type) + MED-2 (apply_effects
+`:reply` arm comment lied about reply/persist ordering) + MED-3 (AwayState
+recovery overstated). All fixed in commit `1980035`. LOW-1 (CTCP source-grep
+test) + LOW-2 (helper takes String.t() label) deferred as stylistic follow-ups.
+Round 2: APPROVE clean (0/0/0/0).
 
-**REV cluster — remaining buckets after REV-D:**
-- REV-E — `:ok = Client.send_*` regression sweep (H11) — server, 8+ sites
+**REV-F staged.** IRC SASL fallback + missing `:invalid_line` arm (H9, H10) — server.
+
+**REV cluster — remaining buckets after REV-E:**
 - REV-F — IRC SASL fallback + missing :invalid_line arm (H9, H10) — server
 - REV-G — cic SW denylist + adminEvents narrower + markerRef leak (H22, H24, H23) — cic, HOT cic-only
 - REV-H — server-side type tightening Theme A continued (H2-H8, H25) — both, COLD
@@ -56,20 +55,33 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP39 → CP40 active.** REV-D summary in CP39 (now 770 lines, capped at
-rotation threshold). CP40 carries REV-E onwards.
+**CP40 still active** (~360 lines post-REV-E LANDED). Comfortable headroom
+for REV-F + maybe REV-G before next rotation.
 
 ---
 
-## Carry-forwards from REV-D
+## Carry-forwards from REV-E
 
-- **Preflight FALSE-HOT after local merge** —
-  `feedback_deploy_preflight_empty_diff_after_merge` reproduced for the
-  4th time during REV-D deploy. The mitigation candidate (compare against
-  LIVE container SHA, not local `prev_sha == HEAD`) belongs in REV-J or
-  REV-Z.
-- **`_build/prod` cleanup procedure** — STILL undocumented in operator
-  runbook. Reproduced 4th time during REV-D. Defer to REV-Z docs sweep.
+- **HOT-deploy Path 2 procedure worked** — manual preflight against deployed
+  SHA before `scripts/deploy.sh` correctly classified HOT for REV-E and the
+  HOT reload swapped the new modules cleanly without container restart.
+  Procedure proven safe; REV-D's FALSE-HOT empty-diff trap was defused. Real
+  mitigation (preflight should compare against LIVE container SHA, not local
+  `prev_sha == HEAD`) still belongs in REV-J or REV-Z.
+- **REV-D's `_build/prod` cleanup procedure** — STILL undocumented in operator
+  runbook (REV-E was HOT so it didn't recur — REV-Z target).
+- **AwayState reconnect re-issue** — operator must re-issue `/away` post-
+  reconnect because Session crash wipes AwayState. UX-7 follow-up could surface
+  a "your AWAY was lost on reconnect" hint via the cic channel. NOT REV-F
+  scope; backlogged.
+- **CTCP `apply_effects {:reply, line}` runtime regression test** — REV-E's
+  test was a source-grep workaround because the IRC.Client recv-loop
+  (`:prim_inet.setopts(nil, ...)`) crashes post-socket-nil. That's a separate
+  silent-swallow class (handle_info `{:tcp, _, _}` post-socket-nil) — track
+  as REV-J or REV-Z candidate.
+- **`Grappa.AdmissionTest` + `AdminEventsTest:197` baseline flakes** — same
+  testnet-flake set as `feedback_bahamut_load_flake` + the singleton-class
+  backlog. Pre-REV-E. Defer to a dedicated cluster.
 - **MED-2 carry-forward from REV-B** still open —
   `validate_target_name/1` runs on pre-canonical `target` in
   ArchiveController. Bytes-equivalent today; minor drift risk.
