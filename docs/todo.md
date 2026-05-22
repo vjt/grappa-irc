@@ -10,6 +10,19 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-7-A IN PROGRESS 2026-05-22** — baseline e2e fails investigation,
+spec 1 of 2: `ux-4-z-cluster-journey.spec.ts:141`. The backdrop tap
+following the Bucket A members-list verification fails on
+webkit-iphone-15 — `.shell-drawer-backdrop.open` is reported as
+intercepted by `members-pane` (subtree of `aside.shell-members.open`).
+Drawer doesn't close on backdrop tap. Confirmed reproduce on baseline
+`1e90554` during the UX-6-I.2 parity run. Investigation will:
+(a) confirm local repro on 2 consecutive runs; (b) inspect z-index +
+viewport coords + drawer width vs tap coord (Playwright `tap()`
+center-of-viewport-default behavior); (c) minimum-surface fix; (d) full
+gates + reviewer-loop. Next pickup will tackle spec 2 of 2:
+`ux-z-cluster-journey.spec.ts:86` (archive `#bofh` row never renders).
+
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
 
