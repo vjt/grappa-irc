@@ -818,6 +818,49 @@ defmodule Grappa.NetworksTest do
     end
   end
 
+  # REV-B / H6 (2026-05-22 codebase review). `connect/1`, `disconnect/2`,
+  # `mark_failed/2` each pattern-match a subset of
+  # `Credential.connection_states/0` without explicit fallthrough. If
+  # the enum ever grows a 4th state (e.g. SASL-gated `:locked`), the
+  # current shape would silently `FunctionClauseError` rather than
+  # surface the enum addition via a typed return. Per
+  # `feedback_no_silent_drops_closed` we raise rather than swallow — the
+  # raise carries the inspected unknown atom so the caller knows what to
+  # extend.
+  #
+  # These tests fabricate an out-of-enum `connection_state` on a struct
+  # literal (no DB write — the schema `Ecto.Enum` cast would reject the
+  # write at the changeset boundary, which is the in-place state-writer
+  # `transition!/3`'s pre-write guard, distinct from the function-clause
+  # discipline these tests pin).
+  describe "REV-B H6 — closed-set fallthrough on unknown connection_state" do
+    test "connect/1 raises ArgumentError on unknown state" do
+      cred = %Credential{connection_state: :locked, user_id: "fake", network_id: 1}
+
+      assert_raise ArgumentError, ~r/Networks\.connect: unhandled connection_state :locked/, fn ->
+        Networks.connect(cred)
+      end
+    end
+
+    test "disconnect/2 raises ArgumentError on unknown state" do
+      cred = %Credential{connection_state: :locked, user_id: "fake", network_id: 1}
+
+      assert_raise ArgumentError, ~r/Networks\.disconnect: unhandled connection_state :locked/, fn ->
+        Networks.disconnect(cred, "anything")
+      end
+    end
+
+    test "mark_failed/2 raises ArgumentError on unknown state" do
+      cred = %Credential{connection_state: :locked, user_id: "fake", network_id: 1}
+
+      assert_raise ArgumentError,
+                   ~r/Networks\.mark_failed: unhandled connection_state :locked/,
+                   fn ->
+                     Networks.mark_failed(cred, "anything")
+                   end
+    end
+  end
+
   describe "home_data_for_user/1 (UX-4 B)" do
     test "renders %{networks: []} for a user with zero credentials" do
       user = user_fixture()

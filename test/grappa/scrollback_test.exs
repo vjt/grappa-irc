@@ -13,6 +13,7 @@ defmodule Grappa.ScrollbackTest do
   busy_timeout further (already 30s).
   """
   use Grappa.DataCase, async: false
+  use ExUnitProperties
 
   import Grappa.AuthFixtures
 
@@ -1072,7 +1073,19 @@ defmodule Grappa.ScrollbackTest do
     # cross-subject scan. EXPLAIN QUERY PLAN is the only observable
     # signal that the index leadership matters; functional output is
     # identical either way.
-    test "EXPLAIN QUERY PLAN: user-side DM fetch picks the subject-leading composite",
+    #
+    # REV-B / H18 (2026-05-22 codebase review): the regression
+    # invariant is "subject-LEADING", not "this specific index name".
+    # The new REV-B covering index (`messages_archive_user_idx` on
+    # `(user_id, network_id, COALESCE(dm_with, channel), server_time)`)
+    # is ALSO subject-leading; SQLite's planner may pick it for the
+    # DM-fetch OR-shape because the COALESCE column matches BOTH OR
+    # arms in a single walk. Either choice preserves the H1
+    # invariant — the `refute` against the subject-less
+    # `messages_network_id_dm_with_server_time_index` is the
+    # invariant; the asserted name list permits the planner to pick
+    # the more selective subject-leading composite.
+    test "EXPLAIN QUERY PLAN: user-side DM fetch picks a subject-leading composite",
          %{user: user, network: net} do
       {:ok, %{rows: rows}} =
         Repo.query("""
@@ -1087,14 +1100,19 @@ defmodule Grappa.ScrollbackTest do
 
       plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
 
-      assert plan_text =~ "messages_user_id_network_id_dm_with_server_time_index",
-             "expected dm_with arm to use the subject-leading composite, got plan:\n#{plan_text}"
+      acceptable = [
+        "messages_user_id_network_id_dm_with_server_time_index",
+        "messages_archive_user_idx"
+      ]
+
+      assert Enum.any?(acceptable, &String.contains?(plan_text, &1)),
+             "expected dm_with arm to use a subject-leading composite (#{Enum.join(acceptable, " OR ")}), got plan:\n#{plan_text}"
 
       refute plan_text =~ "messages_network_id_dm_with_server_time_index",
              "old subject-less index must NOT be used:\n#{plan_text}"
     end
 
-    test "EXPLAIN QUERY PLAN: visitor-side DM fetch picks the subject-leading composite",
+    test "EXPLAIN QUERY PLAN: visitor-side DM fetch picks a subject-leading composite",
          %{network: net} do
       {:ok, visitor} =
         Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
@@ -1112,8 +1130,13 @@ defmodule Grappa.ScrollbackTest do
 
       plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
 
-      assert plan_text =~ "messages_visitor_id_network_id_dm_with_server_time_index",
-             "expected dm_with arm to use the subject-leading composite, got plan:\n#{plan_text}"
+      acceptable = [
+        "messages_visitor_id_network_id_dm_with_server_time_index",
+        "messages_archive_visitor_idx"
+      ]
+
+      assert Enum.any?(acceptable, &String.contains?(plan_text, &1)),
+             "expected dm_with arm to use a subject-leading composite (#{Enum.join(acceptable, " OR ")}), got plan:\n#{plan_text}"
 
       refute plan_text =~ "messages_network_id_dm_with_server_time_index",
              "old subject-less index must NOT be used:\n#{plan_text}"
@@ -1707,6 +1730,105 @@ defmodule Grappa.ScrollbackTest do
 
       assert {:ok, 0} = Scrollback.delete_for_channel({:user, vjt.id}, net.id, "#room")
       assert [_] = Repo.all(Message)
+    end
+  end
+
+  # REV-B / H17 (2026-05-22 codebase review). Write side canonicalises
+  # channel names via `Identifier.canonical_channel/1` (sigil-aware);
+  # delete side did raw `String.downcase/1`. ASCII channels agree
+  # today (both shapes collapse to `String.downcase/1` for `[A-Z]`),
+  # but any future canonicalisation extension would silently make the
+  # delete miss its target rows. Property test pins the parity: for
+  # ANY mixed-case channel name, `delete_for_channel(s)` and
+  # `delete_for_channel(canonical(s))` must affect the SAME row set.
+  describe "REV-B H17 — delete_for_channel/3 canonicalisation parity with write side" do
+    property "write side and delete side observe the same channel canonicalisation rule",
+             %{user: user, network: net} do
+      # Sigil-prefixed mixed-case channel-shape names. The single-char
+      # body keeps the property fast — the canonicalisation rule is
+      # name-independent, the property generator only needs to vary
+      # case + sigil. We bias to the common `#` sigil + a short letter
+      # body; the rule is identical for `&!+`.
+      check all(
+              letter <- StreamData.member_of(~w(A B X y z foo BAR Mixed)),
+              max_runs: 20
+            ) do
+        channel = "#" <> letter
+
+        canonical = Grappa.IRC.Identifier.canonical_channel(channel)
+
+        # Persist one row under the canonical channel (write side has
+        # already canonicalised, so this matches the on-disk shape).
+        {:ok, persisted} =
+          Scrollback.persist_event(
+            sample(user, net, :erlang.unique_integer([:positive]), %{
+              channel: canonical,
+              dm_with: nil
+            })
+          )
+
+        # Delete via the mixed-case caller-supplied name. Pre-H17 the
+        # raw `String.downcase` would have matched ASCII (today); the
+        # property pins the single-source guarantee.
+        assert {:ok, 1} = Scrollback.delete_for_channel({:user, user.id}, net.id, channel)
+
+        # And the row is actually gone.
+        assert Repo.get(Message, persisted.id) == nil
+      end
+    end
+  end
+
+  # REV-B / H18 (2026-05-22 codebase review). Covering expression index
+  # on `(<subject>, network_id, COALESCE(dm_with, channel))` for
+  # `list_archive/3`'s GROUP BY shape. The migration is purely
+  # additive — the planner picks it up automatically once present. We
+  # assert via `EXPLAIN QUERY PLAN` that the planner consults
+  # `messages_archive_user_idx` (or `messages_archive_visitor_idx`)
+  # for the archive query shape.
+  #
+  # SQLite is permitted to fall through to `SCAN messages` on very
+  # small tables (zero or one row) — the test seeds enough rows to
+  # nudge the planner past that heuristic.
+  describe "REV-B H18 — list_archive/3 covering index" do
+    test "EXPLAIN QUERY PLAN consults messages_archive_user_idx", %{user: user, network: net} do
+      # Seed a handful of rows so the planner has cardinality to
+      # reason about; bias toward heterogeneous COALESCE values so
+      # the index is materially useful.
+      for {ch, dm, st} <- [
+            {"#a", nil, 10},
+            {"#b", nil, 20},
+            {"peer", "peer", 30},
+            {"other", "other", 40}
+          ] do
+        {:ok, _} = Scrollback.persist_event(sample(user, net, st, %{channel: ch, dm_with: dm}))
+      end
+
+      sql = """
+      EXPLAIN QUERY PLAN
+        SELECT COALESCE(dm_with, channel) AS target,
+               MAX(server_time) AS last_activity,
+               COUNT(*) AS row_count
+          FROM messages
+         WHERE user_id = ? AND network_id = ?
+         GROUP BY COALESCE(dm_with, channel)
+      """
+
+      %Exqlite.Result{rows: rows} = Repo.query!(sql, [user.id, net.id])
+
+      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
+
+      # The planner output for SQLite uses "SEARCH messages USING INDEX
+      # <name>" when the index is actually applied. We accept either
+      # the user-scoped index by name OR the broader assertion that
+      # SOME index is used (defensive against minor SQLite planner
+      # wording variance across versions); the index name is the
+      # canonical signal and what the migration guarantees exists.
+      assert plan =~ "messages_archive_user_idx",
+             """
+             Expected EXPLAIN QUERY PLAN to reference messages_archive_user_idx,
+             got:
+             #{plan}
+             """
     end
   end
 end

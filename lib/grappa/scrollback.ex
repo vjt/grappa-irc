@@ -54,6 +54,7 @@ defmodule Grappa.Scrollback do
 
   import Ecto.Query
 
+  alias Grappa.IRC.Identifier
   alias Grappa.Repo
   alias Grappa.Scrollback.{Message, Meta}
 
@@ -532,7 +533,7 @@ defmodule Grappa.Scrollback do
     # in `Grappa.Scrollback.Message.changeset/2` + the backfill
     # migration. Sigil-aware via `Identifier.canonical_channel/1` —
     # nick-shape DM targets pass through unchanged.
-    channel = Grappa.IRC.Identifier.canonical_channel(channel)
+    channel = Identifier.canonical_channel(channel)
 
     cond do
       # Own-nick query window: restrict to self-msgs only
@@ -618,7 +619,19 @@ defmodule Grappa.Scrollback do
   @spec delete_for_dm(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
   def delete_for_dm(subject, network_id, peer)
       when is_integer(network_id) and is_binary(peer) do
-    lower_peer = String.downcase(peer)
+    # REV-B / H17 (2026-05-22 codebase review): route through
+    # `Identifier.canonical_channel/1` for boundary single-sourcing
+    # consistency with `delete_for_channel/3` + the controller. The
+    # call is a no-op on nick-shaped input (no sigil → pass-through),
+    # so the `lower()` fragment comparison stays correct: `dm_with`
+    # is intentionally case-preserved at write time (see
+    # `lib/grappa/scrollback/message.ex:252-254`), and `dm_with` is
+    # the nick comparator. The orphan-channel arm
+    # (`is_nil(m.dm_with) and channel = peer`) compares against the
+    # canonical-cased `channel` column — write-time canonical guarantees
+    # the lowercase form, so `lower()` is redundant but harmless.
+    canonical_peer = Identifier.canonical_channel(peer)
+    lower_peer = String.downcase(canonical_peer)
 
     # UX-3 Z (2026-05-18): match the same coalescing rule `list_archive/3`
     # uses on the read side. The read-side groups by
@@ -670,13 +683,25 @@ defmodule Grappa.Scrollback do
   @spec delete_for_channel(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
   def delete_for_channel(subject, network_id, channel)
       when is_integer(network_id) and is_binary(channel) do
-    lower_channel = String.downcase(channel)
+    # REV-B / H17 (2026-05-22 codebase review): single-source the
+    # canonicalisation rule via `Identifier.canonical_channel/1` so the
+    # delete path observes the SAME normalisation the write path
+    # applies in `Grappa.Scrollback.Message.canonicalize_channel/1` +
+    # the UX-4-A backfill migration. Pre-fix the delete path raw-
+    # downcased while the write path called the sigil-aware
+    # `canonical_channel`. ASCII channels agree today (both shapes
+    # collapse to `String.downcase/1` for `[A-Z]`), but any future
+    # canonicalisation extension (Unicode-aware casefold, leading-`!`
+    # strip, etc.) would silently make the delete miss its target
+    # rows. Stored `channel` is already canonical → plain `==` (no
+    # `lower()` fragment) is the correct comparison.
+    canonical = Identifier.canonical_channel(channel)
 
     {count, _} =
       Message
       |> subject_where(subject)
       |> where([m], m.network_id == ^network_id)
-      |> where([m], fragment("lower(?)", m.channel) == ^lower_channel)
+      |> where([m], m.channel == ^canonical)
       |> Repo.delete_all()
 
     {:ok, count}

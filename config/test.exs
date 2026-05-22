@@ -15,6 +15,12 @@ config :grappa, Grappa.Repo,
   # comes from interleaved checkouts, not concurrent file writes.
   pool_size: 1,
   busy_timeout: 30_000,
+  # REV-B / C3 (2026-05-22 codebase review): pin PRAGMAs in lockstep
+  # with config/runtime.exs and config/dev.exs. See runtime.exs for
+  # the full rationale — dep major-version default flip would silently
+  # subvert WAL durability or CASCADE FK invariants without a diff.
+  synchronous: :normal,
+  foreign_keys: :on,
   # CI runner is slower than local dev (single-vCPU + coveralls
   # instrumentation overhead). Default DBConnection queue_target=50ms /
   # queue_interval=1000ms triggers `queue_timeout` on Sandbox checkout

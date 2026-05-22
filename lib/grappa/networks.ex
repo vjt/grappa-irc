@@ -398,6 +398,18 @@ defmodule Grappa.Networks do
     {:ok, updated}
   end
 
+  # REV-B / H6 (2026-05-22 codebase review): explicit fallthrough raises
+  # on any future `Credential.connection_state()` addition (e.g. a
+  # SASL-gated `:locked`). Without this, the Dialyzer spec lies — the
+  # clauses above are exhaustive on the CURRENT enum but not the future
+  # one, and runtime falls through as `FunctionClauseError` instead of
+  # the typed `{:ok, _}` contract. Per `feedback_no_silent_drops_closed`,
+  # we RAISE rather than `{:error, _}`-fallthrough so the enum addition
+  # is visible at the call sites that hold a fully-typed credential.
+  # Mirrors `Scrollback.subject_where/2` (B5.4 L-pers-2 precedent).
+  def connect(%Credential{connection_state: other}),
+    do: raise(ArgumentError, "Networks.connect: unhandled connection_state #{inspect(other)}")
+
   @doc """
   Transitions a credential to `:parked` (user-initiated `/disconnect`
   or `/quit`). `:connected → :parked`; rejects from `:parked | :failed`
@@ -429,6 +441,12 @@ defmodule Grappa.Networks do
   def disconnect(%Credential{connection_state: state}, _)
       when state in [:parked, :failed],
       do: {:error, :not_connected}
+
+  # REV-B / H6 (2026-05-22 codebase review): see `connect/1` fallthrough
+  # rationale. Raises on any future `Credential.connection_state()`
+  # addition rather than silently `FunctionClauseError`-ing.
+  def disconnect(%Credential{connection_state: other}, _),
+    do: raise(ArgumentError, "Networks.disconnect: unhandled connection_state #{inspect(other)}")
 
   @doc """
   Server-internal: marks a credential `:failed` after a hard upstream
@@ -463,6 +481,12 @@ defmodule Grappa.Networks do
 
   def mark_failed(%Credential{connection_state: :parked}, _),
     do: {:error, :user_parked}
+
+  # REV-B / H6 (2026-05-22 codebase review): see `connect/1` fallthrough
+  # rationale. Raises on any future `Credential.connection_state()`
+  # addition rather than silently `FunctionClauseError`-ing.
+  def mark_failed(%Credential{connection_state: other}, _),
+    do: raise(ArgumentError, "Networks.mark_failed: unhandled connection_state #{inspect(other)}")
 
   @doc """
   Session-internal variant of `mark_failed/2` for use from

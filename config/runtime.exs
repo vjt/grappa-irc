@@ -52,7 +52,19 @@ if config_env() == :prod do
     busy_timeout: 30_000,
     journal_mode: :wal,
     cache_size: -64_000,
-    temp_store: :memory
+    temp_store: :memory,
+    # REV-B / C3 (2026-05-22 codebase review): pin PRAGMAs that today
+    # happen to be the correct ecto_sqlite3 defaults — `synchronous:
+    # :normal` (correct under WAL — fsync on checkpoint, not every
+    # commit) and `foreign_keys: :on` (the visitor-reap CASCADE chain
+    # walks 8 tables and silently no-ops without it). Defaults are
+    # "right by accident" — a dep major-version flip would silently
+    # convert every prod commit into a fsync-deferred best-effort
+    # write OR break CASCADE without a migration, log line, or diff.
+    # Insurance against future dep upgrades; zero runtime behavior
+    # change today.
+    synchronous: :normal,
+    foreign_keys: :on
 
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||

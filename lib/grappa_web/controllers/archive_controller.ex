@@ -107,13 +107,31 @@ defmodule GrappaWeb.ArchiveController do
     session_subject = Subject.to_session(subject)
 
     with :ok <- validate_target_name(target) do
+      # REV-B / H17 (2026-05-22 codebase review): canonicalise the
+      # target at the controller boundary BEFORE sigil dispatch so the
+      # delete path observes the same normalisation as the write path
+      # (`Grappa.Scrollback.Message.canonicalize_channel/1`). The
+      # `Identifier.canonical_channel/1` helper is sigil-aware — it
+      # lowercases channel-shaped names and passes nick-shaped names
+      # through verbatim, so it is also safe for the `:query` branch
+      # (DMs are nick-shaped and case-meaningful per the `dm_with`
+      # column rule at `lib/grappa/scrollback/message.ex:252-254`,
+      # which `canonical_channel/1` correctly preserves). Mirrors the
+      # write-side single-sourcing pattern; the only consumer of
+      # `delete_for_channel/3` is this controller so the upstream
+      # canonicalisation is sufficient.
+      canonical_target = Grappa.IRC.Identifier.canonical_channel(target)
+
       {:ok, _} =
-        case Scrollback.target_kind(target) do
-          :channel -> Scrollback.delete_for_channel(session_subject, network.id, target)
-          :query -> Scrollback.delete_for_dm(session_subject, network.id, target)
+        case Scrollback.target_kind(canonical_target) do
+          :channel ->
+            Scrollback.delete_for_channel(session_subject, network.id, canonical_target)
+
+          :query ->
+            Scrollback.delete_for_dm(session_subject, network.id, canonical_target)
         end
 
-      _ = broadcast_archive_purged(subject, network.slug, target)
+      _ = broadcast_archive_purged(subject, network.slug, canonical_target)
 
       send_resp(conn, :no_content, "")
     end
