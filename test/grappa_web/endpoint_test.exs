@@ -60,11 +60,11 @@ defmodule GrappaWeb.EndpointTest do
                Keyword.fetch!(original_env, :session_signing_salt)
     end
 
-    test "config_change/2 invalidates :persistent_term cache when salt changes (REV-C MED-1)" do
+    test "config_change/2 invalidates :persistent_term cache when salt changes (REV-C MED-1 / round-2 HIGH-1)" do
       original_env = Application.fetch_env!(:grappa, Endpoint)
 
-      # Prime the cache.
-      Plug.Conn.put_resp_header(%Plug.Conn{}, "x-warm", "1")
+      # Prime the cache with a sentinel that we can prove gets
+      # overwritten by the invalidation path.
       :persistent_term.put({Endpoint, :session_opts}, :primed_sentinel)
 
       rotated = "rotated-#{System.unique_integer([:positive])}"
@@ -75,7 +75,14 @@ defmodule GrappaWeb.EndpointTest do
         Keyword.put(original_env, :session_signing_salt, rotated)
       )
 
-      Endpoint.config_change([session_signing_salt: rotated], [])
+      # `Application.config_change/3` delivers application-scoped
+      # changes: `[{GrappaWeb.Endpoint, [session_signing_salt: ...]}]`
+      # — NOT a flat keyword (round-2 HIGH-1 fix; mirror Phoenix's own
+      # Config.config_change/3 shape).
+      Endpoint.config_change(
+        [{Endpoint, [session_signing_salt: rotated]}],
+        []
+      )
 
       cached = :persistent_term.get({Endpoint, :session_opts})
       # The :primed_sentinel must have been overwritten.
@@ -89,7 +96,25 @@ defmodule GrappaWeb.EndpointTest do
 
     test "config_change/2 leaves the cache alone when salt is not in the changed set" do
       :persistent_term.put({Endpoint, :session_opts}, :sentinel_untouched)
-      Endpoint.config_change([url: [host: "different.host"]], [])
+      # url change on the endpoint — different inner key.
+      Endpoint.config_change(
+        [{Endpoint, [url: [host: "different.host"]]}],
+        []
+      )
+
+      assert :persistent_term.get({Endpoint, :session_opts}) == :sentinel_untouched
+    end
+
+    test "config_change/2 ignores changes scoped to a different application key" do
+      :persistent_term.put({Endpoint, :session_opts}, :sentinel_untouched)
+
+      # An outer key matching `:session_signing_salt` shouldn't match —
+      # the inner-keyword scoping must hold.
+      Endpoint.config_change(
+        [{:session_signing_salt, "decoy"}],
+        []
+      )
+
       assert :persistent_term.get({Endpoint, :session_opts}) == :sentinel_untouched
     end
   end

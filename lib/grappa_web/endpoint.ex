@@ -88,20 +88,34 @@ defmodule GrappaWeb.Endpoint do
     )
   end
 
-  # REV-C reviewer MED-1/MED-2: invalidate the session-opts cache when
-  # `:session_signing_salt` changes at runtime. `:persistent_term.put/2`
-  # OVERWRITES the existing key — avoids the `:persistent_term.erase/1`
-  # process-wide GC scan documented at
-  # https://www.erlang.org/doc/man/persistent_term.html.
+  # REV-C reviewer MED-1/MED-2 + round-2 HIGH-1: invalidate the
+  # session-opts cache when `:session_signing_salt` changes at
+  # runtime. `:persistent_term.put/2` OVERWRITES the existing key —
+  # avoids the `:persistent_term.erase/1` process-wide GC scan
+  # documented at https://www.erlang.org/doc/man/persistent_term.html.
   #
-  # `Phoenix.Endpoint.__phoenix_endpoint__/3` macros generate the base
-  # `config_change/2`; we wrap with super/2 + the cache hop.
+  # `changed` arrives application-scoped from
+  # `Application.config_change/3`:
+  #
+  #   [{GrappaWeb.Endpoint, [session_signing_salt: ..., url: ...]},
+  #    {OtherKey, ...}]
+  #
+  # — NOT flat. The predicate must descend into our own module's
+  # keyword first (Phoenix's own `Phoenix.Config.config_change/3`
+  # uses `changed[module]` for the same reason). `removed` is the
+  # outer-keys list; presence of `__MODULE__` there means the whole
+  # endpoint env was removed (full rotation as if a fresh boot).
+  #
+  # `Phoenix.Endpoint.__phoenix_endpoint__/3` macros generate the
+  # base `config_change/2`; we wrap with super/2 + the cache hop.
   defoverridable config_change: 2
 
   @impl Phoenix.Endpoint
   def config_change(changed, removed) do
-    if Keyword.has_key?(changed, :session_signing_salt) or
-         :session_signing_salt in removed do
+    our_changed = Keyword.get(changed, __MODULE__, [])
+
+    if Keyword.has_key?(our_changed, :session_signing_salt) or
+         __MODULE__ in removed do
       :persistent_term.put(@session_persistent_term_key, build_session_opts())
     end
 
