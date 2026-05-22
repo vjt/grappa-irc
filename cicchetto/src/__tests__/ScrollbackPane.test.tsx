@@ -1125,63 +1125,92 @@ describe("ScrollbackPane", () => {
     });
 
     // REV-G H23 (2026-05-22): regression pin on the markerRef function-
-    // ref signal refactor. Pre-REV-G `markerRef` was a `let`-bound ref;
-    // SolidJS doesn't auto-null let-bound refs on unmount, so when the
-    // marker row was removed mid-channel (cursor advance — same scenario
-    // as Bug A above), subsequent reads of `markerRef` still pointed at
-    // the now-detached DOM node. A visibility-return after mid-channel
-    // removal would call `scrollIntoView` on the stale node instead of
-    // taking the fall-through scroll-to-bottom branch.
+    // ref signal + onCleanup refactor. Pre-REV-G `markerRef` was a
+    // `let`-bound ref; SolidJS doesn't auto-null let-bound refs on
+    // unmount, so when the marker row was removed mid-channel (cursor
+    // advance — same scenario as Bug A above), subsequent reads of
+    // `markerRef` still pointed at the now-detached DOM node. A
+    // visibility-return after mid-channel removal would call
+    // `scrollIntoView` on the stale node and either throw (real browser
+    // TypeError on detached node) or silently no-op (jsdom optional-
+    // chain swallowed the call).
     //
-    // Post-REV-G `markerRef` is a `createSignal` function-ref:
-    // SolidJS calls the ref function with `undefined` on unmount, so
-    // `markerRef()` returns undefined and the scrollToActivation effect
-    // takes the marker-absent branch.
+    // Post-REV-G `markerRef` is a `createSignal` function-ref + an
+    // explicit `onCleanup` at the marker JSX (SolidJS function-refs
+    // are mount-only; React-style auto-null on unmount requires the
+    // explicit hook). Signal flips back to undefined on unmount;
+    // downstream readers (`scrollToActivation`, length-effect) take
+    // the marker-absent branch.
     //
-    // This test exercises the full mid-channel + visibility-return
-    // sequence and asserts no crash + correct fall-through behavior
-    // (atBottom latches true after the marker is gone and the next
-    // visibility-return fires). The crash would be a TypeError from
-    // calling .scrollIntoView on a node that's been removed but pre-
-    // REV-G still held in the let ref.
-    it("REV-G H23: visibility-return after mid-channel marker removal does not crash on stale ref", async () => {
+    // Pin strategy: spy on `Element.prototype.scrollIntoView` (same
+    // polyfill pattern the "scroll-on-activate canonical" describe
+    // block uses) and assert it's NOT called between the cursor-
+    // advance-mid-channel and post-visibility-return checkpoints.
+    // The marker-absent branch sets scrollTop directly; scrollIntoView
+    // belongs ONLY to the marker-present path. A regression to a let-
+    // bound ref OR a missing `onCleanup` would surface as a stray
+    // scrollIntoView call on the detached marker node.
+    it("REV-G H23: visibility-return after mid-channel marker removal does NOT call scrollIntoView (stale-ref pin)", async () => {
       const { applyReadCursorSet } = await import("../lib/readCursor");
       const proto = fixture[0];
       if (!proto) throw new Error("fixture[0] missing");
 
-      const fourUnread: ScrollbackMessage[] = [
-        { ...proto, id: 50, server_time: 100, sender: "alice", body: "u1" },
-        { ...proto, id: 51, server_time: 101, sender: "alice", body: "u2" },
-        { ...proto, id: 52, server_time: 102, sender: "alice", body: "u3" },
-        { ...proto, id: 53, server_time: 103, sender: "alice", body: "u4" },
-      ];
-      seedReadCursor("freenode", "#grappa", 0);
-      setScrollback({ "freenode #grappa": fourUnread });
-      setDocVisible(true);
-      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const scrollIntoViewSpy = vi.fn();
+      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+      const origScrollIntoView = (Element.prototype as any).scrollIntoView;
+      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+      (Element.prototype as any).scrollIntoView = scrollIntoViewSpy;
 
-      // Marker present after mount.
-      expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
+      try {
+        const fourUnread: ScrollbackMessage[] = [
+          { ...proto, id: 50, server_time: 100, sender: "alice", body: "u1" },
+          { ...proto, id: 51, server_time: 101, sender: "alice", body: "u2" },
+          { ...proto, id: 52, server_time: 102, sender: "alice", body: "u3" },
+          { ...proto, id: 53, server_time: 103, sender: "alice", body: "u4" },
+        ];
+        seedReadCursor("freenode", "#grappa", 0);
+        setScrollback({ "freenode #grappa": fourUnread });
+        setDocVisible(true);
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
 
-      // Mid-channel cursor advance removes the marker (Bug A path).
-      applyReadCursorSet("freenode", "#grappa", 53);
-      await waitFor(() => {
-        expect(screen.queryByTestId("unread-marker")).toBeNull();
-      });
+        // Marker present after mount; the length-effect's initial run
+        // may or may not have fired scrollIntoView depending on jsdom
+        // flush order. We don't care — the regression pin is the
+        // POST-visibility-return checkpoint.
+        expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
 
-      // Now simulate a backgrounded → foregrounded transition (visibility
-      // false → true) on the SAME channel. The activation effect re-runs
-      // scrollToActivation; pre-REV-G this would call scrollIntoView on
-      // the stale markerRef (detached node) and crash. Post-REV-G the
-      // signal returns undefined → fall-through to scroll-to-bottom.
-      setDocVisible(false);
-      setDocVisible(true);
+        // Mid-channel cursor advance removes the marker DOM row. The
+        // marker's onCleanup hook fires, setMarkerRef(undefined).
+        applyReadCursorSet("freenode", "#grappa", 53);
+        await waitFor(() => {
+          expect(screen.queryByTestId("unread-marker")).toBeNull();
+        });
 
-      // No throw + marker still absent — the fall-through branch fired
-      // without crashing on a stale ref.
-      await waitFor(() => {
-        expect(screen.queryByTestId("unread-marker")).toBeNull();
-      });
+        // Clear the spy: from THIS point on, no scrollIntoView call is
+        // acceptable. Pre-REV-G the stale-ref path would fire
+        // scrollIntoView during the visibility-return effect.
+        scrollIntoViewSpy.mockClear();
+
+        // Drive visibility false→true on the SAME channel. Yield between
+        // transitions so SolidJS flushes the false state (effect captures
+        // prev=false) BEFORE we flip back to true — otherwise both writes
+        // batch and the effect's prev=undefined guard returns early.
+        setDocVisible(false);
+        await new Promise((r) => queueMicrotask(() => r(undefined)));
+        setDocVisible(true);
+        await new Promise((r) => queueMicrotask(() => r(undefined)));
+
+        // GREEN post-fix: 0 scrollIntoView calls — marker gone, signal
+        // returns undefined, fall-through branch (scrollTop = ...) ran.
+        // RED pre-fix: scrollIntoView called on the detached marker
+        // div still held by the let-bound ref / signal-without-cleanup.
+        expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+      } finally {
+        // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+        (Element.prototype as any).scrollIntoView = origScrollIntoView;
+      }
     });
 
     // CP29 R-6: vjt's "/part → /join shows 'unread messages' for my own

@@ -620,13 +620,20 @@ type Row = SeparatorRow | UnreadMarkerRow | MessageRow;
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
   // REV-G H23 (2026-05-22): function-ref signal instead of let-bound
-  // ref. SolidJS calls the ref function with `undefined` on unmount —
-  // mid-channel removal of the unread-marker row (cursor advance while
-  // staying on the same channel) now nulls the pointer automatically.
-  // Pre-REV-G the let-bound ref leaked across <For> diffs; the channel-
-  // switch case was compensated by an explicit reset, mid-channel
-  // removal was not — every read after a cursor-advance saw a stale
-  // detached DOM node. Per `feedback_solidjs_for_ref_leak`.
+  // ref. Combined with an explicit `onCleanup` wired at the marker
+  // JSX site (`{ ref={(el) => { setMarkerRef(el); onCleanup(...) }} }`),
+  // the signal flips back to undefined when the marker row unmounts —
+  // either on channel switch OR on mid-channel removal (cursor advance
+  // while staying on the same channel). Pre-REV-G the let-bound ref
+  // leaked across <For> diffs; the channel-switch case was compensated
+  // by an explicit reset, mid-channel removal was not — every read
+  // after a cursor-advance saw a stale detached DOM node. Per
+  // `feedback_solidjs_for_ref_leak`.
+  //
+  // SolidJS gotcha: unlike React, Solid function-refs are called
+  // ONCE on mount; they do NOT auto-null on unmount. `onCleanup` is
+  // the explicit hook for that lifecycle. The two together (ref-set +
+  // onCleanup-null) give the React-equivalent behavior.
   const [markerRef, setMarkerRef] = createSignal<HTMLDivElement | undefined>();
   const [atBottom, setAtBottom] = createSignal(true);
   // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
@@ -1198,7 +1205,21 @@ const ScrollbackPane: Component<Props> = (props) => {
               if (row.type === "unread-marker") {
                 return (
                   <div
-                    ref={(el) => setMarkerRef(el)}
+                    ref={(el) => {
+                      // REV-G H23: SolidJS function-refs are called
+                      // ONCE on mount; for `<For>`-rendered elements
+                      // they are NOT auto-called with `undefined` on
+                      // unmount the way React refs are. Wire an
+                      // explicit `onCleanup` here so the stale-ref
+                      // bug doesn't re-emerge — when the marker row
+                      // is removed (cursor advance mid-channel OR
+                      // channel switch), the signal flips back to
+                      // undefined and downstream readers
+                      // (`scrollToActivation` + the length-effect)
+                      // take the marker-absent branch.
+                      setMarkerRef(el);
+                      onCleanup(() => setMarkerRef(undefined));
+                    }}
                     class="scrollback-unread-marker"
                     data-testid="unread-marker"
                   >
