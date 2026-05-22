@@ -409,6 +409,19 @@ test("@webkit UX-4-Z cluster — case-fix + home + sidebar collapse + close-fall
     // bootstrap loadUploadTtlSeconds path). Without bucket M's
     // bootstrap effect (reviewer-loop HIGH-1 fix) the saved pref
     // was silently ignored on the first upload after reload.
+    //
+    // UX-7-C (2026-05-22) — the bucket-E PART fix removed the eager
+    // setSelectedChannel(null) from subscribe.ts's self-PART handler.
+    // Selection now stays on whatever the operator was viewing at
+    // PART time (here: the `#ux4z-key-test` :failed pseudo-row,
+    // because /join #ux4z-key-test in bucket F auto-focused it).
+    // On mobile + selectedChannel.kind === "channel", ShellChrome
+    // (which hosts the shell-chrome-cog testid) is suppressed per
+    // UX-5 BM — the cog lives in the members-drawer footer instead.
+    // Switch to the server window so the standalone ShellChrome
+    // re-mounts. This is the existing bucket-K route used above
+    // (line 295 `serverTab.tap()`), no new dependency.
+    await sidebarWindow(page, NETWORK_SLUG, "Server").tap();
     await page.getByTestId("shell-chrome-cog").tap();
     const drawer = page.locator(".settings-drawer.open");
     await expect(drawer).toBeVisible({ timeout: 5_000 });
@@ -475,7 +488,7 @@ test("@webkit UX-4-Z cluster — case-fix + home + sidebar collapse + close-fall
     // logic above relies on vjt being seeded).
     const adminPage = await context.newPage();
     const admin = getSeededAdmin();
-    await loginAs(adminPage, admin);
+    await loginAs(adminPage, admin, { noNetworks: true });
     // ShellChrome cog visible for the home selection (bucket L: cog
     // always visible — re-pinned for the admin-on-home case).
     await expect(adminPage.getByTestId("shell-chrome-cog")).toBeVisible({

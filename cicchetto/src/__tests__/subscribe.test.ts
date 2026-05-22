@@ -2114,7 +2114,20 @@ describe("subscribe — BUG5a: self-PART window dismiss", () => {
     vi.mocked(api.listMessages).mockResolvedValue([]);
   };
 
-  it("self-PART event clears selectedChannel", async () => {
+  it("self-PART of focused channel leaves selection for close-watcher to redirect (no eager null)", async () => {
+    // UX-7-C 2026-05-22: the self-PART handler previously called
+    // `setSelectedChannel(null)` eagerly. That short-circuited the
+    // UX-4-E close-watcher (selection.ts:317 — `if (!sel) return;`
+    // bails on null), so MRU / server-fallback / home picker never
+    // ran. It also nuked selection when the operator partied a
+    // DIFFERENT channel than the focused one (see the next test).
+    //
+    // The window-dismiss intent is now wholly owned by the close-
+    // watcher: own-PART → channels_changed → channelsBySlug drops
+    // the channel → close-watcher fires its MRU/server/home chain.
+    // This handler keeps only the `setParted(key)` projection (the
+    // windowState absence semantic) — see the "own-PART fires
+    // setParted" test below.
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
@@ -2124,7 +2137,7 @@ describe("subscribe — BUG5a: self-PART window dismiss", () => {
     const store = await loadStores();
     await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
 
-    // Pre-select the channel to simulate being focused in #grappa.
+    // Pre-select the focused channel.
     store.setSelectedChannel({ networkSlug: "freenode", channelName: "#grappa", kind: "channel" });
     expect(store.selectedChannel()).not.toBeNull();
 
@@ -2145,7 +2158,62 @@ describe("subscribe — BUG5a: self-PART window dismiss", () => {
       },
     });
 
-    expect(store.selectedChannel()).toBeNull();
+    // The handler MUST NOT eagerly null the selection. Close-watcher
+    // (selection.ts) picks the next window when channelsBySlug drops
+    // the channel — that path is exercised by the UX-4-Z e2e and
+    // selection-redirect tests over there.
+    expect(store.selectedChannel()).toEqual({
+      networkSlug: "freenode",
+      channelName: "#grappa",
+      kind: "channel",
+    });
+  });
+
+  it("self-PART of an UNFOCUSED channel leaves selection untouched (UX-7-C regression guard)", async () => {
+    // UX-7-C 2026-05-22 — exact bug: operator focused on
+    // `#ux4z-key-test` (a :failed pseudo-row), then types
+    // `/part #bofh` (DIFFERENT channel). Pre-fix the handler
+    // unconditionally setSelectedChannel(null) on every own-PART,
+    // nuking the unrelated selection and dumping the operator on the
+    // "select a channel below" placeholder.
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedWithNick("alice");
+    const store = await loadStores();
+    await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled());
+
+    // Focus is on a DIFFERENT channel than the one being parted.
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#elsewhere",
+      kind: "channel",
+    });
+
+    const eventHandler = mockChannel.on.mock.calls.find((c) => c[0] === "event")?.[1] as (
+      p: unknown,
+    ) => void;
+    eventHandler({
+      kind: "message",
+      message: {
+        id: 101,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "part",
+        sender: "alice",
+        body: "Leaving",
+        meta: {},
+      },
+    });
+
+    expect(store.selectedChannel()).toEqual({
+      networkSlug: "freenode",
+      channelName: "#elsewhere",
+      kind: "channel",
+    });
   });
 
   it("other-user PART does NOT clear selectedChannel", async () => {
@@ -2177,7 +2245,9 @@ describe("subscribe — BUG5a: self-PART window dismiss", () => {
       },
     });
 
-    // Still selected — only own PART clears the window.
+    // Selection untouched. Post-UX-7-C neither own-PART nor peer-PART
+    // clears selection in subscribe.ts — the close-watcher in
+    // selection.ts owns selection-redirect on close events.
     expect(store.selectedChannel()).toEqual({
       networkSlug: "freenode",
       channelName: "#grappa",

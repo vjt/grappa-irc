@@ -87,7 +87,11 @@ function isMobileViewport(page: Page): boolean {
 // chrome-free first paint; rather than have every spec dismiss the
 // splash, the test seam mirrors the production "user has chosen
 // browser-only mode" branch via the same localStorage key.
-export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
+export async function loginAs(
+  page: Page,
+  vjt: SeededUser,
+  opts: { noNetworks?: boolean } = {},
+): Promise<void> {
   // addInitScript runs BEFORE any page script — guarantees the
   // localStorage values are present when auth.ts's `createSignal`
   // default reads them. Doing this via page.evaluate AFTER goto would
@@ -112,6 +116,25 @@ export async function loginAs(page: Page, vjt: SeededUser): Promise<void> {
   // DOM is absent entirely in the mobile JSX branch, so a single
   // OR-style selector would be more brittle than a viewport-
   // conditioned one.
+  //
+  // UX-7-C (2026-05-22) — `noNetworks: true` opt-in for users with
+  // NO networks bound (M-7 seeded admin-vjt has no credentials). The
+  // per-network-header selector waits forever in that case; switch
+  // to the registered home pane placeholder ("No networks bound")
+  // which is the post-/me steady-state render for empty-networks
+  // accounts. Opt-in rather than OR-selector because the
+  // `.home-pane-registered` element can RACE in front of the network
+  // section for normal bound users (homeData resolves off /me alone;
+  // network sidebar/bottom-bar wait for /networks + /channels) —
+  // weakening the post-loginAs invariant from "shell fully populated"
+  // to "DOM has homepane scaffolding". Callers that immediately
+  // interact with sidebar/bottom-bar windows would race.
+  if (opts.noNetworks === true) {
+    await expect(page.locator(".home-pane-registered").first()).toBeVisible({
+      timeout: SHELL_READY_TIMEOUT_MS,
+    });
+    return;
+  }
   const readySelector = isMobileViewport(page)
     ? ".bottom-bar-network-header"
     : ".sidebar-network-header";

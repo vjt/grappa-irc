@@ -269,11 +269,21 @@ createRoot(() => {
   // `sender === ownNick`, call `setSelectedChannel` so the operator
   // lands in the new channel immediately. Mirrors irssi's auto-focus.
   //
-  // BUG5a: self-PART window dismiss. When `message.kind === "part"` and
-  // `sender === ownNick`, call `setSelectedChannel(null)` to clear the
-  // focused window. The sidebar removes the channel from the list via
-  // the channels_changed broadcast; without this, ScrollbackPane shows
-  // a ghost window with a blank header.
+  // BUG5a: self-PART windowState projection. When `message.kind === "part"`
+  // and `sender === ownNick`, call `setParted(key)` so the windowState map
+  // drops the entry (absence is the projection per CP15 B5). Window
+  // dismissal — picking the next focused window — is owned by the UX-4-E
+  // close-watcher in `selection.ts:317`: own-PART → `channels_changed`
+  // broadcast → `channelsBySlug` drops the channel → close-watcher fires
+  // its MRU/server/home picker for the focused-channel case.
+  //
+  // Pre-UX-7-C (2026-05-22) this handler also called
+  // `setSelectedChannel(null)` eagerly on EVERY own-PART. That nuked
+  // selection when the operator partied a channel OTHER than the focused
+  // one ("select a channel below" placeholder, no MRU/home redirect at
+  // all). And even for the focused-channel case the eager null
+  // short-circuited the close-watcher (its `if (!sel) return;` bails on
+  // null), so the MRU/server/home chain never ran.
   const installChannelHandler = (
     phx: Channel,
     slug: string,
@@ -374,13 +384,13 @@ createRoot(() => {
             setSelectedChannel({ networkSlug: slug, channelName: name, kind: "channel" });
           }
 
-          // BUG5a: own PART → dismiss the focused window.
+          // BUG5a: own PART → drop the windowState entry. Selection
+          // redirection is owned by the close-watcher in selection.ts
+          // (UX-4-E), which fires off the channels_changed broadcast.
           if (message.kind === "part" && nickEquals(message.sender, ownNick)) {
-            setSelectedChannel(null);
             // CP15 B5: own-PART projects to absence in the windowState
             // map. Server intentionally does NOT broadcast `kind:
-            // "parted"` — cic derives the projection here, mirroring
-            // the same own-nick gate used for the focus dismiss above.
+            // "parted"` — cic derives the projection here.
             setParted(key);
           }
 
