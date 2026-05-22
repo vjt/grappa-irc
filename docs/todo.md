@@ -55,18 +55,90 @@ round 2 APPROVE clean.
 **Deploy:** NONE NEEDED (e2e-only change; no `cicchetto/src/` and no
 Elixir touched).
 
-**UX-7-B IN PROGRESS 2026-05-22.** Investigating
-`ux-z-cluster-journey.spec.ts:86` Failure A (archive modal `#bofh` row
-never renders, `toHaveCount(1)` got 0 after 5s). Repro + root-cause +
-TDD per orchestrator brief. Scope decision after root-cause:
-- If A is small + UX-4-Z:399 (Failure B — post-PART selection-redirect)
-  fits cleanly = fold B in via AskUserQuestion (orchestrator pre-blessed).
-- If A is structural-deep = ship A alone, stage UX-7-C for B.
+**UX-7-B LANDED 2026-05-22.** Failure A (ux-z-cluster-journey.spec.ts:204
+— 200 ghost rows after archive DELETE + re-JOIN of #bofh). Real product
+bug, not spec rot.
 
-Failure B detail: post-PART selection-redirect check
-(`redirectedToHome > 0 || selectedTabText !== null &&
-!selectedTabText.includes(CHANNEL)`) returns false. Selection state
-after `partChannel(#bofh)` doesn't redirect away from `#bofh`.
+**Root cause:** cic's `archive_changed` userTopic handler reloaded the
+per-network archive list via `loadArchive(slug)` but never invalidated
+the in-memory `scrollbackByChannel[key]` for the deleted target. After
+DELETE + re-JOIN, `subscribe.ts`'s join-ok callback fires
+`refreshScrollback(slug, channel)` which fetches `?after=<high-water>`
+— the cursor is past every deleted row, so the server's "empty page"
+answer adds nothing and the pre-delete rows persist in the Solid
+store. Any user that archives + deletes + rejoins on the same tab
+sees ghost scrollback.
+
+**Fix (two-event split, both sides):**
+- **Server**: new `Wire.archive_purged_payload/2(network_slug, target)`
+  for the destructive DELETE path; legacy `archive_changed_payload/1`
+  stays for the PART arm (refresh-only). Single-responsibility events
+  — PART must NOT purge scrollback (user expects to rejoin and see
+  history). `ArchiveController.delete/2` now emits `archive_purged`
+  with `target`; PART path unchanged.
+- **Cic**: new `lib/scrollback.ts:purgeScrollback(key)` verb (drops
+  signal entry + load-once gate + load-more exhausted latch + in-flight
+  guard) + new `lib/reconnectBackfill.ts:clearSeen(key)` (drops
+  per-key high-water mark). `userTopic.ts` archive_purged arm:
+  purge → clearSeen → loadArchive.
+
+**Guard subtlety**: purgeScrollback no-op gate uses
+`(key in scrollbackByChannel() || loadedChannels.has(key))`. Gating on
+`loadedChannels.has` ALONE breaks the fix — auto-joined channels
+populate the signal store via `subscribe.ts:joinOk →
+refreshScrollback → appendToScrollback` WITHOUT touching the
+load-once Set (Set is only added by `loadInitialScrollback`, the
+user-selection path). New regression test
+`scrollback.test.ts:732-758` (drives `appendToScrollback` directly
+without selection) pins this against future contributors.
+
+**readCursor INTENTIONALLY not cleared**: server's `read_cursors` row
+is `ON DELETE SET NULL`'d by FK; `applyJoinReply` no-ops on null;
+sqlite AUTOINCREMENT is monotonic so any post-purge live message has
+id > stale cursor; clearing would break cross-device cursor sync.
+Documented in `userTopic.ts:723-733`.
+
+**Reviewer-loop** (general-purpose, 2 rounds): Round 1 caught MED-1
+(purgeScrollback mutated unconditionally → sibling-tab race),
+LOW-1 (race comment overstated safety), LOW-2 (no doc on readCursor
+retention), Nit (scrollback.ex moduledoc drift). All fixed inline
++ regression test added that pins the first-attempt mistake.
+Round 2: APPROVE clean.
+
+**Gates:**
+- `scripts/check.sh` exit 0 — `Finished in 54.2 seconds (24.3s async,
+  29.9s sync) / 8 doctests, 32 properties, 2314 tests, 0 failures`,
+  Dialyzer `Total errors: 0`, Sobelow v0.14.1 clean, doctor green,
+  bats 23/23.
+- `scripts/bun.sh run check` exit 0 (21 baseline warnings, 0 errors).
+- `scripts/bun.sh run test` exit 0 (89 files / 1573 vitest passed —
+  1560 baseline + 13 new: 6 purgeScrollback + 2 clearSeen + 5
+  archive_purged userTopic dispatch arm).
+- E2E target: `scripts/integration.sh --grep "UX-Z cluster"` 1 passed
+  (9.6s) on TWO consecutive runs (was 1 failed at line 204 pre-fix;
+  baseline confirmed via git stash).
+
+**Deploy**: HOT (preflight classified as safe — no struct/migration/
+application.ex/Dockerfile/nginx/long-lived-genserver changes; just
+new public wire functions + cic surface). cic bundle deploy via
+`scripts/deploy-cic.sh` for hash broadcast. Bundle `index-DmtyBI2h.js`
+→ `index-LoF9Lw3p.js`. Healthcheck ok post-deploy.
+
+**Pre-existing baseline rot NOT caused by this bucket** (UX-7-C/D
+follow-ups): cp15-b4-archive-section, cp15-b6-part-archive-rejoin,
+cp15-b6-kicked, ux-1-archive-delete — all fail on `git stash`
+baseline + post-fix the same way. Different surface (archive sidebar
+rendering + click → setSelectedChannel propagation), not the
+scrollback-cache invalidation arm fixed here.
+
+**UX-7-C PENDING.** Failure B of the baseline-fails cluster:
+`ux-4-z-cluster-journey.spec.ts:399` (Bucket E post-PART selection-
+redirect). Per orchestrator pre-blessed scope decision, separate
+bucket — different surface from UX-7-B (selection state machine vs
+scrollback cache invalidation). Failure mode: after `partChannel(
+#bofh)` the selection doesn't reliably redirect away from `#bofh` to
+home/MRU/server; selectedTab text doesn't satisfy the bucket-E
+contract. Investigation TBD.
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
