@@ -55,14 +55,18 @@ round 2 APPROVE clean.
 **Deploy:** NONE NEEDED (e2e-only change; no `cicchetto/src/` and no
 Elixir touched).
 
-**UX-7-B PENDING.** Second spec of the baseline-e2e-fails investigation
-cluster — `ux-z-cluster-journey.spec.ts:86` (archive modal `#bofh` row
-never renders, `toHaveCount(1)` got 0 after 5s). PLUS the freshly
-surfaced UX-4-Z line 399 / Bucket E downstream failure: post-PART
-selection-redirect check (`redirectedToHome > 0 || selectedTabText
-!== null && !selectedTabText.includes(CHANNEL)`) returns false. The
-selection state after `partChannel(vjt.token, NETWORK_SLUG, CHANNEL)`
-doesn't redirect away from `#bofh` reliably. Investigation TBD.
+**UX-7-B IN PROGRESS 2026-05-22.** Investigating
+`ux-z-cluster-journey.spec.ts:86` Failure A (archive modal `#bofh` row
+never renders, `toHaveCount(1)` got 0 after 5s). Repro + root-cause +
+TDD per orchestrator brief. Scope decision after root-cause:
+- If A is small + UX-4-Z:399 (Failure B — post-PART selection-redirect)
+  fits cleanly = fold B in via AskUserQuestion (orchestrator pre-blessed).
+- If A is structural-deep = ship A alone, stage UX-7-C for B.
+
+Failure B detail: post-PART selection-redirect check
+(`redirectedToHome > 0 || selectedTabText !== null &&
+!selectedTabText.includes(CHANNEL)`) returns false. Selection state
+after `partChannel(#bofh)` doesn't redirect away from `#bofh`.
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
