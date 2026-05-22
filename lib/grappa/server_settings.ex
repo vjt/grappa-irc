@@ -26,13 +26,16 @@ defmodule Grappa.ServerSettings do
 
   ## PubSub broadcast on change
 
-  `put_*/1` broadcasts `:server_settings_changed` on the
-  `"grappa:server_settings"` topic — retained as an in-process signal
-  for tests + any future internal subscriber. The cic fan-out path
-  lives at `GrappaWeb.Admin.SettingsController.update/2` (mirrors
+  `put_*/1` broadcasts a `kind: "server_settings_changed"` event on
+  `Grappa.PubSub.Topic.server_settings/0` via
+  `Grappa.PubSub.broadcast_event/2` — same single-source-of-truth path
+  every other context uses. Retained as an in-process signal for tests
+  + any future internal subscriber. The cic fan-out path lives at
+  `GrappaWeb.Admin.SettingsController.update/2` (mirrors
   `AdminController.cic_bundle_changed/2`'s per-user-topic broadcast
   via `WSPresence.list_user_names/0`); subscribers on this topic
-  receive `{:server_settings_changed, public_view()}`.
+  receive `%Phoenix.Socket.Broadcast{event: "event", payload: ...}`
+  with the typed wire payload from `ServerSettings.Wire.server_settings_changed/1`.
 
   ## Why direct Repo reads vs cache
 
@@ -46,12 +49,12 @@ defmodule Grappa.ServerSettings do
   Deps: `Grappa.PubSub`, `Grappa.Repo`. Pure persistence + broadcast.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Repo]
+  use Boundary, top_level?: true, deps: [Grappa.Repo, Grappa.PubSub, Grappa.ServerSettings.Wire]
 
+  alias Grappa.PubSub, as: GrappaPubSub
+  alias Grappa.PubSub.Topic
   alias Grappa.Repo
-  alias Grappa.ServerSettings.Setting
-
-  @topic "grappa:server_settings"
+  alias Grappa.ServerSettings.{Setting, Wire}
 
   # Setting keys
   @key_upload_active_host "upload.active_host"
@@ -75,7 +78,7 @@ defmodule Grappa.ServerSettings do
 
   @doc "PubSub topic name for settings changes."
   @spec topic() :: String.t()
-  def topic, do: @topic
+  def topic, do: Topic.server_settings()
 
   # ---- upload.active_host ------------------------------------------
 
@@ -181,7 +184,16 @@ defmodule Grappa.ServerSettings do
   end
 
   defp broadcast_changed do
-    Phoenix.PubSub.broadcast(Grappa.PubSub, @topic, {:server_settings_changed, public_view()})
+    # broadcast_event/2 is the documented single source of truth
+    # (CLAUDE.md PubSub invariant). Routes through Phoenix's channel-
+    # server dispatcher with the typed `kind: "server_settings_changed"`
+    # wire payload — same fastlane-aware fan-out every other context
+    # uses, and the topic now appears in Topic.parse/1's enumeration so
+    # the public PubSub grammar is single-sourced.
+    GrappaPubSub.broadcast_event(
+      Topic.server_settings(),
+      Wire.server_settings_changed(public_view())
+    )
   end
 
   defp decode_pos_int(nil), do: :error

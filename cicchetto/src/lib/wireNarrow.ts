@@ -534,9 +534,15 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         at: r.at as string,
       };
     case "cap_counts_changed":
+      // REV-H H5 (2026-05-22): network_slug is required non-null on
+      // this arm. The server-side broadcaster early-returns when the
+      // network row was deleted, so a nil-slug payload would already
+      // never reach cic — narrowing it as required surfaces that
+      // contract at the boundary instead of letting cic render
+      // `net#{id}` for a payload that can't occur.
       if (
         typeof r.network_id !== "number" ||
-        !isNullableString(r.network_slug) ||
+        typeof r.network_slug !== "string" ||
         typeof r.visitors !== "number" ||
         typeof r.users !== "number" ||
         !isNullableNumber(r.max_concurrent_visitor_sessions) ||
@@ -546,7 +552,7 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
       return {
         kind: "cap_counts_changed",
         network_id: r.network_id,
-        network_slug: r.network_slug as string | null,
+        network_slug: r.network_slug,
         visitors: r.visitors,
         users: r.users,
         max_concurrent_visitor_sessions: r.max_concurrent_visitor_sessions as number | null,

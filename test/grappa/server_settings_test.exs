@@ -91,34 +91,44 @@ defmodule Grappa.ServerSettingsTest do
       :ok
     end
 
-    test "broadcasts :server_settings_changed on put_upload_active_host" do
+    test "broadcasts server_settings_changed on put_upload_active_host" do
       :ok = ServerSettings.put_upload_active_host(:litterbox)
-      assert_receive {:server_settings_changed, view}
-      assert view.upload.active_host == :litterbox
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: "server_settings_changed", upload: %{active_host: "litterbox"}}
+      }
     end
 
-    test "broadcasts :server_settings_changed on put_upload_per_file_cap_bytes" do
+    test "broadcasts server_settings_changed on put_upload_per_file_cap_bytes" do
       :ok = ServerSettings.put_upload_per_file_cap_bytes(7_777_777)
-      assert_receive {:server_settings_changed, view}
-      assert view.upload.per_file_cap_bytes == 7_777_777
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: "server_settings_changed", upload: %{per_file_cap_bytes: 7_777_777}}
+      }
     end
 
-    test "broadcasts :server_settings_changed on put_upload_global_cap_bytes" do
+    test "broadcasts server_settings_changed on put_upload_global_cap_bytes" do
       :ok = ServerSettings.put_upload_global_cap_bytes(99_999)
-      assert_receive {:server_settings_changed, view}
-      assert view.upload.global_cap_bytes == 99_999
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: "server_settings_changed", upload: %{global_cap_bytes: 99_999}}
+      }
     end
 
     test "does NOT broadcast on rejected value" do
       ServerSettings.put_upload_active_host(:bogus)
-      refute_receive {:server_settings_changed, _}, 50
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
     end
   end
 
   describe "topic/0" do
-    test "returns the PubSub topic for settings-changed broadcasts" do
-      assert is_binary(ServerSettings.topic())
-      assert String.starts_with?(ServerSettings.topic(), "grappa:")
+    test "returns the canonical PubSub topic enumerated by Topic.parse/1" do
+      topic = ServerSettings.topic()
+      assert topic == Grappa.PubSub.Topic.server_settings()
+      assert {:ok, :server_settings} = Grappa.PubSub.Topic.parse(topic)
     end
   end
 end

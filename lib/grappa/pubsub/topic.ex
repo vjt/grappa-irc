@@ -25,6 +25,14 @@ defmodule Grappa.PubSub.Topic do
       admin operators, not the per-user subject; folding onto
       `grappa:user:*` would force a phantom user_name segment whose
       authz check would never match.
+    * `grappa:server_settings` — admin-set server-wide settings fan-out
+      (UX-6 bucket B1). In-process signal consumed by tests + future
+      internal subscribers; the cic-visible WS push lives on a per-user
+      topic via `GrappaWeb.Admin.SettingsController.update/2` instead.
+      Lives outside the user-rooted shape (settings are server-global,
+      not per-subject) and outside the admin-events shape (separate
+      audience: any internal subscriber, not just the admin operator
+      console).
     * `grappa:ws_presence:{user_name}` — server-internal bridge from
       the WS edge (`Grappa.WSPresence`) to per-`(user, network)`
       `Grappa.Session.Server` processes for auto-away timing. Distinct
@@ -48,6 +56,7 @@ defmodule Grappa.PubSub.Topic do
           | {:network, String.t(), String.t()}
           | {:channel, String.t(), String.t(), String.t()}
           | :admin_events
+          | :server_settings
 
   @doc "Builds the per-user fan-out topic."
   @spec user(String.t()) :: t()
@@ -103,6 +112,26 @@ defmodule Grappa.PubSub.Topic do
   def admin_events, do: "grappa:admin:events"
 
   @doc """
+  Builds the server-settings fan-out topic (UX-6 bucket B1).
+
+  Single fixed topic — `Grappa.ServerSettings.put_*/1` broadcasts
+  `{kind: "server_settings_changed", ...}` here on every committed
+  change. Audience: in-process subscribers (tests + future internal
+  consumers). The cic-visible WS push to connected browsers lives on
+  a per-user topic via `GrappaWeb.Admin.SettingsController.update/2`
+  which mirrors the broadcast across every live `Topic.user/1` — the
+  per-user fan-out is the operator-visible surface, this topic is the
+  intra-server signal that triggers it.
+
+  Lives outside the user-rooted shape (settings are server-global, not
+  per-subject) and outside the admin-events shape (different audience:
+  any internal subscriber on settings, not just the admin operator
+  console).
+  """
+  @spec server_settings() :: t()
+  def server_settings, do: "grappa:server_settings"
+
+  @doc """
   Builds the WSPresence bridge topic.
 
   Internal grappa-side fan-out from the WS edge (`Grappa.WSPresence`)
@@ -133,6 +162,7 @@ defmodule Grappa.PubSub.Topic do
   """
   @spec parse(String.t()) :: {:ok, parsed()} | :error
   def parse("grappa:admin:events"), do: {:ok, :admin_events}
+  def parse("grappa:server_settings"), do: {:ok, :server_settings}
 
   def parse("grappa:user:" <> rest) when rest != "" do
     case String.split(rest, "/", parts: 3) do

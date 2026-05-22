@@ -40,28 +40,90 @@ defmodule Grappa.Session.WireTest do
   end
 
   describe "topic_changed/3" do
-    test "passes the topic entry through unchanged" do
-      entry = %{topic: "Welcome to #grappa", set_by: "vjt", set_at: 1_700_000_000}
+    test "converts the EventRouter topic_entry to the wire shape (set_at: DateTime → ISO8601)" do
+      {:ok, dt, 0} = DateTime.from_iso8601("2026-05-22T12:34:56Z")
+      entry = %{text: "Welcome to #grappa", set_by: "vjt", set_at: dt}
 
       assert Wire.topic_changed("azzurra", "#grappa", entry) == %{
                kind: "topic_changed",
                network: "azzurra",
                channel: "#grappa",
-               topic: entry
+               topic: %{
+                 text: "Welcome to #grappa",
+                 set_by: "vjt",
+                 set_at: "2026-05-22T12:34:56Z"
+               }
              }
+    end
+
+    test "preserves nil text + nil set_by + nil set_at (RPL_NOTOPIC / partial state)" do
+      entry = %{text: nil, set_by: nil, set_at: nil}
+
+      assert Wire.topic_changed("azzurra", "#grappa", entry) == %{
+               kind: "topic_changed",
+               network: "azzurra",
+               channel: "#grappa",
+               topic: %{text: nil, set_by: nil, set_at: nil}
+             }
+    end
+
+    test "rejects malformed entries (closed shape enforced at the boundary)" do
+      # `apply/3` defeats the Elixir 1.19 set-theoretic compile-time
+      # type checker. The runtime FunctionClauseError is what pins
+      # the boundary.
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :topic_changed, ["azzurra", "#grappa", %{}])
+      end
+
+      # set_at as a raw integer (not DateTime) — Jason.Encoder would
+      # silently serialize it as a number; the boundary catches it.
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :topic_changed, [
+          "azzurra",
+          "#grappa",
+          %{text: "t", set_by: "v", set_at: 1_700_000_000}
+        ])
+      end
     end
   end
 
   describe "channel_modes_changed/3" do
-    test "passes the modes entry through unchanged" do
-      entry = %{modes: "+nt", params: []}
+    test "passes the modes entry through (REV-H H4: structural copy with typed boundary)" do
+      entry = %{modes: ["n", "t"], params: %{}}
 
       assert Wire.channel_modes_changed("azzurra", "#grappa", entry) == %{
                kind: "channel_modes_changed",
                network: "azzurra",
                channel: "#grappa",
-               modes: entry
+               modes: %{modes: ["n", "t"], params: %{}}
              }
+    end
+
+    test "preserves mode-with-arg params (k=secret, l=42)" do
+      entry = %{modes: ["k", "l", "n"], params: %{"k" => "secret", "l" => "42"}}
+
+      assert Wire.channel_modes_changed("azzurra", "#grappa", entry) == %{
+               kind: "channel_modes_changed",
+               network: "azzurra",
+               channel: "#grappa",
+               modes: %{modes: ["k", "l", "n"], params: %{"k" => "secret", "l" => "42"}}
+             }
+    end
+
+    test "rejects malformed entries (closed shape enforced at the boundary)" do
+      # `apply/3` bypasses the Elixir 1.19 set-theoretic type checker
+      # which would flag the malformed literals as a compile-time
+      # type error (the typespec WORKS). The runtime FunctionClauseError
+      # is what we're pinning.
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :channel_modes_changed, ["azzurra", "#grappa", %{}])
+      end
+
+      # params as a list (not a map) — pre-H4 the lax map() spec
+      # accepted this; tightened to %{required(String.t()) => ...}.
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :channel_modes_changed, ["azzurra", "#grappa", %{modes: ["n"], params: []}])
+      end
     end
   end
 
@@ -209,18 +271,30 @@ defmodule Grappa.Session.WireTest do
   end
 
   describe "away_confirmed/2" do
-    test "carries the present/away state string" do
-      assert Wire.away_confirmed("azzurra", "present") == %{
+    test "carries the present/away state string (REV-H H3: atom→string at the wire boundary)" do
+      assert Wire.away_confirmed("azzurra", :present) == %{
                kind: "away_confirmed",
                network: "azzurra",
                state: "present"
              }
 
-      assert Wire.away_confirmed("azzurra", "away") == %{
+      assert Wire.away_confirmed("azzurra", :away) == %{
                kind: "away_confirmed",
                network: "azzurra",
                state: "away"
              }
+    end
+
+    test "rejects unknown atoms (closed set enforced at the boundary)" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :away_confirmed, ["azzurra", :unknown])
+      end
+    end
+
+    test "rejects string input (callers pass the EventRouter effect atom, not a string)" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :away_confirmed, ["azzurra", "present"])
+      end
     end
   end
 
@@ -509,14 +583,14 @@ defmodule Grappa.Session.WireTest do
       payloads = [
         Wire.channels_changed(),
         Wire.own_nick_changed(1, "n"),
-        Wire.topic_changed("net", "#c", %{}),
-        Wire.channel_modes_changed("net", "#c", %{}),
+        Wire.topic_changed("net", "#c", %{text: nil, set_by: nil, set_at: nil}),
+        Wire.channel_modes_changed("net", "#c", %{modes: [], params: %{}}),
         Wire.members_seeded("net", "#c", []),
         Wire.joined("net", "#c"),
         Wire.window_pending("net", "#c"),
         Wire.join_failed("net", "#c", "r", 473),
         Wire.kicked("net", "#c", "by", "r"),
-        Wire.away_confirmed("net", "present"),
+        Wire.away_confirmed("net", :present),
         Wire.mentions_bundle("net", "from", "to", nil, []),
         Wire.whois_bundle("net", "alice", %{}),
         Wire.peer_away("net", "alice", "Gone fishing"),

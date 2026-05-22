@@ -1,6 +1,7 @@
 import { createEffect, createRoot, untrack } from "solid-js";
 import {
   assertNever,
+  type ConnectionState,
   type MentionsBundleMessage,
   type QueryWindowEntry,
   type WireUserEvent,
@@ -63,6 +64,16 @@ function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number
     }));
   }
   return result;
+}
+
+// REV-H H2 (2026-05-22) — runtime narrower for ConnectionState. Mirror
+// of server-side `Credential.connection_state()` closed atom union. A
+// fourth state lands here as one edit; until then any string outside
+// the union drops the payload (drop + log via narrowUserEvent's
+// downstream dispatch). Refer to `ConnectionState` in api.ts for the
+// single source of truth.
+function isConnectionState(value: unknown): value is ConnectionState {
+  return value === "connected" || value === "parked" || value === "failed";
 }
 
 // no-silent-drops B6.10 HIGH-11 — per-element narrowers for bundle
@@ -178,8 +189,8 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         typeof r.user_id !== "string" ||
         typeof r.network_id !== "number" ||
         typeof r.network_slug !== "string" ||
-        typeof r.from !== "string" ||
-        typeof r.to !== "string" ||
+        !isConnectionState(r.from) ||
+        !isConnectionState(r.to) ||
         (r.reason !== null && typeof r.reason !== "string") ||
         (r.at !== null && typeof r.at !== "string")
       )
@@ -421,9 +432,7 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
       if (
         typeof n.slug !== "string" ||
         typeof n.nick !== "string" ||
-        (n.connection_state !== "connected" &&
-          n.connection_state !== "parked" &&
-          n.connection_state !== "failed") ||
+        !isConnectionState(n.connection_state) ||
         (n.connection_state_reason !== null && typeof n.connection_state_reason !== "string") ||
         (n.connection_state_changed_at !== null &&
           typeof n.connection_state_changed_at !== "string")

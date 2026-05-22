@@ -777,6 +777,12 @@ describe("narrowAdminEvent (REV-G H24)", () => {
     it("rejects negative-not-checked but non-number visitors", () => {
       expect(narrowAdminEvent({ ...valid, visitors: "12" })).toBeNull();
     });
+    it("rejects null network_slug (REV-H H5: required non-null on this arm)", () => {
+      // Server-side `AdminEvents.broadcast_lifecycle/3` early-returns
+      // when the network row is missing, so a nil slug NEVER reaches
+      // cic for this event kind. The narrower enforces the contract.
+      expect(narrowAdminEvent({ ...valid, network_slug: null })).toBeNull();
+    });
   });
 });
 

@@ -171,7 +171,14 @@ defmodule Grappa.AdminEvents.Wire do
   @type cap_counts_changed_event :: %{
           kind: :cap_counts_changed,
           network_id: integer(),
-          network_slug: String.t() | nil,
+          # REV-H H5 (2026-05-22): tightened from `String.t() | nil` to
+          # `String.t()`. The only call site (`AdminEvents.broadcast_lifecycle/3`)
+          # early-returns when `Networks.get_network/1` returns nil, so this
+          # event NEVER fires with a nil slug. Pre-fix the optional-nil
+          # spec implied cic must render `∞` / "unknown network" branches
+          # that never run; removing the nil arm here drives the dead
+          # `networkLabel` null branch out of the cic narrower (REV-K).
+          network_slug: String.t(),
           visitors: non_neg_integer(),
           users: non_neg_integer(),
           max_concurrent_visitor_sessions: integer() | nil,
@@ -499,7 +506,7 @@ defmodule Grappa.AdminEvents.Wire do
   """
   @spec cap_counts_changed(
           integer(),
-          String.t() | nil,
+          String.t(),
           %{visitors: non_neg_integer(), users: non_neg_integer()},
           integer() | nil,
           integer() | nil
@@ -535,6 +542,9 @@ defmodule Grappa.AdminEvents.Wire do
   # Split out to keep `cap_counts_changed/5` below Credo's cyclomatic
   # gate. Two helpers (one per arg cluster) per `validate_caps_args/5`
   # pattern; both raise FunctionClauseError on shape violation.
+  # REV-H H5: `network_slug` is non-nil per the broadcast_lifecycle/3
+  # invariant (caller short-circuits on a missing network row); the
+  # guard enforces it at the wire boundary.
   defp validate_cap_counts_args(
          network_id,
          network_slug,
@@ -542,7 +552,7 @@ defmodule Grappa.AdminEvents.Wire do
          max_visitor_sessions,
          max_user_sessions
        )
-       when is_integer(network_id) and (is_binary(network_slug) or is_nil(network_slug)) do
+       when is_integer(network_id) and is_binary(network_slug) do
     :ok = validate_cap_count_pair(v, u)
     :ok = validate_cap_max_pair(max_visitor_sessions, max_user_sessions)
     :ok

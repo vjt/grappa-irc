@@ -58,6 +58,7 @@ defmodule Grappa.Session.Wire do
   """
 
   alias Grappa.Scrollback.Message
+  alias Grappa.Session.EventRouter
 
   @typedoc """
   The closed set of event kinds emitted by Session. Useful when
@@ -91,18 +92,44 @@ defmodule Grappa.Session.Wire do
           nick: String.t()
         }
 
+  @typedoc """
+  Wire projection of `EventRouter.topic_entry/0` — same fields but
+  `set_at` is the ISO8601 string the JSON wire delivers (not the
+  in-process `DateTime.t()`). REV-H H4: pinned at the Wire boundary
+  so the contract cic narrows in `narrowTopicEntry` is single-sourced
+  here instead of relying on the bespoke `Jason.Encoder` derive on
+  DateTime (same model as `channel_created/3` which is the proof-of-
+  pattern at line 369-376).
+  """
+  @type topic_entry_wire :: %{
+          text: String.t() | nil,
+          set_by: String.t() | nil,
+          set_at: String.t() | nil
+        }
+
   @type topic_changed_payload :: %{
           kind: String.t(),
           network: String.t(),
           channel: String.t(),
-          topic: map()
+          topic: topic_entry_wire()
+        }
+
+  @typedoc """
+  Wire projection of `EventRouter.channel_mode_entry/0`. Already JSON-
+  serializable as-is (no DateTime); the alias here pins the wire-side
+  shape explicitly so a future field add to the in-process cache
+  must come through the Wire boundary first.
+  """
+  @type channel_modes_wire :: %{
+          modes: [String.t()],
+          params: %{String.t() => String.t() | nil}
         }
 
   @type channel_modes_changed_payload :: %{
           kind: String.t(),
           network: String.t(),
           channel: String.t(),
-          modes: map()
+          modes: channel_modes_wire()
         }
 
   @type channel_created_payload :: %{
@@ -345,23 +372,61 @@ defmodule Grappa.Session.Wire do
   end
 
   @doc """
-  TOPIC change — entry shape decided by `EventRouter`'s topic cache.
+  TOPIC change — `EventRouter.topic_entry()` projected to its wire
+  shape (`set_at` → ISO8601 string at the boundary, per REV-H H4).
+  Mirrors the explicit-conversion pattern in `channel_created/3` so
+  the cic-side `narrowTopicEntry` narrower has a single typed source
+  for the field set.
   """
-  @spec topic_changed(String.t(), String.t(), map()) :: topic_changed_payload()
-  def topic_changed(network_slug, channel, entry)
-      when is_binary(network_slug) and is_binary(channel) and is_map(entry) do
-    %{kind: "topic_changed", network: network_slug, channel: channel, topic: entry}
+  @spec topic_changed(String.t(), String.t(), EventRouter.topic_entry()) ::
+          topic_changed_payload()
+  def topic_changed(network_slug, channel, %{} = entry)
+      when is_binary(network_slug) and is_binary(channel) do
+    %{
+      kind: "topic_changed",
+      network: network_slug,
+      channel: channel,
+      topic: topic_entry_wire(entry)
+    }
   end
 
   @doc """
-  Channel MODE change — entry shape decided by `EventRouter`'s modes
-  cache.
+  Channel MODE change — `EventRouter.channel_mode_entry()` is already
+  JSON-serializable, so the wire-side projection is a structural copy.
+  Defining the wire type explicitly (per REV-H H4) pins the contract
+  the cic-side `narrowModesEntry` narrower validates against, so any
+  future field add to the in-process cache must come through this
+  boundary first.
   """
-  @spec channel_modes_changed(String.t(), String.t(), map()) :: channel_modes_changed_payload()
-  def channel_modes_changed(network_slug, channel, entry)
-      when is_binary(network_slug) and is_binary(channel) and is_map(entry) do
-    %{kind: "channel_modes_changed", network: network_slug, channel: channel, modes: entry}
+  @spec channel_modes_changed(String.t(), String.t(), EventRouter.channel_mode_entry()) ::
+          channel_modes_changed_payload()
+  def channel_modes_changed(network_slug, channel, %{modes: modes, params: params})
+      when is_binary(network_slug) and is_binary(channel) and is_list(modes) and is_map(params) do
+    %{
+      kind: "channel_modes_changed",
+      network: network_slug,
+      channel: channel,
+      modes: %{modes: modes, params: params}
+    }
   end
+
+  # REV-H H4: explicit DateTime → ISO8601 conversion at the wire
+  # boundary mirroring `channel_created/3` so the cic narrower sees
+  # a stable string and we don't rely on Jason.Encoder derive on
+  # DateTime.
+  @spec topic_entry_wire(EventRouter.topic_entry()) :: topic_entry_wire()
+  defp topic_entry_wire(%{text: text, set_by: set_by, set_at: set_at})
+       when (is_binary(text) or is_nil(text)) and
+              (is_binary(set_by) or is_nil(set_by)) do
+    %{
+      text: text,
+      set_by: set_by,
+      set_at: encode_set_at(set_at)
+    }
+  end
+
+  defp encode_set_at(nil), do: nil
+  defp encode_set_at(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   @doc """
   Channel-creation timestamp from 329 RPL_CREATIONTIME. Emitted on
@@ -503,14 +568,20 @@ defmodule Grappa.Session.Wire do
 
   @doc """
   S3.4 — `305 RPL_UNAWAY` / `306 RPL_NOWAWAY` confirmed by upstream.
-  Caller passes the lowercase string literal `"present"` or
-  `"away"` (the `Atom.to_string/1` conversion happens in the
-  Session.Server arm so this fn stays a pure data shaper).
+
+  Caller passes the closed-set `:present | :away` atom (the
+  EventRouter effect-tuple shape — `{:away_confirmed, :present |
+  :away}`). The atom-to-string conversion happens HERE at the wire
+  boundary mirroring `Scrollback.Wire.to_json/1`'s
+  `Atom.to_string(m.kind)` — keeps Session.Server free of
+  presentation-shape concerns, and a fourth `:away`-class atom
+  surfaces as a FunctionClauseError at the boundary instead of
+  silently shipping `to_string(:unexpected)` over the wire.
   """
-  @spec away_confirmed(String.t(), String.t()) :: away_confirmed_payload()
+  @spec away_confirmed(String.t(), :present | :away) :: away_confirmed_payload()
   def away_confirmed(network_slug, state)
-      when is_binary(network_slug) and state in ["present", "away"] do
-    %{kind: "away_confirmed", network: network_slug, state: state}
+      when is_binary(network_slug) and state in [:present, :away] do
+    %{kind: "away_confirmed", network: network_slug, state: Atom.to_string(state)}
   end
 
   @doc """

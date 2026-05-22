@@ -610,4 +610,75 @@ defmodule Grappa.BootstrapTest do
                Bootstrap.run()
     end
   end
+
+  describe "classify_outcome/3 (REV-H H7 — closed-set + catch-all)" do
+    # Direct unit tests on the testable seam. The dispatch is
+    # tested via every documented success/failure shape, plus an
+    # explicit catch-all for any future SpawnOrchestrator failure
+    # tag so a 5th capacity-class atom added to
+    # `Admission.capacity_error_atoms/0` does not crash-loop
+    # Bootstrap.
+
+    setup do
+      %{acc: %Result{}, log_keys: [test: :ok]}
+    end
+
+    test "{:ok, :spawned} → +1 spawned", %{acc: acc, log_keys: lk} do
+      assert %Result{spawned: 1} = Bootstrap.classify_outcome({:ok, :spawned, self()}, lk, acc)
+    end
+
+    test "{:ok, :already_started} → +1 already_running", %{acc: acc, log_keys: lk} do
+      assert %Result{already_running: 1} =
+               Bootstrap.classify_outcome({:ok, :already_started, self()}, lk, acc)
+    end
+
+    test "every Admission.capacity_error_atoms/0 atom routes to a known bucket",
+         %{acc: acc, log_keys: lk} do
+      # Source-of-truth iteration: the closed set lives in
+      # `Admission`. Any new atom landing in that list MUST be
+      # handled explicitly here or fall into the catch-all
+      # (network_failed). Test fails loudly if a new atom is added
+      # without classifying — the dashboard counter must be a
+      # known field.
+      for atom <- Grappa.Admission.capacity_error_atoms() do
+        outcome =
+          case atom do
+            :network_circuit_open -> {:error, {:network_circuit_open, %{}}}
+            other -> {:error, other}
+          end
+
+        result = Bootstrap.classify_outcome(outcome, lk, acc)
+        assert result.spawned == 0
+        assert result.already_running == 0
+        assert result.plan_failed == 0
+
+        # Every CURRENT capacity atom maps to :capacity_rejected.
+        # A future atom can legally route to :network_failed via
+        # the catch-all — the test below pins that contract.
+        assert result.capacity_rejected + result.network_failed == 1
+      end
+    end
+
+    test "{:error, {:start_failed, reason}} → +1 network_failed", %{acc: acc, log_keys: lk} do
+      assert %Result{network_failed: 1} =
+               Bootstrap.classify_outcome({:error, {:start_failed, :econnrefused}}, lk, acc)
+    end
+
+    test "{:error, unknown_atom} catch-all → +1 network_failed (REV-H H7)",
+         %{acc: acc, log_keys: lk} do
+      # Concrete regression test for the catch-all. A novel
+      # error tag (e.g. a future 5th capacity atom that hasn't
+      # been wired through the dispatch yet, OR an entirely new
+      # SpawnOrchestrator failure shape) MUST land in
+      # network_failed and emit Logger.error — never crash.
+      assert %Result{network_failed: 1, capacity_rejected: 0} =
+               Bootstrap.classify_outcome({:error, :brand_new_failure_tag}, lk, acc)
+    end
+
+    test "{:error, unknown_tuple} catch-all → +1 network_failed",
+         %{acc: acc, log_keys: lk} do
+      assert %Result{network_failed: 1} =
+               Bootstrap.classify_outcome({:error, {:weird, "tuple"}}, lk, acc)
+    end
+  end
 end

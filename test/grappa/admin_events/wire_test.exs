@@ -185,9 +185,16 @@ defmodule Grappa.AdminEvents.WireTest do
       assert event.max_concurrent_user_sessions == nil
     end
 
-    test "accepts nil network_slug for deleted-network race" do
-      event = Wire.cap_counts_changed(7, nil, %{visitors: 0, users: 0}, nil, nil)
-      assert event.network_slug == nil
+    test "rejects nil network_slug (REV-H H5: broadcaster early-returns on missing network)" do
+      # `AdminEvents.broadcast_lifecycle/3` short-circuits when
+      # `Networks.get_network/1` returns nil, so `cap_counts_changed`
+      # NEVER fires with a nil slug. The boundary enforces it.
+      # `apply/3` defeats the Elixir 1.19 set-theoretic compile-time
+      # type checker which would flag the nil literal as the wrong
+      # type before the runtime FunctionClauseError fires.
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :cap_counts_changed, [7, nil, %{visitors: 0, users: 0}, nil, nil])
+      end
     end
 
     test "rejects negative counts" do

@@ -90,6 +90,19 @@ export type LoginResponse = {
 // envelope unconditionally).
 export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
 
+// REV-H H2 (2026-05-22) — closed enumeration of upstream IRC
+// connection states. Mirror of server-side
+// `Grappa.Networks.Credential.connection_state()` atom union
+// (encoded over JSON as the string discriminator); the server
+// guards every transition through `Networks.connect/1`,
+// `Networks.disconnect/2`, `Networks.mark_failed/2` so a fourth
+// arm requires a server-side schema change AND this type update
+// in lockstep. Single source of truth for every cic consumer:
+// `HomeNetworkRow`, `CredentialJson`, `narrowUserEvent`'s
+// `connection_state_changed` arm, and the per-network sidebar
+// badge rendering.
+export type ConnectionState = "connected" | "parked" | "failed";
+
 // UX-4 bucket B — one row in the `home_data.networks` array, returned
 // from `GET /me` for user subjects. Mirror of server-side
 // `Grappa.Networks.Wire.home_network_row/0`. Identical shape to the
@@ -103,7 +116,7 @@ export type ReadCursorsEnvelope = Record<string, Record<string, number>>;
 export type HomeNetworkRow = {
   slug: string;
   nick: string;
-  connection_state: "connected" | "parked" | "failed";
+  connection_state: ConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
 };
@@ -263,7 +276,7 @@ export type UserNetwork = {
   // for a freshly-bound credential is "connected". `failed` is a
   // server-set transition (admission failure / network unreachable);
   // `parked` is a user-initiated /disconnect.
-  connection_state: CredentialConnectionState | "failed";
+  connection_state: ConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
   inserted_at: string;
@@ -299,7 +312,7 @@ export type RawNetwork = {
   id: number;
   slug: string;
   nick?: string;
-  connection_state?: CredentialConnectionState | "failed";
+  connection_state?: ConnectionState;
   connection_state_reason?: string | null;
   connection_state_changed_at?: string | null;
   inserted_at: string;
@@ -628,8 +641,8 @@ export type WireUserEvent =
       user_id: string;
       network_id: number;
       network_slug: string;
-      from: string;
-      to: string;
+      from: ConnectionState;
+      to: ConnectionState;
       reason: string | null;
       at: string | null;
     }
@@ -867,9 +880,16 @@ export type WireAdminEvent =
       at: string;
     }
   | {
+      // REV-H H5 (2026-05-22): `network_slug` tightened to non-null.
+      // The server-side broadcaster (`AdminEvents.broadcast_lifecycle/3`)
+      // early-returns when `Networks.get_network/1` returns nil, so
+      // this event NEVER fires with a missing slug. Other admin events
+      // (circuit_open / capacity_reject / session_terminated) keep
+      // their nullable `network_slug` because the deleted-network race
+      // CAN reach those paths.
       kind: "cap_counts_changed";
       network_id: number;
-      network_slug: string | null;
+      network_slug: string;
       visitors: number;
       users: number;
       max_concurrent_visitor_sessions: number | null;
@@ -1509,7 +1529,15 @@ export async function postNick(token: string, networkSlug: string, nick: string)
 // `reason` propagates to the server-lifecycle event and to the
 // `connection_state_reason` column, surfacing in the server-messages
 // window (#4) and in the credential badge rendering.
-export type CredentialConnectionState = "connected" | "parked";
+//
+// REV-H H2 (2026-05-22): operator-input subset of `ConnectionState`.
+// `PATCH /networks/:id` accepts only `"connected"` (manual /connect)
+// or `"parked"` (manual /disconnect); `"failed"` is server-derived
+// (admission failure / network unreachable / k-line) and never
+// requested by cic. Distinct type from `ConnectionState` so the
+// 2-arm operator surface stays narrower than the 3-arm server-emit
+// surface.
+export type CredentialConnectionStateRequest = "connected" | "parked";
 
 export type CredentialJson = {
   network: string;
@@ -1519,7 +1547,7 @@ export type CredentialJson = {
   auth_method: string;
   auth_command_template: string | null;
   autojoin_channels: string[];
-  connection_state: CredentialConnectionState | "failed";
+  connection_state: ConnectionState;
   connection_state_reason: string | null;
   connection_state_changed_at: string | null;
   inserted_at: string;
@@ -1529,7 +1557,7 @@ export type CredentialJson = {
 export async function patchNetwork(
   token: string,
   networkSlug: string,
-  body: { connection_state: CredentialConnectionState; reason?: string },
+  body: { connection_state: CredentialConnectionStateRequest; reason?: string },
 ): Promise<CredentialJson> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}`, {
     method: "PATCH",

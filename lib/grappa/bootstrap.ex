@@ -229,6 +229,14 @@ defmodule Grappa.Bootstrap do
   # root cause. `Credentials.count_by_state/0` materializes the
   # state-by-state row count via one GROUP BY query so the operator sees
   # the truth: total rows + per-state breakdown.
+  #
+  # REV-H H8 (2026-05-22): per-state breakdown derived from
+  # `Credential.connection_states/0` instead of hardcoded
+  # `counts.parked + counts.failed`. A 4th state added to the schema's
+  # `:connection_states` enum (e.g. `:reconnecting`) flows through
+  # without an edit here — `count_by_state/0` zero-fills the new state
+  # and the reject-connected-or-zero filter surfaces it in the log
+  # line automatically.
   defp log_web_only_warning do
     counts = Credentials.count_by_state()
     total = counts |> Map.values() |> Enum.sum()
@@ -236,9 +244,15 @@ defmodule Grappa.Bootstrap do
     if total == 0 do
       Logger.warning("bootstrap: no credentials bound — running web-only")
     else
+      breakdown =
+        counts
+        |> Enum.reject(fn {state, n} -> state == :connected or n == 0 end)
+        |> Enum.sort_by(fn {state, _} -> state end)
+        |> Enum.map_join(", ", fn {state, n} -> "#{n} #{state}" end)
+
       Logger.warning(
         "bootstrap: 0 credentials in :connected state " <>
-          "(#{counts.parked} parked, #{counts.failed} failed) — running web-only. " <>
+          "(#{breakdown}) — running web-only. " <>
           "Inspect with `bin/grappa list-credentials`."
       )
     end
@@ -378,61 +392,95 @@ defmodule Grappa.Bootstrap do
           Result.t()
         ) :: Result.t()
   defp spawn_with_admission(subject, network_id, plan, capacity_input, log_keys, acc) do
-    case Grappa.SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
-      {:ok, :spawned, _} ->
-        Logger.info("session started", log_keys)
-        %{acc | spawned: acc.spawned + 1}
+    subject
+    |> Grappa.SpawnOrchestrator.spawn(network_id, plan, capacity_input)
+    |> classify_outcome(log_keys, acc)
+  end
 
-      {:ok, :already_started, _} ->
-        # F3 (S29) + U-2 honest log: Bootstrap is `restart: :transient`.
-        # On the (single) restart every previously-spawned session is
-        # still alive under the same `{:via, Registry, ...}` key, so
-        # the orchestrator surfaces `{:already_started, _}` as
-        # `{:ok, :already_started, _}`. Idempotent NO-OP, NOT a fresh
-        # start: Bootstrap did nothing because the session was already
-        # up. U-2: this used to share the `:skipped` bucket with
-        # capacity rejections — now distinct so the dashboard can tell
-        # "expected idempotent restart" from "capacity policy tripped."
-        Logger.debug("session already started", log_keys)
-        %{acc | already_running: acc.already_running + 1}
+  @doc false
+  # REV-H H7 (2026-05-22): testable seam — kept `@doc false` so the
+  # closed-set regression test (`BootstrapTest classify_outcome…`) can
+  # drive the catch-all branch without standing up an orchestrator
+  # mock. Production callers go through `spawn_with_admission/6`.
+  @spec classify_outcome(
+          {:ok, atom(), pid()} | {:error, term()},
+          keyword(),
+          Result.t()
+        ) :: Result.t()
+  def classify_outcome({:ok, :spawned, _}, log_keys, acc) do
+    Logger.info("session started", log_keys)
+    %{acc | spawned: acc.spawned + 1}
+  end
 
-      {:error, cap_err} when cap_err in [:visitor_cap_exceeded, :user_cap_exceeded, :client_cap_exceeded] ->
-        # T31 Plan 2 Task 4 + U-2: per-network/per-client cap tripped.
-        # Best-effort per the moduledoc's failure-modes contract: skip
-        # the row + warn, no queue or retry shape. Operator sizes the
-        # cap correctly is the right pressure. Both visitor and user
-        # caps + client cap collapse here — the dashboard distinguishes
-        # via the per-row Logger line's :error key, not the summary
-        # counter (which collapses capacity-policy events into one
-        # actionable bucket).
-        Logger.warning(
-          "session skipped — capacity rejected",
-          [error: cap_err] ++ log_keys
-        )
+  def classify_outcome({:ok, :already_started, _}, log_keys, acc) do
+    # F3 (S29) + U-2 honest log: Bootstrap is `restart: :transient`.
+    # On the (single) restart every previously-spawned session is
+    # still alive under the same `{:via, Registry, ...}` key, so
+    # the orchestrator surfaces `{:already_started, _}` as
+    # `{:ok, :already_started, _}`. Idempotent NO-OP, NOT a fresh
+    # start: Bootstrap did nothing because the session was already
+    # up. U-2: this used to share the `:skipped` bucket with
+    # capacity rejections — now distinct so the dashboard can tell
+    # "expected idempotent restart" from "capacity policy tripped."
+    Logger.debug("session already started", log_keys)
+    %{acc | already_running: acc.already_running + 1}
+  end
 
-        %{acc | capacity_rejected: acc.capacity_rejected + 1}
+  def classify_outcome({:error, cap_err}, log_keys, acc)
+      when cap_err in [:visitor_cap_exceeded, :user_cap_exceeded, :client_cap_exceeded] do
+    # T31 Plan 2 Task 4 + U-2: per-network/per-client cap tripped.
+    # Best-effort per the moduledoc's failure-modes contract: skip
+    # the row + warn, no queue or retry shape. Operator sizes the
+    # cap correctly is the right pressure. Both visitor and user
+    # caps + client cap collapse here — the dashboard distinguishes
+    # via the per-row Logger line's :error key, not the summary
+    # counter (which collapses capacity-policy events into one
+    # actionable bucket).
+    Logger.warning(
+      "session skipped — capacity rejected",
+      [error: cap_err] ++ log_keys
+    )
 
-      {:error, {:network_circuit_open, _} = circuit_err} ->
-        # U-2: circuit-open is a capacity-class rejection (operator-
-        # controlled cooldown after repeated upstream failures). Counts
-        # against capacity_rejected, not network_failed: the bouncer
-        # CHOSE not to attempt the spawn, the upstream wasn't asked.
-        Logger.warning(
-          "session skipped — circuit open",
-          [error: inspect(circuit_err)] ++ log_keys
-        )
+    %{acc | capacity_rejected: acc.capacity_rejected + 1}
+  end
 
-        %{acc | capacity_rejected: acc.capacity_rejected + 1}
+  def classify_outcome({:error, {:network_circuit_open, _} = circuit_err}, log_keys, acc) do
+    # U-2: circuit-open is a capacity-class rejection (operator-
+    # controlled cooldown after repeated upstream failures). Counts
+    # against capacity_rejected, not network_failed: the bouncer
+    # CHOSE not to attempt the spawn, the upstream wasn't asked.
+    Logger.warning(
+      "session skipped — circuit open",
+      [error: inspect(circuit_err)] ++ log_keys
+    )
 
-      {:error, {:start_failed, reason}} ->
-        # Session.start_session/3 returned a non-already_started error
-        # (init refused — upstream connect failure, etc.). Distinct
-        # bucket so the dashboard tells "the network is unreachable or
-        # config is bad" apart from "capacity policy tripped" — only
-        # network_failed should page on-call.
-        Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
-        %{acc | network_failed: acc.network_failed + 1}
-    end
+    %{acc | capacity_rejected: acc.capacity_rejected + 1}
+  end
+
+  def classify_outcome({:error, {:start_failed, reason}}, log_keys, acc) do
+    # Session.start_session/3 returned a non-already_started error
+    # (init refused — upstream connect failure, etc.). Distinct
+    # bucket so the dashboard tells "the network is unreachable or
+    # config is bad" apart from "capacity policy tripped" — only
+    # network_failed should page on-call.
+    Logger.error("session start failed", [error: inspect(reason)] ++ log_keys)
+    %{acc | network_failed: acc.network_failed + 1}
+  end
+
+  def classify_outcome({:error, other}, log_keys, acc) do
+    # REV-H H7 (2026-05-22): explicit catch-all for any future
+    # SpawnOrchestrator failure shape (e.g. a 5th capacity-class
+    # atom added to `Admission.capacity_error_atoms/0`) so a new
+    # error tag doesn't crash-loop Bootstrap on every boot. We
+    # WANT the surprise to be loud — Logger.error + bucket as
+    # network_failed (the "investigate" lane) rather than silently
+    # absorbing it.
+    Logger.error(
+      "session start failed — unknown error shape from SpawnOrchestrator",
+      [error: inspect(other)] ++ log_keys
+    )
+
+    %{acc | network_failed: acc.network_failed + 1}
   end
 
   # W7 invariant: every active visitor's `network_slug` must resolve
