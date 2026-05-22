@@ -65,24 +65,46 @@ defmodule GrappaWeb.Endpoint do
   defp cached_session_opts do
     case :persistent_term.get(@session_persistent_term_key, nil) do
       nil ->
-        salt =
-          :grappa
-          |> Application.fetch_env!(__MODULE__)
-          |> Keyword.fetch!(:session_signing_salt)
-
-        opts =
-          Plug.Session.init(
-            store: :cookie,
-            key: @session_key,
-            signing_salt: salt,
-            same_site: "Lax"
-          )
-
+        opts = build_session_opts()
         :persistent_term.put(@session_persistent_term_key, opts)
         opts
 
       opts ->
         opts
     end
+  end
+
+  defp build_session_opts do
+    salt =
+      :grappa
+      |> Application.fetch_env!(__MODULE__)
+      |> Keyword.fetch!(:session_signing_salt)
+
+    Plug.Session.init(
+      store: :cookie,
+      key: @session_key,
+      signing_salt: salt,
+      same_site: "Lax"
+    )
+  end
+
+  # REV-C reviewer MED-1/MED-2: invalidate the session-opts cache when
+  # `:session_signing_salt` changes at runtime. `:persistent_term.put/2`
+  # OVERWRITES the existing key — avoids the `:persistent_term.erase/1`
+  # process-wide GC scan documented at
+  # https://www.erlang.org/doc/man/persistent_term.html.
+  #
+  # `Phoenix.Endpoint.__phoenix_endpoint__/3` macros generate the base
+  # `config_change/2`; we wrap with super/2 + the cache hop.
+  defoverridable config_change: 2
+
+  @impl Phoenix.Endpoint
+  def config_change(changed, removed) do
+    if Keyword.has_key?(changed, :session_signing_salt) or
+         :session_signing_salt in removed do
+      :persistent_term.put(@session_persistent_term_key, build_session_opts())
+    end
+
+    super(changed, removed)
   end
 end

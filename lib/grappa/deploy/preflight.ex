@@ -118,7 +118,11 @@ defmodule Grappa.Deploy.Preflight do
   bug class"). The compiler's tokenizer IS the authority on Elixir
   syntax — no parser regression risk.
 
-  Returns the empty string when no state block is present.
+  Returns the empty string when no state block is present. Returns a
+  unique parse-failure marker when the source does not parse, so two
+  unparseable sources NEVER compare equal — conservative bias keeps
+  parse failures classified as COLD per "in doubt, COLD" (REV-C
+  reviewer LOW-3).
   """
   @spec extract_state_block(String.t()) :: String.t()
   def extract_state_block(source) when is_binary(source) do
@@ -129,15 +133,12 @@ defmodule Grappa.Deploy.Preflight do
         |> Enum.map_join(" ", &normalize/1)
 
       {:error, _} ->
-        # Pre-classifier source might not parse cleanly (mid-edit
-        # state). Per "conservative bias: in doubt, COLD" — return a
-        # sentinel that differs from any successful parse so the
-        # comparison goes COLD. Use a random-ish but deterministic
-        # marker so two unparseable-but-different sources still
-        # compare equal (a parse failure on both sides is still a
-        # parse failure — the diff caller decides COLD on either
-        # side via the state-shape path-class regardless).
-        ""
+        # Conservative bias per "in doubt, COLD" — embed a hash of
+        # the unparseable source so two different parse-failures
+        # don't accidentally compare equal. `:erlang.phash2/1` is
+        # process-local-stable; no crypto needed here, we just want
+        # inequality across distinct sources.
+        "##unparseable##" <> Integer.to_string(:erlang.phash2(source))
     end
   end
 

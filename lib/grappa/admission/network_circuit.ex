@@ -79,6 +79,16 @@ defmodule Grappa.Admission.NetworkCircuit do
   @table :admission_network_circuit_state
   @jitter_pct 25
 
+  @doc """
+  Returns the ETS table atom for the `Grappa.Health` `:ets`
+  substrate check. Public surface so the health check single-sources
+  the table-name boundary instead of duplicating the atom literal
+  (REV-C reviewer LOW-1). Renaming `@table` here automatically
+  surfaces a Health check failure on next deploy.
+  """
+  @spec table_name() :: :admission_network_circuit_state
+  def table_name, do: @table
+
   @threshold Application.compile_env(:grappa, [:admission, :network_circuit_threshold], 5)
   @window_ms Application.compile_env(:grappa, [:admission, :network_circuit_window_ms], 60_000)
   @cooldown_ms Application.compile_env(:grappa, [:admission, :network_circuit_cooldown_ms], 300_000)

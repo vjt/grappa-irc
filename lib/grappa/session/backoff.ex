@@ -118,6 +118,16 @@ defmodule Grappa.Session.Backoff do
   @table :session_backoff_state
   @jitter_pct 25
 
+  @doc """
+  Returns the ETS table atom for the `Grappa.Health` `:ets`
+  substrate check. Public surface so the health check single-sources
+  the table-name boundary instead of duplicating the atom literal
+  (REV-C reviewer LOW-1). Renaming `@table` here automatically
+  surfaces a Health check failure on next deploy.
+  """
+  @spec table_name() :: :session_backoff_state
+  def table_name, do: @table
+
   @base_ms Application.compile_env(:grappa, [:session_backoff, :base_ms], 5_000)
   @cap_ms Application.compile_env(:grappa, [:session_backoff, :cap_ms], 30 * 60 * 1_000)
 

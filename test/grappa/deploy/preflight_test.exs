@@ -300,6 +300,30 @@ defmodule Grappa.Deploy.PreflightTest do
 
       assert Preflight.extract_state_block(source) == ""
     end
+
+    test "two distinct unparseable sources NEVER compare equal (REV-C LOW-3)" do
+      # If both sources fail to parse, we MUST classify COLD because
+      # we can't prove the state-shape didn't change. Tested via
+      # `extract_state_block/1` returning a per-source hash sentinel
+      # so equality compares to actual content, not to a shared
+      # empty-string fallback.
+      a = "defmodule A do @type t :: %{a: integer(), unclosed"
+      b = "defmodule B do @type t :: %{b: integer(), unclosed"
+      refute Preflight.extract_state_block(a) == Preflight.extract_state_block(b)
+    end
+
+    test "an unparseable source NEVER compares equal to a successfully-parsed one" do
+      unparseable = "defmodule A do @type t :: %{a: integer(), unclosed"
+
+      parseable = """
+      defmodule A do
+        @type t :: %{a: integer()}
+      end
+      """
+
+      refute Preflight.extract_state_block(unparseable) ==
+               Preflight.extract_state_block(parseable)
+    end
   end
 
   describe "classify_state_shape/3 — long-lived module state-shape diff" do

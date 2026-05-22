@@ -14,10 +14,12 @@ defmodule Grappa.Health do
 
     1. `ready?/0` — flipped to `true` by `Grappa.Application`'s start
        callback AFTER `Supervisor.start_link/2` returns clean. `false`
-       until then, AND set back to `false` when a release boot is
-       restart-looping (the `:persistent_term` survives a supervisor
-       crash; it's the boundary between "Application.start succeeded"
-       and "we're back in restart hell").
+       until then. NOTE: `:persistent_term` survives top-supervisor
+       restarts within the same BEAM (release-boot crash-loops are a
+       separate process), so if the supervision tree later wedges
+       (e.g. a sub-tree crash-loop after first-boot success) this
+       flag stays `true`. That gap is covered by the Repo + ETS
+       checks below — operator chases the specific failed check.
     2. `Repo.query("SELECT 1")` — runtime sqlite + WAL liveness. The
        canonical wedge: pool exhausted, file lock held, sqlite-lib
        upgrade broke the binding.
@@ -34,7 +36,18 @@ defmodule Grappa.Health do
   callback end-of-init mark — see `config/test.exs`).
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Repo]
+  use Boundary,
+    top_level?: true,
+    deps: [
+      Grappa.Repo,
+      # The two ETS singletons whose presence the substrate check
+      # verifies. Coupling on each module's public `table_name/0`
+      # API (REV-C reviewer LOW-1) — single-sourced, so renaming the
+      # @table atom in either module surfaces a Health check failure
+      # on next deploy rather than silently diverging here.
+      Grappa.Session,
+      Grappa.Admission
+    ]
 
   @persistent_term_key {__MODULE__, :ready}
 
@@ -134,15 +147,15 @@ defmodule Grappa.Health do
 
   @spec check_ets() :: check()
   defp check_ets do
-    # The names below are the ETS table atom names (private to each
-    # module's `init/1`), NOT the GenServer process names. The two
-    # are deliberately distinct in the SoT modules — the table name
-    # is the @table module attribute (`:session_backoff_state` etc.),
-    # the GenServer name is `__MODULE__`. Tracking the TABLE names
-    # because that's what an `:ets.info/1` lookup actually queries.
-    # When a new long-lived singleton lands with its own ETS table,
-    # add its @table here.
-    required = [:session_backoff_state, :admission_network_circuit_state]
+    # Pull the table atoms from the SoT modules (REV-C reviewer LOW-1:
+    # single-source the coupling boundary so a rename of the @table
+    # in either module surfaces an ETS check failure on the next
+    # deploy rather than silently diverging here).
+    required = [
+      Grappa.Session.Backoff.table_name(),
+      Grappa.Admission.NetworkCircuit.table_name()
+    ]
+
     missing = Enum.reject(required, &table_exists?/1)
 
     case missing do

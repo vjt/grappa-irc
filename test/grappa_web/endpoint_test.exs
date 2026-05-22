@@ -59,5 +59,38 @@ defmodule GrappaWeb.EndpointTest do
       refute Keyword.fetch!(new_env, :session_signing_salt) ==
                Keyword.fetch!(original_env, :session_signing_salt)
     end
+
+    test "config_change/2 invalidates :persistent_term cache when salt changes (REV-C MED-1)" do
+      original_env = Application.fetch_env!(:grappa, Endpoint)
+
+      # Prime the cache.
+      Plug.Conn.put_resp_header(%Plug.Conn{}, "x-warm", "1")
+      :persistent_term.put({Endpoint, :session_opts}, :primed_sentinel)
+
+      rotated = "rotated-#{System.unique_integer([:positive])}"
+
+      Application.put_env(
+        :grappa,
+        Endpoint,
+        Keyword.put(original_env, :session_signing_salt, rotated)
+      )
+
+      Endpoint.config_change([session_signing_salt: rotated], [])
+
+      cached = :persistent_term.get({Endpoint, :session_opts})
+      # The :primed_sentinel must have been overwritten.
+      refute cached == :primed_sentinel
+      # And the rebuilt opts must be a Plug.Session opts map carrying
+      # the new salt (Plug.Session.init/1 returns a map; signing_salt
+      # is nested under :store_config).
+      assert is_map(cached)
+      assert get_in(cached, [:store_config, :signing_salt]) == rotated
+    end
+
+    test "config_change/2 leaves the cache alone when salt is not in the changed set" do
+      :persistent_term.put({Endpoint, :session_opts}, :sentinel_untouched)
+      Endpoint.config_change([url: [host: "different.host"]], [])
+      assert :persistent_term.get({Endpoint, :session_opts}) == :sentinel_untouched
+    end
   end
 end
