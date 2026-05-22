@@ -10,83 +10,62 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 10 of 11 closed (REV-J LANDED 2026-05-22,
-`e0b8b27`).** Full close-out in `docs/checkpoints/2026-05-22-cp41.md` (S2).
-Closes 9 MEDIUM from the 2026-05-22 codebase review — cross-cutting
-smells spanning lifecycle (M7-M11), persistence (M12-M13), cross-module
-(M14-M15), web boundary (M18). 22 lib + test files; HOT-deployed.
+**REV cluster autopilot — bucket 11 of 11 closed (REV-K LANDED 2026-05-22,
+`e4a08bc` base + `8070551` reviewer-fix).** Full close-out in
+`docs/checkpoints/2026-05-22-cp42.md` (S1). Closes 2 MEDIUM from the
+2026-05-22 codebase review — cross-surface naming pay-down (M19 + M20).
+17 lib + test + cic files in base sweep; +2 files in reviewer-fix patch;
+COLD-deployed.
 
-**M-cluster MEDs closed in REV-J:**
-- **M7 (lifecycle S6)** — `Session.Server` `{:EXIT, _, :shutdown|:normal}`
-  catch-all raises on non-Client linked process. Pre-fix the comment was
-  the only defense against a future `Process.link/1` site silently
-  taking the Session down on its planned exit.
-- **M8 (lifecycle S7)** — `cancel_and_drain/2` recursive `drain_all/1`
-  shape. Invariant moved from call-site convention to structure.
-- **M9 (lifecycle S8)** — `Visitors.Reaper` schedules `:tick` BEFORE
-  sweep so cadence is interval-fixed under sweep load.
-- **M10 (lifecycle S5)** — `NetworkCircuit.reset_sync/1` public synchronous
-  verb replaces `Operator`'s `:sys.get_state/1` drain.
-- **M11 (lifecycle S10)** — `Operator.disconnect_session` user-branch
-  gates `:session_disconnected` on `{:ok, :transitioned}` outcome. No
-  more fabricated "operator disconnected" rows on no-op runs.
-- **M12 (persistence S10)** — `Scrollback.fetch/5` + `fetch_after/5`
-  wrappers retired. Callers thread `nil` for `own_nick` explicitly.
-- **M13 (persistence S11)** — `Networks.transition!/3` routes through
-  narrow `Credential.connection_state_changeset/2` with `safe_line_token`
-  guard on reason.
-- **M14 (cross-module S5)** — `Session.call_session/3` delegates to /4
-  with explicit 5_000ms default + typed `:timeout` error. FallbackController
-  gets `:gateway_timeout` arm.
-- **M15 (cross-module S7)** — `Networks.broadcast_state_change/4` folds
-  `home_network_state_changed` into `connection_state_changed`'s new
-  `:network` field. Lockstep cic edits in `api.ts`, `userTopic.ts`,
-  `HomePane.tsx`.
-- **M18 (web S6)** — `UploadsController.disposition_header/1` uses
-  `URI.encode/2` with RFC 3986 unreserved-char predicate (RFC 5987
-  compliance).
+**M-cluster MEDs closed in REV-K:**
+- **M19 (cross-surface S15)** — `mentions_bundle.messages[*]` wire shape
+  renamed `sender_nick:` → `sender:` to match sibling `ScrollbackMessage`.
+  Server moduledoc-flagged "Total consistency or nothing" debt paid in
+  one touch across server Wire + cic narrowing + cic render + tests.
+  Note `Message.sender_nick/1` (IRC parser helper for prefix extraction)
+  intentionally unchanged — different domain.
+- **M20 (cross-surface S18)** — WS Channel error envelope `%{reason:
+  "<token>"}` unified with REST `FallbackController`'s `%{error:
+  "<token>"}`. 36 server error replies + 33 channel test assertions;
+  cic adds typed `ChannelPushError` + `channelPushError/1` extractor
+  mirroring `ApiError`'s shape. Push helpers reject with typed error
+  carrying wire `code`. Per `feedback_no_silent_drops_closed`:
+  pushWatchlist's prior `reject(err)` of bare unknown was effectively
+  a silent-swallow at the cic boundary; typed class closes it.
 
-**M16 + M17** were already closed in REV-D (`fc5d221`); the REV-J brief
-incorrectly re-listed them. No-op in REV-J.
+**REV-J.5 STILL DEFERRED.** REV-K touched lib + cic only — no
+compose-shape changes, so the Dockerfile UID prep prerequisite for
+M1+M5 anonymous-volumes refactor didn't fold in. Standalone bucket
+REV-J.5 between REV-K and REV-Z if bandwidth permits, else carry
+forward to a future infra-polish cluster.
 
-**M1 + M5 DEFERRED to REV-J.5.** First-attempt anonymous-volumes
-refactor hit the named-volume root-init UID trap from
-`feedback_named_volume_uid_trap`. Path forward: Dockerfile chown of
-`/app/_build` / `/app/deps` / `/app/.mix` / `/app/.hex` / `/app/.cache`
-/ `/app/.local` to 1000:1000 BEFORE the COPY layers, then re-attempt
-M1+M5 as REV-J.5 or fold into a later bucket if scope allows. Brief's
-documented escape hatch: "ship (1)+(2) as REV-J + (3) as REV-J.5 if
-reviewer flags the bundle as too large." Reviewer didn't flag bundle
-size; the deferral is driven by the UID trap, not bundle scope.
+Deployed 2026-05-22 via `scripts/deploy.sh --force-cold` (preflight
+classified HOT but business rule "wire-shape change to live cic
+sockets is risky" forced COLD per `feedback_hot_deploy_preflight`
+conservative bias). Sessions reset, image rebuilt, container ID
+rotated. Healthcheck `ok`. `scripts/deploy-cic.sh` after: cic bundle
+rebuilt, hash `34TrT3jr` broadcast — refresh banner auto-prompts on
+any surviving tabs.
 
-Deployed 2026-05-22 via `scripts/deploy.sh` HOT (preflight returned
-"no unsafe markers → HOT" for lib-only changes). Sessions preserved.
-Healthcheck `ok`. Container ID unchanged. cic bundle `DpQoKo_g`
-unchanged (cic touched but only narrowing types + dispatcher; no
-bundle hash bump warranted since the structural change is in
-lockstep with server emit, no production cic flow break).
+Reviewer round-1 APPROVE with 3 LOW observations. Round-2 patch
+addressed LOW-1 (5 focused `ChannelPushError` unit tests) + LOW-2
+(softened docstring claim to "FUTURE consumer pattern" matching
+`compose.ts:601` reality). LOW-3 (`info` duplicates `error` key,
+cosmetic) deferred. Round-2 APPROVE clean.
 
-Reviewer round-1 APPROVE — clean. Standalone re-run of `scripts/check.sh`
-+ `scripts/dialyzer.sh` confirmed; literal gate-tail paste matched
-commit-message claim per `feedback_reviewer_gate_evidence`.
+**REV-Z staged.** Final REV bucket: docs sweep + README closed-clusters
+entry + LOW liquidation that fits. No code changes (or trivial
+spot-fixes only). Notable LOW candidates from cross-cluster
+carry-forwards:
+- `compose.ts` ChannelPushError branching consumer (wire to handle
+  the typed class symmetrically with `ApiError`) — could land here
+  or as own polish bucket
+- LOW-3 from REV-K reviewer (`info` field deduplication)
+- LOW set from the 2026-05-22 review (27 total — `bin/start.sh`
+  env-fiddling, `register-dns.sh` deployment-specific helper, etc.)
 
-**REV-K staged.** Cross-surface naming pay-down (M19 + M20):
-- **M19** — `mentions_bundle.messages[*]` uses `sender_nick:` while
-  sibling `ScrollbackMessage` uses `sender:`. Server moduledoc flagged
-  this as deferred drift; pay it now per "Total consistency or
-  nothing." Rename `sender_nick` → `sender` everywhere; one-touch
-  breaking change.
-- **M20** — REST error envelope uses `error:` key; WS Channel uses
-  `reason:` key for the same conceptual error. Unify on `error:` in
-  both surfaces.
-
-Both surfaces (server + cic); COLD likely (wire shape changes). Could
-also bundle **REV-J.5** (compose anonymous-volumes + Dockerfile UID
-prep) if scope tolerates; reviewer decides.
-
-**REV cluster — remaining buckets after REV-J:**
-- REV-K — cross-surface naming pay-down (M19, M20) + possibly REV-J.5 — both, COLD
-- REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only
+**REV cluster — final bucket after REV-K:**
+- REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only (or trivial spot-fixes)
 
 Per `project_post_tmu_full_review_scheduled` (vjt 2026-05-16 night
 mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
@@ -94,30 +73,36 @@ deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
 ★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
-`project_post_review_ordering_2026_05_22`): after REV-K + REV-Z LANDED,
-the order is (1) e2e flake triage + fix, (2) wireTypes.ts codegen,
+`project_post_review_ordering_2026_05_22`): after REV-Z LANDED, the
+order is (1) e2e flake triage + fix, (2) wireTypes.ts codegen,
 (3) bastille deploy workstream. Do NOT skip (1) or (2) to fast-track
 bastille — flakes-first because a noisy e2e suite blocks confidence in
 bastille validation; codegen-second because the cic↔server wire boundary
 is the highest-risk drift surface the review identified. Bastille is
 prod-runtime migration; cleaner on a green-suite + structurally-typed-
-boundary substrate.
+boundary substrate. REV-K's M19+M20 manual rename is NOT wasted —
+the unified `sender:` / `error:` names become the server-side
+typespecs that codegen will consume.
 
 ---
 
-## Carry-forwards from REV-J
+## Carry-forwards from REV-K
 
-- **REV-J.5 (M1+M5)** open — needs Dockerfile UID prep before the
-  anonymous-volumes refactor can land. Slot as own bucket or fold
-  into REV-K if scope allows.
-- **HOT-deploy validated for lib-only MED sweeps** — REV-J adds to the
-  REV-D / REV-E / REV-G / REV-H precedent.
-- **Reviewer gate-evidence discipline holding** — round-1 reviewer
-  re-ran `check.sh` + `dialyzer.sh` standalone, pasted tail, matched
-  commit-message claim. No drift detected.
-- **`feedback_no_silent_drops_closed` extended** by the M7 raise +
-  M11 transition-gated emission + M14 typed-error arm. Three more
-  boundaries upgraded from convention-as-contract to structure.
+- **REV-J.5 (M1+M5)** still open — same Dockerfile UID prep
+  prerequisite documented in REV-J carry-forward; REV-K did not
+  bundle it.
+- **COLD-with-cic-bundle-deploy validated** — REV-K is the first
+  REV-cluster wire-shape change where both surfaces moved in
+  lockstep. The COLD + deploy-cic.sh pairing worked cleanly;
+  refresh banner auto-prompt mechanism honored.
+- **`feedback_no_silent_drops_closed` extended** by the cic typed
+  `ChannelPushError` class — pushWatchlist's prior `reject(err)` of
+  bare unknown was effectively a silent-swallow at the cic boundary.
+  Typed class closes the gap structurally.
+- **Wire-shape change "in doubt, COLD" precedent established** — even
+  when preflight classifies HOT, wire-shape changes that desync
+  server emit from live cic narrower expectations should force COLD.
+  Adds to `feedback_hot_deploy_preflight` discipline.
 
 ---
 

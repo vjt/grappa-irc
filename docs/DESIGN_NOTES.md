@@ -8596,6 +8596,138 @@ flags the bundle as too large."
 
 ---
 
+## 2026-05-22 — REV-K: cross-surface naming pay-down (M19 + M20)
+
+Bucket 11 of 11 in the REV cluster (codebase-review-fixes,
+2026-05-22). Per `project_post_tmu_full_review_scheduled`. CP42 S1
+(rotated from CP41 at 447 lines). Both surfaces; COLD-deployed
+(server-side wire shape change + cic bundle hash bump).
+
+Closes 2 MEDIUM from
+`docs/reviews/codebase/2026-05-22-codebase-review.md` § cross-
+surface (S15 + S18).
+
+### M19 — `mentions_bundle.messages[*].sender_nick:` → `sender:`
+
+The mentions bundle's per-message wire shape historically used
+`sender_nick:` while sibling `ScrollbackMessage` used `sender:` —
+the server moduledoc explicitly flagged this as "deferred to the
+next channel-client-polish cluster". REV-K is that cluster.
+
+One-touch rename across:
+- `lib/grappa/session/wire.ex` — typespec + project_bundle_message
+  builder + moduledoc explaining the rename is paid down (was a
+  "consistency or nothing" debt from arch review A8 — kept the
+  divergence "small but EXPLICIT in one place" then; the explicit
+  pin enabled the one-touch rename later)
+- `lib/grappa/push/payload.ex` — doc-comment reference (title
+  source = "sender" matches the storage field)
+- `test/grappa/session/wire_test.exs` — payload assertions
+- `cicchetto/src/lib/api.ts` — `MentionsBundleMessage` type
+- `cicchetto/src/lib/userTopic.ts` — `narrowMentionsBundleMessage`
+- `cicchetto/src/MentionsWindow.tsx` — render path
+- 4 cic test files
+
+Note: `Message.sender_nick/1` (the IRC parser helper for extracting
+nick from prefix) is intentionally UNCHANGED. Different concern —
+the parser helper is the source-of-nick from an IRC wire prefix;
+the wire field is the projection into the mentions bundle. Same
+NAME, different DOMAIN.
+
+### M20 — WS Channel error envelope `%{reason: "<token>"}` → `%{error: "<token>"}`
+
+REST `FallbackController` error envelope: `%{error: "<token>"}` —
+the canonical A7 envelope shape used by every Phoenix-route error
+path. WS Channel `handle_in` reply envelope: `%{reason: "<token>"}`
+— same conceptual content (a tokenized error reason cic can
+branch on) under a different key. cic's push helpers could not
+branch on the WS error token because the receive callback received
+an opaque `unknown` that stringified to `[object Object]`.
+
+Unified on `error:` key in both surfaces. Across:
+- `lib/grappa_web/channels/grappa_channel.ex` — all 36 error
+  replies in handle_in dispatch arms + join/3 + with_body_check
+- `lib/grappa_web/channels/admin_channel.ex` — join/3 forbidden +
+  unknown-topic
+- 33 channel test assertions across grappa_channel_test +
+  admin_channel_test + user_socket_test
+
+Cic-side adds typed `ChannelPushError` + `channelPushError/1`
+extractor (`cicchetto/src/lib/api.ts:929-983`) mirroring
+`ApiError`'s shape. Push helpers (pushAwaySet, pushAwayUnset,
+pushWatchlist{Add,Del,List}) now reject with the typed error
+carrying the wire `code` so callers can branch the same way they
+do for REST `ApiError.code`. Per `feedback_no_silent_drops_closed`:
+pushWatchlist's prior `reject(err)` of bare unknown was effectively
+a silent-swallow at the cic boundary — the caller's `.catch` got
+an opaque object with no surface to branch on. Typed error class
+closes that gap.
+
+The typed-class shape ENABLES future branching at consumers; the
+current single consumer (`compose.ts:601`) still falls through to
+a generic "send failed" string. Docstring softened post-reviewer
+LOW-2 to honestly frame this as "FUTURE consumer pattern" so
+future readers don't grep for branching that doesn't exist yet.
+Wiring `compose.ts` to branch on `ChannelPushError.code` lands
+independently (REV-Z or polish bucket).
+
+### Reviewer round
+
+Round-1: APPROVE clean with 3 LOW observations.
+- LOW-1: `ChannelPushError` lacked direct unit test (transitive
+  coverage in `socket.test.ts:210` would have passed even if
+  extractor returned `new Error("anything")` — defeating the typed
+  class purpose). Addressed in REV-K round-2: 5 focused unit
+  tests in `api.test.ts` covering well-formed, sibling fields,
+  object missing `error`, non-object payloads, subclass identity.
+- LOW-2: Docstring claim "callers can branch on code" outpaced
+  consumer reality. Addressed in round-2: softened to "FUTURE
+  consumer pattern" + explicit note that current consumers fall
+  through.
+- LOW-3: `info` field duplicates `error` key in extractor return.
+  Deferred as cosmetic (`info` IS the full server reply by
+  design; the duplication is the "info captures everything" model).
+
+Round-2: APPROVE — mutate-tested all 5 new tests, all real
+assertions. REV-K ready to merge.
+
+### Deploy — COLD (--force-cold)
+
+Preflight `Grappa.Deploy.Preflight.cli(["e412c17", "HEAD"])`
+classified HOT (no mix.lock / struct / supervision / Dockerfile /
+compose / migration / nginx changes). However the BUSINESS rule
+"wire-shape change to live connected cic sockets is risky"
+applies: server hot-reload would emit the NEW shape (`sender:` +
+`%{error:}`) while connected browser tabs run the OLD bundle
+(narrowers expect `sender_nick:` + `%{reason:}`) until the cic
+refresh banner is clicked. Conservative bias per the
+`feedback_hot_deploy_preflight` discipline ("in doubt, COLD"):
+forced cold via `scripts/deploy.sh --force-cold`. Sessions reset,
+new image baked, container ID rotated.
+
+`scripts/deploy-cic.sh` after: cic bundle rebuilt and hash
+`34TrT3jr` broadcast to all live user-topics — refresh banner
+auto-prompts on any tab that survived the reconnect with the
+old bundle.
+
+Healthcheck `ok`. Push `e412c17..8070551`.
+
+### Carry-forwards into REV-Z
+
+- **REV-J.5 still deferred** — Dockerfile UID prep prerequisite for
+  M1+M5 anonymous-volumes refactor not bundled in REV-K (REV-K
+  touched lib + cic only; no compose-shape changes). Standalone
+  bucket REV-J.5 between REV-K and REV-Z if bandwidth permits, else
+  carry forward to a future infra-polish cluster.
+- **LOW-3 cosmetic** — `info` field duplicates `error` key. Polish
+  opportunity for REV-Z or future.
+- **compose.ts ChannelPushError branching consumer** — wire
+  `compose.ts:601` to handle the typed class symmetrically with
+  `ApiError`. Bucket-sized; REV-Z or polish.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
