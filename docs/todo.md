@@ -16,36 +16,66 @@ A→K + REV-Z docs sweep shipped from the 2026-05-22 codebase review.
 per-bucket deploy + healthcheck. Cluster summary at
 `project_rev_cluster_closed.md`; chronological close in DESIGN_NOTES.
 
-**REV-Z LANDED 2026-05-22.** Final REV bucket (12 of 12), docs-only:
-- README "Closed clusters" entry for REV cluster A→K + Z added
-  per `feedback_readme_currency`.
-- DESIGN_NOTES cluster-close entry appended with meta-lessons +
-  carry-forwards; REV-G header normalised to `## YYYY-MM-DD — TITLE`.
-- CP43 opened (CP42 closed at 225 lines, over rotate threshold).
-- MEMORY.md compressed from 25.6KB → 12.8KB (well under 24.4KB
-  warn threshold); 15 UX-5 bucket entries + 18 UX-6 bucket entries
-  collapsed into three cluster-summary memories
-  (`project_ux_5_cluster_closed`, `project_ux_6_cluster_closed`,
-  `project_rev_cluster_closed`); per-bucket files preserved on disk.
-- LOW liquidation deferred — 27-item set stays opportunistic per
-  review § "spot-fix when adjacent code is touched"; REV-K
-  reviewer-fix patch already softened compose.ts:601 docstring;
-  LOW-3 cosmetic dedup has no consumer impact.
+**FLAKES cluster opened 2026-05-22.** Post-REV per vjt mandate
+`project_post_review_ordering_2026_05_22`. **FLAKE-A LANDED
+2026-05-22** (triage manifest, docs-only).
 
-NO deploy (docs-only). Pushed to origin/main.
+Re-baseline of brief against HEAD `bf3ba3a` (REV-Z close):
+- e2e: **41 fails** (33 distinct files); brief said 45. Drift = −4.
+- server-side: **0 fails** (`scripts/test.sh` returns `8 doctests,
+  33 properties, 2424 tests, 0 failures`). Brief's 2 server-side
+  classes (ETS-singleton-leak + AdminEventsTest:197) are STALE —
+  closed by `7bb3caa` 2026-05-17 + REV-D + U-cluster work.
+- **Cluster scope shrinks to e2e only.**
+
+Duration histogram: 27 at 31s (Class C bahamut load class per
+`project_bahamut_load_flake`); 14 real Class A/B with clean
+concentrations (NickText × 3, image-upload × 2, server-window × 2,
+iOS-PWA kb × 3, 5 singletons).
+
+Manifest: `docs/reviews/flake-triage-2026-05-22.md`.
+
+### FLAKE-B (NEXT) — testnet load isolation
+
+Single bucket fix combining both hypotheses from
+`project_bahamut_load_flake`:
+1. **docker compose restart between specs** via Playwright
+   `globalSetup` hook (~5-10s/restart; clean isolation).
+2. **per-spec channel-name uniquification** — most specs use
+   `AUTOJOIN_CHANNELS[0]` (`#bofh`); per-run uniquify + tear down
+   the credential's autojoin entry post-spec to remove the load
+   source.
+
+Defense in depth. Target SCOPE = 27 Class C specs returning to
+green on TWO consecutive `scripts/integration.sh` runs.
+
+Worktree: `/tmp/grappa-flake-b`. Reviewer-loop mandatory (code-
+touching). LANDED requires literal gate-tail paste per
+`feedback_landed_claim_evidence` AND TWO consecutive integration
+runs.
+
+### FLAKE-C..G — per-class fix buckets (sized after FLAKE-B)
+
+- **FLAKE-C** — NickText cluster (3 specs in `ux-5-bc2-nick-render`)
+- **FLAKE-D** — image-upload modal (2 specs in `i2-image-upload`)
+- **FLAKE-E** — server-window cluster (2 specs in `cp13-server-window`)
+- **FLAKE-F** — iOS-PWA kb cluster (3 specs: `ux-6-d-keyboard-
+  pattern` × 2 + `ux-5-bv-mobile-keyboard-react`)
+- **FLAKE-G** — singletons (`m9-cicchetto-part-x-click`,
+  `cic-members-panel-scope:107`, `p0d-lusers`,
+  `names-ux-n3-cold-load-auto-select`, `cp13-server-window:80`)
+
+### FLAKE-Z — closer
+
+Reconciliation; remaining quarantines with inline justification
+per `feedback_recurring_e2e_not_flake`; DESIGN_NOTES cluster-close
+entry; README closed-clusters bullet; cluster summary memory.
 
 ---
 
-★ **NEXT CLUSTER (vjt mandate per `project_post_review_ordering_2026_05_22`):**
-**E2e flakes triage + fix.** 45 baseline-fail testnet specs +
-`Grappa.AdmissionTest` ETS-singleton-leak class +
-`AdminEventsTest:197` assert_receive class. Per
-`feedback_recurring_e2e_not_flake`: same-triplet recurring fails
-are NEVER flakes — triage each as real product bug behind a flake
-label or genuine testnet/load flake.
-
-After flakes: (2) **wireTypes.ts codegen** — generate cic TS wire
-types from server-side `Grappa.*.Wire` typespecs; closes
+★ **AFTER FLAKES (vjt mandate per `project_post_review_ordering_2026_05_22`):**
+(2) **wireTypes.ts codegen** — generate cic TS wire types from
+server-side `Grappa.*.Wire` typespecs; closes
 C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY, supersedes REV-A/H/K
 hand-edits. (3) **Bastille deploy workstream** (GitHub #8).
 

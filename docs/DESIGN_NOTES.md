@@ -8850,6 +8850,89 @@ Per `project_post_review_ordering_2026_05_22` — after REV-Z:
 
 REV cluster: **CLOSED**.
 
+---
+
+## 2026-05-22 — FLAKE-A: e2e baseline triage manifest
+
+First bucket of the FLAKES cluster (post-REV per vjt mandate
+`project_post_review_ordering_2026_05_22`). Docs-only; no code.
+
+Manifest at [`reviews/flake-triage-2026-05-22.md`](reviews/flake-triage-2026-05-22.md).
+
+Headline finding: brief said "45 e2e + 2 server-side classes";
+re-baseline against current HEAD `bf3ba3a` measures **41 e2e + 0
+server-side**. The two server-side classes (`Grappa.AdmissionTest`
+ETS-singleton-leak + `AdminEventsTest:197` `assert_receive` race)
+were closed earlier:
+
+- ETS-singleton-leak — commit `7bb3caa` 2026-05-17, root cause was
+  `IRC.Client.handle_call({:send, _})` raising on dead socket and
+  blocking `Session.Server.terminate/2`'s narrow exit-catch (the
+  `:tcp_closed` recv-loop nilling the socket pre-SEND). Boundary
+  fix returns `{:error, :no_socket | :closed}` honestly. Per
+  memory `project_network_circuit_ets_leak`.
+- `AdminEventsTest:197` `assert_receive` race — folded into REV-D
+  silent-swallow audit + U-cluster live-cap-counters work. No
+  longer surfaces on current HEAD.
+
+`scripts/test.sh` against `bf3ba3a` returns `8 doctests, 33
+properties, 2424 tests, 0 failures` in 55.9s. Server-side baseline
+= clean. Cluster scope shrinks to e2e only.
+
+### e2e shape (41 fails, 33 distinct files)
+
+Duration histogram is the diagnostic:
+
+```
+27 × 31.x s   → Playwright 30s test-timeout (Class C — load)
+ 9 × 5-6s     → assertion-fail @ default 5s/6s timeout (Class A)
+ 3 × <1s      → locator-not-found instant fail (Class A)
+ 2 × 10-11s   → bumped-timeout assertion fail (Class A/B)
+```
+
+27/41 (≈66%) cluster at 31s. These share the bahamut state-
+corruption shape documented since 2026-05-15 in
+`project_bahamut_load_flake` — `loginAs → selectChannel → IRC
+interaction → assert on DOM`. After ~40-50 specs of sustained
+sequential JOIN/PART/KICK traffic, bahamut accumulates orphan
+state and new JOINs against fresh channel names don't get clean
+handshakes. **One root cause, one fix bucket (FLAKE-B).**
+
+The remaining 14 are real-shape Class A / Class B candidates with
+proper concentrations: 3 in `ux-5-bc2-nick-render` (single
+NickText cluster), 2 in `i2-image-upload` (privacy modal flow),
+2 in `cp13-server-window` (server-window cluster), 2 in `ux-6-d-
+keyboard-pattern`-area (iOS PWA kb carry-debt per
+`feedback_ux_6_d_anti_patterns`), 5 singletons.
+
+### Bucket plan
+
+- **FLAKE-B** — testnet load isolation. Hypothesis 1 (docker
+  compose restart between specs / N-spec windows via Playwright
+  `globalSetup`) + Hypothesis 2 (per-spec channel-name
+  uniquification — most specs use `AUTOJOIN_CHANNELS[0]`).
+  Likely both, defense in depth. Target: 27 → 0 on two
+  consecutive `scripts/integration.sh` runs.
+- **FLAKE-C** — Class A NickText cluster (3 specs).
+- **FLAKE-D** — Class A image-upload modal (2 specs).
+- **FLAKE-E** — Class A server-window cluster (2 specs).
+- **FLAKE-F** — Class A iOS-PWA kb cluster (3 specs).
+- **FLAKE-G** — Class A/B singletons (5 specs).
+- **FLAKE-Z** — closer; reconciliation; remaining quarantines
+  with inline justification per `feedback_recurring_e2e_not_flake`.
+
+### Hard rules carried from REV cluster
+
+- No `gh run rerun --failed` (`feedback_no_ci_retries_on_first_failure`).
+- No silent-swallow (`feedback_no_silent_drops_closed`); quarantines
+  via `test.skip` + tracking memory acceptable, silent timeout-bumps
+  not.
+- Per-bucket reviewer-loop + LANDED gate-tail paste for code-
+  touching buckets only; FLAKE-A + FLAKE-Z docs-only.
+
+FLAKE-A: **LANDED**. Pushed to origin/main on commit alongside
+manifest + CP43 update + this entry.
+
 
 ---
 
