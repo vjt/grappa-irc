@@ -13,12 +13,15 @@
 #       Tasks, Phoenix Channels) linearly. One knob, both tables move
 #       together.
 #
-#   - GRAPPA_DIRTY_SCHEDULERS (default: $(nproc))
+#   - GRAPPA_DIRTY_SCHEDULERS (default: max(nproc, 10))
 #       Sets BOTH `+SDcpu` (dirty CPU schedulers) and `+SDio` (dirty
 #       IO schedulers). BEAM's `+SDio` default is a fixed 10 regardless
 #       of CPU count, which is wasteful on a 4-core host (10 idle
 #       threads with their own allocator carriers). Defaulting to nproc
-#       gives 1 dirty scheduler per CPU for each pool.
+#       gives 1 dirty scheduler per CPU for each pool — but floored at
+#       BEAM's own 10-IO default so a single-core deployment never
+#       starves the sqlite WAL pool that shares dirty IO with file
+#       watchers (M6 from the 2026-05-22 codebase review).
 #
 # Why this exists: Docker on Linux 6.x inherits NOFILE = 2^30 from the
 # host; without a `+Q` cap BEAM sizes the port table at
@@ -35,7 +38,11 @@
 set -e
 
 : "${GRAPPA_MAX_USERS:=100}"
-: "${GRAPPA_DIRTY_SCHEDULERS:=$(nproc)}"
+default_schedulers=$(nproc)
+if [ "$default_schedulers" -lt 10 ]; then
+    default_schedulers=10
+fi
+: "${GRAPPA_DIRTY_SCHEDULERS:=$default_schedulers}"
 
 # T-2: Erlang distribution for `bin/grappa remote-shell` operator
 # attach. RELEASE_COOKIE is required (no default here — compose.yaml

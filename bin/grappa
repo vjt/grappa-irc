@@ -18,8 +18,23 @@
 # path, every door.
 #
 # Verb name policy: kebab-case on the command line, snake_case for the
-# underlying mix task (grappa.create_user, etc.). Mapping is the
-# `case` statement in dispatch() below.
+# underlying mix task (grappa.create_user, etc.). Mapping is mechanical
+# (tr - _) — no per-verb hardcoding.
+#
+# Verb table: a single `declare -Ag VERBS` map (below) is the source
+# of truth for dispatch + help. Per-verb metadata is encoded as a
+# pipe-separated tuple `kind|target|group|description`:
+#   - kind:    boot|rpc|attach|debug|meta
+#   - target:  for boot, the mix task name; for rpc, the
+#              `Grappa.Operator.fn!()` expression body (sans args);
+#              for attach/debug/meta, the verb name itself (handled
+#              by the per-verb function `verb_<snake>`).
+#   - group:   help-banner section header
+#   - description: one-line summary for help-banner
+#
+# Adding a new verb is now a TWO-touchpoint change: one VERBS entry +
+# one verb_<snake>() function (boot verbs can drop the explicit
+# function by using the default boot-handler).
 
 set -euo pipefail
 
@@ -28,6 +43,60 @@ set -euo pipefail
 # Test seam: bats overrides SCRIPTS_DIR to point at a tmpdir with
 # fake scripts/mix.sh. Production calls inherit the real scripts/.
 SCRIPTS_DIR="${SCRIPTS_DIR:-$SRC_ROOT/scripts}"
+
+# --- verb table -----------------------------------------------------------
+#
+# kebab-name → kind|target|group|description
+#
+# Ordering inside each group section is the order verbs appear in
+# `help_top()`. Across groups, ordering is preserved by the explicit
+# GROUP_ORDER array below.
+declare -Ag VERBS=(
+    [create-user]="boot|grappa.create_user|boot|create a Grappa user account"
+    [bind-network]="boot|grappa.bind_network|boot|bind a (user, network) credential"
+    [add-server]="boot|grappa.add_server|boot|add a server entry to a network"
+    [remove-server]="boot|grappa.remove_server|boot|remove a server entry from a network"
+    [set-network-caps]="boot|grappa.set_network_caps|boot|set per-network session caps"
+    [unbind-network]="boot|grappa.unbind_network|boot|remove a (user, network) credential"
+    [update-network-credential]="boot|grappa.update_network_credential|boot|edit autojoin / nick / SASL fields"
+    [seed-scrollback]="boot|grappa.seed_scrollback|boot|seed dev scrollback"
+    [gen-encryption-key]="boot|grappa.gen_encryption_key|boot|generate a Cloak.Vault key"
+    [gen-vapid]="boot|grappa.gen_vapid|boot|generate a VAPID keypair (push)"
+
+    [delete-visitor]="rpc|Grappa.Operator.delete_visitor!|rpc|terminate + delete a visitor (sync)"
+    [reap-visitors]="rpc|Grappa.Operator.reap_visitors!|rpc|force-run the visitor reaper"
+    [list-sessions]="rpc|Grappa.Operator.list_sessions_text!|rpc|inspect the live session registry"
+    [list-credentials]="rpc|Grappa.Operator.list_credentials_text!|rpc|list cred bindings + state"
+    [list-visitors]="rpc|Grappa.Operator.list_visitors_text!|rpc|list active visitor rows"
+
+    [remote-shell]="attach|remote-shell|attach|iex --remsh against the live BEAM"
+
+    [open-db]="debug|open-db|debug|interactive sqlite3 against active env (RW)"
+    [shell]="debug|shell|debug|bash inside the grappa container"
+
+    [help]="meta|help|meta|this banner / per-verb help"
+)
+
+declare -ag GROUP_ORDER=(boot rpc attach debug meta)
+declare -Ag GROUP_HEADERS=(
+    [boot]="Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):"
+    [rpc]="Live-state verbs (--rpc-eval against the live BEAM):"
+    [attach]="Live-state attach:"
+    [debug]="Debug verbs:"
+    [meta]="Meta:"
+)
+
+# Field accessor — `verb_field <kebab> <field-index>`. Field indices:
+# 1=kind, 2=target, 3=group, 4=description. Returns empty if verb is
+# unknown (caller's responsibility to gate on `[ -n "${VERBS[$v]:-}" ]`).
+verb_field() {
+    local entry="${VERBS[$1]:-}"
+    [ -z "$entry" ] && return 0
+    cut -d'|' -f"$2" <<<"$entry"
+}
+
+# Kebab → snake conversion. Pure mechanical — no per-verb hardcoding.
+kebab_to_snake() { tr '-' '_' <<<"$1"; }
 
 # --- helpers --------------------------------------------------------------
 
@@ -59,24 +128,29 @@ die_unknown_verb() {
 }
 
 # --- per-verb implementations --------------------------------------------
+#
+# Boot verbs use the generic `dispatch_boot` handler (kebab → mix task
+# name from the VERBS table). RPC verbs that take a positional argument
+# need a bespoke `verb_<snake>` function; nullary RPC verbs route
+# through the generic `dispatch_rpc` handler.
 
-# Boot-time verbs — thin delegates to existing mix tasks.
+dispatch_boot() {
+    local verb=$1; shift
+    local task
+    task="$(verb_field "$verb" 2)"
+    mix_task "$task" "$@"
+}
 
-verb_create_user()                { mix_task grappa.create_user "$@"; }
-verb_bind_network()               { mix_task grappa.bind_network "$@"; }
-verb_add_server()                 { mix_task grappa.add_server "$@"; }
-verb_set_network_caps()           { mix_task grappa.set_network_caps "$@"; }
-verb_unbind_network()             { mix_task grappa.unbind_network "$@"; }
-verb_update_network_credential()  { mix_task grappa.update_network_credential "$@"; }
-verb_seed_scrollback()            { mix_task grappa.seed_scrollback "$@"; }
-verb_gen_encryption_key()         { mix_task grappa.gen_encryption_key "$@"; }
-verb_gen_vapid()                  { mix_task grappa.gen_vapid "$@"; }
-verb_remove_server()              { mix_task grappa.remove_server "$@"; }
-
-# Live-state verbs — evaluate Grappa.Operator entry points on the live
-# BEAM via --rpc-eval. Output is whatever Operator's IO.puts emits;
-# --rpc-eval also echoes the expression's return value (typically `:ok`)
-# after the puts output. Same precedent as remote-shell --batch.
+dispatch_rpc() {
+    local verb=$1; shift
+    if [ $# -ne 0 ]; then
+        printf 'bin/grappa: %s takes no arguments\n' "$verb" >&2
+        exit 64
+    fi
+    local fn
+    fn="$(verb_field "$verb" 2)"
+    rpc_eval "${fn}()"
+}
 
 verb_delete_visitor() {
     if [ $# -ne 1 ]; then
@@ -85,22 +159,6 @@ verb_delete_visitor() {
     fi
     local id=$1
     rpc_eval "Grappa.Operator.delete_visitor!(\"$id\")"
-}
-
-verb_reap_visitors() {
-    rpc_eval "Grappa.Operator.reap_visitors!()"
-}
-
-verb_list_sessions() {
-    rpc_eval "Grappa.Operator.list_sessions_text!()"
-}
-
-verb_list_credentials() {
-    rpc_eval "Grappa.Operator.list_credentials_text!()"
-}
-
-verb_list_visitors() {
-    rpc_eval "Grappa.Operator.list_visitors_text!()"
 }
 
 verb_remote_shell() {
@@ -136,8 +194,6 @@ verb_remote_shell() {
     esac
 }
 
-# Debug verbs — direct docker compose exec.
-
 verb_open_db() {
     # WARNING: opens RW. scripts/db.sh is the ambient-safe RO alternative
     # for casual prod queries. Auto-detects active env's DB file via the
@@ -162,17 +218,6 @@ help_boot_verb() {
     local task=$1
     exec "$SCRIPTS_DIR/mix.sh" --env=dev help "$task"
 }
-
-verb_help_create_user()                { help_boot_verb grappa.create_user; }
-verb_help_bind_network()               { help_boot_verb grappa.bind_network; }
-verb_help_add_server()                 { help_boot_verb grappa.add_server; }
-verb_help_set_network_caps()           { help_boot_verb grappa.set_network_caps; }
-verb_help_unbind_network()             { help_boot_verb grappa.unbind_network; }
-verb_help_update_network_credential()  { help_boot_verb grappa.update_network_credential; }
-verb_help_seed_scrollback()            { help_boot_verb grappa.seed_scrollback; }
-verb_help_gen_encryption_key()         { help_boot_verb grappa.gen_encryption_key; }
-verb_help_gen_vapid()                  { help_boot_verb grappa.gen_vapid; }
-verb_help_remove_server()              { help_boot_verb grappa.remove_server; }
 
 verb_help_delete_visitor() { cat <<'EOF'
 delete-visitor <uuid>
@@ -271,79 +316,86 @@ EOF
 }
 
 # --- top-level help banner -----------------------------------------------
+#
+# Generated from the VERBS table — no manual list to keep in lockstep
+# with the dispatch table.
 
 help_top() {
-    cat <<'EOF'
-bin/grappa — host-side operator dispatcher
+    printf 'bin/grappa — host-side operator dispatcher\n\n'
+    printf 'Usage:\n'
+    printf '    bin/grappa <verb> [args...]\n'
+    printf '    bin/grappa help [verb]\n\n'
 
-Usage:
-    bin/grappa <verb> [args...]
-    bin/grappa help [verb]
-
-Boot-time verbs (mix tasks; auto-detect MIX_ENV from container):
-    create-user                  create a Grappa user account
-    bind-network                 bind a (user, network) credential
-    add-server                   add a server entry to a network
-    remove-server                remove a server entry from a network
-    set-network-caps             set per-network session caps
-    unbind-network               remove a (user, network) credential
-    update-network-credential    edit autojoin / nick / SASL fields
-    seed-scrollback              seed dev scrollback
-    gen-encryption-key           generate a Cloak.Vault key
-    gen-vapid                    generate a VAPID keypair (push)
-
-Live-state verbs (--rpc-eval against the live BEAM):
-    delete-visitor <uuid>        terminate + delete a visitor (sync)
-    reap-visitors                force-run the visitor reaper
-    list-sessions                inspect the live session registry
-    list-credentials             list cred bindings + state
-    list-visitors                list active visitor rows
-
-Live-state attach:
-    remote-shell [--batch -e]    iex --remsh against the live BEAM
-
-Debug verbs:
-    open-db [args]               interactive sqlite3 against active env (RW)
-    shell                        bash inside the grappa container
-
-Meta:
-    help [verb]                  this banner / per-verb help
-
-EOF
+    local group verb kind target g desc
+    for group in "${GROUP_ORDER[@]}"; do
+        printf '%s\n' "${GROUP_HEADERS[$group]}"
+        # Iterate in insertion order via the GROUP_ORDER+VERBS pairing.
+        # Bash 4 associative arrays don't preserve insertion order on
+        # iteration, so we walk a manually-ordered display list per group.
+        for verb in "${VERB_DISPLAY_ORDER[@]}"; do
+            g="$(verb_field "$verb" 3)"
+            [ "$g" = "$group" ] || continue
+            desc="$(verb_field "$verb" 4)"
+            printf '    %-28s %s\n' "$verb" "$desc"
+        done
+        printf '\n'
+    done
 }
+
+# Display order — matches the original help_top()'s curated ordering
+# per group. Bash 4 associative-array iteration is unordered, so we
+# carry an explicit ordered list. New verbs: add to VERBS map AND
+# here in the appropriate group's position.
+declare -ag VERB_DISPLAY_ORDER=(
+    create-user
+    bind-network
+    add-server
+    remove-server
+    set-network-caps
+    unbind-network
+    update-network-credential
+    seed-scrollback
+    gen-encryption-key
+    gen-vapid
+    delete-visitor
+    reap-visitors
+    list-sessions
+    list-credentials
+    list-visitors
+    remote-shell
+    open-db
+    shell
+    help
+)
 
 # --- dispatch ------------------------------------------------------------
 
+# Per-verb help dispatch. Boot verbs delegate to `mix help grappa.<task>`;
+# all others have an explicit `verb_help_<snake>` function.
 dispatch_help() {
     if [ $# -eq 0 ]; then
         help_top
         exit 0
     fi
     local verb=$1
-    case "$verb" in
-        create-user)                verb_help_create_user;;
-        bind-network)               verb_help_bind_network;;
-        add-server)                 verb_help_add_server;;
-        set-network-caps)           verb_help_set_network_caps;;
-        unbind-network)             verb_help_unbind_network;;
-        update-network-credential)  verb_help_update_network_credential;;
-        seed-scrollback)            verb_help_seed_scrollback;;
-        gen-encryption-key)         verb_help_gen_encryption_key;;
-        gen-vapid)                  verb_help_gen_vapid;;
-        remove-server)              verb_help_remove_server;;
-        delete-visitor)             verb_help_delete_visitor;;
-        reap-visitors)              verb_help_reap_visitors;;
-        list-sessions)              verb_help_list_sessions;;
-        list-credentials)           verb_help_list_credentials;;
-        list-visitors)              verb_help_list_visitors;;
-        remote-shell)               verb_help_remote_shell;;
-        open-db)                    verb_help_open_db;;
-        shell)                      verb_help_shell;;
-        help)                       verb_help_help;;
-        *)                          die_unknown_verb "$verb";;
-    esac
+    [ -n "${VERBS[$verb]:-}" ] || die_unknown_verb "$verb"
+    local kind
+    kind="$(verb_field "$verb" 1)"
+    if [ "$kind" = "boot" ]; then
+        help_boot_verb "$(verb_field "$verb" 2)"
+    else
+        local snake
+        snake="$(kebab_to_snake "$verb")"
+        "verb_help_${snake}"
+    fi
 }
 
+# Main verb dispatch. Routes by `kind`:
+#   - boot   → dispatch_boot (mix task)
+#   - rpc    → dispatch_rpc OR bespoke verb_<snake> for arg-taking verbs
+#   - meta   → help (special-cased)
+#   - attach → verb_remote_shell
+#   - debug  → verb_open_db / verb_shell
 dispatch() {
     if [ $# -eq 0 ]; then
         help_top
@@ -351,27 +403,25 @@ dispatch() {
     fi
     local verb=$1
     shift
-    case "$verb" in
-        help)                       dispatch_help "$@";;
-        create-user)                verb_create_user "$@";;
-        bind-network)               verb_bind_network "$@";;
-        add-server)                 verb_add_server "$@";;
-        set-network-caps)           verb_set_network_caps "$@";;
-        unbind-network)             verb_unbind_network "$@";;
-        update-network-credential)  verb_update_network_credential "$@";;
-        seed-scrollback)            verb_seed_scrollback "$@";;
-        gen-encryption-key)         verb_gen_encryption_key "$@";;
-        gen-vapid)                  verb_gen_vapid "$@";;
-        remove-server)              verb_remove_server "$@";;
-        delete-visitor)             verb_delete_visitor "$@";;
-        reap-visitors)              verb_reap_visitors "$@";;
-        list-sessions)              verb_list_sessions "$@";;
-        list-credentials)           verb_list_credentials "$@";;
-        list-visitors)              verb_list_visitors "$@";;
-        remote-shell)               verb_remote_shell "$@";;
-        open-db)                    verb_open_db "$@";;
-        shell)                      verb_shell "$@";;
-        *)                          die_unknown_verb "$verb";;
+    [ -n "${VERBS[$verb]:-}" ] || die_unknown_verb "$verb"
+    local kind snake
+    kind="$(verb_field "$verb" 1)"
+    snake="$(kebab_to_snake "$verb")"
+    # Prefer a bespoke `verb_<snake>` function when one exists — that
+    # handles arg-taking verbs (delete-visitor, remote-shell) and the
+    # debug verbs (open-db, shell). Generic dispatchers handle the
+    # nullary/conventional cases. The prefer-bespoke rule means adding
+    # a future arg-taking RPC verb is one VERBS entry + one
+    # verb_<snake>() function — no dispatch-table edit needed.
+    if declare -F "verb_${snake}" >/dev/null; then
+        "verb_${snake}" "$@"
+        return
+    fi
+    case "$kind" in
+        boot) dispatch_boot "$verb" "$@" ;;
+        rpc)  dispatch_rpc  "$verb" "$@" ;;
+        meta) dispatch_help "$@" ;;
+        *)    die_unknown_verb "$verb" ;;
     esac
 }
 

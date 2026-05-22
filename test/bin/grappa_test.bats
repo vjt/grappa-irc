@@ -262,3 +262,16 @@ EOF
     grep -q -- '--rpc-eval' "$ARGV_LOG"
     grep -q 'Grappa.Operator.list_visitors_text' "$ARGV_LOG"
 }
+
+# --- M3 (REV-I) — VERBS table single-source-of-truth invariants ---------
+
+@test "rpc verb with extra args exits 64 (nullary rpc handler refuses args)" {
+    # Per M3 (REV-I) prefer-bespoke rule: nullary rpc verbs go through
+    # dispatch_rpc which refuses extra args. If a future arg-taking
+    # rpc verb is added without a bespoke verb_<snake>() handler, this
+    # test will catch the mistake at the right call site.
+    run "$BIN_GRAPPA" reap-visitors --extra
+    [ "$status" -eq 64 ]
+    [[ "$output" == *"reap-visitors"* ]]
+    [[ "$output" == *"no arguments"* ]]
+}

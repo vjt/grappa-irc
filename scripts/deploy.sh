@@ -141,7 +141,7 @@ if [ "$mode" = "hot" ]; then
     # `:code.modified_modules/0` and purges + reloads modified beams in
     # place. Sessions (Session.Server, IRC.Client, etc.) keep state.
     echo "Reloading modules in live BEAM..."
-    docker exec grappa curl -fsS -X POST http://localhost:4000/admin/reload
+    in_container curl -fsS -X POST http://localhost:4000/admin/reload
     echo
     echo "✓ hot-deploy complete (sessions preserved, container ID unchanged)"
     exit 0
