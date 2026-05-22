@@ -956,6 +956,40 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :error, %{reason: "no_session"})
     end
 
+    test "op (REV-E HIGH-1): dead Session.Server socket → typed upstream_unavailable reply, Channel survives",
+         %{socket: socket, network: network, user: user} do
+      # REV-E (H11) widened `Session.send_op/4`'s return shape from
+      # `{:error, :no_session}` to include the dead-socket family
+      # (`:no_socket | :closed | :invalid_line | :inet.posix()`). Pre-fix
+      # the `dispatch_ops_verb/3` `with`/`else` chain had no arm for
+      # those — the WITH-chain would have raised `WithClauseError`,
+      # crashing the Channel process (same crash class as the original
+      # MatchError, different victim).
+      #
+      # Repro: find the running Session.Server's linked Client pid and
+      # nil its socket via `:sys.replace_state`, then fire /op. The
+      # Channel's catch-all maps to `upstream_unavailable` and the
+      # process stays alive.
+      session_pid = Grappa.Session.whereis({:user, user.id}, network.id)
+      assert is_pid(session_pid), "session must be live for this regression"
+
+      client_pid = :sys.get_state(session_pid).client
+      :sys.replace_state(client_pid, fn cs -> %{cs | socket: nil} end)
+
+      socket_channel_pid = socket.channel_pid
+
+      ref =
+        push(socket, "op", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "nicks" => ["alice"]
+        })
+
+      assert_reply(ref, :error, %{reason: "upstream_unavailable"})
+      assert Process.alive?(socket_channel_pid), "Channel process must survive dead-socket /op"
+      assert Process.alive?(session_pid), "Session.Server must survive dead-socket /op"
+    end
+
     test "visitor socket: op returns visitor_not_allowed", %{network: network} do
       visitor_name = "visitor:#{Ecto.UUID.generate()}"
       topic = Topic.user(visitor_name)

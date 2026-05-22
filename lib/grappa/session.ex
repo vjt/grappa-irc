@@ -87,6 +87,21 @@ defmodule Grappa.Session do
   @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
 
   @typedoc """
+  REV-E (H11): the dead-socket / closed-mid-write error shape that any
+  `Session.send_*` wrapper can return once the Session.Server's
+  underlying `IRC.Client.send_*` call observes a dead socket. Mirrors
+  the transport-error half of `IRC.Client`'s `send_result` type —
+  all atoms (`:inet.posix()` per OTP is a set of atom error codes
+  like `:einval`). Pre-REV-E this shape was hidden by `:ok =
+  Client.send_*` strict-binds that MatchError-crashed Session.Server;
+  post-REV-E it propagates cleanly through the wrappers to whichever
+  caller surfaces upstream send failures (controllers map to 5xx;
+  GrappaChannel's `dispatch_ops_verb` maps to a typed
+  `upstream_unavailable` reply).
+  """
+  @type send_transport_error :: :no_socket | :closed | :inet.posix()
+
+  @typedoc """
   Per-channel member entry as returned by `list_members/3`. The
   per-row shape is the canonical contract that the WS
   `members_seeded` event AND the REST `/members` snapshot both
@@ -291,7 +306,7 @@ defmodule Grappa.Session do
   @spec send_privmsg(subject(), integer(), String.t(), String.t()) ::
           {:ok, Grappa.Scrollback.Message.t()}
           | {:ok, :no_persist}
-          | {:error, :no_session | :invalid_line}
+          | {:error, :no_session | :invalid_line | send_transport_error()}
           | {:error, Ecto.Changeset.t()}
   def send_privmsg(subject, network_id, target, body)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and
@@ -345,7 +360,7 @@ defmodule Grappa.Session do
   pipeline → `:join_failed` event with numeric=475.
   """
   @spec send_join(subject(), integer(), String.t(), String.t() | nil) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_join(subject, network_id, channel, key)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              (is_nil(key) or is_binary(key)) do
@@ -378,7 +393,7 @@ defmodule Grappa.Session do
   for the rationale). `{:error, :no_session}` if not registered.
   """
   @spec send_part(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_part(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     if Identifier.safe_line_token?(channel) and Identifier.valid_channel?(channel) do
@@ -400,7 +415,7 @@ defmodule Grappa.Session do
   """
   @spec send_topic(subject(), integer(), String.t(), String.t()) ::
           {:ok, Grappa.Scrollback.Message.t()}
-          | {:error, :no_session | :invalid_line}
+          | {:error, :no_session | :invalid_line | send_transport_error()}
           | {:error, Ecto.Changeset.t()}
   def send_topic(subject, network_id, channel, body)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
@@ -421,7 +436,7 @@ defmodule Grappa.Session do
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`.
   """
   @spec send_nick(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_nick(subject, network_id, new_nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(new_nick) do
     if Identifier.safe_line_token?(new_nick) do
@@ -444,7 +459,7 @@ defmodule Grappa.Session do
   string carrying CR/LF/NUL).
   """
   @spec send_quit(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_quit(subject, network_id, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(reason) do
     if Identifier.safe_line_token?(reason) do
@@ -466,7 +481,7 @@ defmodule Grappa.Session do
   S3.2 (channel-client-polish). Symmetric with `unset_explicit_away/2`.
   """
   @spec set_explicit_away(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def set_explicit_away(subject, network_id, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(reason) do
     if Identifier.safe_line_token?(reason) do
@@ -486,7 +501,7 @@ defmodule Grappa.Session do
   `origin_window` is `%{kind: atom(), target: String.t() | nil}`.
   """
   @spec set_explicit_away(subject(), integer(), String.t(), map()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def set_explicit_away(subject, network_id, reason, origin_window)
       when is_subject(subject) and is_integer(network_id) and is_binary(reason) and
              is_map(origin_window) do
@@ -760,7 +775,7 @@ defmodule Grappa.Session do
   exceeds the server's MODES= limit. Returns `:ok` or `{:error, :no_session}`.
   """
   @spec send_op(subject(), integer(), String.t(), [String.t()]) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_op(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
@@ -769,7 +784,7 @@ defmodule Grappa.Session do
 
   @doc "Sends `MODE <channel> -ooo... <nicks>` upstream, chunked per ISUPPORT MODES=."
   @spec send_deop(subject(), integer(), String.t(), [String.t()]) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_deop(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
@@ -778,7 +793,7 @@ defmodule Grappa.Session do
 
   @doc "Sends `MODE <channel> +vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
   @spec send_voice(subject(), integer(), String.t(), [String.t()]) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_voice(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
@@ -787,7 +802,7 @@ defmodule Grappa.Session do
 
   @doc "Sends `MODE <channel> -vvv... <nicks>` upstream, chunked per ISUPPORT MODES=."
   @spec send_devoice(subject(), integer(), String.t(), [String.t()]) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_devoice(subject, network_id, channel, nicks)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_list(nicks) do
@@ -801,7 +816,7 @@ defmodule Grappa.Session do
   `Grappa.IRC.Client.send_kick/4`.
   """
   @spec send_kick(subject(), integer(), String.t(), String.t(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_kick(subject, network_id, channel, nick, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) and is_binary(reason) do
@@ -816,7 +831,7 @@ defmodule Grappa.Session do
   Returns `:ok` or `{:error, :no_session}`.
   """
   @spec send_ban(subject(), integer(), String.t(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_ban(subject, network_id, channel, mask_or_nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(mask_or_nick) do
@@ -828,7 +843,7 @@ defmodule Grappa.Session do
   Returns `:ok` or `{:error, :no_session}`.
   """
   @spec send_unban(subject(), integer(), String.t(), String.t()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_unban(subject, network_id, channel, mask)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(mask) do
@@ -841,7 +856,7 @@ defmodule Grappa.Session do
   if the channel/nick syntax is rejected by `Grappa.IRC.Client.send_invite/3`.
   """
   @spec send_invite(subject(), integer(), String.t(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_invite(subject, network_id, channel, nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(nick) do
@@ -855,7 +870,7 @@ defmodule Grappa.Session do
   Returns `:ok` or `{:error, :no_session}`.
   """
   @spec send_lusers(subject(), integer()) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_lusers(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     call_session(subject, network_id, :send_lusers)
@@ -868,7 +883,7 @@ defmodule Grappa.Session do
   if the channel syntax is rejected by `Grappa.IRC.Client.send_banlist/2`.
   """
   @spec send_banlist(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_banlist(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     call_session(subject, network_id, {:send_banlist, Identifier.canonical_channel(channel)})
@@ -887,7 +902,7 @@ defmodule Grappa.Session do
   if the nick syntax is rejected by `Grappa.IRC.Client.send_whois/2`.
   """
   @spec send_whois(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_whois(subject, network_id, nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
     call_session(subject, network_id, {:send_whois, nick})
@@ -908,7 +923,7 @@ defmodule Grappa.Session do
   if the nick syntax is rejected by `Grappa.IRC.Client.send_whowas/2`.
   """
   @spec send_whowas(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_whowas(subject, network_id, nick)
       when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
     call_session(subject, network_id, {:send_whowas, nick})
@@ -932,7 +947,7 @@ defmodule Grappa.Session do
   if the channel syntax is rejected by `Grappa.IRC.Client.send_who/2`.
   """
   @spec send_who(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_who(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     call_session(subject, network_id, {:send_who, Identifier.canonical_channel(channel)})
@@ -958,7 +973,7 @@ defmodule Grappa.Session do
   if the channel syntax is rejected by `Grappa.IRC.Client.send_names/2`.
   """
   @spec send_names(subject(), integer(), String.t(), String.t() | nil) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_names(subject, network_id, channel, origin_window)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              (is_nil(origin_window) or is_binary(origin_window)) do
@@ -974,7 +989,7 @@ defmodule Grappa.Session do
   if the modes bytes are rejected by `Grappa.IRC.Client.send_umode/3`.
   """
   @spec send_umode(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_umode(subject, network_id, modes)
       when is_subject(subject) and is_integer(network_id) and is_binary(modes) do
     call_session(subject, network_id, {:send_umode, modes})
@@ -987,7 +1002,7 @@ defmodule Grappa.Session do
   Returns `:ok` or `{:error, :no_session}`.
   """
   @spec send_mode(subject(), integer(), String.t(), String.t(), [String.t()]) ::
-          :ok | {:error, :no_session}
+          :ok | {:error, :no_session | send_transport_error()}
   def send_mode(subject, network_id, target, modes, params)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and
              is_binary(modes) and is_list(params) do
@@ -1002,7 +1017,7 @@ defmodule Grappa.Session do
   if the channel syntax is rejected by `Grappa.IRC.Client.send_topic_clear/2`.
   """
   @spec send_topic_clear(subject(), integer(), String.t()) ::
-          :ok | {:error, :no_session | :invalid_line}
+          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
   def send_topic_clear(subject, network_id, channel)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) do
     call_session(subject, network_id, {:send_topic_clear, Identifier.canonical_channel(channel)})

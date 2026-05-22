@@ -158,6 +158,8 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.BodyLimit
 
+  require Logger
+
   @typedoc "Wire payload for `topic_changed` events pushed by this channel."
   @type topic_changed_payload :: %{
           kind: String.t(),
@@ -1143,13 +1145,43 @@ defmodule GrappaWeb.GrappaChannel do
          :ok <- thunk.(user) do
       {:reply, :ok, socket}
     else
-      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
-      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      {:error, :invalid_mask} -> {:reply, {:error, %{reason: "invalid_mask"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
-      {:error, :visitor_not_allowed} -> {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_channel} ->
+        {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+
+      {:error, :invalid_nick} ->
+        {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+
+      {:error, :invalid_mask} ->
+        {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+
+      {:error, :invalid_line} ->
+        {:reply, {:error, %{reason: "invalid_line"}}, socket}
+
+      {:error, :visitor_not_allowed} ->
+        {:reply, {:error, %{reason: "visitor_not_allowed"}}, socket}
+
+      :error ->
+        {:reply, {:error, %{reason: "user_not_found"}}, socket}
+
+      {:error, :no_session} ->
+        {:reply, {:error, %{reason: "no_session"}}, socket}
+
+      # REV-E (H11) — reviewer HIGH-1: Session.send_* CAN return
+      # `{:error, :no_socket | :closed | :inet.posix()}` post-U-cluster
+      # boundary fix once a dead-socket SEND fires. Pre-REV-E those
+      # crashed Session.Server with MatchError; REV-E fixed Session.Server
+      # to propagate cleanly, but those error shapes had no `else` arm
+      # here — would have raised WithClauseError in the Channel process
+      # (same crash class, different victim). Catch-all maps any
+      # uncategorised upstream-write failure to a single typed cic
+      # surface so the operator's /op (etc.) gets a structured reply
+      # instead of the Channel dying.
+      {:error, reason} ->
+        Logger.warning("ops verb: upstream send failed",
+          reason: inspect(reason)
+        )
+
+        {:reply, {:error, %{reason: "upstream_unavailable"}}, socket}
     end
   end
 

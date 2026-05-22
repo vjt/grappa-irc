@@ -2575,12 +2575,14 @@ defmodule Grappa.Session.Server do
 
   defp apply_effects([{:reply, line} | rest], state) do
     # REV-E (H11): EventRouter-emitted outbound (e.g., CTCP VERSION NOTICE
-    # reply). Fire-and-forget: the persist effect that pairs with the reply
-    # already landed in scrollback, and the reply target is the SENDER of
-    # an inbound — if our socket just died we have nothing else to do but
-    # log it and let the supervisor restart drive reconnect. Pre-fix this
-    # strict-bound `:ok =` and MatchError-crashed the Session on dead
-    # socket.
+    # reply). Fire-and-forget: a dead socket here means the reply doesn't
+    # land on the wire, but the paired `:persist` effect (emitted in the
+    # SAME effect list — EventRouter.do_route/2 emits `[{:reply, _},
+    # {:persist, _, _}]`) will run on the NEXT recursion regardless of
+    # send_line's outcome, so the user-visible scrollback row lands
+    # either way. Pre-fix this strict-bound `:ok =` and MatchError-
+    # crashed the Session on dead socket, swallowing the persist too.
+    # Supervisor restart owns reconnect.
     case Client.send_line(state.client, line) do
       :ok ->
         :ok
@@ -3039,12 +3041,21 @@ defmodule Grappa.Session.Server do
   # REV-E (H11): single fire-and-forget Logger helper for AWAY-internal
   # send paths. Pre-fix each call site strict-bound `:ok =` and
   # MatchError-crashed on dead socket. Local AwayState mutation still
-  # happens (next reconnect resends AWAY); the warning is the honest
-  # signal that the wire write didn't land. `:ok` arm returns `:ok` so
-  # callers can ignore the result identically to the strict-bind era.
-  # Error narrowed to `atom()` to mirror IRC.Client's success-typed
-  # send_result (`:invalid_line | :no_socket | :closed | :inet.posix()`
-  # — all atoms; Dialyzer flagged the wider `term()` as supertype).
+  # happens for the LIVE process (so the cic `away_confirmed` broadcast
+  # fires + Mentions aggregation tracks the window), but a Session
+  # crash + supervisor restart wipes AwayState (no DB persistence, no
+  # Registry handoff at init/1) — the operator's `/away` is effectively
+  # lost on the next reconnect.
+  #
+  # That's acceptable per "Log honesty": the Logger.warning is the
+  # honest signal that the wire write didn't land; the operator can
+  # observe the failure and re-issue `/away` post-reconnect (a UX-7-ish
+  # follow-up could surface a "your AWAY was lost on reconnect" hint
+  # via the same channel that posts the bundle-refresh banner, but it's
+  # out of REV-E scope). Error narrowed to `atom()` to mirror
+  # IRC.Client's success-typed send_result (`:invalid_line | :no_socket
+  # | :closed | :inet.posix()` — all atoms; Dialyzer flagged the wider
+  # `term()` as supertype).
   @spec maybe_log_send_failure(String.t(), :ok | {:error, atom()}) :: :ok
   defp maybe_log_send_failure(_, :ok), do: :ok
 
