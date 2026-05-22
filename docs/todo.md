@@ -240,12 +240,57 @@ Gates:
 Commit `1acfdc6`. Pushed. No deploy needed — e2e-fixture-only change
 (no `lib/` or `cicchetto/src/` edits). Container healthy.
 
-**UX-7-E PENDING.** Shared ComposeBox greyed-class surface:
-- `cp15-b6-kicked.spec.ts:112` — `expect(composeBox).toHaveClass(/compose-box-greyed/)` fails after peer KICK.
-- `cp15-b6-parked.spec.ts:129` — same `toHaveClass(/compose-box-greyed/)` failure after /disconnect cascade.
+**UX-7-E LANDED 2026-05-22 (autopilot, 25afe7a).** Shared ComposeBox
+greyed-class surface for cp15-b6-kicked. selection.ts stillLive was
+blind to pseudo-rows; close-watcher MRU picker fired on peer KICK
+and yanked focus to the seeded autojoin channel, hiding the kicked
+window's greyed compose. Extracted `windowIsPresent(key)` in
+windowState.ts as the single source of truth for "channel-window
+state exists" (pending|failed|kicked|parked); selection.ts channel-
+arm falls back to it after live-row check. Regression-guard vitest
+added simulating peer KICK shape; subscribe.test.ts mock surface
+extended with the three current windowState exports.
 
-Both probably driven by the same upstream signal not flowing to
-ComposeBox's greyed-class derivation. Investigation next.
+**UX-7-F LANDED 2026-05-22 (autopilot, fe8dfb2).** Spec rewrite for
+post-UX-4-D Home-redirect contract on /disconnect cascade:
+- `cp15-b6-parked.spec.ts:90` — was failing at composeSend timeout
+  (textarea retained `/disconnect ...` body for 5s).
+
+Plan agent's briefed hypothesis (HTTP/2 stream contention between
+PATCH response + refetch GETs) was provably WRONG: server-side PATCH
+returned 200 in 9ms with broadcast emitted synchronously on the
+correct user-rooted topic per two parallel research agents reading
+networks.ex + wire.ex + the existing assert_receive coverage.
+
+Real root cause: `cicchetto/src/lib/selection.ts:287-316` (added by
+UX-4-D commit cdc5470, 2026-05-18) auto-redirects selection to Home
+when a network transitions to :parked or :failed. The ComposeBox
+unmounts (Home renders no compose); composeSend's `toHaveValue("")`
+poll races the unmount and times out at 5s.
+
+vjt 2026-05-22 chose "keep redirect, fix spec" — UX-4-D's redirect
+is the intentional UX (parked = surface parked summary on Home).
+Pre-UX-4-D spec asserted `.compose-box-greyed` cascade on the
+parked channel — that asserts buggy behavior under current
+contract.
+
+Fix: e2e-fixture-only, no src/ changes.
+- composeSend gains `expectUnmount: true` opt (cicchettoPage.ts):
+  waits for textarea-gone (`toHaveCount 0`) instead of textarea-
+  empty when caller knows the command triggers selection redirect.
+  Default behavior unchanged for non-redirect commands.
+- cp15-b6-parked.spec.ts: full rewrite asserts post-UX-4-D
+  contract: Home redirect with parked card visible + Reconnect chip
+  enabled + sidebar still greyed + tooltip preserved.
+- Reconnect chip click (not /connect typing) drives unpark: mirrors
+  what every operator does (no compose on Home; only path is the
+  Home card chip).
+
+NO DEPLOY (e2e fixture+spec only).
+
+Cluster meta: UX-7 cluster CLOSED — A LANDED, B LANDED, C LANDED,
+D LANDED, E LANDED, F LANDED. 45 other baseline fails remain
+documented as testnet-flake set (separate cluster).
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
