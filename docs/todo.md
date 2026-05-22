@@ -131,14 +131,76 @@ baseline + post-fix the same way. Different surface (archive sidebar
 rendering + click → setSelectedChannel propagation), not the
 scrollback-cache invalidation arm fixed here.
 
-**UX-7-C PENDING.** Failure B of the baseline-fails cluster:
+**UX-7-C LANDED 2026-05-22.** Failure B of the baseline-fails cluster:
 `ux-4-z-cluster-journey.spec.ts:399` (Bucket E post-PART selection-
-redirect). Per orchestrator pre-blessed scope decision, separate
-bucket — different surface from UX-7-B (selection state machine vs
-scrollback cache invalidation). Failure mode: after `partChannel(
-#bofh)` the selection doesn't reliably redirect away from `#bofh` to
-home/MRU/server; selectedTab text doesn't satisfy the bucket-E
-contract. Investigation TBD.
+redirect). Real product bug, not spec rot.
+
+**Root cause:** `cicchetto/src/lib/subscribe.ts:379` (pre-fix) — the
+self-PART handler called `setSelectedChannel(null)` unconditionally on
+EVERY own-PART. Two bugs in one:
+1. **UX-7-C exact**: operator focused on `#ux4z-key-test` (:failed
+   pseudo-row from `/join #ux4z-key-test wrong-key`); `partChannel(
+   #bofh)` (DIFFERENT channel) nuked selection. Operator landed on
+   "select a channel below" placeholder.
+2. **Even when sel WAS the parted channel**: setting null short-
+   circuited the UX-4-E close-watcher in `selection.ts:317`
+   (`if (!sel) return;`), defeating its MRU → server → home picker
+   chain. Architecturally — a parallel selection-redirect path that
+   wasn't updated when the close-watcher single-funnel landed
+   (UX-4 bucket E). Violates "one feature, one code path".
+
+**Fix:** removed `setSelectedChannel(null)` from BUG5a self-PART
+handler. Kept `setParted(key)` (windowState projection only). Close-
+watcher now owns selection redirect on close events. Two regression-
+guard tests added to `subscribe.test.ts` (focused-channel + unfocused-
+channel arms; previous "self-PART clears selection" test deleted —
+it encoded the bug).
+
+**Carry-debt surfaced by fix:**
+- `loginAs(adminPage, admin)` at spec:491 (admin-only path) hung
+  because admin-vjt has no networks (M-7 seeding) and `loginAs` waited
+  for the per-network header. Pre-UX-7-C this was masked because the
+  spec failed at line 399 before reaching admin arm. Added
+  `loginAs(page, vjt, { noNetworks: true })` opt-in: waits for
+  `.home-pane-registered` instead. Opt-in (not OR-selector) per
+  reviewer R1 MED-1: homeData resolves off /me which can race ahead of
+  /networks for bound users, weakening the post-condition invariant.
+- Spec line 412 (`shell-chrome-cog.tap()`) worked by accident pre-fix
+  (BUG5a had nulled selection → ShellChrome rendered). Post-fix
+  selection stays on `#ux4z-key-test` channel → ShellChrome hidden
+  (Shell.tsx:593 `<Show when={selectedChannel()?.kind !== "channel">`).
+  Switch to Server window before bucket M (reuses existing bucket-K
+  route line 295 — no new dependency).
+
+**Reviewer-loop** (general-purpose, 2 rounds):
+- R1: APPROVE overall. MED-1 (loginAs OR-selector race risk) + LOW
+  (stale "only own PART clears" comment) — both fixed inline.
+- R2: APPROVE clean.
+
+**Gates:**
+- `scripts/check.sh` exit 0: 8 doctests + 32 properties + **2314
+  tests, 0 failures** + 0 Dialyzer + 0 Credo + 0 Sobelow + doctor
+  green + bats 23/23
+- `scripts/bun.sh run check` exit 0: 21 baseline warnings (0 new)
+- `scripts/bun.sh run test` exit 0: 89 files / **1574 vitest**
+  (1573 baseline + 1 net new — 2 regression-guard tests added,
+  1 bug-encoding test deleted)
+- `scripts/integration.sh --grep "UX-4-Z cluster"`: 1 passed (5.8s)
+  on TWO consecutive runs
+
+**Deploy:** HOT-cic-bundle (no struct/migration/application.ex/
+Dockerfile/nginx/long-lived-genserver changes; cic-only). Bundle
+`index-LoF9Lw3p.js` → next bundle hash. Healthcheck ok.
+
+**UX-7-D PENDING.** Remaining baseline-fails cluster work (different
+surface from UX-7-B and UX-7-C — archive sidebar rendering +
+click-to-select propagation):
+- `cp15-b4-archive-section.spec.ts:37` — archive entry click doesn't
+  navigate to scrollback (selectedChannel stays on $server).
+- `cp15-b6-part-archive-rejoin.spec.ts:41` — likely same surface.
+- `cp15-b6-kicked.spec.ts` — kicked-state sidebar greying not visible.
+- `ux-1-archive-delete.spec.ts:44` — archive `<details>` element
+  never renders in sidebar after PART (loadArchive not triggered?).
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
