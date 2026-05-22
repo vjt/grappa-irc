@@ -8936,6 +8936,186 @@ manifest + CP43 update + this entry.
 
 ---
 
+## 2026-05-22 — FLAKE-B Part 1: desktop fixture rot for `selectChannel(_, _, "Server")`
+
+**Closes:** 6+ spec-rot cases (b0, b2, p0e, cp22-bnames, m2,
+ux-2-mobile-archive + downstream cp13-server-window S8/S9 and
+cp15-b6-pending-to-failed which share `SERVER_WINDOW_LABEL`).
+
+**Does NOT close:** "Class C" testnet load class (FLAKE-A's manifest
+mis-classified — see Part 2 below).
+
+### Background
+
+FLAKE-A's manifest listed 27 e2e specs at 31s timeout, all classified
+as "Class C bahamut load class". Hypothesis-phase sampled 6 specs in
+isolation (all passed) and inducted the rest were load class too.
+The induction was wrong: the SPECIFIC 6 sampled (push-install et al.)
+happen NOT to use `selectChannel(_, _, "Server")`. When other
+"Class C" specs were tested in isolation, several failed alone too —
+the failure was NOT load-class but fixture rot.
+
+### Root cause
+
+Post-UX-4-C the cic desktop sidebar collapses the per-network `<h3>` +
+standalone Server tab into a single `<li class="sidebar-network-header">`
+row whose visible text is `⚙️ <slug>` — never the literal word
+"Server". The mobile fixture branch
+(`cicchetto/e2e/fixtures/cicchettoPage.ts:167-171`) was updated for
+this contract; the desktop branch (line 192) kept the pre-UX-4-C
+fall-through `section.locator("li", { hasText: "Server" })` which
+times out at 30s waiting for a row that doesn't exist.
+
+### Fix
+
+`cicchetto/e2e/fixtures/cicchettoPage.ts:190-204` (commit `c804208`).
+Same callsite shape as the mobile branch:
+
+```ts
+if (windowName === "Server") {
+  return section.locator("li.sidebar-network-header");
+}
+return section.locator("li", { hasText: windowName });
+```
+
+12-line addition; e2e-fixture-only (no `lib/` touched, no cic source
+touched, no deploy needed).
+
+### Failed hypotheses (do not retry)
+
+1. **Per-spec session-bounce isolation** (`PATCH /networks/:slug park
+   → connect` between specs via a `bounceVjtSession()` helper +
+   `test.beforeAll` hook). Implemented, reverted on evidence:
+   bounce HOOK succeeded but test BODY still stalled; late-suite
+   specs cascaded to 0ms (the bounce helper itself broke under
+   accumulated load); non-bounced cp15-b6-pending-to-failed ALSO
+   failed (14.4s). The u-z-cluster-journey afterEach log line
+   `vjt did not re-join #bofh on bahamut-test within 30s; next
+   spec may flake on autojoin assumption` proves autojoin
+   restoration ITSELF takes >30s at suite scale, exactly what the
+   bounce relies on.
+2. **Per-spec channel-name uniquification** — never implemented;
+   would only have addressed at most 14 of 26 putative Class C
+   specs.
+3. **Autojoin-restore latency as primary root cause** — vjt mandate
+   "find out why join takes 30s do not work around it" investigated:
+   `Session.Server` autojoin loop is `Enum.reduce` over
+   `state.autojoin` calling `IRC.Client.send_join` (fire-and-forget).
+   The 30s is the gap between SEND and bahamut's JOIN/353/366 echo.
+   `IRC.Client.do_connect/3` has `@connect_timeout_ms 30_000`;
+   testnet has `THROTTLE_ENABLE` disabled
+   (`cicchetto/e2e/infra/bahamut/options.h_hub:47-55`). No single
+   mechanism explains the 30s universally — evidence pivoted to
+   per-spec rot for the early specs.
+
+### Evidence
+
+- Pre-fix baseline (run `26299521755`): 41 e2e fails.
+- Post-fix Run #1: 37 fails (−4 net).
+- Post-fix Run #2: 48 fails (+11; 12 specs flipped pass→fail run-to-run).
+- Suite-level flake (±10 specs per run) dwarfs the fix impact (±4).
+
+**LANDED-with-two-green-runs DELIBERATELY NOT CLAIMED** per
+`feedback_landed_claim_evidence` + `feedback_recurring_e2e_not_flake`:
+fix is verified-correct in isolation (each unblocked spec <2s
+post-fix, was 30.6s pre-fix) but broader suite too flaky to call
+two green runs.
+
+FLAKE-B Part 1: **LANDED on commit `c804208`**. Pushed to origin/main
+alongside CP43 S2 update + this entry. No deploy (e2e-fixture-only).
+
+
+---
+
+## 2026-05-22 — FLAKE-B Part 2: per-spec true-isolation triage
+
+**Documents the truth that FLAKE-A's classifications were FALSE
+INDUCTIONS.** No code shipped this entry — pure triage that re-baselines
+the manifest at `docs/reviews/flake-triage-2026-05-22.md`.
+
+### Methodology
+
+Two-pass approach to validate each of the 38 distinct failing spec
+files post-FLAKE-B-Part-1:
+
+1. **Pass 1 (batched)**: 38 files × 2 runs each, stack-reset
+   between BATCHES of 5 files. Caught the obvious "always-fails-
+   alone" cases but mis-classified m4/m5/m6/marker-target-window/
+   message-replay as "REAL BUG?" — these contaminated by prior-
+   spec state within their batch.
+
+2. **Pass 2 (true isolation)**: All 11 Pass-1 "REAL BUG?" candidates
+   re-validated with PER-SPEC stack cycle (`scripts/testnet.sh down
+   && up` before EACH single spec). Authoritative result.
+
+### Results
+
+- **27 files** → PASS in true isolation = **SPEC-ROT (load class)**.
+  Upstream isolation failure (NOT per-spec). Includes m4/m5/m6,
+  marker-target-window, message-replay (reclassified from Pass 1),
+  AND FLAKE-A's "Class A NickText cluster" (ux-5-bc2-nick-render
+  × 3) AND "Class A iOS-PWA kb cluster" (ux-6-d × 2 +
+  ux-5-bv-mobile-keyboard-react) which all pass cleanly when run
+  alone. Same with `ux-z-cluster-journey`, `scroll-on-window-switch`,
+  the push-* family, p0a/p0b/p0c, r6, refresh-on-join, cp14-b1/b2,
+  cic-members-panel-scope, cp15-b6-pending-to-failed,
+  m10-admin-networks-cap-editor (slow 38s but green),
+  ux-2-mobile-archive.
+
+- **7 files** → FAIL in true isolation = **REAL BUG candidates**
+  needing per-spec evaluation:
+  - `i2-image-upload` (vjt note: uploads WORK IN PROD → spec wrong)
+  - `m9-cicchetto-part-x-click`
+  - `members-prefix-regression`
+  - `names-ux-n3-cold-load-auto-select`
+  - `nick-case-sensitivity`
+  - `p0d-lusers`
+  - `p0e-invite-ack`
+
+- **4 files** → mixed Pass-1 results (FLAKE class); not yet
+  re-validated in Pass 2:
+  - `cp14-b3-dm-history-bidirectional`
+  - `ios-z-cluster-journey`
+  - `m9b-admin-sessions-actions`
+  - `ux-6-k-pm-unread-cursor`
+
+### Lessons
+
+1. **Batched isolation is unreliable.** `scripts/testnet.sh down +
+   up` between batches does NOT fully reset state between spec
+   runs on the same stack instance — grappa state (vjt's
+   `Session.Server`, bahamut leaf state) leaks across `docker
+   compose run` invocations against the same playwright-runner
+   container. **Per-spec full stack cycle is the ONLY reliable
+   isolation primitive.**
+
+2. **Sampling-based inductions are dangerous.** FLAKE-A took 6
+   passing specs as evidence for "all 27 are load class". The
+   specific 6 were not representative (they all happened to be
+   load-class clean). Per-spec validation is required for any
+   classification claim.
+
+3. **Most "real-product-bug" classifications in FLAKE-A were
+   wrong.** The UX-4/5/6/7 sweeps moved enough DOM that specs
+   assert on stale selectors. The bugs are spec rot in nearly
+   every case — not regression.
+
+### Next-session work (per vjt mandate)
+
+"finish this round, we clear and we evaluate each one":
+
+1. `/clear` + open per-spec triage on the 7 REAL BUG candidates
+   with vjt collaboratively. Most likely outcome: most are SPEC
+   ROT (stale selectors), fix by updating specs.
+2. Re-classify the 4 FLAKE files in true isolation.
+3. Design upstream isolation mechanism for the 27 SPEC-ROT (load
+   class) files — NOT session-bounce per Part 1 evidence.
+
+No code change in Part 2 — manifest update only. No deploy needed.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

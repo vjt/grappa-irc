@@ -17,8 +17,15 @@ per-bucket deploy + healthcheck. Cluster summary at
 `project_rev_cluster_closed.md`; chronological close in DESIGN_NOTES.
 
 **FLAKES cluster opened 2026-05-22.** Post-REV per vjt mandate
-`project_post_review_ordering_2026_05_22`. **FLAKE-A LANDED
-2026-05-22** (triage manifest, docs-only).
+(see ★ POST-FLAKES ROADMAP block below for ordering canon).
+**FLAKE-A LANDED
+2026-05-22** (triage manifest, docs-only). **FLAKE-B Part 1
+LANDED 2026-05-22** (commit `c804208` on `origin/main`; desktop
+sidebarWindow fixture rot for `windowName === "Server"` —
+unblocks 6 spec-rot cases cleanly in isolation; broader suite
+flake too high to claim two-green-runs). **FLAKE-B Part 2 — per-
+spec triage COMPLETED 2026-05-22** (re-baselines FLAKE-A; details
+in `docs/reviews/flake-triage-2026-05-22.md` Part 2 section).
 
 Re-baseline of brief against HEAD `bf3ba3a` (REV-Z close):
 - e2e: **41 fails** (33 distinct files); brief said 45. Drift = −4.
@@ -28,42 +35,50 @@ Re-baseline of brief against HEAD `bf3ba3a` (REV-Z close):
   closed by `7bb3caa` 2026-05-17 + REV-D + U-cluster work.
 - **Cluster scope shrinks to e2e only.**
 
-Duration histogram: 27 at 31s (Class C bahamut load class per
-`project_bahamut_load_flake`); 14 real Class A/B with clean
-concentrations (NickText × 3, image-upload × 2, server-window × 2,
-iOS-PWA kb × 3, 5 singletons).
+**FLAKE-B Part 2 findings (re-baselines FLAKE-A)**:
+- **27 files** PASS in true isolation → SPEC-ROT (load class).
+  Includes FLAKE-A's "Class A NickText" + "iOS-PWA kb saga" +
+  m4/m5/m6/marker-target-window/message-replay (all
+  reclassified — FLAKE-A's per-class groupings were wrong).
+- **7 files** FAIL in true isolation → REAL BUG candidates
+  needing per-spec vjt evaluation: `i2-image-upload` (vjt:
+  works in prod → spec wrong), `m9-cicchetto-part-x-click`,
+  `members-prefix-regression`, `names-ux-n3-cold-load-auto-
+  select`, `nick-case-sensitivity`, `p0d-lusers`,
+  `p0e-invite-ack`.
+- **4 files** mixed Pass-1 (FLAKE): `cp14-b3-dm-history-
+  bidirectional`, `ios-z-cluster-journey`, `m9b-admin-sessions-
+  actions`, `ux-6-k-pm-unread-cursor` — not yet re-validated in
+  true isolation.
 
-Manifest: `docs/reviews/flake-triage-2026-05-22.md`.
+### FLAKE-C (NEXT) — collaborative per-spec evaluation with vjt
 
-### FLAKE-B (NEXT) — testnet load isolation
+Per vjt mandate 2026-05-22 evening: "finish this round, we clear
+and we evaluate each one." After `/clear`, open per-spec triage
+on the 7 REAL BUG candidates with vjt. Most likely outcome:
+most are SPEC ROT (UX-4/5/6/7 sweeps moved DOM; specs assert on
+stale selectors). Fix by updating specs to match current contract.
 
-Single bucket fix combining both hypotheses from
-`project_bahamut_load_flake`:
-1. **docker compose restart between specs** via Playwright
-   `globalSetup` hook (~5-10s/restart; clean isolation).
-2. **per-spec channel-name uniquification** — most specs use
-   `AUTOJOIN_CHANNELS[0]` (`#bofh`); per-run uniquify + tear down
-   the credential's autojoin entry post-spec to remove the load
-   source.
+### FLAKE-D — true-isolation revalidation of the 4 FLAKE files
 
-Defense in depth. Target SCOPE = 27 Class C specs returning to
-green on TWO consecutive `scripts/integration.sh` runs.
+`cp14-b3-dm-history-bidirectional`, `ios-z-cluster-journey`,
+`m9b-admin-sessions-actions`, `ux-6-k-pm-unread-cursor`. Likely
+all reclassify as SPEC-ROT under true isolation.
 
-Worktree: `/tmp/grappa-flake-b`. Reviewer-loop mandatory (code-
-touching). LANDED requires literal gate-tail paste per
-`feedback_landed_claim_evidence` AND TWO consecutive integration
-runs.
+### FLAKE-E — upstream isolation mechanism design (27 SPEC-ROT files)
 
-### FLAKE-C..G — per-class fix buckets (sized after FLAKE-B)
+NOT addressable by per-spec fix. Per-spec session-bounce DISPROVEN
+in CP43 S2. Candidates:
+- Per-spec-file `scripts/integration.sh`-level stack reset
+  (~30-60s/file × 104 files = +1h penalty per suite run).
+- Playwright `fullyParallel:true` with per-spec subject isolation
+  (much bigger change; needs per-test seeded user, per-test
+  bahamut leaf, etc.).
+- Investigate WHY per-spec runs accumulate state — root cause
+  could be addressable (e.g. vjt's Session.Server channel-state
+  map grows unboundedly across spec runs, sqlite WAL contention).
 
-- **FLAKE-C** — NickText cluster (3 specs in `ux-5-bc2-nick-render`)
-- **FLAKE-D** — image-upload modal (2 specs in `i2-image-upload`)
-- **FLAKE-E** — server-window cluster (2 specs in `cp13-server-window`)
-- **FLAKE-F** — iOS-PWA kb cluster (3 specs: `ux-6-d-keyboard-
-  pattern` × 2 + `ux-5-bv-mobile-keyboard-react`)
-- **FLAKE-G** — singletons (`m9-cicchetto-part-x-click`,
-  `cic-members-panel-scope:107`, `p0d-lusers`,
-  `names-ux-n3-cold-load-auto-select`, `cp13-server-window:80`)
+Design phase first (RFC-style), implementation second.
 
 ### FLAKE-Z — closer
 
@@ -73,16 +88,50 @@ entry; README closed-clusters bullet; cluster summary memory.
 
 ---
 
-★ **AFTER FLAKES (vjt mandate per `project_post_review_ordering_2026_05_22`):**
-(2) **wireTypes.ts codegen** — generate cic TS wire types from
-server-side `Grappa.*.Wire` typespecs; closes
-C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY, supersedes REV-A/H/K
-hand-edits. (3) **Bastille deploy workstream** (GitHub #8).
+★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22 evening, supersedes prior orderings):**
 
-Do NOT skip flakes/codegen to fast-track bastille — flakes-first
-because a noisy e2e suite blocks confidence in bastille validation;
-codegen-second because the cic↔server wire boundary is the
-highest-risk drift surface the review identified.
+After FLAKES-Z LANDED, work proceeds in this order. Do NOT skip ahead.
+
+1. **UX-7 scroll cluster** — (a) channel-switch scroll position
+   interference (UX-6-M folds in if vjt repro arrives); (b) read-cursor
+   update on scroll = NEW server contract. `Grappa.ReadCursor.set/4`
+   currently fires on focus-leave + browser-blur only; adding scroll =
+   new settle-event class with throttling spec.
+2. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`
+   from server-side `Grappa.*.Wire` typespecs. Closes
+   C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY (compile-time guarantee, not
+   vigilance), supersedes REV-A/H/K hand-edits. See 2026-05-22 codebase
+   review § "Direction recommendation".
+3. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
+   gh issue view 8`). FreeBSD bastille jail target prod runtime; current
+   deploy is docker-compose. Likely parallel target
+   (`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
+   Docker→Bastille rewrite. Verify scope from #8 before assuming.
+
+**Why this order (load-bearing):**
+- FLAKES-first: noisy e2e blocks confidence in every later wave
+  (bastille port needs e2e validation).
+- UX-7-before-codegen: read-cursor-on-scroll changes the server
+  contract; codegen captures the final wire shape in one pass not two.
+  Also: scroll-switching e2e through current 41-fail noise floor masks
+  regressions, so FLAKES must land green BEFORE UX-7.
+- Codegen-before-bastille: cic↔server boundary is the highest-risk
+  drift surface per 2026-05-22 review. Closing it structurally before
+  deploy reduces failure-mode matrix the bastille port has to validate.
+- Bastille-last: prod-runtime migration on a green-suite + structurally-
+  typed-boundary substrate, not during cleanup.
+
+**Lineage** (verbatim vjt words preserved):
+- 2026-05-22 mid-REV-E: "after review is done, fix all the flakes and
+  do the codegens before proceeding with bastille deploy"
+- 2026-05-22 evening: "we still have scrolling issues when switching
+  channels, and we need to implement read cursor update on scroll. when
+  is the best moment?" → proposal: insert UX-7 between FLAKES-Z and
+  codegen → vjt: "it's ok fix the flakes first"
+
+Memory pointer (single source of truth lives HERE, not in memory):
+`project_post_rev_roadmap.md` is a one-liner that points back to this
+section. If you're updating the roadmap, update THIS section.
 
 ---
 
