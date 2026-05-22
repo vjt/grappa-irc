@@ -10,55 +10,62 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 6 of 11 closed (REV-F LANDED 2026-05-22, `6574f0e`).**
-Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S1). Closes 2 HIGH from the
-2026-05-22 codebase review:
+**REV cluster autopilot — bucket 7 of 11 closed (REV-G LANDED 2026-05-22,
+`99256ed`).** Full close-out in `docs/checkpoints/2026-05-22-cp40.md` (S2).
+Closes 3 HIGH from the 2026-05-22 codebase review:
 
-- **H9 (irc/S1)** — `Grappa.IRC.AuthFSM` combined `CAP REQ :sasl labeled-response`
-  blob had no fallback when the server NAK'd. Bahamut + some Solanum variants
-  advertise `labeled-response` in CAP LS but NAK the combined REQ while ACKing
-  `:sasl` alone. Pre-fix a `:sasl`-required credential restart-looped permanently.
-  Fix: new `:awaiting_cap_ack_combined` + `:awaiting_cap_ack_sasl_only` phases;
-  combined-NAK falls back to `CAP REQ :sasl` alone before declaring
-  `:sasl_unavailable`. `:auto` also benefits (combined-NAK no longer skips SASL
-  even when server supports it). 7 new ExUnit cases covering the matrix.
+- **H22 (cicchetto/S3)** — PWA SW NavigationRoute denylist missed `/api`,
+  `/admin`, `/uploads`. Tapping a `📸 host/uploads/<slug>` URL in a new
+  tab fetched the SPA shell instead of image bytes. Same failure mode for
+  direct `/admin/*` operator-console URLs + `/api/*` REST surfaces. Fix:
+  broaden denylist to include the 3 missing prefixes (`/healthz` omitted
+  — single GET, SPA shell harmless). Plus
+  `test/grappa_web/router_sw_denylist_test.exs` walking
+  `GrappaWeb.Router.__routes__/0` + parsing the SW source, asserts SW ⊇
+  router-prefix-set modulo `{/, /healthz}`. M-9b-style boundary discipline.
 
-- **H10 (web/S1)** — `GrappaWeb.GrappaChannel.dispatch_subject_verb/3` (sister
-  of `dispatch_ops_verb/3`) was missing the catch-all `{:error, reason}` arm
-  REV-E HIGH-1 added to its sibling. `Session.send_whois`, `send_who`,
-  `send_names`, `send_banlist` post-U-cluster CAN return
-  `Session.send_transport_error()` shapes when the socket is dead — pre-fix
-  those crashed the channel pid with `WithClauseError`. Same crash class as
-  REV-E HIGH-1, relocated. Fix: verbatim mirror of REV-E HIGH-1's catch-all
-  (Logger.warning + typed `upstream_unavailable` reply). 1 new ExUnit case
-  mirroring the REV-E HIGH-1 regression test exactly modulo verb swap.
+- **H23 (cicchetto/S4)** — `markerRef` `let`-bound ref in
+  `ScrollbackPane.tsx` leaked across `<For>` mid-channel removal (cursor
+  advance staying on the same window). Round-1 attempted `createSignal`
+  function-ref + assumed React-style auto-null on unmount — **wrong
+  assumption**: SolidJS function-refs are mount-only. Reviewer round-1
+  caught the test-pin-quality issue; investigation under MED-1 exposed
+  the incomplete fix. Round-2 wires `onCleanup(() => setMarkerRef(undefined))`
+  inside the marker JSX ref function. Test pin upgraded to
+  `Element.prototype.scrollIntoView` spy regression that genuinely
+  discriminates pre-fix from post-fix code.
 
-HOT-deployed 2026-05-22 ~11:55 UTC via `Phoenix.CodeReloader.reload/1`
-(Path 2 — manual preflight against deployed SHA `a4d4b22` BEFORE running
-`scripts/deploy.sh` per `feedback_deploy_preflight_empty_diff_after_merge`).
-Live-verified post-deploy via grep on `/app/lib/...` (9 occurrences of
-`awaiting_cap_ack_combined` + `"subject verb: upstream send failed"` Logger
-message present in container source). Healthcheck `ok`.
+- **H24 (cicchetto/S2)** — admin-channel `snapshot` + `event` handlers
+  cast WS payloads directly without runtime narrowing (sibling channels
+  adopted `narrowChannelEvent` / `narrowUserEvent`; admin path was
+  missed). Malformed payload crashed `ingest()` or silently corrupted
+  `liveCountsByNetworkId`. Fix: add `narrowAdminEvent` +
+  `narrowAdminSnapshot` to `cicchetto/src/lib/wireNarrow.ts` covering all
+  13 `WireAdminEvent` arms + atomic snapshot validation. Route both
+  `channel.on` arms through narrowers; `console.warn` + drop on shape
+  mismatch (no silent swallow per `feedback_no_silent_drops_closed`).
 
-Reviewer round 1 (general-purpose agent): **APPROVE clean** — reviewer ran
-`scripts/check.sh` + `scripts/dialyzer.sh` directly and pasted literal
-gate-tail output, verified every invariant the brief named (phase union
-+ moduledoc accuracy, new phases reaching existing ACK clause via guard
-match without SASL leak via C1 phase pin, `maybe_send_cap_end/1` recognising
-both new phases, `leave_cap_negotiation/2` docstring accuracy, `:auto`
-parity both NAK paths, standalone `:sasl` NAK invariant preserved, H10
-verbatim mirror of REV-E HIGH-1 sibling, test mirrors REV-E HIGH-1
-line 959 exactly, `Session.send_whois/3` spec confirms
-`send_transport_error()` IS real return shape — no over-engineering).
-Single round, no fix-up needed. LOW-1 (labeled-response-only NAK symmetry
-test) + LOW-2 (vertical phase-list style nit) deferred as opportunistic
-polish.
+Deployed 2026-05-22 ~13:11 UTC via `scripts/deploy-cic.sh` — cic bundle
+hash `D49vAsv9` broadcast to every live user-topic. No server restart
+(cic-only HOT). Healthcheck `ok`. Live SW source verified via
+`docker compose exec` grep on `/app/runtime/cicchetto-dist/service-worker.js`
+— 8-prefix denylist present.
 
-**REV-G staged.** cic SW navigation-route denylist + admin-channel WS payload
-narrower + markerRef `<For>` leak (H22, H23, H24) — cic, HOT cic-only.
+Reviewer rounds: 1 fix-up cycle. Round 1 (general-purpose agent) APPROVE
+with MEDIUM-1 (test-pin quality on H23); round 2 APPROVE clean, 0
+findings. Strong validation that the literal-paste reviewer discipline
+catches incomplete-fix-disguised-as-weak-test cases.
 
-**REV cluster — remaining buckets after REV-F:**
-- REV-G — cic SW denylist + adminEvents narrower + markerRef leak (H22, H24, H23) — cic, HOT cic-only
+**REV-H staged.** Server-side type-tightening Theme A continued (H2-H8,
+H25) — tightens wire-shape typespecs for the structs cic narrows. COLD
+deploy (typespec changes may touch long-lived GenServer state shapes;
+preflight `Grappa.Deploy.Preflight.cli` will auto-classify but manual
+check warranted). Feeds the post-REV-Z `wireTypes.ts` codegen work
+(codegen consumes the tightened typespecs as input source). REV-H
+ordering preserved — codegen comes LATER, after the REV cluster
+closes.
+
+**REV cluster — remaining buckets after REV-G:**
 - REV-H — server-side type tightening Theme A continued (H2-H8, H25) — both, COLD
 - REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD (will re-trigger
   the meta first-deploy-after-script-change cycle — `--force-cold` mandate)
@@ -71,8 +78,9 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP40 still active** (~430 lines post-REV-F LANDED). Comfortable headroom
-for REV-G before next rotation (REV-G is cic-only, likely small commit).
+**CP40 still active** (post-REV-G ~620 lines). Rotation likely at REV-H
+LANDED (REV-H is server-side COLD with multi-module wire-typespec
+changes — bigger entry than the cic-only REV-G).
 
 ★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
 `project_post_review_ordering_2026_05_22`): after REV-K + REV-Z LANDED,
@@ -86,7 +94,26 @@ boundary substrate.
 
 ---
 
-## Carry-forwards from REV-F
+## Carry-forwards from REV-G
+
+- **SolidJS function-ref gotcha** — function-refs are mount-only; on
+  unmount they are NOT auto-called with `undefined` (that's the React
+  contract). The fix recipe needs `createSignal` function-ref **plus**
+  explicit `onCleanup(() => setRef(undefined))` registered inside the
+  ref function. The `feedback_solidjs_for_ref_leak` memory needs an
+  update to reflect this — REV-Z carry-forward (or sooner if a
+  follow-up touches Solid refs).
+- **HOT-deploy cic-only procedure** — proven this bucket. cic deploys
+  via `scripts/deploy-cic.sh` need no server preflight + no
+  `Phoenix.CodeReloader` cycle. Independent of server deploy cadence.
+- **scripts/_lib.sh worktree volume gap (cicchetto/src)** — closed in
+  this bucket (RO mount added). Pattern: any Elixir test that reads
+  cic source via `File.read!` from a worktree was previously seeing
+  main's source. Documented inline in the lib comments.
+
+---
+
+## Carry-forwards from REV-F (still standing)
 
 - **HOT-deploy Path 2 procedure worked** — third consecutive clean use
   (REV-D introduced, REV-E proven, REV-F third). Manual preflight against

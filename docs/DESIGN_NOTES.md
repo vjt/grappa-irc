@@ -7968,6 +7968,172 @@ of how "small" the bucket looks.
 
 ---
 
+## REV-G (2026-05-22) — PWA SW denylist + Solid reactivity + admin WS
+
+REV-G (bucket 7 of 11). Three-finding cic-only HOT bucket closing
+H22, H23, H24 from the 2026-05-22 codebase review. Reviewer round 1
+caught a MEDIUM that exposed an incomplete H23 fix; round 2 APPROVE
+clean.
+
+### H22 — PWA SW navigation-route denylist gap
+
+The cic PWA service worker installs a `NavigationRoute` that
+serves the precached SPA shell on top-level navigations. Workbox
+`NavigationRoute` matches `request.mode === "navigate"`, so REST
+fetches + WS upgrades pass through untouched — but explicit
+top-level navigations (URL paste, tab open, deep link) hit the
+denylist gate. Pre-REV-G the denylist was
+`[/^\/auth/, /^\/me/, /^\/networks/, /^\/socket/, /^\/push/]` —
+the five scopes the router exposed at the time the SW was first
+authored. Three subsequent additions (`/api`, `/admin`,
+`/uploads`) were never reflected back into the SW.
+
+Concrete bug: a user posts a `📸 host/uploads/<slug>.png` URL in
+IRC. A peer with the PWA already open taps the link, opening a
+new tab to `host/uploads/<slug>.png`. The SW intercepts the
+top-level navigation and serves the SPA shell → broken image in
+new tab. Same failure mode for direct operator-console
+navigation (`host/admin/visitors` → SPA shell instead of JSON
+controller response) + the small `/api/*` REST surface.
+
+Fix: broaden the denylist to include `/api`, `/admin`,
+`/uploads`. `/healthz` is intentionally omitted — a single GET
+that load balancers probe; if a probe URL gets opened in a tab
+the SPA shell is harmless (no security oracle, no broken
+attached resource).
+
+Structural pin: `test/grappa_web/router_sw_denylist_test.exs`
+walks `GrappaWeb.Router.__routes__/0` (the authoritative compiled
+router) + regex-parses the SW source file for `denylist: [...]`
+tokens, asserts SW ⊇ router-prefix-set modulo a documented
+whitelist (`/`, `/healthz`). Same M-9b-style boundary discipline
+the nginx allowlist test established — adding a new top-level
+route scope in `router.ex` without updating the SW now fails
+this test before deploy. The router-side superset assertion is
+the real defense; the per-baseline-prefix sanity test pins the
+exact set REV-G adds so any silent SW edit dropping one of them
+fails loudly.
+
+`scripts/_lib.sh` `WORKTREE_VOLUMES` extended to mount
+`cicchetto/src` RO so the new Elixir test (which reads the SW
+source via `File.read!`) sees worktree state instead of main's
+in oneshot mode. Scoped to worktree mode only; live container
+sees main via the base `./:/app` bind unchanged.
+
+### H23 — `markerRef` `<For>` ref leak in ScrollbackPane
+
+`cicchetto/src/ScrollbackPane.tsx` had `let markerRef: HTMLDivElement
+| undefined` used as the unread-marker DOM ref via JSX
+`ref={markerRef}`. The unread marker is rendered inside a `<For>`
+over the day-separator-marker-message row mix. When SolidJS
+removed the marker mid-channel (cursor advance to highest
+sessionTopId → marker disappears WHILE the operator stays on the
+same window), the `let`-bound ref still pointed at the
+now-detached DOM node.
+
+Compensated for the CHANNEL-SWITCH case at the key-change effect
+with an explicit `markerRef = undefined` reset. Mid-channel
+removal had NO compensation. A subsequent `scrollToActivation()`
+call (e.g. visibility-return after backgrounded tab) hit the
+marker-present branch and called `scrollIntoView` on the
+detached node — either a no-op (jsdom optional-chain) or a real
+TypeError (production browser on certain detached-node code
+paths).
+
+Documented gotcha per `feedback_solidjs_for_ref_leak`. The
+feedback memory pre-REV-G said: "convert to function-ref signal,
+SolidJS calls the function with `undefined` on unmount." **That
+assumption was wrong.** SolidJS function-refs are called ONCE on
+mount; on unmount they are NOT auto-called with `undefined` the
+way React refs are. That's the React contract, not Solid's.
+Round-1 REV-G fix did exactly that — converted to a
+`createSignal` function-ref — and shipped a test that didn't
+actually exercise the regression code path (the smoke "no crash"
+assertion was satisfied independently of the bug).
+
+Reviewer round 1 (general-purpose agent) caught the test-pin
+quality as a MEDIUM. Investigation while writing a real spy-based
+pin (`Element.prototype.scrollIntoView` spy + 0-calls assertion
+between cursor advance and visibility return) failed — the spy
+fired on the marker div even with the function-ref signal "fix."
+The signal STILL retained the stale node. The function-ref
+hypothesis was wrong.
+
+Correct fix: function-ref signal **plus** explicit
+`onCleanup(() => setMarkerRef(undefined))` registered inside the
+ref function. SolidJS's `onCleanup` fires when the parent
+reactive scope disposes — for a `<For>`-rendered child, that's
+at row unmount. Signal flips back to undefined; downstream
+readers (`scrollToActivation`, length-effect) take the
+marker-absent branch.
+
+Test pin: the spy-based regression NOW genuinely discriminates
+pre-fix from post-fix code. Without onCleanup the spy fires;
+with it the marker-absent scrollTop-direct branch runs and the
+spy stays at 0 calls. Module docstrings at both the declaration
+site + the JSX site explain the SolidJS gotcha explicitly so a
+future reviewer can't repeat the React-style auto-null
+assumption. Commit body documents the wrong-hypothesis path
+without papering it over.
+
+Lesson for the `feedback_solidjs_for_ref_leak` memory: the fix
+recipe needs both the function-ref signal AND the explicit
+`onCleanup`. The memory should be updated.
+
+### H24 — admin-channel WS narrower
+
+`cicchetto/src/lib/adminEvents.ts` registered
+`channel.on("snapshot", (payload: AdminSnapshotPayload) => ...)` +
+`channel.on("event", (payload: WireAdminEvent) => ...)` —
+TypeScript-only contract, zero runtime enforcement. Sibling
+channels (per-channel topic + user-topic) adopted
+`narrowChannelEvent` / `narrowUserEvent` as the WS-edge boundary
+validators (bucket G H4+U3 + cic M1 respectively); the admin path
+was missed when adminEvents.ts was originally authored at M-11.
+
+A malformed admin push — version skew, server-side bug, hostile
+push — would either crash `ingest()` via a missing-field read
+(`recordCapCounts` reads `ev.visitors`/`ev.users` without guard)
+or silently corrupt the `liveCountsByNetworkId` projection.
+
+Fix: add `narrowAdminEvent` + `narrowAdminSnapshot` to
+`cicchetto/src/lib/wireNarrow.ts` mirroring the sibling pattern.
+Per-arm field-shape validation for all 13 `WireAdminEvent` arms
+(every arm carries `at: string` + most carry `network_id: number`
++ `network_slug: string | null`; shared nullable-helpers
+`isNullableString` / `isNullableNumber` keep the per-arm switches
+compact). Atomic snapshot validation — a single malformed element
+drops the WHOLE `{events: WireAdminEvent[]}` (avoids corrupting
+the audit ring with partial state). `installAdminEvents` routes
+both `channel.on` arms through the narrowers; `console.warn` +
+drop on shape mismatch (no silent swallow per
+`feedback_no_silent_drops_closed`).
+
+60 new vitest cases in `wireNarrow.test.ts` exercise every arm +
+edge case (null fields, missing fields, wrong-typed fields,
+unknown discriminator). 4 new boundary regression tests in
+`adminEvents.test.ts` pin the no-crash + atomic-drop +
+console.warn contract using a raw-payload test seam that bypasses
+the WireAdminEvent type cast.
+
+### Procedural carry-forward
+
+REV-G round-1 catching the incomplete-fix bug-in-the-bug-fix is
+the strongest validation yet that the literal-paste reviewer
+discipline pays for itself. Round-1 reviewer noted MED-1 ("test
+doesn't actually pin the bug"), worker's investigation under that
+finding exposed the production-code completeness issue. Without
+the MED-1 catch the H23 fix would have shipped with a passing
+smoke test masking a still-broken production path.
+
+Standing reminder: when a reviewer flags test-pin quality on a
+fix that "looks right" on inspection, treat it as potentially
+signalling an incomplete fix, not just a weak test. The two are
+correlated: a weak test often masks an incomplete fix that the
+worker assumed would work.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
