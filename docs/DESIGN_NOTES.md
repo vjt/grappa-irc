@@ -7437,6 +7437,197 @@ the soil for UX-6-A's overlay scroll-leak universal fix.
 
 ---
 
+## 2026-05-22 — REV-C: substrate preflight + healthcheck depth (C4 + H20 + H21 + H26)
+
+Third bucket of the REV cluster (codebase-review-fixes 2026-05-22).
+Single COLD-deploy bucket closing 1 CRIT + 3 HIGH — all live in
+the deploy + boot + healthcheck substrate.
+
+### C4 — `scripts/deploy.sh` ↔ `LongLivedModules` SoT decoupling
+
+Pre-REV-C the bash preflight parsed the SoT module list with
+`grep -E '^\s+Grappa\.[A-Za-z_.0-9]+,?$'` — matched ANY indented
+line that LOOKED like a Grappa module reference. In the current
+file this happened to pick up 14 lines: 12 real `@modules` /
+`@state_helpers` entries + 2 typespec union lines. Today's bug is
+benign (typespec lines duplicate real entries); tomorrow's would
+be a CP28 rerun (add to typespec, forget `@modules`, false-COLD
+on every change to a module not actually tracked).
+
+The fix is **structural** rather than a tighter regex: the bash
+script becomes a thin wrapper around `mix run --no-start -e
+'Grappa.Deploy.Preflight.cli([from, to])'`. The new module
+`lib/grappa/deploy/preflight.ex` reads `LongLivedModules.all/0`
+directly — no string parsing, no regex, no awk. The hand-rolled
+brace-matching helper `scripts/_extract_state_block.awk` is
+deleted; `Code.string_to_quoted/2` + AST walk handles the
+state-block extraction now that an Elixir runtime is available
+anyway. Two-line bash refactor → ~150-LOC awk file gone; the
+SoT is the only definition.
+
+Per CLAUDE.md "Implement once, reuse everywhere" + "use
+infrastructure, don't bypass it": the SoT module was always the
+right authority; the bash regex was the bypass.
+
+### H20 — preflight path-class gaps
+
+`Grappa.Deploy.Preflight.classify_paths/1` covers seven path
+classes the pre-REV-C regex missed:
+- `compose.override.yaml` + `compose.oneshot.yaml`
+- `bin/grappa`
+- `.dockerignore`
+- Deeper `infra/snippets/*` paths
+- ALL `config/*.exs`
+- `priv/repo/migrations/*` (REV-B live-repro)
+
+Each class has a dedicated test. The migration class was
+*reproduced live during REV-B's deploy* — preflight returned HOT
+despite the new migration file; operator forced `--force-cold`.
+Three documented misses (UX-6-B1, REV-B, and the H21 motivation
+itself) was enough — closed in this bucket.
+
+### H21 — `SECRET_SIGNING_SALT` compile→runtime
+
+Pre-REV-C: `config/config.exs:102` baked
+`System.get_env("SECRET_SIGNING_SALT") || "build-time-placeholder…"`
+into the Endpoint module's `@session_options` at compile time. An
+operator rotating the salt via `.env` + `scripts/deploy.sh` saw no
+effect until a full image rebuild — the `_build/<env>/lib/grappa/ebin/`
+beams carried the old value.
+
+The mechanical move (`config.exs` → `config/runtime.exs`
+alongside `SECRET_KEY_BASE`) is straightforward. The interesting
+bit is the Endpoint rewrite: dropped the `@session_options` module
+attribute + `plug Plug.Session, @session_options`. New custom
+`:session` plug calls `Plug.Session.call(conn, cached_session_opts())`.
+`cached_session_opts/0` reads `Application.fetch_env!/2` on first
+request, caches into `:persistent_term` for lock-free subsequent
+reads. Per CLAUDE.md "Application.{put,get}_env/2: boot-time only"
+— `:persistent_term` is the documented analog for "boot-once
+readonly" and the cache is a first-request lazy init, not a
+runtime config read.
+
+The `config_change/2` override (round-2 reviewer HIGH-1 fix —
+see below) invalidates the cache when `:session_signing_salt`
+changes. `:persistent_term.put/2` not `erase/1` (avoids
+process-wide GC scan).
+
+### H26 — `/healthz` substrate depth
+
+NEW `lib/grappa/health.ex` (`Grappa.Health` module). Three
+substrate checks via `Grappa.Health.check/0`:
+- `:ready` — `Grappa.Application.start/2` marks the supervision
+  tree ready via `:persistent_term` AFTER `Supervisor.start_link/2`
+  returns clean.
+- `:repo` — `Grappa.Repo.query("SELECT 1")` round-trip.
+- `:ets` — `:ets.info/1` on `Grappa.Session.Backoff.table_name()`
+  + `Grappa.Admission.NetworkCircuit.table_name()` (REV-C reviewer
+  LOW-1 single-sources the table-atom boundary).
+
+`HealthController.show/2`: 200 `ok` on green; 503 + JSON
+`{status: "fail", checks: [{name, reason}]}` on any failure. Per
+`feedback_silent_retry_anti_pattern`: surface the specific failing
+check.
+
+Docker HEALTHCHECK + nginx healthcheck inherit the deeper check
+for free.
+
+### The 3-round reviewer-loop
+
+Round 1 caught MED-1+MED-2 (Endpoint cache not invalidated on
+`config_change`), LOW-1 (ETS table atom single-source), LOW-2
+(Health moduledoc tightening), LOW-3 (parse-failure sentinel).
+All fixed inline.
+
+Round 2 caught HIGH-1: the round-1 `Endpoint.config_change/2`
+override read the WRONG shape of `changed`. `Application.config_change/3`
+delivers application-scoped keyword `[{Endpoint, [salt: ...]},
+{OtherKey, ...}]` — NOT a flat keyword. The predicate
+`Keyword.has_key?(changed, :session_signing_salt)` checked the
+OUTER application-env key, which can never be
+`:session_signing_salt`. Production salt rotation would have
+silently no-op'd — the exact failure MED-1 was meant to close,
+just one layer deeper. Tests passed because they bypassed the
+real shape.
+
+**Meta-lesson**: a wrong-shape predicate that "compiles fine" but
+never matches in production is exactly the class of bug code
+review is meant to catch. Reviewer caught it; tests had to be
+rewritten to drive the realistic shape. CP39 + the
+`feedback_reviewer_gate_evidence` discipline earned its keep.
+
+Round 3: APPROVE clean.
+
+### Deploy: COLD (with the meta first-deploy-after-script-change gotcha)
+
+First `scripts/deploy.sh` invocation after the merge used the OLD
+script's preflight (it ran BEFORE the new script could replace
+itself). The OLD preflight didn't see `config/*.exs` or the new
+modules as cold-required → false-HOT. `POST /admin/reload` then
+500'd because `Grappa.Deploy.Preflight` + `Grappa.Health` didn't
+exist in the live BEAM. Fix mechanical:
+`docker compose run --rm -T grappa rm -rf /app/_build/prod` (per
+`feedback_hot_deploy_corrupts_build_prod`), then
+`scripts/deploy.sh --force-cold` re-ran clean.
+
+**This is now a documented recurring lesson**: ANY cluster that
+touches `scripts/deploy.sh` itself MUST first-deploy with
+`--force-cold` because the OLD preflight ships in the OLD script
+that still runs before the new one takes effect. REV-I (infra
+simplification) is the next bucket to hit this.
+
+### Smoke verifications post-deploy
+
+```
+$ ... Preflight.classify_paths(["priv/repo/migrations/99999999_smoke.exs"])
+{:cold, [migration: [...]]}
+
+$ ... Preflight.classify_paths(["config/runtime.exs"])
+{:cold, [config: ["config/runtime.exs"]]}
+
+$ ... Preflight.classify_paths(["lib/grappa/foo.ex"])
+{:hot, []}
+
+$ bin/grappa remote-shell --batch -e '... |> Keyword.fetch!(:session_signing_salt)
+                                      |> String.length() |> IO.puts'
+32
+
+$ curl http://192.168.53.12:4000/healthz
+ok
+```
+
+### Carry-forwards
+
+- Meta first-deploy-after-script-change cycle (see Deploy section)
+  — flag in REV-I briefing.
+- `_build/prod` corruption from prior HOT — operator runbook
+  STILL doesn't document the cleanup. Reproduced third time.
+  REV-Z target.
+- MED-2 from REV-B (`validate_target_name/1` pre-canonical) still
+  open. REV-J or REV-Z.
+
+### Lessons
+
+1. **The reviewer-loop is not theater.** Round 2 caught a
+   production-only HIGH bug that round-1 tests passed against
+   because they bypassed the real call shape. The test was a
+   mirror, not an oracle.
+2. **`feedback_hot_deploy_corrupts_build_prod` keeps repeating.**
+   Third time documented. The operator-side cleanup mechanic is
+   identical every time. Documenting in CP is not enough; needs
+   to live in the operator runbook (REV-Z scope).
+3. **Cluster-scope clean-up rewards itself.** Deleting
+   `_extract_state_block.awk` + the bash regex feels like
+   "polishing" — but the AST oracle (`Code.string_to_quoted/2`)
+   is the right authority and Elixir's tokenizer is genuinely
+   stable. The shell was the bypass.
+4. **Conservative bias = COLD always wins.** Two MEDs +
+   `LOW-3` (parse-failure sentinel) all converged on "when in
+   doubt, COLD." A 30s false-COLD is cheap; a deferred
+   shape-mismatch crash is not.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
