@@ -10,6 +10,62 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
+**UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
+cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.
+
+Pre-bucket: `bundle-refresh-banner.spec.ts` stubbed
+`getRegistration` + `caches.keys/delete` + used `__refreshProbe` to
+assert performRefresh INVOKES the right sequence — proved WIRING,
+not real SW + real precache convergence. Post-bucket the new
+`bundle-refresh-real-swap.spec.ts` drives the real `BundleRefreshBanner`
+button against a real nginx-served swapped `index.html` + asserts the
+script-src on the reloaded page carries the new hash on the FIRST
+click. Negative-control proven mid-development: spec FAILS against a
+downgraded `performRefresh` doing bare `window.location.reload()`.
+
+Surfaces:
+- `cicchetto/e2e/fixtures/bundleSwap.ts` — snapshot/swap/restore
+  helpers. H1 self-healing: detects synthetic-bundle-B leftover from
+  a crashed prior run + restores from snapshot first. L2 per-entry
+  try/catch + console.warn on restore failures. M4 pid+timestamp
+  tmpPath suffix defense-in-depth vs parallel-workers footgun.
+- `cicchetto/e2e/tests/bundle-refresh-real-swap.spec.ts` — the spec.
+  H2 `framenavigated` Promise.all (replaces deprecated
+  `waitForNavigation`). L3 role+name button selector vs literal text.
+- `cicchetto/e2e/compose.yaml` — one bind-mount added:
+  `../../runtime/e2e/cicchetto-dist:/work/dist-test` (RW for fixture
+  swap; nginx-test reads same path RO).
+- `cicchetto/src/lib/bundleHash.ts` — local `BUNDLE_HASH_RE` const +
+  reciprocal "keep in lockstep" comment with the fixture. (M2 review
+  fix attempted shared-module extraction but Playwright ESM
+  resolution doesn't see cross-project imports; inlined regex with
+  paired comments is the principle-aligned choice.)
+
+Reviewer (general-purpose, parallel): APPROVED WITH FIXES. CRIT 0 /
+HIGH 2 (H1 self-heal + H2 framenavigated) / MED 5 (M2 shared regex,
+M3 fsync irrelevance doc, M4 pid suffix, M5 Window dedup) / LOW 4
+(L1 path constants, L2 console.warn restore, L3 role selector, L4
+leftover JS accum). All HIGH + most MED/LOW applied inline. M1
+(encode negative-control discipline) + M3 (fsync — covered by post-
+condition doc) + L1 (path env-var) + L4 (subsumed by H1 self-heal)
+deferred per judgment.
+
+Gates: scripts/check.sh exit-0 (8 doctests + 32 properties + 2312
+tests + 0 failures + bats 23/23) + scripts/bun.sh run check exit-0
+(biome + tsc clean, 21 baseline warnings) + scripts/bun.sh run test
+exit-0 (89 files / 1560 vitest passed) + full e2e suite green for
+the new spec (UX-6-I.2 ✓ at chromium spec #9 in 394ms).
+
+**E2e baseline parity confirmed** — ran full e2e at `1e90554`
+(pre-bucket baseline, after stashing the 2 new files) AND at this-
+bucket HEAD. Baseline: 136 pass / 45 fail. This bucket: 136 pass /
+46 fail (the +1 is the new UX-6-I.2 spec). Zero pre-existing specs
+regressed; the 45 baseline fails are the documented testnet flake
+set (see `feedback_bahamut_load_flake` + CP38 baseline-fail note).
+
+Deploy: NONE NEEDED (e2e-only change + reciprocal comment on
+`bundleHash.ts`; no runtime cic surface modified, no Elixir touched).
+
 **UX-6-D LANDED 2026-05-21.** 11 attempts (D1-D12) + 4 parallel
 research agents converged on Telegram Web K pattern. See
 docs/DESIGN_NOTES.md UX-6-D entry for the full catastrophe-and-
@@ -395,13 +451,8 @@ bats 23/23. Deploy: COLD (channel snapshot + new wire boundary).
   bundle-swap e2e fixture rather than stubs) parked as follow-up.
   Deploy: HOT cic-only (no Elixir touched).
 
-  **UX-6-I.2 follow-up (parked from reviewer M2):** current e2e
-  stubs `getRegistration` + `caches` + uses the probe seam — proves
-  the chain WIRING but not that the REAL SW + REAL precache behave.
-  A meaningful e2e would deploy a 2nd bundle hash mid-session
-  (`compose run cicchetto-build` + `POST /admin/cic-bundle-changed`)
-  and assert single-press convergence. Out of scope for I; file as a
-  cluster follow-up.
+  **UX-6-I.2 LANDED 2026-05-22.** See top of `## Immediate` for the
+  full bucket close-out. Closes this M2 follow-up.
 - **UX-6-J — LANDED 2026-05-22.** Push notif tap opens source window.
   Root cause was a B5 (2026-05-14) carry-debt: SW notificationclick
   ran `existing.navigate(url)` on the focused client, but cic is an

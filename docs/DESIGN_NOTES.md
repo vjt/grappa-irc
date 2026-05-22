@@ -7190,7 +7190,135 @@ HOT cic-only — no Elixir touched. Bundle deploy via
 
 ---
 
-## 2026-05-22 — UX-6 cluster CLOSED + UX-5 backfill (UX-6-Z docs sweep)
+## 2026-05-22 — UX-6-I.2: real-bundle-swap e2e (UX-6-I follow-up close)
+
+Closes the M2 follow-up parked at UX-6-I (commit `22ce80e` shipped
+the single-press refresh fix; UX-6-I's reviewer flagged "the e2e
+proves wiring not behavior" and parked a real-swap fixture as
+M2). UX-6-I.2 ships that fixture.
+
+### The gap UX-6-I.2 closes
+
+`cicchetto/e2e/tests/bundle-refresh-banner.spec.ts` (the UX-6-I e2e)
+stubs `navigator.serviceWorker.getRegistration`, `caches.keys`,
+`caches.delete`, and uses the `__refreshProbe` test seam to assert
+that `performRefresh()` invokes the right chain in the right order.
+This proves WIRING. It cannot prove the user-visible bug ("iPhone
+PWA needs 3 button presses to pick up a new bundle") is gone, because
+the stubs short-circuit the real SW + real precache race the bug
+lived in. A green stubbed-spec is necessary but not sufficient.
+
+UX-6-I.2 adds `bundle-refresh-real-swap.spec.ts`: drives the real
+`BundleRefreshBanner` button against a real nginx-served swapped
+`index.html`, asserts the script-src on the reloaded page carries
+the new hash on the FIRST click. Discriminator: temporarily
+downgrading `performRefresh` to a bare `window.location.reload()`
+makes the new spec FAIL (post-condition: post-refresh script-src
+mismatches the swapped hash because SW precache served the old
+cached index.html). Negative-control was hand-run mid-development;
+production `performRefresh` makes the spec pass at ~7-9s.
+
+### Fixture shape — pre-prepared bundle-swap
+
+Orchestrator decision (autopilot mandate, vjt asleep): chose
+"pre-prepared bundle-swap" over "docker-compose-oneshot fidelity"
+per KISS + e2e determinism + no-CI-retries alignment.
+
+`cicchetto/e2e/fixtures/bundleSwap.ts`:
+- `snapshotBundle()` — copies `runtime/e2e/cicchetto-dist` to a side
+  directory for teardown restore. **Self-healing** (H1 reviewer fix):
+  detects synthetic-bundle-B leftover from a crashed prior run
+  (sentinel `Ux6i2Synth` in index.html) AND prior snapshot dir
+  presence → restores snapshot over dist BEFORE taking THIS run's
+  snapshot. Otherwise we'd capture the synthetic state as
+  "baseline" and the spec restore would leave the dist permanently
+  broken.
+- `swapToBundleB()` — rewrites `index.html`'s `<script src>` to a
+  fresh `/assets/index-Ux6i2Synth<timestamp>.js`, drops a minimal
+  ES-module stub at that path. Atomic via `fs.rename` (POSIX
+  guarantee on same-filesystem rename). M4 reviewer fix: tmpPath
+  includes `pid` + `timestamp` defense-in-depth vs parallel-workers
+  footgun (today blocked by playwright `workers: 1` config).
+- `restore()` — wipes dist, copies snapshot back, deletes snapshot
+  dir. L2 reviewer fix: per-entry try/catch + `console.warn` so a
+  single unwritable leftover doesn't swallow the spec's primary
+  assertion failure.
+
+`cicchetto/e2e/tests/bundle-refresh-real-swap.spec.ts`:
+- Boot → SW install + claim → assert no banner.
+- Snapshot baseline → swap → `setServerHash(newHash)` → assert
+  banner visible.
+- Single click via `getByRole({name: /refresh|new version/i})` (L3
+  reviewer fix vs literal `button` selector).
+- `Promise.all([page.waitForEvent("framenavigated"), click])` (H2
+  reviewer fix vs deprecated `waitForNavigation`).
+- `waitForLoadState("load")` belt-and-braces post-nav.
+- Read script-src from reloaded DOM (NOT via `__cic_bundleHash` —
+  synthetic stub bundle doesn't bootstrap the SPA).
+- `expect(reloadedHash).toBe(newHash)`.
+- `finally { snap.restore() }`.
+
+### Why a stub JS, not a real Vite rebuild
+
+A real `cicchetto-build` mid-spec adds ~30s + depends on bun + node_
+modules in the runner image. Out of scope. The behavior under test
+is "post-purge reload converges to whatever index.html nginx now
+serves" — a synthetic index.html pointing at a stub JS asset proves
+the convergence without the build overhead. The spec asserts on the
+script-src attribute, not on the bundled JS executing — fsync
+ordering between the JS write and the HTML rename (M3 reviewer
+concern) is therefore not a correctness boundary.
+
+### Caveats accepted
+
+- Spec runs against chrome on Linux (nginx-test stack). The iPhone
+  PWA bug it descends from is platform-specific (iOS Safari
+  throttles SW activation more aggressively than chromium). A green
+  run here proves the convergence logic + cache-purge ordering hold
+  under nominal SW timing; iPhone-specific timing must be hand-
+  validated each release per the H2-reviewer wait-loop in
+  `performRefresh()`. Spec moduledoc carries this banner.
+- `BUNDLE_HASH_RE` is inlined in both `cicchetto/src/lib/bundleHash.ts`
+  (production) and `cicchetto/e2e/fixtures/bundleSwap.ts` (fixture)
+  with reciprocal "keep in lockstep" comments. Attempted shared-
+  module extraction in M2 reviewer fix, but Playwright's native ESM
+  loader doesn't see imports outside the `cicchetto/e2e/tsconfig.json`
+  project root, and the e2e runner's bind-mount of `cicchetto/src`
+  resolved but the export was not visible. Two-line regex with paired
+  comments is cheaper than the build-system bridge that would
+  unify them.
+
+### Gates
+
+- `scripts/check.sh` exit-0 (8 doctests + 32 properties + 2312 tests
+  + 0 failures + bats 23/23).
+- `scripts/bun.sh run check` exit-0 (biome + tsc clean, 21 baseline
+  warnings — pre-existing default.css !important + BottomBar.test
+  rot).
+- `scripts/bun.sh run test` exit-0 (89 test files, 1560 vitest
+  passed).
+- Full integration suite: ran at `1e90554` baseline (files stashed)
+  AND at this-bucket HEAD. Baseline 136 pass / 45 fail. This bucket
+  136 pass / 46 fail (the +1 = the new UX-6-I.2 spec). Zero pre-
+  existing specs regressed; the 45 baseline fails are the documented
+  testnet flake set + the 2 known baselines from CP38.
+
+### Deploy
+
+NONE. E2e-only change + reciprocal comment on a production source
+file. No runtime cic surface modified, no Elixir touched.
+
+### Carry-forwards
+
+- UX-6-M (channel scroll position interference) — still parked on
+  vjt repro pattern. Likely ScrollbackPane reused via Solid `<Show>`
+  non-keyed across `selectedChannel` changes.
+- Baseline e2e fails surfaced via UX-6-E smoke (ux-4-z:141 +
+  ux-z:86) — still parked for dedicated investigation cluster.
+
+---
+
+
 
 UX-6 ships in 11 production buckets (A–L minus H which merged into
 D2; plus Z this docs sweep) across `57cd88b`→`7625e13` (chronological)

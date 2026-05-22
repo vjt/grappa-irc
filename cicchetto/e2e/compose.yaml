@@ -340,6 +340,13 @@ services:
       # cicchetto/e2e/.gitignore).
       - ./test-results:/work/test-results
       - ./playwright-report:/work/playwright-report
+      # UX-6-I.2 (2026-05-22) — real-bundle-swap fixture mounts the
+      # cic dist tree RW so the swap fixture can rewrite index.html +
+      # drop a synthetic bundle B asset mid-spec. nginx-test mounts
+      # the same host path RO (line ~301); the host file is the single
+      # source of truth, both containers see the same bytes. See
+      # cicchetto/e2e/fixtures/bundleSwap.ts.
+      - ../../runtime/e2e/cicchetto-dist:/work/dist-test
     working_dir: /work
     environment:
       CI: "1"

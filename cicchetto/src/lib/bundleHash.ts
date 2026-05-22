@@ -27,13 +27,18 @@ import { type Accessor, createSignal } from "solid-js";
 // "manual hard-refresh after `cicchetto-build`", this signal automates
 // it.
 
-const BUNDLE_RE = /\/assets\/index-([^."]+)\.js/;
+// IMPORTANT: keep in lockstep with `cicchetto/e2e/fixtures/bundleSwap.ts`
+// `BUNDLE_HASH_RE`. The e2e fixture inlines the same regex because
+// cross-project import fails under Playwright's ESM resolution (the
+// e2e tsconfig doesn't include cicchetto/src). Update BOTH if Vite
+// ever changes asset-hash format.
+const BUNDLE_HASH_RE = /\/assets\/index-([^."]+)\.js/;
 
 function readBootBundleHash(): string | null {
   if (typeof document === "undefined") return null;
   const scripts = document.querySelectorAll<HTMLScriptElement>('script[src*="/assets/index-"]');
   for (const s of scripts) {
-    const m = s.src.match(BUNDLE_RE);
+    const m = s.src.match(BUNDLE_HASH_RE);
     if (m?.[1]) return m[1];
   }
   return null;
