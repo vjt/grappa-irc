@@ -269,3 +269,147 @@ Per `/tmp/orchestrate-next.txt`:
 - `feedback_test_singletons_async_false` — singleton-lane rule
 - `feedback_ux_6_d_anti_patterns` — iOS PWA kb anti-patterns
 - `feedback_landed_claim_evidence` — gate-tail paste
+
+---
+
+# FLAKE-B Part 2 — per-spec true-isolation triage (2026-05-22)
+
+Re-baselines the FLAKE-A classifications against TRUE isolated runs
+(each spec on its own fresh testnet stack via `scripts/testnet.sh
+down && up`). FLAKE-A's induction "27 specs are bahamut load class"
+was based on 6 sampled specs all passing alone; this Part 2 sampled
+ALL 38 distinct failing files from the post-FLAKE-B-Part-1 suite run.
+
+**Major findings**:
+1. FLAKE-A's "27 Class C" was WRONG by induction. Real count: ~27
+   files (most of the 38) actually pass alone (= true SPEC-ROT
+   load class).
+2. FLAKE-A's "Class A real product bugs" claims for
+   `ux-5-bc2-nick-render` × 3, `ux-5-bv-mobile-keyboard-react`,
+   `ux-6-d-keyboard-pattern` × 2 were ALSO WRONG. All pass cleanly
+   in isolation — these are SPEC-ROT (load class), not Class A bugs.
+3. 7 specs DO fail in true isolation — REAL BUG candidates needing
+   per-spec evaluation per vjt mandate 2026-05-22 ("specs may just
+   be wrong; triage in browser if needed").
+4. **The "two-pass" technique was load-bearing**: Pass 1 (batched,
+   stack-reset every 5 files) mis-classified m4/m5/m6/marker-
+   target-window/message-replay as "REAL BUG?". Pass 2 (own
+   per-spec stack cycle) corrected to SPEC-ROT. Cause: `scripts/
+   testnet.sh down + up` between batches does NOT actually reset
+   the grappa container's per-spec state contamination from prior
+   runs — only a per-spec cycle gives clean signal.
+
+## Per-spec true-isolation results
+
+### SPEC-ROT / load class (true-iso = PASS): 27 files
+
+These pass cleanly in isolation but fail at suite scale. Cause is
+upstream isolation failure (NOT addressable by per-spec fix — needs
+infrastructure design; session-bounce already disproven per CP43 S2).
+
+```
+cic-members-panel-scope
+cp14-b1-scroll-marker-vs-bottom
+cp14-b2-scroll-up-loadmore
+cp15-b6-pending-to-failed-invite-only
+m10-admin-networks-cap-editor    (slow but green: 38.6s)
+m4-irssi-to-priv-no-window       (Pass-1 false-FAIL; Pass-2 PASS)
+m5-irssi-to-priv-window-open     (Pass-1 false-FAIL; Pass-2 PASS)
+m6-cicchetto-to-priv             (Pass-1 false-FAIL; Pass-2 PASS)
+marker-target-window-regression  (Pass-1 false-FAIL; Pass-2 PASS)
+message-replay-on-reconnect      (Pass-1 false-FAIL; Pass-2 PASS)
+p0a-whois-flags
+p0b-peer-away
+p0c-whowas
+push-install
+push-permission-denied
+push-prefs-whitelist
+push-server-fires-regardless-of-focus
+push-trigger-channel-mention
+push-trigger-dm
+r6-own-action-no-events-badge
+refresh-on-join
+scroll-on-window-switch
+ux-2-mobile-archive
+ux-5-bc2-nick-render             (FLAKE-A claimed "Class A NickText" — WRONG)
+ux-5-bv-mobile-keyboard-react    (FLAKE-A claimed "Class A" — WRONG)
+ux-6-d-keyboard-pattern          (FLAKE-A claimed "Class A 11-attempt saga" — WRONG)
+ux-z-cluster-journey
+```
+
+### REAL BUG candidates (true-iso = FAIL): 7 files
+
+These fail in TRUE isolation on a fresh stack. Per vjt mandate
+("specs may just be wrong; triage in browser if needed"), each needs
+individual evaluation before classifying as PRODUCT BUG vs SPEC ROT.
+
+```
+i2-image-upload                  (2 FAIL — vjt note 2026-05-22:
+                                  uploads WORK IN PROD → spec is
+                                  wrong, not bug)
+m9-cicchetto-part-x-click        (1 FAIL — `.shell-main p.muted
+                                  "select a channel"` not found
+                                  post-PART; page snapshot shows
+                                  sidebar still has #bofh after
+                                  X-button click. Could be BUG5a
+                                  self-PART dismiss broken OR spec
+                                  asserts on pre-UX-5/6 empty-state UI)
+members-prefix-regression        (1 FAIL — `.members-pane` not in
+                                  DOM at assertion time despite
+                                  selectChannel succeeding. Members
+                                  panel may not be mounting; check
+                                  viewport/responsive rules)
+names-ux-n3-cold-load-auto-select (1 FAIL — needs investigation)
+nick-case-sensitivity            (1 FAIL — `/q` with different casing
+                                  focuses existing window, no duplicate)
+p0d-lusers                       (1 FAIL — LusersCard pinned in $server)
+p0e-invite-ack                   (1 FAIL — `/invite` to peer surfaces
+                                  invite-ack row in $server)
+```
+
+### FLAKE (Pass 1 mixed; not re-validated in Pass 2): 4 files
+
+```
+cp14-b3-dm-history-bidirectional (1 PASS + 1 FAIL across batched runs)
+ios-z-cluster-journey            (1 PASS + 1 FAIL)
+m9b-admin-sessions-actions       (4 PASS + 4 FAIL — sharp split)
+ux-6-k-pm-unread-cursor          (1 PASS + 1 FAIL)
+```
+
+May reclassify as SPEC-ROT under true isolation; not yet validated.
+
+## Lessons learned
+
+1. **Batched isolation is unreliable**: `scripts/testnet.sh down &&
+   up` does NOT fully reset state between spec runs on the same
+   stack instance. Each `docker compose run` against the same
+   playwright-runner container shares grappa state across spec
+   runs (vjt's `Session.Server`, bahamut leaf state, sqlite WAL).
+   Per-spec full stack cycle (down + up before EACH spec) gives
+   clean signal.
+2. **FLAKE-A manifest's classifications were FALSE INDUCTIONS**.
+   Sample of 6 "load class" specs that happened to be clean
+   inducted to "all 27 are load class". 5+ "Class A real product
+   bugs" actually pass cleanly in isolation.
+3. **Suite-level flake is the dominant signal**: 38 distinct files
+   show failures at suite scale; only 7 of them actually have
+   per-spec issues. The remaining 31 are upstream isolation
+   failure (load class + flake).
+4. **The fixture-rot fix (FLAKE-B Part 1) unblocks ~6 cases
+   cleanly** but suite-level flake (±10 specs/run) dwarfs the
+   improvement. Real fix is upstream isolation, not per-spec.
+
+## Next-session work
+
+Per vjt 2026-05-22 mandate "finish this round, we clear and we
+evaluate each one":
+
+1. `/clear` + open per-spec triage on the 7 REAL BUG candidates
+   with vjt in collaborative browser triage. Most likely outcome:
+   most are SPEC ROT (UX-4/5/6/7 sweeps moved DOM around; specs
+   assert on stale selectors) — fix by updating specs to match
+   current UX contract.
+2. Re-classify the 4 FLAKE (Pass 1 mixed) files in true isolation.
+3. Re-classify the broader cluster scope based on triage outcomes.
+4. Design upstream isolation mechanism for the 27 SPEC-ROT (load
+   class) files — NOT session-bounce per CP43 S2 (already disproven).
