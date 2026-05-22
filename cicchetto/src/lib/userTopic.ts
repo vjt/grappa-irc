@@ -17,6 +17,8 @@ import { setMentionsBundle } from "./mentionsWindow";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { setPeerAway } from "./peerAway";
 import { type QueryWindow, setQueryWindowsByNetwork } from "./queryWindows";
+import { clearSeen } from "./reconnectBackfill";
+import { purgeScrollback } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
@@ -416,13 +418,25 @@ function narrowUserEvent(raw: unknown): WireUserEvent | null {
         reason: r.reason as string | null,
       };
     case "archive_changed":
-      // UX-1 (2026-05-17) — server broadcasts after a successful
-      // DELETE /networks/:slug/archive/:target. Single-field envelope:
-      // cic re-fetches via `loadArchive(slug)` rather than tracking a
+      // UX-1 (2026-05-17) — server broadcasts after a successful PART
+      // (channel moves into archive list). Single-field envelope: cic
+      // re-fetches via `loadArchive(slug)` rather than tracking a
       // wire-side delta (small set; refresh is idempotent and survives
-      // reconnect replay).
+      // reconnect replay). For the DESTRUCTIVE
+      // `DELETE /networks/:slug/archive/:target` path the server now
+      // broadcasts `archive_purged` instead — see below (UX-7-B).
       if (typeof r.network_slug !== "string") return null;
       return { kind: "archive_changed", network_slug: r.network_slug };
+    case "archive_purged":
+      // UX-7-B (2026-05-22) — server broadcasts after a successful
+      // DELETE /networks/:slug/archive/:target. Two fields: the slug
+      // (refresh the archive list, same as archive_changed) AND the
+      // target (invalidate `scrollbackByChannel[channelKey(slug,
+      // target)]` so the pre-delete rows don't ghost in the live Solid
+      // store on re-JOIN — refreshScrollback's `?after=cursor` fetch
+      // is past every deleted row, masking the gap without the purge).
+      if (typeof r.network_slug !== "string" || typeof r.target !== "string") return null;
+      return { kind: "archive_purged", network_slug: r.network_slug, target: r.target };
     case "home_network_state_changed": {
       // UX-4 bucket B — per-row patch for the HomePane's networks list.
       // Co-emitted by `Networks.broadcast_state_change/4` alongside the
@@ -682,11 +696,49 @@ createRoot(() => {
           return;
 
         case "archive_changed":
-          // UX-1 (2026-05-17) — server delete cleared a per-network
-          // archive entry. Re-fetch via the existing `loadArchive(slug)`
-          // helper rather than tracking the wire-side delta (the set
-          // is small and refresh is idempotent + reconnect-safe).
+          // UX-1 (2026-05-17) — PART moved a channel into archive.
+          // Re-fetch via the existing `loadArchive(slug)` helper rather
+          // than tracking the wire-side delta (the set is small and
+          // refresh is idempotent + reconnect-safe).
           void loadArchive(payload.network_slug);
+          return;
+
+        case "archive_purged":
+          // UX-7-B (2026-05-22) — destructive archive-entry delete.
+          // Order (purge → clearSeen → loadArchive) covers the common
+          // happy path: invalidate the in-memory scrollback cache for
+          // the target key, then drop the high-water mark so the next
+          // refresh fetches from 0 (or the server-side read cursor)
+          // rather than the pre-delete high-water, then refresh the
+          // archive list so the modal/sidebar sections drop the row.
+          //
+          // Edge case (not defended): an `await listMessagesAfter(...)`
+          // already in flight when this handler runs will resolve into
+          // `appendToScrollback` + `recordSeen` on the just-purged
+          // key, re-seeding the store from rows the server returned
+          // BEFORE the delete landed. Practical likelihood is ~zero
+          // because the DELETE response (204) is sent by the same
+          // controller process that emits this broadcast, well before
+          // any post-delete re-JOIN's refreshScrollback could fire.
+          // Stale rows would be re-purged on the next archive_purged
+          // anyway. Not worth the complexity to await/cancel.
+          //
+          // The cic-side `readCursor.cursors[key]` is INTENTIONALLY
+          // NOT cleared here: (1) the server's `read_cursors` row was
+          // already `ON DELETE SET NULL`'d by the migration FK; (2)
+          // `applyJoinReply` no-ops on a null cursor so cic's signal
+          // map retains the stale id; (3) sqlite AUTOINCREMENT is
+          // monotonic, so any post-purge live message has id > stale
+          // cursor and the next `refreshScrollback` returns the full
+          // gap. Clearing client-side would break cross-device cursor
+          // sync (settled reads on device A would vanish on device B
+          // after the unrelated archive delete).
+          {
+            const key = channelKey(payload.network_slug, payload.target);
+            purgeScrollback(key);
+            clearSeen(key);
+            void loadArchive(payload.network_slug);
+          }
           return;
 
         case "home_network_state_changed":

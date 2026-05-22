@@ -278,11 +278,57 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
   };
 
+  // UX-7-B (2026-05-22) — destructive cache invalidation for the
+  // `archive_purged` userTopic event. Drops the per-channel signal
+  // entry + clears the load-once gate + clears the load-more
+  // exhausted latch. WITHOUT this verb cic's `scrollbackByChannel[key]`
+  // survived a server-side DELETE + re-JOIN: `refreshScrollback`
+  // fetches `?after=cursor` (high-water mark) which is past every
+  // deleted row, so the pre-delete rows persisted in the live Solid
+  // store and re-appeared in the pane on re-JOIN.
+  //
+  // Caller is `userTopic.ts` archive_purged arm; the deleting tab
+  // ALSO receives the broadcast over its own user-topic so the same
+  // code path covers both the initiator and any other open tabs.
+  // No need for a separate REST-204 client-side hook.
+  //
+  // No-op guard: tabs with NO local trace of this key (no signal
+  // entry, no load-once gate) skip every mutation — honours "purge
+  // what's there, don't touch what isn't". Note `loadedChannels.has`
+  // ALONE is insufficient: auto-joined channels populate
+  // `scrollbackByChannel[key]` via `refreshScrollback` (subscribe.ts
+  // WS join-ok callback) WITHOUT touching `loadedChannels` — that
+  // Set is only added by user-initiated `loadInitialScrollback`.
+  // The signal store is the actual cache; the load-once Set is the
+  // REST-deduplication gate. Both can carry state; either having
+  // the key means there's something to purge.
+  //
+  // The high-water mark in `reconnectBackfill.lastSeenIdByKey` is
+  // cleared via the sibling `clearSeen(key)` from that module — kept
+  // separate so this verb stays cohesive with the scrollback-store
+  // boundary (and so test mocks for reconnectBackfill stay decoupled
+  // from scrollback's internals).
+  const purgeScrollback = (key: ChannelKey): void => {
+    const hasSignal = key in scrollbackByChannel();
+    const hasGate = loadedChannels.has(key);
+    if (!hasSignal && !hasGate) return;
+    loadedChannels.delete(key);
+    loadMoreExhausted.delete(key);
+    loadMoreInFlight.delete(key);
+    if (hasSignal) {
+      setScrollbackByChannel((prev) => {
+        const { [key]: _drop, ...rest } = prev;
+        return rest;
+      });
+    }
+  };
+
   return {
     scrollbackByChannel,
     appendToScrollback,
     loadInitialScrollback,
     loadMore,
+    purgeScrollback,
     refreshScrollback,
     sendMessage,
   };
@@ -292,5 +338,6 @@ export const scrollbackByChannel = exports.scrollbackByChannel;
 export const appendToScrollback = exports.appendToScrollback;
 export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
+export const purgeScrollback = exports.purgeScrollback;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;

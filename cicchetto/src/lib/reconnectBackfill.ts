@@ -75,8 +75,22 @@ const exports = identityScopedStore((onIdentityChange) => {
     return getReadCursor(slug, chan);
   }
 
-  return { recordSeen, getResumeCursor };
+  // UX-7-B (2026-05-22) — drop the high-water mark for one key. Sibling
+  // to `lib/scrollback.ts:purgeScrollback` for the `archive_purged`
+  // userTopic arm. Without this, post-purge re-JOIN's
+  // `refreshScrollback` would re-fetch `?after=<pre-purge high-water>`
+  // and skip every row that survived (or was reposted to) the channel
+  // after the operator started reading again — silently masking the
+  // post-rejoin gap. Kept separate from `purgeScrollback` so the
+  // backfill module stays cohesive (high-water tracker boundary) and
+  // tests of either module don't have to mock the other.
+  function clearSeen(key: ChannelKey): void {
+    lastSeenIdByKey.delete(key);
+  }
+
+  return { recordSeen, clearSeen, getResumeCursor };
 });
 
 export const recordSeen = exports.recordSeen;
+export const clearSeen = exports.clearSeen;
 export const getResumeCursor = exports.getResumeCursor;

@@ -86,6 +86,18 @@ vi.mock("../lib/whoisCard", () => ({
   setWhoisBundle: vi.fn(),
 }));
 
+vi.mock("../lib/archive", () => ({
+  loadArchive: vi.fn(),
+}));
+
+vi.mock("../lib/scrollback", () => ({
+  purgeScrollback: vi.fn(),
+}));
+
+vi.mock("../lib/reconnectBackfill", () => ({
+  clearSeen: vi.fn(),
+}));
+
 describe("userTopic", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -784,6 +796,74 @@ describe("userTopic", () => {
         "azzurra",
         expect.objectContaining({ channels: [] }),
       );
+    });
+  });
+
+  describe("archive_purged arm (UX-7-B 2026-05-22)", () => {
+    it("purges scrollback + clears the resume cursor + reloads the archive list", async () => {
+      const archive = await import("../lib/archive");
+      const sb = await import("../lib/scrollback");
+      const rb = await import("../lib/reconnectBackfill");
+      const { channelKey } = await import("../lib/channelKey");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        network_slug: "bahamut-test",
+        target: "#bofh",
+      });
+
+      const key = channelKey("bahamut-test", "#bofh");
+      expect(sb.purgeScrollback).toHaveBeenCalledWith(key);
+      expect(rb.clearSeen).toHaveBeenCalledWith(key);
+      expect(archive.loadArchive).toHaveBeenCalledWith("bahamut-test");
+    });
+
+    it("works for query-shaped targets too (peer-nick DM purge)", async () => {
+      const sb = await import("../lib/scrollback");
+      const { channelKey } = await import("../lib/channelKey");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        network_slug: "azzurra",
+        target: "alice",
+      });
+
+      expect(sb.purgeScrollback).toHaveBeenCalledWith(channelKey("azzurra", "alice"));
+    });
+
+    it("drops archive_purged payload missing `target` (narrowing rejects)", async () => {
+      const sb = await import("../lib/scrollback");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        network_slug: "bahamut-test",
+      });
+
+      expect(sb.purgeScrollback).not.toHaveBeenCalled();
+    });
+
+    it("drops archive_purged payload missing `network_slug` (narrowing rejects)", async () => {
+      const sb = await import("../lib/scrollback");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        target: "#bofh",
+      });
+
+      expect(sb.purgeScrollback).not.toHaveBeenCalled();
+    });
+
+    it("archive_changed (refresh-only sibling) does NOT trigger purgeScrollback", async () => {
+      const sb = await import("../lib/scrollback");
+      const archive = await import("../lib/archive");
+
+      channelMock.fireEvent({
+        kind: "archive_changed",
+        network_slug: "bahamut-test",
+      });
+
+      expect(sb.purgeScrollback).not.toHaveBeenCalled();
+      expect(archive.loadArchive).toHaveBeenCalledWith("bahamut-test");
     });
   });
 });

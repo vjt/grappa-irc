@@ -724,6 +724,14 @@ export type WireUserEvent =
       };
     }
   | { kind: "archive_changed"; network_slug: string }
+  // UX-7-B (2026-05-22) — `archive_purged` push after a destructive
+  // archive-entry delete (operator dropped scrollback for the target).
+  // Distinct from `archive_changed` (which is refresh-only for the
+  // archive LIST shape, e.g. PART moving a channel into archive): this
+  // event ALSO invalidates the in-memory `scrollbackByChannel[key]` for
+  // the target so cic doesn't ghost the pre-delete rows on re-JOIN. See
+  // `Wire.archive_purged_payload/2` moduledoc for the bug history.
+  | { kind: "archive_purged"; network_slug: string; target: string }
   // UX-4 bucket B — per-row patch for the HomePane's networks list.
   // Co-emitted by `Networks.broadcast_state_change/4` alongside the
   // wider `connection_state_changed` arm so HomePane patches its

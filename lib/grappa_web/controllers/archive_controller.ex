@@ -18,8 +18,13 @@ defmodule GrappaWeb.ArchiveController do
   channel-kind targets the IRC server retains state and the channel
   remains rejoinable from the operator's POV — the bouncer just
   forgets the scrollback. Confirm-modal copy in cic states this
-  explicitly. Returns 204 + broadcasts `:archive_changed` on
-  `Topic.user(subject_label)` so connected cic tabs refresh.
+  explicitly. Returns 204 + broadcasts `:archive_purged` on
+  `Topic.user(subject_label)` so connected cic tabs refresh the
+  archive list AND invalidate the in-memory scrollback cache for the
+  deleted target (UX-7-B 2026-05-22 — pre-fix the broadcast was
+  `archive_changed` without `target`, so cic's `scrollbackByChannel`
+  retained the deleted rows in the live Solid store and ghost rows
+  re-appeared on re-JOIN).
 
   Subject-dispatched: visitors share the controller (no separate
   endpoint). Both users and visitors persist DM windows under the
@@ -75,10 +80,13 @@ defmodule GrappaWeb.ArchiveController do
       (`dm_with = ^peer` case-insensitive, symmetric across inbound
       + outbound rows).
 
-  Returns 204 with no body. Broadcasts `archive_changed` on
+  Returns 204 with no body. Broadcasts `archive_purged` on
   `Topic.user(subject_label)` after a successful delete so any
   connected cic tab listening on the user-topic refreshes its
-  archive section.
+  archive section AND invalidates the in-memory scrollback cache for
+  the deleted target. See `Wire.archive_purged_payload/2` for the
+  envelope shape rationale (separate kind from `archive_changed` —
+  the PART arm uses the lighter envelope without scrollback purge).
 
   Validation is at-the-boundary per CLAUDE.md: invalid target name
   (not channel-shaped, not nick-shaped, not `$server`) → 400. Note
@@ -105,7 +113,7 @@ defmodule GrappaWeb.ArchiveController do
           :query -> Scrollback.delete_for_dm(session_subject, network.id, target)
         end
 
-      _ = broadcast_archive_changed(subject, network.slug)
+      _ = broadcast_archive_purged(subject, network.slug, target)
 
       send_resp(conn, :no_content, "")
     end
@@ -156,18 +164,30 @@ defmodule GrappaWeb.ArchiveController do
   # `"visitor:" <> visitor.id` — same shape `UserSocket` assigns to
   # `:user_name` so visitor cic instances subscribed to their
   # user-rooted topic see the broadcast (V4 visitor-parity).
-  @spec broadcast_archive_changed(
+  #
+  # UX-7-B (2026-05-22): event kind flipped from `archive_changed` to
+  # `archive_purged` + `target` added. cic's userTopic dispatcher routes
+  # the new kind through `purgeScrollback(channelKey(slug, target))`
+  # BEFORE refreshing the archive list — without the invalidation the
+  # pre-delete rows linger in the live Solid store and re-appear on
+  # re-JOIN (refreshScrollback fetches `?after=cursor`, which is past
+  # every deleted row).
+  @spec broadcast_archive_purged(
           {:user, User.t()} | {:visitor, Visitor.t()},
+          String.t(),
           String.t()
         ) :: :ok | {:error, term()}
-  defp broadcast_archive_changed({:user, %User{name: name}}, network_slug) do
-    PubSub.broadcast_event(Topic.user(name), Wire.archive_changed_payload(network_slug))
+  defp broadcast_archive_purged({:user, %User{name: name}}, network_slug, target) do
+    PubSub.broadcast_event(
+      Topic.user(name),
+      Wire.archive_purged_payload(network_slug, target)
+    )
   end
 
-  defp broadcast_archive_changed({:visitor, %Visitor{id: visitor_id}}, network_slug) do
+  defp broadcast_archive_purged({:visitor, %Visitor{id: visitor_id}}, network_slug, target) do
     PubSub.broadcast_event(
       Topic.user("visitor:" <> visitor_id),
-      Wire.archive_changed_payload(network_slug)
+      Wire.archive_purged_payload(network_slug, target)
     )
   end
 end

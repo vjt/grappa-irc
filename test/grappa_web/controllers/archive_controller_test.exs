@@ -8,8 +8,9 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
   `DELETE /networks/:network_id/archive/:target` drops the scrollback
   for one target (channel-shaped via `delete_for_channel/3`, query-
-  shaped via `delete_for_dm/3`) and broadcasts `archive_changed` on
-  the user-rooted topic so connected cic tabs refresh.
+  shaped via `delete_for_dm/3`) and broadcasts `archive_purged` on
+  the user-rooted topic so connected cic tabs refresh AND invalidate
+  the in-memory scrollback cache for the deleted target.
 
   Scope of these tests: controller wiring (auth, iso boundary, JSON
   shape, active_keyset assembly, sigil dispatch on DELETE, broadcast
@@ -152,7 +153,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
   end
 
   describe "DELETE /networks/:network_slug/archive/:target (UX-1)" do
-    test "channel-shaped target → 204 + drops channel rows + broadcasts archive_changed",
+    test "channel-shaped target → 204 + drops channel rows + broadcasts archive_purged",
          %{conn: conn, vjt: vjt} do
       net = net_with_credential(vjt)
       :ok = seed_archive_rows(vjt, net)
@@ -173,13 +174,13 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_changed", network_slug: slug}
+        payload: %{kind: "archive_purged", network_slug: slug, target: "#a"}
       }
 
       assert slug == net.slug
     end
 
-    test "query-shaped target → 204 + drops DM rows + broadcasts archive_changed",
+    test "query-shaped target → 204 + drops DM rows + broadcasts archive_purged",
          %{conn: conn, vjt: vjt} do
       net = net_with_credential(vjt)
       :ok = seed_archive_rows(vjt, net)
@@ -197,7 +198,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_changed", network_slug: slug}
+        payload: %{kind: "archive_purged", network_slug: slug, target: "vjt-peer"}
       }
 
       assert slug == net.slug
@@ -213,7 +214,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
-        payload: %{kind: "archive_changed"}
+        payload: %{kind: "archive_purged", target: "#ghost"}
       }
     end
 

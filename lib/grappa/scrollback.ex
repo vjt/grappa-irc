@@ -611,8 +611,9 @@ defmodule Grappa.Scrollback do
   Sole consumer: `GrappaWeb.ArchiveController.delete/2`. Caller
   resolves `subject` + `network_id` from the authenticated conn +
   `Plugs.ResolveNetwork`; controller broadcasts a typed
-  `:archive_changed` event on `Topic.user(subject_label)` so connected
-  cic tabs refresh their archive section.
+  `:archive_purged` event on `Topic.user(subject_label)` so connected
+  cic tabs refresh their archive section AND invalidate the in-memory
+  scrollback cache for the deleted target (UX-7-B 2026-05-22).
   """
   @spec delete_for_dm(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
   def delete_for_dm(subject, network_id, peer)

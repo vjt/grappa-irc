@@ -158,28 +158,72 @@ defmodule Grappa.Scrollback.Wire do
 
   @typedoc """
   UX-1 (2026-05-17) — `archive_changed` push payload broadcast on
-  `Topic.user(subject_label)` after a successful archive-entry delete.
-  Carries `network_slug` so the cic dispatcher knows which
-  per-network archive section to refresh; cic re-fetches via
-  `loadArchive(network_slug)` rather than rendering an embedded
-  delta (small, simple, idempotent — re-arriving the broadcast on
-  reconnect is a no-op).
+  `Topic.user(subject_label)` after a successful archive-entry mutation
+  that affects the network's archive LIST shape (e.g. PART moves a
+  channel from active → archive). Carries `network_slug` so the cic
+  dispatcher knows which per-network archive section to refresh; cic
+  re-fetches via `loadArchive(network_slug)` rather than rendering an
+  embedded delta (small, simple, idempotent — re-arriving the broadcast
+  on reconnect is a no-op).
 
-  No `target` field on purpose — the delete is fait accompli on the
-  server; cic's local archive cache for that network is stale until
-  the refresh lands, but the only loss is briefly stale row counts.
-  Sending the target would tempt cic-side optimistic patches that
-  drift from server truth.
+  No `target` field on purpose — for archive-list refreshes, the delete
+  is fait accompli on the server; cic's local archive cache for that
+  network is stale until the refresh lands, but the only loss is briefly
+  stale row counts. Sending the target would tempt cic-side optimistic
+  patches that drift from server truth.
+
+  For the DESTRUCTIVE archive-delete path (which also purges scrollback
+  rows for the target), see `archive_purged_payload/2` — separate event
+  kind so cic can fan into the cache-invalidation arm WITHOUT widening
+  this envelope.
   """
   @type archive_changed_payload :: %{kind: String.t(), network_slug: String.t()}
 
   @doc """
   Build the `archive_changed` event envelope for a network slug —
-  used by `GrappaWeb.ArchiveController.delete/2` to notify connected
+  used by `ChannelsController.delete/2` (PART) to notify connected
   cic tabs that the archive section for this network needs a refresh.
   """
   @spec archive_changed_payload(String.t()) :: archive_changed_payload()
   def archive_changed_payload(network_slug) when is_binary(network_slug) do
     %{kind: "archive_changed", network_slug: network_slug}
+  end
+
+  @typedoc """
+  UX-7-B (2026-05-22) — `archive_purged` push payload broadcast on
+  `Topic.user(subject_label)` after a successful
+  `DELETE /networks/:slug/archive/:target` (i.e. the operator dropped
+  scrollback rows for the target). Carries `network_slug` + `target` so
+  cic can BOTH:
+    (a) invalidate the in-memory `scrollbackByChannel[key]` for the
+        target — without this the pre-delete rows persist in the live
+        Solid store and reappear on re-JOIN (the `refreshScrollback`
+        cursor is the high-water mark, which is already past every
+        deleted row); AND
+    (b) refresh the per-network archive section (same shape as
+        `archive_changed` — `loadArchive(network_slug)`).
+
+  Separate event kind from `archive_changed` so a cic-side handler
+  can distinguish "archive list shape moved" (PART) from "history was
+  destructively purged" (DELETE). Conflating them under one kind would
+  either over-invalidate (PART would wrongly drop scrollback the user
+  expects to see on re-JOIN) or under-invalidate (DELETE without
+  target would leak ghosts — the original bug).
+  """
+  @type archive_purged_payload :: %{
+          kind: String.t(),
+          network_slug: String.t(),
+          target: String.t()
+        }
+
+  @doc """
+  Build the `archive_purged` event envelope for a `(network_slug,
+  target)` pair — used by `ArchiveController.delete/2` after a
+  destructive purge of scrollback rows.
+  """
+  @spec archive_purged_payload(String.t(), String.t()) :: archive_purged_payload()
+  def archive_purged_payload(network_slug, target)
+      when is_binary(network_slug) and is_binary(target) do
+    %{kind: "archive_purged", network_slug: network_slug, target: target}
   end
 end

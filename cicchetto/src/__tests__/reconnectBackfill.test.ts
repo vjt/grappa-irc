@@ -95,3 +95,22 @@ describe("getResumeCursor heuristic", () => {
     expect(getResumeCursor("azzurra", "#sniffo")).toBe(7);
   });
 });
+
+describe("clearSeen (UX-7-B 2026-05-22)", () => {
+  it("drops the high-water mark for the targeted key only", async () => {
+    const { recordSeen, clearSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
+    recordSeen(channelKey("azzurra", "#bofh"), sampleMsg(200));
+    recordSeen(channelKey("azzurra", "#sniffo"), sampleMsg(150));
+
+    clearSeen(channelKey("azzurra", "#bofh"));
+
+    expect(getResumeCursor("azzurra", "#bofh")).toBeNull();
+    expect(getResumeCursor("azzurra", "#sniffo")).toBe(150);
+  });
+
+  it("is a no-op for keys that have never been recorded", async () => {
+    const { clearSeen, getResumeCursor } = await import("../lib/reconnectBackfill");
+    expect(() => clearSeen(channelKey("azzurra", "#ghost"))).not.toThrow();
+    expect(getResumeCursor("azzurra", "#ghost")).toBeNull();
+  });
+});

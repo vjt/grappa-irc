@@ -136,4 +136,22 @@ defmodule Grappa.Scrollback.WireTest do
       assert Wire.archive_index([]) == %{archive: []}
     end
   end
+
+  describe "archive_purged_payload/2" do
+    test "carries network_slug and target so cic can invalidate the right scrollback key" do
+      assert Wire.archive_purged_payload("bahamut-test", "#bofh") == %{
+               kind: "archive_purged",
+               network_slug: "bahamut-test",
+               target: "#bofh"
+             }
+    end
+
+    test "preserves nick-shaped targets verbatim for query-kind purges" do
+      assert Wire.archive_purged_payload("freenode", "alice") == %{
+               kind: "archive_purged",
+               network_slug: "freenode",
+               target: "alice"
+             }
+    end
+  end
 end

@@ -570,3 +570,190 @@ describe("refreshScrollback (CP29 R-5)", () => {
     consoleSpy.mockRestore();
   });
 });
+
+describe("purgeScrollback (UX-7-B 2026-05-22)", () => {
+  it("drops scrollbackByChannel[key] for the targeted channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 1,
+        network: "bahamut",
+        channel: "#bofh",
+        server_time: 100,
+        kind: "privmsg",
+        sender: "seed-bot",
+        body: "seed line #1",
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+
+    const key = channelKey("bahamut", "#bofh");
+    expect(scrollback.scrollbackByChannel()[key]).toHaveLength(1);
+
+    scrollback.purgeScrollback(key);
+
+    // The Solid signal returns a fresh map without the purged key.
+    expect(scrollback.scrollbackByChannel()[key]).toBeUndefined();
+  });
+
+  it("clears the loaded-once gate so the next loadInitialScrollback refetches", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 1,
+        network: "bahamut",
+        channel: "#bofh",
+        server_time: 100,
+        kind: "privmsg",
+        sender: "seed-bot",
+        body: "seed line #1",
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+
+    // Without purge: second loadInitialScrollback would be a no-op.
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+
+    // After purge: load-once gate reset, REST fires again.
+    scrollback.purgeScrollback(channelKey("bahamut", "#bofh"));
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the load-more exhausted latch so a re-JOIN can paginate again", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValueOnce([
+      {
+        id: 5,
+        network: "bahamut",
+        channel: "#bofh",
+        server_time: 500,
+        kind: "privmsg",
+        sender: "alice",
+        body: "tail",
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+
+    // Latch the channel as exhausted via an empty loadMore.
+    vi.mocked(api.listMessages).mockResolvedValueOnce([]);
+    await scrollback.loadMore("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+
+    // Subsequent loadMore: exhausted latch short-circuits, no REST.
+    await scrollback.loadMore("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(2);
+
+    // After purge + reseed: loadMore can fire again.
+    scrollback.purgeScrollback(channelKey("bahamut", "#bofh"));
+    vi.mocked(api.listMessages).mockResolvedValueOnce([
+      {
+        id: 6,
+        network: "bahamut",
+        channel: "#bofh",
+        server_time: 600,
+        kind: "privmsg",
+        sender: "alice",
+        body: "post-rejoin",
+        meta: {},
+      },
+    ]);
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+    vi.mocked(api.listMessages).mockResolvedValueOnce([]);
+    await scrollback.loadMore("bahamut", "#bofh");
+    expect(api.listMessages).toHaveBeenCalledTimes(4);
+  });
+
+  it("leaves other channels untouched", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockImplementation(async (_t, _slug, channel) => [
+      {
+        id: 1,
+        network: "bahamut",
+        channel,
+        server_time: 100,
+        kind: "privmsg" as const,
+        sender: "alice",
+        body: `body for ${channel}`,
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("bahamut", "#bofh");
+    await scrollback.loadInitialScrollback("bahamut", "#sniffo");
+
+    scrollback.purgeScrollback(channelKey("bahamut", "#bofh"));
+
+    expect(scrollback.scrollbackByChannel()[channelKey("bahamut", "#bofh")]).toBeUndefined();
+    expect(scrollback.scrollbackByChannel()[channelKey("bahamut", "#sniffo")]).toHaveLength(1);
+  });
+
+  it("is a no-op for keys the local tab never opened (sibling-tab race guard)", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.listMessages).mockResolvedValue([
+      {
+        id: 1,
+        network: "bahamut",
+        channel: "#sniffo",
+        server_time: 100,
+        kind: "privmsg",
+        sender: "alice",
+        body: "sniffo line",
+        meta: {},
+      },
+    ]);
+    const scrollback = await import("../lib/scrollback");
+    await scrollback.loadInitialScrollback("bahamut", "#sniffo");
+
+    // Tab never opened #bofh via REST or WS — purge must NOT disturb
+    // load-once gate for a channel this tab DID open (would mask a
+    // sibling-tab race where #sniffo's mid-flight REST hadn't landed).
+    scrollback.purgeScrollback(channelKey("bahamut", "#bofh"));
+
+    // #sniffo still present + load-once gate held: second load is no-op.
+    expect(scrollback.scrollbackByChannel()[channelKey("bahamut", "#sniffo")]).toHaveLength(1);
+    await scrollback.loadInitialScrollback("bahamut", "#sniffo");
+    expect(api.listMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("purges keys populated via the WS path (appendToScrollback only — no REST load-once gate)", async () => {
+    // Regression guard: auto-joined channels populate
+    // `scrollbackByChannel[key]` via `subscribe.ts:joinOk →
+    // refreshScrollback → appendToScrollback` WITHOUT ever calling
+    // `loadInitialScrollback`. If purgeScrollback gates only on the
+    // load-once Set, these auto-joined cases leak ghosts on archive-
+    // delete + re-JOIN (the original UX-7-B bug). The fix: gate on
+    // signal-presence OR load-once-gate, not Set membership alone.
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("bahamut", "#bofh");
+    scrollback.appendToScrollback(key, {
+      id: 1,
+      network: "bahamut",
+      channel: "#bofh",
+      server_time: 100,
+      kind: "privmsg",
+      sender: "seed-bot",
+      body: "auto-joined seed line",
+      meta: {},
+    });
+    expect(scrollback.scrollbackByChannel()[key]).toHaveLength(1);
+
+    scrollback.purgeScrollback(key);
+
+    expect(scrollback.scrollbackByChannel()[key]).toBeUndefined();
+  });
+});
