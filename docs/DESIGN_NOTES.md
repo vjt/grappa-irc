@@ -7968,7 +7968,7 @@ of how "small" the bucket looks.
 
 ---
 
-## REV-G (2026-05-22) — PWA SW denylist + Solid reactivity + admin WS
+## 2026-05-22 — REV-G: PWA SW denylist + Solid reactivity + admin WS (H22 + H23 + H24)
 
 REV-G (bucket 7 of 11). Three-finding cic-only HOT bucket closing
 H22, H23, H24 from the 2026-05-22 codebase review. Reviewer round 1
@@ -8724,6 +8724,131 @@ Healthcheck `ok`. Push `e412c17..8070551`.
 - **compose.ts ChannelPushError branching consumer** — wire
   `compose.ts:601` to handle the typed class symmetrically with
   `ApiError`. Bucket-sized; REV-Z or polish.
+
+
+---
+
+## 2026-05-22 — REV-Z: REV cluster CLOSED — docs sweep + LOW liquidation
+
+Final REV bucket (12 of 12) closing the post-2026-05-22-codebase-review
+sprint. Docs-only by mandate. No deploy.
+
+### Cluster summary
+
+11 fix buckets (A → K) + 1 docs bucket (Z) shipped autopilot from
+2026-05-22 morning through 2026-05-22 evening. The 2026-05-22 full
+codebase review (8 parallel review agents) catalogued 4 CRIT + 29
+HIGH + 20 gating MED + 27 LOW. Per `project_post_tmu_full_review_scheduled`
+the wave fixed all CRIT + all HIGH + all gating MED; LOWs were
+opportunistic.
+
+Bucket map with closes:
+- REV-A (`ad7565f`) — C1, C2, H1: cross-surface wire arms + flow union
+- REV-B (`e21c299`) — C3, H6, H17, H18: persistence pragma + closed-set guards
+- REV-C (`84ccc68`) — C4, H20, H21, H26: substrate preflight + healthcheck depth + `signing_salt` move to runtime.exs
+- REV-D (`fc5d221`) — H12-H16, M16-M17: silent-swallow at boundaries
+- REV-E (`1980035` + `a4d4b22`) — H11: `:ok = Client.send_*` strict-bind regression sweep
+- REV-F (`6574f0e`) — H9, H10: IRC SASL fallback + missing dispatch arm
+- REV-G (`bc16132` + `99256ed`) — H22, H23, H24: PWA SW denylist + Solid reactivity + admin WS
+- REV-H (`f77f46a`) — H2-H5, H7, H8, H25: server-side type tightening Theme A
+- REV-I (`1539292`) — H19, H27, M3, M6: infra simplification
+- REV-J (`e0b8b27`) — M7-M15, M18: cross-cutting smells
+- REV-K (`e4a08bc` + `8070551`) — M19, M20: cross-surface naming pay-down
+- REV-Z (this) — docs sweep
+
+### Meta-lessons from the cluster
+
+1. **Per-bucket reviewer-loop earned its keep.** REV-G round-1 caught
+   an incomplete-fix in the bug-fix itself (SolidJS function-ref
+   gotcha); REV-K round-1 caught LOW-1 (`ChannelPushError` lacked
+   direct unit test) + LOW-2 (docstring outpaced consumer reality).
+   The reviewer-loop is friction worth paying every time.
+
+2. **Wire-shape changes desync server emit from live cic narrower.**
+   REV-K precedent: even when preflight classifies HOT, wire-shape
+   changes that desync server emit from live cic narrower expectations
+   should force COLD per `feedback_hot_deploy_preflight` conservative
+   bias. Adds to the "in doubt, COLD" discipline.
+
+3. **Hand-edits + lockstep cross-surface bumps are not the right
+   long-term shape.** A third of HIGHs + both REV-K MEDs were
+   shape-drift between server typespecs and cic types. The
+   structural answer — emerged organically from the review wave —
+   is `wireTypes.ts` codegen from server-side `Grappa.*.Wire`
+   typespecs. Slotted as second post-REV cluster behind flakes-
+   triage per `project_post_review_ordering_2026_05_22`. REV-A/H/K
+   hand-edits become the SOURCE the codegen consumes; not wasted.
+
+4. **Substrate fragility is the second-biggest emergent risk.** REV-C
+   (preflight regex + healthcheck depth + `signing_salt` rotation)
+   closed C4 + H20 + H21 + H26 — all neighbours in the substrate
+   space. The CP28 incident-class fix landed here; preflight now
+   has an AST oracle (`scripts/_extract_state_block.awk`) catching
+   field-addition-inside-existing-block changes that the line-anchor
+   regex missed.
+
+5. **Silent-swallow class continues to be load-bearing.** REV-D closed
+   five distinct silent-swallow boundaries (H12-H16 + M16-M17),
+   each one a separate way for a failure to disappear before the
+   operator (or CI) could see it. REV-K extended the pattern across
+   the cic boundary via the typed `ChannelPushError` class —
+   pushWatchlist's prior `reject(err)` of bare unknown was
+   effectively a silent-swallow on the cic side.
+
+### REV-Z scope (this bucket)
+
+- **README closed-clusters entry** — REV cluster A→K + Z added to
+  `## Closed clusters (recent)` per `feedback_readme_currency`.
+- **DESIGN_NOTES sweep** — REV-G header normalised to the
+  `## YYYY-MM-DD — TITLE` convention (was `## REV-G (DATE) — TITLE`).
+  REV-A + REV-B chronological entries are NOT backfilled — kept as
+  cluster-summary-only here at the close, since the cluster summary
+  cites them with commit SHAs anyway. (Future REV reviewers can
+  follow the cluster summary → commit → review-finding chain.)
+- **CP43 opens** to host REV-Z + the flakes-cluster handoff brief.
+  CP42 closed at 225 lines.
+- **MEMORY.md compression** — over warn-threshold; index entries
+  compressed/merged to one-line < 200 chars per entry.
+- **LOW liquidation that fits** — chose the lowest-friction subset
+  from the 27-item set: REV-K reviewer LOW-3 cosmetic dedup
+  (`info` field duplicates `error` key in ChannelPushError
+  extractor) DEFERRED — cosmetic only, no consumer impact.
+  compose.ts:601 ChannelPushError branching consumer DEFERRED —
+  REV-K's reviewer-fix patch softened the docstring already
+  documenting that current consumers fall through.
+
+### Carry-forwards
+
+- **REV-J.5 (M1+M5)** — Dockerfile UID prep prerequisite for
+  anonymous-volumes refactor. Standalone bucket between flakes
+  cluster and codegen cluster if bandwidth permits, else future
+  infra-polish cluster.
+- **Compose.ts:601 ChannelPushError branching consumer** — wire to
+  handle the typed class symmetrically with `ApiError`. Bucket-
+  sized polish.
+- **REV-K LOW-3 cosmetic** — `info` field duplicates `error` key in
+  ChannelPushError extractor. Trivial dedup; not blocking anything.
+- **REV-C carry-forward** — `_build/prod` cleanup procedure still
+  undocumented in operator runbook (REV-D + REV-E + REV-F were
+  HOT so it didn't recur; not closed in REV-Z). Future
+  infra-polish target.
+- **27-item LOW set** — mostly remains opportunistic for adjacent
+  touches. Notable themes: dead-code clauses in
+  `Identifier.services_sender?`, empty-reason `send_away/2`
+  accepting `AWAY :\r\n`, `Push.subscription.id` as `string` vs
+  branded UUID type, `linkify` regex `\S+` unbounded, image-upload
+  bypass of `token()` signal, `bin/start.sh` env-fiddling vs
+  trusting BEAM defaults, `register-dns.sh` placement.
+
+### Post-REV ordering (vjt mandate, repeated for completeness)
+
+Per `project_post_review_ordering_2026_05_22` — after REV-Z:
+1. E2e flake triage + fix (45 baseline-fail testnet specs +
+   AdmissionTest ETS-leak class + AdminEventsTest:197 class).
+2. wireTypes.ts codegen.
+3. Bastille deploy workstream (GitHub #8).
+
+REV cluster: **CLOSED**.
 
 
 ---

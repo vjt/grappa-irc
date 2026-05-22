@@ -10,99 +10,72 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 11 of 11 closed (REV-K LANDED 2026-05-22,
-`e4a08bc` base + `8070551` reviewer-fix).** Full close-out in
-`docs/checkpoints/2026-05-22-cp42.md` (S1). Closes 2 MEDIUM from the
-2026-05-22 codebase review — cross-surface naming pay-down (M19 + M20).
-17 lib + test + cic files in base sweep; +2 files in reviewer-fix patch;
-COLD-deployed.
+**REV cluster CLOSED 2026-05-22 (autopilot).** Full 11 fix buckets
+A→K + REV-Z docs sweep shipped from the 2026-05-22 codebase review.
+4 CRIT + 29 HIGH + 20 gating MED closed; reviewer-loop per bucket;
+per-bucket deploy + healthcheck. Cluster summary at
+`project_rev_cluster_closed.md`; chronological close in DESIGN_NOTES.
 
-**M-cluster MEDs closed in REV-K:**
-- **M19 (cross-surface S15)** — `mentions_bundle.messages[*]` wire shape
-  renamed `sender_nick:` → `sender:` to match sibling `ScrollbackMessage`.
-  Server moduledoc-flagged "Total consistency or nothing" debt paid in
-  one touch across server Wire + cic narrowing + cic render + tests.
-  Note `Message.sender_nick/1` (IRC parser helper for prefix extraction)
-  intentionally unchanged — different domain.
-- **M20 (cross-surface S18)** — WS Channel error envelope `%{reason:
-  "<token>"}` unified with REST `FallbackController`'s `%{error:
-  "<token>"}`. 36 server error replies + 33 channel test assertions;
-  cic adds typed `ChannelPushError` + `channelPushError/1` extractor
-  mirroring `ApiError`'s shape. Push helpers reject with typed error
-  carrying wire `code`. Per `feedback_no_silent_drops_closed`:
-  pushWatchlist's prior `reject(err)` of bare unknown was effectively
-  a silent-swallow at the cic boundary; typed class closes it.
+**REV-Z LANDED 2026-05-22.** Final REV bucket (12 of 12), docs-only:
+- README "Closed clusters" entry for REV cluster A→K + Z added
+  per `feedback_readme_currency`.
+- DESIGN_NOTES cluster-close entry appended with meta-lessons +
+  carry-forwards; REV-G header normalised to `## YYYY-MM-DD — TITLE`.
+- CP43 opened (CP42 closed at 225 lines, over rotate threshold).
+- MEMORY.md compressed from 25.6KB → 12.8KB (well under 24.4KB
+  warn threshold); 15 UX-5 bucket entries + 18 UX-6 bucket entries
+  collapsed into three cluster-summary memories
+  (`project_ux_5_cluster_closed`, `project_ux_6_cluster_closed`,
+  `project_rev_cluster_closed`); per-bucket files preserved on disk.
+- LOW liquidation deferred — 27-item set stays opportunistic per
+  review § "spot-fix when adjacent code is touched"; REV-K
+  reviewer-fix patch already softened compose.ts:601 docstring;
+  LOW-3 cosmetic dedup has no consumer impact.
 
-**REV-J.5 STILL DEFERRED.** REV-K touched lib + cic only — no
-compose-shape changes, so the Dockerfile UID prep prerequisite for
-M1+M5 anonymous-volumes refactor didn't fold in. Standalone bucket
-REV-J.5 between REV-K and REV-Z if bandwidth permits, else carry
-forward to a future infra-polish cluster.
-
-Deployed 2026-05-22 via `scripts/deploy.sh --force-cold` (preflight
-classified HOT but business rule "wire-shape change to live cic
-sockets is risky" forced COLD per `feedback_hot_deploy_preflight`
-conservative bias). Sessions reset, image rebuilt, container ID
-rotated. Healthcheck `ok`. `scripts/deploy-cic.sh` after: cic bundle
-rebuilt, hash `34TrT3jr` broadcast — refresh banner auto-prompts on
-any surviving tabs.
-
-Reviewer round-1 APPROVE with 3 LOW observations. Round-2 patch
-addressed LOW-1 (5 focused `ChannelPushError` unit tests) + LOW-2
-(softened docstring claim to "FUTURE consumer pattern" matching
-`compose.ts:601` reality). LOW-3 (`info` duplicates `error` key,
-cosmetic) deferred. Round-2 APPROVE clean.
-
-**REV-Z staged.** Final REV bucket: docs sweep + README closed-clusters
-entry + LOW liquidation that fits. No code changes (or trivial
-spot-fixes only). Notable LOW candidates from cross-cluster
-carry-forwards:
-- `compose.ts` ChannelPushError branching consumer (wire to handle
-  the typed class symmetrically with `ApiError`) — could land here
-  or as own polish bucket
-- LOW-3 from REV-K reviewer (`info` field deduplication)
-- LOW set from the 2026-05-22 review (27 total — `bin/start.sh`
-  env-fiddling, `register-dns.sh` deployment-specific helper, etc.)
-
-**REV cluster — final bucket after REV-K:**
-- REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only (or trivial spot-fixes)
-
-Per `project_post_tmu_full_review_scheduled` (vjt 2026-05-16 night
-mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
-deploy + healthcheck, literal gate-tail paste, push autonomy once
-green.
-
-★ **Post-REV-Z bucket ordering** (vjt 2026-05-22 mid-REV-E mandate, per
-`project_post_review_ordering_2026_05_22`): after REV-Z LANDED, the
-order is (1) e2e flake triage + fix, (2) wireTypes.ts codegen,
-(3) bastille deploy workstream. Do NOT skip (1) or (2) to fast-track
-bastille — flakes-first because a noisy e2e suite blocks confidence in
-bastille validation; codegen-second because the cic↔server wire boundary
-is the highest-risk drift surface the review identified. Bastille is
-prod-runtime migration; cleaner on a green-suite + structurally-typed-
-boundary substrate. REV-K's M19+M20 manual rename is NOT wasted —
-the unified `sender:` / `error:` names become the server-side
-typespecs that codegen will consume.
+NO deploy (docs-only). Pushed to origin/main.
 
 ---
 
-## Carry-forwards from REV-K
+★ **NEXT CLUSTER (vjt mandate per `project_post_review_ordering_2026_05_22`):**
+**E2e flakes triage + fix.** 45 baseline-fail testnet specs +
+`Grappa.AdmissionTest` ETS-singleton-leak class +
+`AdminEventsTest:197` assert_receive class. Per
+`feedback_recurring_e2e_not_flake`: same-triplet recurring fails
+are NEVER flakes — triage each as real product bug behind a flake
+label or genuine testnet/load flake.
 
-- **REV-J.5 (M1+M5)** still open — same Dockerfile UID prep
-  prerequisite documented in REV-J carry-forward; REV-K did not
-  bundle it.
-- **COLD-with-cic-bundle-deploy validated** — REV-K is the first
-  REV-cluster wire-shape change where both surfaces moved in
-  lockstep. The COLD + deploy-cic.sh pairing worked cleanly;
-  refresh banner auto-prompt mechanism honored.
-- **`feedback_no_silent_drops_closed` extended** by the cic typed
-  `ChannelPushError` class — pushWatchlist's prior `reject(err)` of
-  bare unknown was effectively a silent-swallow at the cic boundary.
-  Typed class closes the gap structurally.
-- **Wire-shape change "in doubt, COLD" precedent established** — even
-  when preflight classifies HOT, wire-shape changes that desync
-  server emit from live cic narrower expectations should force COLD.
-  Adds to `feedback_hot_deploy_preflight` discipline.
+After flakes: (2) **wireTypes.ts codegen** — generate cic TS wire
+types from server-side `Grappa.*.Wire` typespecs; closes
+C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY, supersedes REV-A/H/K
+hand-edits. (3) **Bastille deploy workstream** (GitHub #8).
+
+Do NOT skip flakes/codegen to fast-track bastille — flakes-first
+because a noisy e2e suite blocks confidence in bastille validation;
+codegen-second because the cic↔server wire boundary is the
+highest-risk drift surface the review identified.
+
+---
+
+## Carry-forwards from REV cluster (open)
+
+- **REV-J.5 (M1+M5)** anonymous-volumes refactor — Dockerfile UID
+  prep prerequisite. Standalone bucket between flakes and codegen
+  if bandwidth permits, else future infra-polish cluster.
+- **REV-K LOW-3 cosmetic** — `info` field duplicates `error` key
+  in ChannelPushError extractor. Trivial dedup; not blocking.
+- **compose.ts:601 ChannelPushError branching consumer** — wire to
+  handle the typed class symmetrically with `ApiError`.
+  Bucket-sized polish.
+- **REV-C carry-forward** — `_build/prod` cleanup procedure still
+  undocumented in operator runbook (REV-D/E/F were HOT so it
+  didn't recur; not closed in REV-Z). Future infra-polish target.
+- **27-item LOW set** — mostly remains opportunistic. Notable
+  themes per review doc § "LOW findings": dead-code clauses in
+  `Identifier.services_sender?`, empty-reason `send_away/2`
+  accepting `AWAY :\r\n`, `Push.subscription.id` as `string` vs
+  branded UUID, `linkify` regex `\S+` unbounded, `image-upload.ts`
+  localStorage vs `token()` signal, `bin/start.sh` env-fiddling,
+  `register-dns.sh` placement.
 
 ---
 

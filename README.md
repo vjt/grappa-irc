@@ -554,6 +554,50 @@ since the Phase-1 walking skeleton landed. Each cluster solved a
 specific class of bug or shipped a coherent slice of UX. The most
 recent CLOSED clusters:
 
+- **REV — codebase-review-fixes-2026-05-22** (closed 2026-05-22).
+  11 buckets A→K (+ REV-Z docs sweep) shipped autopilot from the
+  2026-05-22 full codebase review (4 CRIT + 29 HIGH + 20 gating
+  MED + 27 LOW catalogued across 8 parallel review agents). Each
+  bucket reviewer-loop'd to APPROVE-clean before LANDED; per-bucket
+  deploy + healthcheck. **A** (`ad7565f`) cross-surface wire arms
+  + flow union — closed C1 + C2 + H1 (cic narrowing vs server Wire
+  typespec drift). **B** (`e21c299`) persistence SQLite pragma +
+  closed-set guards — C3 + H6 + H17 + H18; new index migration
+  forced COLD. **C** (`84ccc68`) substrate preflight + healthcheck
+  depth + `signing_salt` move to runtime.exs — C4 + H20 + H21 +
+  H26; H26 explicitly requires `/healthz` exercise the substrate
+  (don't weaken to "always 200"). **D** (`fc5d221`) silent-swallow
+  at boundaries — H12-H16 + M16-M17; extends
+  `feedback_no_silent_drops_closed` discipline. **E** (`1980035` +
+  `a4d4b22`) `:ok = Client.send_*` regression sweep — H11; CTCP
+  `apply_effects` runtime regression test added. **F** (`6574f0e`)
+  IRC SASL fallback + missing arm — H9 + H10. **G** (`bc16132` +
+  `99256ed`) cic SW denylist + adminEvents narrower + markerRef
+  leak — H22 + H23 + H24; SolidJS function-ref gotcha pinned
+  (`feedback_solidjs_for_ref_leak` updated). **H** (`f77f46a`)
+  server-side type tightening, Theme A continued — H2 + H3 + H4 +
+  H5 + H7 + H8 + H25; lockstep server typespec + cic type bump,
+  COLD-deployed. **I** (`1539292`) infra simplification — nginx
+  snippet dedup + bin/grappa table + docker dedup; H19 + H27 +
+  M3 + M6. **J** (`e0b8b27`) cross-cutting smells — cross-module
+  M14/M15 + lifecycle M7-M11 + persistence M12-M13; HOT-deployed.
+  **K** (`e4a08bc` + `8070551`) cross-surface naming pay-down —
+  M19 + M20: `mentions_bundle.messages[*].sender_nick:` → `sender:`
+  to match sibling `ScrollbackMessage`; WS Channel error envelope
+  `%{reason:}` → `%{error:}` unified with REST `FallbackController`;
+  cic adds typed `ChannelPushError` class + `channelPushError/1`
+  extractor mirroring `ApiError`'s shape; COLD-deployed (wire-shape
+  change to live cic sockets). **Z** (`HEAD`) THIS docs sweep —
+  README closed-clusters entry + DESIGN_NOTES sweep + MEMORY.md
+  compression + a handful of LOW liquidations from the 27-item set.
+  REV-J.5 (M1+M5 anonymous-volumes with Dockerfile UID prep)
+  carries forward — standalone bucket if bandwidth permits.
+  Structural follow-up: **wireTypes.ts codegen** (generate cic TS
+  wire types from server-side `Grappa.*.Wire` typespecs) closes
+  C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY, supersedes hand-edits.
+  Slotted as second post-REV cluster behind flakes-triage per
+  `project_post_review_ordering_2026_05_22`.
+
 - **UX-6 — second iPhone-dogfooding wave** (closed 2026-05-22). 11
   production buckets shipped in autopilot mode across three days. No
   formal plan-doc — each bucket scoped from a vjt iPhone PWA bug-list
