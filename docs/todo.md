@@ -10,36 +10,37 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 3 of 11 closed (REV-C LANDED 2026-05-22, 84ccc68 chain).**
-Full close-out in `docs/checkpoints/2026-05-22-cp39.md`. Closes 1 CRIT
-+ 3 HIGH from the 2026-05-22 codebase review:
-- C4 — `Grappa.Deploy.Preflight` (NEW) — single-Elixir-source preflight
-  reading `LongLivedModules.all/0` directly; awk helper deleted
-- H20 — 7 path classes added: compose.override.yaml, compose.oneshot.yaml,
-  bin/grappa, .dockerignore, deeper infra/snippets/*, ALL config/*.exs,
-  priv/repo/migrations/*
-- H21 — `SECRET_SIGNING_SALT` runtime read in config/runtime.exs +
-  custom session plug with :persistent_term cache + config_change/2
-  override (3-round reviewer fix on the predicate shape)
-- H26 — `Grappa.Health` (NEW) + `/healthz` substrate exercise: Repo
-  + supervision-readiness flag + long-lived ETS
+**REV cluster autopilot — bucket 4 of 11 closed (REV-D LANDED 2026-05-22, fc5d221).**
+Full close-out in `docs/checkpoints/2026-05-22-cp39.md`. Closes 5 HIGH + 2
+gating MEDs from the 2026-05-22 codebase review:
+- H12 — `Backoff.record_failure` funneled into `Session.Server.terminate/2`
+  abnormal-reason clause; single funnel for every crash class
+- H13 — `Visitor.touch_changeset/2` monotonicity guard + new
+  `expire_changeset/2` for `mark_failed/2`'s forced-expiry semantic
+- H14 — `Visitors.commit_password/2` + `Visitors.update_nick/2` wrap
+  `Repo.update` in `try/rescue Ecto.StaleEntryError` → `{:error, :not_found}`
+- H15 — `last_joined_channels` cap hoisted to schema; `Credential.last_joined_channels_max/0`
+  is SoT; `validate_length/3` enforces the bound at the changeset boundary
+- H16 — `Grappa.Push.boot/0` + `vapid_public_key/0` (`:persistent_term`-backed)
+  closes the lone runtime `Application.fetch_env!/2` violation
+- M16 — `ChannelsController.delete/2` propagates autojoin-removal errors via
+  `with` → FallbackController (was silent 202 + log line)
+- M17 — `ArchiveController.delete/2` strict-bind → `with` arm; extracted
+  `delete_for_target/3` helper
 
-COLD deploy applied (with `_build/prod` cleanup per
-`feedback_hot_deploy_corrupts_build_prod` — first-deploy-after-deploy.sh-
-change used OLD preflight and false-HOT'd). All 4 findings live-verified
-post-deploy (smoke commands archived in CP39). Healthcheck `ok` via
-substrate-deep `/healthz`. Push autonomy used per `feedback_push_autonomy`.
+COLD deploy applied (with `_build/prod` cleanup per `feedback_hot_deploy_corrupts_build_prod`
+— **4th repro** of preflight FALSE-HOT after local merge per
+`feedback_deploy_preflight_empty_diff_after_merge`). All 7 findings live-verified
+post-deploy (healthcheck ok + H16 `:persistent_term` smoke confirmed live).
+Reviewer round 1 → APPROVE with 2 LOWs (LOW-2 spec narrowing applied inline;
+LOW-1 documented).
 
-**REV-D staged.** Silent-swallow at boundaries (H12 Backoff.record_failure
-doc/call-site drift; H13 Visitor.touch_changeset monotonicity guard; H14
-Visitors.commit_password/update_nick race; H15 last_joined_channels
-schema-level cap; H16 PushVapidController runtime fetch_env!; M16/M17
-companion silent-swallow MEDs). Server-only, COLD if H13 changes the
-Visitor schema. Orchestrator briefing at `/tmp/orchestrate-next.txt` for
-post-clear pickup.
+**REV-E staged.** `:ok = Client.send_*` regression sweep (H11) across 8+ sites
+where strict-bind on `IRC.Client.send_*` returns crashes the caller once the
+U-cluster boundary fix returns `{:error, :no_socket}` on dead socket. Server-only,
+likely HOT.
 
-**REV cluster — remaining buckets after REV-C:**
-- REV-D — silent-swallow at boundaries (H12-H16 + M16-M17) — server
+**REV cluster — remaining buckets after REV-D:**
 - REV-E — `:ok = Client.send_*` regression sweep (H11) — server, 8+ sites
 - REV-F — IRC SASL fallback + missing :invalid_line arm (H9, H10) — server
 - REV-G — cic SW denylist + adminEvents narrower + markerRef leak (H22, H24, H23) — cic, HOT cic-only
@@ -55,24 +56,26 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP38 → CP39 active.** REV-B + REV-C summaries live in CP39. CP39
-now ~700+ lines — REV-D close will push past rotation threshold,
-expect CP39→CP40 rotation at REV-D LANDED.
+**CP39 → CP40 active.** REV-D summary in CP39 (now 770 lines, capped at
+rotation threshold). CP40 carries REV-E onwards.
 
 ---
 
-## Carry-forwards from REV-C
+## Carry-forwards from REV-D
 
-- **Meta-lesson** (`feedback_hot_deploy_preflight` echo): the FIRST
-  deploy after a `scripts/deploy.sh` change uses the OLD preflight.
-  REV-I touches deploy.sh again — `--force-cold` mandate on first
-  deploy.
-- **`_build/prod` cleanup before COLD** — STILL undocumented in
-  operator runbook. Reproduced THIRD time during REV-C. Defer to
-  REV-Z docs sweep, but note the recurrence.
+- **Preflight FALSE-HOT after local merge** —
+  `feedback_deploy_preflight_empty_diff_after_merge` reproduced for the
+  4th time during REV-D deploy. The mitigation candidate (compare against
+  LIVE container SHA, not local `prev_sha == HEAD`) belongs in REV-J or
+  REV-Z.
+- **`_build/prod` cleanup procedure** — STILL undocumented in operator
+  runbook. Reproduced 4th time during REV-D. Defer to REV-Z docs sweep.
 - **MED-2 carry-forward from REV-B** still open —
   `validate_target_name/1` runs on pre-canonical `target` in
   ArchiveController. Bytes-equivalent today; minor drift risk.
+- **REV-D reviewer LOW-1** — H14 narrow-window test name vs. behavior.
+  Two-line rescue, both nil-get + rescue paths return same typed error.
+  Documented; not fixed inline.
 
 ---
 

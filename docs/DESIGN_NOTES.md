@@ -7628,6 +7628,190 @@ ok
 
 ---
 
+## 2026-05-22 — REV-D: silent-swallow at boundaries (H12-H16 + M16/M17)
+
+Bucket 4 of 11 in the 2026-05-22 codebase-review-fixes cluster
+(`project_post_tmu_full_review_scheduled`). Closes 5 HIGH + 2 gating
+MEDs that shared the silent-swallow-at-boundary theme — every
+finding was a place where the codebase *had* an error path on
+paper but the implementation absorbed, masked, or routed around it.
+Single bucket; one COLD deploy.
+
+### The shape
+
+Five distinct failure classes that all look like the same bug from
+a distance:
+
+1. **Doc-vs-impl drift** (H12). `Backoff.record_failure`'s moduledoc
+   claimed "called from `terminate/2` on any non-`:normal` exit."
+   Actual call sites were `handle_info({:EXIT, client_pid, _})` +
+   `do_start_client/2`. Non-Client crash classes (callback raise,
+   mailbox overflow, link-death from a hypothetical non-Client
+   linked proc) bypassed backoff bookkeeping. Counter stayed at 0
+   → `:transient` respawn fired with no delay → tight crash loop
+   exactly when the per-`(subject, network_id)` ladder mattered
+   most.
+
+2. **Sister-function asymmetry** (H13). `Accounts.Session.touch_changeset/2`
+   got a backward-clock-skew guard in B5.4 L-pers-3 (NTP step or
+   container reboot under wall-clock drift would otherwise move
+   `last_seen_at` backward, breaking the idle-timer math). The
+   structurally-identical `Visitor.touch_changeset/2` never got the
+   port — backward-clock skew silently shrank visitor TTL → Reaper
+   deleted a still-active row.
+
+3. **Lookup-then-update race** (H14). `Visitors.commit_password/2`
+   + `Visitors.update_nick/2` did `Repo.get` → `Repo.update` with
+   no race protection. A peer caller (operator delete, Reaper
+   sweep, `purge_if_anon` on session revoke) could vanish the row
+   between calls, raising `Ecto.StaleEntryError` instead of the
+   spec'd `{:error, :not_found}`. The 500 in the web layer
+   silently violated the typed contract.
+
+4. **Schema-vs-context cap drift** (H15). `last_joined_channels`
+   was capped at 200 by the `Credentials` context helper only. Any
+   bypassing writer — a future REST credentials surface, an
+   operator mix task, a test helper — could grow the JSON column
+   unbounded. Schema is the canonical bound; context-side cap is
+   a convenience.
+
+5. **Runtime config read** (H16). The lone surviving CLAUDE.md
+   "boot-time only, runtime banned" violation in the codebase:
+   `PushVapidController.show/2` did `Application.fetch_env!/2`
+   per request. Mirror `Grappa.Uploads.boot/1`'s precedent — pin
+   in `:persistent_term` at boot, lock-free runtime reads.
+
+### Two MEDs in the same theme
+
+- **M16** — `ChannelsController.delete/2`'s
+  `remove_from_autojoin/3` logged a warning + returned 202 even
+  when removal failed. Next reconnect re-joined the channel the
+  user explicitly left, invisibly. M-9b silent-swallow pattern.
+  Now propagates via `with` → FallbackController.
+- **M17** — `ArchiveController.delete/2` strict-bound
+  `{:ok, _} = Scrollback.delete_for_*` so any context error
+  became `MatchError` → 500 bypassing `FallbackController`'s
+  typed envelope. Routed through `with` arm.
+
+### The H12 funnel pattern
+
+Single-source the cross-cutting concern at the terminal door,
+not at every spawn site that could trip it. Pre-REV-D: two call
+sites (`handle_info` EXIT + `do_start_client`) each said
+"I observe a failure → I tell Backoff." Post-REV-D: one call site
+(`terminate/2`'s abnormal-reason clause) says "I am the funnel
+through which every Session.Server abnormal exit passes — I am
+the place where Backoff gets the news." Reasoning surface
+contracts: instead of auditing every potential crash class to
+verify it bumps the counter, audit the terminate clauses and
+verify they cover everything. OTP's `terminate/2` contract
+guarantees the funnel for every non-`:brutal_kill`,
+non-BEAM-shutdown exit — which IS every failure class the backoff
+ladder cares about (`:brutal_kill` is an OS-level signal, not a
+network-instability symptom; if the bouncer is being SIGKILL'd
+the operator has bigger problems than backoff).
+
+The split that mattered: `terminate(:normal, ...)` (operator
+intent — no bump), `terminate(:shutdown | {:shutdown, _}, ...)`
+(supervisor-driven shutdown — no bump, graceful QUIT), catchall
+(every other reason — bump). The catchall is the funnel; the
+two earlier clauses are the "this is not a failure" exemptions.
+
+### The H13 split-changeset pattern
+
+`Visitor.touch_changeset/2` was overloaded for two different
+semantics that happened to share a column write:
+1. **Sliding extension** — `Visitors.touch/1`'s anonymous-visitor
+   TTL bump (forward in time, conceptually).
+2. **Forced expiry** — `Visitors.mark_failed/2`'s k-line response
+   (write NOW over a future `expires_at`, conceptually backward).
+
+The monotonicity guard correctly rejects backward bumps for case
+(1), but case (2) IS legitimately backward by design. Splitting
+into `touch_changeset/2` (guarded) + `expire_changeset/2`
+(unguarded) made the two semantics distinct doors. The guard is
+behavioral, not data-shape; the column write is identical. This
+is the "different verbs, same noun" pattern from CLAUDE.md.
+
+### Boot-time pinning convention
+
+H16 added the second `:persistent_term`-pinned boot-time read to
+the codebase (after `Grappa.Uploads.boot/1`). The pattern is now
+stable enough to call out:
+
+- `<Context>.boot/0` (or `/1` if it takes a path) reads
+  `Application.fetch_env!/2` once at `Application.start/2` time,
+  stashes the result via `:persistent_term.put(@key, value)`.
+- `<Context>.<accessor>/0` returns `:persistent_term.get(@key)`.
+  Raises if `boot/0` hasn't run (any caller reaching it pre-boot
+  is a bug).
+- `Application.start/2` calls each `boot/0` BEFORE the supervised
+  Endpoint comes up.
+
+The library may itself read from `Application.get_env/2` at
+delivery time (web_push_elixir's signing path does this); we
+can't influence the library, but OUR call sites observe the
+boot-time pin.
+
+### Deploy preflight FALSE-HOT trap
+
+`feedback_deploy_preflight_empty_diff_after_merge` reproduced for
+the **4th** time. Local `git merge --ff-only` had already
+advanced HEAD to the deploy target BEFORE `scripts/deploy.sh`'s
+`git pull --ff-only` ran → pull returned "Already up to date" →
+`prev_sha == HEAD` → preflight's "same SHA = nothing to deploy"
+shortcircuit returned HOT. The HOT reload silently no-op'd
+`Application.start`, leaving the new `Grappa.Push.boot/0`
+uncalled. Caught immediately by the H16 smoke; cleaned
+`_build/prod` + `--force-cold` recovered.
+
+Mitigation candidate (REV-J or REV-Z): preflight should compare
+against the LIVE container's deployed SHA, not local
+`prev_sha == HEAD`. The current logic is structurally fragile
+to the "local merge advances HEAD before deploy.sh's pull"
+race.
+
+### Carry-forwards
+
+- **Preflight empty-diff FALSE-HOT** — 4th repro. Mitigation in
+  REV-J or REV-Z.
+- **`_build/prod` cleanup procedure** — 4th repro. STILL
+  undocumented in operator runbook. REV-Z target.
+- MED-2 from REV-B (`validate_target_name/1` pre-canonical) still
+  open. REV-J or REV-Z.
+- REV-D reviewer LOW-1 (H14 narrow-window test name vs.
+  behavior). Two-line rescue, both branches return same typed
+  error. Documented; not fixed inline.
+
+### Lessons
+
+1. **Single funnels beat distributed checkpoints.** The H12 fix
+   collapsed two crash-bookkeeping call sites into one
+   `terminate/2` clause. The reasoning surface for "does every
+   failure class bump the backoff counter?" went from
+   "audit every potential crash site" to "audit the terminate
+   clauses." Fewer doors = fewer places to forget.
+2. **Sister functions are a red flag.** When two functions are
+   structurally identical but only one has a load-bearing guard,
+   the asymmetry is almost always a port-not-made (H13). Code
+   search by signature shape before signing off on a fix.
+3. **Spec-vs-impl drift is the silent killer.** H12's moduledoc
+   was wrong; nobody noticed for months because the doc was
+   right enough that nobody re-read it. Reviewer-loop's LOW-2
+   spec-tightening (post-H13) caught the same shape at smaller
+   scale — Dialyzer narrows the contract, future readers see
+   the real story.
+4. **Boot-time pinning is a stable pattern now.** Second instance
+   (`Grappa.Push.boot/0` after `Grappa.Uploads.boot/1`); the
+   pattern is documented above. Use it for any future
+   per-request env reads.
+5. **Preflight needs a live-state oracle.** The empty-diff
+   FALSE-HOT trap will keep biting until the preflight compares
+   against the deployed-container SHA instead of local
+   `prev_sha`. Mark for REV-J/Z mitigation.
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
