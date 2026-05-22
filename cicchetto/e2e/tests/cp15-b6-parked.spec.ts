@@ -1,11 +1,21 @@
-// CP19 T32 — parked-window cic derivation cascade.
+// CP19 T32 — parked-network cic derivation cascade.
 //
-// Closes the gap CP15 B6's brief promised but couldn't author: the
-// `cp15-b6-parked.spec.ts` shape was "mechanically authorable" only
-// after the design pass landed in
-// docs/plans/2026-05-09-t32-parked-window.md (Q1.B = derive from
-// `connection_state`, no per-window `:parked` event from
-// Session.Server.terminate/2).
+// UX-7-F (2026-05-22) — spec rewritten for the post-UX-4-D contract.
+// Pre-UX-4-D, `/disconnect` left selection on the parked channel and
+// the spec asserted ComposeBox cascaded `.compose-box-greyed`. Post-
+// UX-4-D (commit cdc5470), `cicchetto/src/lib/selection.ts:287-316`
+// auto-redirects selection to Home whenever a network transitions to
+// `:parked` or `:failed` — the user-intent encoded by every park
+// trigger (sidebar ×, compose `/disconnect`, sidebar circuit-breaker
+// park, `bin/grappa disconnect`) is "this network is done; surface
+// the parked summary on Home." The ComposeBox unmounts because Home
+// renders no compose; asserting `.compose-box-greyed` on a parked
+// channel is asserting buggy behavior (the redirect IS the contract).
+//
+// vjt 2026-05-22 chose "keep redirect, fix spec" over "skip redirect
+// for /disconnect" — the redirect is intentional UX and the spec is
+// what was wrong. This spec is the authoritative encoding of the
+// post-UX-4-D contract.
 //
 // Scenario:
 //   1. vjt logged in, autojoin lands → SEED_CHANNEL row appears as
@@ -15,20 +25,30 @@
 //      → terminate Session.Server + flip credential.connection_state
 //      to :parked + broadcast connection_state_changed on user-topic.
 //      Cic-side: userTopic.ts → refetchNetworks() → networkBySlug
-//      surfaces connection_state=parked + reason → Sidebar derivation
-//      cascades.
-//   3. Assert: network <section> gains .sidebar-network-greyed; channel
-//      row gains .sidebar-window-greyed; ComposeBox gains
-//      .compose-box-greyed; network header tooltip carries the reason.
-//   4. Operator types `/connect <network>`. Server-side: Networks.connect
-//      → eager SpawnOrchestrator → DB flip + broadcast. Cic-side:
-//      networkBySlug.connection_state=connected → network derivation
-//      drops; channel rows ungrey once autojoin lands.
-//   5. Assert: network ungreys immediately; channel row ungreys after
-//      autojoin (typed events flow through subscribe.ts as before).
+//      surfaces connection_state=parked → selection.ts:287-316 fires
+//      → selection jumps to Home.
+//   3. Assert: selection is Home, HomePane renders the parked network
+//      card (slug + nick + reason + Reconnect button). Sidebar still
+//      shows the network section with `.sidebar-network-greyed`
+//      (rows remain visible — operator can re-navigate to view
+//      scrollback; greyed-cascade visual is intact).
+//   4. Operator clicks `[Reconnect bahamut-test]` on the Home card
+//      (mirrors the same patchNetwork verb /connect would invoke).
+//      Server-side: Networks.connect → eager SpawnOrchestrator → DB
+//      flip + broadcast. Cic-side: networkBySlug.connection_state =
+//      connected → home card re-renders as connected.
+//   5. Assert: sidebar network section ungreys; SEED_CHANNEL row
+//      ungreys after autojoin (typed events flow through subscribe.ts
+//      as before).
+//
+// Why click Reconnect instead of typing `/connect`: from Home, there
+// IS no ComposeBox — the only way to issue `/connect` from the Home
+// pane is via the typed Reconnect chip. Mirrors what every operator
+// does in practice (they don't navigate back to the parked channel
+// to type `/connect`; they tap the Home card).
 //
 // CHANNEL CLEANUP: only touches the seeded autojoin channel — no
-// per-run setup needed. The `/connect` triggers a fresh
+// per-run setup needed. The Reconnect click triggers a fresh
 // SpawnOrchestrator → autojoin loop, which re-JOINs SEED_CHANNEL and
 // gets the row back to its baseline live state.
 
@@ -87,7 +107,7 @@ test.afterEach(async () => {
   }
 });
 
-test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autojoin restores channel", async ({
+test("CP19 T32 — /disconnect parks network + redirects to Home; Reconnect ungreys + autojoin restores channel", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -105,29 +125,42 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
     has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),
   });
   await expect(networkSection).not.toHaveClass(/sidebar-network-greyed/);
-  const composeBox = page.locator(".compose-box");
-  await expect(composeBox).not.toHaveClass(/compose-box-greyed/);
+  await expect(page.locator(".compose-box")).not.toHaveClass(/compose-box-greyed/);
 
   // Operator parks the network via /disconnect. compose.ts dispatches
   // patchNetwork → server-side disconnect/2 → user-topic broadcast →
-  // userTopic.ts refetchNetworks → networkBySlug surfaces parked.
-  await composeSend(page, `/disconnect ${NETWORK_SLUG} ${PARK_REASON}`);
+  // userTopic.ts refetchNetworks → networkBySlug surfaces parked →
+  // selection.ts:287-316 redirects to Home. ComposeBox unmounts mid-
+  // await, so composeSend uses `expectUnmount: true` to wait for the
+  // textarea-gone signal instead of textarea-empty (which would race
+  // the unmount). Draft IS cleared in the composeByChannel signal
+  // regardless — re-navigating to #bofh later shows an empty compose.
+  await composeSend(page, `/disconnect ${NETWORK_SLUG} ${PARK_REASON}`, { expectUnmount: true });
 
-  // Network header gains .sidebar-network-greyed. The cascading CSS
-  // rule (.sidebar-network-section.sidebar-network-greyed li
-  // .sidebar-window-btn) paints channel rows muted+italic via the
-  // network derivation overlay. windowStateByChannel may still hold
-  // stale :joined values; the network derivation wins per CLAUDE.md
-  // "derive don't duplicate". The class on the parent <section> is
-  // the load-bearing contract; vitest covers the per-row visual at
-  // the JSDOM level. e2e asserts only the class presence here so a
-  // CSS theme rewrite doesn't false-positive the cascade.
+  // Selection redirected to Home — HomePane renders the parked
+  // network card. `.home-pane-network-row-parked` is the load-bearing
+  // class (HomePane.tsx:110 — parked-specific styling hook). The card
+  // carries the slug + nick + reason text + a typed Reconnect chip.
+  const parkedCard = page.locator(".home-pane-network-row-parked", {
+    has: page.locator(".home-pane-network-slug", { hasText: NETWORK_SLUG }),
+  });
+  await expect(parkedCard).toHaveCount(1, { timeout: 10_000 });
+  await expect(parkedCard.locator(".home-pane-network-reason")).toHaveText(PARK_REASON);
+  // Reviewer LOW-1 (UX-7-F): chip is rendered in the same synchronous
+  // JSX block as the card so `toBeVisible()` is redundant with the
+  // card-found assertion above. `toBeEnabled()` also asserts the
+  // `pending()` disabled-state edge isn't surfaced (which would
+  // indicate a click was already in flight — wrong state for the spec).
+  const reconnectBtn = parkedCard.getByRole("button", { name: `Reconnect ${NETWORK_SLUG}` });
+  await expect(reconnectBtn).toBeEnabled();
+
+  // Sidebar network section gains .sidebar-network-greyed. The
+  // cascading CSS rule (.sidebar-network-section.sidebar-network-
+  // greyed li .sidebar-window-btn) paints channel rows muted+italic
+  // via the network derivation overlay. Operator can still see + re-
+  // navigate to scrollback for the parked channels; the greyed visual
+  // is the cue "this network is parked, no live messages."
   await expect(networkSection).toHaveClass(/sidebar-network-greyed/, { timeout: 10_000 });
-
-  // ComposeBox cascades greyed. The selected channel's compose
-  // shouldn't look ready-to-send when the network is parked.
-  await expect(composeBox).toHaveClass(/compose-box-greyed/, { timeout: 10_000 });
-  await expect(page.locator("p.compose-box-not-joined")).toBeVisible();
 
   // Tooltip on the network header carries the reason text. Implemented
   // as a `title=` attr (zero-bundle-cost; design pass deferred a
@@ -142,24 +175,30 @@ test("CP19 T32 — /disconnect cascades greyed; /connect ungreys network + autoj
   );
   await expect(networkHeader).toHaveAttribute("title", PARK_REASON, { timeout: 5_000 });
 
-  // Operator unparks via /connect. Eager SpawnOrchestrator → DB flip
-  // + broadcast → userTopic.ts refetchNetworks → networkBySlug
-  // surfaces :connected → network derivation drops immediately.
-  await composeSend(page, `/connect ${NETWORK_SLUG}`);
+  // Operator unparks via the Home card's Reconnect chip. Server-side:
+  // Networks.connect → eager SpawnOrchestrator → DB flip + broadcast.
+  // Cic-side: networkBySlug.connection_state = :connected → network
+  // derivation drops greyed cascade; the parked Home card re-renders
+  // as a connected row.
+  await reconnectBtn.click();
 
-  // Network section ungreys on the user-topic event (sub-second).
+  // Sidebar network section ungreys on the user-topic event (sub-
+  // second).
   await expect(networkSection).not.toHaveClass(/sidebar-network-greyed/, { timeout: 10_000 });
 
-  // Channel row ungreys post-autojoin: SpawnOrchestrator spawns a
-  // fresh Session.Server, the autojoin loop re-JOINs SEED_CHANNEL,
-  // and the typed window-state event flows through subscribe.ts as
-  // before. ComposeBox follows.
-  await expect(composeBox).not.toHaveClass(/compose-box-greyed/, { timeout: 15_000 });
-  await expect(page.locator("p.compose-box-not-joined")).toHaveCount(0);
+  // Parked card flips off the Home pane (the network re-renders as
+  // a connected `home-pane-network-row-connected` row, not parked).
+  await expect(parkedCard).toHaveCount(0, { timeout: 10_000 });
 
   // Tooltip is gone (or empty) once the network is connected — the
   // derivation only attaches a `title=` when the network is in a
   // greyed state; when connected, the helper returns undefined and
   // Solid removes the attribute.
   await expect(networkHeader).not.toHaveAttribute("title", PARK_REASON);
+
+  // Channel row ungreys post-autojoin: SpawnOrchestrator spawns a
+  // fresh Session.Server, the autojoin loop re-JOINs SEED_CHANNEL,
+  // and the typed window-state event flows through subscribe.ts as
+  // before.
+  await expect(channelRow.locator(".sidebar-window-greyed")).toHaveCount(0, { timeout: 15_000 });
 });

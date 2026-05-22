@@ -325,10 +325,34 @@ export function composeTextarea(page: Page) {
 // emits N keydown events which the Solid signal flushes between
 // every char. Both work; `fill` is faster and the spec doesn't care
 // about per-keystroke side-effects.
-export async function composeSend(page: Page, body: string): Promise<void> {
+export async function composeSend(
+  page: Page,
+  body: string,
+  opts: { expectUnmount?: boolean } = {},
+): Promise<void> {
   const ta = composeTextarea(page);
   await ta.fill(body);
   await ta.press("Enter");
+  if (opts.expectUnmount) {
+    // UX-7-F (2026-05-22) — caller knows the command triggers a
+    // selection redirect (e.g. /disconnect parks a network and
+    // selection.ts:287-316 jumps to Home, which renders no
+    // ComposeBox). The original draft IS cleared in the
+    // composeByChannel signal — but the textarea DOM element
+    // unmounts before the post-await clear arrives, so the
+    // textarea-empty wait races against the unmount and observes
+    // either a stale value or zero/two textareas during transition.
+    // Wait for unmount instead — it's the synchronous side-effect
+    // the caller actually cares about.
+    //
+    // Reviewer MED-1: precondition was implicit (ta.fill above would
+    // throw on missing element) but make it explicit so a future
+    // caller who passes `expectUnmount: true` without first focusing
+    // a textarea-bearing window gets a sharp signal instead of a
+    // silent fast-pass on `toHaveCount(0)`.
+    await expect(ta).toHaveCount(0, { timeout: 5_000 });
+    return;
+  }
   // Successful submit clears the draft → textarea empties. If the
   // submit fails (e.g. /msg with no network), the textarea retains
   // the body — wait would time out, surfacing the failure.
