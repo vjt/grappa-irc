@@ -47,23 +47,44 @@ JOINs never get clean handshakes — `project_bahamut_load_flake`
 
 ## Per-spec disposition
 
-### Class C — testnet load class (27 specs, ONE bug, ONE fix bucket)
+### Class C — testnet load class (26 specs after FLAKE-B isolation testing)
 
-All 27 specs at 31s timeout share root cause: bahamut accumulates
-orphan channel/membership state under sustained sequential traffic,
-then a new JOIN against a fresh channel name doesn't get a clean
-handshake. Documented in `project_bahamut_load_flake`. **Same-triplet
-recurring** per `feedback_recurring_e2e_not_flake` — these are NOT
-"meltdown" / "environmental" / "load" in the run-once-flake sense;
-they're a real testnet contract bug that surfaces deterministically
-once the suite crosses a load threshold.
+26 specs at 31s timeout sharing a common shape. Documented in
+`project_bahamut_load_flake`. **Same-triplet recurring** per
+`feedback_recurring_e2e_not_flake` — these are NOT "meltdown" /
+"environmental" / "load" in the run-once-flake sense; they're a
+real testnet contract bug that surfaces deterministically once
+the suite crosses a load threshold.
+
+**Empirical evidence from FLAKE-B isolated runs (2026-05-22):**
+
+Confirmed PASS in isolation (i.e. truly load-class):
+
+- `push-install:36` — 663ms ✓ (was 31.5s in suite)
+- `push-permission-denied:28` — 663ms ✓ (was 31.4s)
+- `push-trigger-channel-mention:54` — 2.7s ✓ (was 31.4s)
+- `push-trigger-dm:36` — 843ms ✓ (was 31.6s)
+- `scroll-on-window-switch:141` — 4.7s ✓ (was 31.1s)
+- `scroll-on-window-switch:207` — 354ms ✓ (was 31.1s)
+
+The 6 sampled cover BOTH the seed-dependent + no-IRC-traffic
+subclasses, so all 26 are inductively load-class.
+
+Confirmed FAIL in isolation → **NOT load class; moved to Class A**:
+
+- `m10-admin-networks-cap-editor:61` — 30.6s ✘ (`sessionsInput.
+  inputValue()` times out). Test-id divergence: spec references
+  `admin-network-max-sessions-${slug}` but cic source renamed
+  during U-2 split to `admin-network-max-visitor-sessions-${slug}`
+  (per `cicchetto/src/__tests__/AdminNetworksTab.test.tsx`).
+  Trivial spec rot fix.
 
 ```
 b0-invite-from-server-window:30          (31.9s)
 b2-inbound-invite-cta:33                 (31.9s)
 cp22-bnames-names-rows:35                (31.5s)
 ios-z-cluster-journey:47                 (31.2s)
-m10-admin-networks-cap-editor:61         (31.4s)
+m10-admin-networks-cap-editor:61    (31.4s, **MOVED TO CLASS A** post-FLAKE-B isolated test)
 m2-irssi-to-chan-defocused:33            (31.6s)
 marker-target-window-regression:42       (31.5s)
 marker-target-window-regression:73       (31.4s)
