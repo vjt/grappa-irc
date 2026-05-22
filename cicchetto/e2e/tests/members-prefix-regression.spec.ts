@@ -12,6 +12,30 @@
 // jsdom-based vitest is blind to this class of bug — `::before` content
 // is invisible to `textContent`, and jsdom doesn't compute layout. Only
 // a real-browser e2e (this spec) catches it.
+//
+// FLAKE-C bucket 2 (2026-05-22): post-FLAKE-B Part 2 triage. vjt
+// confirms members pane renders correctly in prod on both narrow and
+// wide screens — the spec was wrong. Two assumptions invalidated by
+// M-cluster seed expansion (admin-vjt + m9b-test both autojoin #bofh
+// now):
+//
+//   1. "vjt-grappa is the +o channel founder" — Bahamut grants @ to
+//      the first user to JOIN an empty channel. Bootstrap spawns all
+//      three sessions concurrently; m9b-grappa or admin-vjt can win
+//      the race instead of vjt-grappa. The spec asserted specifically
+//      on `@vjt-grappa` — now flaky.
+//   2. Implicit "vjt is the only user in #bofh" — the original peer-
+//      join check assumed a 1-user steady state (peer arrives → 2
+//      users, peer is the only plain row). Now there are 3 baseline
+//      users (vjt, admin-vjt, m9b) so the peer is the FOURTH; the
+//      plain-row count differs from the original baseline.
+//
+// Fix: stop pinning to a specific nick. The regression this spec
+// catches is RENDER SHAPE (prefix + nick text + non-clipped width),
+// which is per-tier, not per-nick. Assert on ANY .member-op row and
+// ANY .member-plain row that the prefix renders correctly + width
+// is sane. The peer-join arm still verifies the plain-tier render
+// path via the peer's own row.
 
 import { expect, test } from "@playwright/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
@@ -26,35 +50,42 @@ test("members pane renders @-prefix + full op nick (not clipped)", async ({ page
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  // vjt-grappa autojoined #bofh and is the founder, so it carries +o.
-  // The op-tier row's button text must read `@vjt-grappa` exactly.
-  const ownOpBtn = page.locator(`.members-pane .member-op .member-name`, {
-    hasText: NETWORK_NICK,
-  });
-  await expect(ownOpBtn).toBeVisible({ timeout: 5_000 });
-  await expect(ownOpBtn).toHaveText(`@${NETWORK_NICK}`);
+  // Wait for members pane to mount — gates on
+  // `isActiveChannelJoined() && selectedChannel()` in Shell.tsx, which
+  // depends on the per-channel topic's `push_window_state_if_known`
+  // firing `setJoined`. selectChannel's awaitWsReady only proves the
+  // scrollback-join-line rendered, NOT the windowState push.
+  await expect(page.locator(".members-pane")).toBeVisible({ timeout: 10_000 });
 
-  // Bounding-rect smoke: the button must be wide enough to fit the full
-  // nick (not just the `@` prefix). Pre-fix, the wrapped button got
-  // clipped by overflow:hidden — width collapsed to roughly the prefix
-  // glyph alone. A single `@` glyph in mono is < 12px; the full text
-  // `@vjt-grappa` in mono is comfortably > 50px. 30px catches the
-  // regression without flaking on font metrics.
-  const ownBox = await ownOpBtn.boundingBox();
-  expect(ownBox).not.toBeNull();
-  if (ownBox) {
-    expect(ownBox.width).toBeGreaterThan(30);
+  // Any op row — Bahamut grants @ to whichever autojoined user wins
+  // the race for an empty channel; with 3 seeded users (vjt-grappa,
+  // admin-vjt, m9b-grappa) autojoining #bofh, the winner is
+  // non-deterministic. The regression this guards is render shape
+  // per tier, NOT identity per row.
+  const opRow = page.locator(".members-pane .member-op .member-name").first();
+  await expect(opRow).toBeVisible({ timeout: 5_000 });
+  // The @-prefix must be the first character of the button's text.
+  const opText = await opRow.textContent();
+  expect(opText).not.toBeNull();
+  expect(opText?.startsWith("@")).toBe(true);
+  // Full text width — pre-fix the wrapped button collapsed to the
+  // prefix glyph alone (~12px). A normal op-row's text is comfortably
+  // > 30px.
+  const opBox = await opRow.boundingBox();
+  expect(opBox).not.toBeNull();
+  if (opBox) {
+    expect(opBox.width).toBeGreaterThan(30);
   }
 
-  // A plain (non-op) row exercises the leading-space prefix path. Have
-  // a peer join the channel — they enter as plain (no modes), and
-  // their button text must read ` <nick>` (single leading space) so
-  // columns align with op/voice siblings.
+  // Plain-tier row — have a peer join the channel. Peers arrive as
+  // plain (no modes), so their row carries the leading-space prefix
+  // path (` <nick>`) that mirrors the op/voice ` @nick` / ` +nick`
+  // column alignment.
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
   try {
     await peer.join(CHANNEL);
 
-    const plainBtn = page.locator(`.members-pane .member-plain .member-name`, {
+    const plainBtn = page.locator(".members-pane .member-plain .member-name", {
       hasText: PEER_NICK,
     });
     await expect(plainBtn).toBeVisible({ timeout: 5_000 });
