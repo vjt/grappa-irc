@@ -8,8 +8,8 @@ irssi. One supervised OTP process per `(user, network)`; sqlite-backed
 scrollback; Phase 6 adds a downstream IRCv3 listener facade.
 
 See `README.md` for the spec and `docs/DESIGN_NOTES.md` for the
-chronological decision log. The current Phase 1 implementation plan is
-`docs/plans/2026-04-25-walking-skeleton.md`.
+chronological decision log. Active implementation plans live under
+`docs/plans/`.
 
 ## Architecture
 
@@ -70,10 +70,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   push payloads MUST be JSON-encodable — convert structs to wire
   shape via a context-owned `*.Wire` module (`Grappa.Scrollback.Wire`,
   `Grappa.QueryWindows.Wire`). Raw `%Schema{}` structs over PubSub
-  crashed Phoenix's `fastlane!/1` at the WS edge during fan-out
-  (CP15 B6 finding); `Jason.Encoder` derive on schemas is NOT
-  enough because the schema's wire shape rarely matches the
-  storage shape. Wire conversion is per-context responsibility.
+  crash Phoenix's `fastlane!/1` at the WS edge during fan-out;
+  `Jason.Encoder` derive on schemas is NOT enough because the
+  schema's wire shape rarely matches the storage shape. Wire
+  conversion is per-context responsibility.
 - **Window state model lives on the server.** `Grappa.Session.Server`
   owns `window_states %{channel => :pending | :joined | :failed |
   :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
@@ -215,15 +215,14 @@ classifies the change:
     time so the doc + script + Dialyzer cannot drift.
     The marker-line regex catches added/removed declaration lines;
     field additions INSIDE an existing `@type t :: %{...}` block
-    are caught by the AST oracle at `scripts/_extract_state_block.awk`
-    (no-silent-drops B6.5 HIGH-27, root cause of the CP28 incident).
+    are caught by the AST oracle at `scripts/_extract_state_block.awk`.
   - `Dockerfile`, `compose.yaml`, `bin/start.sh` (image substrate)
-  - `priv/repo/migrations/*` (B6.5 HIGH-28 — hot path skips
-    `mix ecto.migrate`; new tables/columns 500 on first query post-
-    reload, BEAM crash-loops if Bootstrap reads them)
-  - `infra/nginx.conf` or `infra/snippets/*` (B6.5 HIGH-29 — hot
-    path doesn't reload nginx; CSP allowlist drift particularly
-    bad: new captcha provider won't take effect, cic widgets 404)
+  - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
+    new tables/columns 500 on first query post-reload, BEAM
+    crash-loops if Bootstrap reads them.
+  - `infra/nginx.conf` or `infra/snippets/*` — hot path doesn't
+    reload nginx; CSP allowlist drift particularly bad: new
+    captcha provider won't take effect, cic widgets 404.
 
 Conservative bias: in doubt, COLD. `Phoenix.CodeReloader` does NOT
 refuse unsafe diffs at runtime — it accepts the reload, returns
@@ -398,25 +397,22 @@ not the surrounding code.**
   `linkify` path; clicking opens the resource in a browser tab. Do
   not propose in-scrollback thumbnails / autoplay / preview cards /
   lightbox-on-arrival without an explicit cluster spec lifting this
-  rule. The image-upload cluster (2026-05-15) ships a 📸-prefixed
-  URL pattern that is text on the wire and a clickable link in
-  cic — that is the model.
+  rule. The image-upload pattern ships a 📸-prefixed URL that is
+  text on the wire and a clickable link in cic — that is the model.
 - **Bite-sized commits**: one logical change. Messages explain WHY.
 - **Log honesty**: when a fast path skips work, the log message must
-  describe the state it OBSERVED, not the absence of work. The pre-T-4
-  `bootstrap: no credentials bound — running web-only` lied when N
-  credentials existed but all were `:parked` (T32) or `:failed` (kline)
-  — `list_credentials_for_all_users/0` filters `:connected`-only, so an
-  all-parked DB returned `[]` to Bootstrap. Operator chased "DB is
-  empty" instead of "vjt disconnected this network." Post-T-4 the line
-  reads `0 credentials in :connected state (N parked, M failed) —
-  running web-only`. The general rule: fast paths state what they
-  observed, not what they did. If your fast path is "skip because input
-  was empty," check WHY it was empty before logging the skip — the
-  empty input is often a different bug surfacing at the wrong layer.
+  describe the state it OBSERVED, not the absence of work. Example:
+  `bootstrap: no credentials bound — running web-only` lies when N
+  credentials exist but all are `:parked` or `:failed`. The honest
+  line reads `0 credentials in :connected state (N parked, M failed)
+  — running web-only`. General rule: fast paths state what they
+  observed, not what they did. If your fast path is "skip because
+  input was empty," check WHY it was empty before logging the skip —
+  the empty input is often a different bug surfacing at the wrong
+  layer.
 - **DB state and live state are separate sources of truth.** Every
   admin resource listing MUST combine both, and `live_state: null` is
-  the U-0 honesty signal that something diverged — don't paper over
+  the honesty signal that something diverged — don't paper over
   with computed-from-DB fields.
   `Grappa.Networks.Credential.connection_state` is the DB-canonical
   state; `Grappa.Session.whereis/2` is the live-pid truth. They can
@@ -427,26 +423,19 @@ not the surrounding code.**
   `null` when the live pid is gone — diagnostic value beats false
   uniformity. When adding a new admin listing, return both
   projections; never compute one from the other to "tidy up" the
-  response shape (origin: M-9b 2026-05-16; the U-0 cluster-wide rule).
+  response shape.
 - **No silent-swallow at boundaries.** Two failure modes share one
   root: (a) a controller helper that wraps an ok-or-error
-  orchestrator and throws the error away while returning ok
-  (`NetworksController.spawn_session_after_connect/3` pre-U-0 —
+  orchestrator and throws the error away while returning ok (e.g.
   DB row at `:connected`, no live Session.Server, REST writes 404
   silently); (b) a wide `try`/`catch` exit-clause in a long-lived
   process (e.g. `Session.Server.terminate/2`) that absorbs an
   exception class which "shouldn't happen" and so hides the next
-  bug to fall into it (the IRC.Client dead-socket SEND
-  `FunctionClauseError`/`MatchError`, hidden for weeks until it
-  starved the test-supervisor's 15s registry-clear and tipped CI
-  red — commit `7bb3caa`). Both share the lesson: the operator
-  (or CI) MUST see the failure. Fix at the boundary that raised
-  (return `{:error, _}` from `IRC.Client.handle_call({:send, _}, _, _)`
-  on a closed socket; propagate spawn errors from controller
-  helpers via `with`/FallbackController); never widen the catch
-  to swallow more. Per `project_no_silent_drops_closed` /
-  `project_network_circuit_ets_leak`: a safety net that catches
-  an impossible exception silently absorbs the next class of bug.
+  bug to fall into it. Both share the lesson: the operator (or CI)
+  MUST see the failure. Fix at the boundary that raised (return
+  `{:error, _}` and propagate via `with`/FallbackController); never
+  widen the catch to swallow more. A safety net that catches an
+  impossible exception silently absorbs the next class of bug.
 
 ### OTP patterns (Elixir-specific)
 
@@ -484,10 +473,7 @@ not the surrounding code.**
 - **`Application.{put,get}_env/2`: boot-time only, runtime banned.**
   Allowed at boot-time configuration boundaries: `config/*.exs`,
   `lib/grappa/application.ex` start/2 (the documented exception), and
-  inside mix-task helpers BEFORE `Application.ensure_all_started/1`
-  (operator-task suppression of `Grappa.Bootstrap` is mirror-symmetric
-  with `config/test.exs`'s `:start_bootstrap, false` — pre-boot
-  configuration of the same exception point, not config-as-IPC).
+  inside mix-task helpers BEFORE `Application.ensure_all_started/1`.
   Banned at runtime — neither read nor written from any GenServer
   callback, controller, context function, plug body, or release task.
   Pass config via `start_link/1` opts; the supervisor reads env at
@@ -534,7 +520,7 @@ not the surrounding code.**
   nginx allowlist (`infra/nginx.conf` + e2e
   `cicchetto/e2e/nginx-test.conf`) must list the new resource — both
   the `:80` and `:443` server blocks — or the route 404s at the proxy
-  before reaching Phoenix (origin: M-9b 2026-05-16).
+  before reaching Phoenix.
 
 ### Charset / wire-format rule
 
