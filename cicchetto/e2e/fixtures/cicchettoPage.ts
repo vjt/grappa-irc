@@ -311,3 +311,26 @@ export async function composeSend(page: Page, body: string): Promise<void> {
   // the body — wait would time out, surfacing the failure.
   await expect(ta).toHaveValue("", { timeout: 5_000 });
 }
+
+// Mobile members-drawer close primitive.
+//
+// `.shell-drawer-backdrop` is `position: fixed; inset: 0` (full
+// viewport) but `.shell-members.open` renders on top of it at
+// `width: 80vw` anchored right (z-index 90 vs backdrop 89). The
+// default `tap()` / `click()` targets element center → viewport
+// center → covered by the drawer → `members-pane` intercepts pointer
+// events. Pin the click to the visible left strip (x:20 is well
+// inside the ~79px-wide strip on iPhone 15 393×659) so it lands on
+// the backdrop's `setMembersOpen(false)` onClick handler.
+//
+// Why `.click()` not `.tap()`: Playwright `tap()` issues
+// touchstart/touchend and relies on engine-side click synthesis,
+// which is timing-flaky on WebKit. `.click()` fires the synthetic
+// click directly via DevTools — same end-state effect, no synthesis
+// race. Verified across UX-6-A scroll spec + UX-4-Z journey spec.
+export async function closeMembersDrawer(page: Page): Promise<void> {
+  await page
+    .locator(".shell-drawer-backdrop.open")
+    .click({ position: { x: 20, y: 200 } });
+  await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+}

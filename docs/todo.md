@@ -10,18 +10,59 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**UX-7-A IN PROGRESS 2026-05-22** — baseline e2e fails investigation,
-spec 1 of 2: `ux-4-z-cluster-journey.spec.ts:141`. The backdrop tap
-following the Bucket A members-list verification fails on
-webkit-iphone-15 — `.shell-drawer-backdrop.open` is reported as
-intercepted by `members-pane` (subtree of `aside.shell-members.open`).
-Drawer doesn't close on backdrop tap. Confirmed reproduce on baseline
-`1e90554` during the UX-6-I.2 parity run. Investigation will:
-(a) confirm local repro on 2 consecutive runs; (b) inspect z-index +
-viewport coords + drawer width vs tap coord (Playwright `tap()`
-center-of-viewport-default behavior); (c) minimum-surface fix; (d) full
-gates + reviewer-loop. Next pickup will tackle spec 2 of 2:
-`ux-z-cluster-journey.spec.ts:86` (archive `#bofh` row never renders).
+**UX-7-A LANDED 2026-05-22.** First spec of the baseline-e2e-fails
+investigation cluster. Fixed `ux-4-z-cluster-journey.spec.ts:141`
+(was line 270): the drawer-backdrop close-tap was being intercepted by
+the `members-pane` subtree. Root cause was a spec bug from inception
+(commit `571dca3`, UX-4-Z cluster close), NOT a UX-6 regression.
+
+**Root cause:** `.shell-drawer-backdrop` is `position: fixed; inset: 0`
+(full viewport) but `.shell-members.open` renders on top at
+`width: 80vw` anchored right (z-index 90 vs 89). Playwright `tap()`
+defaults to element CENTER → backdrop center is viewport center →
+inside the drawer → `members-pane` intercepts. A real user taps the
+visible left ~79px strip; the spec used default-center.
+
+**Fix shape:** Extract shared `closeMembersDrawer(page)` helper to
+`cicchetto/e2e/fixtures/cicchettoPage.ts`. Pin click to
+`{x: 20, y: 200}` (well inside the left strip on iPhone 15 393×659).
+Use `.click()` not `.tap()` — `tap()` issues touchstart/touchend and
+relies on engine-side click synthesis, which is timing-flaky on WebKit
+(verified mid-bucket: `.tap({position})` landed the touch but the
+onClick handler did NOT fire). `.click()` fires the synthetic click
+directly via DevTools.
+
+**Migration:** Reviewer-loop caught duplicate pattern in
+`ux-6-a-mobile-members-scroll.spec.ts:107` with slightly different
+magic numbers (x:10 y:100 vs x:20 y:300). Per CLAUDE.md "Implement
+once, reuse everywhere": both sites migrated to the helper in this
+bucket. Helper owns the post-condition assertion
+(`.shell-members.open` toHaveCount 0) so callers can't forget it.
+
+**Reviewer-loop:** APPROVE post-helper-extraction. Both rounds green.
+Round 1 caught MED-1 (precedent exists + 2-site magic-number drift),
+round 2 APPROVE clean.
+
+**Gates:**
+- `scripts/check.sh` exit 0 (8 doctests + 32 properties + 2312 tests
+  + 0 failures + bats 23/23 + 0 Dialyzer/Credo/Sobelow + doctor green)
+- `scripts/bun.sh run check` exit 0 (21 baseline warnings, 0 new)
+- `scripts/bun.sh run test` exit 0 (89 files, 1560 vitest passed)
+- `scripts/integration.sh --grep "ux-6-a|UX-4-Z cluster"`: 6/6 ux-6-a
+  specs pass via helper; UX-4-Z passes line 270 (the bug we fixed),
+  now fails at line 399 (parked downstream as UX-7-B; out of scope)
+
+**Deploy:** NONE NEEDED (e2e-only change; no `cicchetto/src/` and no
+Elixir touched).
+
+**UX-7-B PENDING.** Second spec of the baseline-e2e-fails investigation
+cluster — `ux-z-cluster-journey.spec.ts:86` (archive modal `#bofh` row
+never renders, `toHaveCount(1)` got 0 after 5s). PLUS the freshly
+surfaced UX-4-Z line 399 / Bucket E downstream failure: post-PART
+selection-redirect check (`redirectedToHome > 0 || selectedTabText
+!== null && !selectedTabText.includes(CHANNEL)`) returns false. The
+selection state after `partChannel(vjt.token, NETWORK_SLUG, CHANNEL)`
+doesn't redirect away from `#bofh` reliably. Investigation TBD.
 
 **UX-6-I.2 LANDED 2026-05-22.** Real-bundle-swap e2e fixture for the
 cic refresh banner. Closes the M2 follow-up parked at UX-6-I close.

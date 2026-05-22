@@ -92,6 +92,7 @@
 
 import { expect, test } from "@playwright/test";
 import {
+  closeMembersDrawer,
   loginAs,
   selectChannel,
   sidebarWindow,
@@ -266,9 +267,11 @@ test("@webkit UX-4-Z cluster — case-fix + home + sidebar collapse + close-fall
       expect(order).toBe("op-first");
     }
     // Close the members drawer so subsequent arms (scroll, /join,
-    // /msg) interact with the compose surface uncovered.
-    await page.locator(".shell-drawer-backdrop.open").tap();
-    await expect(membersDrawer).not.toBeVisible({ timeout: 5_000 });
+    // /msg) interact with the compose surface uncovered. Uses the
+    // shared `closeMembersDrawer` helper (see cicchettoPage.ts) for
+    // the why behind `.click({position})` vs `.tap()` — same layout
+    // gotcha as UX-6-A's mobile members-scroll spec.
+    await closeMembersDrawer(page);
 
     // ─── Bucket C — sidebar header collapse + ShellChrome archive ─────
     // BottomBar renders ONE "Server" tab per network (no duplicate

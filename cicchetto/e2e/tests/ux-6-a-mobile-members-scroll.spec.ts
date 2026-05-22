@@ -39,7 +39,7 @@
 // subject-shape-agnostic CSS contract — registered vjt suffices.
 
 import { expect, test } from "@playwright/test";
-import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { closeMembersDrawer, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -97,15 +97,11 @@ test("@webkit ux-6-a — opening members drawer adds html.overlay-open; closing 
   await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
   await expect.poll(hasOverlayClass).toBe(true);
 
-  // Close drawer by tapping the backdrop on the LEFT half (drawer
-  // is right-aligned, max-width 18rem; pointer events on the right
-  // portion hit the aside / members-pane, which intercepts). The
-  // backdrop's onClick handler in Shell.tsx ~:390 dispatches
-  // setMembersOpen(false). Using { position } pins the tap to the
-  // viewport coordinate space directly so the click lands on the
-  // backdrop, not the drawer.
-  await page.locator(".shell-drawer-backdrop.open").click({ position: { x: 10, y: 100 } });
-  await expect(page.locator(".shell-members.open")).toHaveCount(0);
+  // Close drawer via shared `closeMembersDrawer` helper (see
+  // cicchettoPage.ts for the layout why-comment). Identical primitive
+  // chosen in UX-7-A's parity migration of this site + ux-4-z journey
+  // spec to one shared helper.
+  await closeMembersDrawer(page);
   await expect.poll(hasOverlayClass).toBe(false);
 });
 
