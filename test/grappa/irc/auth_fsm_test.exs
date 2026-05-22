@@ -285,6 +285,110 @@ defmodule Grappa.IRC.AuthFSMTest do
     end
   end
 
+  # H9 (REV-F): combined CAP REQ `:sasl labeled-response` NAK fallback.
+  # Bahamut + some Solanum variants advertise `labeled-response` in CAP LS
+  # but NAK the combined REQ blob; pre-fix that immediately declared
+  # `:sasl_unavailable` and a `:sasl`-required credential restart-looped
+  # permanently. The fallback REQ exercises `:sasl` alone before giving up.
+  describe "step/2 — H9 combined-REQ fallback on NAK (REV-F)" do
+    setup do
+      {state, _} = AuthFSM.initial_handshake(new!(%{auth_method: :sasl, password: "swordfish"}))
+      %{state: state}
+    end
+
+    test "CAP LS :sasl + labeled-response -> combined CAP REQ + phase :awaiting_cap_ack_combined",
+         %{state: state} do
+      msg = %Message{command: :cap, params: ["*", "LS", "sasl=PLAIN labeled-response"]}
+
+      assert {:cont, %AuthFSM{phase: :awaiting_cap_ack_combined, caps_buffer: []}, sends} =
+               AuthFSM.step(state, msg)
+
+      assert send_lines(sends) == ["CAP REQ :sasl labeled-response"]
+    end
+
+    test "combined CAP REQ NAK -> fallback CAP REQ :sasl + phase :awaiting_cap_ack_sasl_only (NO :stop)",
+         %{state: state} do
+      combined_state = %{state | phase: :awaiting_cap_ack_combined}
+      msg = %Message{command: :cap, params: ["*", "NAK", "sasl labeled-response"]}
+
+      assert {:cont, %AuthFSM{phase: :awaiting_cap_ack_sasl_only}, sends} =
+               AuthFSM.step(combined_state, msg)
+
+      assert send_lines(sends) == ["CAP REQ :sasl"]
+    end
+
+    test "fallback REQ ACK :sasl -> AUTHENTICATE PLAIN + phase :sasl_pending (SASL proceeds)",
+         %{state: state} do
+      fallback_state = %{state | phase: :awaiting_cap_ack_sasl_only}
+      msg = %Message{command: :cap, params: ["*", "ACK", "sasl"]}
+
+      assert {:cont, %AuthFSM{phase: :sasl_pending}, sends} =
+               AuthFSM.step(fallback_state, msg)
+
+      assert send_lines(sends) == ["AUTHENTICATE PLAIN"]
+    end
+
+    test "fallback REQ NAK -> :stop :sasl_unavailable + CAP END (genuine no-SASL)",
+         %{state: state} do
+      fallback_state = %{state | phase: :awaiting_cap_ack_sasl_only}
+      msg = %Message{command: :cap, params: ["*", "NAK", "sasl"]}
+
+      assert {:stop, :sasl_unavailable, %AuthFSM{phase: :pre_register, caps_buffer: []}, sends} =
+               AuthFSM.step(fallback_state, msg)
+
+      assert send_lines(sends) == ["CAP END"]
+    end
+
+    test ":auto auth: combined NAK ALSO triggers fallback (preserves SASL eligibility)" do
+      # Pre-H9, `:auto` combined-NAK fell through to cap_unavailable's
+      # non-`:sasl` clause (no :stop, PASS-handoff path) — losing SASL
+      # entirely even when the server supported it. Post-H9 the fallback
+      # exercises `:sasl` alone first; only the SECOND NAK falls back
+      # to the PASS-handoff path.
+      {state, _} = AuthFSM.initial_handshake(new!(%{auth_method: :auto, password: "swordfish"}))
+      combined_state = %{state | phase: :awaiting_cap_ack_combined}
+      msg = %Message{command: :cap, params: ["*", "NAK", "sasl labeled-response"]}
+
+      assert {:cont, %AuthFSM{phase: :awaiting_cap_ack_sasl_only}, sends} =
+               AuthFSM.step(combined_state, msg)
+
+      assert send_lines(sends) == ["CAP REQ :sasl"]
+    end
+
+    test ":auto auth: fallback REQ NAK -> :cont (PASS-handoff, NO :stop on :auto)" do
+      # Mirror of the unchanged-behavior invariant for `:auto`: when
+      # SASL is genuinely unavailable, `:auto` falls back cleanly
+      # (no stop) instead of crashing. The post-H9 path arrives here
+      # through `:awaiting_cap_ack_sasl_only -> cap_unavailable/1`,
+      # whose non-`:sasl` clause is the existing `:auto` fallback.
+      {state, _} = AuthFSM.initial_handshake(new!(%{auth_method: :auto, password: "swordfish"}))
+      fallback_state = %{state | phase: :awaiting_cap_ack_sasl_only}
+      msg = %Message{command: :cap, params: ["*", "NAK", "sasl"]}
+
+      assert {:cont, %AuthFSM{phase: :pre_register, caps_buffer: []}, sends} =
+               AuthFSM.step(fallback_state, msg)
+
+      assert send_lines(sends) == ["CAP END"]
+    end
+
+    test "non-combined SASL-only REQ NAK on :sasl auth UNCHANGED (no labeled-response → no fallback)",
+         %{state: state} do
+      # Invariant preservation: if `labeled-response` was NOT advertised
+      # in CAP LS, the REQ goes out as `:sasl` alone → phase
+      # `:awaiting_cap_ack` (not `:awaiting_cap_ack_combined`). NAK on
+      # this phase is still the immediate `:sasl_unavailable` declaration
+      # — there's nothing to fall back FROM. Re-asserts the existing
+      # behavior under H9 to pin the per-phase NAK dispatch.
+      ack_state = %{state | phase: :awaiting_cap_ack}
+      msg = %Message{command: :cap, params: ["*", "NAK", "sasl"]}
+
+      assert {:stop, :sasl_unavailable, %AuthFSM{phase: :pre_register, caps_buffer: []}, sends} =
+               AuthFSM.step(ack_state, msg)
+
+      assert send_lines(sends) == ["CAP END"]
+    end
+  end
+
   describe "step/2 — SASL chain" do
     setup do
       {state, _} = AuthFSM.initial_handshake(new!(%{auth_method: :sasl, password: "swordfish"}))

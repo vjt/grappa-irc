@@ -25,12 +25,29 @@ defmodule Grappa.IRC.AuthFSM do
 
   ## Phases
 
-      :pre_register      -- pre-handshake; nothing sent yet
-      :awaiting_cap_ls   -- CAP LS 302 sent; collecting LS replies
-                            (continuation lines accumulate `caps_buffer`)
-      :awaiting_cap_ack  -- CAP REQ :sasl sent; waiting on ACK or NAK
-      :sasl_pending      -- AUTHENTICATE PLAIN sent; waiting on SASL numeric
-      :registered        -- 001 received; CAP and `caps_buffer` cleared
+      :pre_register                  -- pre-handshake; nothing sent yet
+      :awaiting_cap_ls               -- CAP LS 302 sent; collecting LS replies
+                                        (continuation lines accumulate `caps_buffer`)
+      :awaiting_cap_ack              -- CAP REQ sent; waiting on ACK or NAK.
+                                        Either standalone `:sasl`, standalone
+                                        `:labeled-response`, OR — for the combined
+                                        request branch — sent via this phase when
+                                        only one cap is in flight.
+      :awaiting_cap_ack_combined     -- Combined CAP REQ `:sasl labeled-response`
+                                        sent; waiting on ACK or NAK. On NAK the
+                                        FSM falls back to a `:sasl`-alone REQ
+                                        (H9, REV-F) before declaring
+                                        `:sasl_unavailable`. On ACK, behaves
+                                        identically to `:awaiting_cap_ack`.
+      :awaiting_cap_ack_sasl_only    -- Fallback `:sasl` REQ in flight after a
+                                        combined-REQ NAK. ACK proceeds with the
+                                        AUTHENTICATE chain; NAK now genuinely
+                                        means the server doesn't support SASL
+                                        (combined-REQ NAK was the
+                                        `labeled-response` mis-impl signal,
+                                        not the SASL-unavailable signal).
+      :sasl_pending                  -- AUTHENTICATE PLAIN sent; waiting on SASL numeric
+      :registered                    -- 001 received; CAP and `caps_buffer` cleared
 
   ## Auth methods (mirror `Grappa.Networks.Credential`)
 
@@ -68,6 +85,8 @@ defmodule Grappa.IRC.AuthFSM do
           :pre_register
           | :awaiting_cap_ls
           | :awaiting_cap_ack
+          | :awaiting_cap_ack_combined
+          | :awaiting_cap_ack_sasl_only
           | :sasl_pending
           | :registered
 
@@ -272,7 +291,9 @@ defmodule Grappa.IRC.AuthFSM do
   # every phase below `:registered`, so a buggy / hostile / MitM
   # upstream could elicit a verbatim SASL credential reply BEFORE SASL
   # had been negotiated by sending `AUTHENTICATE +` while the FSM was
-  # in `:pre_register` / `:awaiting_cap_ls` / `:awaiting_cap_ack`. Under
+  # in `:pre_register` / `:awaiting_cap_ls` / `:awaiting_cap_ack` (or
+  # the H9 cap-ack phase variants `:awaiting_cap_ack_combined` /
+  # `:awaiting_cap_ack_sasl_only`). Under
   # Phase-1 `verify: :verify_none` the leak was network-exploitable.
   # The phase pin closes the leak; the catch-all clause below absorbs
   # stray pre-handshake `AUTHENTICATE` lines silently, mirroring the
@@ -374,7 +395,15 @@ defmodule Grappa.IRC.AuthFSM do
   # `IRC.Client`) to track which caps are active without coupling the FSM
   # to session state. The FSM only cares whether SASL was ACK'd to
   # drive the AUTHENTICATE flow.
-  defp handle_cap([_, "ACK", caps_blob | _], %{phase: :awaiting_cap_ack} = state) do
+  #
+  # H9 (REV-F): both `:awaiting_cap_ack` and `:awaiting_cap_ack_combined`
+  # (and the `:awaiting_cap_ack_sasl_only` fallback phase) reach this
+  # clause through the guard match — ACK semantics are identical across
+  # all three (drive AUTHENTICATE if SASL was ACK'd, otherwise close
+  # negotiation). The NAK clause splits per-phase below to drive the
+  # combined-REQ fallback.
+  defp handle_cap([_, "ACK", caps_blob | _], %{phase: phase} = state)
+       when phase in [:awaiting_cap_ack, :awaiting_cap_ack_combined, :awaiting_cap_ack_sasl_only] do
     acked = parse_cap_list(caps_blob)
 
     if "sasl" in acked do
@@ -387,8 +416,26 @@ defmodule Grappa.IRC.AuthFSM do
     end
   end
 
-  defp handle_cap([_, "NAK", _ | _], %{phase: :awaiting_cap_ack} = state),
-    do: cap_unavailable(state)
+  # H9 (REV-F): combined-REQ NAK falls back to `CAP REQ :sasl` alone.
+  # Bahamut + some Solanum variants advertise `labeled-response` in
+  # CAP LS but NAK the combined `CAP REQ :sasl labeled-response` blob,
+  # which pre-fix declared `:sasl_unavailable` immediately and
+  # restart-looped a `:sasl`-required credential permanently. The
+  # fallback REQ exercises whether SASL is genuinely unavailable
+  # (next NAK → `:sasl_unavailable`) or whether `labeled-response`
+  # was the sole offender (ACK → SASL chain proceeds).
+  #
+  # `:auto` auth method also benefits: combined NAK previously fell
+  # through to `cap_unavailable/1`'s non-`:sasl` clause (PASS-handoff
+  # path, no stop), losing SASL even when the server supports it.
+  # The fallback restores SASL eligibility for `:auto` too.
+  defp handle_cap([_, "NAK", _ | _], %{phase: :awaiting_cap_ack_combined} = state) do
+    {:cont, %{state | phase: :awaiting_cap_ack_sasl_only}, ["CAP REQ :sasl\r\n"]}
+  end
+
+  defp handle_cap([_, "NAK", _ | _], %{phase: phase} = state)
+       when phase in [:awaiting_cap_ack, :awaiting_cap_ack_sasl_only],
+       do: cap_unavailable(state)
 
   defp handle_cap(_, state), do: {:cont, state, []}
 
@@ -404,9 +451,15 @@ defmodule Grappa.IRC.AuthFSM do
   # correlation — not just SASL-related exchanges.
   #
   # Request shape:
-  #   - SASL + labeled-response both advertised → `CAP REQ :sasl labeled-response`
-  #   - Only labeled-response → `CAP REQ :labeled-response`
-  #   - Only SASL → `CAP REQ :sasl` (existing behaviour, unchanged)
+  #   - SASL + labeled-response both advertised → `CAP REQ :sasl labeled-response`,
+  #     phase `:awaiting_cap_ack_combined` (H9: on NAK, fall back to `:sasl` alone
+  #     before declaring `:sasl_unavailable` — Bahamut/Solanum variants mis-implement
+  #     `labeled-response` and NAK the combined blob, but ACK `:sasl` alone)
+  #   - Only labeled-response → `CAP REQ :labeled-response`, phase `:awaiting_cap_ack`
+  #     (NAK is non-fatal — `cap_unavailable/1` closes negotiation cleanly)
+  #   - Only SASL → `CAP REQ :sasl`, phase `:awaiting_cap_ack` (existing behaviour,
+  #     NAK declares `:sasl_unavailable` immediately — no labeled-response involved
+  #     so no fallback shape applies)
   #   - Neither → fall through to cap_unavailable (existing behaviour)
   defp finalize_cap_ls(caps, state) do
     sasl_wanted = "sasl" in caps and state.auth_method in [:auto, :sasl]
@@ -414,7 +467,7 @@ defmodule Grappa.IRC.AuthFSM do
 
     cond do
       sasl_wanted and labeled_response ->
-        {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :sasl labeled-response\r\n"]}
+        {:cont, leave_cap_negotiation(state, :awaiting_cap_ack_combined), ["CAP REQ :sasl labeled-response\r\n"]}
 
       sasl_wanted ->
         {:cont, leave_cap_negotiation(state, :awaiting_cap_ack), ["CAP REQ :sasl\r\n"]}
@@ -444,7 +497,13 @@ defmodule Grappa.IRC.AuthFSM do
   end
 
   defp maybe_send_cap_end(%{phase: phase} = state)
-       when phase in [:awaiting_cap_ls, :awaiting_cap_ack, :sasl_pending] do
+       when phase in [
+              :awaiting_cap_ls,
+              :awaiting_cap_ack,
+              :awaiting_cap_ack_combined,
+              :awaiting_cap_ack_sasl_only,
+              :sasl_pending
+            ] do
     {leave_cap_negotiation(state, :pre_register), ["CAP END\r\n"]}
   end
 
@@ -458,10 +517,15 @@ defmodule Grappa.IRC.AuthFSM do
   # to also-clear-the-buffer (today's S6 latency, Phase 5 reconnect's
   # bug). Routed by every transition out of `:awaiting_cap_ls`:
   #
-  #   * finalize_cap_ls       (LS         -> AWAIT_ACK)
+  #   * finalize_cap_ls       (LS         -> AWAIT_ACK | AWAIT_ACK_COMBINED)
   #   * step/2 (numeric 1, _) (LS         -> REGISTERED)
   #   * step/2 (numeric 903)  (SASL_PEND  -> PRE_REGISTER)
   #   * maybe_send_cap_end    (any        -> PRE_REGISTER)
+  #
+  # The `AWAIT_ACK_COMBINED -> AWAIT_ACK_SASL_ONLY` transition (H9
+  # combined-NAK fallback) does NOT route through here: the FSM is
+  # still mid-CAP and `caps_buffer` was already cleared at the LS
+  # boundary, so a direct `%{state | phase: ...}` is correct.
   defp leave_cap_negotiation(state, new_phase) do
     %{state | phase: new_phase, caps_buffer: []}
   end

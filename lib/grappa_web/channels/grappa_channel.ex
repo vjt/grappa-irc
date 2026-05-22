@@ -1288,12 +1288,40 @@ defmodule GrappaWeb.GrappaChannel do
          :ok <- thunk.(subject) do
       {:reply, :ok, socket}
     else
-      {:error, :invalid_channel} -> {:reply, {:error, %{reason: "invalid_channel"}}, socket}
-      {:error, :invalid_nick} -> {:reply, {:error, %{reason: "invalid_nick"}}, socket}
-      {:error, :invalid_mask} -> {:reply, {:error, %{reason: "invalid_mask"}}, socket}
-      {:error, :invalid_line} -> {:reply, {:error, %{reason: "invalid_line"}}, socket}
-      :error -> {:reply, {:error, %{reason: "user_not_found"}}, socket}
-      {:error, :no_session} -> {:reply, {:error, %{reason: "no_session"}}, socket}
+      {:error, :invalid_channel} ->
+        {:reply, {:error, %{reason: "invalid_channel"}}, socket}
+
+      {:error, :invalid_nick} ->
+        {:reply, {:error, %{reason: "invalid_nick"}}, socket}
+
+      {:error, :invalid_mask} ->
+        {:reply, {:error, %{reason: "invalid_mask"}}, socket}
+
+      {:error, :invalid_line} ->
+        {:reply, {:error, %{reason: "invalid_line"}}, socket}
+
+      :error ->
+        {:reply, {:error, %{reason: "user_not_found"}}, socket}
+
+      {:error, :no_session} ->
+        {:reply, {:error, %{reason: "no_session"}}, socket}
+
+      # REV-F (H10): mirror of REV-E HIGH-1 catch-all on dispatch_ops_verb/3.
+      # `Session.send_*` post-U-cluster CAN return `{:error, :no_socket
+      # | :closed | :inet.posix()}` once a dead-socket SEND fires (the
+      # `Session.send_transport_error/0` typedoc'd union). Pre-REV-F
+      # those would raise WithClauseError in the channel pid; this
+      # catch-all maps any uncategorised upstream-write failure to a
+      # single typed cic surface (the operator's /whois etc. gets a
+      # structured reply instead of the channel dying). Same crash-
+      # class defense the sister `dispatch_ops_verb/3` already carries;
+      # consistency drift was the root cause of REV-E HIGH-1.
+      {:error, reason} ->
+        Logger.warning("subject verb: upstream send failed",
+          reason: inspect(reason)
+        )
+
+        {:reply, {:error, %{reason: "upstream_unavailable"}}, socket}
     end
   end
 

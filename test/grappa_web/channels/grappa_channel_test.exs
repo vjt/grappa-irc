@@ -1155,6 +1155,40 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert_reply(ref, :ok)
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "NAMES #snap\r\n"), 1_000)
     end
+
+    test "whois (REV-F H10): dead Session.Server socket → typed upstream_unavailable reply, Channel survives",
+         %{socket: socket, network: network, user: user} do
+      # REV-F (H10): `dispatch_subject_verb/3` (sister of `dispatch_ops_verb/3`)
+      # was missing the catch-all `{:error, reason}` arm REV-E HIGH-1 added
+      # to its sibling. `Session.send_whois/3` (and other subject-verb
+      # facades — `send_who`, `send_names`, `send_banlist`) post-U-cluster
+      # CAN return `Session.send_transport_error/0` shapes (`:no_socket
+      # | :closed | :inet.posix()`) when the underlying client socket is
+      # dead. Pre-REV-F those crashed the Channel pid with
+      # `WithClauseError` — same crash class as REV-E HIGH-1 relocated
+      # to the sibling helper.
+      #
+      # Repro mirrors the REV-E HIGH-1 test exactly (line 959), only
+      # the verb differs (whois vs op) to exercise the subject-verb
+      # path instead of ops-verb.
+      session_pid = Grappa.Session.whereis({:user, user.id}, network.id)
+      assert is_pid(session_pid), "session must be live for this regression"
+
+      client_pid = :sys.get_state(session_pid).client
+      :sys.replace_state(client_pid, fn cs -> %{cs | socket: nil} end)
+
+      socket_channel_pid = socket.channel_pid
+
+      ref =
+        push(socket, "whois", %{
+          "network_id" => network.id,
+          "nick" => "alice"
+        })
+
+      assert_reply(ref, :error, %{reason: "upstream_unavailable"})
+      assert Process.alive?(socket_channel_pid), "Channel process must survive dead-socket /whois"
+      assert Process.alive?(session_pid), "Session.Server must survive dead-socket /whois"
+    end
   end
 
   # C3 (CRITICAL — 2026-05-12 codebase review): WHOIS is a read-only verb
