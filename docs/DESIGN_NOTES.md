@@ -8440,6 +8440,162 @@ docker-shape so will preflight COLD).
 
 ---
 
+## 2026-05-22 — REV-J: cross-cutting smells (M7-M15 + M18)
+
+Bucket 10 of 11 in the REV cluster. Lib + test only — server-side
+boundaries (lifecycle, persistence, cross-module, web). 9 MEDIUM
+closed. M1 + M5 deferred to REV-J.5 (root cause: the
+named-volume-init UID trap from `feedback_named_volume_uid_trap`
+bit on first attempt; needs Dockerfile chown of the cache dirs to
+1000:1000 before COPY layers, then re-attempt). M16 + M17 were
+already closed in REV-D; the REV-J brief incorrectly re-listed them.
+
+### Theme — "no convention-as-contract" applied across boundaries
+
+Three sub-themes share one rule: when an invariant only holds
+because the next call-site author remembers it, the rule lives at
+the wrong layer. REV-J moves five separate invariants from "comment
++ convention" to "structure":
+
+1. **M7 — exhaustive linked-process matching**
+   `Session.Server.handle_info({:EXIT, _, :shutdown|:normal})`
+   pre-fix caught any non-Client linked process's clean exit and
+   propagated as a Session stop. Unreachable in production today
+   (Client is the only `init/1`-linked spawn) — but the comment
+   was the only defense against a future handler `Process.link/1`'ing
+   a Task or sibling. Now raises so any escape from the design rule
+   surfaces at the supervisor immediately instead of masquerading
+   as planned park. Per CLAUDE.md "Crash boundary alignment."
+
+2. **M8 — drain-all loop over single-shot drain**
+   `cancel_and_drain/2`'s `receive ... after 0` single-shot drain
+   pre-fix only worked because every call site re-armed the timer
+   after canceling. Three slots (`:auto_away_debounce_fire`,
+   `:pending_auth_timeout`, `:ghost_timeout`) carried the invariant
+   by code-review discipline. New `drain_all/1` recursive shape:
+   constant overhead when queue empty, zero correctness obligation
+   on call sites.
+
+3. **M12 — drop wrapper arities that default load-bearing params**
+   `Scrollback.fetch/5` + `fetch_after/5` auto-passed `nil` for
+   `own_nick`. CP14-B3 own-nick-leak fix could silently re-emerge
+   through any future controller forgetting the threading. Per
+   CLAUDE.md "No default arguments via `\\`" extends naturally:
+   wrapper arities that default load-bearing parameters carry the
+   same hazard. Callers now state `nil` explicitly — the nil-ness
+   becomes a deliberate decision at the call site.
+
+4. **M11 — gate event emission on actual outcome, not boundary return**
+   `Operator.disconnect_session` user-branch pre-fix emitted
+   `:session_disconnected` whenever `disconnect_user_session`
+   returned `:ok`, including the already-`:parked|:failed` no-op
+   branch — the admin events ring buffer falsely claimed "the
+   operator disconnected this session" when nothing happened. Now
+   `disconnect_user_session/3` returns `{:ok, :transitioned | :noop}`
+   so the caller routes the emission. Symmetric with the visitor
+   branch's `Session.whereis/2` pre-check (which has had this
+   discipline since the operator-events cluster).
+
+5. **M13 — narrow changeset over raw write**
+   `Networks.transition!/3` pre-fix used `Ecto.Changeset.change/2`
+   which skipped every validation including the `safe_line_token`
+   guard on `:connection_state_reason`. Defense-in-depth today
+   (reasons come from controlled internal sources) but the bypass
+   meant a future schema validation would silently NOT fire. New
+   `Credential.connection_state_changeset/2` casts only the three
+   transition fields, applies `safe_line_token` to reason.
+   Consistent shape with `Accounts.User.admin_changeset/2`.
+
+### Theme — single-source-of-truth at the broadcast boundary
+
+**M15** folds the two-event pattern (`connection_state_changed` +
+co-emitted `home_network_state_changed`) into one event with a
+`:network` field carrying the same `home_network_row` shape
+HomePane consumed before. Pre-fix the two events on the same
+topic created a temporal window where the first arm reflected the
+new state and the second hadn't landed. One logical event, one
+wire payload, one broadcast.
+
+The fold required lockstep cic edits — `api.ts` `WireUserEvent`
+arm extended with `:network`; `userTopic.ts` narrowing arm
+extended; dispatcher arm folds `patchHomeNetwork` + `refetchNetworks`
+into the `connection_state_changed` handler. Documentation across
+`me_controller.ex` / `me_json.ex` / `wire.ex` updated in step.
+
+### Theme — typed errors at the controller boundary
+
+**M14** — `Session.call_session/3`'s implicit-5s timeout surfaced
+as Phoenix 500 with no typed envelope; the sibling `/4` already
+had `try/catch :exit, {:timeout, _} -> {:error, :timeout}`. /3
+now delegates to /4 with explicit 5_000ms default; FallbackController
+gains a `:timeout` arm → `:gateway_timeout` + `session_timeout` +
+`retry-after: 10`. Every REST IRC-verb path on one shape per
+CLAUDE.md "no silent-swallow at boundaries" + "fix at the
+boundary that raised."
+
+### Theme — spec compliance at the wire boundary
+
+**M18** — `UploadsController.disposition_header/1` pre-fix used
+`URI.encode_www_form/1` which is form-URL-encoded (space → `+`).
+RFC 5987 `ext-value` inside `filename*=UTF-8''...` requires
+percent-encoded UTF-8 per RFC 3986 — space MUST be `%20`. Now
+`URI.encode/2` with the unreserved-char predicate. Single LOC fix;
+spec-compliance regression that browsers exposed differently per
+implementation strictness.
+
+### Theme — synchronous variants at the public-API boundary
+
+**M9 + M10** both retire `:sys` / cadence-drift behavior with
+explicit public-API verbs:
+
+- `Visitors.Reaper` schedules `:tick` BEFORE running `sweep/0` so
+  cadence is interval-fixed under sweep load (the prior shape
+  drifted as "interval + sweep_duration").
+- `NetworkCircuit.reset_sync/1` is a new synchronous-call sibling
+  of the existing `reset/1` cast. `Operator.reset_circuit/2`
+  drops its `:sys.get_state/1` drain in favor of the public verb.
+  A future Registry / `:persistent_term` / different-process
+  refactor of NetworkCircuit no longer silently breaks Operator's
+  post-reset snapshot.
+
+### Deploy
+
+Lib-only (no compose / mix.lock / migration / state-shape /
+supervision-tree changes), so preflight HOT-classified correctly.
+`scripts/deploy.sh` → `==> deploy mode: hot` → modules reloaded in
+the live BEAM, sessions preserved, container ID unchanged.
+Healthcheck `ok`. Push `57f7cca..e0b8b27`. Bucket-9-style
+post-merge-preflight discipline (manual `Grappa.Deploy.Preflight.cli`
+with explicit prev-SHA) followed; trap did not bite this time
+because lib-only edits classify HOT regardless.
+
+### Why M1+M5 deferred
+
+The compose-anonymous-volumes refactor (overlay `_build`/`deps`/
+`.mix`/`.hex`/`.cache`/`.local` so the image-baked compile cache
+survives the bind-mount + collapse `WORKTREE_VOLUMES` 10-mount
+include list to single `$SRC_ROOT:/app`) is mechanically right but
+hit the named-volume root-init trap on first attempt: anonymous
+volumes seed from the image as root-owned, container drops to UID
+1000, `mkdir -p _build/test/lib/<dep>` denies on first compile.
+`feedback_named_volume_uid_trap` is precisely this hazard.
+`compose.yaml`'s pre-REV-J comment block explicitly documents why
+the prior named-volume approach was abandoned in favor of bind
+mounts — the bind mount sidesteps the UID problem by inheriting
+host ownership.
+
+Path to fix: Dockerfile chown of `/app/_build` `/app/deps`
+`/app/.mix` `/app/.hex` `/app/.cache` `/app/.local` to 1000:1000
+BEFORE the COPY layers, so the image already has UID-1000-owned
+empty cache dirs that the anonymous-volume init step copies
+verbatim. Then re-attempt M1+M5 as REV-J.5 (or fold into REV-K if
+the latter has compose-shape changes already). Brief's documented
+escape hatch: "ship (1)+(2) as REV-J + (3) as REV-J.5 if reviewer
+flags the bundle as too large."
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.

@@ -10,70 +10,82 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 9 of 11 closed (REV-I LANDED 2026-05-22,
-`1539292`).** Full close-out in `docs/checkpoints/2026-05-22-cp41.md` (S1).
-Closes 2 HIGH + 2 MEDIUM from the 2026-05-22 codebase review:
+**REV cluster autopilot — bucket 10 of 11 closed (REV-J LANDED 2026-05-22,
+`e0b8b27`).** Full close-out in `docs/checkpoints/2026-05-22-cp41.md` (S2).
+Closes 9 MEDIUM from the 2026-05-22 codebase review — cross-cutting
+smells spanning lifecycle (M7-M11), persistence (M12-M13), cross-module
+(M14-M15), web boundary (M18). 22 lib + test files; HOT-deployed.
 
-- **H19 (docker S2)** — nginx admin allowlist snippet extraction.
-  Pre-H19 the location-block surface (admin allowlist regex + REST
-  allowlist + /socket WS proxy + /sw.js cache override + security
-  headers + SPA fallback) lived in three places (`infra/nginx.conf`,
-  `cicchetto/e2e/nginx-test.conf` :80 and :443). New
-  `infra/snippets/locations-api.conf` is the single source —
-  `include`d from each server block. Adding a new admin resource is
-  now ONE-FILE edit. Snippet dir already mounted in both nginx
-  containers via `compose.yaml:163` + `cicchetto/e2e/compose.yaml:299`.
-- **H27 (docker S7)** — `_lib.sh in_container` replaces bare
-  `docker exec grappa …` in `scripts/deploy.sh:144` (admin/reload
-  POST) + `scripts/deploy-cic.sh:48` (admin/cic-bundle-changed POST).
-  Robust to compose overrides + multi-host.
-- **M3 (docker S10)** — `bin/grappa` VERBS table single-source-of-
-  truth refactor. Single `declare -Ag VERBS` map +
-  `dispatch_boot`/`dispatch_rpc` generic handlers + `declare -F`
-  prefer-bespoke probe in `dispatch()`. Future arg-taking RPC verb:
-  ONE VERBS entry + ONE `verb_<snake>()` function (no dispatch-table
-  edit). Bats: 24/24 (was 23/23; +1 regression test). Net +60 LOC
-  (structural DRY, not size-reducing).
-- **M6 (docker S13)** — `bin/start.sh` `+SDio` floor at BEAM's 10-IO
-  default. `nproc=1 → default_schedulers=10`; `nproc=20 →
-  default_schedulers=20`. Prevents single-core sqlite WAL pool
-  starvation.
+**M-cluster MEDs closed in REV-J:**
+- **M7 (lifecycle S6)** — `Session.Server` `{:EXIT, _, :shutdown|:normal}`
+  catch-all raises on non-Client linked process. Pre-fix the comment was
+  the only defense against a future `Process.link/1` site silently
+  taking the Session down on its planned exit.
+- **M8 (lifecycle S7)** — `cancel_and_drain/2` recursive `drain_all/1`
+  shape. Invariant moved from call-site convention to structure.
+- **M9 (lifecycle S8)** — `Visitors.Reaper` schedules `:tick` BEFORE
+  sweep so cadence is interval-fixed under sweep load.
+- **M10 (lifecycle S5)** — `NetworkCircuit.reset_sync/1` public synchronous
+  verb replaces `Operator`'s `:sys.get_state/1` drain.
+- **M11 (lifecycle S10)** — `Operator.disconnect_session` user-branch
+  gates `:session_disconnected` on `{:ok, :transitioned}` outcome. No
+  more fabricated "operator disconnected" rows on no-op runs.
+- **M12 (persistence S10)** — `Scrollback.fetch/5` + `fetch_after/5`
+  wrappers retired. Callers thread `nil` for `own_nick` explicitly.
+- **M13 (persistence S11)** — `Networks.transition!/3` routes through
+  narrow `Credential.connection_state_changeset/2` with `safe_line_token`
+  guard on reason.
+- **M14 (cross-module S5)** — `Session.call_session/3` delegates to /4
+  with explicit 5_000ms default + typed `:timeout` error. FallbackController
+  gets `:gateway_timeout` arm.
+- **M15 (cross-module S7)** — `Networks.broadcast_state_change/4` folds
+  `home_network_state_changed` into `connection_state_changed`'s new
+  `:network` field. Lockstep cic edits in `api.ts`, `userTopic.ts`,
+  `HomePane.tsx`.
+- **M18 (web S6)** — `UploadsController.disposition_header/1` uses
+  `URI.encode/2` with RFC 3986 unreserved-char predicate (RFC 5987
+  compliance).
 
-M-cluster triage: **M2 SUBSUMED** by H19 (same fix —
-nginx-test :80/:443 dup also collapsed via the snippet hoist).
-**M1+M5 deferred to REV-J** (coupled to compose-anonymous-volumes
-refactor that also drops the 180s start_period band-aid + the
-`WORKTREE_VOLUMES` explicit include-list). **M4 deferred to REV-Z**
-polish (cosmetic `!override` vs `!reset` consistency).
+**M16 + M17** were already closed in REV-D (`fc5d221`); the REV-J brief
+incorrectly re-listed them. No-op in REV-J.
 
-Deployed 2026-05-22 via `scripts/deploy.sh --force-cold` (operator
-forgot the post-merge preflight trap — `feedback_deploy_preflight_empty_diff_after_merge`
-bit AGAIN; auto-recovered with explicit `--force-cold`; lesson in
-CP41 S1 + DESIGN_NOTES). Container rebuild + recreate. Sessions
-reset. Healthcheck `ok`. Container IDs new. cic bundle `DpQoKo_g`
-(REV-H — unchanged; REV-I touched NO cic code).
+**M1 + M5 DEFERRED to REV-J.5.** First-attempt anonymous-volumes
+refactor hit the named-volume root-init UID trap from
+`feedback_named_volume_uid_trap`. Path forward: Dockerfile chown of
+`/app/_build` / `/app/deps` / `/app/.mix` / `/app/.hex` / `/app/.cache`
+/ `/app/.local` to 1000:1000 BEFORE the COPY layers, then re-attempt
+M1+M5 as REV-J.5 or fold into a later bucket if scope allows. Brief's
+documented escape hatch: "ship (1)+(2) as REV-J + (3) as REV-J.5 if
+reviewer flags the bundle as too large." Reviewer didn't flag bundle
+size; the deferral is driven by the UID trap, not bundle scope.
 
-Reviewer round-1 APPROVE + 2 MED. MED-1 (`delete-visitor` hardcode
-in dispatch reintroduces enumeration trap) fixed inline with
-prefer-bespoke `declare -F` rule + regression test. MED-2 (Bash 4
-associative-array iteration order limitation) acknowledged with
-inline comment, shipped as-is. Reviewer also caught the brief's LOC
-overstatement (claimed −95; actual +60). Round-2 APPROVE clean.
+Deployed 2026-05-22 via `scripts/deploy.sh` HOT (preflight returned
+"no unsafe markers → HOT" for lib-only changes). Sessions preserved.
+Healthcheck `ok`. Container ID unchanged. cic bundle `DpQoKo_g`
+unchanged (cic touched but only narrowing types + dispatcher; no
+bundle hash bump warranted since the structural change is in
+lockstep with server emit, no production cic flow break).
 
-**REV-J staged.** Cross-cutting smells — cross-module (M14
-`call_session/3` consolidation, M15 double-broadcast fold),
-lifecycle (M7-M11 EXIT catch-all + cancel_and_drain loop + Reaper-
-tick monotonic-clock + NetworkCircuit.reset_sync + session_disconnected
-gating), persistence (M12 scrollback fetch arity discipline, M13
-transition!/3 changeset routing). **Plus deferred M1+M5** — compose
-anonymous-volumes for `_build`/`deps`/cache + drop `start_period:
-180s` band-aid + drop `WORKTREE_VOLUMES` explicit include-list.
-Server-side; preflight-detect (likely HOT for the lib changes,
-COLD for the compose changes — probably bundles as COLD).
+Reviewer round-1 APPROVE — clean. Standalone re-run of `scripts/check.sh`
++ `scripts/dialyzer.sh` confirmed; literal gate-tail paste matched
+commit-message claim per `feedback_reviewer_gate_evidence`.
 
-**REV cluster — remaining buckets after REV-I:**
-- REV-J — cross-cutting smells + M1+M5 — server+infra, COLD (likely)
-- REV-K — cross-surface naming pay-down (M19, M20) — both, COLD
+**REV-K staged.** Cross-surface naming pay-down (M19 + M20):
+- **M19** — `mentions_bundle.messages[*]` uses `sender_nick:` while
+  sibling `ScrollbackMessage` uses `sender:`. Server moduledoc flagged
+  this as deferred drift; pay it now per "Total consistency or
+  nothing." Rename `sender_nick` → `sender` everywhere; one-touch
+  breaking change.
+- **M20** — REST error envelope uses `error:` key; WS Channel uses
+  `reason:` key for the same conceptual error. Unify on `error:` in
+  both surfaces.
+
+Both surfaces (server + cic); COLD likely (wire shape changes). Could
+also bundle **REV-J.5** (compose anonymous-volumes + Dockerfile UID
+prep) if scope tolerates; reviewer decides.
+
+**REV cluster — remaining buckets after REV-J:**
+- REV-K — cross-surface naming pay-down (M19, M20) + possibly REV-J.5 — both, COLD
 - REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only
 
 Per `project_post_tmu_full_review_scheduled` (vjt 2026-05-16 night
@@ -90,6 +102,22 @@ bastille validation; codegen-second because the cic↔server wire boundary
 is the highest-risk drift surface the review identified. Bastille is
 prod-runtime migration; cleaner on a green-suite + structurally-typed-
 boundary substrate.
+
+---
+
+## Carry-forwards from REV-J
+
+- **REV-J.5 (M1+M5)** open — needs Dockerfile UID prep before the
+  anonymous-volumes refactor can land. Slot as own bucket or fold
+  into REV-K if scope allows.
+- **HOT-deploy validated for lib-only MED sweeps** — REV-J adds to the
+  REV-D / REV-E / REV-G / REV-H precedent.
+- **Reviewer gate-evidence discipline holding** — round-1 reviewer
+  re-ran `check.sh` + `dialyzer.sh` standalone, pasted tail, matched
+  commit-message claim. No drift detected.
+- **`feedback_no_silent_drops_closed` extended** by the M7 raise +
+  M11 transition-gated emission + M14 typed-error arm. Three more
+  boundaries upgraded from convention-as-contract to structure.
 
 ---
 
