@@ -384,6 +384,39 @@ defmodule GrappaWeb.ChannelsControllerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # M16 regression (REV-D 2026-05-22): pre-fix the controller logged a
+    # warning + returned 202 even when `remove_autojoin_channel` failed.
+    # Next reconnect re-joined the channel the user explicitly left,
+    # invisibly. The fix propagates `{:error, _}` through `with` so
+    # FallbackController surfaces 404 for `:not_found`. Synthesize the
+    # error path by deleting the credential row between the PART send
+    # (which succeeds against the live session) and the autojoin update
+    # (which now misses the row). Lookup-then-update gap is the natural
+    # race window where the M16 propagation matters most.
+    test "autojoin removal failure propagates as 404 instead of silently 202 (M16)",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      {network, _} = network_with_server(port: port, slug: "az-m16-#{u()}")
+      _ = credential_fixture(vjt, network, %{autojoin_channels: ["#grappa"]})
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # Race-synthesis: delete the credential row out from under the
+      # request after the session is up. The controller's
+      # `Session.send_part` routes via subject + network_id (live state,
+      # not credential-table lookup), so the PART still goes out; then
+      # `remove_autojoin_channel` returns `{:error, :not_found}`. Pre-M16
+      # this was a silent 202 + log line. Post-M16 the 404 surface
+      # tells cic the persistence side of "leave channel" failed.
+      _ = Grappa.Repo.delete_all(Grappa.Networks.Credential)
+
+      conn = delete(conn, "/networks/#{network.slug}/channels/%23grappa")
+
+      assert json_response(conn, 404)["error"] == "not_found"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     # UX-4 bucket H — PART-fail still closes window. The cast handler
     # eagerly cleans up local state (members + topics + channel_modes +
     # channels_created + userhost_cache + window_state) regardless of

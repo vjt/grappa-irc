@@ -141,6 +141,46 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     end
   end
 
+  describe "Credential.changeset/2 schema-level cap (H15, REV-D)" do
+    # H15: defensive schema-level cap. The context helper
+    # `update_last_joined_channels/3` truncates before building the
+    # changeset, but any bypassing writer (future REST surface,
+    # operator mix task, test helper) MUST also observe the bound.
+    # `validate_length(:last_joined_channels, max: 200)` is the
+    # belt-and-braces guard.
+    test "rejects oversize list at the changeset boundary (bypassing the context helper)" do
+      {_, _, cred} = setup_credential()
+
+      oversize =
+        for n <- 1..250, do: "#chan-" <> String.pad_leading(Integer.to_string(n), 3, "0")
+
+      cs = Credential.changeset(cred, %{last_joined_channels: oversize})
+
+      refute cs.valid?
+
+      errors =
+        Ecto.Changeset.traverse_errors(cs, fn {msg, opts} ->
+          Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
+            opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+          end)
+        end)
+
+      assert List.first(errors[:last_joined_channels]) =~ "should have at most"
+    end
+
+    test "accepts exactly the cap length at the changeset boundary (boundary)" do
+      {_, _, cred} = setup_credential()
+      exactly = for n <- 1..Credential.last_joined_channels_max(), do: "##{n}"
+
+      cs = Credential.changeset(cred, %{last_joined_channels: exactly})
+      assert cs.valid?
+    end
+
+    test "last_joined_channels_max/0 exposes the schema-level constant" do
+      assert Credential.last_joined_channels_max() == 200
+    end
+  end
+
   describe "SessionPlan.build_plan boot-merge — autojoin + last_joined" do
     test "merges autojoin_channels + last_joined_channels at session_plan build" do
       {_, _, cred} =

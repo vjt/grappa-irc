@@ -109,12 +109,48 @@ defmodule Grappa.Visitors.Visitor do
   @doc """
   Slides `expires_at` forward on user-initiated REST/WS verbs. Caller
   enforces the ≥1h cadence (no-op if last touch <1h) — see
-  `Grappa.Visitors.touch/1`. Pure schema-level concern: just bumps the
-  column.
+  `Grappa.Visitors.touch/1`.
+
+  Time-monotonicity guard (H13, REV-D 2026-05-22): mirrors
+  `Accounts.Session.touch_changeset/2` (B5.4 L-pers-3). Strictly-
+  backward bumps (new < prev) are REJECTED — a system-clock skew
+  (NTP step, container reboot, test fixture seeding from a fixed
+  past) would otherwise silently shrink a visitor's TTL, causing
+  the Reaper to delete a still-active row.
+
+  Equal-to-prev is admitted (degenerate-but-not-skewed — a tight
+  touch loop under high load can reasonably observe `now == prev`
+  at usec resolution). Rows with `expires_at = nil` (V7 NickServ-
+  identified visitors) are not callable here because
+  `Visitors.touch/1` short-circuits the nil branch before reaching
+  this changeset.
+
+  Forced-expiry paths (`Visitors.mark_failed/2`) move the column
+  backward by design and use `expire_changeset/2` instead — the
+  guard would otherwise reject the legitimate "expire now" semantic.
   """
   @spec touch_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
-  def touch_changeset(%__MODULE__{} = visitor, new_expires_at) do
-    change(visitor, %{expires_at: new_expires_at})
+  def touch_changeset(%__MODULE__{expires_at: prev} = visitor, %DateTime{} = new_expires_at) do
+    cs = change(visitor, %{expires_at: new_expires_at})
+
+    case DateTime.compare(new_expires_at, prev) do
+      :lt -> add_error(cs, :expires_at, "must not move backward (system-clock skew?)")
+      _ -> cs
+    end
+  end
+
+  @doc """
+  Forces `expires_at` to the supplied instant unconditionally — used by
+  `Visitors.mark_failed/2` to expire a row immediately after upstream
+  permanently rejected the visitor (k-line / terminal SASL failure).
+  Distinct from `touch_changeset/2`: this changeset BYPASSES the
+  monotonicity guard because the semantic is "expire NOW" (move time
+  backward relative to the row's prior future-`expires_at`), which
+  the guard would otherwise reject as backward-clock skew.
+  """
+  @spec expire_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
+  def expire_changeset(%__MODULE__{} = visitor, %DateTime{} = at) do
+    change(visitor, %{expires_at: at})
   end
 
   @doc """

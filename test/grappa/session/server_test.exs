@@ -344,7 +344,43 @@ defmodule Grappa.Session.ServerTest do
       assert Backoff.failure_count({:user, user.id}, network.id) == 1
     end
 
-    # Bucket H — lifecycle/S3: clean Client exit must NOT trigger
+    # H12 regression (REV-D 2026-05-22): non-Client-EXIT crashes — server-
+    # internal callback raise, mailbox-overflow exit, etc. — must ALSO
+    # advance Backoff bookkeeping. Pre-fix `record_failure` was called from
+    # the linked-Client EXIT clause + `do_start_client/2` only; any other
+    # crash class bypassed the bump and the `:transient` respawn fired with
+    # no delay. The fix funnels the call into `terminate/2`'s abnormal-
+    # reason clause so every crash path bumps once. Synthesize via an
+    # unhandled message: handle_info has no catchall, so the server raises
+    # FunctionClauseError → GenServer treats the callback raise as an
+    # abnormal exit → terminate/2 fires with non-`:normal`/`:shutdown`
+    # reason → Backoff.record_failure runs.
+    test "non-Client-EXIT crash (callback raise) DOES record a Backoff failure (H12)" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Backoff.reset({:user, user.id}, network.id)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+
+      # Suppress the expected GenServer crash report from polluting test
+      # output. The server WILL raise — that's the point of the test.
+      ExUnit.CaptureLog.capture_log(fn ->
+        send(pid, {:rev_d_h12_synthetic_unhandled, :rev_d_h12})
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_500
+      end)
+
+      :ok = Backoff.reset({:user, Ecto.UUID.generate()}, -1)
+
+      assert Backoff.failure_count({:user, user.id}, network.id) == 1,
+             "Server-internal crash (non-Client-EXIT) must funnel through " <>
+               "terminate/2's abnormal clause and bump Backoff — pre-H12 " <>
+               "the bump was skipped, tight crash loop possible."
+    end
+
     # `:transient` supervisor auto-restart of the Session.
     #
     # Pre-fix the Session returned `{:stop, {:client_exit, :normal}, _}`

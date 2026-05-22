@@ -9,6 +9,7 @@ defmodule Grappa.Application do
       Grappa.Bootstrap,
       Grappa.Health,
       Grappa.PubSub,
+      Grappa.Push,
       Grappa.Repo,
       Grappa.Session,
       Grappa.Uploads,
@@ -35,6 +36,16 @@ defmodule Grappa.Application do
     # runtime. Boot-time read of `Application.get_env/2` is the
     # CLAUDE.md-designated boundary (mirrors Admission.Config.boot/0).
     :ok = Grappa.Uploads.boot(uploads_storage_root())
+
+    # H16 (REV-D 2026-05-22): pin the VAPID public key in
+    # `:persistent_term` so PushVapidController reads lock-free per
+    # request instead of doing a runtime `Application.fetch_env!/2`
+    # (CLAUDE.md "boot-time only, runtime banned" — the lone offender
+    # in the codebase). Mirrors `Grappa.Uploads.boot/1`. Must run
+    # AFTER `config/runtime.exs` has populated `:web_push_elixir,
+    # :vapid_public_key` from `VAPID_PUBLIC_KEY` env, which is
+    # guaranteed by the time `Application.start/2` is invoked.
+    :ok = Grappa.Push.boot()
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a

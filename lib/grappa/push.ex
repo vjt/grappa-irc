@@ -83,6 +83,39 @@ defmodule Grappa.Push do
 
   alias Grappa.{Push.Subscription, Repo, Subject}
 
+  @vapid_public_key_term {__MODULE__, :vapid_public_key}
+
+  @doc """
+  Boot-time stash of the VAPID public key into `:persistent_term`. Read
+  once at boot via `Application.fetch_env!/2` (the CLAUDE.md-designated
+  boundary site) so the runtime hot path (`PushVapidController.show/2`)
+  reads lock-free without re-hitting `Application.get_env/2` per
+  request (H16, REV-D 2026-05-22).
+
+  The upstream `:web_push_elixir` library itself reads the key from
+  `Application.get_env/2` at delivery time — that's the library's
+  concern and out of our control. We mirror the value here so OUR
+  callers (the controller) observe the boot-time-pinned constant
+  instead of doing their own runtime env read.
+
+  Idempotent; later calls overwrite.
+  """
+  @spec boot() :: :ok
+  def boot do
+    key = Application.fetch_env!(:web_push_elixir, :vapid_public_key)
+    :persistent_term.put(@vapid_public_key_term, key)
+    :ok
+  end
+
+  @doc """
+  Returns the VAPID public key pinned at boot. Raises if `boot/0`
+  hasn't run — any caller reaching this without prior boot is a bug
+  (Application.start/2 must call `boot/0` BEFORE the supervised
+  Endpoint comes up).
+  """
+  @spec vapid_public_key() :: String.t()
+  def vapid_public_key, do: :persistent_term.get(@vapid_public_key_term)
+
   @doc """
   Inserts a new push subscription for the given subject.
 

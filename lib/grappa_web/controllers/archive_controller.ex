@@ -122,22 +122,34 @@ defmodule GrappaWeb.ArchiveController do
       # canonicalisation is sufficient.
       canonical_target = Grappa.IRC.Identifier.canonical_channel(target)
 
-      {:ok, _} =
-        case Scrollback.target_kind(canonical_target) do
-          :channel ->
-            Scrollback.delete_for_channel(session_subject, network.id, canonical_target)
-
-          :query ->
-            Scrollback.delete_for_dm(session_subject, network.id, canonical_target)
-        end
-
-      _ = broadcast_archive_purged(subject, network.slug, canonical_target)
-
-      send_resp(conn, :no_content, "")
+      # M17 (REV-D 2026-05-22): pre-fix this was a strict-bind
+      # `{:ok, _} =` against the Scrollback delete result. Even though
+      # both `delete_for_channel/3` + `delete_for_dm/3` spec a
+      # `{:ok, _}`-only return today, a future shape extension would
+      # surface as `MatchError` → 500 bypassing FallbackController.
+      # Routing through `with` keeps the controller resilient to
+      # `{:error, _}` evolutions without a behavioural change for the
+      # current happy path.
+      with {:ok, _} <- delete_for_target(canonical_target, session_subject, network.id) do
+        _ = broadcast_archive_purged(subject, network.slug, canonical_target)
+        send_resp(conn, :no_content, "")
+      end
     end
   end
 
   def delete(_, _), do: {:error, :bad_request}
+
+  @spec delete_for_target(String.t(), Grappa.Subject.t(), pos_integer()) ::
+          {:ok, non_neg_integer()}
+  defp delete_for_target(canonical_target, session_subject, network_id) do
+    case Scrollback.target_kind(canonical_target) do
+      :channel ->
+        Scrollback.delete_for_channel(session_subject, network_id, canonical_target)
+
+      :query ->
+        Scrollback.delete_for_dm(session_subject, network_id, canonical_target)
+    end
+  end
 
   # Active keyset = currently-joined channels (live Session state) +
   # currently-open query windows (persisted, subject-scoped per V1's

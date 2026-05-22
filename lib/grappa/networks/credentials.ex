@@ -157,19 +157,26 @@ defmodule Grappa.Networks.Credentials do
 
   ## Cap (CP24 cluster post-cr-review bucket B, persistence/S8)
 
-  Truncated to `@last_joined_max` entries. The natural upper bound is
-  the live join count (typically 5-50; RFC 2812 has no absolute
-  ceiling). The cap is a safety belt — bounds the JSON column write +
-  boot-time merge cost so a pathological session can't grow the
-  snapshot without limit. Tail (oldest by sort key in the snapshot
-  Session.Server passes in) is dropped on overflow.
+  Truncated to `Credential.last_joined_channels_max/0` entries (200).
+  The natural upper bound is the live join count (typically 5-50;
+  RFC 2812 has no absolute ceiling). The cap is a safety belt —
+  bounds the JSON column write + boot-time merge cost so a
+  pathological session can't grow the snapshot without limit. Tail
+  (oldest by sort key in the snapshot Session.Server passes in) is
+  dropped on overflow.
+
+  H15 (REV-D 2026-05-22): the cap is also enforced at the schema
+  changeset level via `validate_length/3` so any bypassing writer
+  (future REST surface, operator mix task, test helper) observes
+  the same bound. SoT is `Credential.last_joined_channels_max/0`;
+  this helper pre-truncates to keep the changeset validation a
+  belt-and-braces guard, not the primary enforcement point.
   """
-  @last_joined_max 200
   @spec update_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
           :ok | {:error, :not_found | Ecto.Changeset.t()}
   def update_last_joined_channels(user_id, network_id, channels)
       when is_binary(user_id) and is_integer(network_id) and is_list(channels) do
-    capped = Enum.take(channels, @last_joined_max)
+    capped = Enum.take(channels, Credential.last_joined_channels_max())
 
     case Repo.get_by(Credential, user_id: user_id, network_id: network_id) do
       nil ->

@@ -605,9 +605,9 @@ defmodule Grappa.Session.Server do
         # Inline start failure (Client.init/1 rejected the opts —
         # malformed AuthFSM state, etc.). Treat as a failure for
         # backoff purposes: respawn-cycle on this would be the same
-        # hammer pattern as a connect-fail loop. Bumps the same
-        # counter the EXIT-path bumps.
-        :ok = Backoff.record_failure(state.subject, state.network_id)
+        # hammer pattern as a connect-fail loop. The `:client_start_failed`
+        # stop reason routes through terminate/2's abnormal-reason
+        # clause which is the single record_failure funnel (H12, REV-D).
         {:stop, {:client_start_failed, reason}, state}
     end
   end
@@ -684,8 +684,29 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  def terminate(:normal, state) do
+    emit_lifecycle(:terminated, state)
+    :ok
+  end
+
+  # Abnormal teardown — every non-`:normal` / non-`:shutdown` reason
+  # funnels here. Single source of truth for Backoff bookkeeping (H12,
+  # REV-D): pre-fix `record_failure` was called from the linked-Client
+  # EXIT clause + `do_start_client/2` only, so crash classes that
+  # bypass those paths (callback raise inside `handle_info` /
+  # `handle_call` / `handle_cast`, mailbox-overflow exit, an
+  # `EXIT` from a non-Client linked process, …) skipped the bump.
+  # The `:transient` supervisor respawned with no delay, defeating
+  # the per-(subject, network_id) ladder exactly when it mattered
+  # most (recurring server-internal bug → tight crash loop).
+  #
+  # `terminate/2` is best-effort per OTP — `:brutal_kill` and BEAM
+  # shutdown skip it — but the supervisor's `:transient` policy here
+  # uses the default `:shutdown` (5s graceful), so every crash class
+  # we care about reaches this clause.
   def terminate(_, state) do
     emit_lifecycle(:terminated, state)
+    :ok = Backoff.record_failure(state.subject, state.network_id)
     :ok
   end
 
@@ -1377,7 +1398,11 @@ defmodule Grappa.Session.Server do
   # propagation without Backoff bookkeeping.
   def handle_info({:EXIT, client_pid, reason}, %{client: client_pid} = state)
       when client_pid != nil and reason != :normal and reason != :shutdown do
-    :ok = Backoff.record_failure(state.subject, state.network_id)
+    # Backoff bookkeeping runs in terminate/2's abnormal-reason clause
+    # (H12, REV-D) so every crash class — not just linked-Client EXIT —
+    # advances the failure counter. The `:client_exit` reason wrapper
+    # is preserved for supervisor-log fidelity (distinguishes upstream
+    # disconnect from a Session-internal crash).
     {:stop, {:client_exit, reason}, %{state | client: nil}}
   end
 

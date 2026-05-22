@@ -182,12 +182,8 @@ defmodule GrappaWeb.ChannelsController do
     network = conn.assigns.network
 
     with :ok <- validate_channel_name(channel),
-         :ok <- Session.send_part(subject, network.id, channel) do
-      # Remove from autojoin so GET /channels no longer returns the channel
-      # after the PART echo + channels_changed refetch. Only meaningful for
-      # user subjects — visitors have no persistent credential.
-      remove_from_autojoin(conn.assigns.current_subject, network, channel)
-
+         :ok <- Session.send_part(subject, network.id, channel),
+         :ok <- remove_from_autojoin(conn.assigns.current_subject, network, channel) do
       # UX-3 Z2 (2026-05-18): closing a channel makes its scrollback
       # archive-eligible (list_archive/3 excludes joined channels via
       # the `active_keyset`). Without this broadcast, connected cic
@@ -203,29 +199,26 @@ defmodule GrappaWeb.ChannelsController do
 
   # Removes `channel` from the user's credential autojoin list. Visitors
   # have no persistent credential, so this is a no-op for them.
+  #
+  # M16 (REV-D 2026-05-22): pre-fix this was a silent-swallow at the
+  # boundary — failure was logged + the controller still returned 202.
+  # Next reconnect re-joined a channel the user explicitly left,
+  # invisibly. Now propagates `{:error, _}` so `FallbackController`
+  # surfaces the failure to cic (422/404 per the changeset shape).
+  # The IRC-side PART already went through; this only gates the
+  # persistence side of the "leave the channel" intent.
   @spec remove_from_autojoin(
           {:user, User.t()} | {:visitor, term()},
           Network.t(),
           String.t()
-        ) :: :ok
+        ) :: :ok | {:error, term()}
   defp remove_from_autojoin({:user, user}, %Network{} = network, channel) do
-    # Best-effort: if the credential doesn't exist or the update fails,
-    # the PART already went through so the IRC channel is left. Logging
-    # the failure is enough — the next reconnect's autojoin would re-join
-    # the channel, but that's an edge case (DELETE → credential gone).
     case Credentials.remove_autojoin_channel(user, network, channel) do
       {:ok, _} ->
         :ok
 
-      {:error, reason} ->
-        require Logger
-
-        Logger.warning("remove_autojoin_channel failed after PART",
-          channel: channel,
-          reason: inspect(reason)
-        )
-
-        :ok
+      {:error, _} = err ->
+        err
     end
   end
 

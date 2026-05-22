@@ -117,9 +117,22 @@ defmodule Grappa.Visitors do
         {:error, :not_found}
 
       visitor ->
-        visitor
-        |> Visitor.commit_password_changeset(password, nil)
-        |> Repo.update()
+        # H14 (REV-D 2026-05-22): lookup-then-update races on concurrent
+        # delete — between the Repo.get above and Repo.update below, a
+        # peer caller (operator delete, Reaper sweep, anon visitor logout)
+        # may purge the row. Pre-fix the update would raise
+        # `Ecto.StaleEntryError` (caller spec'd `{:error, :not_found}`,
+        # so the raise was a silent contract violation: 500 in the web
+        # layer instead of a typed result). Map back to the documented
+        # return shape so callers handle the concurrent-delete case the
+        # same way as the initial Repo.get/2 miss.
+        try do
+          visitor
+          |> Visitor.commit_password_changeset(password, nil)
+          |> Repo.update()
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
+        end
     end
   end
 
@@ -132,7 +145,7 @@ defmodule Grappa.Visitors do
   per-request DB-write cost negligible under sustained traffic.
   """
   @spec touch(Ecto.UUID.t()) ::
-          {:ok, Visitor.t()} | {:error, :not_found | :expired | Ecto.Changeset.t()}
+          {:ok, Visitor.t()} | {:error, :not_found | :expired}
   def touch(visitor_id) when is_binary(visitor_id) do
     case Repo.get(Visitor, visitor_id) do
       nil ->
@@ -160,9 +173,29 @@ defmodule Grappa.Visitors do
     target = DateTime.add(DateTime.utc_now(), @anon_ttl_seconds, :second)
 
     if DateTime.diff(target, visitor.expires_at, :second) >= @touch_cadence_seconds do
-      visitor
-      |> Visitor.touch_changeset(target)
-      |> Repo.update()
+      case visitor |> Visitor.touch_changeset(target) |> Repo.update() do
+        {:ok, updated} ->
+          {:ok, updated}
+
+        {:error, %Ecto.Changeset{}} ->
+          # H13 (REV-D 2026-05-22): the touch_changeset monotonicity
+          # guard rejects strictly-backward bumps. A clock-skew event
+          # (NTP step or container reboot under wall-clock drift) is
+          # an operator-side infrastructure problem the bouncer can't
+          # recover from inline. Mirror `Accounts.touch_session/2`'s
+          # precedent: log a warning, return the un-bumped row so the
+          # caller (auth plug / socket connect) keeps the session
+          # alive with stale `expires_at` until the clock resolves.
+          Logger.warning(
+            "visitor touch backward-clock detected; ignoring " <>
+              "(prev=#{DateTime.to_iso8601(visitor.expires_at)} " <>
+              "attempted=#{DateTime.to_iso8601(target)})",
+            visitor_id: visitor.id,
+            reason: :backward_clock
+          )
+
+          {:ok, visitor}
+      end
     else
       {:ok, visitor}
     end
@@ -317,7 +350,7 @@ defmodule Grappa.Visitors do
 
         {:ok, _} =
           visitor
-          |> Visitor.touch_changeset(now)
+          |> Visitor.expire_changeset(now)
           |> Repo.update()
 
         :ok
@@ -450,9 +483,16 @@ defmodule Grappa.Visitors do
         {:error, :not_found}
 
       visitor ->
-        visitor
-        |> Visitor.nick_changeset(new_nick)
-        |> Repo.update()
+        # H14 (REV-D 2026-05-22): same concurrent-delete race as
+        # commit_password/2 — map StaleEntryError to the spec'd
+        # `{:error, :not_found}` return.
+        try do
+          visitor
+          |> Visitor.nick_changeset(new_nick)
+          |> Repo.update()
+        rescue
+          Ecto.StaleEntryError -> {:error, :not_found}
+        end
     end
   end
 

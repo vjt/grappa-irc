@@ -27,7 +27,16 @@ defmodule Grappa.Session.Backoff do
       `Session.Server.handle_continue({:start_client, _}, _)` to
       decide whether to delay before spawning the Client.
     * `record_failure/2` — bumps the count; called from
-      `Session.Server.terminate/2` on any non-`:normal` exit.
+      `Session.Server.terminate/2` on any non-`:normal` /
+      non-`:shutdown` exit. Single funnel: every abnormal teardown
+      class (linked-Client EXIT, inline `Client.start_link` rejection,
+      GenServer callback raise, mailbox overflow, …) reaches
+      `terminate/2` with a non-clean reason, so backoff bookkeeping
+      stays consistent regardless of which path tripped the crash.
+      Pre-REV-D the call sites were `handle_info({:EXIT, client_pid,
+      _})` + `do_start_client/2` only — non-Client crash classes
+      bypassed backoff and the `:transient` respawn fired with no
+      delay (H12).
     * `record_success/2` — clears the entry; called from the 001
       RPL_WELCOME hook in `Session.Server` (we know the upstream
       accepted us, so prior failures are stale).

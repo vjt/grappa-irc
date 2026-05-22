@@ -64,6 +64,56 @@ defmodule Grappa.Visitors.VisitorTest do
     end
   end
 
+  describe "touch_changeset/2 monotonic expires_at (H13, REV-D)" do
+    setup do
+      visitor = %Visitor{
+        id: Ecto.UUID.generate(),
+        nick: "vjt",
+        network_slug: "azzurra",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      %{visitor: visitor}
+    end
+
+    test "accepts a forward bump (new > prev)", %{visitor: visitor} do
+      forward = DateTime.add(visitor.expires_at, 60, :second)
+      cs = Visitor.touch_changeset(visitor, forward)
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :expires_at) == forward
+    end
+
+    test "accepts the same instant (no-op write — same-tick under load is benign)",
+         %{visitor: visitor} do
+      cs = Visitor.touch_changeset(visitor, visitor.expires_at)
+      assert cs.valid?
+    end
+
+    test "rejects a backward jump (system-clock skew)", %{visitor: visitor} do
+      backward = DateTime.add(visitor.expires_at, -60, :second)
+      cs = Visitor.touch_changeset(visitor, backward)
+
+      refute cs.valid?
+      assert "must not move backward (system-clock skew?)" in errors_on(cs).expires_at
+    end
+  end
+
+  describe "expire_changeset/2 bypasses monotonicity guard" do
+    test "allows backward time (mark_failed forced-expiry semantic)" do
+      visitor = %Visitor{
+        id: Ecto.UUID.generate(),
+        nick: "vjt",
+        network_slug: "azzurra",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      now = DateTime.utc_now()
+      cs = Visitor.expire_changeset(visitor, now)
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :expires_at) == now
+    end
+  end
+
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
       Regex.replace(~r"%{(\w+)}", message, fn _, key ->

@@ -61,6 +61,25 @@ defmodule Grappa.Networks.Credential do
   # transitions are valid.
   @connection_states [:connected, :parked, :failed]
 
+  # H15 (REV-D 2026-05-22): hard ceiling on the per-credential
+  # `last_joined_channels` snapshot. Schema-level cap so every
+  # persistence path observes the same bound — the context helper
+  # `Credentials.update_last_joined_channels/3` reads this attribute
+  # via `last_joined_channels_max/0` so the SoT lives here, not at
+  # the context. Bounds the JSON column write + boot-time merge cost
+  # so a pathological session can't grow the snapshot without limit.
+  @last_joined_channels_max 200
+
+  @doc """
+  Returns the schema-level cap on `last_joined_channels` length. Public
+  so the context helper (`Credentials.update_last_joined_channels/3`)
+  can pre-truncate the input list using the same constant the
+  changeset validator enforces. Single source of truth — renaming
+  `@last_joined_channels_max` here automatically updates the context.
+  """
+  @spec last_joined_channels_max() :: unquote(@last_joined_channels_max)
+  def last_joined_channels_max, do: @last_joined_channels_max
+
   @doc """
   Returns the closed-set list of valid `:auth_method` values. Exposed
   so tests (notably the migration drift-detector
@@ -201,6 +220,16 @@ defmodule Grappa.Networks.Credential do
     |> validate_change(:password, &validate_safe_line_token/2)
     |> validate_change(:auth_command_template, &validate_safe_line_token/2)
     |> validate_change(:autojoin_channels, &validate_autojoin_channels/2)
+    # H15 (REV-D 2026-05-22): defensive schema-level cap on the
+    # `last_joined_channels` snapshot. The context helper
+    # `Credentials.update_last_joined_channels/3` truncates to
+    # `@last_joined_channels_max` before building the changeset, but
+    # any other writer (a future REST surface, an operator mix task,
+    # a test-only helper) bypassing that helper could otherwise grow
+    # the JSON column without bound. The schema is the single source
+    # of truth: enforce the same cap here so every persistence path
+    # observes the same ceiling.
+    |> validate_length(:last_joined_channels, max: @last_joined_channels_max)
     |> put_encrypted_password()
     |> put_default_connection_state_changed_at()
   end
