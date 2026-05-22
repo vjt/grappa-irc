@@ -1,4 +1,11 @@
-import type { MessageKind, ScrollbackMessage, WireChannelEvent } from "./api";
+import type {
+  AdminSnapshotPayload,
+  AdmissionFlow,
+  MessageKind,
+  ScrollbackMessage,
+  WireAdminEvent,
+  WireChannelEvent,
+} from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
 
@@ -287,4 +294,286 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
     default:
       return null;
   }
+}
+
+// ── REV-G H24 (2026-05-22) — admin-channel narrowers ───────────────
+//
+// `lib/adminEvents.ts` was using `channel.on("snapshot", (payload:
+// AdminSnapshotPayload) => ...)` and `channel.on("event", (payload:
+// WireAdminEvent) => ...)` direct casts — TypeScript-only contract,
+// zero runtime enforcement. Sibling channels adopted `narrowChannelEvent`
+// / `narrowUserEvent` for this exact boundary; admin path was missed.
+//
+// A malformed admin push (kind valid but field missing/wrong-typed) would
+// either crash `ingest()` via the missing field read or silently corrupt
+// the live `liveCountsByNetworkId` projection. The narrowers gate the
+// boundary: shape mismatch → return null → caller drops + logs.
+//
+// `narrowAdminSnapshot` validates the `{events: WireAdminEvent[]}` outer
+// shape AND every element. Either the whole snapshot validates or it
+// drops — partial admission would corrupt the audit ring with malformed
+// rows.
+//
+// Adding a new admin event arm:
+//   1. Add to `WireAdminEvent` union in api.ts.
+//   2. Add an arm to `narrowAdminEvent` here.
+//   3. Add a dispatch case to `ingest()` in adminEvents.ts (tsc-enforced
+//      via `assertNever`).
+// The narrower's default-arm returning null is the runtime mirror of
+// `assertNever` — unknown server kinds drop instead of crashing.
+
+const VALID_ADMISSION_FLOWS: ReadonlySet<AdmissionFlow> = new Set([
+  "login_fresh",
+  "login_existing",
+  "bootstrap_user",
+  "bootstrap_visitor",
+  "patch_network_connect",
+]);
+
+const VALID_SUBJECT_KINDS: ReadonlySet<"user" | "visitor"> = new Set(["user", "visitor"]);
+
+const VALID_CIRCUIT_CLOSE_REASONS: ReadonlySet<"success" | "cooldown_expired"> = new Set([
+  "success",
+  "cooldown_expired",
+]);
+
+// Shared helpers — every admin arm carries `at: string`; most carry
+// `network_id: number` + `network_slug: string | null`. Failing the
+// shared shape early keeps the per-arm switches compact.
+
+function isNonNullString(v: unknown): boolean {
+  return typeof v === "string";
+}
+
+function isNullableString(v: unknown): boolean {
+  return v === null || typeof v === "string";
+}
+
+function isNullableNumber(v: unknown): boolean {
+  return v === null || typeof v === "number";
+}
+
+/**
+ * Runtime narrower for admin-channel events (`WireAdminEvent` arms).
+ * Mirror of `narrowChannelEvent` / `narrowUserEvent` for the admin
+ * boundary. Returns the typed union variant on success or `null` on
+ * any shape mismatch. Caller (adminEvents.ts) drops + logs on null.
+ */
+export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.kind !== "string") return null;
+  if (!isNonNullString(r.at)) return null;
+  switch (r.kind) {
+    case "circuit_open":
+      if (
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        typeof r.threshold !== "number" ||
+        typeof r.cooldown_ms !== "number"
+      )
+        return null;
+      return {
+        kind: "circuit_open",
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        threshold: r.threshold,
+        cooldown_ms: r.cooldown_ms,
+        at: r.at as string,
+      };
+    case "circuit_close":
+      if (
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        typeof r.reason !== "string" ||
+        !VALID_CIRCUIT_CLOSE_REASONS.has(r.reason as "success" | "cooldown_expired")
+      )
+        return null;
+      return {
+        kind: "circuit_close",
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        reason: r.reason as "success" | "cooldown_expired",
+        at: r.at as string,
+      };
+    case "capacity_reject":
+      if (
+        typeof r.flow !== "string" ||
+        !VALID_ADMISSION_FLOWS.has(r.flow as AdmissionFlow) ||
+        typeof r.error !== "string" ||
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        !isNullableString(r.client_id)
+      )
+        return null;
+      return {
+        kind: "capacity_reject",
+        flow: r.flow as AdmissionFlow,
+        error: r.error,
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        client_id: r.client_id as string | null,
+        at: r.at as string,
+      };
+    case "visitor_deleted":
+      if (
+        typeof r.visitor_id !== "string" ||
+        !isNullableString(r.visitor_nick) ||
+        !isNullableString(r.network_slug) ||
+        !isNullableString(r.actor_user_id) ||
+        !isNullableString(r.actor_user_name)
+      )
+        return null;
+      return {
+        kind: "visitor_deleted",
+        visitor_id: r.visitor_id,
+        visitor_nick: r.visitor_nick as string | null,
+        network_slug: r.network_slug as string | null,
+        actor_user_id: r.actor_user_id as string | null,
+        actor_user_name: r.actor_user_name as string | null,
+        at: r.at as string,
+      };
+    case "visitor_reaped":
+      if (
+        typeof r.visitor_id !== "string" ||
+        !isNullableString(r.visitor_nick) ||
+        !isNullableString(r.network_slug)
+      )
+        return null;
+      return {
+        kind: "visitor_reaped",
+        visitor_id: r.visitor_id,
+        visitor_nick: r.visitor_nick as string | null,
+        network_slug: r.network_slug as string | null,
+        at: r.at as string,
+      };
+    case "reaper_swept":
+      if (typeof r.count !== "number") return null;
+      return { kind: "reaper_swept", count: r.count, at: r.at as string };
+    case "upload_reaped":
+      if (
+        typeof r.upload_id !== "string" ||
+        typeof r.slug !== "string" ||
+        typeof r.subject_kind !== "string" ||
+        !VALID_SUBJECT_KINDS.has(r.subject_kind as "user" | "visitor") ||
+        typeof r.subject_id !== "string"
+      )
+        return null;
+      return {
+        kind: "upload_reaped",
+        upload_id: r.upload_id,
+        slug: r.slug,
+        subject_kind: r.subject_kind as "user" | "visitor",
+        subject_id: r.subject_id,
+        at: r.at as string,
+      };
+    case "uploads_swept":
+      if (typeof r.count !== "number") return null;
+      return { kind: "uploads_swept", count: r.count, at: r.at as string };
+    case "session_disconnected":
+    case "session_terminated": {
+      if (
+        typeof r.subject_kind !== "string" ||
+        !VALID_SUBJECT_KINDS.has(r.subject_kind as "user" | "visitor") ||
+        typeof r.subject_id !== "string" ||
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        !isNullableString(r.actor_user_id) ||
+        !isNullableString(r.actor_user_name)
+      )
+        return null;
+      const base = {
+        subject_kind: r.subject_kind as "user" | "visitor",
+        subject_id: r.subject_id,
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        actor_user_id: r.actor_user_id as string | null,
+        actor_user_name: r.actor_user_name as string | null,
+        at: r.at as string,
+      };
+      return r.kind === "session_disconnected"
+        ? { kind: "session_disconnected", ...base }
+        : { kind: "session_terminated", ...base };
+    }
+    case "network_caps_updated":
+      if (
+        typeof r.network_id !== "number" ||
+        typeof r.network_slug !== "string" ||
+        !isNullableNumber(r.max_concurrent_visitor_sessions) ||
+        !isNullableNumber(r.max_concurrent_user_sessions) ||
+        !isNullableNumber(r.max_per_client) ||
+        !isNullableString(r.actor_user_id) ||
+        !isNullableString(r.actor_user_name)
+      )
+        return null;
+      return {
+        kind: "network_caps_updated",
+        network_id: r.network_id,
+        network_slug: r.network_slug,
+        max_concurrent_visitor_sessions: r.max_concurrent_visitor_sessions as number | null,
+        max_concurrent_user_sessions: r.max_concurrent_user_sessions as number | null,
+        max_per_client: r.max_per_client as number | null,
+        actor_user_id: r.actor_user_id as string | null,
+        actor_user_name: r.actor_user_name as string | null,
+        at: r.at as string,
+      };
+    case "circuit_reset":
+      if (
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        !isNullableString(r.actor_user_id) ||
+        !isNullableString(r.actor_user_name)
+      )
+        return null;
+      return {
+        kind: "circuit_reset",
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        actor_user_id: r.actor_user_id as string | null,
+        actor_user_name: r.actor_user_name as string | null,
+        at: r.at as string,
+      };
+    case "cap_counts_changed":
+      if (
+        typeof r.network_id !== "number" ||
+        !isNullableString(r.network_slug) ||
+        typeof r.visitors !== "number" ||
+        typeof r.users !== "number" ||
+        !isNullableNumber(r.max_concurrent_visitor_sessions) ||
+        !isNullableNumber(r.max_concurrent_user_sessions)
+      )
+        return null;
+      return {
+        kind: "cap_counts_changed",
+        network_id: r.network_id,
+        network_slug: r.network_slug as string | null,
+        visitors: r.visitors,
+        users: r.users,
+        max_concurrent_visitor_sessions: r.max_concurrent_visitor_sessions as number | null,
+        max_concurrent_user_sessions: r.max_concurrent_user_sessions as number | null,
+        at: r.at as string,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Runtime narrower for the admin-channel `snapshot` push payload.
+ * Validates the `{events: [...]}` outer shape AND every element.
+ * Atomic: a single malformed element drops the whole snapshot (avoids
+ * corrupting the audit ring with mid-shape rows). Caller drops + logs
+ * on null.
+ */
+export function narrowAdminSnapshot(raw: unknown): AdminSnapshotPayload | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.events)) return null;
+  const events: WireAdminEvent[] = [];
+  for (const el of r.events) {
+    const narrowed = narrowAdminEvent(el);
+    if (narrowed === null) return null;
+    events.push(narrowed);
+  }
+  return { events };
 }

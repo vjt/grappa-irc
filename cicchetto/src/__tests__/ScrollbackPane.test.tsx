@@ -1124,6 +1124,66 @@ describe("ScrollbackPane", () => {
       });
     });
 
+    // REV-G H23 (2026-05-22): regression pin on the markerRef function-
+    // ref signal refactor. Pre-REV-G `markerRef` was a `let`-bound ref;
+    // SolidJS doesn't auto-null let-bound refs on unmount, so when the
+    // marker row was removed mid-channel (cursor advance — same scenario
+    // as Bug A above), subsequent reads of `markerRef` still pointed at
+    // the now-detached DOM node. A visibility-return after mid-channel
+    // removal would call `scrollIntoView` on the stale node instead of
+    // taking the fall-through scroll-to-bottom branch.
+    //
+    // Post-REV-G `markerRef` is a `createSignal` function-ref:
+    // SolidJS calls the ref function with `undefined` on unmount, so
+    // `markerRef()` returns undefined and the scrollToActivation effect
+    // takes the marker-absent branch.
+    //
+    // This test exercises the full mid-channel + visibility-return
+    // sequence and asserts no crash + correct fall-through behavior
+    // (atBottom latches true after the marker is gone and the next
+    // visibility-return fires). The crash would be a TypeError from
+    // calling .scrollIntoView on a node that's been removed but pre-
+    // REV-G still held in the let ref.
+    it("REV-G H23: visibility-return after mid-channel marker removal does not crash on stale ref", async () => {
+      const { applyReadCursorSet } = await import("../lib/readCursor");
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+
+      const fourUnread: ScrollbackMessage[] = [
+        { ...proto, id: 50, server_time: 100, sender: "alice", body: "u1" },
+        { ...proto, id: 51, server_time: 101, sender: "alice", body: "u2" },
+        { ...proto, id: 52, server_time: 102, sender: "alice", body: "u3" },
+        { ...proto, id: 53, server_time: 103, sender: "alice", body: "u4" },
+      ];
+      seedReadCursor("freenode", "#grappa", 0);
+      setScrollback({ "freenode #grappa": fourUnread });
+      setDocVisible(true);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+      // Marker present after mount.
+      expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
+
+      // Mid-channel cursor advance removes the marker (Bug A path).
+      applyReadCursorSet("freenode", "#grappa", 53);
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+
+      // Now simulate a backgrounded → foregrounded transition (visibility
+      // false → true) on the SAME channel. The activation effect re-runs
+      // scrollToActivation; pre-REV-G this would call scrollIntoView on
+      // the stale markerRef (detached node) and crash. Post-REV-G the
+      // signal returns undefined → fall-through to scroll-to-bottom.
+      setDocVisible(false);
+      setDocVisible(true);
+
+      // No throw + marker still absent — the fall-through branch fired
+      // without crashing on a stale ref.
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+    });
+
     // CP29 R-6: vjt's "/part → /join shows 'unread messages' for my own
     // join action" bug. Pre-fix the unreadCount filter only excluded
     // `isOperatorActionEcho` (numeric NOTICEs); own JOIN/PART/etc rows

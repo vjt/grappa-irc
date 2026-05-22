@@ -619,7 +619,15 @@ type Row = SeparatorRow | UnreadMarkerRow | MessageRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
-  let markerRef: HTMLDivElement | undefined;
+  // REV-G H23 (2026-05-22): function-ref signal instead of let-bound
+  // ref. SolidJS calls the ref function with `undefined` on unmount —
+  // mid-channel removal of the unread-marker row (cursor advance while
+  // staying on the same channel) now nulls the pointer automatically.
+  // Pre-REV-G the let-bound ref leaked across <For> diffs; the channel-
+  // switch case was compensated by an explicit reset, mid-channel
+  // removal was not — every read after a cursor-advance saw a stale
+  // detached DOM node. Per `feedback_solidjs_for_ref_leak`.
+  const [markerRef, setMarkerRef] = createSignal<HTMLDivElement | undefined>();
   const [atBottom, setAtBottom] = createSignal(true);
   // UX-3 Z3 R4: actual-overflow gate for the `pan-y → chrome reveal`
   // trap. Recomputed on every layout-affecting signal (messages,
@@ -945,8 +953,9 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!listRef) return;
     queueMicrotask(() => {
       if (!listRef) return;
-      if (markerRef) {
-        markerRef.scrollIntoView?.({ block: "center" });
+      const marker = markerRef();
+      if (marker) {
+        marker.scrollIntoView?.({ block: "center" });
         setMarkerScrolled(true);
         const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
         setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
@@ -973,15 +982,16 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   * markerScrolled — latch reset so the new channel's marker
   //     gets its own scroll-to-marker (re-fires for a future window
   //     where the marker shows up only after a delayed REST page).
-  //   * markerRef = undefined — null the (now-disposed) DOM pointer
-  //     from the prior window. Pre-fix bug: Solid's ref-binding
-  //     lifecycle for <For>-rendered elements doesn't auto-null the
-  //     variable on unmount; the effect would take the marker branch
-  //     on the wrong window, call scrollIntoView on a stale node, and
-  //     never fall through — viewport stuck at top.
   //   * sessionTopId — capture the focus-session boundary (highest
   //     id present right now) so future arrivals during this session
   //     are "live-read" and never spawn a fresh marker.
+  //
+  // REV-G H23 (2026-05-22): the previous `markerRef = undefined` reset
+  // here is removed — the function-ref signal nulls itself on unmount,
+  // so the channel-switch case no longer needs explicit compensation.
+  // The mid-channel-removal case (cursor advance) ALSO benefits — it
+  // had no compensation pre-REV-G and silently held a stale DOM
+  // pointer.
   //
   // `defer: true` skips the initial mount run so the auto-focus
   // effect's first-mount evaluation isn't pre-emptively cleared.
@@ -990,7 +1000,6 @@ const ScrollbackPane: Component<Props> = (props) => {
       key,
       () => {
         setMarkerScrolled(false);
-        markerRef = undefined;
         // CP29 R-4: capture the boundary as the highest message id present
         // RIGHT NOW. `messages()` is the same store the rows memo reads;
         // an empty window leaves the boundary null and the latching
@@ -1009,9 +1018,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // switch) then re-opened. selection.ts owns the cursor settle on
   // false→true (clearBadgesForWindow); this effect owns the scroll
   // settle. NO per-channel pre-work — visibility-return on the SAME
-  // selectedChannel must preserve markerScrolled / markerRef /
-  // sessionTopId (the operator hasn't left the window; only the
-  // browser tab lost visibility).
+  // selectedChannel must preserve markerScrolled / sessionTopId (the
+  // operator hasn't left the window; only the browser tab lost
+  // visibility). The function-ref signal owns markerRef lifecycle
+  // (REV-G H23).
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
@@ -1064,10 +1074,11 @@ const ScrollbackPane: Component<Props> = (props) => {
       () => {
         if (!listRef) return;
         // C7.3: first mount with unread — scroll to marker, not tail.
-        if (!markerScrolled() && markerRef) {
+        const marker = markerRef();
+        if (!markerScrolled() && marker) {
           // scrollIntoView is not implemented in jsdom (test environment).
           // Optional-chain so tests don't throw; real browsers have it.
-          markerRef.scrollIntoView?.({ block: "center" });
+          marker.scrollIntoView?.({ block: "center" });
           setMarkerScrolled(true);
           // atBottom is false after scroll-to-marker (marker is not at tail).
           const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
@@ -1186,7 +1197,11 @@ const ScrollbackPane: Component<Props> = (props) => {
               }
               if (row.type === "unread-marker") {
                 return (
-                  <div ref={markerRef} class="scrollback-unread-marker" data-testid="unread-marker">
+                  <div
+                    ref={(el) => setMarkerRef(el)}
+                    class="scrollback-unread-marker"
+                    data-testid="unread-marker"
+                  >
                     <span class="scrollback-unread-marker-line" />
                     <span class="scrollback-unread-marker-label">
                       {row.count} unread message{row.count !== 1 ? "s" : ""}

@@ -26,16 +26,18 @@ function makeFakeChannel(): {
   channel: Channel;
   fireSnapshot: (events: WireAdminEvent[]) => void;
   fireEvent: (event: WireAdminEvent) => void;
+  fireRawSnapshot: (payload: unknown) => void;
+  fireRawEvent: (payload: unknown) => void;
   leftCount: () => number;
 } {
-  let snapshotCb: ((p: { events: WireAdminEvent[] }) => void) | null = null;
-  let eventCb: ((p: WireAdminEvent) => void) | null = null;
+  let snapshotCb: ((p: unknown) => void) | null = null;
+  let eventCb: ((p: unknown) => void) | null = null;
   let leftCount = 0;
 
   const channel = {
     on: (name: string, cb: unknown) => {
-      if (name === "snapshot") snapshotCb = cb as (p: { events: WireAdminEvent[] }) => void;
-      if (name === "event") eventCb = cb as (p: WireAdminEvent) => void;
+      if (name === "snapshot") snapshotCb = cb as (p: unknown) => void;
+      if (name === "event") eventCb = cb as (p: unknown) => void;
       return 0;
     },
     leave: () => {
@@ -48,6 +50,8 @@ function makeFakeChannel(): {
     channel,
     fireSnapshot: (events) => snapshotCb?.({ events }),
     fireEvent: (event) => eventCb?.(event),
+    fireRawSnapshot: (payload) => snapshotCb?.(payload),
+    fireRawEvent: (payload) => eventCb?.(payload),
     leftCount: () => leftCount,
   };
 }
@@ -344,5 +348,83 @@ describe("adminEvents — REV-A C1 upload_reaped + uploads_swept ingestion", () 
     expect(list[0]?.kind).toBe("uploads_swept");
     expect(list[1]?.kind).toBe("upload_reaped");
     expect(list[2]?.kind).toBe("reaper_swept");
+  });
+});
+
+// REV-G H24 (2026-05-22) — runtime narrower boundary regression.
+//
+// Pre-REV-G the channel.on handlers cast payloads directly without
+// runtime validation. A malformed server push would crash `ingest()`
+// (missing-field reads) or corrupt the live projection. Post-REV-G
+// `narrowAdminSnapshot` + `narrowAdminEvent` gate the boundary —
+// malformed shapes drop with a console.warn instead of propagating.
+//
+// Mirrors the equivalent boundary pin on per-channel topic
+// (subscribe.ts → narrowChannelEvent).
+describe("adminEvents — REV-G H24 narrower boundary", () => {
+  it("drops a malformed event payload without crashing or polluting the ring", () => {
+    const fake = makeFakeChannel();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installAdminEvents(fake.channel);
+
+    // Wrong-typed `count` on a reaper_swept event — narrower rejects.
+    expect(() =>
+      fake.fireRawEvent({ kind: "reaper_swept", count: "lots", at: "t1" }),
+    ).not.toThrow();
+
+    expect(adminEvents()).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      "[adminEvents] dropped malformed event payload",
+      expect.objectContaining({ kind: "reaper_swept" }),
+    );
+
+    warn.mockRestore();
+  });
+
+  it("drops a malformed snapshot payload atomically (no partial ingest)", () => {
+    const fake = makeFakeChannel();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installAdminEvents(fake.channel);
+
+    // First event is valid, second is malformed — narrower atomically
+    // rejects the WHOLE snapshot (avoids corrupting the audit ring
+    // with mid-shape rows).
+    const valid = { kind: "reaper_swept", count: 3, at: "t1" };
+    const malformed = { kind: "reaper_swept", count: null, at: "t2" };
+
+    expect(() => fake.fireRawSnapshot({ events: [valid, malformed] })).not.toThrow();
+
+    expect(adminEvents()).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      "[adminEvents] dropped malformed snapshot payload",
+      expect.anything(),
+    );
+
+    warn.mockRestore();
+  });
+
+  it("accepts a valid event after dropping a malformed one (no state corruption)", () => {
+    const fake = makeFakeChannel();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installAdminEvents(fake.channel);
+
+    fake.fireRawEvent({ kind: "totally_unknown", at: "t1" });
+    fake.fireEvent({ kind: "reaper_swept", count: 9, at: "t2" } as WireAdminEvent);
+
+    const list = adminEvents();
+    expect(list.length).toBe(1);
+    expect((list[0] as { count: number }).count).toBe(9);
+  });
+
+  it("drops a snapshot whose outer shape is not {events: [...]}", () => {
+    const fake = makeFakeChannel();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installAdminEvents(fake.channel);
+
+    fake.fireRawSnapshot({ events: "not-an-array" });
+    fake.fireRawSnapshot(null);
+    fake.fireRawSnapshot({ wrong: "key" });
+
+    expect(adminEvents()).toEqual([]);
   });
 });

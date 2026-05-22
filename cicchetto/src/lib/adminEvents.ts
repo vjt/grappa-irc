@@ -1,7 +1,8 @@
 import type { Channel } from "phoenix";
 import { createSignal } from "solid-js";
-import { type AdminSnapshotPayload, assertNever, type WireAdminEvent } from "./api";
+import { assertNever, type WireAdminEvent } from "./api";
 import { joinAdminEvents } from "./socket";
+import { narrowAdminEvent, narrowAdminSnapshot } from "./wireNarrow";
 
 // M-11 — Admin events stream consumer.
 //
@@ -102,18 +103,36 @@ export function installAdminEvents(channel: Channel): void {
   if (installed === channel) return;
   installed = channel;
 
-  channel.on("snapshot", (payload: AdminSnapshotPayload) => {
+  // REV-G H24 (2026-05-22): both arms route through runtime narrowers
+  // (`narrowAdminSnapshot` + `narrowAdminEvent` in lib/wireNarrow.ts)
+  // instead of trusting the cast. Pre-REV-G a malformed server push —
+  // version skew, server-side bug, or hostile payload — would either
+  // crash `ingest()` via a missing-field read or silently corrupt the
+  // `liveCountsByNetworkId` live projection. The narrower returns null
+  // on shape mismatch; we drop + log per the sibling per-handler
+  // convention (subscribe.ts, userTopic.ts).
+  channel.on("snapshot", (payload: unknown) => {
     if (installed !== channel) return;
+    const narrowed = narrowAdminSnapshot(payload);
+    if (narrowed === null) {
+      console.warn("[adminEvents] dropped malformed snapshot payload", payload);
+      return;
+    }
     // Snapshot is the cold-WS replay of the audit ring. Server-side
     // omits `cap_counts_changed` from the buffer (live projection
     // surface; would saturate the 200-cap), so the snapshot only
     // contains ring-eligible kinds.
-    setEvents(cap(payload.events));
+    setEvents(cap(narrowed.events));
   });
 
-  channel.on("event", (payload: WireAdminEvent) => {
+  channel.on("event", (payload: unknown) => {
     if (installed !== channel) return;
-    ingest(payload);
+    const narrowed = narrowAdminEvent(payload);
+    if (narrowed === null) {
+      console.warn("[adminEvents] dropped malformed event payload", payload);
+      return;
+    }
+    ingest(narrowed);
   });
 }
 

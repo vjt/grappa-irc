@@ -49,9 +49,37 @@ precacheAndRoute(self.__WB_MANIFEST);
 // style redirect). Workbox `NavigationRoute` only matches
 // `request.mode === "navigate"`, so non-navigation REST + WS
 // requests are unaffected by this route.
+//
+// REV-G H22 (2026-05-22): added `/api`, `/admin`, `/uploads`.
+// `/uploads/<slug>` is the public file-fetch surface for embedded
+// image uploads (UX-6-B1); when a user posts `📸 host/uploads/<slug>`
+// in IRC and a peer taps the link in a new tab, the PWA SW
+// intercepts the top-level navigation and pre-REV-G served the SPA
+// shell instead of the image bytes. `/admin` covers BOTH the
+// loopback hooks (`/admin/reload`) and the operator console
+// (`/admin/me`, `/admin/visitors`, etc.) — direct navigation
+// pre-REV-G served the SPA shell instead of forwarding to the
+// controller. `/api` covers the small authenticated surface
+// (uploads.create, server-settings.show). `/healthz` is intentionally
+// omitted (single GET; if a curl probe is opened in a tab the SPA
+// shell isn't a security issue).
+//
+// The denylist MUST be a superset of router.ex's top-level scope
+// prefixes. `test/grappa_web/router_sw_denylist_test.exs` enforces
+// this — adding a new top-level scope without updating this regex
+// list trips the test before deploy.
 const navigationHandler = createHandlerBoundToURL("index.html");
 const navigationRoute = new NavigationRoute(navigationHandler, {
-  denylist: [/^\/auth/, /^\/me/, /^\/networks/, /^\/socket/, /^\/push/],
+  denylist: [
+    /^\/auth/,
+    /^\/me/,
+    /^\/networks/,
+    /^\/socket/,
+    /^\/push/,
+    /^\/api/,
+    /^\/admin/,
+    /^\/uploads/,
+  ],
 });
 registerRoute(navigationRoute);
 
