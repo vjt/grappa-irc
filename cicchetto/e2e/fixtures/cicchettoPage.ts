@@ -189,6 +189,18 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
   const section = page.locator(".sidebar-network-section", {
     has: page.locator(".sidebar-network-header", { hasText: networkSlug }),
   });
+  // FLAKE-B (2026-05-22) — same callsite shape as the mobile branch
+  // above. Post-UX-4-C the desktop sidebar network-header `<li>` IS
+  // the server-window entry; its visible text is `⚙️ <slug>` (NOT
+  // "Server"). Pre-fix `section.locator("li", { hasText: "Server" })`
+  // never matched and timed out at 30s — falsely attributed to
+  // "testnet load" in FLAKE-A. Same windowName ergonomics as mobile
+  // (callers can pass "Server" or the slug interchangeably); see
+  // `Sidebar.test.tsx:212` for the literal "Server is gone as a label"
+  // post-UX-4-C contract.
+  if (windowName === "Server") {
+    return section.locator("li.sidebar-network-header");
+  }
   return section.locator("li", { hasText: windowName });
 }
 
