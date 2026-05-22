@@ -9,6 +9,7 @@ import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
+import { windowIsPresent } from "./windowState";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -392,7 +393,13 @@ const exports = identityScopedStore((onIdentityChange) => {
         // a canonicalised ChannelKey).
         const decoded = decodeChannelKey(selKey);
         const name = decoded?.name ?? sel.channelName;
-        return list.some((c) => c.name === name);
+        if (list.some((c) => c.name === name)) return true;
+        // UX-7-E: non-joined window states (pending|failed|kicked)
+        // keep the row in the sidebar via pseudoChannelsForNetwork.
+        // Selection must mirror that membership predicate so peer KICK
+        // or JOIN-failed doesn't yank focus away before the operator
+        // sees the reason / kick metadata in the (greyed) compose box.
+        return windowIsPresent(selKey);
       }
       const net = networkBySlug(sel.networkSlug);
       if (!net) return false;

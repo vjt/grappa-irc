@@ -150,6 +150,23 @@ export const setParted = exports_.setParted;
 export const windowIsJoined = (key: ChannelKey): boolean =>
   windowStateByChannel()[key] === "joined";
 
+// UX-7-E: channel-window presence primitive. Any non-undefined state
+// (pending|joined|failed|kicked|parked) means the operator's sidebar
+// still includes the window — as a live row OR as a greyed pseudo-row
+// via `Sidebar.pseudoChannelsForNetwork`. Used by `selection.ts`'s
+// close-watcher (channel-kind branch) so a transition that drops
+// `channelsBySlug[slug]` while keeping a pseudo-row (peer KICK,
+// JOIN-failed) doesn't yank focus away from the row the operator is
+// still looking at. Scope: channel-shaped keys only; the Sidebar
+// primitive layers extra projection filters (slug match, live-row
+// dedup, query-row exclusion) on top of the same state map — those
+// filters are automatic in the channel-kind selection path (selKey
+// is built from the active network slug; live wins via the earlier
+// `list.some` check in selection.ts; DM nicks don't share the
+// channel-name keyspace).
+export const windowIsPresent = (key: ChannelKey): boolean =>
+  windowStateByChannel()[key] !== undefined;
+
 export const isActiveChannelJoined = (): boolean => {
   const sel = selectedChannel();
   if (sel === null) return false;

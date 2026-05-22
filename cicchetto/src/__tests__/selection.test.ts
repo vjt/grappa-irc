@@ -1087,6 +1087,58 @@ describe("selection store", () => {
       });
       expect(sel.selectedChannel()?.kind).toBe("query");
     });
+
+    it("UX-7-E: stays on kicked channel when windowState=kicked + cbs drops", async () => {
+      // Peer KICK semantics on the server (apply_effects {:kicked, ...}):
+      // drops channel from state.members → channels_changed broadcast
+      // → cbs[slug] drops the channel. AND sets window_states[key] =
+      // :kicked. Sidebar.pseudoChannelsForNetwork keeps a greyed row
+      // for it (the operator should see the kick reason + greyed
+      // compose). Pre-UX-7-E, stillLive checked ONLY cbs, so the
+      // close-watcher MRU picker fired and yanked focus away to the
+      // seeded autojoin channel — defeating the kicked-channel UX.
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([userNet("freenode", 1, "connected")]);
+      vi.mocked(api.listChannels)
+        .mockResolvedValueOnce([
+          { name: "#bofh", joined: true, source: "autojoin" },
+          { name: "#new", joined: true, source: "joined" },
+        ])
+        .mockResolvedValue([{ name: "#bofh", joined: true, source: "autojoin" }]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      const windowState = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      auth.setToken("tokE-UX-7-E");
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(2);
+      });
+
+      // Focus the soon-to-be-kicked channel.
+      sel.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#new",
+        kind: "channel",
+      });
+
+      // Peer KICK → server emits channels_changed (refetch drops #new)
+      // AND broadcasts the windowState transition (cic mirrors via
+      // setKicked). Order matches lib/grappa/session/server.ex
+      // apply_effects/2 ordering: state change before broadcast.
+      windowState.setKicked(channelKey("freenode", "#new"), "operator", "spam");
+      networks.refetchChannels();
+
+      // Selection must NOT redirect. Give the close-watcher effect a
+      // tick to run — if it would fire, it'd flip selection to #bofh
+      // (MRU) or $server within a microtask.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sel.selectedChannel()?.channelName).toBe("#new");
+      expect(sel.selectedChannel()?.kind).toBe("channel");
+      expect(sel.selectedChannel()?.networkSlug).toBe("freenode");
+    });
   });
 
   // UX-5 bucket BU — unread state machine: single "is operator reading?"

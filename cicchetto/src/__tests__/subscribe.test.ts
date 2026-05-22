@@ -105,6 +105,9 @@ vi.mock("../lib/windowState", () => ({
   windowStateByChannel: vi.fn(() => ({})),
   windowFailureByChannel: vi.fn(() => ({})),
   windowKickedMetaByChannel: vi.fn(() => ({})),
+  windowIsJoined: vi.fn(() => false),
+  windowIsPresent: vi.fn(() => false),
+  isActiveChannelJoined: vi.fn(() => false),
 }));
 
 vi.mock("../lib/mentions", () => ({
@@ -2894,6 +2897,9 @@ describe("subscribe - pending-channel pre-subscribe loop (CP15 B5 fix)", () => {
       }),
       windowFailureByChannel: () => ({}),
       windowKickedMetaByChannel: () => ({}),
+      windowIsJoined: vi.fn(() => false),
+      windowIsPresent: vi.fn(() => false),
+      isActiveChannelJoined: vi.fn(() => false),
     }));
     vi.doMock("../lib/mentions", () => ({
       bumpMention: vi.fn(),
