@@ -10,30 +10,42 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**REV cluster autopilot — bucket 2 of 11 closed (REV-B LANDED 2026-05-22, e21c299).**
+**REV cluster autopilot — bucket 3 of 11 closed (REV-C LANDED 2026-05-22, 84ccc68 chain).**
 Full close-out in `docs/checkpoints/2026-05-22-cp39.md`. Closes 1 CRIT
 + 3 HIGH from the 2026-05-22 codebase review:
-- C3 — pin SQLite `synchronous` + `foreign_keys` PRAGMAs (config/{runtime,dev,test}.exs)
-- H6 — closed-set fallthrough raising `ArgumentError` in Networks.{connect,disconnect,mark_failed}
-- H17 — `Identifier.canonical_channel/1` single-sourcing in delete paths + ArchiveController dispatcher
-- H18 — covering expression index migration `20260522073826_add_archive_covering_indexes`
+- C4 — `Grappa.Deploy.Preflight` (NEW) — single-Elixir-source preflight
+  reading `LongLivedModules.all/0` directly; awk helper deleted
+- H20 — 7 path classes added: compose.override.yaml, compose.oneshot.yaml,
+  bin/grappa, .dockerignore, deeper infra/snippets/*, ALL config/*.exs,
+  priv/repo/migrations/*
+- H21 — `SECRET_SIGNING_SALT` runtime read in config/runtime.exs +
+  custom session plug with :persistent_term cache + config_change/2
+  override (3-round reviewer fix on the predicate shape)
+- H26 — `Grappa.Health` (NEW) + `/healthz` substrate exercise: Repo
+  + supervision-readiness flag + long-lived ETS
 
-COLD deploy applied. Live planner verified consults `messages_archive_user_idx`
-on prod DB. Healthcheck `ok`. Push autonomy used per
-`feedback_push_autonomy`.
+COLD deploy applied (with `_build/prod` cleanup per
+`feedback_hot_deploy_corrupts_build_prod` — first-deploy-after-deploy.sh-
+change used OLD preflight and false-HOT'd). All 4 findings live-verified
+post-deploy (smoke commands archived in CP39). Healthcheck `ok` via
+substrate-deep `/healthz`. Push autonomy used per `feedback_push_autonomy`.
 
-**REV-C staged.** Substrate preflight + healthcheck depth (C4 + H20 +
-H21 + H26). Orchestrator briefing at `/tmp/orchestrate-next.txt` for
+**REV-D staged.** Silent-swallow at boundaries (H12 Backoff.record_failure
+doc/call-site drift; H13 Visitor.touch_changeset monotonicity guard; H14
+Visitors.commit_password/update_nick race; H15 last_joined_channels
+schema-level cap; H16 PushVapidController runtime fetch_env!; M16/M17
+companion silent-swallow MEDs). Server-only, COLD if H13 changes the
+Visitor schema. Orchestrator briefing at `/tmp/orchestrate-next.txt` for
 post-clear pickup.
 
-**REV cluster — remaining buckets after REV-B:**
-- REV-C — substrate preflight + healthcheck depth (C4, H20, H21, H26) — infra, COLD
+**REV cluster — remaining buckets after REV-C:**
 - REV-D — silent-swallow at boundaries (H12-H16 + M16-M17) — server
 - REV-E — `:ok = Client.send_*` regression sweep (H11) — server, 8+ sites
 - REV-F — IRC SASL fallback + missing :invalid_line arm (H9, H10) — server
 - REV-G — cic SW denylist + adminEvents narrower + markerRef leak (H22, H24, H23) — cic, HOT cic-only
 - REV-H — server-side type tightening Theme A continued (H2-H8, H25) — both, COLD
-- REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD
+- REV-I — infra simplification (H19, H27, M1-M6) — infra, COLD (will re-trigger
+  the meta first-deploy-after-script-change cycle — `--force-cold` mandate)
 - REV-J — cross-cutting smells (cross-module + lifecycle + persistence MEDs)
 - REV-K — cross-surface naming pay-down (M19, M20) — both, COLD
 - REV-Z — docs sweep + closed-clusters entry + LOW liquidation — docs only
@@ -43,24 +55,24 @@ mandate). Standing autopilot: reviewer-loop mandatory, per-bucket
 deploy + healthcheck, literal gate-tail paste, push autonomy once
 green.
 
-**CP38 → CP39 rotated.** REV-B summary lives in CP39. CP38 capped at
-the rotation threshold.
+**CP38 → CP39 active.** REV-B + REV-C summaries live in CP39. CP39
+now ~700+ lines — REV-D close will push past rotation threshold,
+expect CP39→CP40 rotation at REV-D LANDED.
 
 ---
 
-## Carry-forwards from REV-B
+## Carry-forwards from REV-C
 
-- **deploy.sh preflight migration gap** — REV-B preflight CLASSIFIED
-  HOT despite the new migration; operator forced `--force-cold`. The
-  preflight regex doesn't watch `priv/repo/migrations/*`. REV-C scope
-  hits the preflight directly (C4); migration detection is the
-  natural pairing.
-- **`_build/prod` cleanup before COLD** — operator runbook should
-  document the carry-debt cleanup when prior HOT corrupted the
-  cache. Reproduced during REV-B (`feedback_hot_deploy_corrupts_build_prod`).
-- **MED-2 carry-forward** — `validate_target_name/1` runs on
-  pre-canonical `target` in ArchiveController. Bytes-equivalent
-  today; if validation tightens, validate/dispatch shapes drift.
+- **Meta-lesson** (`feedback_hot_deploy_preflight` echo): the FIRST
+  deploy after a `scripts/deploy.sh` change uses the OLD preflight.
+  REV-I touches deploy.sh again — `--force-cold` mandate on first
+  deploy.
+- **`_build/prod` cleanup before COLD** — STILL undocumented in
+  operator runbook. Reproduced THIRD time during REV-C. Defer to
+  REV-Z docs sweep, but note the recurrence.
+- **MED-2 carry-forward from REV-B** still open —
+  `validate_target_name/1` runs on pre-canonical `target` in
+  ArchiveController. Bytes-equivalent today; minor drift risk.
 
 ---
 
