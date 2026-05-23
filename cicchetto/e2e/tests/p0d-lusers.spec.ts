@@ -18,22 +18,24 @@
 // path end-to-end (without depending on the welcome-time race).
 
 import { expect, test } from "@playwright/test";
-import { composeSend, loginAs } from "../fixtures/cicchettoPage";
+import { composeSend, loginAs, sidebarWindow } from "../fixtures/cicchettoPage";
 import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 
 test("P-0d — /lusers surfaces LusersCard pinned in the $server window", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Click the always-present Server sidebar slot.
-  //
-  // UX-5 BH (2026-05-19): pre-bucket `<h3>` per-network header was
-  // dropped in UX-4 bucket C — use `.sidebar-network-header`.
-  const serverEntry = page
-    .locator(".sidebar-network-section")
-    .filter({ has: page.locator(".sidebar-network-header").filter({ hasText: NETWORK_SLUG }) })
-    .locator("li")
-    .filter({ has: page.locator(".sidebar-channel-name").filter({ hasText: /^Server$/ }) });
+  // Focus the always-present Server sidebar slot via the shared
+  // sidebarWindow fixture. Post-UX-4-C the desktop sidebar's
+  // server-window entry IS the `li.sidebar-network-header` itself
+  // (visible text is `⚙️ <slug>`, NOT the word "Server"); the
+  // fixture's `windowName === "Server"` branch handles both desktop
+  // and mobile contracts (cicchettoPage.ts:167-203). Pre-FLAKE-B
+  // Part 1 the spec used a hardcoded `.sidebar-channel-name`
+  // hasText "Server" filter that never matched post-UX-4-C — same
+  // class of breakage that c804208 fixed for the 6 desktop specs
+  // already routed through sidebarWindow().
+  const serverEntry = sidebarWindow(page, NETWORK_SLUG, "Server");
   await expect(serverEntry).toHaveCount(1);
   await serverEntry.locator(".sidebar-window-btn").click();
 
