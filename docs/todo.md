@@ -86,6 +86,59 @@ Memory pointer (single source of truth lives HERE, not in memory):
 
 ---
 
+## Pre-bastille bug-hunt (vjt 2026-05-24, dogfood, BEFORE bastille deploy)
+
+Two bugs surfaced during UX-8 cluster execution. **Address after UX-8
++ codegen, before bastille deploy** (these are user-visible regressions
+prod traffic should not see in a new runtime substrate).
+
+1. **Long-message auto-split (SERVER-SIDE)** — when cic POSTs a
+   PRIVMSG larger than the IRC server's max line length, the message
+   gets truncated silently. Need to split into multiple PRIVMSGs on
+   the bouncer side and send sequentially.
+   - **Location**: `Grappa.IRC.Client` or wherever PRIVMSG bytes
+     hit the wire to upstream. Split MUST happen in grappa, NOT in
+     cicchetto (per CLAUDE.md "one parser, on the server" — payload
+     framing is server's job).
+   - **Spec considerations**: per-network max-line-length (RPL_ISUPPORT
+     LINELEN if present, else 512 default minus prefix/header).
+     UTF-8 awareness: split on grapheme boundary not byte. Preserve
+     CTCP framing if body is `\x01ACTION ...\x01` (split inside the
+     action text, NOT inside the framing bytes). Scrollback
+     persistence: each fragment is its own message row (consistent
+     with what upstream sees + with what cic renders).
+   - **Sentinel test**: server-side spec generating a message body of
+     N bytes where N > LINELEN, assert N fragments emitted upstream
+     + N rows in scrollback.
+
+2. **Archive window shows empty on first open (CIC, MOBILE ONLY)** —
+   first open of the Archive window in cic shows empty list. After
+   archiving a fresh window, all archived contents appear. Desktop
+   not yet checked; mobile-only confirmed.
+   - **Suspected location**: `cicchetto/src/lib/archiveStore.ts` or
+     wherever Archive view subscribes/seeds. Likely a SolidJS reactivity
+     gap on first-mount (signal not initialized until first write event
+     lands).
+   - **Repro path**: fresh PWA install on iOS, open Archive window
+     immediately (no prior archive action) → empty. Trigger archive on
+     any window → Archive view repopulates with full list.
+   - **Hypothesis**: store does an initial fetch but the rendered
+     `<For>` is bound to a signal that hasn't been set yet (undefined
+     vs empty array distinction). Or: the listener for `archived` events
+     is wired AFTER the initial REST seed, so seed lands during a
+     listener-not-yet-armed window. Standard cic re-render bug class —
+     see `feedback_home_pane_ws_rerender_bug` for sibling pattern.
+   - **Verify on desktop**: vjt explicitly noted "desktop I didn't
+     check" — first step is reproducing on desktop to confirm
+     mobile-only vs cross-platform. If desktop also broken, root cause
+     is in the store; if mobile-only, focus on touch/PWA cold-start
+     timing (e.g. viewport-resize racing the seed).
+
+These slot in **between codegen and bastille**: don't deploy a fresh
+prod-runtime substrate with known user-visible regressions.
+
+---
+
 ## Carry-forwards from REV cluster (open)
 
 - **REV-J.5 (M1+M5)** anonymous-volumes refactor — Dockerfile UID
