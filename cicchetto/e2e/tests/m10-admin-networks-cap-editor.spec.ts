@@ -63,16 +63,28 @@ test("M-10 cap editor: edit + Save round-trips through server", async ({ page })
   await openAdminNetworksTab(page);
 
   const slug = "bahamut-test";
-  const sessionsInput = page.getByTestId(`admin-network-max-sessions-${slug}`);
+  // U-1 (`84388a7`) split `max_concurrent_sessions` into visitor + user
+  // caps. The rendered testid moved from `admin-network-max-sessions-`
+  // to `admin-network-max-visitor-sessions-` (+ a `user` sibling) but
+  // this spec wasn't updated, so `inputValue` waited for a non-existent
+  // testid until the 30s timeout. Visitor cap mirrors the pre-split
+  // single cap (per the U-1 migration: visitor cap inherits the
+  // historic value, user cap defaults to 3) — keep this spec on the
+  // visitor cap for round-trip parity with the original intent.
+  const sessionsInput = page.getByTestId(`admin-network-max-visitor-sessions-${slug}`);
   const save = page.getByTestId(`admin-network-save-${slug}`);
 
   // Pre-edit: Save disabled (no dirty).
   await expect(save).toBeDisabled();
 
-  // Edit to a new value (use a sentinel +1 so we don't depend on the
-  // seeder's exact starting cap — read the current value first).
+  // Edit to a new sentinel value. Empty string ("") means the seeder
+  // didn't set a cap (NULL = unlimited per U-3 admission contract);
+  // bind_network doesn't accept cap params, so bahamut-test starts
+  // cap-NULL while azzurra is explicitly cap-100. Round-trip works for
+  // both shapes — the revert at the end restores whichever input value
+  // was first read, blank or numeric.
   const current = await sessionsInput.inputValue();
-  const next = String(Number.parseInt(current, 10) + 1);
+  const next = current === "" ? "42" : String(Number.parseInt(current, 10) + 1);
   await sessionsInput.fill(next);
   await expect(save).toBeEnabled();
 

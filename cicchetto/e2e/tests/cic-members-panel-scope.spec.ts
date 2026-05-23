@@ -37,7 +37,6 @@ import {
   selectChannel,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { partChannel } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -49,14 +48,6 @@ const SEED_CHANNEL = AUTOJOIN_CHANNELS[0];
 // which IS the rendered text in the header row.
 const SERVER_WINDOW_LABEL = NETWORK_SLUG;
 const DM_PEER = "members-scope-peer";
-// Random per-run suffix so the spec is repeatable on a long-lived
-// testnet — same shape as cp15-b5/m8.
-const PARK_CHANNEL = `#cic-members-scope-${crypto.randomUUID().slice(0, 8)}`;
-
-test.afterEach(async () => {
-  const vjt = getSeededVjt();
-  await partChannel(vjt.token, NETWORK_SLUG, PARK_CHANNEL).catch(() => {});
-});
 
 test("cic-members-panel-scope — joined channel shows MembersPane (baseline)", async ({ page }) => {
   const vjt = getSeededVjt();
@@ -104,33 +95,20 @@ test("cic-members-panel-scope — DM (query) window does NOT mount MembersPane",
   await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(0);
 });
 
-test("cic-members-panel-scope — parked channel suppresses MembersPane + TopicBar hamburger", async ({
-  page,
-}) => {
-  const vjt = getSeededVjt();
-  await loginAs(page, vjt);
-  await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: NETWORK_NICK });
-
-  // /join then PART (via REST) to drive the channel into a non-joined
-  // state while keeping the sidebar entry around (parked / archive
-  // section). Using `partChannel` REST instead of `/part` slash-cmd
-  // avoids racing composeSend's textarea-clearing assert against the
-  // ComposeBox unmount that follows the parked-state transition.
-  await composeSend(page, `/join ${PARK_CHANNEL}`);
-  await expect(sidebarWindow(page, NETWORK_SLUG, PARK_CHANNEL)).toHaveCount(1, { timeout: 5_000 });
-  // Wait for the joined-state UI to settle (MembersPane appears) before
-  // parting — otherwise we might race the JOIN echo and assert on the
-  // pre-pending render path.
-  await selectChannel(page, NETWORK_SLUG, PARK_CHANNEL, { ownNick: NETWORK_NICK });
-  await expect(page.locator(".shell-members .members-pane")).toBeVisible({ timeout: 5_000 });
-
-  await partChannel(vjt.token, NETWORK_SLUG, PARK_CHANNEL);
-
-  // After PART: window state transitions away from :joined. MembersPane
-  // unmounts, TopicBar suppresses the right hamburger, and the grid
-  // collapses on desktop. The sidebar entry stays (archive section);
-  // we don't assert on its presence here — that's covered by
-  // cp15-b6-part-archive-rejoin.
-  await expect(page.locator(".shell-members .members-pane")).toHaveCount(0, { timeout: 5_000 });
-  await expect(page.locator(".topic-bar [aria-label='open members sidebar']")).toHaveCount(0);
-});
+// The pre-GREEN-CI parked-channel sub-test was deleted: UX-4 bucket E's
+// close-watcher (`selection.ts`) auto-redirects focus AWAY from any
+// channel that drops out of `channelsBySlug` (which happens
+// synchronously on REST PART via the eager `cleanup_local` +
+// `broadcast_channels_changed` path in `Grappa.Session.Server`). Net
+// effect: the operator cannot be focused on a parked channel — the
+// state isn't reachable as an active selection. The pseudo-row case
+// (failed JOIN, peer KICK) is covered by:
+//   * cp15-b6-pending-to-failed-invite-only — :failed suppression
+//   * cp15-b6-kicked — :kicked suppression
+// which exercise the SAME `isActiveChannelJoined()` predicate gating
+// MembersPane mount + grid collapse. Adding a third parked-state spec
+// would assert a state cic intentionally prevents, conflicting with
+// the close-watcher's transition-driven redirect.
+//
+// The non-channel suppression contract is covered by the joined-baseline
+// (test 1) and Server / DM windows (tests 2 + 3) above.
