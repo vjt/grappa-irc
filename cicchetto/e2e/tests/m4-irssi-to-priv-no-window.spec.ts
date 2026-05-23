@@ -27,6 +27,7 @@ import {
   selectChannel,
   sidebarMessageBadge,
   sidebarWindow,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -44,6 +45,7 @@ test("M4 — inbound DM auto-opens query window with unread, clears on focus", a
   // as the WS-ready sync (own-nick subscribe.ts join for the dm-
   // listener topic happens off the same effect chain).
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // Pre-condition: no query window for the peer yet (fresh stack
   // guarantees it; assert anyway so a future cross-test contamination

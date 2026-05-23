@@ -19,6 +19,7 @@ import {
   selectChannel,
   sidebarMessageBadge,
   sidebarWindow,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -34,6 +35,7 @@ test("M5 — inbound DM to focused query window renders inline, no unread", asyn
   // Channel-first focus to drive the WS-ready sync (own-nick subscribe
   // for dm-listener fires off the same boot effect chain).
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // /query opens the window AND focuses it without sending anything.
   // After this, cicchetto is on the (slug, PEER_NICK) query window, sidebar

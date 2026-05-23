@@ -28,6 +28,7 @@ import {
   selectChannel,
   sidebarMessageBadge,
   sidebarWindow,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -44,6 +45,7 @@ test("M6 — cicchetto /msg opens query window, focuses, renders own-msg", async
   // window has no compose). selectChannel + ownNick syncs WS-ready
   // for #bofh — same pattern as M1/M2/M7.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // Peer joins the network so the DM target nick is visible to the
   // leaf. M6 doesn't assert peer-side; the peer is just here to be

@@ -18,6 +18,7 @@ import {
   loginAs,
   selectChannel,
   sidebarWindow,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -30,6 +31,7 @@ test("P-0b — /msg to away peer surfaces peer_away banner in DM window", async 
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
   try {
