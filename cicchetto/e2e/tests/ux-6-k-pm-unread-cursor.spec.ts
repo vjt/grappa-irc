@@ -47,6 +47,7 @@ import {
   scrollbackLine,
   selectChannel,
   sidebarWindow,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted, getReadCursor } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -64,6 +65,12 @@ test("UX-6 K — focus-leave on a peer DM window advances the server-side read c
   // Channel-first focus to drive the WS-ready sync (own-nick subscribe
   // for the DM-listener boots off the same effect chain). Mirrors M4.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  // FLAKE-D (2026-05-23) — same race shape as cp14-b3: peer.privmsg
+  // can land before cic's own-nick DM-listener subscribe completes,
+  // server fan-outs to zero subscribers, sidebar never auto-opens,
+  // spec times out at the `sidebarWindow.toHaveCount(1)` check.
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // Pre-condition: no cursor exists for the peer window yet (fresh
   // stack, vjt never DM'd ux6k-peer before).
