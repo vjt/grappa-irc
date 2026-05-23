@@ -1,0 +1,176 @@
+// UX-8 bucket D — scroll-settle cursor update, verified end-to-end.
+//
+// Three scenarios pinning the contract from
+// docs/superpowers/specs/2026-05-23-ux-8-scroll-design.md (b):
+//   1. Scroll up to middle, wait > debounce, cursor moves to the
+//      last fully-visible row id (NOT the tail).
+//   2. Scroll back to bottom, wait > debounce, cursor advances to
+//      tail id.
+//   3. Scroll UP from bottom, wait > debounce, cursor does NOT retreat.
+//
+// Reuses the cp14-b1 seed shape: rows on (vjt, bahamut-test, #bofh)
+// seeded via `mix grappa.seed_scrollback`. Same 800x300 viewport for
+// reliable overflow.
+
+import { expect, type Page, test } from "@playwright/test";
+import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  AUTOJOIN_CHANNELS,
+  getSeededVjt,
+  NETWORK_NICK,
+  NETWORK_SLUG,
+} from "../fixtures/seedData";
+
+const CHANNEL = AUTOJOIN_CHANNELS[0];
+const REST_PAGE_SIZE = 50;
+const SETTLE_DEBOUNCE_MS = 500;
+// One whole frame past the debounce to absorb the rAF + POST round-trip.
+const SETTLE_WAIT_MS = SETTLE_DEBOUNCE_MS + 300;
+
+// Cursor read-back via `/me` envelope — `read_cursors: %{slug =>
+// %{chan => id}}`. The dedicated GET /networks/:slug/channels/:chan/
+// read-cursor route doesn't exist (only POST does), so /me is the
+// canonical read path. See lib/grappa_web/controllers/me_controller.ex.
+async function fetchCursor(token: string, channel: string): Promise<number | null> {
+  const res = await fetch("http://grappa-test:4000/me", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`fetchCursor (via /me): ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as {
+    read_cursors?: Record<string, Record<string, number>>;
+  };
+  return body.read_cursors?.[NETWORK_SLUG]?.[channel] ?? null;
+}
+
+async function scrollByPx(page: Page, deltaY: number): Promise<void> {
+  await page.evaluate((dy) => {
+    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+    if (!el) throw new Error("scrollback not found");
+    el.scrollTop = Math.max(0, el.scrollTop + dy);
+    el.dispatchEvent(new Event("scroll"));
+  }, deltaY);
+}
+
+async function scrollToBottom(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+    if (!el) throw new Error("scrollback not found");
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event("scroll"));
+  });
+}
+
+async function visibleRowIds(page: Page): Promise<number[]> {
+  return await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+    if (!el) return [];
+    const ids: number[] = [];
+    const viewportBottom = el.scrollTop + el.clientHeight;
+    for (const row of el.querySelectorAll<HTMLElement>(".scrollback-line")) {
+      if (row.offsetTop + row.offsetHeight > viewportBottom) break;
+      const id = row.dataset.msgId;
+      if (id) ids.push(Number.parseInt(id, 10));
+    }
+    return ids;
+  });
+}
+
+test.describe("scroll-settle cursor update — forward-only", () => {
+  test.use({ viewport: { width: 800, height: 300 } });
+
+  test("scroll up to middle advances cursor to last fully-visible row", async ({ page }) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const vjt = getSeededVjt();
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    // Capture the tail-cursor that the existing focus-leave + browser-
+    // blur triggers may have already set (NB: a fresh focus DOES NOT
+    // POST a cursor — selection.ts's on(selectedChannel) only sets
+    // for the OUTGOING window). So this baseline may be null or
+    // whatever the prior test left.
+    const cursor0 = await fetchCursor(vjt.token, CHANNEL);
+
+    // Scroll up by ~150px so the viewport sits mid-page.
+    await scrollByPx(page, -150);
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+
+    const visible = await visibleRowIds(page);
+    expect(visible.length).toBeGreaterThan(0);
+    const expectedCursor = visible[visible.length - 1];
+    if (expectedCursor === undefined) throw new Error("no visible rows");
+
+    const cursor1 = await fetchCursor(vjt.token, CHANNEL);
+    // cursor1 must equal the last-fully-visible row id we measured.
+    // (Forward-only gate would have suppressed the POST if cursor0
+    // already exceeds expectedCursor — but the scroll moved UP from
+    // the tail, so expectedCursor is the largest id in view, which
+    // can only equal or exceed cursor0 when cursor0 was below the
+    // initial-bottom view.)
+    expect(cursor1).toBe(expectedCursor);
+    // And it must NOT exceed the prior cursor (the tail) — equal or
+    // less, since we scrolled UP from the bottom (when cursor0 is
+    // non-null). Forward-only gate would have suppressed a backward
+    // POST; equal-to-prior means the gate worked.
+    if (cursor0 !== null) {
+      expect(cursor1!).toBeLessThanOrEqual(cursor0);
+    }
+  });
+
+  test("scroll back to bottom advances cursor to tail", async ({ page }) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const vjt = getSeededVjt();
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    // Scroll up, settle, then back to bottom, settle. Final cursor
+    // = tail id.
+    await scrollByPx(page, -150);
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+    await scrollToBottom(page);
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+
+    const visible = await visibleRowIds(page);
+    const tail = visible[visible.length - 1];
+    if (tail === undefined) throw new Error("no visible tail");
+
+    const cursorFinal = await fetchCursor(vjt.token, CHANNEL);
+    expect(cursorFinal).toBe(tail);
+  });
+
+  test("scroll up from bottom does NOT retreat cursor", async ({ page }) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const vjt = getSeededVjt();
+    await loginAs(page, vjt);
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+    await expect
+      .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+      .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+    // Pin cursor at tail first (scroll-to-bottom + settle drives the
+    // forward-only path through scroll-settle since fresh focus doesn't
+    // emit cursor writes).
+    await scrollToBottom(page);
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+    const cursorAtTail = await fetchCursor(vjt.token, CHANNEL);
+    expect(cursorAtTail).not.toBeNull();
+
+    // Now scroll UP. Settle. Forward-only gate must suppress the POST.
+    await scrollByPx(page, -150);
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+
+    const cursorAfterUp = await fetchCursor(vjt.token, CHANNEL);
+    expect(cursorAfterUp).toBe(cursorAtTail);
+  });
+});
