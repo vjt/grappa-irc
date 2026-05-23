@@ -294,7 +294,14 @@ defmodule Grappa.AdminEventsTest do
   # inflate `live_counts_for_network/1`. Poll the match-spec used by
   # admission until empty; bounded so a true hang surfaces as a clear
   # test crash instead of a timeout deep inside `assert_receive`.
-  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(50)
+  #
+  # GREEN-CI batch 2 (2026-05-23): bumped budget from 50×10ms (500ms)
+  # to 200×10ms (2s). CI runner under load consistently shows 4 stale
+  # entries surviving the original 500ms window — the issue is genuine
+  # cleanup latency (Registry monitor-DOWN ASYNC cleanup of dead pids
+  # under CI ETS contention), not a bug. 2s is still tight enough that
+  # a true hang surfaces clearly.
+  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(200)
 
   defp wait_for_empty_session_registry!(0) do
     leftover =
