@@ -298,6 +298,38 @@ export async function selectChannel(
   }
 }
 
+// Wait until cic's DM-listener has subscribed to the own-nick topic
+// for `networkSlug` (i.e. `phx.join()` ack landed for
+// `grappa:user:{userName}/network:{slug}/channel:{ownNick}`). Pure
+// test seam: subscribe.ts stamps `__cic_dmListenerReady` (a `Set<slug>`)
+// in the DM-listener join `onJoinOk` callback. Production never reads
+// it.
+//
+// Why: peer-driven specs that fire `peer.privmsg(NETWORK_NICK, …)`
+// IMMEDIATELY after `selectChannel(channel)` race the DM-listener
+// effect. `selectChannel` awaits the channel topic join, NOT the
+// own-nick topic join — those are sibling `createEffect`s gated on
+// `networks()` loading. If the peer's PRIVMSG lands before the
+// own-nick subscribe completes, the server broadcast fan-outs to
+// zero subscribers and the DM-listener handler never fires →
+// no `openQueryWindowState` → no sidebar window → no auto-open. ~20%
+// flake observed in suite pre-fix.
+//
+// Shape mirrors the inline pattern UX-6-L introduced
+// (`ux-6-l-foreground-push-beep.spec.ts:81`); factored here once
+// CP14-B3 needed the same guard (FLAKE-D triage 2026-05-23).
+export async function waitForDmListenerReady(page: Page, networkSlug: string): Promise<void> {
+  await page.waitForFunction(
+    (slug) => {
+      const set = (window as unknown as { __cic_dmListenerReady?: Set<string> })
+        .__cic_dmListenerReady;
+      return set?.has(slug) === true;
+    },
+    networkSlug,
+    { timeout: 5_000 },
+  );
+}
+
 // Scrollback accessors ──────────────────────────────────────────────
 
 // All message rows in the currently focused window's scrollback.

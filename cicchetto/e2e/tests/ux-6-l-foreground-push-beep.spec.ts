@@ -23,7 +23,7 @@
 // path.
 
 import { expect, test } from "@playwright/test";
-import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { loginAs, selectChannel, sidebarWindow, waitForDmListenerReady } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -69,24 +69,10 @@ test("inbound DM fires in-app beep (__lastBeepAt advances) on a non-focused wind
   const baseline = await readLastBeepAt(page);
   expect(baseline).toBeNull();
 
-  // Wait for the DM-listener phx.join() to ack BEFORE driving a peer
-  // DM. Without this, peer.privmsg can arrive at the server while
-  // cic's `joined` Map for `(slug, ownNick)` is still empty — the
-  // server broadcast lands at a topic nobody is subscribed to and
-  // the DM-listener handler silently misses it (~20% flake rate in
-  // suite). The seam is set in subscribe.ts's DM-listener
-  // createEffect onJoinOk callback. Pure test seam — production
-  // doesn't read it. Aligns with `feedback_silent_retry_anti_pattern`:
-  // surface internal state, don't mask with timeouts.
-  await page.waitForFunction(
-    (slug) => {
-      const set = (window as unknown as { __cic_dmListenerReady?: Set<string> })
-        .__cic_dmListenerReady;
-      return set?.has(slug) === true;
-    },
-    NETWORK_SLUG,
-    { timeout: 5_000 },
-  );
+  // Wait for the DM-listener phx.join() ack BEFORE driving a peer DM —
+  // see `waitForDmListenerReady` doc for the race shape. Suite saw
+  // ~20% flake pre-fix.
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK_DM });
   try {

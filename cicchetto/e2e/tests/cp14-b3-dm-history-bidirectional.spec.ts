@@ -31,6 +31,7 @@ import {
   loginAs,
   scrollbackLine,
   selectChannel,
+  waitForDmListenerReady,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -51,6 +52,14 @@ test("CP14 B3 — DM query window shows both inbound and outbound history after 
   // for dm-listener, networks fetch, etc.) is fully evaluated before
   // the DM exchange. Same trick as M5.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  // FLAKE-D (2026-05-23) — `selectChannel` awaits the channel topic
+  // join, NOT the own-nick DM-listener subscribe. Without this guard
+  // the peer's PRIVMSG below races: server fan-outs to zero subscribers,
+  // dm-listener never fires `openQueryWindowState`, sidebar never auto-
+  // opens, spec times out at `selectChannel(PEER_NICK)`. Same race + fix
+  // as UX-6-L.
+  await waitForDmListenerReady(page, NETWORK_SLUG);
 
   // Phase 1 — exchange both directions while connected.
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
