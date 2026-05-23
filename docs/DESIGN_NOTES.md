@@ -9345,6 +9345,98 @@ cleared on `2502d81`: integration run `26336482344` went from
 have NO shared locator signature — distinct individual flakes, not
 cascade. iOS/webkit class (4 of 7) is platform-specific carry-forward.
 
+## 2026-05-23 — GREEN-CI cluster batch 2 close (chromium-3 + webkit-iphone + admin-events)
+
+Same-day continuation. vjt's "FUCKING FIX THE FUCKING CI" mandate
+extended past batch 1. 7 residual failures + 1 latent CI flake
+addressed in 3 commits.
+
+### Batch 2 buckets
+
+**chromium-3 (`45e69b3`)** — 3-way op-race latent flakes (post m9b-victim).
+m9b-victim raised #bofh autojoin race for Bahamut +o from 2 → 3
+candidates (vjt + m9b-test + m9b-victim), breaking 3 specs that
+assumed vjt's op-status was deterministic:
+
+- `b0-invite-from-server-window:30` — same shape as FLAKE-C bucket 4
+  (`p0e-invite-ack`). Bahamut silently drops INVITE from non-op
+  inviter → no 341 ack → no invite-ack row. Switched to dedicated
+  `#b0-invite-test` channel where vjt joins FIRST → +o.
+- `members-prefix-regression:48` — `.member-op` returns 0 nodes
+  when m9b-victim won +o on #bofh AND a destructive admin spec
+  killed m9b-victim's session → #bofh goes opless. Same fix.
+- `ux-5-bc2-nick-render:52` — assertion was wrong by DESIGN. Spec
+  asserted color on members-pane NickText, but `MembersPane.tsx:182`
+  passes `noColor` to NickText (UX-6-A v2 — kept the mode-prefix
+  sigil colored, removed per-nick hue noise from members pane).
+  With `noColor` the `.nick-text` span resolves to `--fg` which is
+  `#000000` in mirc-light theme → rgb sum = 0 → assertion fails.
+  Switched probe to scrollback sender (canonical colored NickText
+  site). Same file: 2 other latent 1/3 op-race flakes hardened by
+  routing through peer-first dedicated channel.
+
+**webkit-iphone (`85d2b1c`)** — iOS-3 close × PART cascade + ux-6-d bugs.
+
+The webkit-iphone-15 quartet was actually two distinct root causes:
+
+- **iOS-3 PART hole**: `ios-3-bottom-bar-close.spec.ts:40` +
+  `ios-z-cluster-journey.spec.ts:99` tap the close × which PARTs
+  vjt from #bofh on the bouncer with NO restoration. Downstream
+  webkit-iphone specs (`ux-2-mobile-archive`, `ios-z`) couldn't
+  selectChannel(#bofh) — the tab is gone, locator times out at 30s.
+  Same SHAPE as batch-1 SPEC-4 cascade (one spec leaving destructive
+  state for downstream), different mechanism. Fix: `afterEach` rejoin
+  via REST in both specs.
+
+- **ux-6-d two distinct bugs** (real iso failures, not cascade):
+  - (d) line 105: `.compose-box textarea` not visible. Mobile boots
+    into HomePane (UX-4-B `:home` default selection) which has no
+    compose-box. Fix: `selectChannel(#bofh)` first.
+  - (f) line 130-160: `promoteVjtToAdmin` hardcoded
+    `const adminToken = "admin-vjt"` (literal string, NOT a bearer
+    token) → /admin/users 401 → `.find` crashed. Plus drove admin
+    via desktop shell-chrome cog which on mobile resolves the
+    settings drawer with admin-console-entry OUTSIDE the viewport.
+    Fix: replace helper with working `ux-6-g` pattern + swap admin
+    entry to mobile members-drawer launcher (`mobile-panel-admin`)
+    from `ux-6-c`.
+
+**admin-events (`b17fd71`)** — CI ETS-contention poll-budget.
+The SPEC-1 SessionRegistry-drain at AdminEventsTest setup polled
+500ms; CI runner ETS contention regularly exceeded that, with 7 of
+10 tests reporting "SessionRegistry never drained" with 4 stale
+entries surviving. Bumped to 2s (200×10ms). Pure setup-timing,
+no production code.
+
+### Lessons
+
+The chromium-3 bucket distilled a new memory:
+`feedback_seed_expansion_audit.md`. When adding seeded users /
+destructive sacrificial-targets to fix one cascade, audit every spec
+assuming a deterministic position on a shared resource (op race for
+first-JOIN, sidebar insertion order, autojoin race for color slots).
+Position assumptions silently break.
+
+The webkit-iphone bucket showed cascade-shaped poisoning isn't a
+chromium-only phenomenon. Any spec that mutates shared state on the
+bouncer (PART, MODE, etc.) MUST `afterEach` restore, regardless of
+project. iOS-3's close × had been quietly relying on alphabetical
+ordering not surfacing the cascade until m9b-victim made the
+downstream specs strict enough about state preconditions.
+
+The admin-events bucket showed CI runner ETS contention can push
+past poll budgets that pass locally. 2s is the new floor for
+SessionRegistry drains under sandbox + load.
+
+### Final CI state
+
+- **integration** at `85d2b1c`: 184 passed / 0 failed (4.4m)
+- **ci** at `b17fd71`: 2m29s exit-0 (test+lint+audit+dialyzer)
+
+vjt's mandate satisfied. 30 → 0 failures across batch 1 + batch 2.
+
+No deploy needed (e2e-only + sandbox-test-only).
+
 
 ---
 
