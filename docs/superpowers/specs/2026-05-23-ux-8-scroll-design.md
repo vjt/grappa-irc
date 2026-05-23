@@ -39,13 +39,28 @@ machines win the race often enough to mask.
 - focus-leave (selection.ts:202-208)
 - browser-blur (selection.ts:256-257)
 
+Both existing triggers POST the scrollback **tail id**
+(`msgs[msgs.length - 1].id`, see `setCursorForWindow` at
+selection.ts:134-143) — they ignore where the operator was actually
+looking. The server contract (`Grappa.ReadCursor.set/4` at
+`lib/grappa/read_cursor.ex:142`) supports backward moves
+(last-write-wins, docstring explicitly allows "scrolled up to re-read
+context, settled there"), but cic never exercises that capability —
+tail id is always ≥ the previous cursor.
+
 **Missing**: scroll-settle. If the operator scrolls down through unread
 messages and stops mid-channel without switching away, the cursor is
 not updated. On next visit, the unread marker is wrong.
 
-**Server contract**: already supports last-write-wins
-(`Grappa.ReadCursor.set/4` semantics — see docstring at
-`lib/grappa/read_cursor.ex:1-20`). No server change required.
+**Scope decision**: this cluster ONLY adds the scroll-settle trigger.
+focus-leave and browser-blur keep their current tail-snap behavior.
+Rewriting them to use visible-row math is a separate change with its
+own risk surface (e.g. operator switches away while scrolled-up to
+read history → cursor would retreat — desired per server semantics but
+divergent from today's behavior). Out of scope here.
+
+**Server contract**: already supports last-write-wins. No server change
+required.
 
 ## Approach
 
@@ -86,10 +101,11 @@ green naturally when the rAF fix lands.
 - Cursor = id of the last fully-visible row at the bottom of the
   viewport when the user stops scrolling.
 - **Forward-only**: never moves backwards on scroll-up. If the
-  scroll-settle would retreat the cursor, skip the POST. The
-  focus-leave + browser-blur paths still allow backward moves (their
-  "I'm leaving, here's where I was" semantic legitimately can go
-  backwards). Scroll-settle is the live signal — monotonic.
+  scroll-settle would retreat the cursor, skip the POST. Today cic's
+  cursor only ever moves forward (focus-leave + browser-blur write
+  the tail id which is monotonic); this rule keeps that invariant
+  intact when scroll-settle is added. The server allows backward
+  moves, but cic does not exercise them.
 
 #### Mechanics
 - Client-only 500ms debounce. `setTimeout` on every scroll event,
@@ -184,8 +200,12 @@ Per `feedback_per_bucket_deploy`:
 
 - **No server-side rate limit on `ReadCursor.set/4`**. Client debounce
   is sufficient; adding rate limit doubles the surface for no win.
-- **No backward-cursor on scroll-up**. Focus-leave + browser-blur
-  preserve that semantic.
+- **No backward-cursor on scroll-up**. Today's invariant (cursor
+  monotonic) preserved; server allows backward moves but cic does
+  not exercise them.
+- **No rewrite of focus-leave / browser-blur to use visible-row math**.
+  Those keep their current tail-snap behavior. Separate change with
+  its own risk surface.
 - **No IntersectionObserver per row**. Overkill for a debounced
   500ms settle path.
 - **GREEN-CI-3 Tier 2/3 work**. Already deferred to its own future
