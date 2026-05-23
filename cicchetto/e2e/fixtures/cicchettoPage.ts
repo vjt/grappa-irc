@@ -152,7 +152,30 @@ export async function loginAs(
 // both as "the per-window container" — the badge selectors below
 // mirror the branching so a `.toHaveCount(1)` assertion works
 // identically on either layout.
+//
+// GREEN-CI-3 B2 (2026-05-23) — match exact window name via the
+// production `data-window-name` attribute (added on every sidebar
+// `<li>` + every `.bottom-bar-tab`). Pre-fix this helper matched on
+// `hasText: windowName` substring, which double-matched on any name
+// that was a prefix of another (`#bofh` ⊂ `#bofh-test`, `peer` ⊂
+// `peer2`) — combined with Playwright's default `.first()` for
+// ambiguous locators, the collision returned a non-deterministic
+// row. The attribute is a stable test seam (same pattern as the
+// existing `data-network-slug` + `data-testid` + `data-kind` ones);
+// production behavior unchanged.
 export function sidebarWindow(page: Page, networkSlug: string, windowName: string) {
+  // Server-window legacy ergonomics: callers historically pass one of
+  //   - "Server" (pre-UX-4-C label)
+  //   - the literal network slug (UX-4-C / UX-6-E callers that
+  //     identify the server tab by the slug it renders alongside the
+  //     ⚙️ emoji)
+  // The production tag now uses SERVER_WINDOW_NAME = "$server" on the
+  // network-header row's data-window-name attribute; map both legacy
+  // shapes → "$server" here so spec callers don't have to know the
+  // storage shape.
+  const isServerWindow = windowName === "Server" || windowName === networkSlug;
+  const resolvedName = isServerWindow ? "$server" : windowName;
+  const attr = `[data-window-name="${resolvedName}"]`;
   if (isMobileViewport(page)) {
     // BottomBar.tsx: `.bottom-bar-network` group is identified by its
     // `.bottom-bar-network-header[data-network-slug=...]` child
@@ -161,20 +184,22 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
     const section = page.locator(".bottom-bar-network", {
       has: page.locator(`.bottom-bar-network-header[data-network-slug="${networkSlug}"]`),
     });
-    // The header's visible text is the slug + ⚙️ + badges, NOT the
-    // literal word "Server". Callers passing windowName="Server"
-    // (legacy ergonomics from pre-UX-6-E) want the header itself.
-    if (windowName === "Server") {
+    // Server-window short-circuit: the network-header IS the server tab
+    // (UX-6-E merge). Selector by data-network-slug to mirror the
+    // section-anchor; data-window-name isn't authored on the header
+    // (the slug attribute already disambiguates it from channel/query
+    // tabs).
+    if (isServerWindow) {
       return section.locator(
         `.bottom-bar-network-header[data-network-slug="${networkSlug}"]`,
       );
     }
-    // Channel + query tabs match by visible text. Exclude the header
-    // so a channel name that happens to share a substring with the
-    // slug doesn't double-match.
-    return section.locator(".bottom-bar-tab:not(.bottom-bar-network-header)", {
-      hasText: windowName,
-    });
+    // Channel + query tabs: exact match via data-window-name on the
+    // `.bottom-bar-tab` button. Exclude the network-header tab
+    // explicitly so a hypothetical attribute collision (server tab
+    // for a network whose slug equals a channel name) can't double-
+    // match.
+    return section.locator(`.bottom-bar-tab:not(.bottom-bar-network-header)${attr}`);
   }
   // Desktop: scope to the section whose collapsed network header
   // row (UX-4 bucket C `.sidebar-network-header` row, replacing the
@@ -194,14 +219,11 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
   // the server-window entry; its visible text is `⚙️ <slug>` (NOT
   // "Server"). Pre-fix `section.locator("li", { hasText: "Server" })`
   // never matched and timed out at 30s — falsely attributed to
-  // "testnet load" in FLAKE-A. Same windowName ergonomics as mobile
-  // (callers can pass "Server" or the slug interchangeably); see
-  // `Sidebar.test.tsx:212` for the literal "Server is gone as a label"
-  // post-UX-4-C contract.
-  if (windowName === "Server") {
-    return section.locator("li.sidebar-network-header");
-  }
-  return section.locator("li", { hasText: windowName });
+  // "testnet load" in FLAKE-A. The `data-window-name="$server"`
+  // attribute on the header `<li>` (added GREEN-CI-3 B2) collapses
+  // both legacy callers ("Server") and explicit slug callers to the
+  // same exact-attribute match.
+  return section.locator(`li${attr}`);
 }
 
 export function sidebarMessageBadge(page: Page, networkSlug: string, windowName: string) {

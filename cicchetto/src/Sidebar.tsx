@@ -307,6 +307,7 @@ const Sidebar: Component<Props> = () => {
                 <li
                   class="sidebar-network-header"
                   classList={{ selected: isSelected(network.slug, SERVER_WINDOW_NAME) }}
+                  data-window-name={SERVER_WINDOW_NAME}
                 >
                   <button
                     type="button"
@@ -373,7 +374,10 @@ const Sidebar: Component<Props> = () => {
                   {(channel) => {
                     const key = channelKey(network.slug, channel.name);
                     return (
-                      <li classList={{ selected: isSelected(network.slug, channel.name) }}>
+                      <li
+                        classList={{ selected: isSelected(network.slug, channel.name) }}
+                        data-window-name={channel.name}
+                      >
                         <button
                           type="button"
                           onClick={() => handleClick(network.slug, channel.name, "channel")}
@@ -425,7 +429,10 @@ const Sidebar: Component<Props> = () => {
                   gates on per-channel join-line wire-truth instead. */}
                 <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
                   {(row) => (
-                    <li classList={{ selected: isSelected(network.slug, row.name) }}>
+                    <li
+                      classList={{ selected: isSelected(network.slug, row.name) }}
+                      data-window-name={row.name}
+                    >
                       <button
                         type="button"
                         onClick={() => handleClick(network.slug, row.name, "channel")}
@@ -469,7 +476,10 @@ const Sidebar: Component<Props> = () => {
                   {(qw) => {
                     const key = channelKey(network.slug, qw.targetNick);
                     return (
-                      <li classList={{ selected: isSelected(network.slug, qw.targetNick) }}>
+                      <li
+                        classList={{ selected: isSelected(network.slug, qw.targetNick) }}
+                        data-window-name={qw.targetNick}
+                      >
                         <button
                           type="button"
                           onClick={() => handleClick(network.slug, qw.targetNick, "query")}
@@ -524,7 +534,7 @@ const Sidebar: Component<Props> = () => {
                     {(entry) => {
                       const key = archiveKey(network.slug, entry.target);
                       return (
-                        <li class="sidebar-archive-row">
+                        <li class="sidebar-archive-row" data-window-name={entry.target}>
                           <button
                             type="button"
                             class="sidebar-window-btn"

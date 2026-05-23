@@ -128,6 +128,7 @@ const BottomBar: Component<Props> = (props) => {
                           selected: isSelected(network.slug, channel.name),
                           parted: !channel.joined,
                         }}
+                        data-window-name={channel.name}
                         onClick={() => handleClick(network.slug, channel.name, "channel")}
                       >
                         {channel.name}
@@ -165,6 +166,7 @@ const BottomBar: Component<Props> = (props) => {
                         role="tab"
                         class="bottom-bar-tab bottom-bar-tab-with-close"
                         classList={{ selected: isSelected(network.slug, qw.targetNick) }}
+                        data-window-name={qw.targetNick}
                         onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                       >
                         <NickText nick={qw.targetNick} extraClass="bottom-bar-tab-nick" />
