@@ -876,9 +876,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   // Eight failed attempts cost: see docs/DESIGN_NOTES.md UX-6-D.
   const measureOverflow = (): void => {
     if (!listRef) return;
-    queueMicrotask(() => {
-      if (!listRef) return;
-      setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
+    // Same microtask-vs-layout race as scrollToActivation: scrollHeight
+    // read before layout returns stale values immediately after a row
+    // append. Double rAF ensures layout has run before we read.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!listRef) return;
+        setIsOverflowing(listRef.scrollHeight > listRef.clientHeight);
+      });
     });
   };
 
@@ -958,18 +963,27 @@ const ScrollbackPane: Component<Props> = (props) => {
   // bottom" button doesn't flash visible mid-activation.
   const scrollToActivation = (): void => {
     if (!listRef) return;
-    queueMicrotask(() => {
-      if (!listRef) return;
-      const marker = markerRef();
-      if (marker) {
-        marker.scrollIntoView?.({ block: "center" });
-        setMarkerScrolled(true);
-        const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
-        setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
-      } else {
-        listRef.scrollTop = listRef.scrollHeight;
-        setAtBottom(true);
-      }
+    // Double rAF: queueMicrotask flushes BEFORE the browser's layout
+    // pass, so listRef.scrollHeight reads stale geometry when called
+    // immediately after a channel switch (Solid commits the new rows,
+    // but their box heights aren't yet included in scrollHeight). First
+    // rAF lands inside the next frame's pre-layout phase; second rAF
+    // guarantees layout has completed. Standard "read DOM geometry
+    // after the browser has settled" idiom.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!listRef) return;
+        const marker = markerRef();
+        if (marker) {
+          marker.scrollIntoView?.({ block: "center" });
+          setMarkerScrolled(true);
+          const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
+          setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+        } else {
+          listRef.scrollTop = listRef.scrollHeight;
+          setAtBottom(true);
+        }
+      });
     });
   };
 
