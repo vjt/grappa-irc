@@ -11,37 +11,21 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-### FLAKES cluster (in flight)
+### Post-FLAKES — UX-8 scroll cluster (next up per locked roadmap)
 
-Triage manifest: `docs/reviews/flake-triage-2026-05-22.md` (STALE;
-needs Part 2 update).
+FLAKES cluster CLOSED 2026-05-23 (commits `2132bea`→`0efa550`).
+Per-cluster history in DESIGN_NOTES (FLAKE-A → FLAKE-B Part 1/2 →
+FLAKE-C + FLAKE-D). Zero product bugs surfaced across 11 candidates;
+all were spec rot or batched-isolation false-positives.
 
-Scope: e2e only. Server-side suite is green (`scripts/test.sh` exit-0;
-8 doctests, 33 properties, 2424 tests, 0 failures at HEAD `bf3ba3a`).
+**Open carry-forward from FLAKES**: 27 "SPEC-ROT (load class)" files
+quarantined behind suite-level isolation noise. Per-spec full-stack
+cycle is the only reliable iso primitive (per
+`feedback_flake_b_batched_isolation_leaks`). Upstream isolation
+mechanism in `scripts/integration.sh` (per-spec cycle, slow + costly)
+deferred until the suite-level pain returns.
 
-**FLAKE-B Part 2 (NEXT)** — per-spec retriage. Running in background
-as `/tmp/flake-b-triage.sh`: loops over 38 distinct failing spec
-files, isolation-runs each TWICE on a fresh testnet stack (reset
-every 5). Output: `/tmp/flake-b-triage.md`. Classifies each as
-SPEC-ROT / REAL BUG / FLAKE — drives FLAKE-C/D/etc. shapes.
-
-**FLAKE-C..G** — per-class fix buckets, RE-SIZE after Part 2's
-honest classification. Pre-FLAKE-B groupings derived from stale
-manifest:
-
-- **FLAKE-C** — NickText cluster (3 specs in `ux-5-bc2-nick-render`)
-- **FLAKE-D** — image-upload modal (2 specs in `i2-image-upload`)
-- **FLAKE-E** — server-window cluster (2 specs in `cp13-server-window`)
-- **FLAKE-F** — iOS-PWA kb cluster (3 specs: `ux-6-d-keyboard-
-  pattern` × 2 + `ux-5-bv-mobile-keyboard-react`)
-- **FLAKE-G** — singletons (`m9-cicchetto-part-x-click`,
-  `cic-members-panel-scope:107`, `p0d-lusers`,
-  `names-ux-n3-cold-load-auto-select`, `cp13-server-window:80`)
-
-**FLAKE-Z** — closer. Reconciliation; remaining quarantines with
-inline justification per `feedback_recurring_e2e_not_flake`;
-DESIGN_NOTES cluster-close entry; README closed-clusters bullet;
-cluster summary memory.
+**Next bucket: UX-8 scroll cluster** — see ★ POST-FLAKES ROADMAP below.
 
 ---
 

@@ -9116,6 +9116,75 @@ No code change in Part 2 — manifest update only. No deploy needed.
 
 ---
 
+## 2026-05-23 — FLAKE-C + FLAKE-D: per-spec triage close
+
+Pair of buckets that closes the FLAKES cluster opened at FLAKE-A
+(2026-05-22). FLAKE-C tackled the 7 "REAL BUG?" candidates from
+FLAKE-B Part 2; FLAKE-D tackled the 4 Pass-1-mixed FLAKE files.
+
+### FLAKE-C (2026-05-23) — 7-for-7 SPEC ROT
+
+Every "REAL BUG candidate" turned out to be spec rot driven by
+UX-cluster refactor sweeps or M-cluster seed expansion. Zero real
+product bugs surfaced. Commit map:
+
+| # | Bucket | Commit | Root cause |
+|---|--------|--------|------------|
+| 1 | i2-image-upload | `2132bea` | UX-6-B2 flipped default upload host litterbox→embedded; spec stubbed wrong endpoint. Split into embedded + litterbox-with-admin-pin specs. |
+| 2 | members-prefix-regression | `5562ae7` | M-cluster seed expansion (3 autojoined users); vjt-grappa no longer wins +o race. Asserted on any op tier instead. |
+| 3 | p0d-lusers | `632148f` | UX-4-C "Server" selector — `.sidebar-channel-name "Server"` regex never matches post-refactor; routed through `sidebarWindow()` fixture. |
+| 4 | p0e-invite-ack | `b05c88e` | Cascade from #2: vjt non-op on #bofh, Bahamut silently drops INVITE from non-op. Joined fresh `#p0e-invite-test` channel first (vjt = first joiner = +o). |
+| 5 | m9-cicchetto-part-x-click | `1d17010` | UX-4-B/E empty-state assertion obsolete — cold-load lands on home, close-window redirects via MRU→server→home. Dropped the assertion. |
+| 6 | names-ux-n3-cold-load-auto-select | `214fce6` | UX-4-B explicitly REPLACED N-3's first-joined auto-select with home cold-load. **Spec obsolete by design — deleted.** |
+| 7 | nick-case-sensitivity | `0a9b7cd` | UX-5 BH dropped `.sidebar` wrapper class for `.shell-sidebar`. Pure selector drift. |
+
+### FLAKE-D (2026-05-23) — 2 real races, 2 batched-only false-positives
+
+The 4 mixed-Pass-1 files split cleanly under true isolation:
+
+| Bucket | Verdict | Commit |
+|--------|---------|--------|
+| `cp14-b3-dm-history-bidirectional` | **Real race** (peer.privmsg arrives before cic's own-nick DM-listener subscribe → silent fan-out drop) | `64d6e0b` |
+| `ios-z-cluster-journey` | Batched-isolation false-positive — 3-for-3 green iso | none |
+| `m9b-admin-sessions-actions` | Batched-isolation false-positive — 4-for-4 green iso (destructive specs in other files corrupt ordering, file itself is sound) | none |
+| `ux-6-k-pm-unread-cursor` | **Same race as cp14-b3** — peer-driven inbound DM | `0efa550` |
+
+The 2 real-race specs shared the same root cause UX-6-L had already
+diagnosed + fixed via the `__cic_dmListenerReady` test seam (set in
+`subscribe.ts:742` from the DM-listener `phx.join()` `onJoinOk`
+callback). Both predated the seam. Factored UX-6-L's inline
+`waitForFunction` into a shared `waitForDmListenerReady(page, slug)`
+helper in `cicchetto/e2e/fixtures/cicchettoPage.ts`; all three
+peer-driven DM specs (UX-6-L + CP14-B3 + UX-6-K) now use it.
+
+### Cluster-level verdict
+
+- **0 product bugs surfaced.** All 11 candidates across FLAKE-C+D
+  were spec rot (UX-cluster refactor drift, M-cluster seed expansion,
+  selector renames) or batched-isolation false-positives.
+- **FLAKE-A's manifest was 0-for-11 on real-bug calls.** Sampling
+  induction killed it — the 6 sample passes were not representative.
+- **Batched isolation = noise floor.** The 27 "load class" SPEC-ROT
+  files (FLAKE-B Part 2) + the 2 batched-false-positives here all
+  pass cleanly in per-spec full-stack cycle. The remaining suite-
+  level flake is upstream isolation, not per-spec bugs.
+
+### Open carry-forward
+
+The 27 "SPEC-ROT (load class)" files from FLAKE-B Part 2 are
+quarantined behind suite-level isolation noise — not bucketed for
+fix in FLAKE-Z. The next iteration on this surface would be the
+"upstream isolation mechanism" called out at the end of Part 2 — a
+per-spec stack cycle inside `scripts/integration.sh` (slow, costly,
+but the only reliable signal). Deferred until the suite-level pain
+returns.
+
+No deploy needed across FLAKE-C+D (pure e2e-only). FLAKES cluster
+CLOSED on commit `0efa550`.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
