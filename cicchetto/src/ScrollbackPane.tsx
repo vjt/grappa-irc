@@ -970,9 +970,24 @@ const ScrollbackPane: Component<Props> = (props) => {
     // rAF lands inside the next frame's pre-layout phase; second rAF
     // guarantees layout has completed. Standard "read DOM geometry
     // after the browser has settled" idiom.
+    //
+    // UX-8(a2): if messages() hasn't flushed yet (cached re-entry to a
+    // window where the scrollback store reload races the key-effect),
+    // skip — the length-effect below catches the bottom-snap on the
+    // first non-empty length transition.
+    //
+    // UX-8(a3): for the bottom-snap branch, `lastElementChild?.scrollIntoView`
+    // is more reliable than `scrollTop = scrollHeight` math — the browser
+    // walks the element's box and scrolls its container natively, which
+    // is layout-aware even when scrollHeight bookkeeping is mid-update
+    // (channel-back path: query → #bofh cached, scrollback store reload
+    // races key-effect even after rAF×2). Fallback scrollHeight write is
+    // preserved if scrollback is empty (no element to scroll into view).
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!listRef) return;
+        const msgs = messages();
+        if (!msgs || msgs.length === 0) return;
         const marker = markerRef();
         if (marker) {
           marker.scrollIntoView?.({ block: "center" });
@@ -980,7 +995,12 @@ const ScrollbackPane: Component<Props> = (props) => {
           const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
           setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
         } else {
-          listRef.scrollTop = listRef.scrollHeight;
+          const tail = listRef.lastElementChild as HTMLElement | null;
+          if (tail?.scrollIntoView) {
+            tail.scrollIntoView({ block: "end" });
+          } else {
+            listRef.scrollTop = listRef.scrollHeight;
+          }
           setAtBottom(true);
         }
       });
@@ -1116,11 +1136,19 @@ const ScrollbackPane: Component<Props> = (props) => {
           // 66px gap pre-double-rAF; vjt prod-dogfooded the same as
           // "short channel scrolled above its own height" 2026-05-23.
           // Double rAF guarantees layout has settled before the read.
+          // UX-8(a3): use lastElementChild.scrollIntoView for native
+          // layout-aware bottom-anchor (avoids scrollHeight-mid-update
+          // race even after rAF×2).
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
               if (!listRef) return;
               if (!atBottom()) return;
-              listRef.scrollTop = listRef.scrollHeight;
+              const tail = listRef.lastElementChild as HTMLElement | null;
+              if (tail?.scrollIntoView) {
+                tail.scrollIntoView({ block: "end" });
+              } else {
+                listRef.scrollTop = listRef.scrollHeight;
+              }
             });
           });
         }

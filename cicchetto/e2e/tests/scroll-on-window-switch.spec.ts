@@ -142,12 +142,30 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     page,
   }) => {
     const vjt = getSeededVjt();
+
+    // Seed expansion (m1-m11 + b3-replay-refresh peers since cp14-b1
+    // wrote this spec) means #bofh now has > 0 unread messages at
+    // login time for vjt — cic's unread-marker injection centers the
+    // viewport on the marker instead of pinning to bottom (C7.3
+    // contract). Bottom-anchor assertion in this spec is the
+    // marker-absent baseline; force that by pinning the read-cursor
+    // to the tail BEFORE login.
+    //
+    // The OTHER spec in this file (`fresh focus into channel-with-
+    // unreads: marker centered...`) covers the marker-present path
+    // explicitly; this one stays pure "no unreads → snap to bottom".
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    const tailPage = await fetchScrollbackPage(vjt.token, CHANNEL);
+    expect(tailPage.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+    const tailRow = tailPage[tailPage.length - 1];
+    if (!tailRow) throw new Error("seeded page empty — cannot pin cursor");
+    await seedCursor(page, CHANNEL, tailRow.id);
+
     await loginAs(page, vjt);
 
     // Step 1 — focus the seeded channel and confirm we landed at the
     // bottom (the existing length-effect handles fresh focus correctly;
     // this is the baseline for the bug). cp14-b1 documents this branch.
-    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
     await expect
