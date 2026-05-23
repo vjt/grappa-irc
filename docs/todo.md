@@ -11,7 +11,29 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-### Post-FLAKES — UX-8 scroll cluster (next up per locked roadmap)
+### GREEN-CI-3 — e2e suite hardening Tier 1 (BEFORE UX-8)
+
+GREEN-CI batches 1 + 2 closed CI green 2026-05-23. Same evening, vjt
+asked for a full-suite e2e review: *"ensure they are solid now and do
+not have an occasion to regress. and further they do test actual
+features and not stupid internals."* 4 parallel review agents covered
+104 specs + 5 fixtures, surfaced ~50 findings.
+
+**Plan**: `docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`.
+
+**Tier 1 only** (highest-leverage, fix-once-cure-all):
+- B1: `waitForDmListenerReady` insert in m4/m5/m6/p0b (4 one-line fixes,
+  eliminates known FLAKE-D recurrence class)
+- B2: `cicchettoPage.sidebarWindow` substring → exact-text regex
+  (cascade-class blocker for the next seed-expansion bite)
+- B3: `seedData.globalSetup` cold-start retry-with-backoff (eliminates
+  "entire suite skipped on first login timeout" class)
+- B-Z: docs close
+
+**Tier 2 + Tier 3** deferred — captured in the plan's "What's NOT in
+this plan" section. UX-8 starts AFTER GREEN-CI-3 closes.
+
+### Post-FLAKES — UX-8 scroll cluster (after GREEN-CI-3)
 
 FLAKES cluster CLOSED 2026-05-23 (commits `2132bea`→`0efa550`).
 Per-cluster history in DESIGN_NOTES (FLAKE-A → FLAKE-B Part 1/2 →
@@ -29,10 +51,14 @@ deferred until the suite-level pain returns.
 
 ---
 
-★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22):**
+★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22, GREEN-CI-3 inserted 2026-05-23):**
 
 After FLAKES-Z LANDED, work proceeds in this order. Do NOT skip ahead.
 
+0. **GREEN-CI-3 e2e suite hardening Tier 1** (inserted 2026-05-23) —
+   plan at `docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`. 3
+   fixture/spec edits totalling ~30 minutes of work. Pre-empts the
+   next seed-expansion cascade-class regression.
 1. **UX-8 scroll cluster** — (a) channel-switch scroll position
    interference (UX-6-M folds in if vjt repro arrives); (b) read-cursor
    update on scroll = NEW server contract. `Grappa.ReadCursor.set/4`
