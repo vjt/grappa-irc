@@ -20,7 +20,8 @@
 // review).
 
 import { expect, test } from "@playwright/test";
-import { getSeededAdmin } from "../fixtures/seedData";
+import { patchNetworkConnectionState } from "../fixtures/grappaApi";
+import { getSeededAdmin, getSeededM9bVictim, NETWORK_SLUG } from "../fixtures/seedData";
 
 async function adminFriendlyLogin(
   page: import("@playwright/test").Page,
@@ -47,12 +48,23 @@ async function openAdminPane(page: import("@playwright/test").Page): Promise<voi
 }
 
 test("U-5 Networks live user-count drops after a session is terminated", async ({ page }) => {
+  // GREEN-CI batch-1 — same victim-reconnect dance as the m9b
+  // destructive specs. u5 runs AFTER m9b (alphabetical file order)
+  // which left m9b-victim terminated; reconnect first to guarantee a
+  // live row, then Terminate it to verify the count drops.
+  const victim = getSeededM9bVictim();
+  await patchNetworkConnectionState(victim.token, NETWORK_SLUG, {
+    connection_state: "connected",
+  });
+
   await adminFriendlyLogin(page, getSeededAdmin());
   await openAdminPane(page);
 
   // 1. Open Networks tab; capture the bahamut-test row's USER live
-  //    count (vjt + m9b-test are both user-kind sessions seeded
-  //    against bahamut-test → count ≥ 2 at boot).
+  //    count (vjt + m9b-test + m9b-victim are all user-kind sessions
+  //    seeded against bahamut-test → count ≥ 1 at boot; m9b-victim
+  //    was reconnected above so the count is whatever the registry
+  //    reports right now).
   await page.getByTestId("admin-tab-networks").click();
   await expect(page.getByTestId("admin-networks-table")).toBeVisible({ timeout: 10_000 });
 
@@ -64,14 +76,20 @@ test("U-5 Networks live user-count drops after a session is terminated", async (
   const initialCount = Number.parseInt(initial.split("/")[0], 10);
   expect(initialCount).toBeGreaterThanOrEqual(1);
 
-  // 2. Navigate to Sessions tab; terminate the first session row.
+  // 2. Navigate to Sessions tab; terminate m9b-victim's row deterministically
+  //    (NOT `.first()` — root-cause of the GREEN-CI batch-1 cascade,
+  //    `.first()` randomly killed vjt's session and stranded every
+  //    subsequent vjt-using spec with an empty sidebar). Targeting
+  //    the same dedicated victim as m9b keeps the destructive blast
+  //    radius scoped to one user.
   await page.getByTestId("admin-tab-sessions").click();
   await expect(page.getByTestId("admin-sessions-table")).toBeVisible({ timeout: 10_000 });
 
-  const firstTerminate = page.locator("[data-testid^='admin-session-terminate-']").first();
-  await firstTerminate.click();
-  await expect(firstTerminate).toHaveText(/^Confirm terminate\?$/);
-  await firstTerminate.click();
+  const victimTerminate = page.getByTestId(`admin-session-terminate-${victim.sessionId}`);
+  await expect(victimTerminate).toHaveText(/^Terminate$/, { timeout: 15_000 });
+  await victimTerminate.click();
+  await expect(victimTerminate).toHaveText(/^Confirm terminate\?$/);
+  await victimTerminate.click();
   // Allow the action a moment to settle (REST round-trip + Session.Server
   // terminate/2 emits :cap_counts_changed telemetry which the AdminEvents
   // sink translates + broadcasts).

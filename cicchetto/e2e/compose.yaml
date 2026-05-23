@@ -156,6 +156,26 @@ services:
         mix grappa.bind_network --user m9b-test --network bahamut-test \
           --server bahamut-test:6667 --no-tls --nick m9b-grappa \
           --auth none --autojoin '#bofh'
+        # GREEN-CI batch-1 — sacrificial-user for the destructive admin
+        # specs (m9b Disconnect/Terminate, u5 Terminate). Disconnect
+        # parks the credential; Terminate kills the pid. Each spec
+        # PATCHes /networks first to reconnect (idempotent) so the row
+        # is guaranteed live before the destructive verb fires. vjt
+        # and m9b-test stay alive for downstream specs.
+        mix grappa.create_user --name m9b-victim --password test-password-not-secret
+        mix grappa.bind_network --user m9b-victim --network bahamut-test \
+          --server bahamut-test:6667 --no-tls --nick m9b-victim-grappa \
+          --auth none --autojoin '#bofh'
+        # GREEN-CI batch-1 — bahamut-test user cap defaults to 3, which
+        # is exactly the seeded-user count (vjt + m9b-test + m9b-victim).
+        # The victim-reconnect PATCH in destructive specs would 503
+        # `network_busy` if a prior spec's parked session hadn't yet
+        # dropped its registry slot. Bump to 10 so the destructive-spec
+        # reconnect-then-kill dance has headroom; the U-cluster spec
+        # which exercises the cap-saturation 503 boundary explicitly
+        # PATCHes its own caps in setup, so this baseline doesn't
+        # conflict with it.
+        mix grappa.set_network_caps --network bahamut-test --max-user-sessions 10
         # M-cluster M-8 — visitor mint endpoint (`POST /auth/login`
         # with `{identifier: nick}`) requires the configured
         # `:visitor_network` slug (`config/config.exs`: "azzurra") to

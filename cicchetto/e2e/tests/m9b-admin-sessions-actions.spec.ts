@@ -28,7 +28,8 @@
 // every other admin spec — out of scope here.
 
 import { expect, test } from "@playwright/test";
-import { getSeededAdmin } from "../fixtures/seedData";
+import { patchNetworkConnectionState } from "../fixtures/grappaApi";
+import { getSeededAdmin, getSeededM9bVictim, NETWORK_SLUG } from "../fixtures/seedData";
 
 async function adminFriendlyLogin(
   page: import("@playwright/test").Page,
@@ -62,12 +63,12 @@ test("M-9b admin Sessions tab lists live sessions including m9b-test seeded row"
   await adminFriendlyLogin(page, getSeededAdmin());
   await openAdminSessionsTab(page);
 
-  // vjt + m9b-test rows both seeded → at least 2 admin-session rows.
-  // We don't filter by exact UUID here (the seeder doesn't echo UUIDs
-  // to the runner env); the visible "who" projection includes
-  // "user:" prefix + UUID prefix, so we assert at least 2 such rows.
+  // vjt + m9b-test + m9b-victim rows seeded → at least 3 admin-session
+  // rows. m9b-victim was added in GREEN-CI batch-1 as the sacrificial
+  // target for destructive specs (see Disconnect / Terminate specs
+  // below). admin-vjt has no bind so doesn't appear.
   const rows = page.locator("[data-testid^='admin-session-row-']");
-  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+  await expect(rows).toHaveCount(3, { timeout: 15_000 });
 });
 
 // IMPORTANT — mutex spec MUST run BEFORE the destructive Disconnect /
@@ -99,41 +100,57 @@ test("M-9b arming Disconnect on one row disarms the same row's Terminate (single
 test("M-9b admin Disconnect inline-confirm transitions Disconnect → Confirm disconnect? → fires", async ({
   page,
 }) => {
+  // GREEN-CI batch-1 — target m9b-victim's row deterministically (NOT
+  // `.first()` which is Registry-insertion-order non-deterministic and
+  // was killing vjt's session, cascading sidebar-empty failures across
+  // every downstream vjt-using spec). Reconnect m9b-victim first
+  // (idempotent if already :connected) so the row is guaranteed live;
+  // Disconnect parks the credential and the row drops on the next
+  // refetch.
+  const victim = getSeededM9bVictim();
+  await patchNetworkConnectionState(victim.token, NETWORK_SLUG, {
+    connection_state: "connected",
+  });
+
   await adminFriendlyLogin(page, getSeededAdmin());
   await openAdminSessionsTab(page);
 
-  // Target the FIRST row's Disconnect button (either vjt or m9b-test;
-  // both are non-admin so neither trips 422). The button's testid is
-  // `admin-session-disconnect-<id>` where <id> = composite.
-  const firstDisconnect = page.locator("[data-testid^='admin-session-disconnect-']").first();
-  await expect(firstDisconnect).toHaveText(/^Disconnect$/);
+  const victimDisconnect = page.getByTestId(`admin-session-disconnect-${victim.sessionId}`);
+  await expect(victimDisconnect).toHaveText(/^Disconnect$/, { timeout: 15_000 });
 
-  await firstDisconnect.click();
-  await expect(firstDisconnect).toHaveText(/^Confirm disconnect\?$/);
-  await expect(firstDisconnect).toHaveClass(/confirming/);
+  await victimDisconnect.click();
+  await expect(victimDisconnect).toHaveText(/^Confirm disconnect\?$/);
+  await expect(victimDisconnect).toHaveClass(/confirming/);
 
-  await firstDisconnect.click();
+  await victimDisconnect.click();
   // Post-disconnect: table refreshes (the runAction re-fetches). The
   // target user's credential transitions to :parked → the Bootstrap
   // pid stops → row drops from /admin/sessions on the next list.
-  // Assert the row count decreases OR (if the m9b/vjt session restarts
-  // quickly via T32) the button resets to idle. We use the simpler
-  // pre/post comparison: at minimum the error banner MUST NOT appear.
+  // At minimum the error banner MUST NOT appear.
   await expect(page.getByTestId("admin-sessions-error")).toHaveCount(0, { timeout: 5_000 });
 });
 
 test("M-9b admin Terminate inline-confirm fires DELETE", async ({ page }) => {
+  // GREEN-CI batch-1 — same victim, same reconnect dance. Disconnect
+  // (above) parked m9b-victim's credential; reconnect-via-PATCH spawns
+  // a fresh Session.Server and the row reappears in /admin/sessions.
+  // Terminate then stops the pid (DB row preserved per M-9a contract).
+  const victim = getSeededM9bVictim();
+  await patchNetworkConnectionState(victim.token, NETWORK_SLUG, {
+    connection_state: "connected",
+  });
+
   await adminFriendlyLogin(page, getSeededAdmin());
   await openAdminSessionsTab(page);
 
-  const firstTerminate = page.locator("[data-testid^='admin-session-terminate-']").first();
-  await expect(firstTerminate).toHaveText(/^Terminate$/);
+  const victimTerminate = page.getByTestId(`admin-session-terminate-${victim.sessionId}`);
+  await expect(victimTerminate).toHaveText(/^Terminate$/, { timeout: 15_000 });
 
-  await firstTerminate.click();
-  await expect(firstTerminate).toHaveText(/^Confirm terminate\?$/);
-  await expect(firstTerminate).toHaveClass(/confirming/);
+  await victimTerminate.click();
+  await expect(victimTerminate).toHaveText(/^Confirm terminate\?$/);
+  await expect(victimTerminate).toHaveClass(/confirming/);
 
-  await firstTerminate.click();
+  await victimTerminate.click();
   // 204 idempotent. Pid is gone; DB rows preserved (per M-9a spec).
   // No error surface expected.
   await expect(page.getByTestId("admin-sessions-error")).toHaveCount(0, { timeout: 5_000 });
