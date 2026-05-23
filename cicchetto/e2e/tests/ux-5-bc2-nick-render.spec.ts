@@ -32,6 +32,7 @@
 
 import { expect, test } from "@playwright/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -49,7 +50,7 @@ function parseRgb(input: string): [number, number, number] | null {
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-test("ux-5-bc2 desktop — members pane: own nick renders with NickText (.nick-text + colored)", async ({
+test("ux-5-bc2 desktop — scrollback sender: own nick renders with NickText (.nick-text + colored)", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
@@ -57,17 +58,28 @@ test("ux-5-bc2 desktop — members pane: own nick renders with NickText (.nick-t
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
 
-  // Members pane must render at least the operator's own nick.
-  const membersPane = page.locator(".members-pane");
-  await expect(membersPane).toBeVisible({ timeout: 10_000 });
-  const ownMember = membersPane.locator(`.member-name:has-text("${NETWORK_NICK}")`);
-  await expect(ownMember).toBeVisible({ timeout: 10_000 });
+  // Send a probe PRIVMSG so a sender-rendered row lands in scrollback.
+  // Scrollback senders are the canonical colored NickText site
+  // (members pane uses `noColor` → renders in `--fg`, see
+  // MembersPane.tsx:182 + UX-6 bucket A v2 rationale in NickText.tsx).
+  // Asserting color on the members site is invalid by design; the
+  // sender site is where the per-nick palette hue actually applies.
+  const compose = page.locator(".compose-box textarea");
+  const probe = `ux-5-bc2 colored-nick probe ${crypto.randomUUID().slice(0, 6)}`;
+  await compose.fill(probe);
+  await compose.press("Enter");
+
+  const ownPrivmsg = page
+    .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
+    .filter({ hasText: probe })
+    .first();
+  await expect(ownPrivmsg).toBeVisible({ timeout: 10_000 });
 
   // The NickText helper renders `<span class="nick"><span class="nick-text"
   // style="color: var(--nick-color-N)">{nick}</span></span>`. Assert
   // the inner span exists AND has a resolved (non-empty, non-default)
   // computed color.
-  const nickTextSpan = ownMember.locator(".nick-text").first();
+  const nickTextSpan = ownPrivmsg.locator(".scrollback-sender .nick-text").first();
   await expect(nickTextSpan).toHaveText(NETWORK_NICK);
   const computedColor = await nickTextSpan.evaluate((el) => getComputedStyle(el).color);
   const rgb = parseRgb(computedColor);
@@ -135,34 +147,56 @@ test("ux-5-bc2 desktop — distinct nicks resolve to distinct CSS color values v
   expect(aliceUpper).toEqual(alice);
 });
 
-test("ux-5-bc2 desktop — own nick (operator self) has no @/%/+ prefix glyph on PRIVMSG sender (not opped on #bofh)", async ({
+test("ux-5-bc2 desktop — own nick (operator self, plain in channel) has no @/%/+ prefix glyph on PRIVMSG sender", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  // Send a PRIVMSG so a sender-rendered row lands in scrollback.
-  const compose = page.locator(".compose-box textarea");
-  await compose.fill("ux-5-bc2 probe message");
-  await compose.press("Enter");
+  // GREEN-CI batch 2 — use a fresh channel where a peer joins FIRST so
+  // vjt is plain (no @ prefix) deterministically. The previous "use
+  // #bofh, vjt is not opped on autojoin" assumption became flaky after
+  // GREEN-CI batch 1 raised the autojoin race to 3 users (vjt +
+  // m9b-test + m9b-victim) — vjt has a 1/3 chance of winning +o on a
+  // fresh #bofh, in which case her sender renders with `@` prefix and
+  // the negative-twin assertion below fails. Per-spec dedicated channel
+  // with peer-first JOIN guarantees plain status.
+  const FRESH = `#bc2-plain-${crypto.randomUUID().slice(0, 6)}`;
+  const peer = await IrcPeer.connect({ nick: `bc2plain-${crypto.randomUUID().slice(0, 6)}` });
+  try {
+    await peer.join(FRESH);
+    const compose = page.locator(".compose-box textarea");
+    await compose.fill(`/join ${FRESH}`);
+    await compose.press("Enter");
+    await expect(
+      page.locator(".sidebar-network-section li").filter({ hasText: FRESH }),
+    ).toHaveCount(1, { timeout: 10_000 });
+    await selectChannel(page, NETWORK_SLUG, FRESH, { ownNick: NETWORK_NICK });
 
-  // The own-PRIVMSG row's sender span must exist and carry NickText.
-  // vjt is not opped on #bofh by default seed — assert no `.nick-prefix`
-  // child inside the sender. This pins the negative-twin (no false
-  // prefix injection on plain members).
-  const ownPrivmsg = page
-    .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
-    .filter({ hasText: "ux-5-bc2 probe message" })
-    .first();
-  await expect(ownPrivmsg).toBeVisible({ timeout: 10_000 });
-  const sender = ownPrivmsg.locator(".scrollback-sender").first();
-  await expect(sender).toBeVisible();
-  // NickText is mounted (verify by `.nick-text` presence + correct text).
-  const senderText = sender.locator(".nick-text");
-  await expect(senderText).toHaveText(NETWORK_NICK);
-  // No prefix glyph on the plain own-nick.
-  await expect(sender.locator(".nick-prefix")).toHaveCount(0);
+    const probe = `ux-5-bc2 probe message ${crypto.randomUUID().slice(0, 6)}`;
+    await page.locator(".compose-box textarea").fill(probe);
+    await page.locator(".compose-box textarea").press("Enter");
+
+    // The own-PRIVMSG row's sender span must exist and carry NickText.
+    // vjt joined this fresh channel SECOND → plain. Assert no
+    // `.nick-prefix` child inside the sender. This pins the
+    // negative-twin (no false prefix injection on plain members).
+    const ownPrivmsg = page
+      .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
+      .filter({ hasText: probe })
+      .first();
+    await expect(ownPrivmsg).toBeVisible({ timeout: 10_000 });
+    const sender = ownPrivmsg.locator(".scrollback-sender").first();
+    await expect(sender).toBeVisible();
+    // NickText is mounted (verify by `.nick-text` presence + correct text).
+    const senderText = sender.locator(".nick-text");
+    await expect(senderText).toHaveText(NETWORK_NICK);
+    // No prefix glyph on the plain own-nick.
+    await expect(sender.locator(".nick-prefix")).toHaveCount(0);
+  } finally {
+    await peer.disconnect("bc2 plain done");
+  }
 });
 
 test("ux-5-bc2 desktop — theme switch repaints nick colors (irssi-dark → mirc-light)", async ({
@@ -214,20 +248,41 @@ test("ux-5-bc2 desktop — scrollback PRIVMSG sender wraps the nick inside angle
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  const compose = page.locator(".compose-box textarea");
-  const probe = "ux-5-bc2 bracket-shape probe";
-  await compose.fill(probe);
-  await compose.press("Enter");
+  // GREEN-CI batch 2 — peer-first JOIN on a dedicated channel so vjt
+  // is plain (no `@` prefix), same rationale as the previous test:
+  // 3-way autojoin race on #bofh post-m9b-victim makes vjt's status
+  // there non-deterministic. Bracket-shape assertion below assumes
+  // bare `<nick>` textContent (no `@nick`), which only holds when vjt
+  // is plain.
+  const FRESH = `#bc2-bracket-${crypto.randomUUID().slice(0, 6)}`;
+  const peer = await IrcPeer.connect({ nick: `bc2brkt-${crypto.randomUUID().slice(0, 6)}` });
+  try {
+    await peer.join(FRESH);
+    const compose = page.locator(".compose-box textarea");
+    await compose.fill(`/join ${FRESH}`);
+    await compose.press("Enter");
+    await expect(
+      page.locator(".sidebar-network-section li").filter({ hasText: FRESH }),
+    ).toHaveCount(1, { timeout: 10_000 });
+    await selectChannel(page, NETWORK_SLUG, FRESH, { ownNick: NETWORK_NICK });
 
-  const ownPrivmsg = page
-    .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
-    .filter({ hasText: probe })
-    .first();
-  await expect(ownPrivmsg).toBeVisible({ timeout: 10_000 });
-  // Sender textContent is `<nick>` (no prefix, since vjt isn't opped).
-  // The bracket pair is OUTSIDE the NickText component (per the
-  // ScrollbackPane senderSpan closure contract), so it appears in the
-  // sender button's textContent unchanged.
-  const senderText = await ownPrivmsg.locator(".scrollback-sender").first().textContent();
-  expect(senderText).toBe(`<${NETWORK_NICK}>`);
+    const probe = `ux-5-bc2 bracket-shape probe ${crypto.randomUUID().slice(0, 6)}`;
+    await page.locator(".compose-box textarea").fill(probe);
+    await page.locator(".compose-box textarea").press("Enter");
+
+    const ownPrivmsg = page
+      .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
+      .filter({ hasText: probe })
+      .first();
+    await expect(ownPrivmsg).toBeVisible({ timeout: 10_000 });
+    // Sender textContent is `<nick>` (no prefix, vjt is plain on the
+    // peer-first fresh channel). The bracket pair is OUTSIDE the
+    // NickText component (per the ScrollbackPane senderSpan closure
+    // contract), so it appears in the sender button's textContent
+    // unchanged.
+    const senderText = await ownPrivmsg.locator(".scrollback-sender").first().textContent();
+    expect(senderText).toBe(`<${NETWORK_NICK}>`);
+  } finally {
+    await peer.disconnect("bc2 bracket done");
+  }
 });

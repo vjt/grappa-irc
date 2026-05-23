@@ -13,41 +13,44 @@
 // is invisible to `textContent`, and jsdom doesn't compute layout. Only
 // a real-browser e2e (this spec) catches it.
 //
-// FLAKE-C bucket 2 (2026-05-22): post-FLAKE-B Part 2 triage. vjt
-// confirms members pane renders correctly in prod on both narrow and
-// wide screens — the spec was wrong. Two assumptions invalidated by
-// M-cluster seed expansion (admin-vjt + m9b-test both autojoin #bofh
-// now):
+// GREEN-CI batch 2 (2026-05-23) — second iteration on this spec's race
+// surface. The bucket-2 fix (2026-05-22) loosened from `@vjt-grappa` to
+// "any op row" because Bahamut's +o-on-first-JOIN was a 2- or 3-way
+// race on #bofh with multiple autojoined users. Post-GREEN-CI batch-1
+// the m9b-victim sacrificial user was added, raising the autojoin race
+// to 3 (vjt + m9b-test + m9b-victim). If m9b-victim wins +o, then a
+// destructive admin spec (m9b-admin-sessions-actions Disconnect /
+// Terminate) kills m9b-victim's session → QUIT → #bofh goes OPLESS
+// (vjt + m9b-test are non-op). `.member-op` returns 0 nodes →
+// 5s timeout failure.
 //
-//   1. "vjt-grappa is the +o channel founder" — Bahamut grants @ to
-//      the first user to JOIN an empty channel. Bootstrap spawns all
-//      three sessions concurrently; m9b-grappa or admin-vjt can win
-//      the race instead of vjt-grappa. The spec asserted specifically
-//      on `@vjt-grappa` — now flaky.
-//   2. Implicit "vjt is the only user in #bofh" — the original peer-
-//      join check assumed a 1-user steady state (peer arrives → 2
-//      users, peer is the only plain row). Now there are 3 baseline
-//      users (vjt, admin-vjt, m9b) so the peer is the FOURTH; the
-//      plain-row count differs from the original baseline.
-//
-// Fix: stop pinning to a specific nick. The regression this spec
-// catches is RENDER SHAPE (prefix + nick text + non-clipped width),
-// which is per-tier, not per-nick. Assert on ANY .member-op row and
-// ANY .member-plain row that the prefix renders correctly + width
-// is sane. The peer-join arm still verifies the plain-tier render
-// path via the peer's own row.
+// Fix: use a dedicated fresh channel where vjt joins FIRST → Bahamut
+// grants +o → vjt is the deterministic op the spec asserts on. Same
+// pattern as p0e-invite-ack.spec.ts + b0-invite-from-server-window.spec.ts.
+// The render-shape regression this spec catches (prefix + nick text +
+// non-clipped width) is per-tier, NOT per-channel — any channel where
+// vjt is +o suffices.
 
 import { expect, test } from "@playwright/test";
-import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
+import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const PEER_NICK = "members-prefix-buddy";
-const CHANNEL = AUTOJOIN_CHANNELS[0];
+const CHANNEL = "#members-prefix-test";
 
 test("members pane renders @-prefix + full op nick (not clipped)", async ({ page }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
+
+  // Focus #bofh first to confirm login + ws-ready, then /join the
+  // fresh per-spec channel so vjt is the first user and Bahamut
+  // grants +o deterministically.
+  await selectChannel(page, NETWORK_SLUG, "#bofh", { ownNick: NETWORK_NICK });
+  await composeSend(page, `/join ${CHANNEL}`);
+  await expect(
+    page.locator(".sidebar-network-section li").filter({ hasText: CHANNEL }),
+  ).toHaveCount(1, { timeout: 10_000 });
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
   // Wait for members pane to mount — gates on
@@ -57,10 +60,8 @@ test("members pane renders @-prefix + full op nick (not clipped)", async ({ page
   // scrollback-join-line rendered, NOT the windowState push.
   await expect(page.locator(".members-pane")).toBeVisible({ timeout: 10_000 });
 
-  // Any op row — Bahamut grants @ to whichever autojoined user wins
-  // the race for an empty channel; with 3 seeded users (vjt-grappa,
-  // admin-vjt, m9b-grappa) autojoining #bofh, the winner is
-  // non-deterministic. The regression this guards is render shape
+  // Any op row — vjt is now the deterministic op via first-JOIN on a
+  // fresh per-spec channel. The regression this guards is render shape
   // per tier, NOT identity per row.
   const opRow = page.locator(".members-pane .member-op .member-name").first();
   await expect(opRow).toBeVisible({ timeout: 5_000 });
