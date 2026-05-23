@@ -35,6 +35,7 @@ import {
   sidebarCloseButton,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
+import { joinChannel } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
@@ -43,6 +44,17 @@ import {
 } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0]; // #bofh
+
+// GREEN-CI batch 2 — iOS-3 arm below taps the close × which PARTs vjt
+// from #bofh on the bouncer. Without restoration, downstream
+// webkit-iphone-15 specs (ux-2-mobile-archive runs next alphabetically)
+// can't selectChannel(#bofh) — the tab is gone, locator times out at
+// 30s. Re-join via REST in afterEach so the autojoin steady state
+// returns before the next spec.
+test.afterEach(async () => {
+  const vjt = getSeededVjt();
+  await joinChannel(vjt.token, NETWORK_SLUG, CHANNEL).catch(() => {});
+});
 
 test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", async ({
   page,

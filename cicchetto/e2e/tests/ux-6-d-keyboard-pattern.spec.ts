@@ -27,43 +27,62 @@
 // (f) Admin → Debug tab renders the diag panel + DiagFloat toggle
 
 import { expect, test } from "@playwright/test";
-import { loginAs } from "../fixtures/cicchettoPage";
-import { getSeededVjt } from "../fixtures/seedData";
+import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { AUTOJOIN_CHANNELS, getSeededAdmin, getSeededVjt, NETWORK_NICK, NETWORK_SLUG, VJT_USER } from "../fixtures/seedData";
 
 const GRAPPA_BASE_URL = "http://grappa-test:4000";
+const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test.setTimeout(60_000);
 
-async function promoteVjtToAdmin(): Promise<{ revert: () => Promise<void> }> {
-  // Mint admin via admin-vjt seeded bearer token, PATCH vjt's
-  // is_admin true (matches UX-6-G + UX-6-C pattern). Revert in
-  // finally so other parallel specs aren't affected.
-  const adminToken = "admin-vjt";
-  const findVjtRes = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
+async function findVjtUserId(adminToken: string): Promise<string> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
     headers: { authorization: `Bearer ${adminToken}` },
   });
-  const users = (await findVjtRes.json()) as { users: { id: string; name: string }[] };
-  const vjtId = users.users.find((u) => u.name === getSeededVjt().name)?.id;
-  if (!vjtId) throw new Error("seeded vjt user not found");
-  const patch = await fetch(`${GRAPPA_BASE_URL}/admin/users/${vjtId}`, {
+  if (!res.ok) {
+    throw new Error(`GET /admin/users → ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { users: { id: string; name: string }[] };
+  const vjt = body.users.find((u) => u.name === VJT_USER);
+  if (!vjt) {
+    throw new Error(`vjt user not found in admin users list: ${JSON.stringify(body)}`);
+  }
+  return vjt.id;
+}
+
+async function setAdminFlag(
+  adminToken: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users/${encodeURIComponent(userId)}`, {
     method: "PATCH",
     headers: {
       authorization: `Bearer ${adminToken}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ is_admin: true }),
+    body: JSON.stringify({ is_admin: isAdmin }),
   });
-  if (!patch.ok) throw new Error(`promote vjt failed: ${patch.status}`);
+  if (!res.ok) {
+    throw new Error(
+      `PATCH /admin/users/${userId} is_admin=${isAdmin} → ${res.status} ${await res.text()}`,
+    );
+  }
+}
+
+// GREEN-CI batch 2 — replaces the original `promoteVjtToAdmin` helper
+// that hardcoded `const adminToken = "admin-vjt"` (just the literal
+// string, NOT a real bearer token). That bypassed admin auth → 401
+// → `users.users` undefined → `.find` crashed before reaching the UI
+// assertions. Mirrors the working pattern in ux-6-g-admin-mobile-h-scroll
+// (findVjtUserId + setAdminFlag with `getSeededAdmin().token`).
+async function promoteVjtToAdmin(): Promise<{ revert: () => Promise<void> }> {
+  const admin = getSeededAdmin();
+  const vjtUserId = await findVjtUserId(admin.token);
+  await setAdminFlag(admin.token, vjtUserId, true);
   return {
     revert: async () => {
-      await fetch(`${GRAPPA_BASE_URL}/admin/users/${vjtId}`, {
-        method: "PATCH",
-        headers: {
-          authorization: `Bearer ${adminToken}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ is_admin: false }),
-      });
+      await setAdminFlag(admin.token, vjtUserId, false);
     },
   };
 }
@@ -102,8 +121,13 @@ test.describe("UX-6 D cluster close — iOS PWA keyboard pattern @webkit", () =>
     page,
   }) => {
     await loginAs(page, getSeededVjt());
+    // GREEN-CI batch 2 — UX-4 bucket B made `:home` the cold-load
+    // default selection; HomePane has no `.compose-box`. Select the
+    // autojoin channel first so the ComposeBox mounts (same fix shape
+    // as ios-z-cluster-journey.spec.ts:57 lessons-learned).
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
     const composeTa = page.locator(".compose-box textarea").first();
-    await expect(composeTa).toBeVisible();
+    await expect(composeTa).toBeVisible({ timeout: 10_000 });
     await composeTa.focus();
     const paddingBottom = await page.evaluate(() => {
       const shell = document.querySelector(".shell-mobile") as HTMLElement | null;
@@ -130,19 +154,24 @@ test.describe("UX-6 D cluster close — iOS PWA keyboard pattern @webkit", () =>
     const adminCtx = await promoteVjtToAdmin();
     try {
       await loginAs(page, getSeededVjt());
-      // Open settings → admin console entry. Mobile path uses the
-      // members drawer launcher; navigate via direct URL nav for
-      // determinism (admin-console routing identical across modes).
-      await page.evaluate(() => {
-        const settingsBtn = document.querySelector<HTMLElement>('[data-testid="shell-chrome-settings"]');
-        settingsBtn?.click();
-      });
-      const adminEntry = page.getByTestId("admin-console-entry");
-      await expect(adminEntry).toBeVisible({ timeout: 5000 });
-      await adminEntry.click();
+      // GREEN-CI batch 2 — mobile admin entry is via the members-drawer
+      // launcher footer (`mobile-panel-admin`), NOT via the desktop
+      // shell-chrome cog. Mirrors ux-6-c-mobile-admin-launcher.spec.ts
+      // pattern: select channel → open members drawer → tap admin
+      // launcher. Original spec used `.querySelector('[data-testid=
+      // "shell-chrome-settings"]').click()` which on mobile resolves
+      // the settings drawer but with admin-console-entry positioned
+      // outside the viewport (drawer is full-height bottom sheet),
+      // so the subsequent click never lands.
+      await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+      await page.getByLabel(/open members sidebar/i).tap();
+      const drawer = page.locator(".shell-members.open");
+      await expect(drawer).toBeVisible({ timeout: 5_000 });
+      await drawer.locator("[data-testid='mobile-panel-admin']").tap();
+      await expect(page.getByTestId("admin-pane")).toBeVisible({ timeout: 5_000 });
       const debugTab = page.getByTestId("admin-tab-debug");
       await expect(debugTab).toBeVisible();
-      await debugTab.click();
+      await debugTab.tap();
       await expect(page.getByTestId("admin-debug-tab")).toBeVisible();
       const toggle = page.getByTestId("diag-float-toggle");
       await expect(toggle).toBeVisible();
