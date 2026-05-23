@@ -28,7 +28,7 @@ import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { loadMore as loadMoreScrollback, scrollbackByChannel } from "./lib/scrollback";
-import { setSelectedChannel } from "./lib/selection";
+import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { WindowKind } from "./lib/windowKinds";
 import NickText from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
@@ -104,6 +104,14 @@ export type Props = {
 
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
+// UX-8 (b): scroll-settle debounce — fire the cursor update 500ms after
+// the last scroll event. Resets on every scroll, so iOS momentum
+// scrolling (events fire for 1-2s after finger lift) settles to a
+// single POST at the natural stop. Long enough that snap-to-bottom +
+// the resulting scroll event don't trigger a write before the user
+// has actually moved.
+const SCROLL_SETTLE_DEBOUNCE_MS = 500;
+
 // CP14 B2: trigger `loadMore` when the user scrolls within this many
 // pixels of the top. 200px is a standard infinite-scroll threshold —
 // fires before the user actually hits the top so the new rows can
@@ -159,6 +167,26 @@ const isDifferentDay = (aMs: number, bMs: number): boolean => {
     a.getMonth() !== b.getMonth() ||
     a.getDate() !== b.getDate()
   );
+};
+
+// UX-8 (b): scroll-settle visible-row math. Walks `.scrollback-line`
+// children of the listRef container, returns the highest `data-msg-id`
+// whose bottom edge is at-or-above the viewport bottom — i.e. the
+// last fully-visible message. Returns null when no row qualifies
+// (empty scrollback, or scrollTop above the first row's bottom).
+//
+// O(n) where n = rows in scrollback. Called from the 500ms-debounced
+// scroll-settle path so the cost is bounded; for a 200-row #bofh
+// scrollback this is sub-millisecond.
+const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
+  const viewportBottom = listRef.scrollTop + listRef.clientHeight;
+  let candidate: number | null = null;
+  for (const row of listRef.querySelectorAll<HTMLElement>(".scrollback-line")) {
+    if (row.offsetTop + row.offsetHeight > viewportBottom) break;
+    const id = row.dataset.msgId;
+    if (id) candidate = Number.parseInt(id, 10);
+  }
+  return candidate;
 };
 
 // Wire-shape source-of-truth: the server's `Grappa.Scrollback.Message.kind()`
@@ -602,6 +630,7 @@ const ScrollbackLine: Component<{
       }}
       data-testid="scrollback-line"
       data-kind={props.msg.kind}
+      data-msg-id={props.msg.id}
     >
       <span class="scrollback-time">{formatTime(props.msg.server_time)}</span>{" "}
       {renderBody(props.msg, handlers)}
@@ -619,6 +648,13 @@ type Row = SeparatorRow | UnreadMarkerRow | MessageRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
+  // UX-8 (b): scroll-settle debounce timer. Plain let — pure mutation,
+  // no Solid reactivity. Cleared on the next scroll event; fires once
+  // when scroll has been quiescent for SCROLL_SETTLE_DEBOUNCE_MS.
+  // onCleanup at component teardown clears any in-flight timer so a
+  // channel switch doesn't fire a stale settle for the previous
+  // window.
+  let scrollSettleTimer: number | undefined;
   // REV-G H23 (2026-05-22): function-ref signal instead of let-bound
   // ref. Combined with an explicit `onCleanup` wired at the marker
   // JSX site (`{ ref={(el) => { setMarkerRef(el); onCleanup(...) }} }`),
@@ -914,6 +950,9 @@ const ScrollbackPane: Component<Props> = (props) => {
     onCleanup(() => {
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
+      if (scrollSettleTimer !== undefined) {
+        window.clearTimeout(scrollSettleTimer);
+      }
     });
   });
 
@@ -1199,6 +1238,25 @@ const ScrollbackPane: Component<Props> = (props) => {
         listRef.scrollTop = newScrollHeight - oldScrollHeight + oldScrollTop;
       });
     }
+
+    // UX-8 (b): scroll-settle cursor update. Debounce 500ms — every
+    // scroll event resets the timer. When it finally fires, compute
+    // the last fully-visible row id; the forward-only gate in
+    // setCursorIfAdvances drops the POST when scroll is upward
+    // (candidate <= current cursor). loadMore block above runs
+    // independently on the same scroll event; the two are unrelated
+    // (forward-only gate makes the post-loadMore scrollHeight grow
+    // harmless — a higher candidate is fine).
+    if (scrollSettleTimer !== undefined) {
+      window.clearTimeout(scrollSettleTimer);
+    }
+    scrollSettleTimer = window.setTimeout(() => {
+      if (!listRef) return;
+      const id = lastFullyVisibleRowId(listRef);
+      if (id !== null) {
+        setCursorIfAdvances(props.networkSlug, props.channelName, id);
+      }
+    }, SCROLL_SETTLE_DEBOUNCE_MS);
   };
 
   // C7.4: scroll-to-bottom click handler — forces scroll to tail and

@@ -7,7 +7,7 @@ import { clearMentionsForKey } from "./mentions";
 import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
-import { setReadCursor } from "./readCursor";
+import { getReadCursor, setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
 import { windowIsPresent } from "./windowState";
 import {
@@ -140,6 +140,29 @@ const exports = identityScopedStore((onIdentityChange) => {
     const bearer = untrack(token);
     if (!bearer) return;
     void setReadCursor(bearer, networkSlug, channelName, last.id);
+  };
+
+  // UX-8 (b): scroll-settle cursor update — forward-only gate.
+  // Reads the current cursor for (slug, name) via getReadCursor; POSTs
+  // only when `candidateId` strictly exceeds it. Today's cursor is
+  // monotonic (focus-leave + browser-blur always write the tail id);
+  // this helper preserves that invariant when scroll-settle becomes
+  // the third trigger. Server (Grappa.ReadCursor.set/4) supports
+  // backward moves via last-write-wins, but cic does not exercise
+  // them — kept as a single-source guard at the client boundary.
+  //
+  // Token guard mirrors setCursorForWindow's: identity-rotation can
+  // null the bearer mid-effect.
+  const setCursorIfAdvances = (
+    networkSlug: string,
+    channelName: string,
+    candidateId: number,
+  ): void => {
+    const current = getReadCursor(networkSlug, channelName);
+    if (current !== null && candidateId <= current) return;
+    const bearer = untrack(token);
+    if (!bearer) return;
+    void setReadCursor(bearer, networkSlug, channelName, candidateId);
   };
 
   // Shared badge-clear helper used by both the cicchetto-select arm
@@ -499,6 +522,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     bumpUnread,
     bumpMessageUnread,
     bumpEventUnread,
+    setCursorIfAdvances,
   };
 });
 
@@ -510,3 +534,4 @@ export const setSelectedChannel = exports.setSelectedChannel;
 export const bumpUnread = exports.bumpUnread;
 export const bumpMessageUnread = exports.bumpMessageUnread;
 export const bumpEventUnread = exports.bumpEventUnread;
+export const setCursorIfAdvances = exports.setCursorIfAdvances;
