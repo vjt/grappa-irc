@@ -55,8 +55,16 @@ test("nick case-sensitivity: /q with different casing focuses existing window, n
     // STEP 1 — Open a query window with the lowercase nick.
     await composeSend(page, `/q ${PEER_NICK_LOWER}`);
 
-    // Sidebar gains exactly one query row for the lowercase nick.
-    const sidebar = page.locator(".sidebar");
+    // FLAKE-C bucket 7 (2026-05-23) — selector drift: pre-bucket
+    // `.sidebar` was the outer wrapper class; UX-5 BH dropped the
+    // `<section class="sidebar">` in favor of the `<aside
+    // class="shell-sidebar">` wrapper (Shell.tsx:412). The query
+    // row sits inside `.sidebar-network-section`'s per-network `<ul>`.
+    // Scope the lookup to `.shell-sidebar` so the same selector
+    // works on both desktop (sidebar) and mobile (bottom-bar would
+    // need a different scope; this spec is desktop-only via the
+    // single chromium project below).
+    const sidebar = page.locator(".shell-sidebar");
     const queryRows = sidebar.locator(`.sidebar-channel-name:has-text("${PEER_NICK_LOWER}")`);
     await expect(queryRows).toHaveCount(1, { timeout: 5_000 });
     // First row's text MUST be the lowercase casing (stored canonical).
