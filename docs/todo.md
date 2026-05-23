@@ -11,59 +11,47 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-### GREEN-CI-3 — e2e suite hardening Tier 1 (BEFORE UX-8)
+### UX-8 scroll cluster (next, after GREEN-CI-3 close)
 
-GREEN-CI batches 1 + 2 closed CI green 2026-05-23. Same evening, vjt
-asked for a full-suite e2e review: *"ensure they are solid now and do
-not have an occasion to regress. and further they do test actual
-features and not stupid internals."* 4 parallel review agents covered
-104 specs + 5 fixtures, surfaced ~50 findings.
+GREEN-CI-3 Tier 1 CLOSED 2026-05-23 at `4afa4e1`. Final CI state:
+integration 183/184 + ci exit-0. The 1 remaining integration failure
+is `scroll-on-window-switch:141` — a **REAL prod scroll regression**
+vjt dogfood-confirmed (channel → empty query → channel-back leaves
+~66px gap instead of 0). The spec is correctly detecting the bug
+intermittently (passes 1st run on fresh stack, fails on consecutive
+re-runs depending on cic state). NO spec-side `afterEach` added —
+masking the spec would hide the prod bug. UX-8 fixes the root cause
+and the spec turns green naturally.
 
-**Plan**: `docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`.
+**UX-8 scope (per locked roadmap):**
+- (a) channel-switch scroll position interference — `scroll-on-window-
+  switch:141` is the sentinel. UX-6-M folds in if vjt repro arrives.
+- (b) read-cursor update on scroll = NEW server contract.
+  `Grappa.ReadCursor.set/4` currently fires on focus-leave + browser-
+  blur only; adding scroll = new settle-event class with throttling
+  spec.
 
-**Tier 1 only** (highest-leverage, fix-once-cure-all):
-- B1: `waitForDmListenerReady` insert in m4/m5/m6/p0b (4 one-line fixes,
-  eliminates known FLAKE-D recurrence class)
-- B2: `cicchettoPage.sidebarWindow` substring → exact-text regex
-  (cascade-class blocker for the next seed-expansion bite)
-- B3: `seedData.globalSetup` cold-start retry-with-backoff (eliminates
-  "entire suite skipped on first login timeout" class)
-- B-Z: docs close
+**GREEN-CI-3 Tier 2/3 deferred** — captured in the plan's appendix
+(`docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`). Future
+cluster pickup; not in UX-8 scope.
 
-**Tier 2 + Tier 3** deferred — captured in the plan's "What's NOT in
-this plan" section. UX-8 starts AFTER GREEN-CI-3 closes.
-
-### Post-FLAKES — UX-8 scroll cluster (after GREEN-CI-3)
-
-FLAKES cluster CLOSED 2026-05-23 (commits `2132bea`→`0efa550`).
-Per-cluster history in DESIGN_NOTES (FLAKE-A → FLAKE-B Part 1/2 →
-FLAKE-C + FLAKE-D). Zero product bugs surfaced across 11 candidates;
-all were spec rot or batched-isolation false-positives.
-
-**Open carry-forward from FLAKES**: 27 "SPEC-ROT (load class)" files
-quarantined behind suite-level isolation noise. Per-spec full-stack
-cycle is the only reliable iso primitive (per
-`feedback_flake_b_batched_isolation_leaks`). Upstream isolation
-mechanism in `scripts/integration.sh` (per-spec cycle, slow + costly)
-deferred until the suite-level pain returns.
-
-**Next bucket: UX-8 scroll cluster** — see ★ POST-FLAKES ROADMAP below.
+After UX-8: wireTypes.ts codegen, then Bastille deploy. ★ roadmap
+block below has full lineage.
 
 ---
 
-★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22, GREEN-CI-3 inserted 2026-05-23):**
+★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22, GREEN-CI-3 CLOSED 2026-05-23):**
 
-After FLAKES-Z LANDED, work proceeds in this order. Do NOT skip ahead.
+After FLAKES-Z + GREEN-CI batches 1+2 + GREEN-CI-3 Tier 1 LANDED,
+work proceeds in this order. Do NOT skip ahead.
 
-0. **GREEN-CI-3 e2e suite hardening Tier 1** (inserted 2026-05-23) —
-   plan at `docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`. 3
-   fixture/spec edits totalling ~30 minutes of work. Pre-empts the
-   next seed-expansion cascade-class regression.
 1. **UX-8 scroll cluster** — (a) channel-switch scroll position
-   interference (UX-6-M folds in if vjt repro arrives); (b) read-cursor
-   update on scroll = NEW server contract. `Grappa.ReadCursor.set/4`
-   currently fires on focus-leave + browser-blur only; adding scroll =
-   new settle-event class with throttling spec.
+   interference (sentinel: `scroll-on-window-switch:141` — vjt
+   dogfood-confirmed real prod regression 2026-05-23); UX-6-M folds
+   in if vjt repro arrives; (b) read-cursor update on scroll = NEW
+   server contract. `Grappa.ReadCursor.set/4` currently fires on
+   focus-leave + browser-blur only; adding scroll = new settle-event
+   class with throttling spec.
    (Naming note: UX-7-A..F was the baseline-e2e-fails cluster, already
    CLOSED. This is a fresh cluster, hence UX-8.)
 2. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`

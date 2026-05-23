@@ -9440,6 +9440,110 @@ No deploy needed (e2e-only + sandbox-test-only).
 
 ---
 
+## 2026-05-23 — GREEN-CI-3 Tier 1 e2e suite hardening
+
+Same-day continuation. Post-GREEN-CI-batch-2 vjt asked for a full
+e2e suite review: *"ensure they are solid now and do not have an
+occasion to regress. and further they do test actual features and
+not stupid internals."* 4 parallel review agents covered 104 specs
++ 5 fixtures and surfaced ~50 findings spanning HIGH/MED/LOW
+classes. Tier 1 (highest-leverage, fix-once-cure-all) was pulled
+into this cluster; Tier 2/3 captured in the plan appendix
+(`docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`) for a future
+cluster.
+
+### Tier 1 buckets
+
+**B1 (`e2894c9`)** — DM-listener race fixes. 4 specs (m4, m5, m6,
+p0b) fired `peer.privmsg(NETWORK_NICK, …)` or `/query` immediately
+after `selectChannel`, racing the own-nick DM-listener `phx.join()`
+ack. Same shape FLAKE-D fixed in `cp14-b3` + `ux-6-k` earlier in
+the day; these 4 specs predated the factored
+`waitForDmListenerReady` helper at `cicchettoPage.ts:321`. One-line
+insert per spec.
+
+**B2 (`243f471`)** — `sidebarWindow` substring → exact-match via
+`data-window-name` attribute. Pre-fix fixture matched windows via
+`hasText: windowName` substring — `#bofh` ⊂ `#bofh-test`, `peer`
+⊂ `peer2`, etc. Combined with Playwright's default `.first()` on
+ambiguous locators, the collision returned a non-deterministic
+row (same class as GREEN-CI batch 1 SPEC-4, at the fixture layer).
+Plan's regex approach (`^\s*${name}\s*(?:\[.*\])?\s*$`) won't work
+because badge spans live as siblings of the name span inside the
+same `<li>`/`<button>` — parent's textContent = `{name}{badge}...`
+defeats anchored regexes (channel names contain digits too).
+
+Cleanest fix: add `data-window-name` attribute on every sidebar
+`<li>` + every `.bottom-bar-tab`. Mirrors existing
+`data-network-slug` + `data-testid` + `data-kind` test-seam
+attributes. Production behavior unchanged. Fixture locator becomes
+trivial `[data-window-name="${name}"]` exact match. Server-window
+legacy ergonomics (callers passing "Server" OR the slug) both
+alias to SERVER_WINDOW_NAME = "$server" in the fixture.
+
+**B3 (`4afa4e1`)** — `globalSetup` cold-start retry-with-backoff.
+Per `feedback_visitor_mint_e2e_cold_start`: first `login()` call
+against a freshly-spawned IRC session can hit
+`login_probe_timeout_ms = 3s` before upstream IRC completes →
+504. globalSetup runs FOUR logins back-to-back (vjt, admin,
+m9b-test, m9b-victim); one 504 throws → entire Playwright run
+aborts before any spec executes. Fix: `loginWithRetry` helper
+wrapping each login (3 attempts, 2s/4s/8s backoff). Pattern matches
+`assertMessagePersisted` / `awaitPushDelivery`.
+
+### CI state at close
+
+- **integration** at `4afa4e1`: 183 passed / 1 failed (4.4m).
+- **ci** at `4afa4e1`: 2m38s exit-0 (test+lint+audit+dialyzer).
+
+The 1 remaining integration failure is
+`scroll-on-window-switch:141` (`channel → empty query →
+channel-back: scroll lands at bottom on return`). Per vjt
+confirmation 2026-05-23 evening, the scroll regression IS real
+in prod — the spec is correctly detecting a true bug that
+manifests intermittently depending on cic state. The spec passes
+on a fresh stack (first run) but fails on consecutive re-runs
+when the query window persists in cic state. Pre-existing class,
+NOT caused by B1/B2/B3 — verified by isolated 3× run on the
+exact same head (✓ ✘ ✘ pattern).
+
+**This spec is the canary for UX-8 scroll cluster.** Per the
+locked post-FLAKES roadmap (`docs/todo.md` ★ block), UX-8 starts
+next with (a) channel-switch scroll position interference + (b)
+read-cursor-on-scroll = new server contract. The scroll:141
+spec turns green naturally as UX-8 ships. **No spec-side
+afterEach cleanup added** that would mask the bug — the
+assertion is correct, production has the regression.
+
+### Lessons
+
+- **Plan-vs-reality has to honor what production actually does.**
+  Plan B2 prescribed a regex exact-match. Reading the rendered
+  DOM showed badge digits in textContent break anchored regexes.
+  Path correction (data-window-name attribute) is a deviation
+  recorded in the commit body — CLAUDE.md "Directions over code"
+  cuts both ways. Plans are inputs, not contracts.
+
+- **A spec that passes 1st run + fails 2nd+ run on shared stack
+  isn't always a spec-rot story.** Sometimes it's a real prod
+  bug that manifests only after a state-leak path is taken. The
+  cleanup that would "fix" the spec would mask the prod bug.
+  `feedback_seed_expansion_audit` is right about test-side
+  cleanup most of the time; this is the exception that proves
+  the rule (vjt's dogfood confirmed the scroll behavior is
+  broken end-to-user).
+
+- **Tier 2 deferred work was the right call.** Tier 1 = 3
+  buckets, ~30 min coding, fixes 6 of 17 HIGH findings. Tier 2 =
+  11 MED, captured verbatim in the plan appendix for future
+  cluster pickup. Resisting the urge to do everything kept the
+  cluster atomic + reviewable.
+
+No deploy needed (e2e-only + sandbox-test-only).
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
