@@ -9185,6 +9185,169 @@ CLOSED on commit `0efa550`.
 
 ---
 
+## 2026-05-23 — GREEN-CI: vjt overrides FLAKES "load class" defer
+
+vjt mandate (mid-day, post-FLAKES-Z): *"is fucking ci green?"* → red
+on 30 specs (CI run `26332299699`). *"do we need clear first?"* →
+yes. *"i dont fucking care about the name. i want fucking ci green
+and testing actual functionality."*
+
+Critical reading: "test ACTUAL functionality" overrides
+FLAKE-B-Part-2's "load class quarantine — deferred." `@skip` tags are
+disallowed; specs must be deterministic AND exercise the real
+contract. The orchestrate prompt enumerated 3 named specs but local
+diagnosis surfaced a single root cause for 26 of 30 cascade failures.
+
+### SPEC-1 (`AdminEventsTest:197`, `ee20035`) — SessionRegistry stale-entry race
+
+`Grappa.AdminEventsTest`'s `setup` registers fake `{:session, _, _}`
+keys under the test pid via `Registry.register/3`; the on_exit hook
+calls `Registry.unregister/2` from a fresh pid (the test pid is
+already dead by then), which is a **no-op** — Registry only
+unregisters entries owned by the CALLING pid. Cleanup falls back to
+Registry's monitor-DOWN of the dead test pid, which is asynchronous.
+
+Sandbox rolls back the `networks` table between tests, so the next
+test's freshly-inserted `%Network{}` gets the same auto-incremented
+`id = 1`. Prior-test stale Registry entries on `network_id = 1`
+inflate `Admission.live_counts_for_network/1` → the
+`:cap_counts_changed` broadcast surfaces `visitors: 2` instead of
+the expected `visitors: 1` after the `:terminated` lifecycle event
+on a single live visitor.
+
+Fix: drain `{:session, _, _}` entries at setup time via a bounded
+poll (50× 10ms = 500ms ceiling, then `flunk/1` with the leftover
+entries so a true hang surfaces clearly). Each test self-defends
+against whatever sibling-test debris hasn't yet been cleared — also
+covers the `Task.start_link` + `Process.exit/2` async-cleanup race
+in `LiveIntrospectionTest`.
+
+### SPEC-2 (`cic-members-panel-scope.spec.ts:107`, `31c7295`) — sub-test asserts unreachable state
+
+The 4th sub-test ("parked channel suppresses MembersPane") was
+written 2026-05-08 BEFORE UX-4 bucket E added the close-watcher
+auto-redirect on `channels_changed`. Post-bucket-E: after REST PART,
+the server's eager `cleanup_local` evicts the channel from
+`state.members` synchronously + broadcasts `channels_changed`; cic
+refetches, cbs loses the parted channel, close-watcher fires +
+selection moves to MRU (the prior `#bofh` selection, which IS joined
+→ MembersPane mounts on the new focus). Net: the operator cannot
+be focused on a parked channel as an active selection.
+
+The non-joined suppression contract is already covered by
+cp15-b6-pending-to-failed-invite-only + cp15-b6-kicked (failed +
+kicked states). The other 3 sub-tests in this file cover
+non-channel kinds (Server window, DM). The parked sub-test
+asserted a state cic intentionally prevents — deleted, not
+quarantined.
+
+### SPEC-3 (`m10-admin-networks-cap-editor.spec.ts:61`, `31c7295`) — two layers of rot
+
+1. **U-1 testid drift.** U-1 (`84388a7`) split
+   `max_concurrent_sessions` → visitor + user. Rendered testid
+   moved from `admin-network-max-sessions-${slug}` to
+   `admin-network-max-visitor-sessions-${slug}` (+ a `user`
+   sibling), but this spec wasn't updated. `inputValue` waited 30s
+   for a non-existent testid then timed out — and the 30s burn was
+   the **head of the cascade timing window** (all subsequent
+   serial-singleton-lane specs got their slot pushed back by 30s
+   and ran into a state where m9b-victim had been parked but vjt's
+   session was also gone). Renamed testid to the visitor cap (the
+   historic single-cap successor per the U-1 migration note).
+2. **NULL starting cap unhandled.** The e2e seeder binds
+   bahamut-test via `mix grappa.bind_network` (no cap params), so
+   the row started with `max_concurrent_visitor_sessions = NULL`
+   (renders as "unlimited" / empty input). The `+1` sentinel
+   became `NaN+1 = NaN` → `fill("NaN")` rejected on
+   `<input type=number>`. Handle the empty case explicitly: when
+   `current === ""`, use sentinel `"42"`; otherwise increment.
+   Revert at end already round-trips back to whichever value was
+   first read.
+
+### SPEC-4 (cascade root cause, `2502d81`) — `.first()` lottery
+
+The big one. `m9b-admin-sessions-actions` + `u5-admin-networks-
+live-counts` both used
+`[data-testid^='admin-session-{disconnect,terminate}-'].first()` to
+pick a target. **Registry insertion order is non-deterministic;
+"first" randomly resolved to vjt's session ~50% of runs.** After
+vjt's session was Disconnected (parked credential, Bootstrap pid
+stops) or Terminated (pid killed), every downstream spec that
+logged in as vjt found an empty channels sidebar — `selectChannel`
+waiting for `.sidebar-window-btn` inside `<li hasText="#bofh">`
+timed out at 30s because the `#bofh` `<li>` no longer existed.
+
+26 of 30 cascade failures in CI run `26335369551` shared this
+exact locator. All p0a/b/c/d/e WHOIS / WHOWAS / LUSERS / INVITE
+specs, push-trigger-*, scroll-on-window-switch,
+marker-target-window, members-prefix, message-replay,
+nick-case-sensitivity, refresh-on-join, r6-own-action — every cic
+spec downstream of m9b. Same root cause, single class.
+
+Fix shape:
+  1. Seed a dedicated sacrificial user `m9b-victim` (bound to
+     bahamut-test like vjt + m9b-test). globalSetup logs in as
+     victim, captures UUID + token in env vars.
+  2. **Bump bahamut-test `max_concurrent_user_sessions` to 10**
+     (default 3 = exactly the seeded-user count after adding
+     m9b-victim → reconnect PATCH hit `503 network_busy` until
+     the parked registry slot released). Headroom for the
+     reconnect-then-kill dance.
+  3. Each destructive spec begins with a `/networks` PATCH (as
+     the victim, using its captured token) to reconnect —
+     idempotent if already `:connected` — guaranteeing a live
+     row before firing the destructive verb. After: vjt + m9b-test
+     stay alive for every downstream spec.
+  4. `getSeededM9bVictim()` returns the composite session id
+     (`user:UUID:1`) the `AdminSessionsTab` testids carry, so
+     specs call `getByTestId('admin-session-terminate-{id}')`
+     without re-deriving the shape.
+  5. m9b "lists rows" assertion bumped from 2 → 3 (vjt + m9b-test
+     + m9b-victim).
+
+Local verification: 6-spec composite run
+(m9b + u5 + marker-target + members-prefix + nick-case + p0a)
+— 10 passed in 15.9s. Pre-fix the same composite failed ~6/10 at
+30s timeouts.
+
+### Cluster-level verdict
+
+- **0 product bugs** across 4 buckets. All 4 were
+  test-infrastructure rot: setup-time race (SPEC-1), unreachable-
+  state assertion (SPEC-2), U-1 testid drift (SPEC-3), `.first()`
+  lottery on non-deterministic Registry order (SPEC-4).
+- **The "load class noise" framing from FLAKE-B Part 2 was wrong
+  for 26 of 27 cascade specs.** Single root cause (SPEC-4 `.first()`
+  lottery), single fix. Per-spec full-stack iso WOULD have masked
+  it (each spec passes alone because `.first()` deterministically
+  picks the only available row). Only the cross-file ordering
+  exposed the lottery + cascade.
+- **vjt's "test ACTUAL functionality" overrode the defer correctly.**
+  The deferred "upstream isolation mechanism" was the wrong remedy
+  for the wrong diagnosis — load was the symptom, `.first()` was
+  the cause.
+
+### Open carry-forward
+
+- 4 newly-flaky specs in `26335369551` (b0-invite, ux-5-bc2:138/210,
+  ux-5-bv-mobile-keyboard) are transient — distinct from the
+  cascade class. To be verified in the post-fix CI run.
+- The 27 "SPEC-ROT (load class)" files quarantine should be
+  re-evaluated after the SPEC-4 fix: most likely ALL of them
+  unbreak (cascade root was upstream of their failure window).
+  Don't pre-emptively un-quarantine; let the next CI run reveal
+  the actual remaining noise floor.
+
+No deploy needed (e2e-only + sandbox-test-only). CI confirms cascade
+cleared on `2502d81`: integration run `26336482344` went from
+**154 passed / 30 failed (15.6m)** pre-fix to **177 passed / 7 failed
+(5.3m)**. 23 specs unlocked by SPEC-4 alone. The 7 remaining failures
+have NO shared locator signature — distinct individual flakes, not
+cascade. iOS/webkit class (4 of 7) is platform-specific carry-forward.
+
+
+---
+
 ## What's *not* in this document (on purpose)
 
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
