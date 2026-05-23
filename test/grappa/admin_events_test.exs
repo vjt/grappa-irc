@@ -27,6 +27,18 @@ defmodule Grappa.AdminEventsTest do
   ]
 
   setup do
+    # Drain stale `{:session, _, _}` entries from prior tests' fake
+    # registrations. `register_fake_session/2` registers under the
+    # test pid; on test exit, Registry cleans entries via monitor-DOWN
+    # which is ASYNC. Next test's Network row gets `id = 1` again
+    # (sandbox transactional rollback), so prior-test stale entries
+    # on network_id=1 inflate `live_counts_for_network/1` and
+    # `:cap_counts_changed` broadcasts assert wrong counts. `on_exit`
+    # cannot help: `Registry.unregister/2` only unregisters the
+    # CALLER's entries, and on_exit runs in a fresh pid. Drain at
+    # setup makes each test self-defending.
+    wait_for_empty_session_registry!()
+
     # AdminEvents is started by Grappa.Application; clear buffer state
     # per-test by record-then-snapshot-then-drop. Since record/1 is a
     # cast, drain via call/2 to force serialization.
@@ -274,5 +286,35 @@ defmodule Grappa.AdminEventsTest do
     key = SessionServer.registry_key(subject, network_id)
     {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
     on_exit(fn -> _ = Registry.unregister(Grappa.SessionRegistry, key) end)
+  end
+
+  # Setup-time drain. Registry-monitor-DOWN cleanup of dead test pids
+  # is asynchronous; without this, sibling-test stale entries on the
+  # same auto-incremented `network_id` survive into the next test and
+  # inflate `live_counts_for_network/1`. Poll the match-spec used by
+  # admission until empty; bounded so a true hang surfaces as a clear
+  # test crash instead of a timeout deep inside `assert_receive`.
+  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(50)
+
+  defp wait_for_empty_session_registry!(0) do
+    leftover =
+      Registry.select(Grappa.SessionRegistry, [
+        {{{:session, :_, :_}, :_, :_}, [], [{{:"$_"}}]}
+      ])
+
+    flunk("SessionRegistry never drained — stale entries: #{inspect(leftover)}")
+  end
+
+  defp wait_for_empty_session_registry!(remaining) do
+    case Registry.count_select(Grappa.SessionRegistry, [
+           {{{:session, :_, :_}, :_, :_}, [], [true]}
+         ]) do
+      0 ->
+        :ok
+
+      _ ->
+        Process.sleep(10)
+        wait_for_empty_session_registry!(remaining - 1)
+    end
   end
 end
