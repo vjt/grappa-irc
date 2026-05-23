@@ -1107,7 +1107,22 @@ const ScrollbackPane: Component<Props> = (props) => {
           return;
         }
         if (atBottom()) {
-          listRef.scrollTop = listRef.scrollHeight;
+          // Same scrollHeight-vs-layout race as scrollToActivation /
+          // measureOverflow: reading scrollHeight synchronously inside
+          // the Solid effect callback fires BEFORE the browser's layout
+          // pass has measured the newly-committed <For> rows, so the
+          // write lands one-or-two rows short of true bottom.
+          // CI sentinel (scroll-on-window-switch:141) consistently saw a
+          // 66px gap pre-double-rAF; vjt prod-dogfooded the same as
+          // "short channel scrolled above its own height" 2026-05-23.
+          // Double rAF guarantees layout has settled before the read.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (!listRef) return;
+              if (!atBottom()) return;
+              listRef.scrollTop = listRef.scrollHeight;
+            });
+          });
         }
       },
     ),
