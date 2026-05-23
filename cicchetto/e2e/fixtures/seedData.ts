@@ -17,6 +17,38 @@
 
 import { login, type SeededUser } from "./grappaApi";
 
+// GREEN-CI-3 B3 (2026-05-23) — cold-start retry around login() calls
+// invoked from globalSetup. Per `feedback_visitor_mint_e2e_cold_start`,
+// first contact against a freshly-spawned IRC session hits
+// `login_probe_timeout_ms` (3s) before the upstream completes, returning
+// a 504 from `/auth/login`. globalSetup runs FOUR logins back-to-back
+// (vjt, admin, m9b-test, m9b-victim) — each is first-contact post
+// container boot. A single 504 throws → entire Playwright run aborts
+// before any spec executes. Pattern matches assertMessagePersisted /
+// awaitPushDelivery (exponential backoff around an unreliable boundary
+// probe).
+async function loginWithRetry(
+  identifier: string,
+  password: string,
+  attempts = 3,
+): ReturnType<typeof login> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await login(identifier, password);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        const backoffMs = 2000 * 2 ** i; // 2s, 4s, 8s
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+    }
+  }
+  throw new Error(
+    `loginWithRetry: ${identifier} failed after ${attempts} attempts: ${String(lastErr)}`,
+  );
+}
+
 export const VJT_USER = "vjt";
 export const VJT_PASSWORD = "test-password-not-secret";
 export const VJT_IDENTIFIER = "vjt@grappa.test";
@@ -65,7 +97,7 @@ const M9B_VICTIM_TOKEN_ENV_VAR = "E2E_M9B_VICTIM_TOKEN";
 const M9B_VICTIM_USER_ID_ENV_VAR = "E2E_M9B_VICTIM_USER_ID";
 
 export default async function globalSetup(): Promise<void> {
-  const result = await login(VJT_IDENTIFIER, VJT_PASSWORD);
+  const result = await loginWithRetry(VJT_IDENTIFIER, VJT_PASSWORD);
   process.env[TOKEN_ENV_VAR] = result.token;
   // Stash the subject envelope as JSON. cicchettoPage.loginAs() seeds
   // it into localStorage before page bootstrap so cicchetto's auth.ts
@@ -77,7 +109,7 @@ export default async function globalSetup(): Promise<void> {
 
   // M-7 — admin login. Parallel-shape to vjt; the M-7 spec uses
   // getSeededAdmin() to obtain the admin bearer + subject.
-  const admin = await login(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
+  const admin = await loginWithRetry(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
   process.env[ADMIN_TOKEN_ENV_VAR] = admin.token;
   process.env[ADMIN_SUBJECT_ENV_VAR] = JSON.stringify(admin.subject);
 
@@ -86,7 +118,7 @@ export default async function globalSetup(): Promise<void> {
   // Registry-insertion-order non-deterministic and was killing vjt's
   // session, cascading sidebar-empty failures across every downstream
   // vjt-using spec — root cause of the GREEN-CI batch-1 cascade).
-  const m9b = await login(M9B_IDENTIFIER, M9B_PASSWORD);
+  const m9b = await loginWithRetry(M9B_IDENTIFIER, M9B_PASSWORD);
   process.env[M9B_USER_ID_ENV_VAR] = m9b.subject.id;
 
   // GREEN-CI batch-1 — sacrificial victim's token + UUID. Destructive
@@ -95,7 +127,7 @@ export default async function globalSetup(): Promise<void> {
   // is stashed so each destructive spec can PATCH /networks to
   // reconnect (idempotent) before firing the destructive verb,
   // guaranteeing a live session even if a prior spec parked it.
-  const victim = await login(M9B_VICTIM_IDENTIFIER, M9B_VICTIM_PASSWORD);
+  const victim = await loginWithRetry(M9B_VICTIM_IDENTIFIER, M9B_VICTIM_PASSWORD);
   process.env[M9B_VICTIM_TOKEN_ENV_VAR] = victim.token;
   process.env[M9B_VICTIM_USER_ID_ENV_VAR] = victim.subject.id;
 }
