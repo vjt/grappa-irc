@@ -114,8 +114,8 @@ const SCROLL_SETTLE_DEBOUNCE_MS = 500;
 
 // BUGHUNT-2: input-event-recency window for the scroll-settle gate.
 // onScroll only arms the settle timer if a real operator input event
-// (pointerdown / touchmove / qualifying keydown) fired within this
-// many ms before the scroll. 1500ms covers user-wheel → 500ms
+// (pointerdown / wheel / touchmove / qualifying keydown) fired within
+// this many ms before the scroll. 1500ms covers user-wheel → 500ms
 // debounce + browser layout slop. Programmatic activation
 // `scrollIntoView`: no preceding input event → no arm.
 const INPUT_EVENT_RECENCY_MS = 1500;
@@ -703,11 +703,11 @@ const ScrollbackPane: Component<Props> = (props) => {
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
   // BUGHUNT-2: timestamp of the most recent real operator input event
-  // (pointerdown / touchmove / qualifying keydown) on the listRef.
-  // `null` until the operator interacts; reset to `null` on `on(key)`
-  // transitions so the new pane starts with a fresh gate (programmatic
-  // scrollIntoView during the activation routine must NOT inherit the
-  // leaving pane's input timestamp).
+  // (pointerdown / wheel / touchmove / qualifying keydown) on the
+  // listRef. `null` until the operator interacts; reset to `null` on
+  // `on(key)` transitions so the new pane starts with a fresh gate
+  // (programmatic scrollIntoView during the activation routine must
+  // NOT inherit the leaving pane's input timestamp).
   const [lastInputEventAtMs, setLastInputEventAtMs] = createSignal<number | null>(null);
 
   // Focus-session boundary id — the highest message id present in this
@@ -1318,10 +1318,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   // settle-arm gate to distinguish operator scrolls from programmatic
   // `scrollIntoView` calls fired by `scrollToActivation`.
   //
-  // Why three handlers (not just pointerdown):
-  //   * `pointerdown` covers wheel-with-mouse-over-element, drag-of-
-  //     scrollbar, and the start of touch interactions on iOS Safari
-  //     (PointerEvent unified since iOS 13).
+  // Why four handlers (not just pointerdown):
+  //   * `pointerdown` covers drag-of-scrollbar and the start of touch
+  //     interactions on iOS Safari (PointerEvent unified since iOS 13).
+  //   * `wheel` covers desktop mouse-wheel rotation. Per W3C the wheel
+  //     event is a real user input but does NOT emit a preceding
+  //     `pointerdown` — pointerdown fires only on button press, not on
+  //     scroll-wheel rotation. Missed in bucket A; the cursor would
+  //     never advance on desktop wheel scroll without this handler.
   //   * `touchmove` covers iOS-Safari touch-scroll where pointerdown
   //     fires but the scroll lands AFTER pointerup if the drag is
   //     short — pointerdown alone leaves a gap if the operator taps
@@ -1331,6 +1335,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   //     on the element so click-to-focus works without adding a tab-
   //     stop).
   const onPointerDown = (): void => {
+    setLastInputEventAtMs(Date.now());
+  };
+
+  const onWheel = (): void => {
     setLastInputEventAtMs(Date.now());
   };
 
@@ -1379,11 +1387,11 @@ const ScrollbackPane: Component<Props> = (props) => {
     // BUGHUNT-2: scroll-settle gated on recent operator input.
     // Programmatic scrolls fired by `scrollToActivation` (window
     // activation routine) emit DOM `scroll` events but no preceding
-    // `pointerdown` / `touchmove` / `keydown` — `lastInputEventAtMs`
-    // stays null or stale, the gate skips arming the settle timer,
-    // cursor is not advanced. Real operator scrolls (wheel / touch /
-    // PageDown) set `lastInputEventAtMs` first → onScroll arms →
-    // 500ms later POSTs the visible-tail id.
+    // `pointerdown` / `wheel` / `touchmove` / `keydown` —
+    // `lastInputEventAtMs` stays null or stale, the gate skips arming
+    // the settle timer, cursor is not advanced. Real operator scrolls
+    // (wheel / touch / PageDown) set `lastInputEventAtMs` first →
+    // onScroll arms → 500ms later POSTs the visible-tail id.
     //
     // forward-only gate in setCursorIfAdvances (selection.ts) drops
     // the POST when candidate <= current cursor — scroll-up from the
@@ -1448,6 +1456,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         tabIndex={-1}
         onScroll={onScroll}
         onPointerDown={onPointerDown}
+        onWheel={onWheel}
         onTouchMove={onTouchMove}
         onKeyDown={onKeyDown}
         data-testid="scrollback"
