@@ -710,6 +710,18 @@ const ScrollbackPane: Component<Props> = (props) => {
   // NOT inherit the leaving pane's input timestamp).
   const [lastInputEventAtMs, setLastInputEventAtMs] = createSignal<number | null>(null);
 
+  // BUGHUNT-2 B7: per-window visible-tail snapshot, captured on every
+  // onScroll. The leave-arm in `on(key, …)` below reads from this map
+  // for `prevKey` — by the time that effect fires, Solid has already
+  // re-rendered the `<For each={messages()}>` with the NEW key's rows
+  // and `lastFullyVisibleRowId(listRef)` returns the new pane's data,
+  // not the leaving pane's. The snapshot freezes the leaving pane's
+  // geometry from the LAST scroll event that fired against it (or
+  // initial-mount measure), surviving the Solid commit. Closure-scoped
+  // Map is fine: only one ScrollbackPane is mounted at a time, the
+  // snapshots persist until the component unmounts.
+  const visibleTailSnapshot = new Map<string, number>();
+
   // Focus-session boundary id — the highest message id present in this
   // window AT MOUNT TIME. Marker injection only considers messages whose
   // id falls in `(cursor, sessionTopId]`. Anything arriving DURING the
@@ -1127,33 +1139,44 @@ const ScrollbackPane: Component<Props> = (props) => {
     on(
       key,
       (newKey, prevKey) => {
-        // BUGHUNT-2: leave-arm cursor write. When key transitions
-        // away from a window, listRef.scrollTop STILL reflects the
-        // leaving pane's geometry (Solid's <Show> in Shell.tsx is
-        // non-keyed for channel↔channel switches, so the DOM node +
-        // component instance survive; scrollToActivation runs INSIDE
-        // double-rAF, which happens AFTER this effect body returns).
-        // Read lastFullyVisibleRowId NOW for the OLD key, decode
-        // prevKey back to (slug, channel), POST via
-        // setCursorIfAdvances.
+        // BUGHUNT-2 + B7: leave-arm cursor write. When key transitions
+        // away from a window, Solid's `<For each={messages()}>` has
+        // ALREADY swapped rows to the new key's content — a post-hoc
+        // `lastFullyVisibleRowId(listRef)` reads the WRONG pane.
+        // B7 fix: read the leaving pane's snapshot from
+        // `visibleTailSnapshot` (captured on every onScroll for the
+        // current key, frozen across the Solid commit). Fallback to
+        // the leaving pane's store-tail when no snapshot exists
+        // (e.g. operator never scrolled — auto-follow kept them at
+        // bottom and onScroll never fired against the leaving key).
+        // The forward-only gate in `setCursorIfAdvances` keeps the
+        // contract honest either way.
         //
         // Skip on initial mount (prevKey undefined) and on identical-
         // key re-fires (prevKey === newKey — defensive; shouldn't
         // happen with `defer: true` + Solid's signal equality).
-        // Skip if listRef hasn't initialized yet or if visible-tail
-        // is null (empty pane, nothing to mark).
+        // Skip if visible-tail is null AND store-tail is null (empty
+        // pane, nothing to mark).
         //
         // Channel→home/mentions switches DON'T fire this — they
         // unmount the component entirely. onCleanup covers that
         // case (added in A5).
-        if (prevKey !== undefined && prevKey !== newKey && listRef) {
-          const id = lastFullyVisibleRowId(listRef);
+        if (prevKey !== undefined && prevKey !== newKey) {
+          const snapshotted = visibleTailSnapshot.get(prevKey);
+          const prevMsgs = scrollbackByChannel()[prevKey];
+          const storeTail =
+            prevMsgs && prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1]?.id ?? null) : null;
+          const id = snapshotted ?? storeTail;
           if (id !== null) {
             const decoded = decodeChannelKey(prevKey);
             if (decoded !== null) {
               setCursorIfAdvances(decoded.slug, decoded.name, id);
             }
           }
+          // Free the snapshot for the leaving key — we won't visit
+          // this `prevKey` as `prev` again until a fresh scroll
+          // captures a new snapshot.
+          visibleTailSnapshot.delete(prevKey);
         }
 
         // BUGHUNT-2: reset input-gate so the new pane starts fresh.
@@ -1356,6 +1379,20 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!listRef) return;
     const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
     setAtBottom(distance <= SCROLL_BOTTOM_THRESHOLD_PX);
+
+    // BUGHUNT-2 B7: snapshot the current visible-tail for the CURRENT
+    // (key) so the leave-arm in `on(key, …)` can recover the leaving
+    // pane's geometry — by the time that effect fires Solid has
+    // already swapped the For-rendered rows to the new key, and a
+    // post-hoc `lastFullyVisibleRowId(listRef)` reads the WRONG pane.
+    // Snapshot fires on EVERY scroll (real + programmatic), so any
+    // scroll-driven viewport change is captured. Initial-mount + post-
+    // activation scrolls also fire scroll events so the snapshot stays
+    // current without an explicit measure.
+    const tailNow = lastFullyVisibleRowId(listRef);
+    if (tailNow !== null) {
+      visibleTailSnapshot.set(key(), tailNow);
+    }
 
     // CP14 B2: scroll-up triggers loadMore. The verb is idempotent
     // under burst (per-key in-flight Set) and forward-latched on
