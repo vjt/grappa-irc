@@ -1262,7 +1262,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "members_seeded",
+                         kind: :members_seeded,
                          network: _,
                          channel: "#test",
                          members: members
@@ -1370,7 +1370,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "joined",
+                         kind: :joined,
                          network: net_slug,
                          channel: "#test",
                          state: "joined"
@@ -1400,7 +1400,7 @@ defmodule Grappa.Session.ServerTest do
     test "other-user JOIN does NOT broadcast :joined (regression)" do
       # Only self-JOIN promotes window state. Other-user JOINs land in
       # scrollback as :persist :join rows and broadcast the row itself
-      # via the existing event surface — no `kind: "joined"` event.
+      # via the existing event surface — no `kind: :joined` event.
       handler = fn state, line ->
         if String.starts_with?(line, "USER ") do
           {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
@@ -1425,14 +1425,14 @@ defmodule Grappa.Session.ServerTest do
       # Drain the self-JOIN echo + its `joined` broadcast first so the
       # mailbox starts clean for the assertion below.
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 1_000
 
       # Now feed an other-user JOIN: must NOT produce a `joined` broadcast.
       IRCServer.feed(server, ":alice!u@h JOIN :#test\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 200
 
       # window_state unchanged — still :joined for #test from the self-JOIN.
       state = :sys.get_state(pid)
@@ -1508,7 +1508,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "window_pending",
+                         kind: :window_pending,
                          network: net_slug,
                          channel: "#sniffo",
                          state: "pending"
@@ -1547,13 +1547,13 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "window_pending", channel: "#sniffo", state: "pending"}
+                       payload: %{kind: :window_pending, channel: "#sniffo", state: "pending"}
                      },
                      1_000
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "window_pending", channel: "#other", state: "pending"}
+                       payload: %{kind: :window_pending, channel: "#other", state: "pending"}
                      },
                      1_000
 
@@ -1618,7 +1618,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Drain the first window_pending broadcast (the legitimate one).
       assert_receive %Phoenix.Socket.Broadcast{
-                       payload: %{kind: "window_pending", channel: "#sniffo"}
+                       payload: %{kind: :window_pending, channel: "#sniffo"}
                      },
                      1_000
 
@@ -1656,7 +1656,7 @@ defmodule Grappa.Session.ServerTest do
       assert {"#sniffo", _, nil} = Map.fetch!(state2.in_flight_joins, "#sniffo")
 
       # Crucially: NO second window_pending broadcast.
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "window_pending"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_pending}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -1726,7 +1726,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "join_failed",
+                         kind: :join_failed,
                          network: net_slug,
                          channel: "#sniffo",
                          state: "failed",
@@ -1832,7 +1832,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "join_failed"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :join_failed}}, 200
 
       state = :sys.get_state(pid)
       assert WindowState.state_of(state.window_state, "#sniffo") == nil
@@ -1994,7 +1994,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Drain the self-JOIN echo + its `joined` broadcast first.
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 1_000
 
       # Self-PART now.
       IRCServer.feed(server, ":grappa-test!u@h PART #test :byebye\r\n")
@@ -2009,7 +2009,7 @@ defmodule Grappa.Session.ServerTest do
 
     test "self-target KICK sets window_states[channel] = :kicked + broadcasts on per-channel topic" do
       # B3 contract: KICK with target == own_nick flips window state to
-      # :kicked AND broadcasts kind: "kicked" carrying by + reason on
+      # :kicked AND broadcasts kind: :kicked carrying by + reason on
       # the per-channel topic so cic transitions the visual without
       # parsing the scrollback.
       handler = fn state, line ->
@@ -2037,7 +2037,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Drive into :joined state via self-JOIN echo.
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 1_000
 
       # Channel-op alice kicks me with reason "behave".
       IRCServer.feed(server, ":alice!u@h KICK #test grappa-test :behave\r\n")
@@ -2045,7 +2045,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "kicked",
+                         kind: :kicked,
                          network: net_slug,
                          channel: "#test",
                          state: "kicked",
@@ -2094,12 +2094,12 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 1_000
 
       IRCServer.feed(server, ":alice!u@h KICK #test grappa-test\r\n")
 
       assert_receive %Phoenix.Socket.Broadcast{
-                       payload: %{kind: "kicked", reason: nil}
+                       payload: %{kind: :kicked, reason: nil}
                      },
                      1_000
 
@@ -2135,14 +2135,14 @@ defmodule Grappa.Session.ServerTest do
 
       # Drain the self-JOIN broadcast so the mailbox is clean.
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: "joined"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :joined}}, 1_000
 
       # Other-target KICK: alice kicks bob.
       IRCServer.feed(server, ":alice!u@h KICK #test bob :spam\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: "kicked"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :kicked}}, 200
 
       # window_state stays :joined — operator still in channel.
       state = :sys.get_state(pid)
@@ -2416,7 +2416,7 @@ defmodule Grappa.Session.ServerTest do
     # Server-side half of the cicchetto live-channel-on-/join fix.
     # Whenever `Map.keys(state.members)` mutates between input + derived
     # state in `Session.Server.delegate/2`, fire a fan-out
-    # `%{kind: "channels_changed"}` broadcast on `Topic.user(user_name)`
+    # `%{kind: :channels_changed}` broadcast on `Topic.user(user_name)`
     # so every connected tab refetches GET /channels and re-subscribes
     # to per-channel WS topics. Direction-agnostic: self-JOIN, self-PART,
     # self-KICK collapse to the same heartbeat (channels-list mutation
@@ -2443,7 +2443,7 @@ defmodule Grappa.Session.ServerTest do
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#newchan\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 1_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -2461,10 +2461,10 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 1_000
 
       IRCServer.feed(server, ":grappa-test!u@h PART #existing :bye\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 1_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -2482,10 +2482,10 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 1_000
 
       IRCServer.feed(server, ":op!u@h KICK #existing grappa-test :reason\r\n")
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 1_000
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 1_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -2513,7 +2513,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush2\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -2538,7 +2538,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :flush2\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush2\r\n"), 1_000)
 
-      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channels_changed"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -3339,7 +3339,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "topic_changed",
+                         kind: :topic_changed,
                          channel: "#test",
                          topic: %{text: "Welcome to the test channel"}
                        }
@@ -3349,7 +3349,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "topic_changed",
+                         kind: :topic_changed,
                          channel: "#test",
                          topic: %{
                            set_by: "vjt!user@host"
@@ -3413,7 +3413,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "topic_changed", channel: "#quiet", topic: %{text: nil}}
+                       payload: %{kind: :topic_changed, channel: "#quiet", topic: %{text: nil}}
                      },
                      1_000
 
@@ -3445,7 +3445,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "topic_changed", channel: "#live", topic: %{text: "Fresh new topic"}}
+                       payload: %{kind: :topic_changed, channel: "#live", topic: %{text: "Fresh new topic"}}
                      },
                      1_000
 
@@ -3555,7 +3555,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "channel_modes_changed", channel: "#modes", modes: %{modes: modes}}
+                       payload: %{kind: :channel_modes_changed, channel: "#modes", modes: %{modes: modes}}
                      },
                      1_000
 
@@ -3608,7 +3608,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "channel_modes_changed", channel: "#delta", modes: %{modes: modes}}
+                       payload: %{kind: :channel_modes_changed, channel: "#delta", modes: %{modes: modes}}
                      },
                      1_000
 
@@ -3676,7 +3676,7 @@ defmodule Grappa.Session.ServerTest do
       # channel_modes unchanged (still just ["n"])
       assert state.channel_modes["#roles"].modes == ["n"]
 
-      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "channel_modes_changed"}}, 200
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channel_modes_changed}}, 200
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -4454,7 +4454,7 @@ defmodule Grappa.Session.ServerTest do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
-                         kind: "mentions_bundle",
+                         kind: :mentions_bundle,
                          network: _,
                          away_reason: "lunch",
                          messages: messages
@@ -4487,7 +4487,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
 
       # Should NOT receive any mentions_bundle event.
-      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "mentions_bundle"}}, 300
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :mentions_bundle}}, 300
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -4761,7 +4761,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":irc.test.org 319 grappa-test alice :@#italia +#grappa\r\n")
       IRCServer.feed(server, ":irc.test.org 318 grappa-test alice :End of /WHOIS list\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "whois_bundle"} = bundle}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :whois_bundle} = bundle}, 1_500
       assert bundle.network == network.slug
       assert bundle.target == "alice"
       assert bundle.user == "alice_u"
@@ -4790,7 +4790,7 @@ defmodule Grappa.Session.ServerTest do
 
       IRCServer.feed(server, ":irc.test.org 318 grappa-test ghost :End of /WHOIS list\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "whois_bundle"} = bundle}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :whois_bundle} = bundle}, 1_500
       assert bundle.target == "ghost"
       assert bundle.user == nil
       assert bundle.host == nil
@@ -4813,7 +4813,7 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":irc.test.org 311 grappa-test ALICE alice_u alice.host * :Alice\r\n")
       IRCServer.feed(server, ":irc.test.org 318 grappa-test ALICE :End of /WHOIS list\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "whois_bundle"} = bundle}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :whois_bundle} = bundle}, 1_500
       assert bundle.user == "alice_u"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -4830,7 +4830,7 @@ defmodule Grappa.Session.ServerTest do
       # No /whois sent — 301 arrives standalone (operator just /msg'd alice).
       IRCServer.feed(server, ":irc.test.org 301 grappa-test alice :Gone fishing\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "peer_away"} = ev}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :peer_away} = ev}, 1_500
       assert ev.network == network.slug
       assert ev.peer == "alice"
       assert ev.message == "Gone fishing"
@@ -4856,7 +4856,7 @@ defmodule Grappa.Session.ServerTest do
       # Operator /invite alice #italia → upstream replies with 341.
       IRCServer.feed(server, ":irc.test.org 341 grappa-test alice #italia\r\n")
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "invite_ack"} = ev},
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :invite_ack} = ev},
                      1_500
 
       assert ev.network == network.slug
@@ -4899,7 +4899,7 @@ defmodule Grappa.Session.ServerTest do
         ":irc.test.org 266 grappa-test :Current global users: 1234 Max: 5000\r\n"
       )
 
-      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "lusers_bundle"} = ev}, 1_500
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :lusers_bundle} = ev}, 1_500
       assert ev.network == network.slug
       assert ev.total_users == 1234
       assert ev.invisible == 56
@@ -4945,7 +4945,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "whowas_bundle"} = ev
+                       payload: %{kind: :whowas_bundle} = ev
                      },
                      1_500
 
@@ -4979,7 +4979,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "whowas_bundle"} = ev
+                       payload: %{kind: :whowas_bundle} = ev
                      },
                      1_500
 
@@ -5235,7 +5235,7 @@ defmodule Grappa.Session.ServerTest do
 
       # Drain JOIN-time members_seeded broadcast.
       receive do
-        %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: "members_seeded"}} -> :ok
+        %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :members_seeded}} -> :ok
       after
         500 -> flunk("expected initial members_seeded after JOIN")
       end
@@ -5249,7 +5249,7 @@ defmodule Grappa.Session.ServerTest do
       # The 366 → members_seeded path MUST still fire so MembersPane refreshes.
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "members_seeded", channel: "#bofh"}
+                       payload: %{kind: :members_seeded, channel: "#bofh"}
                      },
                      1_500
 

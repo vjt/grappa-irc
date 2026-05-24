@@ -84,10 +84,10 @@ defmodule Grappa.Session.Wire do
           | :lusers_bundle
           | :whowas_bundle
 
-  @type channels_changed_payload :: %{kind: String.t()}
+  @type channels_changed_payload :: %{kind: :channels_changed}
 
   @type own_nick_changed_payload :: %{
-          kind: String.t(),
+          kind: :own_nick_changed,
           network_id: integer(),
           nick: String.t()
         }
@@ -108,7 +108,7 @@ defmodule Grappa.Session.Wire do
         }
 
   @type topic_changed_payload :: %{
-          kind: String.t(),
+          kind: :topic_changed,
           network: String.t(),
           channel: String.t(),
           topic: topic_entry_wire()
@@ -126,21 +126,21 @@ defmodule Grappa.Session.Wire do
         }
 
   @type channel_modes_changed_payload :: %{
-          kind: String.t(),
+          kind: :channel_modes_changed,
           network: String.t(),
           channel: String.t(),
           modes: channel_modes_wire()
         }
 
   @type channel_created_payload :: %{
-          kind: String.t(),
+          kind: :channel_created,
           network: String.t(),
           channel: String.t(),
           created_at: String.t()
         }
 
   @type members_seeded_payload :: %{
-          kind: String.t(),
+          kind: :members_seeded,
           network: String.t(),
           channel: String.t(),
           members: [member()]
@@ -168,21 +168,21 @@ defmodule Grappa.Session.Wire do
   @type members_index_payload :: %{members: [member()]}
 
   @type joined_payload :: %{
-          kind: String.t(),
+          kind: :joined,
           network: String.t(),
           channel: String.t(),
           state: String.t()
         }
 
   @type window_pending_payload :: %{
-          kind: String.t(),
+          kind: :window_pending,
           network: String.t(),
           channel: String.t(),
           state: String.t()
         }
 
   @type join_failed_payload :: %{
-          kind: String.t(),
+          kind: :join_failed,
           network: String.t(),
           channel: String.t(),
           state: String.t(),
@@ -191,7 +191,7 @@ defmodule Grappa.Session.Wire do
         }
 
   @type kicked_payload :: %{
-          kind: String.t(),
+          kind: :kicked,
           network: String.t(),
           channel: String.t(),
           state: String.t(),
@@ -200,7 +200,7 @@ defmodule Grappa.Session.Wire do
         }
 
   @type away_confirmed_payload :: %{
-          kind: String.t(),
+          kind: :away_confirmed,
           network: String.t(),
           state: String.t()
         }
@@ -214,7 +214,7 @@ defmodule Grappa.Session.Wire do
         }
 
   @type mentions_bundle_payload :: %{
-          kind: String.t(),
+          kind: :mentions_bundle,
           network: String.t(),
           away_started_at: String.t(),
           away_ended_at: String.t(),
@@ -233,7 +233,7 @@ defmodule Grappa.Session.Wire do
   (with mode prefixes preserved).
   """
   @type whois_bundle_payload :: %{
-          kind: String.t(),
+          kind: :whois_bundle,
           network: String.t(),
           target: String.t(),
           user: String.t() | nil,
@@ -275,7 +275,7 @@ defmodule Grappa.Session.Wire do
   `feedback_no_localized_strings_server_side`.
   """
   @type peer_away_payload :: %{
-          kind: String.t(),
+          kind: :peer_away,
           network: String.t(),
           peer: String.t(),
           message: String.t()
@@ -294,7 +294,7 @@ defmodule Grappa.Session.Wire do
   `feedback_no_localized_strings_server_side`.
   """
   @type invite_ack_payload :: %{
-          kind: String.t(),
+          kind: :invite_ack,
           network: String.t(),
           channel: String.t(),
           peer: String.t()
@@ -310,7 +310,7 @@ defmodule Grappa.Session.Wire do
   the human-readable rendering per `feedback_no_localized_strings_server_side`.
   """
   @type lusers_bundle_payload :: %{
-          kind: String.t(),
+          kind: :lusers_bundle,
           network: String.t(),
           total_users: integer() | nil,
           invisible: integer() | nil,
@@ -341,7 +341,7 @@ defmodule Grappa.Session.Wire do
   only the most-recent entry; future cluster can extend if needed.
   """
   @type whowas_bundle_payload :: %{
-          kind: String.t(),
+          kind: :whowas_bundle,
           network: String.t(),
           target: String.t(),
           user: String.t() | nil,
@@ -359,7 +359,7 @@ defmodule Grappa.Session.Wire do
   deltas; deferred to a future cluster.
   """
   @spec channels_changed() :: channels_changed_payload()
-  def channels_changed, do: %{kind: "channels_changed"}
+  def channels_changed, do: %{kind: :channels_changed}
 
   @doc """
   Live IRC nick change for the operator's session. Carries
@@ -368,7 +368,7 @@ defmodule Grappa.Session.Wire do
   """
   @spec own_nick_changed(integer(), String.t()) :: own_nick_changed_payload()
   def own_nick_changed(network_id, nick) when is_integer(network_id) and is_binary(nick) do
-    %{kind: "own_nick_changed", network_id: network_id, nick: nick}
+    %{kind: :own_nick_changed, network_id: network_id, nick: nick}
   end
 
   @doc """
@@ -383,7 +383,7 @@ defmodule Grappa.Session.Wire do
   def topic_changed(network_slug, channel, %{} = entry)
       when is_binary(network_slug) and is_binary(channel) do
     %{
-      kind: "topic_changed",
+      kind: :topic_changed,
       network: network_slug,
       channel: channel,
       topic: topic_entry_wire(entry)
@@ -403,7 +403,7 @@ defmodule Grappa.Session.Wire do
   def channel_modes_changed(network_slug, channel, %{modes: modes, params: params})
       when is_binary(network_slug) and is_binary(channel) and is_list(modes) and is_map(params) do
     %{
-      kind: "channel_modes_changed",
+      kind: :channel_modes_changed,
       network: network_slug,
       channel: channel,
       modes: %{modes: modes, params: params}
@@ -441,7 +441,7 @@ defmodule Grappa.Session.Wire do
   def channel_created(network_slug, channel, %DateTime{} = dt)
       when is_binary(network_slug) and is_binary(channel) do
     %{
-      kind: "channel_created",
+      kind: :channel_created,
       network: network_slug,
       channel: channel,
       created_at: DateTime.to_iso8601(dt)
@@ -460,7 +460,7 @@ defmodule Grappa.Session.Wire do
   def members_seeded(network_slug, channel, members)
       when is_binary(network_slug) and is_binary(channel) and is_list(members) do
     %{
-      kind: "members_seeded",
+      kind: :members_seeded,
       network: network_slug,
       channel: channel,
       members: Enum.map(members, &member/1)
@@ -502,7 +502,7 @@ defmodule Grappa.Session.Wire do
   @spec joined(String.t(), String.t()) :: joined_payload()
   def joined(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    %{kind: "joined", network: network_slug, channel: channel, state: "joined"}
+    %{kind: :joined, network: network_slug, channel: channel, state: "joined"}
   end
 
   @doc """
@@ -523,7 +523,7 @@ defmodule Grappa.Session.Wire do
   @spec window_pending(String.t(), String.t()) :: window_pending_payload()
   def window_pending(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    %{kind: "window_pending", network: network_slug, channel: channel, state: "pending"}
+    %{kind: :window_pending, network: network_slug, channel: channel, state: "pending"}
   end
 
   @doc """
@@ -536,7 +536,7 @@ defmodule Grappa.Session.Wire do
   def join_failed(network_slug, channel, reason, numeric)
       when is_binary(network_slug) and is_binary(channel) do
     %{
-      kind: "join_failed",
+      kind: :join_failed,
       network: network_slug,
       channel: channel,
       state: "failed",
@@ -557,7 +557,7 @@ defmodule Grappa.Session.Wire do
   def kicked(network_slug, channel, by, reason)
       when is_binary(network_slug) and is_binary(channel) do
     %{
-      kind: "kicked",
+      kind: :kicked,
       network: network_slug,
       channel: channel,
       state: "kicked",
@@ -581,7 +581,7 @@ defmodule Grappa.Session.Wire do
   @spec away_confirmed(String.t(), :present | :away) :: away_confirmed_payload()
   def away_confirmed(network_slug, state)
       when is_binary(network_slug) and state in [:present, :away] do
-    %{kind: "away_confirmed", network: network_slug, state: Atom.to_string(state)}
+    %{kind: :away_confirmed, network: network_slug, state: Atom.to_string(state)}
   end
 
   @doc """
@@ -597,7 +597,7 @@ defmodule Grappa.Session.Wire do
       when is_binary(network_slug) and is_binary(away_started_at) and
              is_binary(away_ended_at) and is_list(messages) do
     %{
-      kind: "mentions_bundle",
+      kind: :mentions_bundle,
       network: network_slug,
       away_started_at: away_started_at,
       away_ended_at: away_ended_at,
@@ -634,7 +634,7 @@ defmodule Grappa.Session.Wire do
   def whois_bundle(network_slug, target, accum)
       when is_binary(network_slug) and is_binary(target) and is_map(accum) do
     %{
-      kind: "whois_bundle",
+      kind: :whois_bundle,
       network: network_slug,
       target: target,
       user: Map.get(accum, :user),
@@ -673,7 +673,7 @@ defmodule Grappa.Session.Wire do
   @spec peer_away(String.t(), String.t(), String.t()) :: peer_away_payload()
   def peer_away(network_slug, peer, message)
       when is_binary(network_slug) and is_binary(peer) and is_binary(message) do
-    %{kind: "peer_away", network: network_slug, peer: peer, message: message}
+    %{kind: :peer_away, network: network_slug, peer: peer, message: message}
   end
 
   @doc """
@@ -689,7 +689,7 @@ defmodule Grappa.Session.Wire do
   @spec invite_ack(String.t(), String.t(), String.t()) :: invite_ack_payload()
   def invite_ack(network_slug, channel, peer)
       when is_binary(network_slug) and is_binary(channel) and is_binary(peer) do
-    %{kind: "invite_ack", network: network_slug, channel: channel, peer: peer}
+    %{kind: :invite_ack, network: network_slug, channel: channel, peer: peer}
   end
 
   @doc """
@@ -703,7 +703,7 @@ defmodule Grappa.Session.Wire do
   def lusers_bundle(network_slug, accum)
       when is_binary(network_slug) and is_map(accum) do
     %{
-      kind: "lusers_bundle",
+      kind: :lusers_bundle,
       network: network_slug,
       total_users: Map.get(accum, :total_users),
       invisible: Map.get(accum, :invisible),
@@ -751,7 +751,7 @@ defmodule Grappa.Session.Wire do
       end
 
     %{
-      kind: "whowas_bundle",
+      kind: :whowas_bundle,
       network: network_slug,
       target: target,
       user: Map.get(last_entry, :user),

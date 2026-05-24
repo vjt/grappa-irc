@@ -25,14 +25,14 @@ defmodule Grappa.Session.WireTest do
 
   describe "channels_changed/0" do
     test "returns the discriminator-only payload" do
-      assert Wire.channels_changed() == %{kind: "channels_changed"}
+      assert Wire.channels_changed() == %{kind: :channels_changed}
     end
   end
 
   describe "own_nick_changed/2" do
     test "carries network_id (integer) + nick (string)" do
       assert Wire.own_nick_changed(7, "vjt-grappa") == %{
-               kind: "own_nick_changed",
+               kind: :own_nick_changed,
                network_id: 7,
                nick: "vjt-grappa"
              }
@@ -45,7 +45,7 @@ defmodule Grappa.Session.WireTest do
       entry = %{text: "Welcome to #grappa", set_by: "vjt", set_at: dt}
 
       assert Wire.topic_changed("azzurra", "#grappa", entry) == %{
-               kind: "topic_changed",
+               kind: :topic_changed,
                network: "azzurra",
                channel: "#grappa",
                topic: %{
@@ -60,7 +60,7 @@ defmodule Grappa.Session.WireTest do
       entry = %{text: nil, set_by: nil, set_at: nil}
 
       assert Wire.topic_changed("azzurra", "#grappa", entry) == %{
-               kind: "topic_changed",
+               kind: :topic_changed,
                network: "azzurra",
                channel: "#grappa",
                topic: %{text: nil, set_by: nil, set_at: nil}
@@ -92,7 +92,7 @@ defmodule Grappa.Session.WireTest do
       entry = %{modes: ["n", "t"], params: %{}}
 
       assert Wire.channel_modes_changed("azzurra", "#grappa", entry) == %{
-               kind: "channel_modes_changed",
+               kind: :channel_modes_changed,
                network: "azzurra",
                channel: "#grappa",
                modes: %{modes: ["n", "t"], params: %{}}
@@ -103,7 +103,7 @@ defmodule Grappa.Session.WireTest do
       entry = %{modes: ["k", "l", "n"], params: %{"k" => "secret", "l" => "42"}}
 
       assert Wire.channel_modes_changed("azzurra", "#grappa", entry) == %{
-               kind: "channel_modes_changed",
+               kind: :channel_modes_changed,
                network: "azzurra",
                channel: "#grappa",
                modes: %{modes: ["k", "l", "n"], params: %{"k" => "secret", "l" => "42"}}
@@ -136,7 +136,7 @@ defmodule Grappa.Session.WireTest do
       ]
 
       assert Wire.members_seeded("azzurra", "#grappa", members) == %{
-               kind: "members_seeded",
+               kind: :members_seeded,
                network: "azzurra",
                channel: "#grappa",
                members: members
@@ -207,7 +207,7 @@ defmodule Grappa.Session.WireTest do
   describe "joined/2" do
     test "carries the typed state literal" do
       assert Wire.joined("azzurra", "#grappa") == %{
-               kind: "joined",
+               kind: :joined,
                network: "azzurra",
                channel: "#grappa",
                state: "joined"
@@ -225,7 +225,7 @@ defmodule Grappa.Session.WireTest do
       # on the user-topic carry a window-namespace prefix to avoid
       # collision with channel-namespace verbs (`joined` etc.).
       assert Wire.window_pending("azzurra", "#grappa") == %{
-               kind: "window_pending",
+               kind: :window_pending,
                network: "azzurra",
                channel: "#grappa",
                state: "pending"
@@ -236,7 +236,7 @@ defmodule Grappa.Session.WireTest do
   describe "join_failed/4" do
     test "carries the failure reason + numeric" do
       assert Wire.join_failed("azzurra", "#grappa", "Cannot join (+i)", 473) == %{
-               kind: "join_failed",
+               kind: :join_failed,
                network: "azzurra",
                channel: "#grappa",
                state: "failed",
@@ -249,7 +249,7 @@ defmodule Grappa.Session.WireTest do
   describe "kicked/4" do
     test "carries the kicker + reason" do
       assert Wire.kicked("azzurra", "#grappa", "op-vjt", "be quiet") == %{
-               kind: "kicked",
+               kind: :kicked,
                network: "azzurra",
                channel: "#grappa",
                state: "kicked",
@@ -260,7 +260,7 @@ defmodule Grappa.Session.WireTest do
 
     test "tolerates nil by + nil reason from un-recorded kick meta" do
       assert Wire.kicked("azzurra", "#grappa", nil, nil) == %{
-               kind: "kicked",
+               kind: :kicked,
                network: "azzurra",
                channel: "#grappa",
                state: "kicked",
@@ -273,13 +273,13 @@ defmodule Grappa.Session.WireTest do
   describe "away_confirmed/2" do
     test "carries the present/away state string (REV-H H3: atom→string at the wire boundary)" do
       assert Wire.away_confirmed("azzurra", :present) == %{
-               kind: "away_confirmed",
+               kind: :away_confirmed,
                network: "azzurra",
                state: "present"
              }
 
       assert Wire.away_confirmed("azzurra", :away) == %{
-               kind: "away_confirmed",
+               kind: :away_confirmed,
                network: "azzurra",
                state: "away"
              }
@@ -326,7 +326,7 @@ defmodule Grappa.Session.WireTest do
         )
 
       assert payload == %{
-               kind: "mentions_bundle",
+               kind: :mentions_bundle,
                network: "azzurra",
                away_started_at: "2026-05-08T08:00:00.000Z",
                away_ended_at: "2026-05-08T08:05:00.000Z",
@@ -376,7 +376,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.whois_bundle("azzurra", "alice", accum)
 
       assert payload == %{
-               kind: "whois_bundle",
+               kind: :whois_bundle,
                network: "azzurra",
                target: "alice",
                user: "alice_u",
@@ -409,7 +409,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.whois_bundle("azzurra", "ghost", %{})
 
       assert payload == %{
-               kind: "whois_bundle",
+               kind: :whois_bundle,
                network: "azzurra",
                target: "ghost",
                user: nil,
@@ -443,7 +443,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.peer_away("azzurra", "alice", "Gone fishing")
 
       assert payload == %{
-               kind: "peer_away",
+               kind: :peer_away,
                network: "azzurra",
                peer: "alice",
                message: "Gone fishing"
@@ -452,7 +452,7 @@ defmodule Grappa.Session.WireTest do
 
     test "tolerates an empty message string (some servers send 301 with empty trailing)" do
       payload = Wire.peer_away("azzurra", "alice", "")
-      assert payload.kind == "peer_away"
+      assert payload.kind == :peer_away
       assert payload.message == ""
     end
   end
@@ -462,7 +462,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.invite_ack("azzurra", "#italia", "alice")
 
       assert payload == %{
-               kind: "invite_ack",
+               kind: :invite_ack,
                network: "azzurra",
                channel: "#italia",
                peer: "alice"
@@ -490,7 +490,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.lusers_bundle("azzurra", accum)
 
       assert payload == %{
-               kind: "lusers_bundle",
+               kind: :lusers_bundle,
                network: "azzurra",
                total_users: 1234,
                invisible: 56,
@@ -510,7 +510,7 @@ defmodule Grappa.Session.WireTest do
     test "missing accum keys project to nil (graceful degradation for partial bundles)" do
       payload = Wire.lusers_bundle("net", %{total_users: 42})
 
-      assert payload.kind == "lusers_bundle"
+      assert payload.kind == :lusers_bundle
       assert payload.total_users == 42
       assert payload.invisible == nil
       assert payload.unknown_connections == nil
@@ -539,7 +539,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.whowas_bundle("azzurra", "Alice", accum)
 
       assert payload == %{
-               kind: "whowas_bundle",
+               kind: :whowas_bundle,
                network: "azzurra",
                target: "Alice",
                user: "alice_u",
@@ -555,7 +555,7 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.whowas_bundle("net", "ghost", %{not_found: true})
 
       assert payload == %{
-               kind: "whowas_bundle",
+               kind: :whowas_bundle,
                network: "net",
                target: "ghost",
                user: nil,
@@ -570,7 +570,7 @@ defmodule Grappa.Session.WireTest do
     test "empty entries with not_found absent defaults to not_found: false + nil fields" do
       payload = Wire.whowas_bundle("net", "alice", %{entries: []})
 
-      assert payload.kind == "whowas_bundle"
+      assert payload.kind == :whowas_bundle
       assert payload.target == "alice"
       assert payload.not_found == false
       assert payload.user == nil
@@ -578,8 +578,8 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
-  describe "kind: discriminator string contract" do
-    test "every Wire fn output carries kind: as a String.t()" do
+  describe "kind: discriminator atom contract" do
+    test "every Wire fn output carries kind: as an atom literal (Jason serializes to string at wire boundary)" do
       payloads = [
         Wire.channels_changed(),
         Wire.own_nick_changed(1, "n"),
@@ -601,7 +601,8 @@ defmodule Grappa.Session.WireTest do
       ]
 
       for p <- payloads do
-        assert is_binary(p.kind), "expected string kind, got #{inspect(p.kind)} in #{inspect(p)}"
+        assert is_atom(p.kind) and p.kind not in [nil, true, false],
+               "expected atom literal kind, got #{inspect(p.kind)} in #{inspect(p)}"
       end
     end
   end

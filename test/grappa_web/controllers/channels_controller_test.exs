@@ -461,7 +461,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       # Cast → eager cleanup runs → channels_changed broadcast fires.
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
-                       payload: %{kind: "channels_changed"}
+                       payload: %{kind: :channels_changed}
                      },
                      1_000
 

@@ -710,7 +710,7 @@ defmodule Grappa.Session do
   """
   @type window_state_snapshot ::
           %{
-            required(:kind) => String.t(),
+            required(:kind) => :joined | :join_failed | :kicked,
             required(:network) => String.t(),
             required(:channel) => String.t(),
             required(:state) => String.t(),

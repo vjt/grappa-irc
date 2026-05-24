@@ -2417,7 +2417,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       payload = Grappa.Session.Wire.whois_bundle("test-net", target, accum)
 
-      assert payload.kind == "whois_bundle"
+      assert payload.kind == :whois_bundle
       assert payload.using_ssl == true
       assert payload.is_registered == true
       assert payload.is_admin == true

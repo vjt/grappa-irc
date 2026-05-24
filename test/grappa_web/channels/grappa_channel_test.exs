@@ -233,7 +233,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # Must receive the cached topic_changed snapshot
-      assert_push("event", %{kind: "topic_changed", channel: "#snap", topic: %{text: "Snapshot topic"}})
+      assert_push("event", %{kind: :topic_changed, channel: "#snap", topic: %{text: "Snapshot topic"}})
     end
 
     test "after-join snapshot: pushes cached channel_modes_changed if session has modes cached" do
@@ -253,7 +253,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> build_socket()
         |> subscribe_and_join(topic, %{})
 
-      assert_push("event", %{kind: "channel_modes_changed", channel: "#snap", modes: %{modes: modes}})
+      assert_push("event", %{kind: :channel_modes_changed, channel: "#snap", modes: %{modes: modes}})
       assert "n" in modes
       assert "t" in modes
     end
@@ -270,14 +270,14 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       # No topic_changed push; no crash
-      refute_push("event", %{kind: "topic_changed"}, 100)
-      refute_push("event", %{kind: "channel_modes_changed"}, 100)
+      refute_push("event", %{kind: :topic_changed}, 100)
+      refute_push("event", %{kind: :channel_modes_changed}, 100)
       # CP15 B3 closes the deploy-reconnect race for window_state +
       # members too; cold subscribe with no session must not push these.
-      refute_push("event", %{kind: "joined"}, 100)
-      refute_push("event", %{kind: "kicked"}, 100)
-      refute_push("event", %{kind: "join_failed"}, 100)
-      refute_push("event", %{kind: "members_seeded"}, 100)
+      refute_push("event", %{kind: :joined}, 100)
+      refute_push("event", %{kind: :kicked}, 100)
+      refute_push("event", %{kind: :join_failed}, 100)
+      refute_push("event", %{kind: :members_seeded}, 100)
     end
 
     test "after-join snapshot: pushes cached members_seeded if session has members for channel (CP15 B3)" do
@@ -312,7 +312,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "members_seeded",
+        kind: :members_seeded,
         channel: "#snap",
         members: members
       })
@@ -342,7 +342,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "joined",
+        kind: :joined,
         channel: "#snap",
         state: "joined"
       })
@@ -369,7 +369,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "kicked",
+        kind: :kicked,
         channel: "#snap",
         state: "kicked",
         by: "alice",
@@ -407,7 +407,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         |> subscribe_and_join(topic, %{})
 
       assert_push("event", %{
-        kind: "join_failed",
+        kind: :join_failed,
         channel: "#snap",
         state: "failed",
         reason: "Cannot join channel (+i)",
