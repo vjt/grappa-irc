@@ -112,6 +112,27 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 // has actually moved.
 const SCROLL_SETTLE_DEBOUNCE_MS = 500;
 
+// BUGHUNT-2: input-event-recency window for the scroll-settle gate.
+// onScroll only arms the settle timer if a real operator input event
+// (pointerdown / touchmove / qualifying keydown) fired within this
+// many ms before the scroll. 1500ms covers user-wheel → 500ms
+// debounce + browser layout slop. Programmatic activation
+// `scrollIntoView`: no preceding input event → no arm.
+const INPUT_EVENT_RECENCY_MS = 1500;
+
+// BUGHUNT-2: keyboard keys that scroll the scrollback pane. Used by
+// the keydown handler to decide whether a key event qualifies as an
+// "operator scrolled" input for the settle-arm gate.
+const SCROLL_KEYS = new Set<string>([
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  "ArrowUp",
+  "ArrowDown",
+  " ", // Space — page-down convention
+]);
+
 // CP14 B2: trigger `loadMore` when the user scrolls within this many
 // pixels of the top. 200px is a standard infinite-scroll threshold —
 // fires before the user actually hits the top so the new rows can
@@ -681,6 +702,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   // window mount. Reset on channel switch (key change).
   const [markerScrolled, setMarkerScrolled] = createSignal(false);
 
+  // BUGHUNT-2: timestamp of the most recent real operator input event
+  // (pointerdown / touchmove / qualifying keydown) on the listRef.
+  // `null` until the operator interacts; reset to `null` on `on(key)`
+  // transitions so the new pane starts with a fresh gate (programmatic
+  // scrollIntoView during the activation routine must NOT inherit the
+  // leaving pane's input timestamp).
+  const [lastInputEventAtMs, setLastInputEventAtMs] = createSignal<number | null>(null);
+
   // Focus-session boundary id — the highest message id present in this
   // window AT MOUNT TIME. Marker injection only considers messages whose
   // id falls in `(cursor, sessionTopId]`. Anything arriving DURING the
@@ -1207,6 +1236,37 @@ const ScrollbackPane: Component<Props> = (props) => {
   // leave hook lives at `lib/selection.ts`'s `on(selectedChannel)`
   // effect.
 
+  // BUGHUNT-2: real-input markers. Set on every operator-driven event
+  // that could plausibly cause a scroll; consulted by onScroll's
+  // settle-arm gate to distinguish operator scrolls from programmatic
+  // `scrollIntoView` calls fired by `scrollToActivation`.
+  //
+  // Why three handlers (not just pointerdown):
+  //   * `pointerdown` covers wheel-with-mouse-over-element, drag-of-
+  //     scrollbar, and the start of touch interactions on iOS Safari
+  //     (PointerEvent unified since iOS 13).
+  //   * `touchmove` covers iOS-Safari touch-scroll where pointerdown
+  //     fires but the scroll lands AFTER pointerup if the drag is
+  //     short — pointerdown alone leaves a gap if the operator taps
+  //     and releases on a flung scroll.
+  //   * `keydown` covers desktop keyboard scrolling (PageDown / Space /
+  //     arrows). Requires the listRef to be focusable (`tabIndex="-1"`
+  //     on the element so click-to-focus works without adding a tab-
+  //     stop).
+  const onPointerDown = (): void => {
+    setLastInputEventAtMs(Date.now());
+  };
+
+  const onTouchMove = (): void => {
+    setLastInputEventAtMs(Date.now());
+  };
+
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (SCROLL_KEYS.has(e.key)) {
+      setLastInputEventAtMs(Date.now());
+    }
+  };
+
   const onScroll = () => {
     if (!listRef) return;
     const distance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
@@ -1298,7 +1358,11 @@ const ScrollbackPane: Component<Props> = (props) => {
         ref={listRef}
         class="scrollback"
         classList={{ "scrollback-overflowing": isOverflowing() }}
+        tabIndex={-1}
         onScroll={onScroll}
+        onPointerDown={onPointerDown}
+        onTouchMove={onTouchMove}
+        onKeyDown={onKeyDown}
         data-testid="scrollback"
       >
         <Show
