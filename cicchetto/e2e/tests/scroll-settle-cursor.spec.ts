@@ -45,21 +45,32 @@ async function fetchCursor(token: string, channel: string): Promise<number | nul
 }
 
 async function scrollByPx(page: Page, deltaY: number): Promise<void> {
-  await page.evaluate((dy) => {
-    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
-    if (!el) throw new Error("scrollback not found");
-    el.scrollTop = Math.max(0, el.scrollTop + dy);
-    el.dispatchEvent(new Event("scroll"));
-  }, deltaY);
+  // BUGHUNT-2: real WheelEvent so the input-event gate in
+  // ScrollbackPane's onScroll passes. Old synthetic
+  // dispatchEvent(new Event("scroll")) was gated out post-BUGHUNT-2.
+  const box = await page.locator('[data-testid="scrollback"]').boundingBox();
+  if (!box) throw new Error("scrollback bounding box null");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, deltaY);
 }
 
 async function scrollToBottom(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
-    if (!el) throw new Error("scrollback not found");
-    el.scrollTop = el.scrollHeight;
-    el.dispatchEvent(new Event("scroll"));
-  });
+  // BUGHUNT-2: prefer the scroll-to-bottom button (real click — counts
+  // as a PointerEvent input), fall back to a big mouse wheel-down.
+  const btn = page.locator('[data-testid="scroll-to-bottom"]');
+  if ((await btn.count()) > 0 && (await btn.isVisible())) {
+    await btn.click();
+    return;
+  }
+  const box = await page.locator('[data-testid="scrollback"]').boundingBox();
+  if (!box) throw new Error("scrollback bounding box null");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // Page-down repeatedly until we reach the tail. 10 turns × 500px ~
+  // covers the seeded scrollback at the test viewport.
+  for (let i = 0; i < 10; i++) {
+    await page.mouse.wheel(0, 500);
+    await page.waitForTimeout(50);
+  }
 }
 
 async function visibleRowIds(page: Page): Promise<number[]> {
