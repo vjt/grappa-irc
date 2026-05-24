@@ -91,13 +91,22 @@ if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
     if [ "${WRITABLE_LOCK:-}" = "1" ]; then
         lock_mode="rw"
     fi
+    # WRITABLE_CIC=1 flips cicchetto/src to RW so `mix grappa.gen_wire_types`
+    # can write the generated wireTypes.ts back to disk from a worktree
+    # oneshot. Without it the codegen task hits read-only filesystem when
+    # invoked via scripts/mix.sh; the default RO mount protects cic source
+    # from accidental container-side mutation during normal mix tasks.
+    cic_mode="ro"
+    if [ "${WRITABLE_CIC:-}" = "1" ]; then
+        cic_mode="rw"
+    fi
     WORKTREE_VOLUMES=(
         -v "$SRC_ROOT/lib:/app/lib"
         -v "$SRC_ROOT/test:/app/test"
         -v "$SRC_ROOT/config:/app/config"
         -v "$SRC_ROOT/priv/repo:/app/priv/repo"
         -v "$SRC_ROOT/infra:/app/infra:ro"
-        -v "$SRC_ROOT/cicchetto/src:/app/cicchetto/src:ro"
+        -v "$SRC_ROOT/cicchetto/src:/app/cicchetto/src:$cic_mode"
         -v "$SRC_ROOT/mix.exs:/app/mix.exs:ro"
         -v "$SRC_ROOT/mix.lock:/app/mix.lock:$lock_mode"
         -v "$SRC_ROOT/.formatter.exs:/app/.formatter.exs:ro"
