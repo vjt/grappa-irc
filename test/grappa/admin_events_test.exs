@@ -301,7 +301,15 @@ defmodule Grappa.AdminEventsTest do
   # cleanup latency (Registry monitor-DOWN ASYNC cleanup of dead pids
   # under CI ETS contention), not a bug. 2s is still tight enough that
   # a true hang surfaces clearly.
-  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(200)
+  #
+  # BUGHUNT-2 pre-baseline (2026-05-24): bumped budget from 200×10ms
+  # (2s) to 500×10ms (5s). Local-dev full-suite load under more
+  # parallelism (post UX-8 + codegen + BUGHUNT-1 mature suite) again
+  # exceeds the prior budget — same root cause as GREEN-CI batch 2
+  # (genuine Registry monitor-DOWN async cleanup latency under ETS
+  # contention), more concurrent test pids feeding it. 5s still
+  # surfaces a true hang clearly.
+  defp wait_for_empty_session_registry!, do: wait_for_empty_session_registry!(500)
 
   defp wait_for_empty_session_registry!(0) do
     leftover =
