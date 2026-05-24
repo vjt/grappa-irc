@@ -1187,8 +1187,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   //
   // `prev === undefined` guards the initial-mount run (signal owns
   // the prev sentinel pattern; mirrors selection.ts's identical guard
-  // shape at on(isDocumentVisible)). false→true is the only edge that
-  // triggers; true→false is owned by selection.ts.
+  // shape at on(isDocumentVisible)). false→true is the only edge this
+  // effect handles (scroll-back-to-activation). true→false cursor
+  // write lives in the BUGHUNT-2 blur-arm effect immediately below;
+  // selection.ts's redundant true→false copy is deleted in A6.
   createEffect(
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
