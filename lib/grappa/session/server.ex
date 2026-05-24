@@ -1433,20 +1433,41 @@ defmodule Grappa.Session.Server do
     {:stop, :normal, %{state | client: nil}}
   end
 
-  # REV-J M7: pre-fix this catch-all matched ANY non-Client linked
-  # process's clean exit and propagated it as a Session-wide stop. Client
-  # is the only `Process.link/1` site in `init/1` today, so it was
-  # unreachable in production — but the comment was the only defense.
-  # A future handler that links a Task or sibling process (e.g. an
-  # async upstream probe) would silently take the whole Session down
-  # on the linked process's normal exit. Now raises so any future
-  # linked-spawn that escapes the design rule surfaces at the
-  # supervisor immediately instead of masquerading as a planned park.
-  def handle_info({:EXIT, pid, reason}, _)
+  # OTP convention: a trap_exit GenServer that receives a clean
+  # `:shutdown` / `:normal` signal stops with the same reason. Two
+  # real callers reach this clause:
+  #   * external `Process.exit(pid, :shutdown)` — e.g. the test-helper
+  #     orphan sweep in `Grappa.Test.AdmissionStateHelpers` (and any
+  #     future supervisor-style external teardown).
+  #   * a future linked sibling process (Task / async probe) exiting
+  #     cleanly — Client is the only `Process.link/1` site in `init/1`
+  #     today, so the only production sender today is `Process.exit/2`
+  #     from outside.
+  #
+  # REV-J M7 added a raise here to surface design violations where a
+  # caller introduced `Process.link/1` outside of `init/1` and the
+  # linked process exited cleanly. The intent — "Client is the only
+  # linked process" — is right; the implementation conflated two
+  # distinct OTP signal classes. `{:EXIT, sender, reason}` carries no
+  # marker for `Process.exit/2` vs. an actual linked-process exit:
+  # both arrive as the same mailbox tuple. The raise made every
+  # external `Process.exit(pid, :shutdown)` a false-positive crash
+  # (test-helper teardown → orphan crash → supervisor respawn race
+  # → `reset_session_supervisor` 15s timeout — the failure mode that
+  # tripped CI run 26371004010).
+  #
+  # The OTP-convention stop honours the external-signal case AND, for
+  # the future linked-sibling case, propagates the linked process's
+  # clean exit reason cleanly through the supervisor: `:shutdown` and
+  # `:normal` are non-restart reasons for `:transient` children, so
+  # the Session is NOT respawned spuriously. New `Process.link/1`
+  # sites within this module MUST add an explicit
+  # `{:EXIT, linked_pid, ...}` clause BEFORE this catch-all if they
+  # need bespoke handling (the earlier client-bound clauses at the
+  # top of this block are the template).
+  def handle_info({:EXIT, _, reason}, state)
       when reason == :shutdown or reason == :normal do
-    raise "unexpected :EXIT from non-Client linked process #{inspect(pid)} (reason=#{inspect(reason)}). " <>
-            "Session.Server links Client only; any additional Process.link/1 " <>
-            "must add an explicit handler before this clause."
+    {:stop, reason, %{state | client: nil}}
   end
 
   def handle_info({:irc, %Message{command: :ping, params: [token | _]}}, state) do
