@@ -55,22 +55,23 @@ async function scrollByPx(page: Page, deltaY: number): Promise<void> {
 }
 
 async function scrollToBottom(page: Page): Promise<void> {
-  // BUGHUNT-2: prefer the scroll-to-bottom button (real click — counts
-  // as a PointerEvent input), fall back to a big mouse wheel-down.
-  const btn = page.locator('[data-testid="scroll-to-bottom"]');
-  if ((await btn.count()) > 0 && (await btn.isVisible())) {
-    await btn.click();
-    return;
-  }
+  // BUGHUNT-2: ALWAYS use a real wheel-down, never the
+  // scroll-to-bottom button. The button's onClick handler triggers
+  // a programmatic `scrollTo({behavior:"smooth"})` which the
+  // BUGHUNT-2 input-event gate correctly suppresses (no preceding
+  // wheel/pointerdown/touchmove/keydown on the listRef) — cursor
+  // never advances, the spec assertion `cursorFinal === tail` fails
+  // because cursor froze at the intermediate scroll-up position.
+  //
+  // Single big wheel-down: fires ONE WheelEvent on the listRef →
+  // gate arms → settle fires once 500ms later → POSTs visible-tail.
+  // The container scrolls all the way to the bottom in one go;
+  // smooth-scroll inertia is moot here (the test viewport is
+  // bounded so deltaY=5000 saturates the scrollHeight).
   const box = await page.locator('[data-testid="scrollback"]').boundingBox();
   if (!box) throw new Error("scrollback bounding box null");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  // Page-down repeatedly until we reach the tail. 10 turns × 500px ~
-  // covers the seeded scrollback at the test viewport.
-  for (let i = 0; i < 10; i++) {
-    await page.mouse.wheel(0, 500);
-    await page.waitForTimeout(50);
-  }
+  await page.mouse.wheel(0, 5000);
 }
 
 async function visibleRowIds(page: Page): Promise<number[]> {
