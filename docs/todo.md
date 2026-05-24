@@ -11,14 +11,15 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-(UX-8 CLOSED 2026-05-24 — see CP45 S5.)
+(UX-8 + wireTypes.ts codegen + BUGHUNT-1 CLOSED 2026-05-24 —
+see CP45 S5, CP46, CP47.)
 
 ---
 
-★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen CLOSED 2026-05-24):**
+★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen + BUGHUNT-1 CLOSED 2026-05-24):**
 
-After UX-8 (scroll cluster) + codegen CLOSED, work proceeds in this
-order. Do NOT skip ahead.
+After UX-8 (scroll cluster) + codegen + BUGHUNT-1 pre-bastille
+bug-hunt CLOSED, work proceeds in this order. Do NOT skip ahead.
 
 1. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
    gh issue view 8`). FreeBSD bastille jail target prod runtime; current
@@ -30,8 +31,13 @@ order. Do NOT skip ahead.
 - Codegen-before-bastille (CLOSED 2026-05-24): cic↔server boundary was
   the highest-risk drift surface per 2026-05-22 review. CP46 closed it
   structurally via mix-task + drift gate + cic-side TS assert.
-- Bastille-last: prod-runtime migration on a green-suite + structurally-
-  typed-boundary substrate, not during cleanup.
+- BUGHUNT-1-before-bastille (CLOSED 2026-05-24): two known user-visible
+  regressions (long-msg silent truncation + cic mobile archive empty
+  on first open) closed in CP47 so the new prod runtime doesn't
+  inherit them.
+- Bastille-last: prod-runtime migration on a green-suite +
+  structurally-typed-boundary + no-known-regressions substrate, not
+  during cleanup.
 
 **Lineage** (verbatim vjt words preserved):
 - 2026-05-22 mid-REV-E: "after review is done, fix all the flakes and
@@ -48,56 +54,21 @@ Memory pointer (single source of truth lives HERE, not in memory):
 
 ---
 
-## Pre-bastille bug-hunt (vjt 2026-05-24, dogfood, BEFORE bastille deploy)
+## Pre-bastille bug-hunt — CLOSED 2026-05-24
 
-Two bugs surfaced during UX-8 cluster execution. **Address after UX-8
-+ codegen, before bastille deploy** (these are user-visible regressions
-prod traffic should not see in a new runtime substrate).
+Both bugs CLOSED in BUGHUNT-1 cluster (`a320a4f` + `d13d77f`); see
+`docs/checkpoints/2026-05-24-cp47.md` for full bucket roster + plan
+deviations. No remaining known regressions blocking bastille deploy.
 
-1. **Long-message auto-split (SERVER-SIDE)** — when cic POSTs a
-   PRIVMSG larger than the IRC server's max line length, the message
-   gets truncated silently. Need to split into multiple PRIVMSGs on
-   the bouncer side and send sequentially.
-   - **Location**: `Grappa.IRC.Client` or wherever PRIVMSG bytes
-     hit the wire to upstream. Split MUST happen in grappa, NOT in
-     cicchetto (per CLAUDE.md "one parser, on the server" — payload
-     framing is server's job).
-   - **Spec considerations**: per-network max-line-length (RPL_ISUPPORT
-     LINELEN if present, else 512 default minus prefix/header).
-     UTF-8 awareness: split on grapheme boundary not byte. Preserve
-     CTCP framing if body is `\x01ACTION ...\x01` (split inside the
-     action text, NOT inside the framing bytes). Scrollback
-     persistence: each fragment is its own message row (consistent
-     with what upstream sees + with what cic renders).
-   - **Sentinel test**: server-side spec generating a message body of
-     N bytes where N > LINELEN, assert N fragments emitted upstream
-     + N rows in scrollback.
-
-2. **Archive window shows empty on first open (CIC, MOBILE ONLY)** —
-   first open of the Archive window in cic shows empty list. After
-   archiving a fresh window, all archived contents appear. Desktop
-   not yet checked; mobile-only confirmed.
-   - **Suspected location**: `cicchetto/src/lib/archiveStore.ts` or
-     wherever Archive view subscribes/seeds. Likely a SolidJS reactivity
-     gap on first-mount (signal not initialized until first write event
-     lands).
-   - **Repro path**: fresh PWA install on iOS, open Archive window
-     immediately (no prior archive action) → empty. Trigger archive on
-     any window → Archive view repopulates with full list.
-   - **Hypothesis**: store does an initial fetch but the rendered
-     `<For>` is bound to a signal that hasn't been set yet (undefined
-     vs empty array distinction). Or: the listener for `archived` events
-     is wired AFTER the initial REST seed, so seed lands during a
-     listener-not-yet-armed window. Standard cic re-render bug class —
-     see `feedback_home_pane_ws_rerender_bug` for sibling pattern.
-   - **Verify on desktop**: vjt explicitly noted "desktop I didn't
-     check" — first step is reproducing on desktop to confirm
-     mobile-only vs cross-platform. If desktop also broken, root cause
-     is in the store; if mobile-only, focus on touch/PWA cold-start
-     timing (e.g. viewport-resize racing the seed).
-
-These slot in **between codegen and bastille**: don't deploy a fresh
-prod-runtime substrate with known user-visible regressions.
+1. ~~Long-message auto-split (SERVER-SIDE)~~ — CLOSED bucket A.
+   `Grappa.IRC.LineSplit.split_privmsg_body/3` + `:linelen` state +
+   `handle_persisting_send/3` fragments loop. Default 512, picks up
+   `005 RPL_ISUPPORT LINELEN=<N>` if advertised. CTCP ACTION envelope
+   preserved on every fragment.
+2. ~~Archive empty on first open (CIC, MOBILE)~~ — CLOSED bucket B.
+   `ArchiveModal.tsx` dedicated `createEffect` seeds via
+   `loadArchive(slug)` on edge-trigger open. Mount-component-owns-
+   state pattern.
 
 ---
 

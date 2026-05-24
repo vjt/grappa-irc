@@ -9746,3 +9746,118 @@ Either gate fires on a single side drifting.
 1. ~~UX-8~~ + ~~wireTypes codegen~~ — both CLOSED.
 2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
    prod runtime parallel to docker-compose.
+
+---
+
+## 2026-05-24 — BUGHUNT-1 pre-bastille bug-hunt CLOSED
+
+Two user-visible regressions vjt flagged during UX-8 dogfooding,
+closed BEFORE bastille deploy so the new prod runtime doesn't
+inherit them. Cluster shape: 2 buckets, brainstorm → spec → plan
+→ autopilot exec (post-CP46 codegen precedent). Spec at
+`docs/superpowers/specs/2026-05-24-bughunt-1-design.md`, plan at
+`docs/superpowers/plans/2026-05-24-bughunt-1.md`.
+
+### Bucket A — server-side PRIVMSG auto-split
+
+`Grappa.IRC.LineSplit.split_privmsg_body/3` is a new pure module
+that splits a PRIVMSG body into fragments fitting the wire-frame
+budget (`linelen - byte_size("PRIVMSG <target> :\r\n")`). UTF-8
+safe (grapheme boundaries), CTCP ACTION envelope preserved on
+every fragment (naive split would emit garbage `\x01ACTION
+text\x01` envelopes), single-grapheme-oversize edge emits the
+grapheme as its own best-effort fragment.
+
+Wired into `Session.Server.handle_persisting_send/3` via a
+`persist_and_send_fragments/4` recursive loop: each fragment is
+its own `Scrollback.persist_event` + per-channel
+`PubSub.broadcast_event` + `IRC.Client.send_privmsg` — matching
+what every other IRC client renders and what other channel
+members see (upstream relays each PRIVMSG as a separate row).
+HTTP reply returns the LAST fragment so cic's scrollback view
+aligns with the final row id.
+
+`Session.Server` gains `:linelen` state field (default 512 per
+RFC 2812; overridden by `005 RPL_ISUPPORT LINELEN=<N>` when the
+upstream advertises). Parser mirrors the existing
+`MODES=N` reduce_while shape — same defensive idempotency,
+same garbage-value-keeps-prior behavior. State-shape change
+forces COLD deploy via `lib/grappa/hot_reload/long_lived_modules.ex`.
+
+**Why server-side, not cic**: per CLAUDE.md "one parser, on the
+server" + "IRC is bytes; the web is UTF-8". Payload framing
+belongs to grappa. cic POSTs an arbitrary-length string; grappa
+fans out the wire fragments. Doing it cic-side would require
+cic to know the upstream's LINELEN + the envelope shape (it
+doesn't, by design — the Phoenix Channels surface is typed JSON).
+
+**Out of scope**: TOPIC / NOTICE / AWAY auto-split (single-line
+verbs, no vjt sighting). `RPL_ISUPPORT MAXTARGETS` comma-split
+(different bug class).
+
+### Bucket B — cic mobile Archive seed-on-open
+
+Root cause confirmed by code-read: `ArchiveModal.tsx` opens via
+`setArchiveModalNetwork(slug)` but never calls
+`loadArchive(slug)`. The only `loadArchive` caller is
+`Sidebar.tsx`'s `<details>` onToggle, which mobile operators
+never reach (sidebar is hidden behind BottomBar). First open
+shows "no archived windows" until the user archives a fresh
+window, which fires `archive_changed` (re-fetch) and the bug
+*appears* fixed.
+
+Fix: dedicated `createEffect` in `ArchiveModal.tsx` that fires
+`void loadArchive(slug)` on edge-trigger open. `lastSeededSlug`
+guard prevents re-load on every reactivity tick — only
+null→slug and slug-A→slug-B transitions trigger.
+Same-slug re-open after close re-fires (refresh semantics per
+`archive.ts:18-20`).
+
+**Mount-component-owns-state pattern**: ArchiveModal seeds
+itself rather than depending on every callsite (ShellChrome
+chip today, future deep-link / push notification / etc.) to
+remember the load step. The spec called this out as a
+deliberate design choice: decoupling future surfaces from the
+load contract.
+
+### Process notes
+
+- **Plan vs production deviation fired on every bucket**. Bucket A
+  alone had 4: (1) inlined `flush_chunk/2` helper instead of
+  plan's `emit_chunk_and_recurse/7` with arity marker;
+  (2) Boundary `exports:` list needed `LineSplit` added
+  (caught by boundary-warning); (3) Credo unused-arg style
+  (`_target` → bare `_`); (4) Dialyzer success-typing rejected
+  `pid() | nil` supertype, tightened to `pid()`. Each recorded
+  in commit body per `feedback_plan_vs_production_reality`.
+  Bucket B had 1: the chip lives in `ShellChrome.tsx` as
+  `[data-testid="shell-chrome-archive"]` not in `BottomBar.tsx`
+  as `.bottom-bar-archive-chip` — e2e selectors adjusted.
+- **Hot-deploy preflight gap recurrence** — `scripts/deploy.sh`
+  preflight mis-classified bucket A as HOT despite the
+  state-shape change. Per
+  `feedback_deploy_sh_preflight_field_addition_gap` (CP28
+  lesson): the line-anchor regex doesn't catch field-additions
+  INSIDE an existing `@type t :: %{...}` block. The AST oracle
+  (`scripts/_extract_state_block.awk`) should catch these but
+  didn't fire. Worth a dedicated bucket to audit during bastille
+  post-mortem.
+- **Hot-deploy on state-shape change corrupts `_build/prod`** —
+  per `feedback_hot_deploy_corrupts_build_prod`. Recovery is
+  `docker compose exec grappa sh -c "rm -rf _build/prod"` +
+  `scripts/deploy.sh --force-cold`. Predictable + cheap to
+  recover, but a sharp edge.
+- **CI integration flake on bucket A** — 2 unrelated cic specs
+  (`p0e-invite-ack` + `ux-5-bk-join-fail-dupe`) failed in
+  bucket A's CI run; both pass locally + both pass in bucket
+  B's identical-code CI run. Per
+  `feedback_recurring_e2e_not_flake`: "single recurrence
+  fine, two is real regression" — bucket B is the second
+  observation, both green. Classified flake.
+
+### Next per locked roadmap
+
+1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ — all CLOSED.
+2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
+   prod runtime parallel to docker-compose. No remaining known
+   user-visible regressions blocking it.
