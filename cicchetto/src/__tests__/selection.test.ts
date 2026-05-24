@@ -36,12 +36,12 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
   };
 });
 
-// CP29 R-4: selection.ts now POSTs to the server via
-// `setReadCursor` on focus-leave / browser-blur. Stub the verb so
-// tests stay self-contained — the cursor-write path is exercised by
-// `readCursor.test.ts` end-to-end (mocked fetch). Without this mock the
-// real `setReadCursor` calls `fetch()` with a relative URL that
-// jsdom's WHATWG fetch implementation rejects with `ERR_INVALID_URL`.
+// BUGHUNT-2: selection.ts no longer writes cursors — moved to
+// ScrollbackPane (leave / unmount / blur / scroll-settle). Mock is
+// retained because surviving tests assert `setReadCursor` was NOT
+// called from selection.ts paths (negative contract). Without the
+// mock the underlying `fetch()` with a relative URL would error on
+// jsdom's WHATWG fetch with `ERR_INVALID_URL`.
 vi.mock("../lib/readCursor", () => ({
   setReadCursor: vi.fn().mockResolvedValue(undefined),
   applyMeEnvelope: vi.fn(),
