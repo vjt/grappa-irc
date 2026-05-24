@@ -27,4 +27,11 @@
 cd "$REPO_ROOT"
 
 "$SRC_ROOT/scripts/mix.sh" --env=dev ci.check
+# Drift gate for cicchetto/src/lib/wireTypes.ts — regenerates the file
+# in memory and diffs against the committed copy. Fails with a clear
+# error message pointing the operator at `scripts/mix.sh
+# grappa.gen_wire_types` when a Wire typespec was edited without
+# regenerating. Closes the C1/C2/H1-H6 drift class structurally per
+# the codegen cluster's "structural drift prevention" goal.
+"$SRC_ROOT/scripts/mix.sh" --env=dev grappa.gen_wire_types --check
 "$SRC_ROOT/scripts/bats.sh"
