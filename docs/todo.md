@@ -15,25 +15,21 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ---
 
-★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 CLOSED 2026-05-24):**
+★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen CLOSED 2026-05-24):**
 
-After UX-8 (scroll cluster) CLOSED, work proceeds in this order. Do
-NOT skip ahead.
+After UX-8 (scroll cluster) + codegen CLOSED, work proceeds in this
+order. Do NOT skip ahead.
 
-1. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`
-   from server-side `Grappa.*.Wire` typespecs. Closes
-   C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY (compile-time guarantee, not
-   vigilance), supersedes REV-A/H/K hand-edits. See 2026-05-22 codebase
-   review § "Direction recommendation".
-2. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
+1. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
    gh issue view 8`). FreeBSD bastille jail target prod runtime; current
    deploy is docker-compose. Likely parallel target
    (`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
    Docker→Bastille rewrite. Verify scope from #8 before assuming.
 
 **Why this order (load-bearing):**
-- Codegen-before-bastille: cic↔server boundary is the highest-risk
-  drift surface per 2026-05-22 review.
+- Codegen-before-bastille (CLOSED 2026-05-24): cic↔server boundary was
+  the highest-risk drift surface per 2026-05-22 review. CP46 closed it
+  structurally via mix-task + drift gate + cic-side TS assert.
 - Bastille-last: prod-runtime migration on a green-suite + structurally-
   typed-boundary substrate, not during cleanup.
 

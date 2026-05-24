@@ -9653,3 +9653,96 @@ The forward-only invariant is the load-bearing assertion.
    boundary drift surface STRUCTURALLY at compile time).
 2. Bastille deploy workstream (GitHub issue #8) — FreeBSD jail prod
    runtime parallel to docker-compose.
+
+
+## 2026-05-24 — wireTypes.ts codegen cluster CLOSED
+
+4-bucket cluster (A→B→C→D) closing the cic↔server boundary drift
+surface STRUCTURALLY. Plan + spec authored same day; bucket execution
+end-of-day. Triggered by 2026-05-22 codebase review § "Direction
+recommendation" — drift between server-side `Grappa.*.Wire` typespecs
+and cic-side hand-rolled `api.ts` types was the root cause of 9 REV
+cluster findings (C1, C2, H1-H4, H6, M19, M20).
+
+### Architecture chosen
+
+One mix task (`Mix.Tasks.Grappa.GenWireTypes`) walks every module
+under `lib/grappa/**/wire.ex`, parses `@type` declarations via
+`Code.Typespec.fetch_types/1`, emits ONE deterministic file at
+`cicchetto/src/lib/wireTypes.ts`. Committed to git. CI gate
+`mix grappa.gen_wire_types --check` (appended to `scripts/check.sh`)
+re-generates in memory and diffs — fails CI on drift between
+typespec source and committed file. cic side adds
+`wireTypesAssert.ts` with `Equal<A, B>` TS type-level helper that
+fails `bun run check` when api.ts hand-roll diverges from generated.
+
+Two gates protect the server→cic contract at CI time:
+1. typespec → committed-wireTypes.ts drift (bucket D)
+2. generated-wireTypes.ts → api.ts hand-roll drift (bucket C)
+
+Either gate fires on a single side drifting.
+
+### Bucket roster
+
+- **A** (`569dc41`): `session.ex` typespec sweep — 17 `kind:
+  String.t()` → atom literals; constructors flipped in lockstep
+  (PLAN DEVIATION: plan kept constructors as strings, Dialyzer
+  caught the success-type mismatch).
+- **B** (`d2fcf3f`): mix task + 558-line generated wireTypes.ts +
+  24-test ExUnit suite. PLAN DEVIATIONS: WRITABLE_CIC=1
+  escape-hatch (cic `:ro` mount); fully-qualified TS naming
+  (avoids collisions on `T`/`Event`); transitive external-type
+  resolution with depth-limit-8 cycle guard; biome-compatible
+  output format.
+- **C** (`d001282`): `wireTypesAssert.ts` — structural-equivalence
+  asserts cic↔generated. ONE assert today (`ConnectionState`,
+  closes H2). PLAN DEVIATION: full api.ts re-export migration
+  deferred to future bucket (high-risk, low-incremental-value
+  given the assert approach catches drift at compile time anyway).
+- **D** (`330e7d4`): `scripts/check.sh` drift gate. Negative test
+  confirmed exit 1 with "OUT OF SYNC" message; positive run exit 0.
+
+### Findings closed structurally
+
+- **H2** — `ConnectionState` cic↔server drift, both ends now pinned
+  at compile time via `_Assert_ConnectionState`.
+
+### Findings deferred (low-risk, scope-limited follow-ups)
+
+- C1/H1/H3-H6/M19/M20 — each requires a server-side typespec
+  tightening (flip `kind: String.t()` → atom literal in
+  cic/scrollback/query_windows wire modules; tighten
+  `capacity_reject.flow` from `atom()` to `Admission.flow()`;
+  tighten `topic_changed.topic` + `channel_modes_changed.modes`
+  from `map()` to proper record). Each is a one-line typespec
+  edit + assert add; safe to do in follow-up buckets.
+- Wholesale api.ts deletion of duplicated wire types — also a
+  follow-up; the assert approach already prevents NEW drift.
+
+### Lessons
+
+- **Plan vs production deviation** — every bucket had at least one
+  (Dialyzer success-type discipline, cic `:ro` mount safety,
+  TS-name collision on bare `T`/`Event`, biome `lineWidth: 100`
+  formatter rules, dead-code from union-rendering rewrites).
+  `feedback_plan_vs_production_reality` paid off — each deviation
+  recorded in commit body, no in-flight design questions surfaced
+  to vjt.
+- **AdminEventsTest registry flake** appeared in 2 of 5 local runs
+  + bucket A's CI. Per `feedback_recurring_e2e_not_flake` "two in
+  a row = real regression" but the recurrences came from a
+  docs-only commit (codegen-plan) too — NOT cluster-introduced.
+  Pre-existing isolation flake; chronic.
+- **HOT deploy corrupted `_build/prod`** on bucket A first attempt
+  (per `feedback_hot_deploy_corrupts_build_prod`). Force-cold-
+  deploy recovered. Subsequent buckets B/C/D HOT-deployed clean.
+- **Transitive external-type resolution** — bucket B's first
+  codegen run hit `NetworksCredentialAuthMethod = IRCAuthFSMAuthMethod`
+  where `IRCAuthFSMAuthMethod` itself unresolved. Fix: fixpoint-
+  iterate the external-refs registry, depth-limit 8.
+
+### Next per locked roadmap
+
+1. ~~UX-8~~ + ~~wireTypes codegen~~ — both CLOSED.
+2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
+   prod runtime parallel to docker-compose.
