@@ -228,99 +228,16 @@ describe("selection store", () => {
     });
   });
 
-  // Read-cursor set on focus-leave.
+  // BUGHUNT-2: cursor writes moved to ScrollbackPane. These tests guard
+  // the NEGATIVE contract — selection.ts must NOT call setReadCursor on
+  // focus-leave. ScrollbackPane's own seams + B-bucket e2e sentinels cover
+  // the positive (cursor IS written) contract.
   //
-  // Spec: when the user moves focus AWAY from a window, that window's
-  // read-cursor is set to the server_time of the last message visible
-  // in its scrollback at the moment of leave. Next visit: no marker
-  // (everything seen). New incoming msgs while away → server_time
-  // exceeds cursor → marker reappears on next visit.
-  //
-  // Anti-spec (the bug this guards against): cursor advancing on FOCUS
+  // Anti-spec (the bug these guard against): cursor advancing on FOCUS
   // (or on every WS append) hides the marker before the user has had
   // a chance to see it. Cursor advancing only on LEAVE preserves the
   // "unread until you've moved on" semantic.
-  //
-  // CP29 R-4: cursor backend flipped from localStorage to server-side
-  // (POST /networks/:slug/channels/:chan/read-cursor). Tests assert on
-  // calls to the mocked `setReadCursor` verb instead of localStorage
-  // bytes. The verb is fire-and-forget; the server-side broadcast that
-  // would normally land via `applyReadCursorSet` is out of scope here
-  // (covered by `readCursor.test.ts`).
   describe("read-cursor set on focus-leave", () => {
-    it("switching from A to B sets A's cursor to A's last msg id", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      const scrollback = await import("../lib/scrollback");
-      const aKey = channelKey("freenode", "#grappa");
-      // Seed #grappa scrollback with two messages.
-      scrollback.appendToScrollback(aKey, {
-        id: 1,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 1_700_000_000_000,
-        kind: "privmsg",
-        sender: "alice",
-        body: "hi",
-        meta: {},
-      });
-      scrollback.appendToScrollback(aKey, {
-        id: 2,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 1_700_000_001_000,
-        kind: "privmsg",
-        sender: "bob",
-        body: "hey",
-        meta: {},
-      });
-      // Focus #grappa, then leave to #cicchetto.
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      // Cursor not yet set on focus alone — only on leave.
-      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#cicchetto",
-        kind: "channel",
-      });
-      // After leave: cursor set to last msg's id.
-      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 2);
-    });
-
-    it("switching from A to null (deselect) also sets A's cursor", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      const scrollback = await import("../lib/scrollback");
-      const aKey = channelKey("freenode", "#grappa");
-      scrollback.appendToScrollback(aKey, {
-        id: 7,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 1_700_000_005_000,
-        kind: "privmsg",
-        sender: "alice",
-        body: "bye",
-        meta: {},
-      });
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      selection.setSelectedChannel(null);
-      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 7);
-    });
-
     it("leaving a window with no scrollback yet does NOT set the cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
@@ -374,45 +291,11 @@ describe("selection store", () => {
     });
   });
 
-  // Browser-blur arm: when the focused window's browser tab loses
-  // focus (Cmd-Tab away, Page Visibility hidden, etc.), the cursor
-  // for the currently-selected window must set — same semantic as
-  // a cicchetto-leave but triggered by document-visibility transitions.
-  // Without this, returning to the browser would show no marker even
-  // for msgs that arrived while the user was demonstrably away.
+  // BUGHUNT-2: browser-blur cursor write moved to ScrollbackPane. These
+  // tests guard the NEGATIVE contract — selection.ts must NOT call
+  // setReadCursor on browser-blur. The positive (cursor IS written)
+  // contract is owned by ScrollbackPane's visibility arm + B-bucket e2e.
   describe("read-cursor set on browser-blur (visibility transition)", () => {
-    it("focused on #grappa, browser blurs → cursor sets to last visible msg id", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      const scrollback = await import("../lib/scrollback");
-      const key = channelKey("freenode", "#grappa");
-      scrollback.appendToScrollback(key, {
-        id: 42,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 1_700_000_010_000,
-        kind: "privmsg",
-        sender: "alice",
-        body: "msg",
-        meta: {},
-      });
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      // Pre-blur: cursor not yet set (focus alone doesn't set).
-      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-
-      setVisibilityForTest(false);
-      await Promise.resolve(); // let the createEffect flush
-
-      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 42);
-    });
-
     it("no selected window: blur does NOT set any cursor", async () => {
       localStorage.setItem("grappa-token", "tok");
       const readCursor = await import("../lib/readCursor");
@@ -442,43 +325,6 @@ describe("selection store", () => {
       await Promise.resolve();
 
       expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-    });
-
-    it("blur followed by focus regain does NOT set the cursor again", async () => {
-      // Only the blur transition writes; focus regain is a no-op
-      // (the user is now actively reading, no msgs to mark as "seen
-      // while away").
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      const scrollback = await import("../lib/scrollback");
-      const key = channelKey("freenode", "#grappa");
-      scrollback.appendToScrollback(key, {
-        id: 100,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 100,
-        kind: "privmsg",
-        sender: "alice",
-        body: "msg",
-        meta: {},
-      });
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-      expect(readCursor.setReadCursor).toHaveBeenCalledTimes(1);
-      expect(readCursor.setReadCursor).toHaveBeenLastCalledWith("tok", "freenode", "#grappa", 100);
-
-      setVisibilityForTest(true);
-      await Promise.resolve();
-      // Focus regain must NOT trigger another set.
-      expect(readCursor.setReadCursor).toHaveBeenCalledTimes(1);
     });
 
     it("initial visibility=true does NOT spuriously set any cursor", async () => {
@@ -1181,43 +1027,6 @@ describe("selection store", () => {
       // No cursor write — the effect didn't re-fire (no leave occurred).
       await Promise.resolve();
       expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-    });
-
-    it("setSelectedChannel STILL fires the leave-arm when (slug, name, kind) differ", async () => {
-      // Anti-spec guard: idempotency MUST be exact-tuple-match. A change in
-      // any one of slug/name/kind is a real transition and the effect
-      // chain runs normally — the leave-arm fires its cursor-set for the
-      // OLD selection.
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      const scrollback = await import("../lib/scrollback");
-      const aKey = channelKey("freenode", "#grappa");
-      scrollback.appendToScrollback(aKey, {
-        id: 99,
-        network: "freenode",
-        channel: "#grappa",
-        server_time: 1_700_000_000_000,
-        kind: "privmsg",
-        sender: "alice",
-        body: "hi",
-        meta: {},
-      });
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-      vi.mocked(readCursor.setReadCursor).mockClear();
-      // Different channel name on same network → real transition.
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#cicchetto",
-        kind: "channel",
-      });
-      expect(readCursor.setReadCursor).toHaveBeenCalledWith("tok", "freenode", "#grappa", 99);
     });
 
     it("setSelectedChannel(null) on already-null is a no-op (no effect re-fire)", async () => {
