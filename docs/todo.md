@@ -11,64 +11,27 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-### UX-8 scroll cluster (next, after GREEN-CI-3 close)
-
-GREEN-CI-3 Tier 1 CLOSED 2026-05-23 at `4afa4e1`. Final CI state:
-integration 183/184 + ci exit-0. The 1 remaining integration failure
-is `scroll-on-window-switch:141` — a **REAL prod scroll regression**
-vjt dogfood-confirmed (channel → empty query → channel-back leaves
-~66px gap instead of 0). The spec is correctly detecting the bug
-intermittently (passes 1st run on fresh stack, fails on consecutive
-re-runs depending on cic state). NO spec-side `afterEach` added —
-masking the spec would hide the prod bug. UX-8 fixes the root cause
-and the spec turns green naturally.
-
-**UX-8 scope (per locked roadmap):**
-- (a) channel-switch scroll position interference — `scroll-on-window-
-  switch:141` is the sentinel. UX-6-M folds in if vjt repro arrives.
-- (b) read-cursor update on scroll = NEW server contract.
-  `Grappa.ReadCursor.set/4` currently fires on focus-leave + browser-
-  blur only; adding scroll = new settle-event class with throttling
-  spec.
-
-**GREEN-CI-3 Tier 2/3 deferred** — captured in the plan's appendix
-(`docs/plans/2026-05-23-green-ci-3-e2e-hardening.md`). Future
-cluster pickup; not in UX-8 scope.
-
-After UX-8: wireTypes.ts codegen, then Bastille deploy. ★ roadmap
-block below has full lineage.
+(UX-8 CLOSED 2026-05-24 — see CP45 S5.)
 
 ---
 
-★ **POST-FLAKES ROADMAP — canonical source of truth (vjt 2026-05-22, GREEN-CI-3 CLOSED 2026-05-23):**
+★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 CLOSED 2026-05-24):**
 
-After FLAKES-Z + GREEN-CI batches 1+2 + GREEN-CI-3 Tier 1 LANDED,
-work proceeds in this order. Do NOT skip ahead.
+After UX-8 (scroll cluster) CLOSED, work proceeds in this order. Do
+NOT skip ahead.
 
-1. **UX-8 scroll cluster** — (a) channel-switch scroll position
-   interference (sentinel: `scroll-on-window-switch:141` — vjt
-   dogfood-confirmed real prod regression 2026-05-23); UX-6-M folds
-   in if vjt repro arrives; (b) read-cursor update on scroll = NEW
-   server contract. `Grappa.ReadCursor.set/4` currently fires on
-   focus-leave + browser-blur only; adding scroll = new settle-event
-   class with throttling spec.
-   (Naming note: UX-7-A..F was the baseline-e2e-fails cluster, already
-   CLOSED. This is a fresh cluster, hence UX-8.)
-2. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`
+1. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`
    from server-side `Grappa.*.Wire` typespecs. Closes
    C1+C2+H1-H4+H6+M19+M20 STRUCTURALLY (compile-time guarantee, not
    vigilance), supersedes REV-A/H/K hand-edits. See 2026-05-22 codebase
    review § "Direction recommendation".
-3. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
+2. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
    gh issue view 8`). FreeBSD bastille jail target prod runtime; current
    deploy is docker-compose. Likely parallel target
    (`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
    Docker→Bastille rewrite. Verify scope from #8 before assuming.
 
 **Why this order (load-bearing):**
-- FLAKES-first: noisy e2e blocks confidence in every later wave.
-- UX-8-before-codegen: read-cursor-on-scroll changes the server
-  contract; codegen captures the final wire shape in one pass not two.
 - Codegen-before-bastille: cic↔server boundary is the highest-risk
   drift surface per 2026-05-22 review.
 - Bastille-last: prod-runtime migration on a green-suite + structurally-
@@ -80,6 +43,9 @@ work proceeds in this order. Do NOT skip ahead.
 - 2026-05-22 evening: "we still have scrolling issues when switching
   channels, and we need to implement read cursor update on scroll. when
   is the best moment?" → "it's ok fix the flakes first"
+- 2026-05-24 night: UX-8 scroll cluster CLOSED — (a) double-rAF +
+  scrollIntoView + spec marker-tolerance, (b) scroll-settle cursor
+  with forward-only gate, (d) 3-scenario e2e + sentinel marker-aware.
 
 Memory pointer (single source of truth lives HERE, not in memory):
 `project_post_rev_roadmap.md` is a one-liner pointer to this section.

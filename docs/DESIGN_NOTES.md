@@ -9549,3 +9549,107 @@ No deploy needed (e2e-only + sandbox-test-only).
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
 - Implementation scheduling ("I'll do X next week") — that belongs on the issue tracker, not in-repo.
 - Anything that belongs in `CONTRIBUTING.md` or a future issue template — to be added when the project moves past spec-only.
+
+## 2026-05-24 — UX-8 scroll cluster CLOSED
+
+Two sub-clusters, one plan: (a) channel-switch scroll-position
+interference + (b) scroll-settle read-cursor update. Sentinel
+`scroll-on-window-switch:141` shifted from intermittent-red to
+consistent-green; e2e count 184 → 187 (3 new scroll-settle
+scenarios, all green).
+
+### Sub-cluster (a) — DOM geometry race
+
+`queueMicrotask` in `scrollToActivation` (line 959) and
+`measureOverflow` (line 877) flushed BEFORE the browser's layout
+pass — `listRef.scrollHeight` read stale geometry when called right
+after a channel switch. Solid had committed the new `<For>` rows
+(DOM nodes existed) but row box-heights weren't yet included in
+`scrollHeight`. `scrollTop = scrollHeight` landed ~66px short of
+true bottom; vjt dogfood-confirmed.
+
+Plan said "swap to double-rAF, two sites." Reality:
+1. Third call site (length-effect at line 1095) had identical race
+   for the initial-mount tail-snap path; double-rAF needed there too.
+2. Even rAF×2 wasn't enough on the channel-back path because the
+   scrollback STORE reload (Solid signal flush from
+   `scrollbackByChannel`) races the key-effect — the rAF callback
+   can fire before messages signal flushes. Switched to
+   `lastElementChild.scrollIntoView({block: "end"})` — browser
+   walks the actual DOM element natively, layout-aware even
+   mid-store-update. Fallback to scrollHeight math when scrollback
+   is empty.
+
+The sentinel spec assertion ("scroll lands at bottom on return")
+was post-cluster STILL wrong because seed expansion (m1-m11 + WS
+chatter peers) made unread messages non-deterministic at login.
+cic's C7.3 contract CENTERS the viewport on the unread marker when
+unreads exist — correct UX, but the spec assumed bottom-anchor
+unconditionally. Spec rewritten to be marker-tolerant: PASS when
+either bottom-anchored OR marker present AND scrollTop > 0. The
+"didn't get stuck at scrollTop=0" failure mode (which motivated
+the cluster) is what's actually pinned.
+
+### Sub-cluster (b) — scroll-settle cursor write
+
+Today's `Grappa.ReadCursor.set/4` fires from cic on focus-leave +
+browser-blur, both write the scrollback tail id (monotonic). Added
+scroll-settle as a third trigger: when the user scrolls and stops
+mid-channel, POST the last-fully-visible row id.
+
+**Forward-only client-side gate** at
+`Grappa.cic.selection.setCursorIfAdvances/3` preserves the existing
+monotonic invariant: POST only if candidate > current cursor. Server
+supports backward moves via last-write-wins (per
+`Grappa.ReadCursor.set/4` docstring) but cic does not exercise
+them. Decision: keep client invariant intact — no operator UX
+asking to "reset unread" on scroll-up.
+
+**500ms client-side debounce** in `ScrollbackPane.onScroll` collapses
+iOS momentum-scroll inertia (events fire for 1-2s post finger-lift)
+into a single POST at the natural stop. Component-scope
+`scrollSettleTimer` cleared on every scroll; `onCleanup` in
+`onMount` drops any in-flight timer at component teardown so a
+channel switch doesn't fire a stale settle for the previous window.
+
+**Visible-row math**: `lastFullyVisibleRowId(listRef)` walks
+`.scrollback-line` children, returns the highest `data-msg-id`
+whose bottom edge is at-or-above viewport bottom. O(n=200)
+sub-millisecond. Requires `data-msg-id={msg.id}` attribute on
+`<ScrollbackLine>` (test-seam, no behavior change — same shape as
+GREEN-CI-3 B2's `data-window-name`).
+
+**No server change**. The read-cursor controller, the wire
+contract, and `Grappa.ReadCursor.set/4` were all already
+last-write-wins-tolerant. Three triggers (focus-leave,
+browser-blur, scroll-settle) feed one endpoint.
+
+### E2E (bucket D)
+
+`cicchetto/e2e/tests/scroll-settle-cursor.spec.ts` — 3 scenarios:
+scroll-to-middle advances cursor (loose match — WS arrivals race
+exact equality), scroll-to-bottom advances cursor to tail,
+scroll-up-from-bottom does NOT retreat cursor (forward-only gate).
+The forward-only invariant is the load-bearing assertion.
+
+### Process notes
+
+- Cic-only cluster — all HOT deploys + cic bundle rebuilds (no
+  server restart). Bundles `RPSS-xLQ` (a) → `CzM79hNe` (a2) →
+  `DBM5AuWJ` (a3) → `B04jfbzh` (b+c).
+- vjt confirmed visual prod correctness at bundle `CzM79hNe` ("tested
+  live, looks great") despite CI sentinel still red — spec issue,
+  not code issue (a3 + a4 closed the gap).
+- 7 commits over ~3 hours. Bucket B + C bundled per
+  `feedback_atomic_css_pattern` — biome rejects unused
+  `lastFullyVisibleRowId` if B lands alone.
+- Plan deviations recorded in commit bodies per
+  `feedback_plan_vs_production_reality`.
+
+### Next per locked roadmap
+
+1. wireTypes.ts codegen — generate `cicchetto/src/lib/wireTypes.ts`
+   from server-side `Grappa.*.Wire` typespecs (closes the cic↔server
+   boundary drift surface STRUCTURALLY at compile time).
+2. Bastille deploy workstream (GitHub issue #8) — FreeBSD jail prod
+   runtime parallel to docker-compose.
