@@ -296,8 +296,8 @@ describe("BottomBar", () => {
     const closeBtn = italiaTab!.nextElementSibling as HTMLElement | null;
     expect(closeBtn).not.toBeNull();
     expect(closeBtn!.classList.contains("bottom-bar-close")).toBe(true);
-    expect(closeBtn!.textContent).toBe("×");
-    expect(closeBtn!.getAttribute("aria-label")).toBe("Close #italia");
+    expect(closeBtn?.textContent).toBe("×");
+    expect(closeBtn?.getAttribute("aria-label")).toBe("Close #italia");
   });
 
   it("renders a close × on each query (DM) tab", () => {
@@ -307,8 +307,8 @@ describe("BottomBar", () => {
     const closeBtn = aliceTab!.nextElementSibling as HTMLElement | null;
     expect(closeBtn).not.toBeNull();
     expect(closeBtn!.classList.contains("bottom-bar-close")).toBe(true);
-    expect(closeBtn!.textContent).toBe("×");
-    expect(closeBtn!.getAttribute("aria-label")).toBe("Close DM with alice");
+    expect(closeBtn?.textContent).toBe("×");
+    expect(closeBtn?.getAttribute("aria-label")).toBe("Close DM with alice");
   });
 
   it("network-header has a disconnect × sibling (mirrors sidebar UX-4 D)", () => {

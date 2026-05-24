@@ -1367,6 +1367,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         ref={listRef}
         class="scrollback"
         classList={{ "scrollback-overflowing": isOverflowing() }}
+        role="log"
         tabIndex={-1}
         onScroll={onScroll}
         onPointerDown={onPointerDown}

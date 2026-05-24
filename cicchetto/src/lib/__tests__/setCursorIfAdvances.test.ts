@@ -53,8 +53,7 @@ vi.mock("../readCursor", async () => {
   const actual = await vi.importActual<typeof import("../readCursor")>("../readCursor");
   return {
     ...actual,
-    setReadCursor: (...args: Parameters<typeof actual.setReadCursor>) =>
-      setReadCursorSpy(...args),
+    setReadCursor: (...args: Parameters<typeof actual.setReadCursor>) => setReadCursorSpy(...args),
   };
 });
 

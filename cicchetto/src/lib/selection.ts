@@ -9,13 +9,13 @@ import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { loadInitialScrollback, scrollbackByChannel } from "./scrollback";
-import { windowIsPresent } from "./windowState";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
   SERVER_WINDOW_NAME,
   type WindowKind,
 } from "./windowKinds";
+import { windowIsPresent } from "./windowState";
 
 // Per-channel selection store: which channel is currently focused +
 // per-channel unread counters. Module-singleton signal store mirroring

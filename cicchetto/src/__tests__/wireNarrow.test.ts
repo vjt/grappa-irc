@@ -809,4 +809,3 @@ describe("narrowAdminSnapshot (REV-G H24)", () => {
     expect(narrowAdminSnapshot({ events: [good, bad] })).toBeNull();
   });
 });
-
