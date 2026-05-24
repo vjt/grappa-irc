@@ -71,12 +71,7 @@ defmodule Grappa.AdmissionTest do
         |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
         |> Repo.update()
 
-      {:ok, _} =
-        Registry.register(
-          SessionRegistry,
-          SessionServer.registry_key({:visitor, "fake-vid"}, net.id),
-          nil
-        )
+      register_for_test({:visitor, "fake-vid"}, net.id)
 
       input = %{
         network_id: net.id,
@@ -97,12 +92,7 @@ defmodule Grappa.AdmissionTest do
         |> Network.changeset(%{max_concurrent_user_sessions: 1})
         |> Repo.update()
 
-      {:ok, _} =
-        Registry.register(
-          SessionRegistry,
-          SessionServer.registry_key({:user, "fake-uid"}, net.id),
-          nil
-        )
+      register_for_test({:user, "fake-uid"}, net.id)
 
       input = %{
         network_id: net.id,
@@ -126,12 +116,7 @@ defmodule Grappa.AdmissionTest do
         })
         |> Repo.update()
 
-      {:ok, _} =
-        Registry.register(
-          SessionRegistry,
-          SessionServer.registry_key({:visitor, "fake-vid"}, net.id),
-          nil
-        )
+      register_for_test({:visitor, "fake-vid"}, net.id)
 
       input = %{
         network_id: net.id,
@@ -153,12 +138,7 @@ defmodule Grappa.AdmissionTest do
         })
         |> Repo.update()
 
-      {:ok, _} =
-        Registry.register(
-          SessionRegistry,
-          SessionServer.registry_key({:user, "fake-uid"}, net.id),
-          nil
-        )
+      register_for_test({:user, "fake-uid"}, net.id)
 
       input = %{
         network_id: net.id,
@@ -724,12 +704,7 @@ defmodule Grappa.AdmissionTest do
         |> Network.changeset(%{max_concurrent_visitor_sessions: 1})
         |> Repo.update()
 
-      {:ok, _} =
-        Registry.register(
-          SessionRegistry,
-          SessionServer.registry_key({:visitor, "fake-vid"}, capped_net.id),
-          nil
-        )
+      register_for_test({:visitor, "fake-vid"}, capped_net.id)
 
       input = %{
         network_id: capped_net.id,
