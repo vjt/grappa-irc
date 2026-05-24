@@ -3,6 +3,7 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import { deleteArchiveEntry } from "./lib/api";
 import {
   archiveModalNetwork,
+  loadArchive,
   setArchiveModalNetwork,
   visibleArchiveForNetwork,
 } from "./lib/archive";
@@ -74,6 +75,32 @@ const ArchiveModal: Component = () => {
       wasOpen = false;
       popOverlay(lockedEl);
       lockedEl = null;
+    }
+  });
+
+  // BUGHUNT-1 B — seed the archive list on edge-trigger open. The
+  // mobile chip (`BottomBar.tsx`'s `.bottom-bar-archive-chip`) calls
+  // `setArchiveModalNetwork(slug)` to open the modal but does NOT
+  // call `loadArchive(slug)` — mobile operators never expand the
+  // Sidebar `<details>` that fires the load, so without this effect
+  // the modal renders "no archived windows" until the user archives
+  // something (which triggers an `archive_changed` event that re-
+  // fetches). Mount-component-owns-state pattern: ArchiveModal seeds
+  // itself rather than depending on every callsite to remember the
+  // load step (future URL deep-link, push notification, etc.).
+  //
+  // `lastSeededSlug` guard prevents re-loading on every reactivity
+  // tick — only edge-trigger open (null→slug, slug-A→slug-B).
+  // Re-opening the same slug AFTER close re-fires the load (refresh
+  // semantics per `archive.ts:18-20`: re-load is a deliberate refresh).
+  let lastSeededSlug: string | null = null;
+  createEffect(() => {
+    const slug = archiveModalNetwork();
+    if (slug === null) {
+      lastSeededSlug = null;
+    } else if (slug !== lastSeededSlug) {
+      lastSeededSlug = slug;
+      void loadArchive(slug);
     }
   });
 

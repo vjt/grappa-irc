@@ -32,7 +32,7 @@ vi.mock("../lib/auth", () => ({
   token: () => "test-token",
 }));
 
-const { mockSlug, mockEntries, setArchiveModalNetwork } = vi.hoisted(() => ({
+const { mockSlug, mockEntries, setArchiveModalNetwork, loadArchive } = vi.hoisted(() => ({
   mockSlug: vi.fn<() => string | null>(() => null),
   mockEntries: vi.fn<
     (
@@ -46,11 +46,13 @@ const { mockSlug, mockEntries, setArchiveModalNetwork } = vi.hoisted(() => ({
     }>
   >(() => []),
   setArchiveModalNetwork: vi.fn(),
+  loadArchive: vi.fn<(slug: string) => Promise<void>>().mockResolvedValue(undefined),
 }));
 
 vi.mock("../lib/archive", () => ({
   archiveModalNetwork: () => mockSlug(),
   setArchiveModalNetwork,
+  loadArchive,
   visibleArchiveForNetwork: (slug: string, id: number) => mockEntries(slug, id),
 }));
 
@@ -175,5 +177,32 @@ describe("ArchiveModal", () => {
     fireEvent.click(deleteBtn);
     await new Promise((r) => setTimeout(r, 0));
     expect(apiMod.deleteArchiveEntry).toHaveBeenCalledWith("test-token", "freenode", "vjt-peer");
+  });
+});
+
+// BUGHUNT-1 B — seed Archive list on edge-trigger open.
+//
+// Root cause: mobile BottomBar chip opens the modal via
+// setArchiveModalNetwork but never calls loadArchive — only Sidebar's
+// <details> onToggle does. Modal renders "no archived windows" until
+// the user archives a new window (which fires archive_changed → cic
+// re-fetches and the bug appears fixed). Fix is a dedicated
+// createEffect inside ArchiveModal that fires loadArchive on
+// edge-trigger open.
+describe("ArchiveModal seed-on-open (BUGHUNT-1 B)", () => {
+  it("does not load anything while archiveModalNetwork() is null", () => {
+    mockSlug.mockReturnValue(null);
+    render(() => <ArchiveModal />);
+    expect(loadArchive).not.toHaveBeenCalled();
+  });
+
+  it("calls loadArchive(slug) when archiveModalNetwork() flips null → slug", async () => {
+    mockSlug.mockReturnValue("freenode");
+    render(() => <ArchiveModal />);
+    // createEffect runs eagerly on mount; the initial slug counts as
+    // an edge-trigger from null → "freenode".
+    await new Promise((r) => setTimeout(r, 0));
+    expect(loadArchive).toHaveBeenCalledWith("freenode");
+    expect(loadArchive).toHaveBeenCalledTimes(1);
   });
 });
