@@ -41,6 +41,13 @@ vi.mock("../lib/documentVisibility", () => ({
 
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
+  // BUGHUNT-2 B5: ScrollbackPane's onScroll calls `loadMore` when
+  // scrollTop is near the top (CP14 B2). Stubbed as a no-op resolved
+  // promise so the scroll-handler can complete without throwing on
+  // tests that drive synthetic scroll events. The export name is
+  // `loadMore` (production imports it as `loadMore as
+  // loadMoreScrollback`).
+  loadMore: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -2151,6 +2158,49 @@ describe("ScrollbackPane", () => {
       await new Promise((r) => queueMicrotask(() => r(undefined)));
 
       expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // BUGHUNT-2: input-event gate. Programmatic scroll without preceding
+  // pointerdown/wheel/touchmove/keydown does NOT arm the settle timer →
+  // setCursorIfAdvances is not called. The positive path (real input
+  // arms the gate + cursor advances) is covered by e2e B3 because the
+  // jsdom layout returns null for `lastFullyVisibleRowId` (no real
+  // viewport) so a jsdom positive test would not exercise the POST
+  // branch.
+  describe("BUGHUNT-2 input-event gate", () => {
+    it("scroll without preceding pointerdown does NOT call setCursorIfAdvances", async () => {
+      // Seed enough rows for the scroll-settle path to be considered.
+      const rows: ScrollbackMessage[] = Array.from({ length: 30 }, (_, i) => ({
+        id: i + 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: i + 1,
+        kind: "privmsg",
+        sender: "alice",
+        body: `row ${i + 1}`,
+        meta: {},
+      }));
+      setScrollback({ "freenode #grappa": rows });
+
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const list = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      expect(list).not.toBeNull();
+      if (!list) throw new Error("scrollback DOM not found");
+
+      // Fire scroll without any prior pointerdown / wheel / touchmove /
+      // keydown. The gate's `lastInputEventAtMs` stays null → settle
+      // timer never arms.
+      list.scrollTop = 100;
+      list.dispatchEvent(new Event("scroll"));
+
+      // Wait past the 500ms debounce + slop. Use real timers (this
+      // suite doesn't enable fake timers).
+      await new Promise((r) => setTimeout(r, 700));
+
+      expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
     });
   });
 });
