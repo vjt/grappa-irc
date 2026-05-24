@@ -85,7 +85,13 @@ test.describe("BUGHUNT-2: switch-away cursor uses visible-tail, not store-tail",
     if (!box) throw new Error("scrollback box null");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, -200);
-    await page.waitForTimeout(100); // let DOM settle, not the cursor
+    // Wait LONGER than the settle window so the scroll-settle POST
+    // from this wheel-up lands BEFORE we snapshot cursor + visible.
+    // Without this, two POSTs race the leave-arm (the settle-arm POST
+    // from the wheel-up + the leave-arm POST from the switch) and the
+    // expected `max(cursorBeforeSwitch, visible)` is wrong because
+    // `cursorBeforeSwitch` is read BEFORE the settle POST lands.
+    await page.waitForTimeout(SETTLE_WAIT_MS);
 
     const visible = await visibleTailId(page);
     const store = await storeTailId(page);
