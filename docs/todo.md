@@ -15,6 +15,24 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 see CP45 S5, CP46, CP47. BUGHUNT-2 unread-marker cursor-write
 contract rewrite CLOSED 2026-05-24 — see CP47 BUGHUNT-2 block.)
 
+**BUGHUNT-3: CI cascade poisoner bisect (next session).** Pre-B7
+main has 3-4 chromium specs failing in CI (marker-target T2, r6,
+ux-5-bk, ux-6-k) that all pass 3/3 iso. Set rotates per run —
+test-order state pollution somewhere in the 109-spec roster.
+Local full-chromium run reproduces a similar (overlapping) set.
+B7 (commit `20c173b`) neither caused nor cleared the cascade;
+fixes ux-6-k specifically and the local 2-spec iso re-run for
+marker-target T2. Webkit-iphone-15 5 specs also pre-existing per
+CP47 Category B (drawer-tap plumbing); may fold into this bucket.
+
+Bisect approach: binary-chop the spec roster by ordering
+(`--grep` half-suites) until poisoner identified. Likely culprit:
+spec that leaves vjt's read-cursor advanced past current head,
+or a #bofh state mutation that doesn't reset between specs.
+Candidates: cp15-b6, ux-5-bj, m2 (all touch #bofh focus + state
+transitions). NO server-code change permitted without root-cause
++ vjt sign-off per `feedback_plan_vs_production_reality`.
+
 ---
 
 ★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen + BUGHUNT-1 + BUGHUNT-2 CLOSED 2026-05-24):**
