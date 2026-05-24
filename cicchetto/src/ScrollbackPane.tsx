@@ -14,7 +14,7 @@ import InviteAckRows from "./InviteAckRows";
 import LusersCard from "./LusersCard";
 import { ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
-import { channelKey } from "./lib/channelKey";
+import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { linkify } from "./lib/linkify";
 import { membersByChannel } from "./lib/members";
@@ -1107,7 +1107,41 @@ const ScrollbackPane: Component<Props> = (props) => {
   createEffect(
     on(
       key,
-      () => {
+      (newKey, prevKey) => {
+        // BUGHUNT-2: leave-arm cursor write. When key transitions
+        // away from a window, listRef.scrollTop STILL reflects the
+        // leaving pane's geometry (Solid's <Show> in Shell.tsx is
+        // non-keyed for channel↔channel switches, so the DOM node +
+        // component instance survive; scrollToActivation runs INSIDE
+        // double-rAF, which happens AFTER this effect body returns).
+        // Read lastFullyVisibleRowId NOW for the OLD key, decode
+        // prevKey back to (slug, channel), POST via
+        // setCursorIfAdvances.
+        //
+        // Skip on initial mount (prevKey undefined) and on identical-
+        // key re-fires (prevKey === newKey — defensive; shouldn't
+        // happen with `defer: true` + Solid's signal equality).
+        // Skip if listRef hasn't initialized yet or if visible-tail
+        // is null (empty pane, nothing to mark).
+        //
+        // Channel→home/mentions switches DON'T fire this — they
+        // unmount the component entirely. onCleanup covers that
+        // case (added in A5).
+        if (prevKey !== undefined && prevKey !== newKey && listRef) {
+          const id = lastFullyVisibleRowId(listRef);
+          if (id !== null) {
+            const decoded = decodeChannelKey(prevKey);
+            if (decoded !== null) {
+              setCursorIfAdvances(decoded.slug, decoded.name, id);
+            }
+          }
+        }
+
+        // BUGHUNT-2: reset input-gate so the new pane starts fresh.
+        // Programmatic activation `scrollIntoView` in scrollToActivation
+        // must not inherit the leaving pane's timestamp.
+        setLastInputEventAtMs(null);
+
         setMarkerScrolled(false);
         // CP29 R-4: capture the boundary as the highest message id present
         // RIGHT NOW. `messages()` is the same store the rows memo reads;
