@@ -151,20 +151,26 @@ defmodule Grappa.AdmissionStateHelpers do
     end
 
     # Registry sweep — catches Session.Servers that crashed unsupervised
-    # OR whose Registry link cleanup hasn't propagated yet. Send
-    # `:shutdown` rather than `:kill` so terminate/2 still runs if the
-    # pid is alive; if dead, no-op.
+    # OR whose Registry link cleanup hasn't propagated yet. Use
+    # `GenServer.stop/3` (NOT `Process.exit(pid, :shutdown)`) so
+    # `terminate/2` runs deterministically AND the mailbox-as-signal
+    # path is bypassed: `Process.exit/2` from a non-linked sender
+    # arrives as `{:EXIT, helper_pid, :shutdown}` and routes through
+    # the server's handle_info catch-all, which is the wrong contract
+    # for external teardown. `GenServer.stop` is synchronous: returns
+    # once the server has fully terminated OR the 2s timeout fires.
+    # `catch :exit, _` because the pid may die mid-stop (race window
+    # between `Process.alive?` check + `GenServer.stop` entry); we
+    # don't care about the cause, only that the pid is gone by the
+    # time `wait_until_registry_clear!/1` polls.
     leftover_pids = Registry.select(Grappa.SessionRegistry, [{{:_, :"$1", :_}, [], [:"$1"]}])
 
     Enum.each(leftover_pids, fn pid ->
       if Process.alive?(pid) do
-        ref = Process.monitor(pid)
-        Process.exit(pid, :shutdown)
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _} -> :ok
-        after
-          2_000 -> Process.demonitor(ref, [:flush])
+        try do
+          GenServer.stop(pid, :shutdown, 2_000)
+        catch
+          :exit, _ -> :ok
         end
       end
     end)
