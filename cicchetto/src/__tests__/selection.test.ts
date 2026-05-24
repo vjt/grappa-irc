@@ -291,46 +291,16 @@ describe("selection store", () => {
     });
   });
 
-  // BUGHUNT-2: browser-blur cursor write moved to ScrollbackPane. These
-  // tests guard the NEGATIVE contract — selection.ts must NOT call
-  // setReadCursor on browser-blur. The positive (cursor IS written)
-  // contract is owned by ScrollbackPane's visibility arm + B-bucket e2e.
+  // BUGHUNT-2: browser-blur cursor write moved to ScrollbackPane. This
+  // single structural-assertion test guards the NEGATIVE contract —
+  // selection.ts's on(isDocumentVisible) effect has only a FALSE→TRUE
+  // arm (focus-regain badge-clear); the TRUE→FALSE branch was
+  // deleted in A6. Any future addition of a cursor-write to this
+  // effect would fail this test. The positive (cursor IS written on
+  // blur) contract is owned by ScrollbackPane's visibility arm +
+  // B-bucket e2e.
   describe("read-cursor set on browser-blur (visibility transition)", () => {
-    it("no selected window: blur does NOT set any cursor", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      // No setSelectedChannel call — selection is null at module load.
-      expect(selection.selectedChannel()).toBeNull();
-
-      setVisibilityForTest(false);
-      await Promise.resolve();
-
-      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-    });
-
-    it("focused on empty-scrollback window: blur does NOT set the cursor", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const readCursor = await import("../lib/readCursor");
-      const selection = await import("../lib/selection");
-      // Select but don't seed any scrollback — there is nothing to mark as read.
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#empty",
-        kind: "channel",
-      });
-      setVisibilityForTest(false);
-      await Promise.resolve();
-
-      expect(readCursor.setReadCursor).not.toHaveBeenCalled();
-    });
-
-    it("initial visibility=true does NOT spuriously set any cursor", async () => {
-      // Module load fires the on(isDocumentVisible) effect with prev===undefined.
-      // That initial run must skip cursor set (otherwise every fresh
-      // window with msgs would have its cursor pinned to "now" at load).
+    it("blur arm never writes cursor (selection.ts has no TRUE→FALSE cursor path)", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -353,9 +323,14 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      // No setVisibilityForTest call — visibility stays at its initial true.
-      // After microtask flush, cursor must NOT be set.
+      // Drive blur — the only edge that the deleted code reacted to.
+      setVisibilityForTest(false);
       await Promise.resolve();
+      // And drive a focus-regain — the only edge the surviving code
+      // reacts to (badge clear, not cursor write).
+      setVisibilityForTest(true);
+      await Promise.resolve();
+
       expect(readCursor.setReadCursor).not.toHaveBeenCalled();
     });
   });
