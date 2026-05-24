@@ -1299,14 +1299,23 @@ const ScrollbackPane: Component<Props> = (props) => {
       });
     }
 
-    // UX-8 (b): scroll-settle cursor update. Debounce 500ms — every
-    // scroll event resets the timer. When it finally fires, compute
-    // the last fully-visible row id; the forward-only gate in
-    // setCursorIfAdvances drops the POST when scroll is upward
-    // (candidate <= current cursor). loadMore block above runs
-    // independently on the same scroll event; the two are unrelated
-    // (forward-only gate makes the post-loadMore scrollHeight grow
-    // harmless — a higher candidate is fine).
+    // BUGHUNT-2: scroll-settle gated on recent operator input.
+    // Programmatic scrolls fired by `scrollToActivation` (window
+    // activation routine) emit DOM `scroll` events but no preceding
+    // `pointerdown` / `touchmove` / `keydown` — `lastInputEventAtMs`
+    // stays null or stale, the gate skips arming the settle timer,
+    // cursor is not advanced. Real operator scrolls (wheel / touch /
+    // PageDown) set `lastInputEventAtMs` first → onScroll arms →
+    // 500ms later POSTs the visible-tail id.
+    //
+    // forward-only gate in setCursorIfAdvances (selection.ts) drops
+    // the POST when candidate <= current cursor — scroll-up from the
+    // tail is harmless. loadMore block above runs independently on
+    // the same scroll event; the two are unrelated.
+    const inputAt = lastInputEventAtMs();
+    const recentInput = inputAt !== null && Date.now() - inputAt < INPUT_EVENT_RECENCY_MS;
+    if (!recentInput) return;
+
     if (scrollSettleTimer !== undefined) {
       window.clearTimeout(scrollSettleTimer);
     }
