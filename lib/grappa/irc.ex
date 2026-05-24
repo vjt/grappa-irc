@@ -17,5 +17,8 @@ defmodule Grappa.IRC do
   namespace; it has no runtime API of its own.
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [AuthFSM, Client, Identifier, Message]
+  use Boundary,
+    top_level?: true,
+    deps: [],
+    exports: [AuthFSM, Client, Identifier, LineSplit, Message]
 end

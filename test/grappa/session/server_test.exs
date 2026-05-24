@@ -829,6 +829,81 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    # BUGHUNT-1 A — server-side PRIVMSG auto-split.
+    #
+    # Body bigger than the per-frame budget (linelen - envelope) is
+    # split into N grappa-IRC.LineSplit fragments; each fragment
+    # becomes its own upstream PRIVMSG + its own Scrollback row +
+    # its own per-channel PubSub broadcast. The HTTP reply returns
+    # the LAST fragment so cic's scrollback view aligns with the
+    # final row id.
+    test "PRIVMSG > linelen splits into N upstream lines + N scrollback rows" do
+      welcomed_handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":server 001 grappa-actual :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(welcomed_handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # Force a small linelen so fragmentation is deterministic on
+      # any IRC server (the testnet ircds don't advertise LINELEN, so
+      # default 512 would fast-path `[body]` for any reasonable body).
+      # `:sys.replace_state` is safe here: session is idle between
+      # handshake and the next send_privmsg call.
+      :sys.replace_state(pid, fn state -> %{state | linelen: 80} end)
+
+      # 200-byte body, linelen 80, envelope overhead 14 → budget 66
+      # → at least 4 fragments.
+      body = String.duplicate("x", 200)
+
+      assert {:ok, last_msg} =
+               Session.send_privmsg({:user, user.id}, network.id, "#sniffo", body)
+
+      assert last_msg.kind == :privmsg
+      assert last_msg.channel == "#sniffo"
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          fn line -> String.starts_with?(line, "PRIVMSG #sniffo :") end,
+          1_000
+        )
+
+      privmsgs =
+        server
+        |> IRCServer.sent_lines()
+        |> Enum.filter(&String.starts_with?(&1, "PRIVMSG #sniffo :"))
+
+      assert length(privmsgs) >= 2
+
+      for line <- privmsgs do
+        assert byte_size(line) <= 80
+      end
+
+      # Scrollback persisted N rows; joined in arrival order = original body.
+      rows = Scrollback.fetch({:user, user.id}, network.id, "#sniffo", nil, 50, nil)
+      sent_rows = Enum.filter(rows, fn r -> r.sender == "grappa-actual" end)
+      assert length(sent_rows) >= 2
+
+      reconstructed =
+        sent_rows
+        |> Enum.sort_by(& &1.server_time)
+        |> Enum.map_join("", & &1.body)
+
+      assert reconstructed == body
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   describe "push notifications (B4) — trigger dispatch on inbound PRIVMSG" do

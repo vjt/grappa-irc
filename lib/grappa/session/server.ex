@@ -349,6 +349,14 @@ defmodule Grappa.Session.Server do
           # bounded integer on state (not a generic ISUPPORT map) to stay
           # minimal — only MODES= is consumed server-side for now.
           modes_per_chunk: pos_integer(),
+          # BUGHUNT-1 A — max wire-frame size for outbound PRIVMSG auto-
+          # split. Defaults to 512 per RFC 2812 when upstream omits
+          # LINELEN= from 005 RPL_ISUPPORT (Bahamut/InspIRCd/UnrealIRCd
+          # commonly do). Used by `Grappa.IRC.LineSplit` to compute the
+          # body budget = `linelen - byte_size("PRIVMSG <target> :\r\n")`.
+          # Sibling shape to `modes_per_chunk` — bounded integer on
+          # state, not a generic ISUPPORT map.
+          linelen: pos_integer(),
           # C2 — per-target WHOIS accumulator. Keyed by lowercased target
           # nick. Entry shape (all fields optional except target_display):
           # `%{target_display, user, host, realname, server, server_info,
@@ -499,6 +507,7 @@ defmodule Grappa.Session.Server do
       labels_pending: %{},
       last_command_window: nil,
       modes_per_chunk: 3,
+      linelen: 512,
       # C2 — pending WHOIS accumulators keyed by lowercased target nick.
       # Set up on `:send_whois` (the operator issued /whois); 311/312/313/
       # 317/319 fold into the entry; 318 emits `{:whois_bundle, ...}` and
@@ -1660,20 +1669,22 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | caps_active: caps_active}}
   end
 
-  # S5.1 — 005 RPL_ISUPPORT: extract MODES=N if advertised. Params are space-
-  # separated ISUPPORT tokens (e.g. ["grappa-test", "MODES=4", "CHANTYPES=#",
-  # "are supported ..."]).  We scan every param for a "MODES=" prefix and parse
-  # the integer. The default of 3 is preserved when MODES= is absent.  Only
-  # the first MODES= token is honoured (ircd should emit at most one per 005
-  # line; multiple 005 lines are additive but MODES= is idempotent — use the
-  # first advertised value and ignore later ones to avoid a misbehaving server
-  # downgrading us mid-session).
+  # S5.1 — 005 RPL_ISUPPORT: extract MODES=N + LINELEN=N if advertised.
+  # Params are space-separated ISUPPORT tokens (e.g. ["grappa-test",
+  # "MODES=4", "LINELEN=512", "CHANTYPES=#", "are supported ..."]).  We
+  # scan every param for the known prefixes. Defaults (3 modes,
+  # 512-byte linelen) are preserved when the token is absent. Only the
+  # first occurrence of each token is honoured (ircd should emit at
+  # most one per 005 line; idempotent values — use the first advertised
+  # and ignore later ones to avoid a misbehaving server downgrading us
+  # mid-session).
   def handle_info(
         {:irc, %Message{command: {:numeric, 5}} = msg},
         state
       ) do
     modes_per_chunk = extract_modes_isupport(msg.params, state.modes_per_chunk)
-    {:noreply, %{state | modes_per_chunk: modes_per_chunk}}
+    linelen = extract_linelen_isupport(msg.params, state.linelen)
+    {:noreply, %{state | modes_per_chunk: modes_per_chunk, linelen: linelen}}
   end
 
   # CP13 server-window cluster: numeric routing produces a persisted
@@ -1840,8 +1851,36 @@ defmodule Grappa.Session.Server do
 
   # Existing behavior — persist scrollback row, broadcast on per-channel
   # PubSub topic, send the wire line. Reply carries the persisted row.
-  # Symmetric with the pre-S9 send_privmsg body.
+  # BUGHUNT-1 A: a body larger than the wire-frame budget (LINELEN -
+  # envelope overhead) is auto-split into N fragments via
+  # `Grappa.IRC.LineSplit.split_privmsg_body/3`; each fragment becomes
+  # its OWN persist_event + broadcast + Client.send_privmsg, matching
+  # what every other IRC client renders (and what other channel members
+  # see — upstream relays each PRIVMSG as a separate row). The HTTP
+  # reply returns the LAST fragment's persisted message so cic's
+  # scrollback view aligns with the final row id. Default linelen=512
+  # makes the fast-path `[body]` for typical-length messages — no
+  # behavior change vs the pre-BUGHUNT-1 single-fragment loop.
   defp handle_persisting_send(target, body, state) do
+    fragments = Grappa.IRC.LineSplit.split_privmsg_body(body, target, state.linelen)
+
+    case persist_and_send_fragments(target, fragments, state, nil) do
+      {:ok, last_message} -> {:reply, {:ok, last_message}, state}
+      {:error, _} = err -> {:reply, err, state}
+    end
+  end
+
+  @spec persist_and_send_fragments(
+          String.t(),
+          [String.t()],
+          t(),
+          Scrollback.Message.t() | nil
+        ) ::
+          {:ok, Scrollback.Message.t()} | {:error, term()}
+  defp persist_and_send_fragments(_, [], _, last_message),
+    do: {:ok, last_message}
+
+  defp persist_and_send_fragments(target, [fragment | rest], state, _) do
     attrs =
       Session.put_subject_id(
         %{
@@ -1850,7 +1889,7 @@ defmodule Grappa.Session.Server do
           server_time: System.system_time(:millisecond),
           kind: :privmsg,
           sender: state.nick,
-          body: body,
+          body: fragment,
           meta: %{},
           # CP14 B3 — outbound DM detection. `Scrollback.dm_peer/4` is
           # the single source for the rule (channel msg vs DM): for
@@ -1863,33 +1902,36 @@ defmodule Grappa.Session.Server do
         state.subject
       )
 
-    case Scrollback.persist_event(attrs) do
-      {:ok, message} ->
-        :ok =
-          Grappa.PubSub.broadcast_event(
-            Topic.channel(state.subject_label, state.network_slug, target),
-            Wire.message_payload(message)
-          )
+    with {:ok, message} <- Scrollback.persist_event(attrs),
+         :ok <-
+           Grappa.PubSub.broadcast_event(
+             Topic.channel(state.subject_label, state.network_slug, target),
+             Wire.message_payload(message)
+           ),
+         # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
+         # since S29 C1. The Session facade pre-validates so the error
+         # branch is unreachable on the documented path; forward-compat
+         # insurance against a future caller bypassing the facade.
+         :ok <- send_privmsg_or_log(state.client, target, fragment) do
+      persist_and_send_fragments(target, rest, state, message)
+    else
+      {:error, _} = err -> err
+    end
+  end
 
-        # `Client.send_privmsg` returns `:ok | {:error, :invalid_line}`
-        # since S29 C1. The Session facade pre-validates so the error
-        # branch is unreachable on the documented path; the case below
-        # is forward-compat insurance against a future caller that
-        # bypasses the facade.
-        case Client.send_privmsg(state.client, target, body) do
-          :ok ->
-            {:reply, {:ok, message}, state}
+  @spec send_privmsg_or_log(pid(), String.t(), String.t()) ::
+          :ok | {:error, :invalid_line}
+  defp send_privmsg_or_log(client, target, body) do
+    case Client.send_privmsg(client, target, body) do
+      :ok ->
+        :ok
 
-          {:error, :invalid_line} = err ->
-            Logger.error("client rejected privmsg AFTER persist — facade bypass?",
-              channel: target
-            )
+      {:error, :invalid_line} = err ->
+        Logger.error("client rejected privmsg AFTER persist — facade bypass?",
+          channel: target
+        )
 
-            {:reply, err, state}
-        end
-
-      {:error, _} = err ->
-        {:reply, err, state}
+        err
     end
   end
 
@@ -2983,6 +3025,27 @@ defmodule Grappa.Session.Server do
   end
 
   defp parse_modes_token(_, acc), do: {:cont, acc}
+
+  # BUGHUNT-1 A — Scans 005 RPL_ISUPPORT params for a "LINELEN=N" token
+  # and returns N as an integer. Returns the current value unchanged
+  # when no LINELEN= is found (default 512 per RFC 2812). Silently
+  # ignores malformed tokens (e.g. "LINELEN=0" or "LINELEN=" with no
+  # number) — the prior value is always a safe fallback.
+  @spec extract_linelen_isupport([String.t()], pos_integer()) :: pos_integer()
+  defp extract_linelen_isupport(params, current) when is_list(params) do
+    Enum.reduce_while(params, current, &parse_linelen_token/2)
+  end
+
+  @spec parse_linelen_token(String.t(), pos_integer()) ::
+          {:cont, pos_integer()} | {:halt, pos_integer()}
+  defp parse_linelen_token("LINELEN=" <> rest, current) do
+    case Integer.parse(rest) do
+      {n, ""} when n > 0 -> {:halt, n}
+      _ -> {:cont, current}
+    end
+  end
+
+  defp parse_linelen_token(_, acc), do: {:cont, acc}
 
   # ---------------------------------------------------------------------------
   # S3.2 — away state internal helpers
