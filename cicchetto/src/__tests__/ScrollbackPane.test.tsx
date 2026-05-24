@@ -6,9 +6,12 @@ import type { ScrollbackMessage } from "../lib/api";
 // C5.0 — JOIN-self auto-focus-switch: mock selection so we can assert
 // setSelectedChannel is called when own nick's JOIN event shows up.
 const mockSetSelectedChannel = vi.fn();
+const mockSetCursorIfAdvances = vi.fn();
 vi.mock("../lib/selection", () => ({
   setSelectedChannel: (ch: unknown) => mockSetSelectedChannel(ch),
   selectedChannel: () => null,
+  setCursorIfAdvances: (slug: unknown, channel: unknown, id: unknown) =>
+    mockSetCursorIfAdvances(slug, channel, id),
 }));
 
 // Mock the store boundary, not the REST/WS plumbing — ScrollbackPane is

@@ -952,6 +952,25 @@ const ScrollbackPane: Component<Props> = (props) => {
     });
   };
 
+  // BUGHUNT-2: unmount-time cursor write. ScrollbackPane unmounts
+  // when sel().kind transitions from "channel"/"query"/"server" to
+  // "home"/"mentions"/"admin" — different `<Show>` branch in
+  // Shell.tsx. The `on(key, …)` effect above only fires for same-
+  // branch switches (channel↔channel, query↔channel, etc.); the
+  // unmount path bypasses it.
+  //
+  // onCleanup runs BEFORE Solid removes the listRef DOM, so
+  // listRef.scrollTop is still readable. Reads visible-tail for the
+  // CURRENT pane (props.networkSlug, props.channelName — captured in
+  // the closure at component-init time, won't change before unmount
+  // because the component IS this (slug, channel) instance).
+  onCleanup(() => {
+    if (!listRef) return;
+    const id = lastFullyVisibleRowId(listRef);
+    if (id === null) return;
+    setCursorIfAdvances(props.networkSlug, props.channelName, id);
+  });
+
   createEffect(
     on(
       () => messages()?.length ?? 0,
@@ -1176,6 +1195,28 @@ const ScrollbackPane: Component<Props> = (props) => {
       if (prev === false && visible === true) {
         scrollToActivation();
       }
+    }),
+  );
+
+  // BUGHUNT-2: browser-blur cursor write. Fires on
+  // `prev === true && visible === false` (tab → hidden, app switch on
+  // mobile, OS lock). Reads lastFullyVisibleRowId for the CURRENT pane
+  // and POSTs via setCursorIfAdvances. Mirror of the leave-arm in
+  // A3's key-effect, but for the no-key-change case.
+  //
+  // No false→true arm — focus-regain does NOT advance cursor;
+  // marker stays where it is.
+  //
+  // `prev === undefined` guards the initial-mount run (mirrors the
+  // sibling effect's identical guard).
+  createEffect(
+    on(isDocumentVisible, (visible, prev) => {
+      if (prev === undefined) return;
+      if (prev !== true || visible !== false) return;
+      if (!listRef) return;
+      const id = lastFullyVisibleRowId(listRef);
+      if (id === null) return;
+      setCursorIfAdvances(props.networkSlug, props.channelName, id);
     }),
   );
 
