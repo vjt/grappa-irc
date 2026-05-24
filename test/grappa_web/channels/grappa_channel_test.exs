@@ -117,6 +117,15 @@ defmodule GrappaWeb.GrappaChannelTest do
     {:ok, plan} = Networks.SessionPlan.resolve(preloaded)
     {:ok, _} = Session.start_session({:user, user.id}, network.id, plan)
 
+    # Stop the Session at test end so the next test's
+    # `AdmissionStateHelpers.reset_all/0` doesn't race a
+    # post-IRC-fake-shutdown reconnect loop (upstream
+    # `:econnrefused` → `:transient` respawn → orphan in
+    # `SessionRegistry` not under `SessionSupervisor`). The
+    # `Session.stop_session/2` verb is the production teardown
+    # path: synchronous, supervisor-mediated, registry-drained.
+    on_exit(fn -> Session.stop_session({:user, user.id}, network.id) end)
+
     {user, network}
   end
 
@@ -140,6 +149,8 @@ defmodule GrappaWeb.GrappaChannelTest do
 
     {:ok, plan} = VisitorSessionPlan.resolve(visitor)
     {:ok, _} = Session.start_session({:visitor, visitor.id}, network.id, plan)
+
+    on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
 
     {visitor, network}
   end
