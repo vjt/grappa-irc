@@ -128,8 +128,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   // backward moves via last-write-wins, but cic does not exercise
   // them — kept as a single-source guard at the client boundary.
   //
-  // Token guard mirrors setCursorForWindow's: identity-rotation can
-  // null the bearer mid-effect.
+  // Token guard: identity-rotation can null the bearer mid-effect.
   const setCursorIfAdvances = (
     networkSlug: string,
     channelName: string,
