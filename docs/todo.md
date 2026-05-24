@@ -12,11 +12,12 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 ## Immediate
 
 (UX-8 + wireTypes.ts codegen + BUGHUNT-1 CLOSED 2026-05-24 —
-see CP45 S5, CP46, CP47.)
+see CP45 S5, CP46, CP47. BUGHUNT-2 unread-marker cursor-write
+contract rewrite CLOSED 2026-05-24 — see CP47 BUGHUNT-2 block.)
 
 ---
 
-★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen + BUGHUNT-1 CLOSED 2026-05-24):**
+★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen + BUGHUNT-1 + BUGHUNT-2 CLOSED 2026-05-24):**
 
 After UX-8 (scroll cluster) + codegen + BUGHUNT-1 pre-bastille
 bug-hunt CLOSED, work proceeds in this order. Do NOT skip ahead.
@@ -59,6 +60,17 @@ Memory pointer (single source of truth lives HERE, not in memory):
 Both bugs CLOSED in BUGHUNT-1 cluster (`a320a4f` + `d13d77f`); see
 `docs/checkpoints/2026-05-24-cp47.md` for full bucket roster + plan
 deviations. No remaining known regressions blocking bastille deploy.
+
+BUGHUNT-2 unread-marker cursor-write contract rewrite also CLOSED
+2026-05-24 (commits `075e7048`..`1159867`; cluster b0+b1..b5).
+Cursor-write ownership moved from `selection.ts` into `ScrollbackPane.tsx`;
+input-event gate (pointerdown/wheel/touchmove/keydown) on
+`onScroll`'s 500ms settle timer means programmatic scrolls
+(`scrollIntoView` in window-activation routine) no longer spuriously
+advance the cursor — unread marker stays put on bare window-open.
+Three e2e sentinels (cursor-no-advance-on-open,
+cursor-advances-on-switch, cursor-walks-with-scroll) + one vitest
+negative pin the contract.
 
 1. ~~Long-message auto-split (SERVER-SIDE)~~ — CLOSED bucket A.
    `Grappa.IRC.LineSplit.split_privmsg_body/3` + `:linelen` state +

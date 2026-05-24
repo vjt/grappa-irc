@@ -9857,7 +9857,162 @@ load contract.
 
 ### Next per locked roadmap
 
-1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ — all CLOSED.
+1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ + ~~BUGHUNT-2~~ — all CLOSED.
+2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
+   prod runtime parallel to docker-compose. No remaining known
+   user-visible regressions blocking it.
+
+## 2026-05-24 — BUGHUNT-2 unread-marker cursor-write contract CLOSED
+
+Same-night follow-up to BUGHUNT-1 + UX-8: opening a window with
+unreads flashed the unread marker for ~500ms then made it vanish
+because UX-8(a3)'s `tail.scrollIntoView({block:"end"})` in the
+activation routine + UX-8(b+c)'s 500ms scroll-settle debounce
+combined to POST `last-fully-visible-row` (now the tail) on bare
+window open. Cursor advanced → marker (just below the OLD cursor)
+fell below the new cursor → vanished.
+
+Worse, the broader contract was incoherent: window-switch +
+browser-blur wrote `store-tail` (last id in scrollback store),
+ignoring operator scroll position. Operator scrolling up to read
+history then switching away lost the marker entirely on next visit.
+
+### Contract rewrite
+
+vjt's revised contract (2026-05-24):
+- Window open / activate: **no cursor write** (was already correct).
+- Switch away (cic→cic): `lastFullyVisibleRowId` of LEAVING pane,
+  measured BEFORE the activation routine touches listRef geometry.
+- Scroll-settle: `lastFullyVisibleRowId` of current pane, debounced
+  500ms, gated on recent operator input event.
+- Browser blur: `lastFullyVisibleRowId` of focused pane.
+- Send: out of scope (deferred — narrow hole: send-while-scrolled-up-
+  then-close-tab).
+
+Cursor-write ownership moved from `selection.ts` → `ScrollbackPane.tsx`
+(spec: docs/superpowers/specs/2026-05-24-bughunt-2-cursor-design.md
+"each context owns its domain": the pane owns its DOM geometry).
+
+### Bucket roster
+
+* `076eb77 a1` — `lastInputEventAtMs` signal + listRef event handlers.
+* `7886be0 a2.5` — Biome a11y + pre-existing lints for clean baseline.
+* `ec6a5f6 a3` — onScroll settle-arm gated on recent operator input.
+* `0c10888 a4` — leave-arm cursor write inside ScrollbackPane key-effect.
+* `52616fb a4.5` — stale visibility-effect comment for blur-arm.
+* `3d80f84 a5` — cursor write on unmount + on browser blur.
+* `a9caa9e a5.5` — drop dangling setCursorForWindow reference.
+* `992f248 a6` — delete cursor-write from selection.ts.
+* `c589451 a7` — fix unit tests asserting the old selection.ts path.
+* `0bdb353 a6.5` — update stale mock comment in selection.test.ts.
+* `b5a1410 a6.6` — collapse vacuous blur-arm negative tests.
+* `75e7048 b0` — wheel handler arms input-event gate (fix-up — see below).
+* `e486e39 b1` — e2e sentinel: bare window open does NOT advance cursor.
+* `077e2ea b2` — e2e sentinel: switch-away writes visible-tail cursor.
+* `63ab010 b2.5` — wait past settle window before snapshot (fix-up).
+* `c513953 b3` — e2e sentinel: real wheel-down advances cursor.
+* `6a63a13 b4` — UX-8 scroll-settle e2e: switch to real PointerEvents.
+* `1159867 b5` — vitest: input-event gate negative unit.
+
+### Bucket A gap caught by B1
+
+Bucket A's `onPointerDown` handler did NOT cover desktop mouse-wheel
+rotation — per W3C the `wheel` event is a real user input but does
+NOT fire a preceding `pointerdown` (pointerdown fires on button
+press, not on wheel rotation). Without an `onWheel` handler, the
+gate stayed null on wheel scroll and the settle timer never armed —
+desktop operators scrolling with the wheel never advanced their
+read cursor. Inline comment in A1 was factually wrong (`"pointerdown
+covers wheel-with-mouse-over-element"`).
+
+B1's e2e sentinel (which sets cursor baseline via real `page.mouse.wheel`)
+caught this immediately: `cursorBaseline` returned null. Fix landed
+as `bughunt-2(b0)` BEFORE the B1 commit. Comment updated; touch +
+keyboard paths were correct already.
+
+### Per-spec plan deviations
+
+* **B1** — plan's `selectChannel(":home")` + fallback regex-Home-click
+  blew the 30s test timeout (selectChannel waits for self-JOIN, never
+  arrives for Home; regex matched multiple buttons → strict-mode
+  flag). Replaced with `getByRole("button", {name: "Home", exact:
+  true}).click()`.
+* **B2** — `AUTOJOIN_CHANNELS` ships only `#bofh` (one channel) —
+  plan's `CHANNEL_B = AUTOJOIN_CHANNELS[1]` fallback would have
+  switched to itself. Switch destination is now the `$server` window
+  (always present). Assertion adjusted for stack-persistence:
+  `expect(cursor).toBe(max(cursorBeforeSwitch, visible))` because
+  `setCursorIfAdvances` (cic) + `ReadCursor.set/4` (server) drop a
+  candidate <= current; the load-bearing claim is
+  `expect(cursor).not.toBe(store)`.
+* **B2.5** — when B2 runs after B1, the leave-arm POST races the
+  scroll-settle POST from the wheel-up (two cursor writes from one
+  user gesture). Wait `SETTLE_WAIT_MS` (1000ms) after wheel-up so
+  the settle POST lands BEFORE we snapshot the cursor baseline.
+* **B3** — final `expect(cursor <= visible)` was brittle under stack
+  persistence (forward-only gate drops POST when visible < prior
+  cursor). Replaced with `expect(cursor).toBe(max(cursorAfterUp,
+  visibleAfterDown))`. Load-bearing `cursor > visibleAtMidList`
+  unchanged.
+* **B5** — `lastFullyVisibleRowId` is module-local in
+  ScrollbackPane.tsx (not exported), returns null in jsdom (no real
+  layout). Per plan's "pragmatic path", negative-only test. Drive-by:
+  extend `../lib/scrollback` mock to export `loadMore` (production
+  imports as `loadMore as loadMoreScrollback`); without it the test
+  passes but vitest flags an unhandled error post-run.
+
+### Gates + deploy
+
+* `mix test`: 2455/2455, 0 failures.
+* `mix credo --strict`: 2413 mods/funs, no issues.
+* `mix dialyzer`: 0 errors.
+* `mix sobelow --config --exit Medium`: 0 findings.
+* `mix deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56`: 0.
+* `mix hex.audit`: 0.
+* `mix doctor`: 98.8% / 100.0% / 99.8% — PASSED.
+* `mix format --check-formatted`: clean.
+* Bats: 24/24.
+* cic vitest: 1641/1641 (incl. new B5 test).
+* cic biome: 17 pre-existing warnings (themes/default.css `!important`
+  — not touched by BUGHUNT-2; diff-stat empty for that file).
+* E2E sentinels (suite): 3/3 PASS at 16s. UX-8 scroll-settle
+  (rewritten for real PointerEvents): 3/3 PASS at 14s.
+
+Deploy: `scripts/deploy.sh` HOT (cic + cic-only e2e tests, no server
+behavior change in bucket B; bucket A's server-side touches were
+test-mock helpers already on main). `scripts/deploy-cic.sh` bundle
+hash `C-Ph5y4M` broadcast to all live user-topics. Healthcheck `ok`.
+
+### Lessons captured
+
+* **Plan vs production reality fires on EVERY bucket** (recurrence
+  from BUGHUNT-1). Bucket B had 5 deviations across 5 sentinels;
+  every one documented in commit body per
+  `feedback_plan_vs_production_reality`. Most material:
+  (a) plan-suggested API surface that didn't exist
+  (`selectChannel(":home")` semantics), (b) wrong assumption about
+  Playwright input synthesis (`mouse.wheel` does not emit
+  pointerdown), (c) stack-persistence across test specs invalidating
+  exact-equality assertions on cursor values.
+* **Sentinel-first development catches contract gaps** — B1's first
+  run failed in a way that revealed a Bucket A oversight (missing
+  `onWheel` handler). The sentinel did its job: a contract gap that
+  would have surfaced as silent prod regression (desktop wheel scroll
+  doesn't advance cursor) was caught + fixed BEFORE the cluster
+  closed. The per-bucket "sentinel passes on first run" gate per
+  `feedback_recurring_e2e_not_flake` was the right halt criterion.
+* **W3C event-model gotcha worth a memory** — wheel events are
+  independent user inputs from pointer events; they fire even when
+  the pointer is not pressed. Future "real user input" detection
+  must enumerate the full set: pointerdown, wheel, touchmove,
+  keydown. iOS Safari's pointerdown ALSO fires on touch-start but
+  not always reliably; touchmove covers the gap. Worth a
+  `feedback_dom_input_event_complete_set` memory if a third bucket
+  trips on this.
+
+### Next per locked roadmap
+
+1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ + ~~BUGHUNT-2~~ — all CLOSED.
 2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
    prod runtime parallel to docker-compose. No remaining known
    user-visible regressions blocking it.
