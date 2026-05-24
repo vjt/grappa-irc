@@ -4,23 +4,34 @@
 # Usage:
 #   scripts/check.sh
 #
-# Equivalent to the `mix ci.check` alias defined in mix.exs:
-#   - mix format --check-formatted
-#   - mix credo --strict
-#   - mix deps.audit (mix_audit) + mix hex.audit
-#   - mix sobelow --config --exit Medium
-#   - mix doctor
-#   - mix test --warnings-as-errors --cover
-#   - mix dialyzer
-#   - mix docs (build check)
+# Same gates as the `ci` GitHub workflow. Two-stage:
 #
-# Plus the bats suite for host-side bash dispatchers (bin/grappa) — runs
-# on the host (no container).
+#   stage 1: `mix ci.check` alias (defined in mix.exs:140-180):
+#     - mix compile --warnings-as-errors  (Boundary compiler fails on cross-boundary violations)
+#     - mix format --check-formatted
+#     - mix credo --strict
+#     - mix deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56  (cowlib cookie LOW, no patch)
+#     - mix hex.audit
+#     - mix sobelow --config --exit Medium
+#     - mix doctor
+#     - cmd env MIX_ENV=test mix test --warnings-as-errors  (shells out so Repo gets Sandbox)
+#     - mix dialyzer
+#     - mix docs (build check)
+#
+#   stage 2 (this script):
+#     - mix grappa.gen_wire_types --check  (cic↔server wire-shape drift gate; codegen cluster H1-H6)
+#     - scripts/bats.sh  (host-side bats for bin/grappa dispatcher; submodule vendor/bats-core)
 #
 # Pins MIX_ENV=dev via scripts/mix.sh because ci.check runs credo +
-# sobelow + doctor + ex_doc, all `only: [:dev, :test]` deps.
+# sobelow + doctor + ex_doc, all `only: [:dev, :test]` deps. The test
+# sub-step uses `cmd env MIX_ENV=test` to shell out into a fresh mix
+# process so Repo gets the Sandbox pool — without the cmd shell-out,
+# `mix test` inside the alias inherits the parent's :dev env and
+# corrupts the run.
 #
 # Exit non-zero if any gate fails. Same gates as CI workflow, run identically.
+#
+# Canonical "which test runner do I use?" docs: docs/TESTING.md.
 
 . "$(dirname "$0")/_lib.sh"
 

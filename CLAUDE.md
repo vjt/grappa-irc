@@ -179,6 +179,8 @@ scripts/format.sh            # mix format
 scripts/format.sh --check    # mix format --check-formatted (CI mode)
 scripts/check.sh             # full mix ci.check (every gate)
 scripts/bats.sh              # bats suite for bin/grappa
+scripts/bun.sh <cmd>         # bun in oven/bun:1 oneshot against cicchetto/ (install / add / run test / run check / run build)
+scripts/testnet.sh up|down|status|logs|probe|shell  # e2e testnet stack standalone (no Playwright)
 scripts/integration.sh       # full e2e suite (testnet + grappa + nginx + Playwright)
 scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
 scripts/healthcheck.sh       # curl /healthz
@@ -191,6 +193,11 @@ scripts/deploy-cic.sh        # cic bundle deploy: vite build + broadcast bundle_
 scripts/register-dns.sh      # operator: register host in local DNS
 scripts/shell.sh             # bash inside container (debug only — bin/grappa shell preferred)
 ```
+
+For how + when to use the test-running scripts (`test.sh`,
+`check.sh`, `bun.sh run test`, `integration.sh`) including the
+e2e cascade-vs-flake-vs-real-bug triage runbook + iso-rerun
+discipline, see **`docs/TESTING.md`**.
 
 ### Hot vs cold deploy — when each path triggers
 
@@ -537,6 +544,13 @@ not the surrounding code.**
 
 ### Testing Standards
 
+**How to RUN tests is in `docs/TESTING.md`** — single canonical
+runbook for `scripts/test.sh`, `scripts/check.sh`,
+`scripts/bun.sh run test`, `scripts/integration.sh`, e2e
+cascade-vs-flake triage, gotchas, and `--repeat-each` iso-rerun
+discipline. Don't duplicate test-running commands here; this
+section is RULES, that file is HOW.
+
 - Assert outcomes, not call sequences. Ask: "If the implementation were
   wrong, would this test catch it?" If not, the test is a mirror.
 - **Never assert buggy behavior.** A test that encodes a bug prevents
@@ -710,6 +724,8 @@ is due. Don't just look at todo.md.
 ## Three docs, three concerns
 
 - **CLAUDE.md** (this file): rules, principles, runtime conventions.
+- **`docs/TESTING.md`**: canonical how-to-run-tests runbook (every
+  gate, e2e triage, gotchas).
 - **`docs/DESIGN_NOTES.md`**: chronological decision log.
 - **`docs/plans/*.md`**: implementation plans, TDD steps, exit criteria.
 

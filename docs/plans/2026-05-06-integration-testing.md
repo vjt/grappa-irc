@@ -1,5 +1,10 @@
 # 2026-05-06 — Integration testing pipeline (`cicchetto/e2e/`)
 
+> **Note (2026-05-24):** this is the historical design doc for the e2e
+> harness. For "how do I actually run the tests today?" see
+> **`docs/TESTING.md`** (canonical runbook). This file remains useful
+> for the rationale + early-build choices, not as an operational guide.
+
 ## Why
 
 Manual e2e via CDP+tmux is brittle and stops at desktop Chrome. Bug 7

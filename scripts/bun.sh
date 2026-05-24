@@ -5,7 +5,10 @@
 #   scripts/bun.sh install
 #   scripts/bun.sh add phoenix
 #   scripts/bun.sh run build
-#   scripts/bun.sh run check
+#   scripts/bun.sh run check                    # biome + tsc (lint + typecheck)
+#   scripts/bun.sh run test                     # vitest (cic unit tests in jsdom)
+#
+# Canonical "which test runner do I use?" docs: docs/TESTING.md.
 #
 # cicchetto/ (the SolidJS PWA) is the working directory inside the
 # container at /app. The grappa Elixir container is unaffected — bun

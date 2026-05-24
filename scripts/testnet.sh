@@ -17,6 +17,9 @@
 #
 # Worktree-aware via _lib.sh — REPO_ROOT / SRC_ROOT resolution mirrors
 # integration.sh so volumes + bind-mounts land in the right place.
+#
+# Canonical "which test runner do I use?" + e2e cascade-vs-flake triage
+# runbook: docs/TESTING.md.
 
 set -euo pipefail
 

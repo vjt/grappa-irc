@@ -10,6 +10,8 @@
 # Usage:
 #   scripts/integration.sh                      # full suite
 #   scripts/integration.sh --grep mysmoke       # passes through to playwright
+#   scripts/integration.sh --project chromium --grep "spec name" --repeat-each 3
+#                                               # iso-rerun for cascade-vs-flake triage
 #
 # Behavior:
 #   - testnet.sh up brings up hub + leaves + services + grappa-test +
@@ -21,6 +23,9 @@
 #   - KEEP_STACK=1 opts out of the tear-down for iterative debugging
 #     (delegates to the same opt-out in testnet.sh down behavior:
 #     just don't call it).
+#
+# Canonical "which test runner do I use?" + e2e cascade-vs-flake-vs-real-bug
+# triage runbook: docs/TESTING.md.
 
 set -euo pipefail
 

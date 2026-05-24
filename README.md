@@ -65,7 +65,10 @@ dispatcher is a thin shell.
 
 For inner-loop development (gates, tests, ad-hoc shells), the
 sibling `scripts/*.sh` family is the developer surface — see
-CLAUDE.md "Developer scripts — `scripts/*.sh`".
+CLAUDE.md "Developer scripts — `scripts/*.sh`". Running tests
+specifically (Elixir, cic vitest, Playwright e2e, gates, the
+flake-vs-cascade-vs-real-bug triage) is documented in one place:
+**`docs/TESTING.md`**.
 
 ### First deploy
 
