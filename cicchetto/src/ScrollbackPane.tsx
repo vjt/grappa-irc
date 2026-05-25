@@ -1267,8 +1267,20 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   // After Solid commits new DOM nodes, scroll to the tail iff the user
   // was at the bottom before the update. The effect tracks
-  // `messages().length` so it re-runs on every append, not on signal
-  // identity (the whole record changes every WS event by design).
+  // `rows().length` so it re-runs on every append AND on cursor
+  // hydration (which inserts/removes the unread-marker row inside the
+  // memo, changing rows().length without changing messages().length).
+  //
+  // BUGHUNT-3 sub-cluster B (2026-05-25): tracking `messages().length`
+  // was insufficient — when the readCursor signal hydrates AFTER
+  // initial scrollback REST (the `me` resource and `loadInitialScrollback`
+  // race; the loser determines which path runs), `rows()` re-runs and
+  // injects the marker, but `messages().length` is unchanged so this
+  // effect didn't fire. The marker DOM appeared with scroll glued to
+  // tail (no-marker branch of `scrollToActivation` had already fired
+  // and snapped down). Tracking `rows().length` catches the marker
+  // insertion as a length delta and re-runs the scroll-to-marker
+  // branch on the same cycle.
   //
   // C7.3: On the FIRST render of a channel with unread messages, scroll to
   // the unread-marker (centered in the viewport so the user sees both
@@ -1279,7 +1291,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // otherwise).
   createEffect(
     on(
-      () => messages()?.length ?? 0,
+      () => rows()?.length ?? 0,
       () => {
         if (!listRef) return;
         // C7.3: first mount with unread — scroll to marker, not tail.
