@@ -31,23 +31,39 @@ grappaApi.ts` + afterAll on cp14-b1 + cursor-* trio + scroll-
 settle-cursor + beforeEach on marker-target + r6-own-action. 4
 full local chromium runs confirm cursor cluster stable green.
 
-**Bahamut state-pollution sub-cluster (next session).** Remaining
-rotating cascade: cp15-b6-pending-to-failed-invite-only +
-p0e-invite-ack + ux-5-bk-join-fail-dupe + occasional ux-5-bs
-right-handle. All involve /join-failure flows with peer-created
-channels (+i / +k modes); 3/3 ✓ iso. Likely bahamut testnet
-state-pollution under cumulative load OR `join_failed` WS state-
-flip race when sub-second pending overlaps the typed event. Pre-B7
-CI rotation pattern (cp47 line 379-412) included this cluster
-already — not introduced by the cursor fix. Fresh-context bisect:
-anchor cp15-b6-pending-to-failed (most stable in v3+v4 full-suite
-fails); binary-chop upstream. NO server-code change without
-root-cause + vjt sign-off per
-`feedback_plan_vs_production_reality`.
+**Bahamut state-pollution sub-cluster — PARTIAL CLOSURE 2026-05-25**
+(commit 4cb0c40, prod-side `ScrollbackPane.tsx` fix). Root cause
+was NOT bahamut testnet state pollution and NOT a `join_failed` WS
+race — it was a prod-side scroll race in `ScrollbackPane.tsx`. The
+length-effect tracked `messages().length`; when `applyMeEnvelope`
+(cold-load cursor hydrate from `/me`) raced `loadInitialScrollback`
+and the cursor signal arrived AFTER scrollback, `rows()` re-ran +
+injected the unread-marker but the length-effect didn't fire
+(marker lives inside the memo, not the messages array). Marker
+DOM present, scroll glued to tail — failure shape rotated between
+cp14-b1, cp15-b6-pending-to-failed-invite-only, p0e-invite-ack,
+ux-5-bk-join-fail-dupe, ux-5-bs, scroll-on-window-switch:225 etc.
+across runs depending on which path won the timing race.
 
-Webkit-iphone-15 5 specs (ux-6-c, ux-6-d, ux-6-g × 3) also pre-
-existing per cp47 Category B (drawer-tap plumbing); may fold into
-this bucket or carve out as BUGHUNT-3-webkit.
+Fix: track `rows().length` instead of `messages().length`. When
+the cursor hydrates and the marker injects, `rows().length` grows
+by 1 → length-effect fires → existing scroll-to-marker branch runs.
+
+Validation: full local chromium 131-132 / 134 (pre-fix 128-132 /
+134); cp14-b1 + bahamut-cluster consistently green; 7/7 ✓ on
+cursor sentinels; 1641 cic unit tests ✓; `scripts/check.sh`
+exit 0.
+
+**Residual: scroll-on-window-switch:225 cascade.** Same scen-2
+shape as cp14-b1 (cursor mid-pane → marker expected in viewport).
+Iso 2/2 ✓. Full suite 1-2 ✘ rotating with other bahamut victims.
+Different sub-cascade — needs separate bisect from the rows()-fix
+landing. Anchor candidate: scroll-on-window-switch:225 (consistent
+victim under load); chop upstream from position 89.
+
+Webkit-iphone-15 5 specs (ux-6-c, ux-6-d, ux-6-g × 3) also
+pre-existing per cp47 Category B (drawer-tap plumbing); carve out
+as BUGHUNT-3-webkit (separate cluster from chromium).
 
 ---
 
