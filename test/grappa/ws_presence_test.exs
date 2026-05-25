@@ -218,4 +218,32 @@ defmodule Grappa.WSPresenceTest do
       send(p2, :stop)
     end
   end
+
+  describe "reset_for_user/1" do
+    test "drops the user_name's entries without touching other users" do
+      :ok = WSPresence.reset_for_test()
+
+      # Spawn two long-lived dummy pids so monitor refs survive the test.
+      vjt_pid = spawn(fn -> Process.sleep(1_000) end)
+      admin_pid = spawn(fn -> Process.sleep(1_000) end)
+      :ok = WSPresence.register("vjt", vjt_pid)
+      :ok = WSPresence.register("admin-vjt", admin_pid)
+
+      assert WSPresence.ws_count("vjt") == 1
+      assert WSPresence.ws_count("admin-vjt") == 1
+
+      assert :ok = WSPresence.reset_for_user("vjt")
+
+      assert WSPresence.ws_count("vjt") == 0
+      assert WSPresence.ws_count("admin-vjt") == 1
+
+      Process.exit(vjt_pid, :kill)
+      Process.exit(admin_pid, :kill)
+    end
+
+    test "is idempotent when user_name has no entries" do
+      :ok = WSPresence.reset_for_test()
+      assert :ok = WSPresence.reset_for_user("ghost-user")
+    end
+  end
 end

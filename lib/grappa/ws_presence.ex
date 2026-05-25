@@ -193,6 +193,27 @@ defmodule Grappa.WSPresence do
     end
   end
 
+  @doc """
+  Test-support: drops `user_name`'s presence entries without touching
+  other users. Mirrors `reset_for_test/0` but per-user — used by
+  `Grappa.TestSupport.SubjectReset` for seed-user cleanup. Not
+  available in prod.
+
+  Removes the user's `sockets` MapSet, demonitors every pid that was
+  in it (clearing `refs_to_user`), and drops the `notify_pids` override.
+  """
+  @dialyzer {:nowarn_function, reset_for_user: 1}
+  @spec reset_for_user(String.t()) :: :ok
+  if Mix.env() == :test do
+    def reset_for_user(user_name) when is_binary(user_name) do
+      GenServer.call(__MODULE__, {:reset_for_user, user_name})
+    end
+  else
+    def reset_for_user(_) do
+      raise "reset_for_user/1 is test-only and must not be called in production"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GenServer callbacks
   # ---------------------------------------------------------------------------
@@ -274,6 +295,24 @@ defmodule Grappa.WSPresence do
 
   def handle_call(:reset_for_test, _, _) do
     {:reply, :ok, %__MODULE__{}}
+  end
+
+  def handle_call({:reset_for_user, user_name}, _, state) do
+    # Identify monitor refs belonging to this user
+    {user_refs, kept_refs} =
+      Enum.split_with(state.refs_to_user, fn {_, name} -> name == user_name end)
+
+    # Demonitor the user's socket pids
+    Enum.each(user_refs, fn {ref, _} -> Process.demonitor(ref, [:flush]) end)
+
+    new_state = %{
+      state
+      | sockets: Map.delete(state.sockets, user_name),
+        notify_pids: Map.delete(state.notify_pids, user_name),
+        refs_to_user: Map.new(kept_refs)
+    }
+
+    {:reply, :ok, new_state}
   end
 
   @impl GenServer
