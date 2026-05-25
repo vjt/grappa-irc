@@ -46,7 +46,7 @@
 // Cleanup: re-JOIN of #bofh restores the seed state. No afterEach
 // restoration needed.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import {
   loginAs,
   selectChannel,

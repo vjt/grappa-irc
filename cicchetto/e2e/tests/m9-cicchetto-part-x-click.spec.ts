@@ -30,7 +30,7 @@
 // `p.muted` empty pane is dead code in the path this spec triggers.
 // Assert on the home pane render instead.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   loginAs,
   selectChannel,

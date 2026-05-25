@@ -37,7 +37,7 @@
 // Manual SW-side dedup verification is the B6 manual smoke pass on
 // a real iOS / Android device.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";

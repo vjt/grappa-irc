@@ -34,7 +34,7 @@
 // `@webkit` tag opts this spec into the `webkit-iphone-15` project
 // (playwright.config.ts grep). Default chromium project skips it.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

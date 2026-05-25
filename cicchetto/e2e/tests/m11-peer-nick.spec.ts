@@ -13,7 +13,7 @@
 // IRC wire: NICK newname (no parameters beyond the new nick). Bahamut
 // echoes the rename to every channel both nicks share with the originator.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

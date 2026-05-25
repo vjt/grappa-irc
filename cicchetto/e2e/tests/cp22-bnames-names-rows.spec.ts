@@ -23,7 +23,7 @@
 //   - The 366 EOF terminator row arrives, containing
 //     "End of /NAMES list" + the channel name.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

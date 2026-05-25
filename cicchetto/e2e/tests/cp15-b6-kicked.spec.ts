@@ -20,7 +20,7 @@
 // CHANNEL CLEANUP: random per-run suffix; peer disconnects in
 // afterEach (its quit drops the channel since vjt got kicked).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

@@ -15,35 +15,25 @@
 // re-trigger the JOIN-self auto-focus path and confuse the focus
 // invariant we want to assert against.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   loginAs,
   selectChannel,
   sidebarMessageBadge,
 } from "../fixtures/cicchettoPage";
-import { assertMessagePersisted, resetSubject } from "../fixtures/grappaApi";
+import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import {
   AUTOJOIN_CHANNELS,
-  getSeededAdmin,
   getSeededVjt,
   NETWORK_NICK,
   NETWORK_SLUG,
-  VJT_USER,
 } from "../fixtures/seedData";
 
 const PEER_NICK = "m2-peer";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const SERVER_WINDOW = "Server";
 const MESSAGE_BODY = "M2: defocused-channel inbound";
-
-// E2E-ROBUSTNESS bucket D pilot — restore vjt's seed state after
-// every test in this file so the next spec in lex order doesn't
-// inherit window-state / cursor / Session.Server in-memory drift.
-test.afterEach(async () => {
-  const admin = getSeededAdmin();
-  await resetSubject(admin.token, VJT_USER);
-});
 
 test("M2 — peer PRIVMSG to defocused channel bumps msg-unread badge by 1", async ({ page }) => {
   const vjt = getSeededVjt();

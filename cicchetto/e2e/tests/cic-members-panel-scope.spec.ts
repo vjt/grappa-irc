@@ -30,7 +30,7 @@
 // presence assertion below covers the same joined-state contract
 // (both gate on the same `windowIsJoined(key())` predicate).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

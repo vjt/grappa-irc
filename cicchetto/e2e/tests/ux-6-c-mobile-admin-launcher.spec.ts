@@ -26,7 +26,7 @@
 // temporarily gives the full surface (admin gate + joined channel +
 // drawer hamburger) without ripple-affecting other specs.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,

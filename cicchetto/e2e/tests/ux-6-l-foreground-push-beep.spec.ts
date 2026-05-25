@@ -22,7 +22,7 @@
 // `pushDedup.test.ts`. The e2e contract here is the WS-driven beep
 // path.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow, waitForDmListenerReady } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";

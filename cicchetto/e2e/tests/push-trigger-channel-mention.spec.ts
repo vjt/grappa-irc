@@ -32,7 +32,7 @@
 // vendor-shaped headers". Body decryption is a job for B6 manual
 // PWA smoke (where a real iOS device renders the actual notif).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";

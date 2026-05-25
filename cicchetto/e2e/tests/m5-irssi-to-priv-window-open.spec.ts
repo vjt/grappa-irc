@@ -11,7 +11,7 @@
 // Together they pin the selection.ts isSelected gate for query
 // windows — the same rule M1/M2 prove for channels.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

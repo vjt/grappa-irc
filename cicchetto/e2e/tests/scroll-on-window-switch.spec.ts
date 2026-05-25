@@ -47,7 +47,8 @@
 // overflows the scrollback area; without overflow, "lands at bottom"
 // is vacuously true and "marker centered" is unmeasurable.
 
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import {
   composeSend,
   loginAs,

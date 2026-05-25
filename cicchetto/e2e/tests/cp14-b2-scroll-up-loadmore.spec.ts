@@ -20,7 +20,8 @@
 // REST page reliably overflows and "is the scrollback longer than
 // the viewport" is measurable.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import {
   loginAs,
   scrollbackLines,

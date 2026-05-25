@@ -21,7 +21,7 @@
 //   * The toggle is checked.
 //   * No banner (banner is the unhappy-path surface).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import {
   pushCatcherEndpoint,

@@ -91,7 +91,7 @@
 // restores vjt to :connected so subsequent specs see the seeder
 // baseline. Mirrors u-2 + u-3 cleanup pattern.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import {
   ADMIN_IDENTIFIER,
   ADMIN_PASSWORD,

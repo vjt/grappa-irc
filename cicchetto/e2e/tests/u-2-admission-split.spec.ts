@@ -36,7 +36,7 @@
 // afterEach restores caps to permissive defaults so subsequent specs
 // see the seeder baseline.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import {
   ADMIN_IDENTIFIER,
   ADMIN_PASSWORD,

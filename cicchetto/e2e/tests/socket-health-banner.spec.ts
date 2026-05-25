@@ -11,7 +11,7 @@
 // lower-level recorder-state contract is covered by the vitest
 // unit suite.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

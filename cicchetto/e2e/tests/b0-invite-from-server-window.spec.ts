@@ -29,7 +29,7 @@
 // dedicated channel (`#b0-invite-test`) AHEAD of any other user so
 // vjt is the first joiner → Bahamut grants +o → /invite goes through.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

@@ -29,7 +29,7 @@
 // ship with a Playwright e2e — vitest jsdom alone can't render
 // layout / can't follow the full DOM-event chain.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

@@ -18,7 +18,7 @@
 // expect.poll over the locators handles WS arrival latency. No
 // arbitrary sleeps.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

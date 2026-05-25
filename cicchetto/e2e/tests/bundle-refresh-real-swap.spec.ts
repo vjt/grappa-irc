@@ -37,7 +37,7 @@
 // validated each release per the H2-reviewer wait-loop in
 // `performRefresh()`.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 import { snapshotBundle, swapToBundleB } from "../fixtures/bundleSwap";

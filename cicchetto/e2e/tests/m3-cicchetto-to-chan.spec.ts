@@ -19,7 +19,7 @@
 // webkit-paint shaped specs (BUG7's territory) come in a second pass
 // once chromium is green across the matrix.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

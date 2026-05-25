@@ -18,7 +18,7 @@
 // joined state, matching the seed → no afterEach restoration needed.
 // The PART side-effect on autojoin survives across runs otherwise.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

@@ -48,7 +48,8 @@
 // this, the entire content fits on-screen and "is the marker mid-pane"
 // becomes unmeasurable.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import {
   loginAs,
   scrollbackLines,

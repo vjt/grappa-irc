@@ -52,7 +52,7 @@
 // SpawnOrchestrator → autojoin loop, which re-JOINs SEED_CHANNEL and
 // gets the row back to its baseline live state.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

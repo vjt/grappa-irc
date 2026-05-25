@@ -18,7 +18,7 @@
 // test contamination isn't a concern; the unique name is for grep-
 // readability in trace failures.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   loginAs,
   scrollbackLine,

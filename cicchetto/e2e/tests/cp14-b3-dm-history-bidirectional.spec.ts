@@ -25,7 +25,7 @@
 // chronological order. Reload simulates the production "I logged in,
 // scrollback should show what happened while I was away" path.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

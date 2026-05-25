@@ -27,7 +27,7 @@
 //
 // Sibling test covers /api/server-settings → JSON not SPA shell.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

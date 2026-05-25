@@ -23,7 +23,7 @@
 // CHANNEL CLEANUP: random per-run suffix; afterEach has the peer PART
 // the channel + cic operator never joined so no autojoin row exists.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

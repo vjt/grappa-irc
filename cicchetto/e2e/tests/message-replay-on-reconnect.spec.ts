@@ -25,7 +25,7 @@
 // have a peer send a PRIVMSG while cic is disconnected, reconnect.
 // The message must appear in the scrollback pane WITHOUT a refresh.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

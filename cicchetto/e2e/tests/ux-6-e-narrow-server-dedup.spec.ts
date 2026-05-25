@@ -19,7 +19,7 @@
 // visitor login is sufficient. Per `feedback_ux_e2e_mandatory`, every
 // cic UX-behavior change ships a Playwright e2e.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 

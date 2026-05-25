@@ -29,7 +29,7 @@
 // CHANNEL CLEANUP: random per-run suffix; afterEach has the peer PART
 // the channel.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

@@ -22,7 +22,7 @@
 // tested in `test/grappa/session/event_router_test.exs` +
 // `cicchetto/src/__tests__/WhoisCard.test.tsx`.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

@@ -31,7 +31,7 @@
 // see font-fallback substitution anyway; the SVG path closes the
 // font-tofu concern at source).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

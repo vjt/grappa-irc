@@ -24,7 +24,7 @@
 // unique random suffix, and `afterEach` PARTs whatever was joined so
 // the credential's autojoin set stays clean.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

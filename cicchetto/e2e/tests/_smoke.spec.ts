@@ -13,7 +13,7 @@
 // session ↔ scrollback path is alive end-to-end". UI-shaped specs land
 // in S3 once this baseline is green.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { IrcPeer } from "../fixtures/ircClient";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
 import { getSeededVjt, NETWORK_SLUG, AUTOJOIN_CHANNELS } from "../fixtures/seedData";

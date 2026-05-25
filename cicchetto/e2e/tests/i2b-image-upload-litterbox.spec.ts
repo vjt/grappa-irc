@@ -20,7 +20,8 @@
 //      specs see a clean default (per `feedback_no_silent_drops_closed`
 //      pattern from ux-6-b-admin-settings.spec.ts).
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,

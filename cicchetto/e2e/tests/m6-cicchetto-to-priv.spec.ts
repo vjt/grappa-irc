@@ -20,7 +20,7 @@
 // window — `/msg` does that automatically inside compose.ts. We just
 // wait for the query window's sidebar entry to appear after submit.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

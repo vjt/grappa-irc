@@ -16,7 +16,7 @@
 // and routes to kind=:action. The body persisted in scrollback is the
 // inner text (no \x01 envelope on the rendered side).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

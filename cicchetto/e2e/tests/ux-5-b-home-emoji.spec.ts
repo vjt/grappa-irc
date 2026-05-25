@@ -18,7 +18,7 @@
 // One registered class pass is sufficient. Chromium-only — mobile
 // uses BottomBar and the home row is not present there.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

@@ -39,7 +39,7 @@
 // `max(1.5rem, env(...))` declaration shape so future refactors that
 // drop the env() arm still fail loud.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

@@ -35,7 +35,7 @@
 // to-end). Reuses U-3 (UD3) FallbackController mapping (`network_busy`
 // for user-cap, `too_many_sessions` for client-cap).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import {
   login,

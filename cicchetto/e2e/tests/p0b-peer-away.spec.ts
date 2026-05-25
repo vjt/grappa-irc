@@ -12,7 +12,7 @@
 // Per `feedback_ux_e2e_mandatory`: every cic UX-touching change ships
 // with a Playwright e2e via scripts/integration.sh.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

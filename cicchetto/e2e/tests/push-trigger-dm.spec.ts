@@ -17,7 +17,7 @@
 // of cic state, and we want the DM unfocused so dedup doesn't
 // short-circuit (dedup is the dedup spec).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import {

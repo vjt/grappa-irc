@@ -30,7 +30,7 @@
 // Per `feedback_e2e_user_class_parity_matrix`: CSS shape + JS-side-
 // effect bucket. Single visitor login is sufficient.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

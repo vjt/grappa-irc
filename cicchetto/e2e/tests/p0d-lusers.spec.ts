@@ -17,7 +17,7 @@
 // /lusers explicitly to exercise the slash → push → broadcast → render
 // path end-to-end (without depending on the welcome-time race).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, sidebarWindow } from "../fixtures/cicchettoPage";
 import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 

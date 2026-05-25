@@ -23,7 +23,7 @@
 //     scrollback contains a notice line, compose box IS PRESENT
 //     (CP13 S9 — slash-only enforced inside compose.ts).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

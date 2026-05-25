@@ -28,7 +28,7 @@
 // has no IRC bind (m9b session-count == 2 hardcode); vjt has the bind
 // + autojoined #bofh so it can reach the mobile launcher footer.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import {
   AUTOJOIN_CHANNELS,

@@ -22,7 +22,7 @@
 // This spec confirms the loop closes without needing a server-side
 // `query_window_opened` push event for first-contact numerics.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,

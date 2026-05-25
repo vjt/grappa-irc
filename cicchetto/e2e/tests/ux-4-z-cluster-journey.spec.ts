@@ -90,7 +90,7 @@
 // Cleanup: re-join the autojoin channel + reset font-size in
 // `afterEach` so subsequent specs see the seeder baseline.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import {
   closeMembersDrawer,
   loginAs,

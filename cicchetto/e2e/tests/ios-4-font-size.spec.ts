@@ -17,7 +17,7 @@
 //   3. Reload → "XL" still selected + `--font-size` = "18px"
 //      (localStorage persistence + boot-apply roundtrip).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

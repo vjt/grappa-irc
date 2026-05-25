@@ -20,7 +20,7 @@
 // copy + a separate spec if/when it earns regression coverage. The
 // current B5 plan calls out the denied path specifically.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, sidebarWindow } from "../fixtures/cicchettoPage";
 import { resetPushSubscriptions, stubPushManagerDenied } from "../fixtures/push";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";

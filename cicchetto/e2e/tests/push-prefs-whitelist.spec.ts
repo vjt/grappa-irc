@@ -24,7 +24,7 @@
 // `should_notify?/4` predicate-level (test/grappa/push/triggers_test.exs);
 // this spec covers the UI → REST → server eval roundtrip.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";

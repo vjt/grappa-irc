@@ -38,7 +38,7 @@
 // Parity matrix per `feedback_e2e_user_class_parity_matrix`:
 // subject-shape-agnostic CSS contract — registered vjt suffices.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { closeMembersDrawer, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

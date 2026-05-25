@@ -26,7 +26,7 @@
 // (e) Smart-pin: window.scrollTo(0,0) clamps any drift
 // (f) Admin → Debug tab renders the diag panel + DiagFloat toggle
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededAdmin, getSeededVjt, NETWORK_NICK, NETWORK_SLUG, VJT_USER } from "../fixtures/seedData";
 

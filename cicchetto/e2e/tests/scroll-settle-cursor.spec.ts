@@ -12,7 +12,8 @@
 // seeded via `mix grappa.seed_scrollback`. Same 800x300 viewport for
 // reliable overflow.
 
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {

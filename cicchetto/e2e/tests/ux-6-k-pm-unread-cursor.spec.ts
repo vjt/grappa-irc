@@ -41,7 +41,7 @@
 // what the production bug surfaces as: it's the cursor persistence
 // that was broken.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   loginAs,
   scrollbackLine,

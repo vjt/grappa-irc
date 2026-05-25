@@ -23,7 +23,7 @@
 // jsdom can't see either (no layout, no `::before`-style ref-drift).
 // This spec is the only line of defense.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";

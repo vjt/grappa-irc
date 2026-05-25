@@ -15,7 +15,7 @@
 // @webkit tag opts into the webkit-iphone-15 project per
 // e2e/playwright.config.ts grep.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, sidebarCloseButton, sidebarWindow } from "../fixtures/cicchettoPage";
 import { joinChannel } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";

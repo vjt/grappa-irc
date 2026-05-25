@@ -28,7 +28,7 @@
 // localStorage at end so subsequent specs in the same browser context
 // don't inherit XL font-size.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import {
   loginAs,
   selectChannel,

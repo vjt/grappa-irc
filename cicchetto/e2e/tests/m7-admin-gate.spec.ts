@@ -20,7 +20,7 @@
 // button needs to be visible (display, opacity, transform) inside
 // the open SettingsDrawer overlay.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
 
 // admin-vjt has no network bind — loginAs's `.sidebar-network-section h3`

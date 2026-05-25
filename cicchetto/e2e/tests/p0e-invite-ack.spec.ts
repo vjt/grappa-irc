@@ -31,7 +31,7 @@
 // per-spec-distinct so concurrent test runs don't collide on +o
 // ownership.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

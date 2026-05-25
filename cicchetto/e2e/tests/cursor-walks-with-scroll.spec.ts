@@ -10,32 +10,21 @@
 // This is the inverse of the bare-open sentinel: gate must PASS on
 // real scroll AND cursor must advance forward.
 
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
-import { resetSubject, restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
-  getSeededAdmin,
   getSeededVjt,
   NETWORK_NICK,
   NETWORK_SLUG,
-  VJT_USER,
 } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const REST_PAGE_SIZE = 50;
 const SETTLE_DEBOUNCE_MS = 500;
 const SETTLE_WAIT_MS = SETTLE_DEBOUNCE_MS + 500;
-
-// E2E-ROBUSTNESS bucket D pilot — restore vjt's seed state after
-// every test in this file so the next spec in lex order doesn't
-// inherit cursor / window-state drift. The existing afterAll
-// restoreReadCursorToTail (cp48) stays as defense-in-depth — becomes
-// a no-op after the per-test reset but documents intent.
-test.afterEach(async () => {
-  const admin = getSeededAdmin();
-  await resetSubject(admin.token, VJT_USER);
-});
 
 async function visibleTailId(page: Page): Promise<number | null> {
   return await page.evaluate(() => {

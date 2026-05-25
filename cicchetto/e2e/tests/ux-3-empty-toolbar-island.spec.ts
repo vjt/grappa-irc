@@ -42,7 +42,7 @@
 // shape bucket, single visitor login sufficient. Parity matrix
 // runs in UX-Z.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

@@ -11,7 +11,7 @@
 // run. The banner's job is to render the bootBundleHash != serverHash
 // invariant, which this spec validates end-to-end.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 

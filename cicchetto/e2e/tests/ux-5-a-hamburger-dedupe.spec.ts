@@ -26,7 +26,7 @@
 // suffices; the per-class loop pattern is reserved for behavior that
 // branches on identity.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

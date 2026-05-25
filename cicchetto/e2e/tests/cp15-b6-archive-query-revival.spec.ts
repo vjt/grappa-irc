@@ -31,7 +31,7 @@
 // effect; afterEach drops it explicitly so subsequent specs don't
 // inherit the window. Peer disconnect cleans the upstream nick.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

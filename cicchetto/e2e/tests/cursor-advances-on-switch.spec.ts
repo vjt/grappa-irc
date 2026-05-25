@@ -11,7 +11,8 @@
 // actually saw" — and POSTs that. Cursor reflects what was read,
 // not what's stored.
 
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import { type Page } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {

@@ -16,7 +16,7 @@
 // Per `feedback_ux_e2e_mandatory`: every cic UX-touching change ships
 // with a Playwright e2e via scripts/integration.sh.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

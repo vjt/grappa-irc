@@ -20,7 +20,7 @@
 // Assertion order matters: badge MUST be checked BEFORE the click-
 // to-inspect, otherwise the focus-switch clears the badge mid-test.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   loginAs,
   scrollbackLine,

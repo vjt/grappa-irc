@@ -41,7 +41,7 @@
 // where /connect succeeds at the HTTP boundary but the spawn dance
 // half-completes (Session.Server up, autojoin loop silently failing).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { patchNetworkConnectionState } from "../fixtures/grappaApi";
 

@@ -19,7 +19,7 @@
 //     to document that the auto-focus side-effect was the only piece
 //     of the entangled `createEffect` that needed to survive.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import {
   composeSend,
   loginAs,

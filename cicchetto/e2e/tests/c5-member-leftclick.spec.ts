@@ -14,7 +14,7 @@
 //   - members list still renders #bofh (we left the channel in the
 //     sidebar — close semantics for query windows is unrelated).
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

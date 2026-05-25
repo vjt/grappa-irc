@@ -18,7 +18,7 @@
 // commit), cold-path because main.tsx never called the URL reader.
 // post-J the same URLs route into the selection signal.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 

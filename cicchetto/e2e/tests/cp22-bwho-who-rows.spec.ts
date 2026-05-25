@@ -15,7 +15,7 @@
 //   - At least one row's body contains "[#bofh]" + the peer's nick.
 //   - The "End of /WHO list" terminator row also lands.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures/test";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";

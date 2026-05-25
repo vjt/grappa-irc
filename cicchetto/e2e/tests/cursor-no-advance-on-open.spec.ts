@@ -8,7 +8,7 @@
 // see no preceding pointerdown/wheel/touchmove/keydown and SKIP arming
 // the 500ms settle timer. Cursor and marker stay where the server says.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {
