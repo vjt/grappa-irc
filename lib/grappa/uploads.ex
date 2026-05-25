@@ -311,4 +311,29 @@ defmodule Grappa.Uploads do
       :ok
     end
   end
+
+  @doc """
+  Test-support: HARD-deletes every `uploads` row for `user_id` and
+  removes the corresponding on-disk files. Intended for
+  `Grappa.TestSupport.SubjectReset` only — production lifecycle uses
+  `soft_delete/2` (which the reaper sweeps in
+  `Grappa.Uploads.Reaper.sweep/2`).
+
+  Iterates per-row to mirror the admin DELETE controller pattern
+  (`File.rm(path)` then row removal). Idempotent if the user has no
+  rows. `File.rm/1` result discarded — a file already swept by the
+  reaper is the expected idempotent case.
+  """
+  @spec delete_all_for_user(Ecto.UUID.t()) :: :ok
+  def delete_all_for_user(user_id) when is_binary(user_id) do
+    storage_root = storage_root()
+    rows = Repo.all(from u in Upload, where: u.user_id == ^user_id)
+
+    Enum.each(rows, fn %Upload{slug: slug} = up ->
+      _ = File.rm(storage_path(storage_root, slug))
+      Repo.delete!(up)
+    end)
+
+    :ok
+  end
 end

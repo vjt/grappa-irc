@@ -398,4 +398,69 @@ defmodule Grappa.UploadsTest do
       assert deleted_once.deleted_at == deleted_twice.deleted_at
     end
   end
+
+  describe "delete_all_for_user/1" do
+    test "deletes every uploads row for the user AND removes their files", %{root: root} do
+      user = user_fixture([])
+      other = user_fixture([])
+      bytes = "test-bytes-for-upload"
+      future = DateTime.add(DateTime.utc_now(), 3600, :second)
+
+      {:ok, u1} =
+        Uploads.create(
+          bytes,
+          %{subject: {:user, user.id}, mime: "image/png", expires_at: future},
+          storage_root: root
+        )
+
+      {:ok, u2} =
+        Uploads.create(
+          bytes,
+          %{subject: {:user, user.id}, mime: "image/png", expires_at: future},
+          storage_root: root
+        )
+
+      {:ok, uo} =
+        Uploads.create(
+          bytes,
+          %{subject: {:user, other.id}, mime: "image/png", expires_at: future},
+          storage_root: root
+        )
+
+      u1_path = Uploads.storage_path(root, u1.slug)
+      u2_path = Uploads.storage_path(root, u2.slug)
+      uo_path = Uploads.storage_path(root, uo.slug)
+
+      # Pre-condition: all three files exist
+      assert File.exists?(u1_path)
+      assert File.exists?(u2_path)
+      assert File.exists?(uo_path)
+
+      # NOTE: production helper reads storage_root from :persistent_term
+      # (boot-time injection), not from per-test :storage_root opt. Tests
+      # set the persistent_term root to the per-test temp dir so the
+      # File.rm sweep targets the same files create/3 wrote. Restore on
+      # exit to avoid leaking the per-test path into sibling tests.
+      original_root = Uploads.storage_root()
+      :ok = Uploads.boot(root)
+      on_exit(fn -> :ok = Uploads.boot(original_root) end)
+
+      assert :ok = Uploads.delete_all_for_user(user.id)
+
+      # Rows for user gone; other user's row + file preserved
+      assert Uploads.get_by_id(u1.id) == {:error, :not_found}
+      assert Uploads.get_by_id(u2.id) == {:error, :not_found}
+      assert {:ok, _} = Uploads.get_by_id(uo.id)
+
+      # Files for user gone; other user's file preserved
+      refute File.exists?(u1_path)
+      refute File.exists?(u2_path)
+      assert File.exists?(uo_path)
+    end
+
+    test "is idempotent when user has no uploads" do
+      user = user_fixture([])
+      assert :ok = Uploads.delete_all_for_user(user.id)
+    end
+  end
 end
