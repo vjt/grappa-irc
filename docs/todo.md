@@ -11,27 +11,32 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**BUGHUNT-3 Sub-cluster C — webkit-iphone-15 (5 specs).**
+**BUGHUNT-3 Sub-cluster D — webkit-iphone-15 prod-bug investigation (5 specs).**
 
-Pre-existing per cp47 Category B (drawer-tap plumbing); has NEVER
-passed iso (0/3 ✓). Failing specs from CI run 26395056218:
+Sub-cluster C (cp48 carry-over) INVESTIGATION CLOSED 2026-05-25:
+identified the actual prod bug — `TypeError: null is not an object
+(evaluating 'e.owned[t]')` inside Solid's `cleanNode` during
+`setSelectedChannel({kind:"admin"})` propagation. 3 fix attempts
+(memo predicate, batch() wrap, navigate-first reorder) all
+discarded — throw still fires inside Solid's recursive owner
+disposal. Full evidence + bisect plan in
+`docs/checkpoints/2026-05-25-cp48.md` "BUGHUNT-3 Sub-cluster D"
+block. NOT quarantine — real prod bug, dormant only because real
+iOS touch gestures sequence differently from Playwright synthetic
+taps.
 
+5 specs (unchanged from C):
 - `ux-6-c-mobile-admin-launcher:97` — drawer footer admin button
 - `ux-6-d-keyboard-pattern:153` — (f) Admin → Debug tab DiagFloat
 - `ux-6-g-admin-mobile-h-scroll:104` — pan-x via touch-action
 - `ux-6-g-admin-mobile-h-scroll:169` — pan-x gesture scrolls table
 - `ux-6-g-admin-mobile-h-scroll:204` — vertical scroll inside pane
 
-Classification hypotheses: (1) real iOS Safari regression in
-cic admin pane; (2) Playwright `webkit-iphone-15` project config
-drift; (3) test setup race. 3-in-one-spec ux-6-g pattern suggests
-project-config or shared-setup, not per-test. Look at
-`describe.beforeEach` + `playwright.config.ts` first; inspect
-trace.zip + test-failed.png before proposing fix. NO cic prod
-fix without root cause + vjt sign-off per
-`feedback_plan_vs_production_reality`.
-
-See `/tmp/orchestrate-next.txt` for the session handoff.
+Next-session bisect: temporarily remove each `onCleanup` site in
+ScrollbackPane (979 / 1010 / 1545) one at a time to identify which
+teardown mutates its grandparent's `owned` array during disposal.
+Alternative: replace nested-Show predicate with `Switch`/`Match`
+siblings to avoid the recursive disposal.
 
 ---
 
