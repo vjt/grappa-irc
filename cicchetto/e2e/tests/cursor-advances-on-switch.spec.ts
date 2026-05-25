@@ -13,6 +13,7 @@
 
 import { expect, type Page, test } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
@@ -69,6 +70,17 @@ async function storeTailId(page: Page): Promise<number | null> {
 
 test.describe("BUGHUNT-2: switch-away cursor uses visible-tail, not store-tail", () => {
   test.use({ viewport: { width: 800, height: 300 } });
+
+  // BUGHUNT-3 cascade fix (2026-05-25) — the leave-arm POSTs visible-tail
+  // mid-pane and persists across spec boundaries on the shared seeded
+  // vjt. Downstream specs focusing `#bofh` (marker-target T2,
+  // r6-own-action, scroll-settle-cursor, ux-5-bk, ux-6-k,
+  // p0e-invite-ack) assume a "fully-read" cursor; restore here.
+  test.afterAll(async () => {
+    if (!CHANNEL_A) return;
+    const vjt = getSeededVjt();
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL_A);
+  });
 
   test("scrolled-up pane writes visible-tail on switch, not store-tail", async ({ page }) => {
     if (!CHANNEL_A) throw new Error("AUTOJOIN_CHANNELS empty");

@@ -12,6 +12,7 @@
 
 import { expect, type Page, test } from "@playwright/test";
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
   getSeededVjt,
@@ -52,6 +53,15 @@ async function fetchCursor(token: string, channel: string): Promise<number | nul
 
 test.describe("BUGHUNT-2: scroll walks cursor down with real input", () => {
   test.use({ viewport: { width: 800, height: 300 } });
+
+  // BUGHUNT-3 cascade fix (2026-05-25) — scroll-settle advances the
+  // server-side cursor mid-pane; restore to tail so downstream specs
+  // inheriting `vjt @ bahamut-test/#bofh` see a fully-read channel.
+  test.afterAll(async () => {
+    if (!CHANNEL) return;
+    const vjt = getSeededVjt();
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+  });
 
   test("real wheel-down advances cursor to new visible-tail", async ({ page }) => {
     if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");

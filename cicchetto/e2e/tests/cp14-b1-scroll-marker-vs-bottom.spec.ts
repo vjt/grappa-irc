@@ -54,6 +54,7 @@ import {
   scrollbackLines,
   selectChannel,
 } from "../fixtures/cicchettoPage";
+import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
@@ -149,6 +150,23 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
   // rows fit on-screen, and "is the tail at the bottom" /
   // "is the marker mid-pane" become unmeasurable.
   test.use({ viewport: { width: 800, height: 300 } });
+
+  // BUGHUNT-3 cascade fix (2026-05-25) — `seedCursor` calls
+  // `ReadCursor.set/4`, which is last-write-wins with direction NOT
+  // enforced (see lib/grappa/read_cursor.ex:113-119). Scenario 2's
+  // mid-pane cursor on `vjt @ bahamut-test/#bofh` persists across spec
+  // boundaries on the shared seeded user. Downstream specs that focus
+  // `#bofh` (marker-target-window-regression T2, r6-own-action,
+  // scroll-settle-cursor, ux-5-bk, ux-6-k, p0e-invite-ack) assume a
+  // "fully-read" cursor at the tail — the persisted mid-pane cursor
+  // injects an unread-marker into the pane, `scrollIntoView(marker)`
+  // lands mid-pane instead of at the bottom, and the cascade fires.
+  // afterAll restores the cursor to the current tail so the channel
+  // reads as "fully read" for whoever inherits the seeded user next.
+  test.afterAll(async () => {
+    const vjt = getSeededVjt();
+    await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+  });
 
   test("no unreads → scroll lands at bottom, no unread-marker in DOM", async ({ page }) => {
     const vjt = getSeededVjt();

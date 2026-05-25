@@ -25,6 +25,7 @@
 
 import { expect, test } from "@playwright/test";
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -38,6 +39,19 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 const RUN_ID = crypto.randomUUID().slice(0, 8);
 const ownBody = (tag: string): string => `marker-target T${tag} own ${RUN_ID}`;
 const replyBody = (tag: string): string => `marker-target T${tag} reply ${RUN_ID}`;
+
+// BUGHUNT-3 cascade fix (2026-05-25) — both tests assume `#bofh`
+// reads as "fully read" at mount. Upstream specs that emit PRIVMSG /
+// JOIN / PART on `#bofh` (m1, m10, m11, push-trigger-*, etc.) push
+// new rows past whatever cursor the BUGHUNT-2 cursor-* / cp14-b1
+// afterAll left behind, recreating a mid-pane cursor → unread-marker
+// injects → `scrollIntoView(marker)` lands mid-pane instead of at
+// the bottom and T2's `dist <= 50` fails. Restore at start of each
+// test so the spec is robust against intervening row arrivals.
+test.beforeEach(async () => {
+  const vjt = getSeededVjt();
+  await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+});
 
 test("focused-window send+reply does NOT spawn unread marker", async ({ page }) => {
   const vjt = getSeededVjt();

@@ -53,10 +53,23 @@ import {
   sidebarEventsBadge,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { joinChannel, partChannel } from "../fixtures/grappaApi";
+import { joinChannel, partChannel, restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
+
+// BUGHUNT-3 cascade fix (2026-05-25) — the spec assumes the cursor is
+// at-or-past tail (moduledoc: "typically null on first session").
+// Upstream cursor-writing specs (cp14-b1, BUGHUNT-2 cursor-*,
+// scroll-settle-cursor) + intervening row arrivals on `#bofh` leave a
+// mid-pane cursor → in-pane unread-marker injects from rows OTHER
+// than the own PART/JOIN under test → the marker assertion fails on
+// rows the predicate fix never controlled. Restore cursor to current
+// tail at start so the test exercises only its own /part → /join cycle.
+test.beforeEach(async () => {
+  const vjt = getSeededVjt();
+  await restoreReadCursorToTail(vjt.token, NETWORK_SLUG, CHANNEL);
+});
 
 test.afterEach(async () => {
   // Defensive restore — if any assertion failed mid-cycle, ensure #bofh

@@ -92,6 +92,50 @@ export async function mintVisitor(nick: string): Promise<MintedVisitor> {
   };
 }
 
+// BUGHUNT-3 cascade fix (2026-05-25) — restore the seeded vjt's read
+// cursor on `(networkSlug, channel)` to the current tail row. Used in
+// `afterAll` hooks of specs that intentionally advance the cursor to
+// a mid-list row as part of their assertions (cp14-b1-scroll-marker,
+// the BUGHUNT-2 cursor-* sentinels). Without restore, downstream
+// specs that focus the channel inherit a mid-list cursor → in-pane
+// unread-marker injects → `scrollIntoView(marker)` lands mid-pane
+// instead of at the bottom → cascade. Forward-only `ReadCursor.set/4`
+// accepts the tail id as last-write-wins; `restoreReadCursorToTail`
+// is idempotent across repeats. No-op if the channel has no rows.
+export async function restoreReadCursorToTail(
+  token: string,
+  networkSlug: string,
+  channel: string,
+): Promise<void> {
+  const messagesUrl = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(
+    networkSlug,
+  )}/channels/${encodeURIComponent(channel)}/messages`;
+  const messagesRes = await fetch(messagesUrl, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!messagesRes.ok) {
+    throw new Error(
+      `restoreReadCursorToTail: GET /messages → ${messagesRes.status} ${await messagesRes.text()}`,
+    );
+  }
+  const rows = (await messagesRes.json()) as Array<{ id: number }>;
+  const tail = rows[0];
+  if (!tail) return;
+  const cursorUrl = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(
+    networkSlug,
+  )}/channels/${encodeURIComponent(channel)}/read-cursor`;
+  const cursorRes = await fetch(cursorUrl, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ message_id: tail.id }),
+  });
+  if (!cursorRes.ok) {
+    throw new Error(
+      `restoreReadCursorToTail: POST /read-cursor → ${cursorRes.status} ${await cursorRes.text()}`,
+    );
+  }
+}
+
 // M-cluster M-8 — operator-side delete via admin bearer. Mirrors
 // `Grappa.Operator.delete_visitor/1`. Used by e2e tests that mint
 // a visitor and need teardown cleanup on early-assertion-failure
