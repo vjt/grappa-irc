@@ -15,23 +15,39 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 see CP45 S5, CP46, CP47. BUGHUNT-2 unread-marker cursor-write
 contract rewrite CLOSED 2026-05-24 — see CP47 BUGHUNT-2 block.)
 
-**BUGHUNT-3: CI cascade poisoner bisect (next session).** Pre-B7
-main has 3-4 chromium specs failing in CI (marker-target T2, r6,
-ux-5-bk, ux-6-k) that all pass 3/3 iso. Set rotates per run —
-test-order state pollution somewhere in the 109-spec roster.
-Local full-chromium run reproduces a similar (overlapping) set.
-B7 (commit `20c173b`) neither caused nor cleared the cascade;
-fixes ux-6-k specifically and the local 2-spec iso re-run for
-marker-target T2. Webkit-iphone-15 5 specs also pre-existing per
-CP47 Category B (drawer-tap plumbing); may fold into this bucket.
+**BUGHUNT-3: CI cascade poisoner bisect.**
 
-Bisect approach: binary-chop the spec roster by ordering
-(`--grep` half-suites) until poisoner identified. Likely culprit:
-spec that leaves vjt's read-cursor advanced past current head,
-or a #bofh state mutation that doesn't reset between specs.
-Candidates: cp15-b6, ux-5-bj, m2 (all touch #bofh focus + state
-transitions). NO server-code change permitted without root-cause
-+ vjt sign-off per `feedback_plan_vs_production_reality`.
+**Cursor sub-cluster CLOSED 2026-05-25** (commit 47be86e):
+`Grappa.ReadCursor.set/4` is last-write-wins with direction NOT
+enforced (lib/grappa/read_cursor.ex:113-119). cp14-b1's Scenario 2
++ BUGHUNT-2 cursor-* trio's real-wheel-scroll-up + settle paths
+advance vjt's `#bofh` cursor mid-pane and persist across spec
+boundaries on the shared seeded user. Downstream specs (marker-
+target T2, r6-own-action, scroll-settle-cursor, ux-6-k) assumed
+cursor=tail → in-pane unread-marker injects → `scrollIntoView
+(marker)` lands mid-pane → `dist <= 50` fails. Fix: shared
+`restoreReadCursorToTail` helper at `cicchetto/e2e/fixtures/
+grappaApi.ts` + afterAll on cp14-b1 + cursor-* trio + scroll-
+settle-cursor + beforeEach on marker-target + r6-own-action. 4
+full local chromium runs confirm cursor cluster stable green.
+
+**Bahamut state-pollution sub-cluster (next session).** Remaining
+rotating cascade: cp15-b6-pending-to-failed-invite-only +
+p0e-invite-ack + ux-5-bk-join-fail-dupe + occasional ux-5-bs
+right-handle. All involve /join-failure flows with peer-created
+channels (+i / +k modes); 3/3 ✓ iso. Likely bahamut testnet
+state-pollution under cumulative load OR `join_failed` WS state-
+flip race when sub-second pending overlaps the typed event. Pre-B7
+CI rotation pattern (cp47 line 379-412) included this cluster
+already — not introduced by the cursor fix. Fresh-context bisect:
+anchor cp15-b6-pending-to-failed (most stable in v3+v4 full-suite
+fails); binary-chop upstream. NO server-code change without
+root-cause + vjt sign-off per
+`feedback_plan_vs_production_reality`.
+
+Webkit-iphone-15 5 specs (ux-6-c, ux-6-d, ux-6-g × 3) also pre-
+existing per cp47 Category B (drawer-tap plumbing); may fold into
+this bucket or carve out as BUGHUNT-3-webkit.
 
 ---
 
