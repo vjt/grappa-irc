@@ -56,10 +56,12 @@ exit 0.
 
 **Residual: scroll-on-window-switch:225 cascade.** Same scen-2
 shape as cp14-b1 (cursor mid-pane → marker expected in viewport).
-Iso 2/2 ✓. Full suite 1-2 ✘ rotating with other bahamut victims.
-Different sub-cascade — needs separate bisect from the rows()-fix
-landing. Anchor candidate: scroll-on-window-switch:225 (consistent
-victim under load); chop upstream from position 89.
+Iso 2/2 ✓. Full local suite 1-2 ✘ rotating with other bahamut
+victims. **CI integration run 26395056218 ✓ for this spec under
+chromium** — only sees ✘ locally under specific timing. Not
+blocking, observation-only. If it surfaces on CI in a future run,
+separate bisect needed (anchor: scroll-on-window-switch:225,
+position 89 lex order).
 
 Webkit-iphone-15 5 specs (ux-6-c, ux-6-d, ux-6-g × 3) also
 pre-existing per cp47 Category B (drawer-tap plumbing); carve out
