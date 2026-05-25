@@ -216,6 +216,18 @@ defmodule Grappa.QueryWindows do
     |> Enum.group_by(& &1.network_id)
   end
 
+  @doc """
+  Test-support: drains every `query_windows` row for `user_id` in a
+  single DELETE. Intended for `Grappa.TestSupport.SubjectReset` only —
+  production lifecycle uses `open/4` + `close/4` per (subject, network,
+  target_nick).
+  """
+  @spec close_all_for_user(Ecto.UUID.t()) :: :ok
+  def close_all_for_user(user_id) when is_binary(user_id) do
+    Repo.delete_all(from w in Window, where: w.user_id == ^user_id)
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------

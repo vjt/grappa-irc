@@ -431,4 +431,31 @@ defmodule Grappa.QueryWindowsTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # close_all_for_user/1
+  # ---------------------------------------------------------------------------
+
+  describe "close_all_for_user/1" do
+    test "deletes every query_windows row for the user_id" do
+      user = user_fixture()
+      other = user_fixture()
+      network = network_fixture()
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "bob", user.name)
+      {:ok, _} = QueryWindows.open({:user, other.id}, network.id, "alice", other.name)
+
+      assert :ok = QueryWindows.close_all_for_user(user.id)
+
+      assert QueryWindows.list_for_subject({:user, user.id}) == %{}
+
+      result = QueryWindows.list_for_subject({:user, other.id})
+      assert [%Window{target_nick: "alice"}] = result[network.id]
+    end
+
+    test "is idempotent when user has no windows" do
+      user = user_fixture()
+      assert :ok = QueryWindows.close_all_for_user(user.id)
+    end
+  end
 end
