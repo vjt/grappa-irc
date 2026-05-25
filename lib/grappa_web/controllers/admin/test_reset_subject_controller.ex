@@ -18,6 +18,10 @@ if Mix.env() in [:dev, :test] do
 
     @spec reset(Plug.Conn.t(), map()) :: Plug.Conn.t()
     def reset(conn, %{"user_name" => user_name}) when is_binary(user_name) do
+      # Inline dispatch (not action_fallback) — three of four error
+      # tuples carry slug/reason payloads only this surface knows
+      # about; FallbackController would have to grow test-only clauses
+      # for them.
       case SubjectReset.reset!(user_name) do
         :ok ->
           send_resp(conn, 204, "")
