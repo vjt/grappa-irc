@@ -44,11 +44,14 @@ const REST_PAGE_SIZE = 50;
 const SETTLE_DEBOUNCE_MS = 500;
 const SETTLE_WAIT_MS = SETTLE_DEBOUNCE_MS + 500;
 // Baseline cursor row index from the bottom of the REST page (DESC-
-// ordered, so index 5 = the 6th-newest row). Picked so visible-tail
-// after wheel-up (row ~25 from bottom) is strictly LESS than baseline,
-// guaranteeing the forward-only gate drops the visible POST in
-// good-impl, and the test can observe a buggy store POST as a jump.
-const BASELINE_ROW_FROM_TAIL = 5;
+// ordered, so index 15 = the 16th-newest row). Picked so visible-tail
+// after wheel-up (typically row 6-10 from bottom for a 200px scroll
+// on the 300px-tall viewport) lands strictly above store-tail AND
+// at-or-above baseline, guaranteeing the forward-only gate drops the
+// visible POST in good-impl. The earlier index 5 was too tight: full-
+// suite seeded backlog made the per-row pixel height differ, and
+// visible occasionally landed AT exactly row 5 → off-by-one fail.
+const BASELINE_ROW_FROM_TAIL = 15;
 
 async function fetchScrollbackPage(
   token: string,
@@ -184,9 +187,11 @@ test.describe("BUGHUNT-2: switch-away cursor uses visible-tail, not store-tail",
     expect(store).not.toBeNull();
     // Sanity: scroll worked, visible-tail is NOT store-tail.
     expect(visible).toBeLessThan(store as number);
-    // Sanity: visible is below the baseline we seeded — proves the
-    // forward-only gate will drop the visible POST.
-    expect(visible).toBeLessThan(baselineRow.id);
+    // Sanity: visible is at-or-below the baseline we seeded — proves
+    // the forward-only gate will drop the visible POST (gate drops
+    // candidate <= current). ≤ not strict-< handles the off-by-one
+    // when wheel scroll lands viewport AT the baseline row.
+    expect(visible).toBeLessThanOrEqual(baselineRow.id);
 
     // Switch to the network's $server window. The BUGHUNT-2 leave-arm
     // fires setCursorIfAdvances for CHANNEL_A with `visible` (the
