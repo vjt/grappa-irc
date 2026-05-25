@@ -11,61 +11,27 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-(UX-8 + wireTypes.ts codegen + BUGHUNT-1 CLOSED 2026-05-24 —
-see CP45 S5, CP46, CP47. BUGHUNT-2 unread-marker cursor-write
-contract rewrite CLOSED 2026-05-24 — see CP47 BUGHUNT-2 block.)
+**BUGHUNT-3 Sub-cluster C — webkit-iphone-15 (5 specs).**
 
-**BUGHUNT-3: CI cascade poisoner bisect.**
+Pre-existing per cp47 Category B (drawer-tap plumbing); has NEVER
+passed iso (0/3 ✓). Failing specs from CI run 26395056218:
 
-**Cursor sub-cluster CLOSED 2026-05-25** (commit 47be86e):
-`Grappa.ReadCursor.set/4` is last-write-wins with direction NOT
-enforced (lib/grappa/read_cursor.ex:113-119). cp14-b1's Scenario 2
-+ BUGHUNT-2 cursor-* trio's real-wheel-scroll-up + settle paths
-advance vjt's `#bofh` cursor mid-pane and persist across spec
-boundaries on the shared seeded user. Downstream specs (marker-
-target T2, r6-own-action, scroll-settle-cursor, ux-6-k) assumed
-cursor=tail → in-pane unread-marker injects → `scrollIntoView
-(marker)` lands mid-pane → `dist <= 50` fails. Fix: shared
-`restoreReadCursorToTail` helper at `cicchetto/e2e/fixtures/
-grappaApi.ts` + afterAll on cp14-b1 + cursor-* trio + scroll-
-settle-cursor + beforeEach on marker-target + r6-own-action. 4
-full local chromium runs confirm cursor cluster stable green.
+- `ux-6-c-mobile-admin-launcher:97` — drawer footer admin button
+- `ux-6-d-keyboard-pattern:153` — (f) Admin → Debug tab DiagFloat
+- `ux-6-g-admin-mobile-h-scroll:104` — pan-x via touch-action
+- `ux-6-g-admin-mobile-h-scroll:169` — pan-x gesture scrolls table
+- `ux-6-g-admin-mobile-h-scroll:204` — vertical scroll inside pane
 
-**Bahamut state-pollution sub-cluster — PARTIAL CLOSURE 2026-05-25**
-(commit 4cb0c40, prod-side `ScrollbackPane.tsx` fix). Root cause
-was NOT bahamut testnet state pollution and NOT a `join_failed` WS
-race — it was a prod-side scroll race in `ScrollbackPane.tsx`. The
-length-effect tracked `messages().length`; when `applyMeEnvelope`
-(cold-load cursor hydrate from `/me`) raced `loadInitialScrollback`
-and the cursor signal arrived AFTER scrollback, `rows()` re-ran +
-injected the unread-marker but the length-effect didn't fire
-(marker lives inside the memo, not the messages array). Marker
-DOM present, scroll glued to tail — failure shape rotated between
-cp14-b1, cp15-b6-pending-to-failed-invite-only, p0e-invite-ack,
-ux-5-bk-join-fail-dupe, ux-5-bs, scroll-on-window-switch:225 etc.
-across runs depending on which path won the timing race.
+Classification hypotheses: (1) real iOS Safari regression in
+cic admin pane; (2) Playwright `webkit-iphone-15` project config
+drift; (3) test setup race. 3-in-one-spec ux-6-g pattern suggests
+project-config or shared-setup, not per-test. Look at
+`describe.beforeEach` + `playwright.config.ts` first; inspect
+trace.zip + test-failed.png before proposing fix. NO cic prod
+fix without root cause + vjt sign-off per
+`feedback_plan_vs_production_reality`.
 
-Fix: track `rows().length` instead of `messages().length`. When
-the cursor hydrates and the marker injects, `rows().length` grows
-by 1 → length-effect fires → existing scroll-to-marker branch runs.
-
-Validation: full local chromium 131-132 / 134 (pre-fix 128-132 /
-134); cp14-b1 + bahamut-cluster consistently green; 7/7 ✓ on
-cursor sentinels; 1641 cic unit tests ✓; `scripts/check.sh`
-exit 0.
-
-**Residual: scroll-on-window-switch:225 cascade.** Same scen-2
-shape as cp14-b1 (cursor mid-pane → marker expected in viewport).
-Iso 2/2 ✓. Full local suite 1-2 ✘ rotating with other bahamut
-victims. **CI integration run 26395056218 ✓ for this spec under
-chromium** — only sees ✘ locally under specific timing. Not
-blocking, observation-only. If it surfaces on CI in a future run,
-separate bisect needed (anchor: scroll-on-window-switch:225,
-position 89 lex order).
-
-Webkit-iphone-15 5 specs (ux-6-c, ux-6-d, ux-6-g × 3) also
-pre-existing per cp47 Category B (drawer-tap plumbing); carve out
-as BUGHUNT-3-webkit (separate cluster from chromium).
+See `/tmp/orchestrate-next.txt` for the session handoff.
 
 ---
 
@@ -104,35 +70,6 @@ bug-hunt CLOSED, work proceeds in this order. Do NOT skip ahead.
 
 Memory pointer (single source of truth lives HERE, not in memory):
 `project_post_rev_roadmap.md` is a one-liner pointer to this section.
-
----
-
-## Pre-bastille bug-hunt — CLOSED 2026-05-24
-
-Both bugs CLOSED in BUGHUNT-1 cluster (`a320a4f` + `d13d77f`); see
-`docs/checkpoints/2026-05-24-cp47.md` for full bucket roster + plan
-deviations. No remaining known regressions blocking bastille deploy.
-
-BUGHUNT-2 unread-marker cursor-write contract rewrite also CLOSED
-2026-05-24 (commits `075e7048`..`1159867`; cluster b0+b1..b5).
-Cursor-write ownership moved from `selection.ts` into `ScrollbackPane.tsx`;
-input-event gate (pointerdown/wheel/touchmove/keydown) on
-`onScroll`'s 500ms settle timer means programmatic scrolls
-(`scrollIntoView` in window-activation routine) no longer spuriously
-advance the cursor — unread marker stays put on bare window-open.
-Three e2e sentinels (cursor-no-advance-on-open,
-cursor-advances-on-switch, cursor-walks-with-scroll) + one vitest
-negative pin the contract.
-
-1. ~~Long-message auto-split (SERVER-SIDE)~~ — CLOSED bucket A.
-   `Grappa.IRC.LineSplit.split_privmsg_body/3` + `:linelen` state +
-   `handle_persisting_send/3` fragments loop. Default 512, picks up
-   `005 RPL_ISUPPORT LINELEN=<N>` if advertised. CTCP ACTION envelope
-   preserved on every fragment.
-2. ~~Archive empty on first open (CIC, MOBILE)~~ — CLOSED bucket B.
-   `ArchiveModal.tsx` dedicated `createEffect` seeds via
-   `loadArchive(slug)` on edge-trigger open. Mount-component-owns-
-   state pattern.
 
 ---
 
@@ -247,8 +184,6 @@ Phase 5 cluster opens):
 
 ## Medium
 
-- Set up GitHub repo `vjt/grappa-irc` with CI secrets (codecov token
-  if desired, no other secrets required for Phase 1).
 - Open tracking issue / doc for **Phase 6 IRCv3 listener** — collect
   specs needed (`CAP LS 302`, `CHATHISTORY`, `server-time`, `batch`,
   `labeled-response`, SASL mechanisms). Reuse parser from Phase 1.
@@ -265,11 +200,12 @@ Phase 5 cluster opens):
 - `Grappa.version/0` (`lib/grappa.ex:28`) has zero callers. Either
   wire into `/healthz` JSON response (one-line change in
   `HealthController`) or drop the function.
-- Sqlite "Database busy" intermittent test flake — hit once during
-  S19 ci.check. 3 tests (`Repo` / `Scrollback` / `Wire`) simultaneously
-  failed inserts with `Exqlite.Error: Database busy`. Likely contention
-  between `async: true` Repo writes and live container also writing
-  to `runtime/grappa_dev.db`.
+- Sqlite "Database busy" intermittent test flake — `Repo` /
+  `Scrollback` / `Wire` occasionally fail inserts with
+  `Exqlite.Error: Database busy`. Contention between `async: true`
+  Repo writes and live container also writing to
+  `runtime/grappa_dev.db`. Mostly benign noise during ci.check;
+  not flaky on CI (which uses fresh DB).
 - Telemetry → Prometheus exporter (PromEx). Phase 5 hardening.
 - Reconnect/backoff policy when upstream IRC drops. Phase 5.
 - Scrollback eviction policy — by row count, by age, or both. Phase 5.
@@ -280,15 +216,6 @@ Phase 5 cluster opens):
   measurable only under sustained load.
 
 ---
-
-## Notes
-
-- Phase 0 (spec) complete. README + DESIGN_NOTES + walking-skeleton
-  plan all in main.
-- Phase 1 tasks have TDD steps with failing-test-first discipline in
-  `docs/plans/2026-04-25-walking-skeleton.md`.
-- Italian Hackers' Embassy / Azzurra context: `docs/project-story.md`
-  for narrative thread surviving individual sessions.
 
 ## Wishlist (vjt 2026-05-03 #sniffo banter w/ nextime)
 

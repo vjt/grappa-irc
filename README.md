@@ -557,40 +557,32 @@ The project is past Phase 1-3 and most of Phase 4. The road to
 **PUBLIC OPEN** is a sequence of focused clusters, each shipped to
 the live operator before the next begins. Current order:
 
-1. **e2e flake triage** — drive the e2e baseline-fail count to zero;
-   re-baseline as load-class vs spec-rot vs real bugs and ship
-   per-class fix buckets.
-2. **UX-8 scroll cluster** — channel-switch scroll position
-   interference + read-cursor update on scroll (new server contract:
-   adds scroll as a settle-event class alongside focus-leave +
-   browser-blur).
-3. **wireTypes.ts codegen** — generate `cicchetto/src/lib/wireTypes.ts`
-   from server-side `Grappa.*.Wire` typespecs. Replaces hand-edited
-   cic types with a compile-time guarantee against server/cic drift.
-4. **Bastille deploy** — FreeBSD bastille jail target prod runtime,
+1. **Bastille deploy** — FreeBSD bastille jail target prod runtime,
    sibling to the existing docker-compose path (GitHub issue #8).
-5. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
+2. **Voice TTS+STT (Web Speech API on-device)** — per-channel TTS +
    STT toggle via the browser's Web Speech API. On-device, no third-
    party round-trip; Vosk/piper WASM offline path stays as the
    long-tail fallback for browsers without Web Speech support.
-6. **UI polish cluster** — its own multi-bucket effort, mobile-first.
+3. **UI polish cluster** — its own multi-bucket effort, mobile-first.
    Mobile UX needs a real pass: responsive breakpoints beyond the
    single 768px line, touch-target sizing, sidebar ergonomics, input
    bar density, scroll behavior. The current mobile layout is
    functional but not polished.
-7. **PUBLIC OPEN** — the milestone where grappa stops being a
+4. **PUBLIC OPEN** — the milestone where grappa stops being a
    single-operator setup hosting `it-opers` people and becomes a
    self-hostable bouncer anyone can deploy. Pre-conditions: every
    cluster above CLOSED, Phase 5 hardening done (TLS verification,
    eviction policy, NickServ proxy), self-hoster docs, OpenAPI
    schema published.
 
+Recently closed (per-cluster history with bucket-level detail in
+[`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)): e2e flake triage,
+UX-8 scroll cluster, wireTypes.ts codegen, BUGHUNT-1/2/3
+pre-bastille bug-hunt.
+
 Beyond PUBLIC OPEN, Phase 6 IRCv3 listener facade is the long-tail
 work — drop-in compatibility with existing IRCv3 mobile clients
 without giving up any of the REST/Channels surface.
-
-Per-cluster history (closed clusters with bucket-level detail) lives
-in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md).
 
 ## Contributing
 
