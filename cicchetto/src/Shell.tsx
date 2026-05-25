@@ -1,4 +1,14 @@
-import { type Component, createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  Match,
+  on,
+  onCleanup,
+  Show,
+  Switch,
+} from "solid-js";
 import { Portal } from "solid-js/web";
 import AdminPane from "./AdminPane";
 import ArchiveModal from "./ArchiveModal";
@@ -72,6 +82,28 @@ import TopicBar from "./TopicBar";
 const Shell: Component = () => {
   const [membersOpen, setMembersOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+
+  // BUGHUNT-3 sub-cluster D (2026-05-25) — single memo for the
+  // selection-kind dispatch. Pre-fix Shell rendered nested `<Show>`
+  // chains that each independently subscribed to `selectedChannel()`
+  // and re-evaluated `sel().kind === ...` checks. When selection
+  // transitioned from `kind: "channel"` (#bofh) to `kind: "admin"`,
+  // the outer admin gate Show flipped TRUE and began disposing the
+  // fallback subtree (TopicBar + ScrollbackPane + ComposeBox) WHILE
+  // the inner `<Show when={selectedChannel()}>{(sel)=>...}>` ALSO
+  // re-fired its `sel().kind === "channel"` check on the new admin
+  // value mid-disposal. The concurrent owner-tree walks collided
+  // inside Solid's `cleanNode` — `for(i=node.owned.length-1...
+  // cleanNode(node.owned[i])` read a now-nulled `node.owned[t]`,
+  // throwing `TypeError: null is not an object (evaluating
+  // 'e.owned[t]')`. The throw broke the AdminPane Show mount cycle
+  // AND halted all downstream Solid reactivity — UI completely
+  // frozen on desktop + mobile (vjt prod-confirmed). Switch/Match
+  // collapses all kind branches into ONE memo edge so disposal is
+  // atomic — the previous subtree fully tears down before the new
+  // branch begins mounting, no concurrent owner-tree mutation.
+  const isAdminPaneVisible = createMemo(() => selectedChannel()?.kind === "admin" && isAdmin());
+  const selKind = createMemo(() => selectedChannel()?.kind ?? null);
 
   // UX-6 bucket A — refcounted overlay scroll-lock for the two
   // Shell-owned mobile overlays (members drawer + AdminPane). The
@@ -440,86 +472,77 @@ const Shell: Component = () => {
                 mobile members drawer is opened by TopicBar's own
                 hamburger (channel-window-only). */}
             <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
-            <Show
-              when={selectedChannel()?.kind === "admin" && isAdmin()}
-              fallback={
-                <Show
-                  when={selectedChannel()}
-                  fallback={<p class="muted">select a channel to view scrollback</p>}
-                >
-                  {(sel) => (
-                    <>
-                      <Show when={sel().kind === "channel"}>
-                        <TopicBar
-                          networkSlug={sel().networkSlug}
-                          channelName={sel().channelName}
-                          onToggleMembers={() => setMembersOpen((v) => !v)}
-                        />
-                      </Show>
-                      <Show
-                        when={sel().kind === "home"}
-                        fallback={
-                          <Show
-                            when={sel().kind === "mentions"}
-                            fallback={
-                              <>
-                                <ScrollbackPane
-                                  networkSlug={sel().networkSlug}
-                                  channelName={sel().channelName}
-                                  kind={sel().kind}
-                                />
-                                {/* CP13 S9: ComposeBox renders on $server too —
-                                    slash-only is enforced inside compose.ts so plain
-                                    text gets rejected with a friendly error. */}
-                                <ComposeBox
-                                  networkSlug={sel().networkSlug}
-                                  channelName={sel().channelName}
-                                />
-                              </>
-                            }
-                          >
-                            {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
-                                onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
-                            <MentionsWindow
-                              bundle={
-                                mentionsBundleBySlug()[sel().networkSlug] ?? {
-                                  network_slug: sel().networkSlug,
-                                  away_started_at: "",
-                                  away_ended_at: "",
-                                  away_reason: null,
-                                  messages: [],
-                                }
-                              }
-                              ownNick={ownNickForSlug(sel().networkSlug)}
-                              onMentionClicked={handleMentionClicked}
-                            />
-                          </Show>
-                        }
-                      >
-                        {/* UX-4 bucket B — home pane. No TopicBar, no
-                            ComposeBox, no MembersPane (sibling <aside>
-                            already self-gates on isActiveChannelJoined). */}
-                        <HomePane />
-                      </Show>
-                    </>
-                  )}
+            <Switch fallback={<p class="muted">select a channel to view scrollback</p>}>
+              <Match when={isAdminPaneVisible()}>
+                {/* UX-4 bucket N — AdminPane mount driven by selection +
+                    isAdmin guard. onClose navigates back to home, mirroring
+                    the demote-redirect effect; both paths terminate at the
+                    same landing window. */}
+                <AdminPane
+                  onClose={() =>
+                    setSelectedChannel({
+                      networkSlug: HOME_WINDOW_SLUG,
+                      channelName: HOME_WINDOW_NAME,
+                      kind: "home",
+                    })
+                  }
+                />
+              </Match>
+              <Match
+                when={selKind() === "channel" || selKind() === "query" || selKind() === "server"}
+              >
+                {/* BUGHUNT-3 D — channel + query + server share ONE Match
+                    so ScrollbackPane stays mounted across kind transitions
+                    (channel↔query↔server). The pane's `on(key, prevKey)`
+                    effect at ScrollbackPane.tsx:~1142 owns the leave-arm
+                    cursor write; splitting these kinds into separate
+                    Matches would unmount + remount the pane and fire
+                    `onCleanup` (which can't read the leaving pane's
+                    `lastFullyVisibleRowId` reliably because listRef may
+                    be stale at the dispose tick). TopicBar is gated
+                    inside on the channel-only kind to preserve its
+                    channel-window-only contract. */}
+                <Show when={selKind() === "channel"}>
+                  <TopicBar
+                    networkSlug={selectedChannel()?.networkSlug ?? ""}
+                    channelName={selectedChannel()?.channelName ?? ""}
+                    onToggleMembers={() => setMembersOpen((v) => !v)}
+                  />
                 </Show>
-              }
-            >
-              {/* UX-4 bucket N — AdminPane mount driven by selection +
-                  isAdmin guard. onClose navigates back to home, mirroring
-                  the demote-redirect effect; both paths terminate at the
-                  same landing window. */}
-              <AdminPane
-                onClose={() =>
-                  setSelectedChannel({
-                    networkSlug: HOME_WINDOW_SLUG,
-                    channelName: HOME_WINDOW_NAME,
-                    kind: "home",
-                  })
-                }
-              />
-            </Show>
+                <ScrollbackPane
+                  networkSlug={selectedChannel()?.networkSlug ?? ""}
+                  channelName={selectedChannel()?.channelName ?? ""}
+                  kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
+                />
+                <ComposeBox
+                  networkSlug={selectedChannel()?.networkSlug ?? ""}
+                  channelName={selectedChannel()?.channelName ?? ""}
+                />
+              </Match>
+              <Match when={selKind() === "mentions"}>
+                {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
+                    onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
+                <MentionsWindow
+                  bundle={
+                    mentionsBundleBySlug()[selectedChannel()?.networkSlug ?? ""] ?? {
+                      network_slug: selectedChannel()?.networkSlug ?? "",
+                      away_started_at: "",
+                      away_ended_at: "",
+                      away_reason: null,
+                      messages: [],
+                    }
+                  }
+                  ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
+                  onMentionClicked={handleMentionClicked}
+                />
+              </Match>
+              <Match when={selKind() === "home"}>
+                {/* UX-4 bucket B — home pane. No TopicBar, no
+                    ComposeBox, no MembersPane (sibling <aside>
+                    already self-gates on isActiveChannelJoined). */}
+                <HomePane />
+              </Match>
+            </Switch>
           </section>
 
           <aside class="shell-members" classList={{ open: membersOpen() }}>
@@ -593,96 +616,82 @@ const Shell: Component = () => {
           <Show when={selectedChannel()?.kind !== "channel"}>
             <ShellChrome onOpenSettings={() => setSettingsOpen(true)} />
           </Show>
-          <Show
-            when={selectedChannel()?.kind === "admin" && isAdmin()}
-            fallback={
-              <Show when={selectedChannel()} fallback={<p class="muted">select a channel below</p>}>
-                {(sel) => (
-                  <>
-                    <Show when={sel().kind === "channel"}>
-                      {/* C6.3 / UX-5 bucket A: TopicBar's
-                          `.topic-bar-hamburger` is the single
-                          members-drawer toggle on mobile (CSS-hidden
-                          on desktop via @media). ShellChrome above no
-                          longer renders its own hamburger.
-                          UX-5 bucket BM (2026-05-20) — `inlineChromeSlot`
-                          dropped on mobile-channel: archive + cog
-                          buttons moved INTO the members drawer footer
-                          (see below). TopicBar's right edge now hosts
-                          ONLY the hamburger. onToggleMembers routes
-                          through `toggleMembersPanel` to enforce the
-                          members | settings | archive | none mutex —
-                          opening members closes the sibling surfaces. */}
-                      <TopicBar
-                        networkSlug={sel().networkSlug}
-                        channelName={sel().channelName}
-                        onToggleMembers={() =>
-                          toggleMembersPanel({
-                            membersOpen,
-                            setMembersOpen,
-                            setSettingsOpen,
-                          })
-                        }
-                      />
-                    </Show>
-                    <Show
-                      when={sel().kind === "home"}
-                      fallback={
-                        <Show
-                          when={sel().kind === "mentions"}
-                          fallback={
-                            <>
-                              <ScrollbackPane
-                                networkSlug={sel().networkSlug}
-                                channelName={sel().channelName}
-                                kind={sel().kind}
-                              />
-                              {/* CP13 S9: ComposeBox renders on $server too —
-                                  slash-only is enforced inside compose.ts so plain
-                                  text gets rejected with a friendly error. */}
-                              <ComposeBox
-                                networkSlug={sel().networkSlug}
-                                channelName={sel().channelName}
-                              />
-                            </>
-                          }
-                        >
-                          <MentionsWindow
-                            bundle={
-                              mentionsBundleBySlug()[sel().networkSlug] ?? {
-                                network_slug: sel().networkSlug,
-                                away_started_at: "",
-                                away_ended_at: "",
-                                away_reason: null,
-                                messages: [],
-                              }
-                            }
-                            ownNick={ownNickForSlug(sel().networkSlug)}
-                            onMentionClicked={handleMentionClicked}
-                          />
-                        </Show>
-                      }
-                    >
-                      {/* UX-4 bucket B — home pane on mobile. Same HomePane
-                          component as desktop; layout is the only branch
-                          difference. */}
-                      <HomePane />
-                    </Show>
-                  </>
-                )}
+          <Switch fallback={<p class="muted">select a channel below</p>}>
+            <Match when={isAdminPaneVisible()}>
+              <AdminPane
+                onClose={() =>
+                  setSelectedChannel({
+                    networkSlug: HOME_WINDOW_SLUG,
+                    channelName: HOME_WINDOW_NAME,
+                    kind: "home",
+                  })
+                }
+              />
+            </Match>
+            <Match
+              when={selKind() === "channel" || selKind() === "query" || selKind() === "server"}
+            >
+              {/* BUGHUNT-3 D — channel + query + server share ONE Match
+                  so ScrollbackPane stays mounted across kind transitions.
+                  See desktop branch comment for details. */}
+              <Show when={selKind() === "channel"}>
+                {/* C6.3 / UX-5 bucket A: TopicBar's
+                    `.topic-bar-hamburger` is the single
+                    members-drawer toggle on mobile (CSS-hidden
+                    on desktop via @media). ShellChrome above no
+                    longer renders its own hamburger.
+                    UX-5 bucket BM (2026-05-20) — `inlineChromeSlot`
+                    dropped on mobile-channel: archive + cog
+                    buttons moved INTO the members drawer footer
+                    (see below). TopicBar's right edge now hosts
+                    ONLY the hamburger. onToggleMembers routes
+                    through `toggleMembersPanel` to enforce the
+                    members | settings | archive | none mutex —
+                    opening members closes the sibling surfaces. */}
+                <TopicBar
+                  networkSlug={selectedChannel()?.networkSlug ?? ""}
+                  channelName={selectedChannel()?.channelName ?? ""}
+                  onToggleMembers={() =>
+                    toggleMembersPanel({
+                      membersOpen,
+                      setMembersOpen,
+                      setSettingsOpen,
+                    })
+                  }
+                />
               </Show>
-            }
-          >
-            <AdminPane
-              onClose={() =>
-                setSelectedChannel({
-                  networkSlug: HOME_WINDOW_SLUG,
-                  channelName: HOME_WINDOW_NAME,
-                  kind: "home",
-                })
-              }
-            />
-          </Show>
+              <ScrollbackPane
+                networkSlug={selectedChannel()?.networkSlug ?? ""}
+                channelName={selectedChannel()?.channelName ?? ""}
+                kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
+              />
+              <ComposeBox
+                networkSlug={selectedChannel()?.networkSlug ?? ""}
+                channelName={selectedChannel()?.channelName ?? ""}
+              />
+            </Match>
+            <Match when={selKind() === "mentions"}>
+              <MentionsWindow
+                bundle={
+                  mentionsBundleBySlug()[selectedChannel()?.networkSlug ?? ""] ?? {
+                    network_slug: selectedChannel()?.networkSlug ?? "",
+                    away_started_at: "",
+                    away_ended_at: "",
+                    away_reason: null,
+                    messages: [],
+                  }
+                }
+                ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
+                onMentionClicked={handleMentionClicked}
+              />
+            </Match>
+            <Match when={selKind() === "home"}>
+              {/* UX-4 bucket B — home pane on mobile. Same HomePane
+                  component as desktop; layout is the only branch
+                  difference. */}
+              <HomePane />
+            </Match>
+          </Switch>
         </section>
 
         <BottomBar />
