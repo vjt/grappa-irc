@@ -20,6 +20,14 @@ if Mix.env() in [:dev, :test] do
     credential → `{:error, {:reconnect_timeout, network_slug}}`. No
     silent retry loops; loud failure surfaces upstream sickness.
 
+    5s is intentionally tight for a test-only path. The e2e testnet
+    runs Bahamut on local-loopback; a >5s WELCOME means upstream
+    sickness or `Session.Server` crash-loop, NOT transient network
+    slowness. Reset is never called against real-world upstreams
+    (compile-gated to dev/test envs). `Visitors.Login`'s 30s welcome
+    budget targets real upstreams; test-reset's 5s targets
+    local-loopback.
+
     Only respawns credentials in `:connected` state. Parked/failed
     credentials get their Backoff + NetworkCircuit reset but no respawn
     attempt — they're already not-running and shouldn't be started by
@@ -56,8 +64,6 @@ if Mix.env() in [:dev, :test] do
       UserSettings,
       WSPresence
     }
-
-    require Logger
 
     @reset_timeout_ms 5_000
 
@@ -100,10 +106,6 @@ if Mix.env() in [:dev, :test] do
 
     defp respawn_each(user, [cred | rest]) do
       network_id = cred.network_id
-      # `list_credentials_for_user/1` preloads `:network` already, but
-      # be defensive — a future refactor that drops the preload would
-      # silently crash on `cred.network.slug` here otherwise.
-      cred = Repo.preload(cred, :network)
       slug = cred.network.slug
 
       :ok = NetworkCircuit.reset_sync(network_id)
@@ -135,7 +137,7 @@ if Mix.env() in [:dev, :test] do
             network_id: cred.network_id,
             client_id: nil,
             flow: :bootstrap_user,
-            requesting_subject: {:user, user.id}
+            requesting_subject: nil
           }
 
           case Grappa.SpawnOrchestrator.spawn(
