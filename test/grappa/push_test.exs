@@ -215,4 +215,36 @@ defmodule Grappa.PushTest do
       assert Grappa.Repo.get(Subscription, sub.id) == nil
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # subscription_clear_all_for_user/1
+  # ---------------------------------------------------------------------------
+
+  describe "subscription_clear_all_for_user/1" do
+    test "deletes every push_subscription for the user_id" do
+      user = user_fixture()
+      other = user_fixture()
+
+      {:ok, _} =
+        Push.create({:user, user.id}, valid_attrs(endpoint: "https://a.example/push/clr-1"))
+
+      {:ok, _} =
+        Push.create({:user, user.id}, valid_attrs(endpoint: "https://b.example/push/clr-2"))
+
+      {:ok, _} =
+        Push.create({:user, other.id}, valid_attrs(endpoint: "https://c.example/push/clr-3"))
+
+      assert :ok = Push.subscription_clear_all_for_user(user.id)
+
+      assert Push.list_for_subject({:user, user.id}) == []
+
+      assert [%Subscription{endpoint: "https://c.example/push/clr-3"}] =
+               Push.list_for_subject({:user, other.id})
+    end
+
+    test "is idempotent when user has no subscriptions" do
+      user = user_fixture()
+      assert :ok = Push.subscription_clear_all_for_user(user.id)
+    end
+  end
 end

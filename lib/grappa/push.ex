@@ -207,6 +207,17 @@ defmodule Grappa.Push do
   end
 
   @doc """
+  Test-support: drains every `push_subscriptions` row for `user_id` in
+  a single DELETE. Intended for `Grappa.TestSupport.SubjectReset` only —
+  production lifecycle uses `create/2` + `delete/1` + `delete_dead/1`.
+  """
+  @spec subscription_clear_all_for_user(Ecto.UUID.t()) :: :ok
+  def subscription_clear_all_for_user(user_id) when is_binary(user_id) do
+    Repo.delete_all(from s in Subscription, where: s.user_id == ^user_id)
+    :ok
+  end
+
+  @doc """
   Updates `last_used_at` to `DateTime.utc_now()`. Called by B2's
   `Push.Sender` after a successful delivery. Returns the updated
   struct so callers can chain.
