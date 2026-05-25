@@ -204,13 +204,13 @@ defmodule Grappa.WSPresence do
   """
   @dialyzer {:nowarn_function, reset_for_user: 1}
   @spec reset_for_user(String.t()) :: :ok
-  if Mix.env() == :test do
+  if Mix.env() in [:dev, :test] do
     def reset_for_user(user_name) when is_binary(user_name) do
       GenServer.call(__MODULE__, {:reset_for_user, user_name})
     end
   else
     def reset_for_user(_) do
-      raise "reset_for_user/1 is test-only and must not be called in production"
+      raise "reset_for_user/1 is dev/test-only and must not be called in production"
     end
   end
 
