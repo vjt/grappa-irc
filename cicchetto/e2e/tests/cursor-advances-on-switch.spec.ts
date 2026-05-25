@@ -43,15 +43,6 @@ const CHANNEL_A = AUTOJOIN_CHANNELS[0];
 const REST_PAGE_SIZE = 50;
 const SETTLE_DEBOUNCE_MS = 500;
 const SETTLE_WAIT_MS = SETTLE_DEBOUNCE_MS + 500;
-// Baseline cursor row index from the bottom of the REST page (DESC-
-// ordered, so index 15 = the 16th-newest row). Picked so visible-tail
-// after wheel-up (typically row 6-10 from bottom for a 200px scroll
-// on the 300px-tall viewport) lands strictly above store-tail AND
-// at-or-above baseline, guaranteeing the forward-only gate drops the
-// visible POST in good-impl. The earlier index 5 was too tight: full-
-// suite seeded backlog made the per-row pixel height differ, and
-// visible occasionally landed AT exactly row 5 → off-by-one fail.
-const BASELINE_ROW_FROM_TAIL = 15;
 
 async function fetchScrollbackPage(
   token: string,
@@ -145,22 +136,61 @@ test.describe("BUGHUNT-2: switch-away cursor uses visible-tail, not store-tail",
       .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
       .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
 
-    // Pin a known mid-pane baseline AFTER selectChannel so cic's
-    // mount-time POST (which races our wheel scroll) is overridden by
-    // the last-write-wins behavior of ReadCursor.set/4. Choose a row
-    // close to the tail (index 5 DESC = 6th-newest) so visible-tail
-    // after the wheel-up below is strictly LESS than baseline → the
-    // forward-only gate drops the leave-arm's visible POST in
-    // good-impl, leaving cursor at baseline. Bug-impl would POST
-    // store, which is > baseline, advancing the cursor.
+    // E2E-ROBUSTNESS bucket D (2026-05-26 iteration) — scroll FIRST,
+    // observe visible-tail, THEN seed baseline = visible_id + buffer.
+    // The old shape (seed by REST-page index, then scroll) coupled
+    // baseline to per-row pixel height and seeded backlog density —
+    // full-suite seed growth pushed visible-tail ABOVE the static
+    // baseline (assertion 920 ≤ 901 with index=15 at HEAD `1458942`).
+    // Computing baseline from observed visible makes the gate semantics
+    // robust regardless of seed size + viewport row density.
+    const box = await page.locator('[data-testid="scrollback"]').boundingBox();
+    if (!box) throw new Error("scrollback box null");
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -400);
+    // Wait LONGER than the settle window so the scroll-settle POST
+    // from this wheel-up lands BEFORE we snapshot cursor + visible.
+    // Settle POSTs `visible` which advances cursor; we override below
+    // with seedCursor at baseline = visible + buffer, so the
+    // post-switch leave-arm's visible POST will be < baseline and
+    // dropped by the forward-only gate.
+    await page.waitForTimeout(SETTLE_WAIT_MS);
+
+    const visible = await visibleTailId(page);
+    const store = await storeTailId(page);
+    expect(visible).not.toBeNull();
+    expect(store).not.toBeNull();
+    // Sanity: scroll worked, visible-tail is NOT store-tail.
+    expect(visible).toBeLessThan(store as number);
+
+    // Seed baseline above visible-tail so the forward-only gate drops
+    // the leave-arm's `visible` POST. Pick a row strictly between
+    // `visible` and `store` (mid-pane) — any row ID in that range
+    // satisfies `visible < baseline ≤ store`. Compute from the REST
+    // page so we land on a real message id (not visible+1 which may
+    // not exist if rows are not contiguous).
     const page0 = await fetchScrollbackPage(vjt.token, CHANNEL_A);
     expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
-    const baselineRow = page0[BASELINE_ROW_FROM_TAIL];
+    // page0 is DESC-ordered (tail first). Find an id strictly greater
+    // than `visible` and ≤ `store`. The middle of that range is the
+    // safest baseline — far enough above visible that wheel jitter
+    // won't land at-or-above baseline, far enough below store that
+    // bug-impl's store POST would clearly advance past baseline.
+    const candidates = page0.filter(
+      (r) => r.id > (visible as number) && r.id <= (store as number),
+    );
+    if (candidates.length === 0) {
+      throw new Error(
+        `no baseline candidate between visible=${visible} and store=${store}; ` +
+          `wheel scroll may have been too shallow or seed too sparse`,
+      );
+    }
+    const baselineRow = candidates[Math.floor(candidates.length / 2)];
     if (!baselineRow) {
-      throw new Error(`baselineRow not found at index ${BASELINE_ROW_FROM_TAIL}`);
+      throw new Error("baselineRow not found in candidate window");
     }
     await seedCursor(vjt.token, CHANNEL_A, baselineRow.id);
-    // Wait briefly for cic to observe the cursor via the WS broadcast
+    // Wait for cic to observe the cursor via the WS broadcast
     // (cic's selection.ts subscribes to read_cursor_set events and
     // updates its in-memory state). Without this, cic's local cursor
     // signal may still hold the pre-seed value, and setCursorIfAdvances
@@ -170,28 +200,10 @@ test.describe("BUGHUNT-2: switch-away cursor uses visible-tail, not store-tail",
       .poll(async () => await fetchCursor(vjt.token, CHANNEL_A), { timeout: 2_000 })
       .toBe(baselineRow.id);
 
-    // Real-wheel scroll up to expose mid-list rows in the viewport.
-    const box = await page.locator('[data-testid="scrollback"]').boundingBox();
-    if (!box) throw new Error("scrollback box null");
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.wheel(0, -200);
-    // Wait LONGER than the settle window so the scroll-settle POST
-    // from this wheel-up lands BEFORE we snapshot cursor + visible.
-    // The settle POSTs `visible` which is < baseline → forward-only
-    // gate drops it → cursor stays at baseline.
-    await page.waitForTimeout(SETTLE_WAIT_MS);
-
-    const visible = await visibleTailId(page);
-    const store = await storeTailId(page);
-    expect(visible).not.toBeNull();
-    expect(store).not.toBeNull();
-    // Sanity: scroll worked, visible-tail is NOT store-tail.
-    expect(visible).toBeLessThan(store as number);
-    // Sanity: visible is at-or-below the baseline we seeded — proves
-    // the forward-only gate will drop the visible POST (gate drops
-    // candidate <= current). ≤ not strict-< handles the off-by-one
-    // when wheel scroll lands viewport AT the baseline row.
-    expect(visible).toBeLessThanOrEqual(baselineRow.id);
+    // Sanity: visible is strictly below the baseline we seeded —
+    // proves the forward-only gate will drop the visible POST (gate
+    // drops candidate <= current).
+    expect(visible).toBeLessThan(baselineRow.id);
 
     // Switch to the network's $server window. The BUGHUNT-2 leave-arm
     // fires setCursorIfAdvances for CHANNEL_A with `visible` (the
