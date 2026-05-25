@@ -407,4 +407,37 @@ defmodule Grappa.ReadCursorTest do
       }
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # clear_all_for_user/1
+  # ---------------------------------------------------------------------------
+
+  describe "clear_all_for_user/1" do
+    test "deletes every cursor row for the given user_id" do
+      user = user_fixture()
+      other = user_fixture()
+      net = network_fixture()
+      msg_a = insert_message(%{user_id: user.id}, net.id, "#a", 1)
+      msg_b = insert_message(%{user_id: user.id}, net.id, "#b", 1)
+      msg_o = insert_message(%{user_id: other.id}, net.id, "#a", 1)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#a", msg_a.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#b", msg_b.id)
+      {:ok, _} = ReadCursor.set({:user, other.id}, net.id, "#a", msg_o.id)
+
+      assert :ok = ReadCursor.clear_all_for_user(user.id)
+
+      assert ReadCursor.get({:user, user.id}, net.id, "#a") == nil
+      assert ReadCursor.get({:user, user.id}, net.id, "#b") == nil
+
+      assert %Cursor{last_read_message_id: kept_id} =
+               ReadCursor.get({:user, other.id}, net.id, "#a")
+
+      assert kept_id == msg_o.id
+    end
+
+    test "is idempotent when user has no cursors" do
+      user = user_fixture()
+      assert :ok = ReadCursor.clear_all_for_user(user.id)
+    end
+  end
 end

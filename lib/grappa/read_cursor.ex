@@ -212,6 +212,17 @@ defmodule Grappa.ReadCursor do
     Grappa.PubSub.broadcast_event(topic, Wire.read_cursor_set(last_read_message_id))
   end
 
+  @doc """
+  Test-support: drains every read-cursor row for `user_id` in a single
+  DELETE. Intended for `Grappa.TestSupport.SubjectReset` only — production
+  cursor lifecycle is per-channel via `set/4`.
+  """
+  @spec clear_all_for_user(Ecto.UUID.t()) :: :ok
+  def clear_all_for_user(user_id) when is_binary(user_id) do
+    Repo.delete_all(from c in Cursor, where: c.user_id == ^user_id)
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
