@@ -633,4 +633,32 @@ defmodule Grappa.UserSettingsTest do
       assert UserSettings.get_upload_ttl_seconds({:visitor, visitor.id}) == 3600
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # reset_for_user/1
+  # ---------------------------------------------------------------------------
+
+  describe "reset_for_user/1" do
+    test "deletes the settings row so subsequent reads return defaults" do
+      user = user_fixture()
+      other = user_fixture()
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, user.id}, ["foo", "bar"])
+      {:ok, _} = UserSettings.set_highlight_patterns({:user, other.id}, ["keep-me"])
+
+      # Pre-condition: both users have custom patterns
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
+      assert UserSettings.get_highlight_patterns({:user, other.id}) == ["keep-me"]
+
+      assert :ok = UserSettings.reset_for_user(user.id)
+
+      # User's settings reset to defaults; other user's preserved.
+      assert UserSettings.get_highlight_patterns({:user, user.id}) == []
+      assert UserSettings.get_highlight_patterns({:user, other.id}) == ["keep-me"]
+    end
+
+    test "is idempotent when user has no settings row" do
+      user = user_fixture()
+      assert :ok = UserSettings.reset_for_user(user.id)
+    end
+  end
 end

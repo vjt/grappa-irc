@@ -210,6 +210,19 @@ defmodule Grappa.UserSettings do
     end
   end
 
+  @doc """
+  Test-support: deletes the `user_settings` row for `user_id` so
+  subsequent reads return defaults. Intended for
+  `Grappa.TestSupport.SubjectReset` only — production lifecycle uses
+  per-field putters (`set_highlight_patterns/2`,
+  `put_notification_prefs/2`, `put_upload_ttl_seconds/2`).
+  """
+  @spec reset_for_user(Ecto.UUID.t()) :: :ok
+  def reset_for_user(user_id) when is_binary(user_id) do
+    Repo.delete_all(from s in Settings, where: s.user_id == ^user_id)
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # notification_prefs accessors (push-notifications cluster B3)
   # ---------------------------------------------------------------------------
