@@ -31,6 +31,24 @@ import { expect, test } from "@playwright/test";
 import { patchNetworkConnectionState } from "../fixtures/grappaApi";
 import { getSeededAdmin, getSeededM9bVictim, NETWORK_SLUG } from "../fixtures/seedData";
 
+// E2E-ROBUSTNESS bucket D — cascade root fix. The Disconnect spec
+// parks m9b-victim's credential and the Terminate spec stops its pid;
+// without a cleanup hook the session stays dead for the remainder of
+// the chromium suite, causing 30s timeout cascades in every downstream
+// spec that depends on a live m9b-victim (push specs, marker specs,
+// P-cluster, UX-5/UX-6 fan-out — 36+ specs total in the baseline).
+//
+// PATCH connection_state:"connected" is idempotent: no-op if already
+// connected, respawn via Networks.connect/1 if parked or terminated.
+// Runs after EVERY spec in this file — overkill for tests 1+2 but the
+// guarantee matters more than the wasted PATCH.
+test.afterEach(async () => {
+  const victim = getSeededM9bVictim();
+  await patchNetworkConnectionState(victim.token, NETWORK_SLUG, {
+    connection_state: "connected",
+  });
+});
+
 async function adminFriendlyLogin(
   page: import("@playwright/test").Page,
   seed: ReturnType<typeof getSeededAdmin>,
