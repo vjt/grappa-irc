@@ -131,6 +131,17 @@ defmodule GrappaWeb.Router do
     delete "/uploads/:id", UploadsController, :delete
   end
 
+  # E2E-ROBUSTNESS bucket D — test-only subject reset surface.
+  # Compile-gated to dev/test Mix env. Prod release literally does
+  # not contain the route (the if-block returns nil at compile time
+  # so Phoenix's router macro never registers it).
+  if Mix.env() in [:dev, :test] do
+    scope "/admin/test", GrappaWeb.Admin do
+      pipe_through [:api, :authn, :admin_authn]
+      post "/reset-subject", TestResetSubjectController, :reset
+    end
+  end
+
   scope "/auth", GrappaWeb do
     pipe_through :api
 
