@@ -213,7 +213,8 @@ defmodule Grappa.Push do
   """
   @spec subscription_clear_all_for_user(Ecto.UUID.t()) :: :ok
   def subscription_clear_all_for_user(user_id) when is_binary(user_id) do
-    Repo.delete_all(from s in Subscription, where: s.user_id == ^user_id)
+    query = from(s in Subscription, where: s.user_id == ^user_id)
+    Repo.delete_all(query)
     :ok
   end
 

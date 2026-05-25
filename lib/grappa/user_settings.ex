@@ -219,7 +219,8 @@ defmodule Grappa.UserSettings do
   """
   @spec reset_for_user(Ecto.UUID.t()) :: :ok
   def reset_for_user(user_id) when is_binary(user_id) do
-    Repo.delete_all(from s in Settings, where: s.user_id == ^user_id)
+    query = from(s in Settings, where: s.user_id == ^user_id)
+    Repo.delete_all(query)
     :ok
   end
 

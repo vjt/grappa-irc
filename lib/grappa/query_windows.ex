@@ -224,7 +224,8 @@ defmodule Grappa.QueryWindows do
   """
   @spec close_all_for_user(Ecto.UUID.t()) :: :ok
   def close_all_for_user(user_id) when is_binary(user_id) do
-    Repo.delete_all(from w in Window, where: w.user_id == ^user_id)
+    query = from(w in Window, where: w.user_id == ^user_id)
+    Repo.delete_all(query)
     :ok
   end
 

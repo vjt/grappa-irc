@@ -327,7 +327,8 @@ defmodule Grappa.Uploads do
   @spec delete_all_for_user(Ecto.UUID.t()) :: :ok
   def delete_all_for_user(user_id) when is_binary(user_id) do
     storage_root = storage_root()
-    rows = Repo.all(from u in Upload, where: u.user_id == ^user_id)
+    query = from(u in Upload, where: u.user_id == ^user_id)
+    rows = Repo.all(query)
 
     Enum.each(rows, fn %Upload{slug: slug} = up ->
       _ = File.rm(storage_path(storage_root, slug))

@@ -219,7 +219,8 @@ defmodule Grappa.ReadCursor do
   """
   @spec clear_all_for_user(Ecto.UUID.t()) :: :ok
   def clear_all_for_user(user_id) when is_binary(user_id) do
-    Repo.delete_all(from c in Cursor, where: c.user_id == ^user_id)
+    query = from(c in Cursor, where: c.user_id == ^user_id)
+    Repo.delete_all(query)
     :ok
   end
 
