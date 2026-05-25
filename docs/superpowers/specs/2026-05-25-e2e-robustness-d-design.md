@@ -127,12 +127,41 @@ verbs:
    (Backoff already has `reset/2`; WSPresence + NetworkCircuit
    need a new test-only reset/1 per surface).
 
-4. **Wait for re-bootstrap** — the orchestrator awaits the
-   restarted session reaching `:connected` via the same probe
-   `loginWithRetry` uses (login_probe_timeout_ms 3s window).
-   Reset returns 204 only after every credential's Session.Server
-   is back to `:connected` state. Synchronous; afterEach gets a
-   guaranteed-clean baseline.
+4. **Wait for re-bootstrap via `notify_pid` event** —
+   event-driven, not polling. Per CLAUDE.md "use
+   infrastructure, don't bypass it" +
+   `condition-based-waiting.md`:
+
+   Session.Server already exposes a notify mechanism for
+   exactly this case (`lib/grappa/session/server.ex:1331`):
+   when started with `plan = %{notify_pid: pid, notify_ref:
+   ref}`, it sends `{:session_phase, ref, :connected}` to
+   `notify_pid` on the `:irc_connected` callback (post-001
+   RPL_WELCOME). Already used by Bootstrap + visitor login.
+
+   For each `(user, network)` credential, sequentially:
+   - Build `ref = make_ref()` and `plan` with `notify_pid:
+     self()` + `notify_ref: ref`.
+   - Call `SpawnOrchestrator.respawn/2` (synchronously stops
+     the old Session.Server pid via supervisor terminate +
+     starts a new one with the notify-bearing plan).
+   - `receive do {:session_phase, ^ref, :connected} -> :ok
+     after @reset_timeout_ms -> {:error, {:timeout,
+     network_slug}} end`
+
+   `@reset_timeout_ms` = 5_000 (one module attribute on
+   `SubjectReset`). Hard error on timeout — caller gets 504
+   with `%{error: "session_reconnect_timeout", network_slug:
+   slug}`. No silent fallback, no retry loop. Loud failure
+   signals upstream (Bahamut) is sick or Session.Server
+   crash-looped — exactly the diagnostic signal a flaky-suite
+   investigation needs.
+
+   N credentials = N respawn/receive cycles sequentially. vjt
+   has 1 credential today; if a future seed user gains
+   multiple, sequential keeps the receive-loop simple (each
+   `ref` is unique → no message mix-up even if multiple were
+   concurrent).
 
 ### What it does NOT do
 
@@ -169,10 +198,15 @@ no-ops after reset but document intent.
 
 ### Failure modes + handling
 
-- **Reset endpoint times out (≥ 3s waiting for Session.Server
-  to reach `:connected`)**: 504 response. afterEach throws,
-  spec is marked as failed cleanup. Loud signal that upstream
-  is sick — better than silently leaving state mid-restart.
+- **Session.Server fails to reach `:connected` within 5s**:
+  504 response with `{error: "session_reconnect_timeout",
+  network_slug: slug}`. afterEach throws, spec is marked as
+  failed cleanup. Loud signal that upstream (Bahamut) is sick
+  or Session.Server crash-looped — better than silently
+  leaving state mid-restart. The event-driven wait means the
+  timeout only fires if the `:connected` PubSub event genuinely
+  never arrives (process never reaches that state), not if it
+  arrives late.
 - **Concurrent specs hit reset** (when `workers > 1`): out of
   scope for this bucket. Bucket E will add per-worker seed
   user isolation if needed.
@@ -197,12 +231,18 @@ Grappa.TestSupport.SubjectReset.reset!/1
    ├── Push.subscription_clear_all_for_user/1
    ├── UserSettings.reset_for_user/1
    ├── Uploads.delete_all_for_user/1
-   ├── for each credential:
-   │     SpawnOrchestrator.respawn/2  (Session.Server stop + restart)
+   ├── for each credential (sequential):
+   │     ref = make_ref()
+   │     SpawnOrchestrator.respawn/2  (Session.Server stop + restart
+   │                                    with notify_pid:self/notify_ref:ref)
+   │     receive {:session_phase, ^ref, :connected}
+   │             (timeout 5s → 504)
    ├── NetworkCircuit.reset/1
    ├── WSPresence.reset/1
    ├── Session.Backoff.reset/2
-   └── await every Session.Server reaches :connected (≤ 3s)
+   └── await every Session.Server fires {:session_phase, ref,
+       :connected} via notify_pid mechanism (5s hard timeout per
+       credential)
 ```
 
 ## Testing
