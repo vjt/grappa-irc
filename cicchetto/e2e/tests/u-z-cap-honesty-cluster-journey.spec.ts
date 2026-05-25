@@ -299,13 +299,15 @@ test("U-Z cap-honesty journey: park → user-cap-reject → row-unchanged → bu
   const userRow = userViewBody.find((n) => n.slug === NETWORK_SLUG);
   expect(userRow?.connection_state).toBe("parked");
 
-  // STEP 4 — Admin bumps user cap to 2 (room for vjt's one session
-  // + m9b-test's bootstrap session — m9b is seeded alongside vjt by
-  // compose.yaml since M-9b shipped). Pre-M-9b the cap=1 was sufficient
-  // because only vjt had a user session on this network; post-M-9b
-  // the test must account for the second seeded user. vjt /connect
-  // succeeds with 200; spawn-orchestrator commits the DB transition.
-  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_concurrent_user_sessions: 2 });
+  // STEP 4 — Admin bumps user cap to 3 (room for vjt's one session
+  // + m9b-test's bootstrap session + m9b-victim's bootstrap session —
+  // m9b-victim is seeded alongside vjt + m9b-test by compose.yaml since
+  // GREEN-CI batch-1 added it as the sacrificial Disconnect/Terminate
+  // target in m9b-admin-sessions-actions. Pre-m9b-victim the cap=2 was
+  // sufficient; post-m9b-victim the test must account for the third
+  // seeded user. vjt /connect succeeds with 200; spawn-orchestrator
+  // commits the DB transition.
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_concurrent_user_sessions: 3 });
 
   const reconnected = await tryConnect(vjt.token, NETWORK_SLUG);
   expect(reconnected.status).toBe(200);
