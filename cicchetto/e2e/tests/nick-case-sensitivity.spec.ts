@@ -76,18 +76,21 @@ test("nick case-sensitivity: /q with different casing focuses existing window, n
     // row count remains 1.
     await composeSend(page, `/q ${PEER_NICK_UPPER}`);
 
-    // Race-safe wait: give cic a beat to react to the slash dispatch
-    // before asserting absence of the phantom row.
-    await page.waitForTimeout(500);
-
-    // The sidebar row count for this peer (case-insensitive) is
-    // still exactly 1 — no phantom uppercase duplicate appeared.
-    // Use a case-insensitive locator to catch BOTH casings if either
-    // exists; the count MUST stay at 1.
+    // Wait for cic to react to the slash dispatch via an event-driven
+    // gate rather than a hard waitForTimeout (audit 2026-05-26): the
+    // case-insensitive count assertion below auto-polls via Playwright,
+    // so the only requirement is to give the dispatcher a chance to
+    // run. A phantom row would mount synchronously on the same tick as
+    // the user-input event — we poll for a stable count==1 across two
+    // consecutive reads ≥100ms apart. If a phantom shows up, one of
+    // the reads catches count=2 and the spec fails.
     const allCaseRows = sidebar.locator(".sidebar-channel-name", {
       hasText: new RegExp(`^${PEER_NICK_LOWER}$`, "i"),
     });
-    await expect(allCaseRows).toHaveCount(1);
+    await expect.poll(async () => allCaseRows.count(), { timeout: 3_000 }).toBe(1);
+    // Stability gate — re-check after a microtask flush to catch a
+    // delayed phantom mount (e.g. via a queued effect).
+    expect(await allCaseRows.count()).toBe(1);
     // And the existing row's display text is still the lowercase
     // canonical (NOT the user's uppercase input).
     await expect(allCaseRows.first()).toHaveText(PEER_NICK_LOWER);

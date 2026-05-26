@@ -36,7 +36,7 @@
 // for user-cap, `too_many_sessions` for client-cap).
 
 import { expect, test } from "../fixtures/test";
-import { loginAs } from "../fixtures/cicchettoPage";
+import { loginAs, waitForUserTopicReady } from "../fixtures/cicchettoPage";
 import {
   login,
   patchNetworkConnectionState,
@@ -160,18 +160,21 @@ test("UX-5 BR — Home pane [Reconnect] chip reconnects a parked network", async
   const reconnectChip = parkedRow.getByRole("button", { name: new RegExp(`reconnect ${NETWORK_SLUG}`, "i") });
   await expect(reconnectChip).toBeVisible();
 
-  // Wait for the user-topic JOIN ACK to land before clicking. cic
-  // joins `grappa:user:<name>` asynchronously after /me resolves
-  // (userTopic.ts createEffect → joinUser). Without this wait the
-  // chip click can race the JOIN ACK — the server's broadcast fires
-  // before cic is subscribed, so home_network_state_changed never
-  // reaches `patchHomeNetwork` and the row stays parked in the UI
-  // even though the server did transition. cp15-b6-parked.spec.ts
-  // sidesteps this because `composeSend("/disconnect <slug>")`
-  // involves keystrokes that take ~200ms+ — the natural delay covers
-  // the WS handshake. Direct row click has no such delay, so we
-  // explicitly wait. 2s is generous for a localhost-loopback handshake.
-  await page.waitForTimeout(2_000);
+  // Gate on the user-topic JOIN ACK before clicking (audit 2026-05-26:
+  // replaced a hardcoded waitForTimeout(2000) — loginAs above already
+  // calls waitForUserTopicReady, but we re-stamp here as a belt-and-
+  // suspenders defense against a hypothetical re-subscribe between
+  // login and click. The helper is idempotent: it polls the stamp set
+  // and returns immediately if already set.
+  //
+  // Why: cic joins `grappa:user:<name>` asynchronously after /me
+  // resolves (userTopic.ts createEffect → joinUser). Without the
+  // gate, the chip click can race the JOIN ACK — the server's
+  // broadcast fires before cic is subscribed, so
+  // home_network_state_changed never reaches `patchHomeNetwork`
+  // and the row stays parked in the UI even though the server did
+  // transition.
+  await waitForUserTopicReady(page, vjt.name);
 
   await reconnectChip.click();
 

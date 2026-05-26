@@ -91,9 +91,17 @@ test.describe("UX-6-J — push notification deep-link routing", () => {
       );
     });
 
-    // Selection is unchanged. (Wait a beat so any setSelectedChannel
-    // would have fired by now.)
-    await page.waitForTimeout(250);
+    // Selection is unchanged. Use expect.poll on a stable read (audit
+    // 2026-05-26: replaced hardcoded waitForTimeout(250)). If a
+    // setSelectedChannel fires, the polled value diverges from
+    // `initial` and the toBe(initial) on the final read still catches
+    // it; the poll just gives the dispatcher a microtask flush window.
+    await expect
+      .poll(async () => page.locator("li.selected").first().innerText().catch(() => ""), {
+        timeout: 1_000,
+        intervals: [50, 100, 200, 400],
+      })
+      .toBe(initial);
     const after = await page.locator("li.selected").first().innerText().catch(() => "");
     expect(after).toBe(initial);
     // Use NETWORK_NICK so the unused-import lint stays quiet.

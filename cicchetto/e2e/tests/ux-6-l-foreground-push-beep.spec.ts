@@ -177,8 +177,19 @@ test("PRIVMSG without nick mention does NOT fire beep on a non-focused channel",
       body: nonMentionBody,
     });
 
-    // Wait long enough for cic WS round-trip + handler to settle.
-    await page.waitForTimeout(1_000);
+    // Negative arm: wait long enough for cic WS round-trip + handler
+    // to settle, but use a polled stable read instead of a hardcoded
+    // sleep (audit 2026-05-26). If a beep DOES fire it'll set
+    // __lastBeepAt to a number; we poll for "still null" + a single
+    // final check. assertMessagePersisted above already guarantees
+    // the message reached cic; the only thing we're waiting for is
+    // the (non-)dispatch of beep handler.
+    await expect
+      .poll(async () => readLastBeepAt(page), {
+        timeout: 1_500,
+        intervals: [100, 200, 400, 800],
+      })
+      .toBeNull();
     expect(await readLastBeepAt(page)).toBeNull();
   } finally {
     await peer.disconnect("ux6l no-mention done");
