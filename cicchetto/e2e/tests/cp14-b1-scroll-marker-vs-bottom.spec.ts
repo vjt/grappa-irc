@@ -158,7 +158,7 @@ test.describe("CP14 B1 — scroll-to-marker vs scroll-to-bottom on window open",
   // mid-pane cursor on `vjt @ bahamut-test/#bofh` persists across spec
   // boundaries on the shared seeded user. Downstream specs that focus
   // `#bofh` (marker-target-window-regression T2, r6-own-action,
-  // scroll-settle-cursor, ux-5-bk, ux-6-k, p0e-invite-ack) assume a
+  // cursor-forward-only, ux-5-bk, ux-6-k, p0e-invite-ack) assume a
   // "fully-read" cursor at the tail — the persisted mid-pane cursor
   // injects an unread-marker into the pane, `scrollIntoView(marker)`
   // lands mid-pane instead of at the bottom, and the cascade fires.
