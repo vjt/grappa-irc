@@ -1,15 +1,12 @@
 #!/bin/sh
-# Convenience wrapper: invoke the assembled release's `bin/grappa`
-# (or `bin/grappa eval <code>`) as the grappa user inside the
-# bastille jail, with the env file sourced first.
+# Run `bin/grappa <args>` as the grappa user inside the bastille
+# jail, with /usr/local/etc/grappa/grappa.env sourced first.
 #
-# Usage (from m42 host):
+# Invoke from m42 host:
 #   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh version
 #   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh eval 'Grappa.Release.migrate()'
-#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh start_iex
-#
-# `start_iex` is useful for first-boot smoke against the env without
-# committing to running as a service.
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh daemon
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh stop
 
 set -eu
 
@@ -21,9 +18,18 @@ if [ ! -r "${ENV_FILE}" ]; then
 	exit 1
 fi
 
-exec su -l grappa -c "
+ARGS_FILE=$(mktemp /tmp/jail_release_args.XXXXXX)
+trap 'rm -f "${ARGS_FILE}"' EXIT
+printf '%s\n' "$@" > "${ARGS_FILE}"
+
+exec su -l grappa -c '
+set -eu
 set -a
-. ${ENV_FILE}
+. '"${ENV_FILE}"'
 set +a
-exec ${RELEASE_PATH}/bin/grappa $*
-"
+set --
+while IFS= read -r line; do
+	set -- "$@" "$line"
+done < "'"${ARGS_FILE}"'"
+exec '"${RELEASE_PATH}"'/bin/grappa "$@"
+'
