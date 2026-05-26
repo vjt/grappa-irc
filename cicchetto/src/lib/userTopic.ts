@@ -472,7 +472,20 @@ createRoot(() => {
     joined = true;
     joinedFor = name;
 
-    const channel = joinUser(name);
+    const channel = joinUser(name, () => {
+      // E2E seam: stamp `__cic_userTopicReady` after the JOIN ack lands.
+      // Mirror of `__cic_dmListenerReady` (subscribe.ts:733-748). Playwright
+      // gates compose-driven specs on this so the user-topic socket is
+      // subscribed BEFORE the test pushes /join (server's window_pending +
+      // join_failed broadcasts fastlane only to subscribed sockets — sub-
+      // 50ms WS-ack races in suite context caused the pending/failed events
+      // to vanish, leaving cic with no sidebar pseudo-row).
+      if (typeof window !== "undefined") {
+        const w = window as Window & { __cic_userTopicReady?: Set<string> };
+        if (!w.__cic_userTopicReady) w.__cic_userTopicReady = new Set();
+        w.__cic_userTopicReady.add(name);
+      }
+    });
     channel.on("event", (raw: unknown) => {
       const payload = narrowUserEvent(raw);
       if (payload === null) {

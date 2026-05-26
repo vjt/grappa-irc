@@ -113,7 +113,7 @@ describe("userTopic", () => {
 
   it("joins the user topic when user resolves", async () => {
     const socket = await import("../lib/socket");
-    expect(socket.joinUser).toHaveBeenCalledWith("vjt");
+    expect(socket.joinUser).toHaveBeenCalledWith("vjt", expect.any(Function));
   });
 
   it("calls refetchChannels on channels_changed event", async () => {

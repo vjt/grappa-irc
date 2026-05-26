@@ -91,10 +91,13 @@ createRoot(() => {
 // infrastructure on the server side but has no cicchetto consumer yet —
 // add it back when a real consumer (presence per network, MOTD on the
 // per-user topic, etc.) needs it.
-export function joinUser(userName: string): Channel {
+export function joinUser(userName: string, onJoinOk?: (reply: unknown) => void): Channel {
   const topic = `grappa:user:${userName}`;
   const ch = getSocket().channel(topic);
   ch.join()
+    .receive("ok", (reply: unknown) => {
+      if (onJoinOk) onJoinOk(reply);
+    })
     .receive("error", (err: unknown) => {
       console.error("[grappa] channel join failed", topic, err);
     })

@@ -133,6 +133,7 @@ export async function loginAs(
     await expect(page.locator(".home-pane-registered").first()).toBeVisible({
       timeout: SHELL_READY_TIMEOUT_MS,
     });
+    await waitForUserTopicReady(page, vjt.name);
     return;
   }
   const readySelector = isMobileViewport(page)
@@ -141,6 +142,12 @@ export async function loginAs(
   await expect(page.locator(readySelector).first()).toBeVisible({
     timeout: SHELL_READY_TIMEOUT_MS,
   });
+  // Gate on the user-topic WS subscribe completing — without this,
+  // compose-driven specs that fire `/join` immediately after loginAs
+  // race the JOIN ack and miss the server's window_pending +
+  // join_failed broadcasts (Phoenix.PubSub doesn't replay to late
+  // subscribers). See `waitForUserTopicReady` for the full why.
+  await waitForUserTopicReady(page, vjt.name);
 }
 
 // Sidebar / bottom-bar accessors ────────────────────────────────────
@@ -348,6 +355,34 @@ export async function waitForDmListenerReady(page: Page, networkSlug: string): P
       return set?.has(slug) === true;
     },
     networkSlug,
+    { timeout: 5_000 },
+  );
+}
+
+// Wait until cic's user-topic Channel has joined (Phoenix `phx.join()`
+// `ok` ack landed for `grappa:user:{userName}`). Pure test seam:
+// userTopic.ts stamps `__cic_userTopicReady` (a `Set<userName>`) in the
+// JOIN ok handler. Production never reads it.
+//
+// Why: window_pending + join_failed events fastlane to subscribed sockets
+// only — Phoenix.PubSub doesn't replay to late subscribers. cic compose
+// `/join` triggers an HTTP POST that returns before the user-topic JOIN
+// ack lands (~45ms gap measured in suite context). When the gap is wide
+// enough, the broadcasts fire on the EMPTY subscriber list and cic never
+// receives setPending/setFailed — sidebar pseudo-row never renders,
+// asserting specs time out at `.sidebar-window-greyed`.
+//
+// Wired into loginAs() universally rather than per-spec because the race
+// affects ANY spec that compose-sends `/join` (or any compose verb that
+// produces a server-side user-topic broadcast) shortly after page-load.
+export async function waitForUserTopicReady(page: Page, userName: string): Promise<void> {
+  await page.waitForFunction(
+    (name) => {
+      const set = (window as unknown as { __cic_userTopicReady?: Set<string> })
+        .__cic_userTopicReady;
+      return set?.has(name) === true;
+    },
+    userName,
     { timeout: 5_000 },
   );
 }
