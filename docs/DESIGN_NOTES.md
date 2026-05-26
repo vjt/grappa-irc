@@ -10010,9 +10010,109 @@ hash `C-Ph5y4M` broadcast to all live user-topics. Healthcheck `ok`.
   `feedback_dom_input_event_complete_set` memory if a third bucket
   trips on this.
 
+---
+
+## Spec audit cluster (2026-05-26)
+
+vjt mandate post-BUGHUNT-3: "in depth review of all specs ... drop the
+ones that make no sense such as testing internals and keep all the
+ones that test actual user behaviour ... lets make them robust and
+faster." 109 Playwright specs surveyed by 5 parallel general-purpose
+agents (~22 specs each), scored on REDUNDANCY / INTERNALS / ASSERTION
+STRENGTH / SPEED / ROBUSTNESS / SCOPE. Per-spec verdicts
+(KEEP / KEEP+REFACTOR / CONSOLIDATE / DROP) merged into a master
+proposal; vjt sign-off gated on every hard-to-reverse move
+(CONSOLIDATE / DROP / file-collapse).
+
+**Shipped over 9 commits + cascade-fix:**
+
+* **EZ bucket** — 4 strict-subset CONSOLIDATEs: `cp15-b4` → `cp15-b6-PAR`,
+  `i2` → `ux-6-b-embedded-upload`, `ios-3` + `ios-4` → `ios-z`.
+  Net −4 spec files, −286 lines.
+* **R1 bucket** — cursor cluster 4 → 1 parametrized spec
+  (`cursor-forward-only.spec.ts`): the 4 specs each tested one slice
+  of the same BUGHUNT-2 forward-only-cursor contract via identical
+  harness shape. Folded into 7 tests, shared helpers, single
+  afterAll cascade-fix. 656 → 407 lines. One assertion strengthened
+  during the consolidation (scroll-settle test-1's
+  `validForwardOnly OR advancedToNewVisible` disjunction was
+  swallowing out-of-band cursor jumps).
+* **R3 bucket** — `ux-z` had a `CLASSES` parity-theatre loop iterating
+  over `[registered, visitor, nickserv]` but `continue`d 2/3 with
+  no side effects. Loop dropped.
+* **R5 bucket** — `cp13-server-window` was bundling 5 unrelated tests
+  in 218 lines; S5 (compose-driven 401 routing) + S10 (mIRC bold
+  renderer) extracted to own files; cluster spec trimmed to the
+  S6+S8+S9 server-window UX contract.
+* **R6 bucket** — 4 hardcoded `waitForTimeout(500-2000ms)` replaced
+  with event-driven gates (nick-case, ux-5-br, ux-6-j, ux-6-l).
+  −3.75s of hardcoded waiting suite-wide.
+* **R7 bucket** — 4 weak assertions strengthened
+  (`p0d-lusers` body `toContainText(/\d+/)` → named-field;
+  `cp22-bnames` SOFT-check → branch precondition; `m12-motd-server`
+  kind-agnostic → kind=notice with leaf-name regex; `ux-5-b-home-emoji`
+  text-only → boundingBox visibility).
+* **Rename batch** — 19 weakest spec filenames got descriptive
+  suffixes (`c2-whois` → `c2-whois-card-inline-render`, etc.).
+  Cluster IDs preserved for chronological backtrace into checkpoints.
+
+**Skipped per vjt call**: R2 (mobile CSS-shape consolidation —
+"keep these alone") + R4 (bug7 fold + webkit-iphone-15 CI matrix
+extension — "ship CI matrix extension SEPARATELY first").
+
+### Cascade root-cause discovery (the real prize)
+
+Mid-audit, the EZ commit landed `cp15-b6-part-archive-rejoin` with a
+fold-in `$server-never-archived` invariant. Local integration suite
+exit 0; CI integration ✘ on the same test, then CI ci ✘ on the next
+commit with 10/11 cascade in `Grappa.AdminEventsTest` —
+`SessionRegistry never drained — stale entries: [{:visitor, ...}]`.
+
+**Root cause traced from CI back to prod**: `Grappa.Session.stop_session/2`'s
+5-second `@stop_down_timeout_ms` ran out, the function `Logger.error`'d
++ demonitored + returned `:ok` WITHOUT actually killing the pid. The
+visitor login_test's `stop_visitor_session` therefore returned `:ok`
+despite the Session.Server still alive in reconnect-backoff
+(`{:connect_failed, :econnrefused}`). The zombie pid then poisoned
+SessionRegistry for the next singleton-lane test (AdminEventsTest's
+`wait_for_empty_session_registry!`), cascading 10+ unrelated failures.
+
+Local repro impossible (faster cores get the `:DOWN` within budget
+every time); the fix has to be unconditional.
+
+**Fix (commit `6980dc8`)**: on the `:DOWN` receive timeout, escalate
+to `Process.exit(pid, :kill)` (unmaskable — bypasses `terminate/2`
+entirely), then re-wait briefly for the kill's `:DOWN` before
+returning. Post-condition is now "process WILL be dead" instead of
+"process MAY still be alive (with Logger.error noise)." Memory:
+`feedback_session_stop_must_force_kill.md`.
+
+Lessons captured:
+
+* **CI is a fuzzer for prod GenServer teardown latency.** The faster
+  the dev machine, the harder it is to repro CI-only teardown bugs.
+  When CI cascades on a singleton-lane test that does ANY
+  Registry-draining setup, suspect a prod-side zombie leaked by some
+  upstream test's "best-effort" cleanup that demonitored without
+  killing.
+* **"No silent-swallow at boundaries" applies to demonitor too.** Per
+  CLAUDE.md "Use infrastructure, don't bypass it" — a function that
+  promises to stop a process and returns `:ok` without proving the
+  process is dead is a silent-swallow shape, even if it logs the
+  failure. The next reader (test, controller, operator) treats `:ok`
+  as "the post-condition holds" and racing the dead pid is the bug
+  class that surfaces.
+* **Spec audit returned more value than the consolidation itself.**
+  The audit was scoped to "make e2e specs robust + faster"; it
+  surfaced a prod GenServer lifecycle bug that had been latent for
+  weeks (intermittent CI cascade prior session investigated +
+  couldn't reproduce — recorded as folklore). The audit gave us the
+  forcing function to trace it end-to-end.
+
 ### Next per locked roadmap
 
-1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ + ~~BUGHUNT-2~~ — all CLOSED.
+1. ~~UX-8~~ + ~~wireTypes codegen~~ + ~~BUGHUNT-1~~ + ~~BUGHUNT-2~~ +
+   ~~E2E-ROBUSTNESS~~ + ~~spec-audit~~ — all CLOSED.
 2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
    prod runtime parallel to docker-compose. No remaining known
    user-visible regressions blocking it.

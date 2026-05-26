@@ -11,65 +11,15 @@ Priority tiers: **Immediate** (this session), **High** (this week),
 
 ## Immediate
 
-**E2E-ROBUSTNESS cluster** — chromium suite pollution audit (filed
-2026-05-25 post-BUGHUNT-3). Goals: (a) make integration suite
-reliable (zero rotating-victim flakes across N runs); (b) speed it
-up (current ~10min per project, single-shot iso ~7s × N = ouch).
-
-**Evidence**: this session 5× iso m2 main = 5/5 ✓, but full chromium
-2 runs in a row produced rotating 3-4 victim shapes:
-- run 1: m2:51, scroll-225, ux-5-bs:88 (3 ✘)
-- run 2: cp15-b6:32, m2:51, scroll-225, ux-5-bs:88 (4 ✘)
-
-All 3 of (m2, scroll-225, ux-5-bs:88) pass clean in iso 3-5× on
-post-D `515920d`. Same as pre-D iso pass-rate (varies). Pattern matches
-`feedback_ci_cascade_rotating_set` + `feedback_recurring_e2e_not_flake`:
-rotating victims across the same UI surface = upstream state
-pollution, NOT product regression.
-
-**Buckets** (preliminary, scoped at cluster open):
-- **A (audit)**: catalog WHICH specs run in chromium lex order ≪ each
-  victim. Lex-position pairs (poisoner→victim). Tooling for
-  reproducible bisect (single-spec iso vs paired iso). 1-day spike.
-- **B (localStorage)**: ux-5-bs:88 victim of ux-5-bs:41 persisted
-  sidebar/members width. Either (i) test-side cleanup in
-  `afterEach` to reset localStorage, or (ii) prod-side per-tab
-  ephemeral state with explicit "reset" verb. Decide after audit.
-- **C (Bahamut /invite rate-limit)**: p0e victim of b0+b2 if both
-  ran recently. Either (i) cooldown timestamp helper before each
-  /invite, or (ii) distinct test-network slug per spec (probably
-  overkill — already per-channel-name distinct).
-- **D (WS subscribe-vs-broadcast race)**: m2 + similar — peer events
-  arrive before per-channel topic ack. cic needs a `__cic_channelReady`
-  set parallel to `__cic_dmListenerReady` for the channels-loop. Test
-  helper `waitForChannelReady(slug, channel)` analogous to
-  `waitForDmListenerReady`. Server-side: investigate whether
-  `phx.join().receive("ok")` is the right gate or whether the
-  per-channel topic subscription has a separate ack.
-- **E (speed)**: parallelize chromium project per spec-file group;
-  warm grappa BEAM across iso runs (currently each iso = full
-  testnet bringup + grappa cold boot ~2min); cache cic build across
-  unchanged-source runs.
-- **Z (close)**: docs sweep, new feedback memories, todo
-  reconcile. Verify chromium full N×5 ✓ in a row.
-
-**Caveat**: per `feedback_recurring_e2e_not_flake`, observing
-flakes 1× ≠ pursuing. Cluster opens only when full chromium run
-shows ≥2 rotating victims across 3 consecutive runs (criteria met
-this session).
+**Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
+gh issue view 8`). FreeBSD bastille jail target prod runtime; current
+deploy is docker-compose. Likely parallel target
+(`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
+Docker→Bastille rewrite. Verify scope from #8 before assuming.
 
 ---
 
-(BUGHUNT-3 fully closed; bastille proper is BLOCKED on
-E2E-ROBUSTNESS — porting to FreeBSD on a leaky CI substrate
-multiplies the debugging surface.)
-
----
-
-★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22, UX-8 + codegen + BUGHUNT-1 + BUGHUNT-2 CLOSED 2026-05-24):**
-
-After UX-8 (scroll cluster) + codegen + BUGHUNT-1 pre-bastille
-bug-hunt CLOSED, work proceeds in this order. Do NOT skip ahead.
+★ **POST-UX-8 ROADMAP — canonical source of truth (vjt 2026-05-22):**
 
 1. **Bastille deploy workstream** — GitHub issue #8 (`GH_CONFIG_DIR=./.gh
    gh issue view 8`). FreeBSD bastille jail target prod runtime; current
@@ -77,27 +27,8 @@ bug-hunt CLOSED, work proceeds in this order. Do NOT skip ahead.
    (`scripts/deploy-bastille.sh` sibling to `scripts/deploy.sh`), not a
    Docker→Bastille rewrite. Verify scope from #8 before assuming.
 
-**Why this order (load-bearing):**
-- Codegen-before-bastille (CLOSED 2026-05-24): cic↔server boundary was
-  the highest-risk drift surface per 2026-05-22 review. CP46 closed it
-  structurally via mix-task + drift gate + cic-side TS assert.
-- BUGHUNT-1-before-bastille (CLOSED 2026-05-24): two known user-visible
-  regressions (long-msg silent truncation + cic mobile archive empty
-  on first open) closed in CP47 so the new prod runtime doesn't
-  inherit them.
-- Bastille-last: prod-runtime migration on a green-suite +
-  structurally-typed-boundary + no-known-regressions substrate, not
-  during cleanup.
-
-**Lineage** (verbatim vjt words preserved):
-- 2026-05-22 mid-REV-E: "after review is done, fix all the flakes and
-  do the codegens before proceeding with bastille deploy"
-- 2026-05-22 evening: "we still have scrolling issues when switching
-  channels, and we need to implement read cursor update on scroll. when
-  is the best moment?" → "it's ok fix the flakes first"
-- 2026-05-24 night: UX-8 scroll cluster CLOSED — (a) double-rAF +
-  scrollIntoView + spec marker-tolerance, (b) scroll-settle cursor
-  with forward-only gate, (d) 3-scenario e2e + sentinel marker-aware.
+Bastille goes on a green-suite + structurally-typed-boundary +
+no-known-regressions substrate — not during cleanup.
 
 Memory pointer (single source of truth lives HERE, not in memory):
 `project_post_rev_roadmap.md` is a one-liner pointer to this section.
