@@ -181,9 +181,19 @@ defmodule GrappaWeb.ChannelsController do
     subject = Subject.to_session(conn.assigns.current_subject)
     network = conn.assigns.network
 
+    # Order matters: remove from autojoin (DB UPDATE) BEFORE send_part
+    # (which broadcasts `channels_changed`). The broadcast triggers
+    # cic's `refetchChannels` GET /channels; that read merges the
+    # credential's `autojoin_channels` with `Session.list_channels/2`.
+    # If the UPDATE hasn't committed yet when the GET reads
+    # network_credentials, the response includes the removed channel
+    # as `source: :autojoin` and the sidebar row never goes away.
+    # Pre-fix race window was ~5ms (DB write latency); under load it
+    # widened. e2e suite saw it as the cp15-b6/r6/bughunt-1-b/m9
+    # rotating-victim cascade. (E2E-ROBUSTNESS bucket D follow-up.)
     with :ok <- validate_channel_name(channel),
-         :ok <- Session.send_part(subject, network.id, channel),
-         :ok <- remove_from_autojoin(conn.assigns.current_subject, network, channel) do
+         :ok <- remove_from_autojoin(conn.assigns.current_subject, network, channel),
+         :ok <- Session.send_part(subject, network.id, channel) do
       # UX-3 Z2 (2026-05-18): closing a channel makes its scrollback
       # archive-eligible (list_archive/3 excludes joined channels via
       # the `active_keyset`). Without this broadcast, connected cic
