@@ -14,6 +14,7 @@ set -eu
 
 # Pass-through args via a temp file so quoting survives su -l.
 ARGS_FILE=$(mktemp /tmp/jail_mix_args.XXXXXX)
+chmod 0644 "${ARGS_FILE}"
 trap 'rm -f "${ARGS_FILE}"' EXIT
 # `bastille cmd <jail> <script> a b c` invokes the script with
 # a as $0 (eaten as script name), b as $1, etc. Restore the real

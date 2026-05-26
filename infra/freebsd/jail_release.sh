@@ -19,6 +19,7 @@ if [ ! -r "${ENV_FILE}" ]; then
 fi
 
 ARGS_FILE=$(mktemp /tmp/jail_release_args.XXXXXX)
+chmod 0644 "${ARGS_FILE}"
 trap 'rm -f "${ARGS_FILE}"' EXIT
 # `bastille cmd <jail> <script> a b c` invokes the script with
 # a as $0, b as $1, etc. — the first positional gets eaten as the
