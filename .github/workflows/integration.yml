@@ -73,15 +73,9 @@ jobs:
     # cicchetto/e2e/compose.ghcr-vjt.yaml). Default GITHUB_TOKEN has
     # this scope on the same-owner package, but only when permissions
     # are declared at the job level.
-    #
-    # `actions: write` so `docker/build-push-action`'s `type=gha`
-    # cache exporter can write to GitHub's per-repo action cache.
-    # Reads are implicit on `actions: read` (the default); writes
-    # require explicit grant.
     permissions:
       contents: read
       packages: read
-      actions: write
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -129,70 +123,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        # Required for `cache-from / cache-to: type=gha` on
-        # `docker/build-push-action`. Configures the local docker
-        # daemon with a buildx builder that supports the GHA cache
-        # exporter (writes to GitHub's per-repo action cache, scoped
-        # per ref + branch). Subsequent `docker compose build` calls
-        # also benefit because buildx becomes the default builder
-        # once set up.
-        uses: docker/setup-buildx-action@v3
-
-      - name: Resolve runner UID/GID
-        # `scripts/_lib.sh:e2e_export_uid` exports
-        # `CONTAINER_UID=$(id -u)` on Linux for the compose stack so
-        # bind-mounted writes land as the host user. Pre-build below
-        # MUST pass the SAME values as build-args — BuildKit includes
-        # ALL declared build-args in cache keys (even when the
-        # Dockerfile doesn't reference them, which is currently the
-        # case here), so a build-args mismatch between pre-build and
-        # the subsequent compose-driven build would force a full
-        # cache miss on every CI run.
-        id: ids
-        run: |
-          {
-            echo "uid=$(id -u)"
-            echo "gid=$(id -g)"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build grappa:e2e (cached)
-        # Pre-build the Elixir/Phoenix bouncer image with the GHA
-        # cache exporter so the heavy `mix deps.compile` layer (~57s
-        # on cold) is cached across CI runs. The Dockerfile orders
-        # COPY mix.exs/mix.lock → deps.get → deps.compile → COPY
-        # config/ → COPY . → compile, so the cache hits as long as
-        # mix.lock + config/ are unchanged.
-        #
-        # `load: true` tags the image in the local docker daemon
-        # (`grappa:e2e`) so the subsequent compose-driven builds in
-        # scripts/{integration,testnet}.sh find it and rebuild
-        # instantly off the warm buildx cache (compose's `build:` +
-        # `--build` still get invoked; what changes is the per-layer
-        # cache-hit cost).
-        #
-        # `cache-from / cache-to type=gha,mode=max` exports ALL
-        # intermediate layers (not just the final image), so a
-        # subsequent run hitting any layer mid-stage can resume from
-        # there. `mode=max` is correct for multi-stage caching;
-        # `mode=min` (the default) only exports the final layers.
-        #
-        # CONTAINER_UID/GID build-args are passed even though the
-        # current Dockerfile doesn't reference them — see "Resolve
-        # runner UID/GID" rationale above for the cache-key parity
-        # constraint.
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          tags: grappa:e2e
-          load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            CONTAINER_UID=${{ steps.ids.outputs.uid }}
-            CONTAINER_GID=${{ steps.ids.outputs.gid }}
 
       - name: Run integration suite
         # `bash scripts/integration.sh` boots the stack, runs the
