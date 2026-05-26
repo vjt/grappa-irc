@@ -352,14 +352,43 @@ export async function getReadCursor(
 // failures, never silently ignores. Wire shape mirrors the
 // SubjectReset.reset_error type (404 user_not_found, 504 reconnect
 // timeout w/ network_slug, 500 reconnect_failed w/ slug + reason).
-export async function resetSubject(adminToken: string, userName: string): Promise<void> {
+// E2E-ROBUSTNESS bucket D — per-spec subject reset. Drains every
+// mutable surface for `userName` (DB rows + Session.Server restart
+// + ETS entries) so the next spec begins from a clean baseline.
+// Server-side gates: route compile-gated to dev/test Mix env
+// (router.ex); admin_authn requires admin bearer.
+//
+// Caller MUST pass the seeded ADMIN token (getSeededAdmin().token),
+// NOT the user's own token. The endpoint is admin-only.
+//
+// `baselineAutojoin` (network_slug → channels) restores
+// `cred.autojoin_channels` to the seed-time list per network. cic's
+// PART verb (DELETE /networks/.../channels) strips the channel from
+// operator-config autojoin permanently (UX-1, m9-part-x-click,
+// cp15-b6 exercise this); without restoration, every subsequent
+// reset would see an empty autojoin list and the seed `#bofh`
+// would never re-JOIN.
+//
+// Throws on non-204 — afterEach treats reset failures as loud test
+// failures, never silently ignores. Wire shape mirrors the
+// SubjectReset.reset_error type (404 user_not_found, 504 reconnect
+// timeout / autojoin timeout w/ network_slug, 500 reconnect_failed
+// w/ slug + reason).
+export async function resetSubject(
+  adminToken: string,
+  userName: string,
+  baselineAutojoin?: Record<string, string[]>,
+): Promise<void> {
+  const body: Record<string, unknown> = { user_name: userName };
+  if (baselineAutojoin) body.baseline_autojoin = baselineAutojoin;
+
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/reset-subject`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${adminToken}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ user_name: userName }),
+    body: JSON.stringify(body),
   });
   if (res.status !== 204) {
     const text = await res.text().catch(() => "<no body>");

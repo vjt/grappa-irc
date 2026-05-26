@@ -10,6 +10,14 @@ if Mix.env() in [:dev, :test] do
     `[:api, :authn, :admin_authn]` pipeline — requires an admin
     bearer token.
 
+    Body: `{"user_name": "vjt", "baseline_autojoin": {"bahamut-test": ["#bofh"]}}`.
+    `baseline_autojoin` is optional — when omitted, credentials keep
+    their current `autojoin_channels` (only `last_joined_channels` is
+    cleared). The fixture supplies the seed-time autojoin per network
+    so DELETE-driven mutations to operator-config autojoin (cic's
+    PART verb, exercised by UX-1, m9-part-x-click, cp15-b6) get
+    restored across specs.
+
     See `docs/superpowers/specs/2026-05-25-e2e-robustness-d-design.md`.
     """
     use GrappaWeb, :controller
@@ -17,12 +25,14 @@ if Mix.env() in [:dev, :test] do
     alias Grappa.TestSupport.SubjectReset
 
     @spec reset(Plug.Conn.t(), map()) :: Plug.Conn.t()
-    def reset(conn, %{"user_name" => user_name}) when is_binary(user_name) do
+    def reset(conn, %{"user_name" => user_name} = params) when is_binary(user_name) do
       # Inline dispatch (not action_fallback) — three of four error
       # tuples carry slug/reason payloads only this surface knows
       # about; FallbackController would have to grow test-only clauses
       # for them.
-      case SubjectReset.reset!(user_name) do
+      opts = build_opts(params)
+
+      case SubjectReset.reset!(user_name, opts) do
         :ok ->
           send_resp(conn, 204, "")
 
@@ -53,5 +63,27 @@ if Mix.env() in [:dev, :test] do
     def reset(conn, _) do
       conn |> put_status(:unprocessable_entity) |> json(%{error: "user_name_required"})
     end
+
+    # Coerce the JSON `baseline_autojoin` map into the keyword-shaped
+    # opts SubjectReset.reset!/2 expects. Reject non-map / non-list
+    # values silently — defaulting to "no baseline" is safer than
+    # 422'ing a malformed body that an older fixture might send.
+    defp build_opts(%{"baseline_autojoin" => baseline}) when is_map(baseline) do
+      sanitized =
+        baseline
+        |> Enum.flat_map(fn
+          {slug, channels} when is_binary(slug) and is_list(channels) ->
+            chans = Enum.filter(channels, &is_binary/1)
+            [{slug, chans}]
+
+          _ ->
+            []
+        end)
+        |> Map.new()
+
+      %{baseline_autojoin: sanitized}
+    end
+
+    defp build_opts(_), do: %{}
   end
 end

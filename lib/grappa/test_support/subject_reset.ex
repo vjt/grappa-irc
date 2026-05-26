@@ -33,18 +33,36 @@ if Mix.env() in [:dev, :test] do
     attempt — they're already not-running and shouldn't be started by
     a test cleanup verb.
 
-    After `:session_ready` (001 RPL_WELCOME) lands, additionally waits
-    for every `autojoin_channels` entry to reach `:joined` window-state
-    via `Session.get_window_state/3`. Autojoin fires AFTER 001 (see
-    `Session.Server.handle_info({:irc, %Message{command: {:numeric, 1}}}, …)`),
-    so without this gate the reset returns into a window where the
-    next spec's REST `/networks/<slug>/channels` query races the
-    upstream JOIN ack and observes an empty sidebar — root cause of
-    the chromium suite cascade observed in T14 (~25 victims, all
-    `selectChannel(#bofh)` 30s timeouts). Shared 5s budget across all
-    autojoin channels for a credential; same loud-failure rationale
-    as the welcome wait — local-loopback Bahamut joins should ack in
-    <1s, multi-second misses signal upstream sickness.
+    ## Baseline channel restore
+
+    Before respawn, each credential is rewritten to its seed-time
+    baseline:
+
+      * `last_joined_channels` is cleared to `[]` — strips ephemeral
+        channels that earlier specs JOIN'd (e.g. random-suffixed test
+        channels). Without this, `Networks.SessionPlan.resolve/1`
+        rehydrates the whole accumulated set every reset, blowing
+        past the per-network JOIN throttle / MAXCHANNELS budget on
+        Bahamut.
+
+      * `autojoin_channels` is restored to `baseline_autojoin[slug]`
+        when the caller provides one. `DELETE /networks/.../channels`
+        (cic's PART verb, exercised by UX-1, m9-part-x-click,
+        cp15-b6) strips the channel from operator-config autojoin
+        permanently; the test seed expects `["#bofh"]` to be present
+        every time. The fixture knows the seed contract
+        (`cicchetto/e2e/fixtures/seedData.ts:AUTOJOIN_CHANNELS`) and
+        passes it through.
+
+    After the baseline write, `Session.get_window_state/3` is polled
+    for every restored autojoin channel until all reach `:joined` or
+    a shared 5s deadline elapses → `{:autojoin_timeout, slug,
+    missing}`. Autojoin fires AFTER RPL_WELCOME on the new
+    `Session.Server`, so the wait window covers the JOIN + 366
+    RPL_ENDOFNAMES round-trip. Pre-fix, reset returned immediately
+    after `:session_ready` and the next spec's REST `/channels`
+    query raced the in-flight JOINs (sidebar `#bofh` row missing →
+    30s `selectChannel` timeout → ~25 cascade victims).
     """
 
     use Boundary,
@@ -69,6 +87,7 @@ if Mix.env() in [:dev, :test] do
       Accounts,
       Admission.NetworkCircuit,
       Networks,
+      Networks.Credential,
       Push,
       QueryWindows,
       ReadCursor,
@@ -83,6 +102,8 @@ if Mix.env() in [:dev, :test] do
     @autojoin_timeout_ms 5_000
     @autojoin_poll_interval_ms 50
 
+    @type reset_opts :: %{optional(:baseline_autojoin) => %{String.t() => [String.t()]}}
+
     @type reset_error ::
             :user_not_found
             | {:reconnect_timeout, String.t()}
@@ -91,6 +112,12 @@ if Mix.env() in [:dev, :test] do
 
     @doc """
     Drain every mutable surface for the user identified by `user_name`.
+
+    `opts.baseline_autojoin` is a map of `network_slug => [channel]`;
+    each matching credential's `autojoin_channels` is restored to the
+    listed channels before respawn. Credentials for networks not in
+    the map keep their current `autojoin_channels`. `last_joined_channels`
+    is ALWAYS cleared to `[]` regardless of map contents.
 
     Returns `:ok` on success. Returns `{:error, :user_not_found}` if
     the user_name doesn't exist. Returns `{:error, {:reconnect_timeout,
@@ -102,15 +129,15 @@ if Mix.env() in [:dev, :test] do
     `autojoin_channels` entry has not reached `:joined` state within
     #{@autojoin_timeout_ms}ms after `:session_ready`.
     """
-    @spec reset!(String.t()) :: :ok | {:error, reset_error()}
-    def reset!(user_name) when is_binary(user_name) do
+    @spec reset!(String.t(), reset_opts()) :: :ok | {:error, reset_error()}
+    def reset!(user_name, opts \\ %{}) when is_binary(user_name) and is_map(opts) do
       case Repo.get_by(Accounts.User, name: user_name) do
         nil -> {:error, :user_not_found}
-        %Accounts.User{} = user -> do_reset(user)
+        %Accounts.User{} = user -> do_reset(user, opts)
       end
     end
 
-    defp do_reset(user) do
+    defp do_reset(user, opts) do
       :ok = ReadCursor.clear_all_for_user(user.id)
       :ok = QueryWindows.close_all_for_user(user.id)
       :ok = Push.subscription_clear_all_for_user(user.id)
@@ -118,8 +145,39 @@ if Mix.env() in [:dev, :test] do
       :ok = Uploads.delete_all_for_user(user.id)
       :ok = WSPresence.reset_for_user(user.name)
 
-      credentials = Networks.Credentials.list_credentials_for_user(user)
+      baseline = Map.get(opts, :baseline_autojoin, %{})
+
+      credentials =
+        user
+        |> Networks.Credentials.list_credentials_for_user()
+        |> Enum.map(&restore_baseline_channels(&1, baseline))
+
       respawn_each(user, credentials)
+    end
+
+    # Rewrite cred.last_joined_channels + cred.autojoin_channels to
+    # the seed baseline so the merged SessionPlan starts every spec
+    # with only the channels the test fixture expects. In-memory cred
+    # struct is returned so respawn_each sees the post-write shape
+    # without an extra Repo.reload.
+    defp restore_baseline_channels(cred, baseline) do
+      slug = cred.network.slug
+      new_autojoin = Map.get(baseline, slug, cred.autojoin_channels)
+
+      attrs = %{
+        last_joined_channels: [],
+        autojoin_channels: new_autojoin
+      }
+
+      {:ok, updated} =
+        cred
+        |> Credential.changeset(attrs)
+        |> Repo.update()
+
+      # Repo.update returns the row without preloads — re-attach the
+      # network association from the original cred so downstream code
+      # paths (slug lookup, SessionPlan.resolve) work without a refetch.
+      %{updated | network: cred.network}
     end
 
     defp respawn_each(_, []), do: :ok
@@ -201,23 +259,6 @@ if Mix.env() in [:dev, :test] do
       end
     end
 
-    # Poll Session.Server's window_state for every autojoin channel
-    # until all observe `:joined`, or the shared budget elapses.
-    # `Session.get_window_state/3` returns `{:ok, %{state: "joined"}}`
-    # once `Session.WindowState.set_joined/2` has fired (366
-    # RPL_ENDOFNAMES path) and `{:error, :not_tracked}` for pending /
-    # parked / unknown — the same `:not_tracked` covers both
-    # "JOIN-in-flight" and "channel was never autojoin'd" so we
-    # cannot distinguish them from the outside; the shared timeout
-    # is the disambiguator.
-    #
-    # `autojoin` here is the RESOLVED Session.Plan list, NOT
-    # `cred.autojoin_channels` — `Networks.SessionPlan.resolve/1`
-    # merges operator-config + `last_joined_channels`, and the
-    # Session.Server JOINs the merged set on RPL_WELCOME. Polling
-    # only `cred.autojoin_channels` would let `#bofh` slip through
-    # whenever an earlier spec PARTed it (DELETE /channels strips
-    # operator-config autojoin but leaves it in `last_joined`).
     defp await_autojoin(_, _, _, []), do: :ok
 
     defp await_autojoin(user, cred, slug, autojoin) do
