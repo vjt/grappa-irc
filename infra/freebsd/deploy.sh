@@ -30,14 +30,15 @@ MIX_ENV=prod mix deps.get --only prod
 echo "[deploy] mix compile --warnings-as-errors"
 MIX_ENV=prod mix compile --warnings-as-errors
 
-# Migrations BEFORE release reassembly — same reasoning as the Docker
-# cold-path in scripts/deploy.sh: the release would 500 on first query
-# against an outdated schema.
-echo "[deploy] mix ecto.migrate"
-MIX_ENV=prod mix ecto.migrate
-
+# Migrations BEFORE rc.d restart — same reasoning as the Docker
+# cold-path in scripts/deploy.sh: the release would 500 on first
+# query against an outdated schema. `Grappa.Release.migrate/0`
+# runs Ecto.Migrator without needing Mix on disk.
 echo "[deploy] mix release --overwrite"
 MIX_ENV=prod mix release --overwrite
+
+echo "[deploy] Grappa.Release.migrate()"
+"${RELEASE_PATH}/bin/grappa" eval 'Grappa.Release.migrate()'
 
 # rc.d restart needs root. The deploy runs as the grappa user; sudo or
 # doas is required for the service swap. If neither is available, this
