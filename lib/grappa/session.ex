@@ -247,13 +247,47 @@ defmodule Grappa.Session do
             # `Log.set_session_context/2`). Inline into message body
             # so allowlist stays tight.
             Logger.error(
-              "session refused to die within #{@stop_down_timeout_ms}ms stop budget " <>
+              "session refused to die within #{@stop_down_timeout_ms}ms stop budget — " <>
+                "escalating to Process.exit :kill " <>
                 "(subject=#{inspect(subject)} network_id=#{network_id})",
               pid: inspect(pid)
             )
 
-            Process.demonitor(ref, [:flush])
-            :ok
+            # spec-audit cascade hunt (2026-05-26): pre-fix the function
+            # demonitored and returned :ok WITHOUT killing the pid.
+            # CI run 26445436191 traced the AdminEventsTest cascade
+            # back here — visitor login_test's stop_session returned
+            # :ok despite the Session.Server still alive in
+            # reconnect-backoff (Client GenServer.call inside
+            # terminate/2 hangs ~5s on a wedged socket). The zombie
+            # then poisoned the SessionRegistry that the next
+            # singleton-lane test (AdminEventsTest) drains in setup,
+            # cascading 10+ unrelated failures.
+            #
+            # Fix: escalate to Process.exit/2 :kill — bypasses
+            # terminate/2, guarantees the pid dies. Re-wait briefly
+            # for the :DOWN so the Registry's own monitor cleanup
+            # has a chance to fire before we return, then proceed to
+            # wait_until_unregistered/3 below (which polls anyway).
+            #
+            # Note: this changes the post-condition of stop_session/2
+            # from "process MAY still be alive (with Logger.error
+            # noise) after 5s timeout" to "process WILL be dead". No
+            # caller relied on the zombie-alive case as a feature —
+            # the prior shape was always a bug.
+            Process.exit(pid, :kill)
+
+            receive do
+              {:DOWN, ^ref, :process, ^pid, _} -> :ok
+            after
+              1_000 ->
+                # :kill is unmaskable; if we somehow still don't get
+                # :DOWN, the monitor itself is wedged (BEAM bug
+                # territory). Demonitor + proceed; downstream
+                # wait_until_unregistered/3 will surface the leak.
+                Process.demonitor(ref, [:flush])
+                :ok
+            end
         end
 
         # `Process.monitor` DOWN guarantees the process is dead, but
