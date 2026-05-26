@@ -76,6 +76,7 @@ if Mix.env() in [:dev, :test] do
         Grappa.QueryWindows,
         Grappa.ReadCursor,
         Grappa.Repo,
+        Grappa.Scrollback,
         Grappa.Session,
         Grappa.SpawnOrchestrator,
         Grappa.Uploads,
@@ -92,6 +93,7 @@ if Mix.env() in [:dev, :test] do
       QueryWindows,
       ReadCursor,
       Repo,
+      Scrollback,
       Session,
       Uploads,
       UserSettings,
@@ -102,7 +104,16 @@ if Mix.env() in [:dev, :test] do
     @autojoin_timeout_ms 5_000
     @autojoin_poll_interval_ms 50
 
-    @type reset_opts :: %{optional(:baseline_autojoin) => %{String.t() => [String.t()]}}
+    @type baseline_channel :: %{
+            required(:name) => String.t(),
+            optional(:seed_count) => non_neg_integer(),
+            optional(:seed_sender) => String.t()
+          }
+
+    @type reset_opts :: %{
+            optional(:baseline_autojoin) => %{String.t() => [String.t()]},
+            optional(:baseline_seed) => %{String.t() => [baseline_channel()]}
+          }
 
     @type reset_error ::
             :user_not_found
@@ -118,6 +129,17 @@ if Mix.env() in [:dev, :test] do
     listed channels before respawn. Credentials for networks not in
     the map keep their current `autojoin_channels`. `last_joined_channels`
     is ALWAYS cleared to `[]` regardless of map contents.
+
+    `opts.baseline_seed` is a map of `network_slug => [%{name,
+    seed_count, seed_sender}]`. For each listed channel, the
+    `messages` table is truncated to zero rows for the user's
+    `(network_id, channel)` and then re-seeded with `seed_count`
+    synthetic `:privmsg` rows from `seed_sender` (default
+    `"seed-bot"`), monotonically spaced 100ms apart ending at "now".
+    Channels not listed keep accumulated scrollback. Runs BEFORE
+    Session.Server respawn so the JOIN-cycle's `joined` + topic +
+    names rows land cleanly on top of the seed baseline (stable
+    post-state: seed_count + ~5 cycle rows per spec).
 
     Returns `:ok` on success. Returns `{:error, :user_not_found}` if
     the user_name doesn't exist. Returns `{:error, {:reconnect_timeout,
@@ -145,12 +167,15 @@ if Mix.env() in [:dev, :test] do
       :ok = Uploads.delete_all_for_user(user.id)
       :ok = WSPresence.reset_for_user(user.name)
 
-      baseline = Map.get(opts, :baseline_autojoin, %{})
+      baseline_autojoin = Map.get(opts, :baseline_autojoin, %{})
+      baseline_seed = Map.get(opts, :baseline_seed, %{})
 
       credentials =
         user
         |> Networks.Credentials.list_credentials_for_user()
-        |> Enum.map(&restore_baseline_channels(&1, baseline))
+        |> Enum.map(&restore_baseline_channels(&1, baseline_autojoin))
+
+      :ok = reset_scrollback(user, credentials, baseline_seed)
 
       respawn_each(user, credentials)
     end
@@ -178,6 +203,55 @@ if Mix.env() in [:dev, :test] do
       # network association from the original cred so downstream code
       # paths (slug lookup, SessionPlan.resolve) work without a refetch.
       %{updated | network: cred.network}
+    end
+
+    # Truncate per-(user, network, channel) scrollback to zero rows
+    # for every listed baseline channel, then re-insert `seed_count`
+    # synthetic `:privmsg` rows. Runs BEFORE respawn so the JOIN
+    # cycle's `joined` + topic + names rows land on top of a clean
+    # seed baseline. Stable post-state: each spec starts with
+    # `seed_count + ~5 cycle rows`. Without this, specs that
+    # `send_privmsg`, drive peer JOIN/PRIVMSG, or `seed_scrollback`
+    # again would accumulate rows across the run — different visible-
+    # tail / marker positions in later specs (CP49 S2 residual
+    # cascade post-baseline-restore: 2-5 rotating failures, all
+    # iso 5×/10× green, all scrollback-density-driven).
+    defp reset_scrollback(user, credentials, baseline_seed) do
+      Enum.each(credentials, fn cred ->
+        channels = Map.get(baseline_seed, cred.network.slug, [])
+        Enum.each(channels, &reset_one_channel(user, cred, &1))
+      end)
+    end
+
+    defp reset_one_channel(user, cred, spec) when is_map(spec) do
+      name = Map.fetch!(spec, :name)
+      count = Map.get(spec, :seed_count, 0)
+      sender = Map.get(spec, :seed_sender, "seed-bot")
+
+      {:ok, _} = Scrollback.delete_for_channel({:user, user.id}, cred.network_id, name)
+
+      if count > 0, do: seed_synthetic(user, cred.network_id, name, count, sender)
+    end
+
+    @seed_gap_ms 100
+
+    defp seed_synthetic(user, network_id, channel, count, sender) do
+      base_time = System.system_time(:millisecond) - count * @seed_gap_ms
+
+      Enum.each(1..count, fn i ->
+        attrs = %{
+          user_id: user.id,
+          network_id: network_id,
+          channel: channel,
+          server_time: base_time + i * @seed_gap_ms,
+          kind: :privmsg,
+          sender: sender,
+          body: "seed line ##{i}",
+          meta: %{}
+        }
+
+        {:ok, _} = Scrollback.persist_event(attrs)
+      end)
     end
 
     defp respawn_each(_, []), do: :ok

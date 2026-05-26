@@ -348,19 +348,6 @@ export async function getReadCursor(
 // Caller MUST pass the seeded ADMIN token (getSeededAdmin().token),
 // NOT the user's own token. The endpoint is admin-only.
 //
-// Throws on non-204 — afterEach treats reset failures as loud test
-// failures, never silently ignores. Wire shape mirrors the
-// SubjectReset.reset_error type (404 user_not_found, 504 reconnect
-// timeout w/ network_slug, 500 reconnect_failed w/ slug + reason).
-// E2E-ROBUSTNESS bucket D — per-spec subject reset. Drains every
-// mutable surface for `userName` (DB rows + Session.Server restart
-// + ETS entries) so the next spec begins from a clean baseline.
-// Server-side gates: route compile-gated to dev/test Mix env
-// (router.ex); admin_authn requires admin bearer.
-//
-// Caller MUST pass the seeded ADMIN token (getSeededAdmin().token),
-// NOT the user's own token. The endpoint is admin-only.
-//
 // `baselineAutojoin` (network_slug → channels) restores
 // `cred.autojoin_channels` to the seed-time list per network. cic's
 // PART verb (DELETE /networks/.../channels) strips the channel from
@@ -369,18 +356,44 @@ export async function getReadCursor(
 // reset would see an empty autojoin list and the seed `#bofh`
 // would never re-JOIN.
 //
+// `baselineSeed` (network_slug → [{name, seedCount, seedSender}])
+// truncates per-channel scrollback to zero rows then re-seeds
+// `seedCount` synthetic privmsg rows. Without this, prior specs'
+// send_privmsg / peer JOIN/PRIVMSG accumulate across the run and
+// later specs see different scrollback density → marker/scroll/
+// cursor assertions flip (CP49 S2 residual cascade root).
+//
 // Throws on non-204 — afterEach treats reset failures as loud test
 // failures, never silently ignores. Wire shape mirrors the
 // SubjectReset.reset_error type (404 user_not_found, 504 reconnect
 // timeout / autojoin timeout w/ network_slug, 500 reconnect_failed
 // w/ slug + reason).
+export interface BaselineSeedChannel {
+  name: string;
+  seedCount?: number;
+  seedSender?: string;
+}
+
 export async function resetSubject(
   adminToken: string,
   userName: string,
   baselineAutojoin?: Record<string, string[]>,
+  baselineSeed?: Record<string, BaselineSeedChannel[]>,
 ): Promise<void> {
   const body: Record<string, unknown> = { user_name: userName };
   if (baselineAutojoin) body.baseline_autojoin = baselineAutojoin;
+  if (baselineSeed) {
+    body.baseline_seed = Object.fromEntries(
+      Object.entries(baselineSeed).map(([slug, chans]) => [
+        slug,
+        chans.map((c) => ({
+          name: c.name,
+          seed_count: c.seedCount ?? 0,
+          seed_sender: c.seedSender ?? "seed-bot",
+        })),
+      ]),
+    );
+  }
 
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/reset-subject`, {
     method: "POST",

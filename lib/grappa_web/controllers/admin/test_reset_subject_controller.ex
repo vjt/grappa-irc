@@ -68,7 +68,13 @@ if Mix.env() in [:dev, :test] do
     # opts SubjectReset.reset!/2 expects. Reject non-map / non-list
     # values silently — defaulting to "no baseline" is safer than
     # 422'ing a malformed body that an older fixture might send.
-    defp build_opts(%{"baseline_autojoin" => baseline}) when is_map(baseline) do
+    defp build_opts(params) when is_map(params) do
+      %{}
+      |> maybe_put_autojoin(params)
+      |> maybe_put_seed(params)
+    end
+
+    defp maybe_put_autojoin(opts, %{"baseline_autojoin" => baseline}) when is_map(baseline) do
       sanitized =
         baseline
         |> Enum.flat_map(fn
@@ -81,9 +87,41 @@ if Mix.env() in [:dev, :test] do
         end)
         |> Map.new()
 
-      %{baseline_autojoin: sanitized}
+      Map.put(opts, :baseline_autojoin, sanitized)
     end
 
-    defp build_opts(_), do: %{}
+    defp maybe_put_autojoin(opts, _), do: opts
+
+    defp maybe_put_seed(opts, %{"baseline_seed" => baseline}) when is_map(baseline) do
+      sanitized =
+        baseline
+        |> Enum.flat_map(fn
+          {slug, channels} when is_binary(slug) and is_list(channels) ->
+            chans = Enum.flat_map(channels, &normalise_channel_spec/1)
+            [{slug, chans}]
+
+          _ ->
+            []
+        end)
+        |> Map.new()
+
+      Map.put(opts, :baseline_seed, sanitized)
+    end
+
+    defp maybe_put_seed(opts, _), do: opts
+
+    defp normalise_channel_spec(%{"name" => name} = entry) when is_binary(name) do
+      count = entry |> Map.get("seed_count", 0) |> coerce_count()
+      sender = entry |> Map.get("seed_sender", "seed-bot") |> coerce_sender()
+      [%{name: name, seed_count: count, seed_sender: sender}]
+    end
+
+    defp normalise_channel_spec(_), do: []
+
+    defp coerce_count(n) when is_integer(n) and n >= 0, do: n
+    defp coerce_count(_), do: 0
+
+    defp coerce_sender(s) when is_binary(s) and byte_size(s) > 0, do: s
+    defp coerce_sender(_), do: "seed-bot"
   end
 end

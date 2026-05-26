@@ -24,17 +24,37 @@ import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG, VJT_USER } from "./see
 // this. Without restoration, every reset after those specs sees an
 // empty autojoin list and `#bofh` never re-JOINs.
 //
+// `baselineSeed` is the per-channel scrollback seed contract —
+// truncate to zero rows then re-seed `seedCount` synthetic privmsg
+// rows. Mirrors the seeder's compose-time
+// `mix grappa.seed_scrollback --count 200 --sender seed-bot` so
+// every spec starts with EXACTLY the same scrollback baseline.
+// Without this, accumulated rows from prior specs flip
+// scroll-density-sensitive assertions in later specs (visible-tail,
+// marker placement, cursor-advance gates).
+//
 // See `lib/grappa/test_support/subject_reset.ex` for the orchestrator
 // + the `POST /admin/test/reset-subject` endpoint
 // (compile-gated to dev/test Mix envs).
+const SEED_COUNT = 200;
+
 export const test = base.extend<{ _vjtReset: void }>({
   _vjtReset: [
     async ({}, use) => {
       await use();
       const admin = getSeededAdmin();
-      await resetSubject(admin.token, VJT_USER, {
-        [NETWORK_SLUG]: AUTOJOIN_CHANNELS,
-      });
+      await resetSubject(
+        admin.token,
+        VJT_USER,
+        { [NETWORK_SLUG]: AUTOJOIN_CHANNELS },
+        {
+          [NETWORK_SLUG]: AUTOJOIN_CHANNELS.map((name) => ({
+            name,
+            seedCount: SEED_COUNT,
+            seedSender: "seed-bot",
+          })),
+        },
+      );
     },
     { auto: true },
   ],
