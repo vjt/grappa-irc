@@ -76,7 +76,8 @@ defmodule Grappa.Push.Sender do
       → Logger.warning + `{:error, {:http_error, status}}`.
     * Network errors / timeouts surface as a `CaseClauseError`
       raised by the upstream lib (v0.8.0 has an unhandled `case` arm
-      for `Req.TransportError`-bearing results) — caught at the
+      for `Req.TransportError`-bearing AND `Req.HTTPError`-bearing
+      results) — caught at the
       boundary and mapped to `{:error, {:transport_error, reason}}`.
       A defensible exception to "let it crash" because (a) we cannot
       wait for upstream patch, (b) silent-dropping the network-error
@@ -285,8 +286,13 @@ defmodule Grappa.Push.Sender do
   # Defensive rescue: `WebPushElixir.send_notification/2` (v0.8.0)
   # has an unhandled `case` arm for `Req.TransportError`-bearing
   # results — connection refused, timeout, DNS failures, etc. all
-  # raise `CaseClauseError` instead of returning `{:error, _}`. The
-  # encryption preamble (`Base.url_decode64!` on stored
+  # raise `CaseClauseError` instead of returning `{:error, _}`. After
+  # the `req 0.5.17 → 0.5.18` bump (2026-05-26), the same unhandled
+  # arm also fires for `Req.HTTPError`-bearing results — the new req
+  # surfaces HTTP/2 pool-exhaustion (`:pool_not_available`) as
+  # `{%Req.Response{}, %Req.HTTPError{...}}` instead of a plain
+  # `{:error, _}`, and `web_push_elixir`'s case doesn't cover it.
+  # The encryption preamble (`Base.url_decode64!` on stored
   # `p256dh_key`/`auth_key`, `:crypto.compute_key` on the P-256
   # point, JOSE.JWS sign on the VAPID private key) raises
   # `ArgumentError` / `MatchError` on malformed inputs. We cannot
@@ -303,6 +309,9 @@ defmodule Grappa.Push.Sender do
     e in CaseClauseError ->
       case e.term do
         {%Req.Request{}, %Req.TransportError{reason: reason}} ->
+          {:error, {:transport_error, reason}}
+
+        {%Req.Request{}, %Req.HTTPError{reason: reason}} ->
           {:error, {:transport_error, reason}}
 
         other ->
