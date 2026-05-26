@@ -271,3 +271,15 @@ if config_env() == :prod do
     end
   end
 end
+
+# Outbound v6 source-address pool. CSV of IPv6 addresses; the bouncer
+# picks a random entry per upstream connect so each peer IRC server
+# sees a rotating rDNS identity. Useful on hosts with multiple v6
+# addresses bound (vanity-domain reverse-DNS, multi-IP jails). Empty
+# = kernel-default source selection (no behavior change). Parsed
+# eagerly so a typo crashes the boot loud rather than silently
+# falling back. Lives outside the prod gate: dev operators may set
+# it for local testing too.
+config :grappa,
+       :outbound_v6_pool,
+       Grappa.OutboundV6Pool.parse_csv(System.get_env("GRAPPA_OUTBOUND_V6_POOL"))

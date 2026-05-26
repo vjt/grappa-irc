@@ -704,16 +704,34 @@ defmodule Grappa.IRC.Client do
   @connect_timeout_ms 30_000
 
   defp do_connect(host, port, false) do
-    :gen_tcp.connect(host, port, [:binary, packet: :line, active: :once], @connect_timeout_ms)
+    :gen_tcp.connect(host, port, [:binary, packet: :line, active: :once] ++ ifaddr_opt(), @connect_timeout_ms)
   end
 
   defp do_connect(host, port, true) do
     :ssl.connect(
       host,
       port,
-      [:binary, packet: :line, active: :once, verify: :verify_none],
+      [:binary, packet: :line, active: :once, verify: :verify_none] ++ ifaddr_opt(),
       @connect_timeout_ms
     )
+  end
+
+  # Outbound v6 source-address selection. Reads from
+  # `Grappa.OutboundV6Pool` (boot-pinned in `:persistent_term`,
+  # configured via `GRAPPA_OUTBOUND_V6_POOL` CSV) and returns a
+  # one-shot `[ifaddr: ip6]` keyword for the connect call. Empty
+  # pool returns `[]` so the kernel's RFC 6724 source selection
+  # stands (no behavior change for single-IP deployments). Pick
+  # happens per-connect so each retry rolls a fresh address.
+  #
+  # `ifaddr` works for both `:gen_tcp.connect/4` and
+  # `:ssl.connect/4` — ssl forwards inet options to its underlying
+  # gen_tcp socket at handshake setup.
+  defp ifaddr_opt do
+    case Grappa.OutboundV6Pool.pick() do
+      {:ok, ip} -> [ifaddr: ip]
+      :none -> []
+    end
   end
 
   ## Inbound

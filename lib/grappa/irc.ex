@@ -19,6 +19,6 @@ defmodule Grappa.IRC do
 
   use Boundary,
     top_level?: true,
-    deps: [],
+    deps: [Grappa.OutboundV6Pool],
     exports: [AuthFSM, Client, Identifier, LineSplit, Message]
 end

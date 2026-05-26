@@ -8,6 +8,7 @@ defmodule Grappa.Application do
       Grappa.AdminEvents,
       Grappa.Bootstrap,
       Grappa.Health,
+      Grappa.OutboundV6Pool,
       Grappa.PubSub,
       Grappa.Push,
       Grappa.Repo,
@@ -46,6 +47,14 @@ defmodule Grappa.Application do
     # :vapid_public_key` from `VAPID_PUBLIC_KEY` env, which is
     # guaranteed by the time `Application.start/2` is invoked.
     :ok = Grappa.Push.boot()
+
+    # Outbound v6 source-address pool. Read GRAPPA_OUTBOUND_V6_POOL
+    # (parsed in `config/runtime.exs`) and pin to `:persistent_term`
+    # for lock-free random pick at `IRC.Client.do_connect` time.
+    # Empty pool = kernel-default source selection (no behavior
+    # change). Mirrors the `Uploads.boot/1` + `Push.boot/0` boundary
+    # pattern.
+    :ok = Grappa.OutboundV6Pool.boot()
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
