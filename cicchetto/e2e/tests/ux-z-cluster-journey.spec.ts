@@ -29,15 +29,14 @@
 //   - "registered" — vjt (seeded user bound to bahamut-test with
 //     #bofh autojoin). DRIVEN end-to-end. The shipping reality across
 //     the live archive + delete + chip + modal surfaces.
-//   - "visitor" — blocked on `feedback_visitor_mint_e2e_cold_start`:
-//     the synchronous bahamut-test mint pathway 504s on cold-start
-//     because `POST /auth/login {identifier: nick}` exceeds the
-//     3s `login_probe_timeout_ms` before the first upstream IRC
-//     connection completes. Same blocker as M-8 + U-4. The
-//     production behavior is otherwise covered by per-bucket UI
-//     shape specs (UX-1/UX-2 use vjt; the underlying ArchiveModal
-//     + InlineConfirmButton render is subject-agnostic — the same
-//     DOM applies once the visitor cold-start unblock lands).
+//   - "visitor" — visitor mint now works (cluster e2e-revive-skips
+//     fixed the seeder TLS default), but driving the visitor arm of
+//     this journey would expand the spec body beyond the original
+//     UX-Z scope. The per-bucket UX-1/UX-2 specs already cover the
+//     subject-agnostic UI shape using vjt; the ArchiveModal +
+//     InlineConfirmButton render keys off no visitor-specific data.
+//     A follow-up cluster can flip the skip + drive the visitor
+//     parity arm — the seam is preserved here.
 //   - "nickserv" — not seeded in the e2e harness. vjt's bahamut-test
 //     bind uses `--auth password-only`; nickserv-identified path
 //     (`--auth nickserv`) would require a second seeded user with a
@@ -68,7 +67,7 @@ const CLASSES: ReadonlyArray<UserClass> = [
   {
     name: "visitor",
     skipReason:
-      "blocked on feedback_visitor_mint_e2e_cold_start — synchronous mint 504 on bahamut-test cold-start",
+      "visitor mint unblocked (e2e-revive-skips); driving this arm is a follow-up — UX-1/UX-2 unit-cover the subject-agnostic UI surface",
   },
   {
     name: "nickserv",

@@ -148,10 +148,9 @@ services:
         # /disconnect against THIS user's session (vjt's session is
         # reserved for non-admin specs; admin-vjt has no bind and
         # can't be targeted as a "real" disconnect because the M-9a
-        # cannot_disconnect_self 422 gate fires). Per
-        # `feedback_visitor_mint_e2e_cold_start`: pre-seed at compose
-        # time, NOT mint at test-time — the first-connection cold-
-        # start latency races the login probe budget.
+        # cannot_disconnect_self 422 gate fires). Pre-seed at compose
+        # time so Bootstrap spawns the Session.Server before the
+        # Playwright suite starts.
         mix grappa.create_user --name m9b-test --password test-password-not-secret
         mix grappa.bind_network --user m9b-test --network bahamut-test \
           --server bahamut-test:6667 --no-tls --nick m9b-grappa \

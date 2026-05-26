@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Grappa.BindNetwork do
-  @shortdoc "Binds a user to an IRC network: --user --network --server host:port [--tls] --nick [--password] [--auth] [--autojoin]"
+  @shortdoc "Binds a user to an IRC network: --user --network --server host:port [--tls|--no-tls] --nick [--password] [--auth] [--autojoin]"
 
   @moduledoc """
   Operator-side network binding. Idempotently creates the network +
@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
 
       scripts/mix.sh grappa.bind_network \\
         --user vjt --network azzurra \\
-        --server irc.azzurra.chat:6697 --tls \\
+        --server irc.azzurra.chat:6697 \\
         --nick vjt-grappa \\
         --password '<NickServ password>' \\
         --auth auto \\
@@ -24,6 +24,13 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
   PASS-handoff (`auto`/`server_pass`) and the modern SASL chain
   (`sasl`) target different on-the-wire surfaces. `--autojoin` is a
   comma-separated list of channel names.
+
+  ## TLS default — port-sniffed
+
+  When neither `--tls` nor `--no-tls` is passed, the TLS posture is
+  inferred from the server's port: `6697` (the de-facto IRC-over-TLS
+  port) defaults to `tls: true`; any other port defaults to
+  `tls: false`. Pass `--tls` or `--no-tls` explicitly to override.
 
   Adding the same `(network, host, port)` server twice is a no-op
   (the duplicate is silently skipped); rebinding an existing
@@ -59,6 +66,9 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     sasl_user: :string
   ]
 
+  # De-facto IRC-over-TLS port per RFC 7194 + ircv3 conventions.
+  @tls_port 6697
+
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
@@ -80,7 +90,7 @@ defmodule Mix.Tasks.Grappa.BindNetwork do
     case Servers.add_server(network, %{
            host: host,
            port: port,
-           tls: Keyword.get(opts, :tls, true)
+           tls: Keyword.get(opts, :tls, port == @tls_port)
          }) do
       {:ok, _} -> :ok
       {:error, :already_exists} -> :ok

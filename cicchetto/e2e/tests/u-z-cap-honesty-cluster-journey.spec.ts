@@ -47,13 +47,14 @@
 // Why four plan §U-Z items are documented but not driven:
 //
 //   - **Step 4 (logout visitor → login user same client_id)** +
-//     **Step 5 (visitor /quit frees slot)**: equivalent to UD5.A
-//     tests parked at u-4-device-identity-change as `test.skip` per
-//     `feedback_visitor_mint_e2e_cold_start` (the bahamut-test mint
-//     pathway 504s on cold start; visitor surfaces in U-cluster e2es
-//     are blocked on the same pre-seeded-visitor work as M-8). The
-//     production behavior is unit-tested at admission_test.exs +
-//     auth_controller_test.exs (UD5.A logout-is-synchronous test).
+//     **Step 5 (visitor /quit frees slot)**: now driven by
+//     `u-4-device-identity-change.spec.ts` (cluster e2e-revive-skips
+//     fixed the seeder TLS default that was blocking visitor mint;
+//     u-4 was reactivated with a real test body). U-Z does not
+//     re-assert Step 4/5 because u-4 covers the cross-kind cap
+//     contract at the HTTP boundary plus unit-level tests at
+//     admission_test.exs + auth_controller_test.exs cover the
+//     synchronous-logout invariant.
 //
 //   - **Step 6 (capacity_reject admin event lands live)**: covered
 //     end-to-end by `m-z-admin-cluster-journey.spec.ts` (the M cluster

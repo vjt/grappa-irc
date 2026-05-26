@@ -18,15 +18,15 @@
 import { login, type SeededUser } from "./grappaApi";
 
 // GREEN-CI-3 B3 (2026-05-23) — cold-start retry around login() calls
-// invoked from globalSetup. Per `feedback_visitor_mint_e2e_cold_start`,
-// first contact against a freshly-spawned IRC session hits
-// `login_probe_timeout_ms` (3s) before the upstream completes, returning
-// a 504 from `/auth/login`. globalSetup runs FOUR logins back-to-back
-// (vjt, admin, m9b-test, m9b-victim) — each is first-contact post
-// container boot. A single 504 throws → entire Playwright run aborts
-// before any spec executes. Pattern matches assertMessagePersisted /
-// awaitPushDelivery (exponential backoff around an unreliable boundary
-// probe).
+// invoked from globalSetup. globalSetup runs FOUR logins back-to-back
+// (vjt, admin, m9b-test, m9b-victim) against a freshly-booted grappa-
+// test container; any transient 5xx from the first-contact boundary
+// (e.g. Bootstrap's Session.Servers mid-welcome handshake against
+// bahamut-test) throws → entire Playwright run aborts before any spec
+// executes. The retry is a generic boundary-probe defense (pattern
+// shared with assertMessagePersisted / awaitPushDelivery): exponential
+// backoff swallows the first 1-2 boundary-flake responses, attempt 3
+// surfaces the real failure if the upstream is genuinely broken.
 async function loginWithRetry(
   identifier: string,
   password: string,

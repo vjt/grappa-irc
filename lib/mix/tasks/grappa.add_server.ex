@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Grappa.AddServer do
-  @shortdoc "Adds a server endpoint to a network: --network --server host:port [--tls] [--priority]"
+  @shortdoc "Adds a server endpoint to a network: --network --server host:port [--tls|--no-tls] [--priority]"
 
   @moduledoc """
   Appends an additional server to an existing network's fail-over
@@ -10,12 +10,27 @@ defmodule Mix.Tasks.Grappa.AddServer do
 
       scripts/mix.sh grappa.add_server \\
         --network azzurra \\
-        --server irc2.azzurra.chat:6697 --tls \\
+        --server irc2.azzurra.chat:6697 \\
         --priority 1
 
   The network must already exist (created via `grappa.bind_network`);
   this task NEVER creates the network. `--priority` defaults to 0.
   Re-adding the same `(network, host, port)` triple is a no-op.
+
+  ## TLS default — port-sniffed
+
+  When neither `--tls` nor `--no-tls` is passed, the TLS posture is
+  inferred from the port: `6697` (the de-facto IRC-over-TLS port)
+  defaults to `tls: true`; any other port defaults to `tls: false`.
+  Pass `--tls` or `--no-tls` explicitly to override.
+
+  Rationale: the prior "always default to tls: true" default was a
+  footgun — adding a plain leaf on `:6667` without `--no-tls` produces
+  a session whose TLS handshake never completes against a non-TLS
+  socket, and the failure mode is `:connect_timeout` ~8s into every
+  spawn (root cause of the 9-day visitor-mint cold-start mystery).
+  Port-sniff matches operator expectation: 6697 means TLS everywhere
+  in the IRC world, anything else is plain unless flagged.
   """
   use Boundary,
     top_level?: true,
@@ -34,6 +49,9 @@ defmodule Mix.Tasks.Grappa.AddServer do
 
   @switches [network: :string, server: :string, tls: :boolean, priority: :integer]
 
+  # De-facto IRC-over-TLS port per RFC 7194 + ircv3 conventions.
+  @tls_port 6697
+
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, strict: @switches)
@@ -48,7 +66,7 @@ defmodule Mix.Tasks.Grappa.AddServer do
     attrs = %{
       host: host,
       port: port,
-      tls: Keyword.get(opts, :tls, true),
+      tls: Keyword.get(opts, :tls, port == @tls_port),
       priority: Keyword.get(opts, :priority, 0)
     }
 

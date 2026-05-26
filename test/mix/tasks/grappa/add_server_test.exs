@@ -36,6 +36,51 @@ defmodule Mix.Tasks.Grappa.AddServerTest do
     assert server.priority == 1
   end
 
+  test "port-sniff default: :6697 defaults to tls: true", %{network: network} do
+    capture_io(fn ->
+      AddServer.run(["--network", "azzurra", "--server", "irc.azzurra.chat:6697"])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.tls == true
+  end
+
+  test "port-sniff default: :6667 defaults to tls: false", %{network: network} do
+    capture_io(fn ->
+      AddServer.run(["--network", "azzurra", "--server", "irc.azzurra.chat:6667"])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.tls == false
+  end
+
+  test "port-sniff default: any non-6697 port defaults to tls: false", %{network: network} do
+    capture_io(fn ->
+      AddServer.run(["--network", "azzurra", "--server", "irc.azzurra.chat:1234"])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.tls == false
+  end
+
+  test "explicit --no-tls overrides port-sniff on :6697", %{network: network} do
+    capture_io(fn ->
+      AddServer.run(["--network", "azzurra", "--server", "irc.azzurra.chat:6697", "--no-tls"])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.tls == false
+  end
+
+  test "explicit --tls overrides port-sniff on :6667", %{network: network} do
+    capture_io(fn ->
+      AddServer.run(["--network", "azzurra", "--server", "irc.azzurra.chat:6667", "--tls"])
+    end)
+
+    [server] = Servers.list_servers(network)
+    assert server.tls == true
+  end
+
   test "is idempotent when re-adding the same host:port", %{network: network} do
     args = ["--network", "azzurra", "--server", "irc.azzurra.chat:6697"]
     capture_io(fn -> AddServer.run(args) end)

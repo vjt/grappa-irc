@@ -57,6 +57,48 @@ defmodule Mix.Tasks.Grappa.BindNetworkTest do
     assert cred.password_encrypted == "secret"
   end
 
+  test "port-sniff default: :6667 server defaults to tls: false", %{user: _user} do
+    capture_io(fn ->
+      BindNetwork.run([
+        "--user",
+        "vjt",
+        "--network",
+        "azzurra",
+        "--server",
+        "irc.azzurra.chat:6667",
+        "--nick",
+        "vjt-grappa",
+        "--auth",
+        "none"
+      ])
+    end)
+
+    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+    [server] = Servers.list_servers(network)
+    assert server.tls == false
+  end
+
+  test "port-sniff default: :6697 server defaults to tls: true", %{user: _user} do
+    capture_io(fn ->
+      BindNetwork.run([
+        "--user",
+        "vjt",
+        "--network",
+        "azzurra",
+        "--server",
+        "irc.azzurra.chat:6697",
+        "--nick",
+        "vjt-grappa",
+        "--auth",
+        "none"
+      ])
+    end)
+
+    {:ok, network} = Networks.find_or_create_network(%{slug: "azzurra"})
+    [server] = Servers.list_servers(network)
+    assert server.tls == true
+  end
+
   test "is idempotent on the server (re-add same host:port is no-op)", %{user: _user} do
     args = [
       "--user",

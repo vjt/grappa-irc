@@ -9,21 +9,16 @@
 //
 // Per-class parity matrix per `feedback_e2e_user_class_parity_matrix`:
 // the CLASSES loop preserves the matrix shape so a future operator
-// unblocking visitor cold-start (`feedback_visitor_mint_e2e_cold_start`)
-// or seeding a nickserv-identified user can flip the skip-and-continue
-// without restructuring the spec.
+// can flip the visitor / nickserv skip-and-continue without
+// restructuring the spec.
 //
 //   - "registered" — vjt + admin-vjt (admin-only bucket N). DRIVEN
 //     end-to-end across the 14 shipping surfaces.
-//   - "visitor" — blocked on `feedback_visitor_mint_e2e_cold_start`:
-//     synchronous bahamut-test mint 504s on cold start because
-//     `POST /auth/login {identifier: nick}` exceeds the 3s
-//     `login_probe_timeout_ms` before the first upstream IRC
-//     connection completes. The cluster's behaviour is otherwise
-//     covered: bucket B's HomePane visitor branch is unit-covered
-//     at `HomePane.test.tsx`; bucket D's `disconnectNetwork`
-//     visitor → /quit branch is unit-covered at
-//     `windowClose.test.ts`.
+//   - "visitor" — visitor mint now works (cluster e2e-revive-skips
+//     fixed the seeder TLS default). Driving the visitor arm of UX-4-Z
+//     would expand scope beyond the original cluster — the per-bucket
+//     surfaces are unit-covered (HomePane.test.tsx, windowClose.test.ts).
+//     Follow-up cluster can flip the skip.
 //   - "nickserv" — no nickserv-identified user seeded in the e2e
 //     harness (vjt bind uses `--auth password-only`); the cluster's
 //     surfaces are subject-shape-agnostic — nothing in EventRouter
@@ -118,7 +113,7 @@ const CLASSES: ReadonlyArray<UserClass> = [
   {
     name: "visitor",
     skipReason:
-      "blocked on feedback_visitor_mint_e2e_cold_start — synchronous mint 504 on bahamut-test cold-start; HomePane visitor branch + disconnectNetwork visitor branch unit-covered at HomePane.test.tsx + windowClose.test.ts",
+      "visitor mint unblocked (e2e-revive-skips); driving this arm is a follow-up — HomePane + windowClose unit-cover the visitor branch",
   },
   {
     name: "nickserv",
