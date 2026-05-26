@@ -1,38 +1,25 @@
-// CP13 server-window cluster e2e suite.
+// CP13 server-window cluster e2e (S6 + S8 + S9 — server-window UX).
 //
-// Validates the bucket end-to-end:
-//   - S5: server-routed numerics persist as :notice rows in the routed
-//     window (hand-off to the regular per-channel WS pipeline).
+// Trimmed 2026-05-26 (spec-audit-r5): S5 (compose-driven 401 routing)
+// extracted to cp13-s5-msg-ghost-401.spec.ts; S10 (mIRC bold renderer)
+// extracted to cp13-s10-mirc-bold.spec.ts — both were distinct
+// failure surfaces, not actually "server-window cluster" behaviour.
+// This file now covers ONLY the server-window UX cluster:
 //   - S6: numericInline ephemeral bottom pane is gone (no
 //     `.numeric-inline-pane` in the DOM).
-//   - S8: $server window surfaces the 3 unread badges.
-//   - S9: $server has a ComposeBox; plain-text submit is rejected with
-//     a friendly error; slash-commands pass the gate.
-//   - S10: bodies render through the mIRC formatter — bold from a peer
-//     produces a `.scrollback-mirc-bold` <span>.
-//
-// Caveat S5 (orchestrator): `/whois nonexistent` should land the 401
-// in the queried nick's query window. Cicchetto's /whois isn't wired
-// as a client-side command yet, so the equivalent observable trip is
-// `/msg <ghost> hi`: cic opens the query window client-side (compose.ts
-// /msg handler), sends the PRIVMSG, the server responds with 401 (no
-// such nick), NumericRouter resolves to {:query, ghost}, EventRouter
-// persists a :notice row on channel=ghost, and the existing per-(slug,
-// nick) WS subscription delivers it live to the open query window.
-// This spec confirms the loop closes without needing a server-side
-// `query_window_opened` push event for first-contact numerics.
+//   - S8: $server window surfaces the unread badge on routed numerics.
+//   - S9: $server has a ComposeBox; plain-text submit is rejected
+//     with a friendly error; slash-commands pass the gate.
 
 import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,
-  scrollbackLines,
   selectChannel,
   sidebarMessageBadge,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { IrcPeer } from "../fixtures/ircClient";
-import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
+import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SERVER_WINDOW_LABEL = "Server";
 const TEST_CHANNEL = "#bofh";
@@ -108,111 +95,5 @@ test.describe("CP13 server-window cluster", () => {
     await expect(badge).toBeVisible({ timeout: 10_000 });
     const text = (await badge.textContent()) ?? "0";
     expect(Number(text)).toBeGreaterThan(0);
-  });
-
-  test("S10 — peer's bold-formatted PRIVMSG renders with .scrollback-mirc-bold span", async ({
-    page,
-  }) => {
-    const vjt = getSeededVjt();
-    await loginAs(page, vjt);
-    // awaitWsReady=false: the bootstrap-time JOIN line for #bofh has
-    // already arrived in the shared grappa session by the time this
-    // test runs in full-suite ordering, so the helper's "wait for a
-    // fresh JOIN-self line" probe times out. The selectChannel itself
-    // still completes — we just don't need the WS-ready handshake.
-    await selectChannel(page, NETWORK_SLUG, TEST_CHANNEL, { awaitWsReady: false });
-
-    // Gate the peer.privmsg send on cic having a LIVE per-channel WS
-    // subscription, otherwise the server's PubSub broadcast for the
-    // boldpeer JOIN+PRIVMSG fires before cic.subscribe.ts joins the
-    // `grappa:user:.../channel:#bofh` Phoenix topic — broadcast lands
-    // in the void, scrollback row never renders, test times out.
-    // members-pane rendering vjt-grappa is the cheapest live-WS
-    // signal: it requires the after_join snapshot push of
-    // `members_seeded` to have arrived AND been processed, which
-    // only happens once the Phoenix channel join completes.
-    await expect(page.locator(".members-pane li", { hasText: NETWORK_NICK })).toBeVisible({
-      timeout: 10_000,
-    });
-
-    // Unique nick per run to dodge a 433 ERR_NICKNAMEINUSE collision
-    // when the prior repeat's `boldpeer` ghost is still in bahamut's
-    // tables (split-mode leaf doesn't always evict on QUIT). With a
-    // static nick the second registration silently rotates to
-    // `boldpeer1`, peer.join's matcher waits for `nick === "boldpeer"`
-    // forever, and the test times out. Mirror of the cp15-b6-kicked
-    // unique-suffix pattern.
-    const peer = await IrcPeer.connect({ nick: `boldpeer-${crypto.randomUUID().slice(0, 6)}` });
-    try {
-      await peer.join(TEST_CHANNEL);
-      // Per-run unique payload so the mIRC-bold count assertion below
-      // doesn't trip over an accumulated-state false-positive: the
-      // sqlite scrollback persists across specs in a single suite run
-      // (tear-down only nukes the testnet container, not the bind-
-      // mounted runtime DB), so a static "BOLD" marker would let
-      // earlier passes pollute later ones with toHaveCount(1)
-      // mismatches. The unique tag also reads better in the failure
-      // diff when grep-ing the recorded scrollback.
-      const boldTag = `BOLD-${crypto.randomUUID().slice(0, 6)}`;
-      // \x02 = bold toggle. The body has "x" plain, "<boldTag>" bold, "y" plain.
-      peer.privmsg(TEST_CHANNEL, `x\x02${boldTag}\x02y`);
-
-      // The mIRC parser splits the body into 3 runs; the bold run is a
-      // <span class="scrollback-mirc-bold">{boldTag}</span>. Look for that
-      // span anywhere in the channel scrollback.
-      await expect(
-        scrollbackLines(page).locator(".scrollback-mirc-bold", { hasText: boldTag }),
-      ).toHaveCount(1, { timeout: 10_000 });
-    } finally {
-      await peer.disconnect("done");
-    }
-  });
-
-  test("S5 caveat — /msg to nonexistent nick: 401 lands in the query window live", async ({
-    page,
-  }) => {
-    const vjt = getSeededVjt();
-    await loginAs(page, vjt);
-    await selectChannel(page, NETWORK_SLUG, TEST_CHANNEL);
-
-    // Pick a nick guaranteed to not exist on the testnet.
-    const ghostNick = `ghost-${Date.now().toString(36)}`;
-
-    // Type /msg <ghost> hi via the compose box. compose.ts's /msg
-    // handler opens a query window client-side AND switches focus to
-    // it AND sends the PRIVMSG upstream. Server tries to deliver, gets
-    // 401 ERR_NOSUCHNICK back, NumericRouter resolves to {:query, nick},
-    // EventRouter persists a :notice row on channel=nick. The query
-    // window's WS subscription (already live since the client-side
-    // open) delivers the row.
-    //
-    // Use composeTextarea + raw fill so we don't depend on
-    // composeSend's "textarea empties on success" wait — /msg's outbound
-    // PRIVMSG path resolves immediately client-side and clears the
-    // draft, but the timing is dependent on the WS join completing
-    // for the new query window. Driving keys directly + asserting the
-    // notice DOM row decouples the two waits.
-    const ta = composeTextarea(page);
-    await ta.fill(`/msg ${ghostNick} hi`);
-    await ta.press("Enter");
-
-    // After /msg, focus switches to the query window. The 401 :notice
-    // row should appear in the scrollback within a few seconds. Wider
-    // timeout because the round-trip is grappa→bahamut→401→grappa→
-    // persist→broadcast→cicchetto, and the WS subscription on the
-    // newly-opened query topic has to settle first.
-    await expect(
-      page.locator(".scrollback-pane .scrollback-notice-error"),
-    ).toHaveCount(1, { timeout: 15_000 });
-
-    // The 401 NOTICE is server feedback to the operator's own /msg —
-    // it must NOT inflate the in-pane unread-marker NOR the sidebar
-    // unread badge for the query window. Pre-fix, the marker rendered
-    // between the operator's outbound PRIVMSG and the 401 reply with
-    // "1 unread message" pinned above the 401 line; the badge fix in
-    // subscribe.ts and the marker fix in ScrollbackPane.tsx share one
-    // predicate (lib/operatorActionEcho.ts).
-    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0);
-    await expect(sidebarMessageBadge(page, NETWORK_SLUG, ghostNick)).toHaveCount(0);
   });
 });
