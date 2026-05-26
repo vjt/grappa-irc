@@ -121,13 +121,16 @@ test("CP15 B6 — PART → archive → re-join: row moves from active to archive
   //
   // We've already re-JOINed #bofh so the archive section is now empty
   // for this network. Re-PART then re-open to verify the rule with a
-  // populated archive too.
+  // populated archive too. Use `=== null` for the open-attr check —
+  // HTML boolean attributes return "" (empty string, falsy in JS!) when
+  // present, so `!getAttribute("open")` would always be truthy and
+  // toggle a previously-open section closed.
   await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
   await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(0, { timeout: 5_000 });
-  if (!(await archiveSection.getAttribute("open"))) {
+  if ((await archiveSection.getAttribute("open")) === null) {
     await archiveSection.locator("summary").click();
-    await expect(archiveSection).toHaveAttribute("open", "");
   }
+  await expect(archiveSection).toHaveAttribute("open", "");
   await expect(
     archiveSection.locator("button.sidebar-window-btn", { hasText: "Server" }),
   ).toHaveCount(0);
