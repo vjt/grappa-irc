@@ -15,6 +15,17 @@ set -eu
 # Pass-through args via a temp file so quoting survives su -l.
 ARGS_FILE=$(mktemp /tmp/jail_mix_args.XXXXXX)
 trap 'rm -f "${ARGS_FILE}"' EXIT
+# `bastille cmd <jail> <script> a b c` invokes the script with
+# a as $0 (eaten as script name), b as $1, etc. Restore the real
+# argv by prepending $0 unless it looks like our own script path.
+case "$0" in
+	*/jail_mix.sh|jail_mix.sh)
+		: # invoked normally
+		;;
+	*)
+		set -- "$0" "$@"
+		;;
+esac
 printf '%s\n' "$@" > "${ARGS_FILE}"
 
 exec su -l grappa -c '

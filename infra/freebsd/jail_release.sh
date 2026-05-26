@@ -20,6 +20,19 @@ fi
 
 ARGS_FILE=$(mktemp /tmp/jail_release_args.XXXXXX)
 trap 'rm -f "${ARGS_FILE}"' EXIT
+# `bastille cmd <jail> <script> a b c` invokes the script with
+# a as $0, b as $1, etc. — the first positional gets eaten as the
+# script name. Reconstruct the real argv by prepending $0 unless
+# it looks like our own path (defensive: if the operator invokes
+# the script outside bastille, $0 IS the script path).
+case "$0" in
+	*/jail_release.sh|jail_release.sh)
+		: # invoked normally, $@ is correct
+		;;
+	*)
+		set -- "$0" "$@"
+		;;
+esac
 printf '%s\n' "$@" > "${ARGS_FILE}"
 
 exec su -l grappa -c '
