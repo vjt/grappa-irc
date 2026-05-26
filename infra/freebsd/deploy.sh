@@ -1,0 +1,69 @@
+#!/bin/sh
+# Grappa native FreeBSD deploy — git pull + mix release + rc.d restart.
+#
+# Run inside the jail as the grappa user:
+#   /home/grappa/grappa/infra/freebsd/deploy.sh
+#
+# Counterpart of `scripts/deploy.sh` for the Docker-based deploy: same
+# end-to-end "pull → build → restart → healthcheck" arc, different
+# substrate. NO hot-reload — release rebuilds always swap the BEAM
+# wholesale. Sessions reset on every deploy.
+#
+# Exit codes: 0 ok, non-zero on any failure (set -e).
+
+set -eu
+
+REPO_ROOT="${REPO_ROOT:-/home/grappa/grappa}"
+RELEASE_PATH="${REPO_ROOT}/_build/prod/rel/grappa"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:4000/healthz}"
+HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
+HEALTHCHECK_SLEEP="${HEALTHCHECK_SLEEP:-2}"
+
+cd "${REPO_ROOT}"
+
+echo "[deploy] git pull --ff-only"
+git pull --ff-only
+
+echo "[deploy] mix deps.get --only prod"
+MIX_ENV=prod mix deps.get --only prod
+
+echo "[deploy] mix compile --warnings-as-errors"
+MIX_ENV=prod mix compile --warnings-as-errors
+
+# Migrations BEFORE release reassembly — same reasoning as the Docker
+# cold-path in scripts/deploy.sh: the release would 500 on first query
+# against an outdated schema.
+echo "[deploy] mix ecto.migrate"
+MIX_ENV=prod mix ecto.migrate
+
+echo "[deploy] mix release --overwrite"
+MIX_ENV=prod mix release --overwrite
+
+# rc.d restart needs root. The deploy runs as the grappa user; sudo or
+# doas is required for the service swap. If neither is available, this
+# script will fail loudly here — that's the right behavior.
+if command -v sudo >/dev/null 2>&1; then
+	SU="sudo"
+elif command -v doas >/dev/null 2>&1; then
+	SU="doas"
+else
+	echo "[deploy] ERROR: neither sudo nor doas available — cannot restart service"
+	exit 1
+fi
+
+echo "[deploy] service grappa restart"
+${SU} service grappa restart
+
+echo "[deploy] healthcheck loop (${HEALTHCHECK_URL})"
+i=0
+while [ "${i}" -lt "${HEALTHCHECK_RETRIES}" ]; do
+	if curl -fsS -o /dev/null "${HEALTHCHECK_URL}"; then
+		echo "[deploy] healthy after ${i} retries"
+		exit 0
+	fi
+	i=$((i + 1))
+	sleep "${HEALTHCHECK_SLEEP}"
+done
+
+echo "[deploy] ERROR: healthcheck never returned 200 after $((HEALTHCHECK_RETRIES * HEALTHCHECK_SLEEP))s"
+exit 1

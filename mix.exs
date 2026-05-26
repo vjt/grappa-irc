@@ -66,7 +66,20 @@ defmodule Grappa.MixProject do
         # See CLAUDE.md "Security" + DESIGN_NOTES TLS posture.
         ignore: ["Config.HTTPS"]
       ],
-      boundary: [default: [check: [in: true, out: true]]]
+      boundary: [default: [check: [in: true, out: true]]],
+      releases: [
+        grappa: [
+          include_executables_for: [:unix],
+          # `assemble` only — Docker deploys never used `mix release`
+          # (the container IS the runtime, see CLAUDE.md). The release
+          # target is the FreeBSD bastille jail on m42 which has no
+          # Docker. Build steps mirror what the container did at
+          # boot: `mix deps.get --only prod`, `mix compile`,
+          # `mix release --overwrite`, then `_build/prod/rel/grappa/bin/grappa
+          # daemon` under an rc.d wrapper.
+          applications: [runtime_tools: :permanent]
+        ]
+      ]
     ]
   end
 

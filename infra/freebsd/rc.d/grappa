@@ -1,0 +1,103 @@
+#!/bin/sh
+#
+# PROVIDE: grappa
+# REQUIRE: NETWORKING SERVERS
+# KEYWORD: shutdown
+#
+# Grappa IRC bouncer — FreeBSD rc.d wrapper for the `mix release` build.
+#
+# Adds to /etc/rc.conf (or /etc/rc.conf.d/grappa):
+#   grappa_enable="YES"
+#   grappa_user="grappa"                                   # default
+#   grappa_release_root="/home/grappa/grappa/_build/prod/rel/grappa"
+#   grappa_env_file="/usr/local/etc/grappa/grappa.env"     # optional
+#
+# The env file (chmod 600, owned by grappa_user) sources secrets:
+#   SECRET_KEY_BASE=...
+#   SECRET_SIGNING_SALT=...
+#   RELEASE_COOKIE=...
+#   GRAPPA_ENCRYPTION_KEY=...
+#   VAPID_PUBLIC_KEY=...
+#   VAPID_PRIVATE_KEY=...
+#   GRAPPA_OUTBOUND_V6_POOL=2a03:4000:2:33c::9000,2a03:4000:2:33c::442,...
+#   DATABASE_PATH=/home/grappa/grappa/runtime/grappa_prod.db
+#   PHX_HOST=grappa.bad.ass
+#   PORT=4000
+#
+# Why a thin wrapper around `bin/grappa daemon` instead of `daemon(8)`:
+# the release script already daemonizes + writes its own pid file, and
+# routes BEAM signals correctly. Reinventing that with the host
+# daemon(8) loses Erlang's signal handling (SIGTERM → graceful
+# Application.stop callback chain → QUIT to upstream peers).
+
+. /etc/rc.subr
+
+name="grappa"
+rcvar="grappa_enable"
+
+load_rc_config "$name"
+
+: ${grappa_enable:="NO"}
+: ${grappa_user:="grappa"}
+: ${grappa_release_root:="/home/grappa/grappa/_build/prod/rel/grappa"}
+: ${grappa_env_file:=""}
+
+command="${grappa_release_root}/bin/grappa"
+pidfile="${grappa_release_root}/tmp/pid"
+extra_commands="reload remote_console release_info"
+
+start_cmd="grappa_start"
+stop_cmd="grappa_stop"
+status_cmd="grappa_status"
+remote_console_cmd="grappa_remote_console"
+release_info_cmd="grappa_release_info"
+
+grappa_env_export() {
+	# Source the env file as the grappa user — keeps secrets readable
+	# only by grappa_user (chmod 600). `set -a` exports every var the
+	# file defines so the release inherits them.
+	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
+		echo "[grappa] sourcing env from ${grappa_env_file}"
+	elif [ -n "${grappa_env_file}" ]; then
+		echo "[grappa] WARNING: env file ${grappa_env_file} not readable by current user — release will boot with empty env (likely to crash on missing SECRET_KEY_BASE)" >&2
+	fi
+}
+
+grappa_runas() {
+	# Run a release subcommand as grappa_user with the env file sourced.
+	# The env file (if set) is read inside the subshell so secrets are
+	# only in memory for the lifetime of the child process.
+	local subcmd="$1"
+	local envsrc=""
+	if [ -n "${grappa_env_file}" ] && [ -r "${grappa_env_file}" ]; then
+		envsrc=". ${grappa_env_file} && export \$(grep -Eo '^[A-Z_][A-Z0-9_]*' ${grappa_env_file}) && "
+	fi
+	su -m "${grappa_user}" -c "${envsrc}${command} ${subcmd}"
+}
+
+grappa_start() {
+	grappa_env_export
+	mkdir -p "${grappa_release_root}/tmp"
+	chown "${grappa_user}":"${grappa_user}" "${grappa_release_root}/tmp"
+	echo "Starting grappa."
+	grappa_runas "daemon"
+}
+
+grappa_stop() {
+	echo "Stopping grappa."
+	grappa_runas "stop"
+}
+
+grappa_status() {
+	grappa_runas "pid" 2>/dev/null && echo "grappa is running." || echo "grappa is stopped."
+}
+
+grappa_remote_console() {
+	grappa_runas "remote"
+}
+
+grappa_release_info() {
+	grappa_runas "version"
+}
+
+run_rc_command "$1"
