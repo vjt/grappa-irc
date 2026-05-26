@@ -1,7 +1,7 @@
 #!/bin/sh
-# Background NDP keepalive — pings the default v6 gateway from every
-# source address in GRAPPA_OUTBOUND_V6_POOL on a fixed interval so the
-# hoster's NDP table never expires a pool entry.
+# Background NDP keepalive — pings the v6 gateway from every source
+# address in GRAPPA_OUTBOUND_V6_POOL on a fixed interval so the
+# upstream router's NDP table never expires a pool entry.
 #
 # Why: m42's upstream router ages NDP entries aggressively. A source
 # address that hasn't sent a packet recently goes stale; the next
@@ -9,17 +9,21 @@
 # solicitation resolves. Touching each source every 30s keeps the
 # entry warm at L2.
 #
-# Pings the default v6 gateway (link-local first hop) rather than a
-# remote target — zero external dependency and exactly the entry that
-# expires.
+# Gateway resolution order:
+#   1. GRAPPA_NDP_KEEPALIVE_GATEWAY env var (operator-pinned, e.g.
+#      "fe80::1%vtnet0") — required for shared-IP bastille jails
+#      where `route get default` returns nothing because the host
+#      owns routing.
+#   2. `route -6 -n get default` — works on hosts and VNET jails.
 #
-# Invoked by /usr/local/etc/rc.d/grappa-ndp-keepalive via daemon(8).
+# Invoked by /usr/local/etc/rc.d/grappa_ndp_keepalive via daemon(8).
 # Sources GRAPPA_OUTBOUND_V6_POOL from /usr/local/etc/grappa/grappa.env.
 
 set -u
 
 ENV_FILE="${GRAPPA_ENV_FILE:-/usr/local/etc/grappa/grappa.env}"
 INTERVAL="${GRAPPA_NDP_KEEPALIVE_INTERVAL:-30}"
+GATEWAY_OVERRIDE="${GRAPPA_NDP_KEEPALIVE_GATEWAY:-}"
 
 log() {
 	echo "[ndp-keepalive] $*"
@@ -39,12 +43,21 @@ if [ -z "${POOL}" ]; then
 fi
 
 resolve_gateway() {
+	if [ -n "${GATEWAY_OVERRIDE}" ]; then
+		echo "${GATEWAY_OVERRIDE}"
+		return
+	fi
 	# `route -6 -n get default` is the FreeBSD-idiomatic way; on a
 	# v6-only default route the gateway line is the link-local hop.
+	# Returns empty inside shared-IP jails (use the override there).
 	route -6 -n get default 2>/dev/null | awk '/gateway:/ {print $2; exit}'
 }
 
-log "starting: interval=${INTERVAL}s pool=${POOL}"
+if [ -n "${GATEWAY_OVERRIDE}" ]; then
+	log "starting: interval=${INTERVAL}s gateway=${GATEWAY_OVERRIDE} (pinned) pool=${POOL}"
+else
+	log "starting: interval=${INTERVAL}s gateway=auto pool=${POOL}"
+fi
 
 while true; do
 	GW=$(resolve_gateway)

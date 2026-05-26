@@ -57,6 +57,9 @@ if [ ! -f "${NDP_RC_CONF}" ]; then
 grappa_ndp_keepalive_enable="YES"
 grappa_ndp_keepalive_env_file="${ENV_FILE}"
 grappa_ndp_keepalive_interval="30"
+# In shared-IP bastille jails `route get default` returns nothing
+# (the host owns routing). Pin the upstream gateway here.
+grappa_ndp_keepalive_gateway="fe80::1%vtnet0"
 EOF
 	chmod 0644 "${NDP_RC_CONF}"
 else
