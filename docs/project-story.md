@@ -2706,3 +2706,103 @@ ledger rather than fixing it as a one-off is the right move:
 fixes need a home in a cluster's narrative, not a free-floating
 chore.
 
+## S54 — 2026-05-26 — The wrapper plug that wasn't a config flag
+
+vjt opened the admin panel post-cp50 polish and reported five things
+in one message: M\Grappa's expiration says "indefinite" with no
+explanation; one of three live sessions had no visitor row behind
+it; the sessions tab showed `user:8f6a979b` instead of "vjt"; he
+wanted to manage networks/users from the admin UI; and visitor IPs
+were all `172.x`-shaped docker bridge addresses, not real clients.
+
+The IP one was the security half. Phoenix sees `conn.remote_ip` from
+the TCP peer, which is always nginx on the docker bridge.
+`auth_controller.ex`'s moduledoc had carried "Phase 5 will add a
+configurable trusted-proxy list" for months. Time to pay the bill.
+
+Research showed `remote_ip` (the hex package) was the canonical
+answer — pure Plug, mature, no Phoenix coupling, and its default
+reserved-range list already covers RFC1918 + docker bridges, so the
+config is `headers: ~w[x-forwarded-for x-real-ip]` and you're done.
+Or so I thought. I wrote the test first — twelve cases covering
+nginx-shaped, X-Real-IP fallback, right-to-left walk, public-IP
+spoofs — and added a `:clients` option to handle the loopback case
+where I assumed `clients: ["127.0.0.0/8"]` would mean "trust this
+peer's headers."
+
+Half the loopback tests failed. The plug rewrote `conn.remote_ip`
+from spoofed X-F-F headers exactly when I wanted it not to.
+
+Re-read the package source. The `:clients` option does the OPPOSITE
+of what its name suggests. It marks IPs *inside the header chain*
+as terminal clients (overriding the reserved-range skip), not "trust
+this peer's headers." There is no peer-based option at all — the
+plug never inspects `conn.remote_ip`. That's by design: the package
+is a header parser, not a trust-boundary gate.
+
+So `docker exec grappa curl -H "X-Forwarded-For: 127.0.0.1"
+http://localhost:4000/admin/reload` would rewrite `conn.remote_ip`
+to loopback and pass the `LoopbackOnly` gate. Container shell →
+admin reload. The gate would silently break.
+
+The fix is a wrapper plug. Three function clauses: peer is loopback
+→ skip the rewrite; peer is anything else → delegate. Forty lines
+including the moduledoc. The test that caught the misconfig now
+also serves as a forever sentinel against re-flattening the wrapper
+back to bare `RemoteIp` — controller-level spoof tests assert the
+full Endpoint pipeline behavior, so a refactor that removed the
+wrapper for "simplicity" would fail loudly.
+
+The lesson isn't "read package docs more carefully." Package docs
+were fine — I'd just stopped reading at "look how easy this is" and
+missed the algorithm section. The lesson is **write the threat test
+first, then the config.** The threat in this case was "container
+shell sets X-F-F to loopback and the gate trusts it." If I'd
+written the config and committed, the test wouldn't have caught it
+because I wouldn't have thought to write it after the config looked
+green. Writing the failing-spoof test first forced me to think
+about what loopback should actually mean here.
+
+The other four buckets went smoother. Subject-label pre-join in the
+sessions wire was a one-day job with a free bonus: the same `nil`
+slot doubles as the orphan-pid honesty signal (live pid, no DB
+row). The composition lives in the controller, not in
+`LiveIntrospection`, because that module's boundary explicitly
+excludes Accounts and Visitors — pure live-state, no DB context.
+The end-to-end test deletes a visitor row out from under a live pid
+and asserts the `subject_label: null` surfaces correctly. That test
+will catch the next class of "DB row deleted via raw SQL" silently.
+
+The NickServ-badge bucket was twenty minutes: `"indefinite" →
+"indefinite (NickServ)"`. The whole point was making the WHY loud
+so the operator can distinguish "intentionally permanent" from "bug
+where the column should have been set." One line of code, two
+tests, ship.
+
+And then post-deploy I checked the live state and found bucket A
+hadn't actually fixed vjt's complaint. M\Grappa's IP was STILL
+`172.19.x`. The wrapper plug worked perfectly — for new logins. But
+`visitors.ip` was set ONLY at row creation, and M\Grappa was created
+back in May before the wrapper existed, with NickServ-identified
+visitors persisting forever. Her `find_or_provision_anon` short-
+circuited on the existing row and never wrote the column. The fix
+was a fifth bucket: refresh `:ip` on every login when the value
+differs. Three guards: same IP no-op, nil-IP no-op (don't blank a
+real value), different non-nil → update.
+
+Bucket E got scrapped mid-session. vjt: "scrap admin manage now,
+proceed with bastille." The five-bucket scoping I'd offered him
+included a manage-cluster (create networks, reset passwords,
+bind/unbind credentials) but `bin/grappa *` already covers all of
+those for the operator path. The admin UI parity was nice-to-have,
+not blocking. Bastille is.
+
+**Law:** *Read the directions, not the surrounding code* applies to
+package documentation. Package docs that read like marketing
+("zero-config!", "secure by default!") are written for the happy
+path. The threat-model details live in the algorithm appendix.
+Write the failing test that exercises your specific threat *before*
+trusting the marketing — the gap between "what the package does"
+and "what your system needs from it" is exactly where security
+bugs hide.
+

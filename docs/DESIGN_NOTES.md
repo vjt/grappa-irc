@@ -10116,3 +10116,127 @@ Lessons captured:
 2. **Bastille deploy workstream** (GitHub issue #8) — FreeBSD jail
    prod runtime parallel to docker-compose. No remaining known
    user-visible regressions blocking it.
+
+## 2026-05-26 — admin polish + X-Forwarded-For with peer-loopback bypass
+
+Pre-bastille polish: vjt opened the admin panel and found five
+distinct UX/correctness issues. Buckets A-D + a follow-up F shipped;
+the planned manage-cluster (E: create/delete networks/users/creds)
+was scrapped — `bin/grappa *` already covers the operator path and
+bastille priority outweighs per-admin-UI parity.
+
+### Trusted-proxy + the `RemoteIpFromProxy` wrapper
+
+`conn.remote_ip` was surfacing the docker-bridge nginx IP for every
+request behind the reverse proxy — `visitors.ip` audit + captcha
+verify all saw nginx, not the client. The `Phase 5 will add` note in
+`auth_controller.ex` moduledoc and the W2 captcha `remoteip` param
+both flagged this gap for months.
+
+Added `{:remote_ip, "~> 1.2"}` to `mix.exs`, wired
+`GrappaWeb.Plugs.RemoteIpFromProxy` between `Plug.RequestId` and
+`Plug.Telemetry` in `endpoint.ex`. `RemoteIp` package is mature
+(v1.2.0 from 2024, pure Plug, zero Phoenix/Bandit coupling),
+default reserved-range list already covers RFC1918 + docker bridge
+ranges → no env-driven CIDR allowlist needed for the single-hop
+nginx→Phoenix topology.
+
+**The peer-loopback bypass** is the non-obvious security half. Bare
+`RemoteIp` operates ONLY on the X-F-F chain + reserved-range
+allowlists; it NEVER inspects `conn.remote_ip` (the TCP peer). That
+means:
+
+    $ docker exec grappa curl -H "X-Forwarded-For: 127.0.0.1" \
+        http://localhost:4000/admin/reload
+
+would rewrite `conn.remote_ip` to `{127,0,0,1}` and pass
+`Plugs.LoopbackOnly`. The fix CANNOT live in the `RemoteIp` config
+itself — the `:clients` option there means the *opposite* of what
+the name suggests (it forces an IP *inside the header chain* to be
+treated as terminal, not "trust this peer's headers"). Tests caught
+this misconfig before the first commit landed.
+
+`RemoteIpFromProxy` is a thin wrapper:
+
+```elixir
+def call(%Plug.Conn{remote_ip: {127, _, _, _}} = conn, _), do: conn
+def call(%Plug.Conn{remote_ip: {0, 0, 0, 0, 0, 0, 0, 1}} = conn, _), do: conn
+def call(%Plug.Conn{} = conn, opts), do: RemoteIp.call(conn, opts)
+```
+
+Peer is loopback → skip the rewrite entirely. Peer is anything else
+(including docker bridge) → delegate to `RemoteIp`. The IPv4-mapped
+IPv6 form `::ffff:127.0.0.1` is intentionally NOT in the bypass
+match — per RFC 4291 it's an IPv4 address in IPv6 transport, not
+loopback, and Bandit surfaces it as `{0, 0, 0, 0, 0, 0xffff, hi, lo}`
+which doesn't pattern-match.
+
+End-to-end controller tests assert both the legitimate nginx-shaped
+path (peer = 172.x, X-F-F honored) and the container-shell spoof
+path (peer = loopback, X-F-F ignored). LoopbackOnly's moduledoc
+cross-references the wrapper so a future refactor sees the security
+coupling.
+
+**Rule for future Plug wrappers:** if a downstream gate keys on
+`conn.remote_ip` (or any conn field a parser-style plug rewrites
+upstream), the rewrite plug's config alone is rarely enough — the
+peer-context behavior often needs to live one layer up. Test the
+end-to-end gate, not the rewriter in isolation.
+
+### Visitor IP staleness — refresh-on-relogin
+
+Post-deploy vjt smoked the admin Visitors tab and saw `M\Grappa`
+still showing `172.19.x` despite the wrapper plug. Root cause:
+`Visitors.find_or_provision_anon/3` returned an existing row
+verbatim, so `visitors.ip` was set ONLY at row creation. For
+long-lived NickServ-identified visitors (V7 — `expires_at: nil`,
+persist forever) the column froze on the row's birth IP indefinitely.
+
+Added `Visitor.ip_changeset/2` + `maybe_refresh_ip/2` head in
+`find_or_provision_anon/3`. Three heads:
+- same ip → no-op (hot path, no UPDATE)
+- nil ip → no-op (refresh is "fresher value," not "forget what you
+  knew" — protects rows from mix-task paths with no remote_ip)
+- different non-nil ip → Repo.update via the changeset
+
+Existing stale rows heal on the next login. The bearer-token resume
+path (`/auth/authenticate`) does NOT call
+`find_or_provision_anon` — only explicit logout/login triggers the
+refresh.
+
+### `subject_label` pre-join + orphan-pid honesty signal
+
+`/admin/sessions` rendered opaque `user:8f6a979b` / `visitor:792fc2a4`
+labels. `LiveIntrospection.AdminWire.session_to_admin_json/2` now
+takes a pre-resolved `subject_label`; the controller batches the
+lookup via new `Accounts.get_users_by_ids/1` +
+`Visitors.get_by_ids/1` helpers (one query per subject_kind
+regardless of session count).
+
+`subject_label: nil` is the **gemello** of the U-0 "live_state: null"
+honesty signal on `/admin/visitors`: pid exists, DB row doesn't
+(orphan pid — raw SQL delete, terminate race, or the ghost-session
+class vjt observed pre-deploy with the M\Grappa visitor session).
+Cic renders `<kind> <uuid8> (no DB row)` so operators see the
+divergence without remsh-ing into the BEAM.
+
+Composition site is the controller, not `LiveIntrospection` — that
+module's boundary explicitly excludes `Accounts` / `Visitors`
+(pure live-state). The pre-join pattern mirrors the M-6 users
+controller's `count_sessions_by_user/0` join.
+
+### Push.SenderTest flake near-miss
+
+During F's diagnosis, `scripts/check.sh` reported `1 failure` —
+push sender `pool_not_available`. Initial iso 2/5 fail on worktree
+vs 5/5 pass on main almost led to a bisect chase. Per
+`feedback_bisect_sample_size_required` ran 8x both sides:
+1-5/8 fail BOTH sides. Pre-existing wallclock-dependent flake
+(`req 0.5.18` surface, documented in `sender.ex:285`). Not a
+regression of F.
+
+**Confirms the discipline:** single-sample iso bisects on a flaky
+test mis-attribute. The cost is 6 extra runs (~3 min) vs hours
+of phantom-regression hunt. Per `feedback_recurring_e2e_not_flake`
+the inverse rule (recurring fails ARE real) still applies — but
+"recurring" needs the sample size to be load-bearing.
