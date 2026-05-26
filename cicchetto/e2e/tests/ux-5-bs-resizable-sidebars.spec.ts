@@ -97,6 +97,17 @@ test("ux-5-bs desktop — drag right handle widens members pane + persists", asy
   const handle = page.locator(".shell-members .resize-handle-right");
   await expect(handle).toHaveCount(1);
 
+  // E2E-ROBUSTNESS bucket D (2026-05-26 iteration) — poll for
+  // `widthBefore` to settle inside the expected 200..240 default
+  // range. Pre-fix the cold-start race returned 256 (LEFT default)
+  // on the first iso iter — likely boundingBox() reads layout
+  // before the grid-template-columns CSS-var applies. Poll until
+  // the value matches the spec contract (default `right: 224` from
+  // sidebarWidths.ts), bounded by a 5s budget.
+  await expect
+    .poll(async () => asideWidth(page, ".shell-members"), { timeout: 5_000 })
+    .toBeLessThan(240);
+
   const widthBefore = await asideWidth(page, ".shell-members");
   expect(widthBefore).toBeGreaterThan(200);
   expect(widthBefore).toBeLessThan(240);
