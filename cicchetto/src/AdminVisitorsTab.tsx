@@ -210,19 +210,22 @@ const LiveBadge: Component<{ live: AdminVisitor["live_state"] }> = (props) => {
   );
 };
 
-// expires_at presentation. `identified === true` is the
-// NickServ-identified branch — `expires_at` is null and the
-// visitor lives indefinitely. Otherwise: relative time from now.
+// expires_at presentation. `expires_at === null` means the visitor
+// committed a NickServ password (server-side `commit_password/2`
+// observed +r MODE on the nick and atomically cleared the column —
+// V7 semantics in `visitor.ex` moduledoc). NickServ-identified
+// visitors persist forever, so the indefinite-expiration display
+// gets a parenthetical "(NickServ)" so the operator can tell
+// "indefinite because identified" from "indefinite because of a bug"
+// at a glance — Bucket D / pre-fix the bare "indefinite" string left
+// the WHY invisible.
 //
-// Inline helper for M-8; if M-9 Sessions tab needs the same
-// formatter, extract to lib/relativeTime.ts on the second
-// caller per "no premature abstraction".
-// expires_at presentation. Server-side `identified === is_nil(expires_at)`
-// (admin_wire.ex:84) — strictly redundant with the null check, so cic
-// keys off `expires_at === null` only and the identified field is
-// not consumed.
+// Server-side `identified === is_nil(expires_at)` (admin_wire.ex:84)
+// — strictly redundant with the null check, so cic keys off
+// `expires_at === null` only and the identified field is not
+// consumed.
 function renderExpires(v: AdminVisitor): string {
-  if (v.expires_at === null) return "indefinite";
+  if (v.expires_at === null) return "indefinite (NickServ)";
   const diffMs = new Date(v.expires_at).getTime() - Date.now();
   if (diffMs <= 0) return "expired";
   return formatRelativeFuture(diffMs);

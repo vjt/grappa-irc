@@ -85,6 +85,28 @@ const DEAD: AdminVisitor = {
   },
 };
 
+// Bucket D — NickServ-identified visitor: server cleared expires_at
+// after +r MODE observation (V7 semantics, `commit_password_changeset/3`
+// in visitor.ex). Persists forever; the row must surface the WHY of
+// the indefinite expiration so the operator doesn't read it as a bug.
+const NICKSERV_IDENTIFIED: AdminVisitor = {
+  id: "00000000-0000-0000-0000-000000000004",
+  nick: "M\\Grappa",
+  network_slug: "azzurra",
+  expires_at: null,
+  identified: true,
+  ip: "9.10.11.12",
+  inserted_at: "2026-05-16T00:00:00Z",
+  live_state: {
+    alive: true,
+    pid_inspect: "#PID<0.555.0>",
+    mailbox_len: 0,
+    memory_bytes: 100_000,
+    joined_channels: ["#italia"],
+    introspection_degraded: [],
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -114,6 +136,33 @@ describe("AdminVisitorsTab", () => {
     expect(badge).toBeInTheDocument();
     expect(badge.classList.contains("live-badge")).toBe(true);
     expect(badge.classList.contains("none")).toBe(true);
+  });
+
+  it("renders 'indefinite (NickServ)' when expires_at is null (Bucket D)", async () => {
+    // Pre-fix the bare "indefinite" left the WHY invisible — the
+    // operator couldn't distinguish "indefinite because identified"
+    // from "indefinite because of a bug". The parenthetical pins it
+    // to the V7 NickServ-identified semantic.
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListVisitors).mockResolvedValue([NICKSERV_IDENTIFIED]);
+
+    render(() => <AdminVisitorsTab />);
+
+    const row = await screen.findByTestId(`admin-visitor-row-${NICKSERV_IDENTIFIED.id}`);
+    expect(row.textContent).toContain("indefinite (NickServ)");
+  });
+
+  it("renders relative future time when expires_at is set (sanity vs bucket D)", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListVisitors).mockResolvedValue([ALIVE]);
+
+    render(() => <AdminVisitorsTab />);
+
+    const row = await screen.findByTestId(`admin-visitor-row-${ALIVE.id}`);
+    // ALIVE has expires_at: "2099-01-01" — far in the future, no
+    // NickServ parenthetical.
+    expect(row.textContent).not.toContain("(NickServ)");
+    expect(row.textContent).toMatch(/in \d+[smhd]/);
   });
 
   it("renders the alive badge + joined channel count when live_state.alive is true", async () => {
