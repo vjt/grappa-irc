@@ -25,6 +25,16 @@ if Mix.env() in [:dev, :test] do
     alias Grappa.TestSupport.SubjectReset
 
     @spec reset(Plug.Conn.t(), map()) :: Plug.Conn.t()
+    @doc """
+    `POST /admin/test/reset-subject` action. Drains every mutable
+    surface for `params["user_name"]` via
+    `Grappa.TestSupport.SubjectReset.reset!/2` and returns 204.
+
+    Inline error dispatch (not `action_fallback`) — three of four
+    error tuples carry slug/reason payloads only this surface knows
+    about; FallbackController would have to grow test-only clauses
+    for them.
+    """
     def reset(conn, %{"user_name" => user_name} = params) when is_binary(user_name) do
       # Inline dispatch (not action_fallback) — three of four error
       # tuples carry slug/reason payloads only this surface knows
