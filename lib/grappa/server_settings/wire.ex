@@ -7,11 +7,11 @@ defmodule Grappa.ServerSettings.Wire do
 
     * `GrappaWeb.GrappaChannel` after-join — `push_server_settings/1`
       private helper, parity with `push_bundle_hash/1`.
-    * `GrappaWeb.Admin.SettingsController.update/2` — after a
-      successful `PUT /admin/settings`, iterates
+    * `GrappaWeb.Admin.SettingsController`'s `PUT /admin/settings` — after
+      a successful update, iterates
       `Grappa.WSPresence.list_user_names/0` + broadcasts on every live
       `Topic.user(name)`. Same fanout pattern as
-      `AdminController.cic_bundle_changed/2` (cluster `cic-bundle-
+      `GrappaWeb.AdminController.cic_bundle_changed/2` (cluster `cic-bundle-
       changed`, CP23 S4 B5).
 
   ## Why per-user-topic re-broadcast (not a dedicated channel)
@@ -28,7 +28,7 @@ defmodule Grappa.ServerSettings.Wire do
   `Grappa.ServerSettings.public_view/0` returns the upload subtree
   with the host as an atom (`:embedded | :litterbox`). Wire shape
   flattens to the string the cic side reads (mirrors
-  `GrappaWeb.ServerSettingsController.show/2`). Adding a field to
+  `GrappaWeb.ServerSettingsController`'s `GET /api/server-settings`). Adding a field to
   the upload subtree is one edit here + one mirror in the cic-side
   narrower; no second wire-shape definition to keep in sync.
   """
@@ -38,8 +38,8 @@ defmodule Grappa.ServerSettings.Wire do
   @typedoc """
   Wire projection of the upload subtree — atoms-out. Shared between
   the WS broadcast (`server_settings_changed/1` below) and the REST
-  surfaces (`GrappaWeb.ServerSettingsController.show/2` +
-  `GrappaWeb.Admin.SettingsController.render_view/1`). Adding a 4th
+  surfaces (`GrappaWeb.ServerSettingsController`'s `GET /api/server-settings` +
+  `GrappaWeb.Admin.SettingsController`'s `GET /admin/settings`). Adding a 4th
   `upload.*` field is one edit here, not three.
   """
   @type upload_view :: %{

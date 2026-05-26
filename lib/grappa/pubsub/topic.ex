@@ -28,7 +28,8 @@ defmodule Grappa.PubSub.Topic do
     * `grappa:server_settings` — admin-set server-wide settings fan-out
       (UX-6 bucket B1). In-process signal consumed by tests + future
       internal subscribers; the cic-visible WS push lives on a per-user
-      topic via `GrappaWeb.Admin.SettingsController.update/2` instead.
+      topic via `GrappaWeb.Admin.SettingsController`'s `PUT /admin/settings`
+      action instead.
       Lives outside the user-rooted shape (settings are server-global,
       not per-subject) and outside the admin-events shape (separate
       audience: any internal subscriber, not just the admin operator
@@ -118,8 +119,8 @@ defmodule Grappa.PubSub.Topic do
   `{kind: "server_settings_changed", ...}` here on every committed
   change. Audience: in-process subscribers (tests + future internal
   consumers). The cic-visible WS push to connected browsers lives on
-  a per-user topic via `GrappaWeb.Admin.SettingsController.update/2`
-  which mirrors the broadcast across every live `Topic.user/1` — the
+  a per-user topic via `GrappaWeb.Admin.SettingsController`'s
+  `PUT /admin/settings` action which mirrors the broadcast across every live `Topic.user/1` — the
   per-user fan-out is the operator-visible surface, this topic is the
   intra-server signal that triggers it.
 

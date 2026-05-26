@@ -3,7 +3,7 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
 
   @moduledoc """
   Walks every module under `lib/grappa/**/wire.ex`, parses `@type`
-  declarations via `Code.Typespec.fetch_types/1`, emits a single
+  declarations via Code.Typespec.fetch_types/1, emits a single
   deterministic TypeScript file at `cicchetto/src/lib/wireTypes.ts`.
 
   ## Usage

@@ -12,7 +12,7 @@ defmodule Grappa.Health do
 
   H26 adds three boundary checks at `/healthz` request time:
 
-    1. `ready?/0` — flipped to `true` by `Grappa.Application`'s start
+    1. `ready?/0` — flipped to `true` by Grappa.Application's start
        callback AFTER `Supervisor.start_link/2` returns clean. `false`
        until then. NOTE: `:persistent_term` survives top-supervisor
        restarts within the same BEAM (release-boot crash-loops are a
@@ -32,7 +32,7 @@ defmodule Grappa.Health do
   boot-time only, runtime banned" — `:persistent_term` is the
   documented analog for "boot-once readonly". Tests opt-in via
   `mark_ready/0` after their own `Application.ensure_all_started`
-  cycle (the test env doesn't run `Grappa.Application`'s start-
+  cycle (the test env doesn't run Grappa.Application's start-
   callback end-of-init mark — see `config/test.exs`).
   """
 
@@ -62,7 +62,7 @@ defmodule Grappa.Health do
   end
 
   @doc """
-  Mark the supervision tree as ready. Called by `Grappa.Application`'s
+  Mark the supervision tree as ready. Called by Grappa.Application's
   start callback AFTER `Supervisor.start_link/2` returns ok. Test
   setups MAY call this directly when they exercise the `/healthz`
   controller and don't want a false 503.

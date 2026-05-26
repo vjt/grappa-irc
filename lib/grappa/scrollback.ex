@@ -488,7 +488,8 @@ defmodule Grappa.Scrollback do
   query (a query already-bound to `Message` so the implicit `[m]`
   binding resolves).
 
-  Public surface: shared with `Grappa.ReadCursor.message_belongs?/4`
+  Public surface: shared with `Grappa.ReadCursor`'s private
+  `message_belongs?/4`
   so the read paths (`fetch/6` + friends) and the cursor-write
   validator agree on the same "what counts as a row in this window"
   predicate. UX-6 bucket K (2026-05-21): pre-K the validator used a

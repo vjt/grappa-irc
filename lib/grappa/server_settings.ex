@@ -31,8 +31,8 @@ defmodule Grappa.ServerSettings do
   `Grappa.PubSub.broadcast_event/2` — same single-source-of-truth path
   every other context uses. Retained as an in-process signal for tests
   + any future internal subscriber. The cic fan-out path lives at
-  `GrappaWeb.Admin.SettingsController.update/2` (mirrors
-  `AdminController.cic_bundle_changed/2`'s per-user-topic broadcast
+  `GrappaWeb.Admin.SettingsController`'s `PUT /admin/settings` (mirrors
+  `GrappaWeb.AdminController.cic_bundle_changed/2`'s per-user-topic broadcast
   via `WSPresence.list_user_names/0`); subscribers on this topic
   receive `%Phoenix.Socket.Broadcast{event: "event", payload: ...}`
   with the typed wire payload from `ServerSettings.Wire.server_settings_changed/1`.

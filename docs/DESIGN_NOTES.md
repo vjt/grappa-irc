@@ -1966,17 +1966,17 @@ a parallel typed event.
 ### Two patterns this cluster pinned for project-wide reuse
 
 **Wire modules.** B6 surfaced a Jason crash in
-`Grappa.QueryWindows.broadcast_windows_list/2`: the function was
+`Grappa.QueryWindows`'s `broadcast_windows_list/2`: the function was
 sending raw `%Window{}` structs over PubSub, and the struct
-doesn't derive `Jason.Encoder`. `Phoenix.Socket.V2.JSONSerializer.
-fastlane!/1` crashed at the WS edge during fan-out, the crash
+doesn't derive `Jason.Encoder`. Phoenix.Socket.V2.JSONSerializer's
+`fastlane!/1` crashed at the WS edge during fan-out, the crash
 dropped the user-channel process, and any subsequent
 `close_query_window` push from cic landed on a dying ref and was
 lost — explaining a long-suspected "DM windows you close stay
 open server-side" bug that pre-dated CP15. Fix:
 `Grappa.QueryWindows.Wire.render_grouped/1`, sibling to
 `Grappa.Scrollback.Wire`. Both `broadcast_windows_list/2` (PubSub
-side) and `GrappaWeb.GrappaChannel.push_query_windows_list/2`
+side) and `GrappaWeb.GrappaChannel`'s `push_query_windows_list/2`
 (Channel push side) now delegate. The wire module pattern is now
 the project's STANDARD for any context that emits over PubSub or
 pushes over Phoenix Channels: contexts own the JSON-encodable wire
@@ -2386,7 +2386,7 @@ the GenServer died). Net: today /disconnect leaves the cic UI looking
 fully connected across every channel under the parked network.
 
 **Two design options weighed in
-[`docs/plans/2026-05-09-t32-parked-window.md`](plans/2026-05-09-t32-parked-window.md):**
+`docs/plans/2026-05-09-t32-parked-window.md`:**
 
 - **Q1.A — emit per-window `:parked` from Session.Server `terminate/2`.**
   Pro: cic's existing `windowStateByChannel` model handles it; symmetric
@@ -3032,7 +3032,7 @@ Right answer: tighten the spec at the boundary so Dialyzer rejects
 out-of-shape calls at compile time. The allowlist remains the
 runtime gate; the spec becomes the static gate. The new alias
 `session_metadata` lives on `Grappa.IRC.Client` itself rather than
-re-exporting `Grappa.Log.session_metadata/0` so the IRC namespace
+re-exporting `Grappa.Log`'s private `session_metadata/0` so the IRC namespace
 stays free of the optional `Grappa.Log` Boundary dep (extraction
 memory `project_extract_irc_libs`: parser + client are slated for
 split into standalone hex libs post-Phase-5). The two type aliases
@@ -3666,7 +3666,7 @@ or sec precision preserved).
 `Login.tsx`'s `friendlyMessage` switch had an arm for the wire
 token `"captcha_provider_unavailable"` that the server NEVER
 emits. The server-side mapping is in
-`Grappa.Admission.Captcha.SiteVerifyHttp` — every upstream-side
+Grappa.Admission.Captcha.SiteVerifyHttp — every upstream-side
 verification failure (4xx, 5xx, transport error) becomes
 `{:error, :captcha_provider_unavailable}` which `FallbackController`
 renders with status 503 and wire body `%{error: "service_degraded"}`.
@@ -4249,7 +4249,7 @@ or behavior-change territory:
    docs referencing private functions (`Bootstrap.spawn_with_admission/6`,
    `NetworksController.spawn_session_after_connect/3`,
    `GrappaChannel.push_bundle_hash/1`, `Admission.Config.put_test_config/1`)
-   or hidden modules (`Grappa.Application` and its `start/2`). Each
+   or hidden modules (Grappa.Application and its `start/2`). Each
    reword turns the backtick-link into either a public-module
    reference + plain-prose helper name OR a path hint to
    `lib/grappa/application.ex`. Also caught one self-introduced
@@ -4495,7 +4495,7 @@ refresh recovers them. Multiple consecutive misses on `#it-opers`,
 vjt — even on iOS Safari which routinely suspends tabs.
 
 The triggering regression was in the mega-cluster but the
-**architectural gap** is older: server-side `Phoenix.PubSub.broadcast/2`
+**architectural gap** is older: server-side Phoenix.PubSub.broadcast/2
 is fire-and-forget. If the WS drops the instant before a row's
 broadcast, the in-flight payload has no live subscriber and is
 silently lost for THAT cic session. Scrollback DB is source-of-truth;
@@ -5023,7 +5023,7 @@ and refused the visitor branch (or accepted it via a parallel
 short-circuit code path). V1-V9 collapse those branches: every
 persistence-write codepath now builds its changeset via
 `Grappa.Subject.put_subject_id/2`, every read query goes through
-`Grappa.Subject.subject_where/3`, every controller picks subject
+`Grappa.Subject.subject_where/2`, every controller picks subject
 from `Subject.from_assigns/1` rather than `safe_get_user/1`. Three
 subject-scoped tables (`query_windows`, `push_subscriptions`,
 `user_settings`) gained the XOR FK pattern that `read_cursors` had
@@ -7041,7 +7041,7 @@ than the channel/DM the push referenced.
 ### Root cause
 
 Push cluster B4 (2026-05-14) built the deep-link URL into push
-payloads — `Grappa.Push.Payload.build_url/2` writes
+payloads — `Grappa.Push.Payload`'s private `build_url/2` writes
 `/?network=<slug>&channel=<percent-encoded>` and the SW carries it
 through to `notificationclick`. B5 then half-shipped the cic side:
 the SW handler ran `existing.navigate(url)` on the focused client,
@@ -7087,7 +7087,7 @@ URL-driven navigation is ever needed.
   - `parsePushTargetUrl` (in `pushPayload.ts`) extracts
     `{networkSlug, channelName, kind}` from the URL. `kind` follows
     RFC 2812 chanstring sigils `#&!+` → `"channel"`, otherwise →
-    `"query"` (DM target). Mirrors `Grappa.Push.Payload.build_url/2`
+    `"query"` (DM target). Mirrors `Grappa.Push.Payload`'s private `build_url/2`
     + `Grappa.IRC.Identifier.canonical_channel/1` on the server.
   - `applyPushTarget(rawUrl)` parses + calls existing
     `setSelectedChannel`. Same code path as a sidebar click — UX-4
@@ -7516,7 +7516,7 @@ process-wide GC scan).
 
 NEW `lib/grappa/health.ex` (`Grappa.Health` module). Three
 substrate checks via `Grappa.Health.check/0`:
-- `:ready` — `Grappa.Application.start/2` marks the supervision
+- `:ready` — Grappa.Application's `start/2` callback marks the supervision
   tree ready via `:persistent_term` AFTER `Supervisor.start_link/2`
   returns clean.
 - `:repo` — `Grappa.Repo.query("SELECT 1")` round-trip.
@@ -7540,7 +7540,7 @@ Round 1 caught MED-1+MED-2 (Endpoint cache not invalidated on
 All fixed inline.
 
 Round 2 caught HIGH-1: the round-1 `Endpoint.config_change/2`
-override read the WRONG shape of `changed`. `Application.config_change/3`
+override read the WRONG shape of `changed`. Application.config_change/3
 delivers application-scoped keyword `[{Endpoint, [salt: ...]},
 {OtherKey, ...}]` — NOT a flat keyword. The predicate
 `Keyword.has_key?(changed, :session_signing_salt)` checked the
@@ -7857,7 +7857,7 @@ recovery overstated — operator must re-issue `/away` post-
 reconnect because Session crash wipes AwayState).
 
 All fixed in commit `1980035` (over base sweep `b457efc`). New
-typed public API: `Grappa.Session.send_transport_error/0`
+typed public API: `t:Grappa.Session.send_transport_error/0`
 typedoc'd union (`:no_socket | :closed | :inet.posix()`); all 22
 `Session.send_*` wrappers widened to include it.
 `dispatch_ops_verb/3` gains catch-all `{:error, reason}` arm
@@ -7931,7 +7931,7 @@ to `:sasl_pending`; new phases NOT included → no credential leak
 via the new states. The C1 catch-all absorbs stray AUTHENTICATE
 in the new phases silently.
 
-### H10 — `GrappaWeb.GrappaChannel.dispatch_subject_verb/3` catch-all
+### H10 — GrappaWeb.GrappaChannel.dispatch_subject_verb/3 catch-all
 
 Sister of `dispatch_ops_verb/3`. REV-E HIGH-1 added a catch-all
 `{:error, reason}` arm to `dispatch_ops_verb/3` after the H11
@@ -8003,7 +8003,7 @@ the SPA shell is harmless (no security oracle, no broken
 attached resource).
 
 Structural pin: `test/grappa_web/router_sw_denylist_test.exs`
-walks `GrappaWeb.Router.__routes__/0` (the authoritative compiled
+walks GrappaWeb.Router.__routes__/0 (the authoritative compiled
 router) + regex-parses the SW source file for `denylist: [...]`
 tokens, asserts SW ⊇ router-prefix-set modulo a documented
 whitelist (`/`, `/healthz`). Same M-9b-style boundary discipline
@@ -8857,7 +8857,7 @@ REV cluster: **CLOSED**.
 First bucket of the FLAKES cluster (post-REV per vjt mandate
 `project_post_review_ordering_2026_05_22`). Docs-only; no code.
 
-Manifest at [`reviews/flake-triage-2026-05-22.md`](reviews/flake-triage-2026-05-22.md).
+Manifest at `docs/reviews/flake-triage-2026-05-22.md`.
 
 Headline finding: brief said "45 e2e + 2 server-side classes";
 re-baseline against current HEAD `bf3ba3a` measures **41 e2e + 0
@@ -9668,7 +9668,7 @@ cluster findings (C1, C2, H1-H4, H6, M19, M20).
 
 One mix task (`Mix.Tasks.Grappa.GenWireTypes`) walks every module
 under `lib/grappa/**/wire.ex`, parses `@type` declarations via
-`Code.Typespec.fetch_types/1`, emits ONE deterministic file at
+Code.Typespec.fetch_types/1, emits ONE deterministic file at
 `cicchetto/src/lib/wireTypes.ts`. Committed to git. CI gate
 `mix grappa.gen_wire_types --check` (appended to `scripts/check.sh`)
 re-generates in memory and diffs — fails CI on drift between

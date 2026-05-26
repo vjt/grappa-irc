@@ -57,7 +57,7 @@ defmodule Grappa.Session.PartCleanup do
 
   @typedoc """
   Minimal local-state shape `cleanup_local/2` consumes + returns.
-  Matches the slice of `Grappa.Session.Server.state/0` that mutates on
+  Matches the slice of `t:Grappa.Session.Server.t/0` that mutates on
   self-PART; the actual Server state struct has many more fields that
   `cleanup_local/2` leaves untouched via the `_ => _` open-map rest.
 
