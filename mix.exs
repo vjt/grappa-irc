@@ -144,15 +144,26 @@ defmodule Grappa.MixProject do
       "ecto.reset": ["ecto.drop --quiet", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "ci.check": [
-        # Compile first with warnings-as-errors so the Boundary compiler
-        # (added to `compilers/0`) fails the build on cross-boundary
-        # violations rather than printing them as advisory warnings.
-        # `cmd mix compile ...` shells out to a fresh mix process —
-        # running `compile --warnings-as-errors` inline corrupts the
-        # archive table for subsequent hex.* tasks in the alias chain.
+        # Each step shells out via `cmd` so the alias chain HALTS on
+        # any non-zero exit. Pre-2026-05-26 (cluster e2e-revive-skips
+        # post-mortem): in-alias steps (`format --check-formatted`,
+        # `credo --strict`, `doctor`, etc.) ran via native task
+        # invocation, which does NOT propagate exit codes to the
+        # alias-level failure. A failing `doctor` exited 1 internally
+        # but the alias kept going and reported success, masking the
+        # failure from `scripts/check.sh`. CI caught it because its
+        # workflow YAML invokes `mix doctor` as a separate step where
+        # exit propagation works. `mix cmd` explicitly aborts on
+        # non-zero per its docs — wrapping every step in `cmd` is the
+        # idiomatic fix.
+        #
+        # `cmd mix compile --warnings-as-errors` must stay first so
+        # Boundary compiler (added to `compilers/0`) fails the build
+        # on cross-boundary violations rather than printing them as
+        # advisory warnings.
         "cmd mix compile --warnings-as-errors",
-        "format --check-formatted",
-        "credo --strict",
+        "cmd mix format --check-formatted",
+        "cmd mix credo --strict",
         # `--ignore-advisory-ids GHSA-g2wm-735q-3f56` skips the LOW-severity
         # cowlib cookie-injection advisory that has NO patched version
         # ("First patched versions:" empty in the advisory). cic does NOT
@@ -161,20 +172,20 @@ defmodule Grappa.MixProject do
         # or-above findings fail the build" — LOW with no fix is filtered.
         # Re-evaluate when cowlib publishes a patch (revisit the
         # vulnerable-version range above).
-        "deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56",
-        "hex.audit",
-        "sobelow --config --exit Medium",
-        "doctor",
+        "cmd mix deps.audit --ignore-advisory-ids GHSA-g2wm-735q-3f56",
+        "cmd mix hex.audit",
+        "cmd mix sobelow --config --exit Medium",
+        "cmd mix doctor",
         # Coverage is a CI-only step (mix coveralls.json in the workflow);
         # local runs would need MIX_ENV=test for excoveralls to load.
-        # `cmd MIX_ENV=test mix test ...` shells out so MIX_ENV is set
+        # `cmd env MIX_ENV=test mix test ...` shells out so MIX_ENV is set
         # for the test run — `mix test` from inside an alias inherits
         # the parent's env (here :dev from ci.check), and then Repo
         # picks up the dev pool instead of Sandbox. Spawning a fresh
         # mix process is the canonical workaround for this Mix quirk.
         "cmd env MIX_ENV=test mix test --warnings-as-errors",
-        "dialyzer",
-        "docs"
+        "cmd mix dialyzer",
+        "cmd mix docs"
       ]
     ]
   end
