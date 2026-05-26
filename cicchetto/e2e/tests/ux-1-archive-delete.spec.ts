@@ -64,7 +64,7 @@ test("UX-1 — × on archive entry confirms + deletes scrollback permanently", a
   // which silently broke at BH (the spec was failing baseline since
   // 2026-05-19; surfaced + fixed in UX-7-D 2026-05-22).
   // xpath sibling-axis matches the working sister specs
-  // (cp15-b4-archive-section + cp15-b6-part-archive-rejoin) and is
+  // (cp15-b6-part-archive-rejoin — the consolidated archive lifecycle spec) and is
   // forward-compat against multi-network seeds.
   const networkSection = page.locator(".sidebar-network-section", {
     has: page.locator(".sidebar-network-header", { hasText: NETWORK_SLUG }),

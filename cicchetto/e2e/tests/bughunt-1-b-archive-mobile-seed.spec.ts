@@ -69,7 +69,7 @@ test("@webkit BUGHUNT-1 B — mobile archive chip seeds list on first open", asy
 
 test("BUGHUNT-1 B — desktop Sidebar archive expand still works (no regression)", async ({ page }) => {
   // Desktop chromium path (no @webkit tag = stays in default project).
-  // Mirror of cp15-b4-archive-section to pin that the createEffect
+  // Mirror of cp15-b6-part-archive-rejoin (consolidated archive spec) to pin that the createEffect
   // addition didn't break the existing Sidebar-driven load path.
   const vjt = getSeededVjt();
   await loginAs(page, vjt);

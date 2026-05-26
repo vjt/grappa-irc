@@ -1,7 +1,7 @@
 // Images cluster I-2 (sister spec) — litterbox uploader Playwright e2e.
 //
 // UX-6-B2 (2026-05-21) flipped the default `upload.active_host` to
-// `embedded`. Embedded happy-path lives in `i2-image-upload.spec.ts`.
+// `embedded`. Embedded happy-path lives in `ux-6-b-embedded-upload.spec.ts`.
 // This spec admin-pins the host back to `litterbox` so we still cover
 // the catbox path (preserved as a selectable host in
 // `image-upload.ts:387 availableHosts`).

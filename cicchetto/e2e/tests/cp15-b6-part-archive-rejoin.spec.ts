@@ -1,4 +1,9 @@
-// CP15 B6 — PART → archive → re-join cycle.
+// CP15 B4 + B6 — Archive section: PART → archive → click → re-join.
+//
+// Consolidated 2026-05-26 (spec-audit-ez): the prior cp15-b4 spec was
+// a strict subset of this lifecycle (PART → archive → click); the only
+// unique signal it carried was the "$server is never archived"
+// invariant — folded in at the bottom of this spec. b4 deleted.
 //
 // Asserts the full archive lifecycle:
 //   1. PART a joined channel (#bofh, the seeded autojoin) → :parted
@@ -13,6 +18,10 @@
 //      filter mirrors server-side `Scrollback.list_archive/3`'s
 //      active_keyset exclusion at render time, so a re-JOINed channel
 //      never duplicates between Active + Archive sections).
+//   5. $server-never-archived invariant (folded from b4): even with
+//      the network archive section open, no "Server" entry appears
+//      there — `Scrollback.list_archive/3` filters $server out
+//      regardless of active_keyset.
 //
 // Cleanup: re-JOIN (assertion path itself) leaves #bofh in the
 // joined state, matching the seed → no afterEach restoration needed.
@@ -103,4 +112,26 @@ test("CP15 B6 — PART → archive → re-join: row moves from active to archive
   await expect(membersPane.locator("li", { hasText: NETWORK_NICK })).toBeVisible({
     timeout: 5_000,
   });
+
+  // $server-never-archived invariant (folded from cp15-b4 2026-05-26):
+  // The Archive section MUST NOT contain a "Server" entry, regardless
+  // of active_keyset state — Scrollback.list_archive/3 filters $server
+  // out unconditionally. Pin the rule here so a future regression
+  // in that filter surfaces in e2e too.
+  //
+  // We've already re-JOINed #bofh so the archive section is now empty
+  // for this network. Re-PART then re-open to verify the rule with a
+  // populated archive too.
+  await partChannel(vjt.token, NETWORK_SLUG, CHANNEL);
+  await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(0, { timeout: 5_000 });
+  if (!(await archiveSection.getAttribute("open"))) {
+    await archiveSection.locator("summary").click();
+    await expect(archiveSection).toHaveAttribute("open", "");
+  }
+  await expect(
+    archiveSection.locator("button.sidebar-window-btn", { hasText: "Server" }),
+  ).toHaveCount(0);
+
+  // Restore seed state for downstream specs.
+  await joinChannel(vjt.token, NETWORK_SLUG, CHANNEL);
 });

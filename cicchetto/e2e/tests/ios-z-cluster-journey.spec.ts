@@ -1,5 +1,11 @@
 // iOS-Z — full iOS UI polish cluster end-to-end journey.
 //
+// Consolidated 2026-05-26 (spec-audit-ez): folded the strict subsets
+// `ios-3-bottom-bar-close.spec.ts` + `ios-4-font-size.spec.ts` into
+// this cluster journey (both were 1-for-1 replays of arms already
+// here). Unique signal from ios-3 test 2 ("Server tab has no close ×")
+// added inside the iOS-3 arm below. Both source specs deleted.
+//
 // Mirrors `m-z-admin-cluster-journey.spec.ts` / U-Z shape: ONE spec
 // replays all 4 iOS buckets back-to-back inside a single webkit
 // iPhone 15 session, so the cluster's shipping reality is exercised
@@ -110,6 +116,22 @@ test("@webkit iOS-Z cluster — viewport + safe-area + close× + font-size", asy
     await expect(closeBtn).toBeVisible();
     await closeBtn.tap();
     await expect(tab).not.toBeVisible({ timeout: 10_000 });
+
+    // iOS-3b (folded from ios-3-bottom-bar-close 2026-05-26) — the
+    // Server "window" header has no `Close <name>` × affordance.
+    // UX-6-E: the server-window entry is now the network header itself
+    // (`.bottom-bar-network-header`, replacing the old chip+Server-tab
+    // pair). It DOES have a sibling × — but that × disconnects the
+    // network (mirrors wide-mode UX-4-D), not "close the server
+    // window." Invariant: no `.bottom-bar-close[aria-label="Close
+    // Server"]` exists. The disconnect × is asserted by
+    // ux-6-e-narrow-server-dedup.
+    const section = page.locator(".bottom-bar-network", {
+      has: page.locator(`.bottom-bar-network-header[data-network-slug="${NETWORK_SLUG}"]`),
+    });
+    await expect(
+      section.locator('.bottom-bar-close[aria-label="Close Server"]'),
+    ).toHaveCount(0);
 
     // iOS-4 — font-size XL persists across reload. UX-5 bucket BM
     // (2026-05-20) — the mobile members drawer also has an

@@ -114,3 +114,36 @@ test("UX-6-B — picker → privacy modal (embedded) → upload → 📸 link �
   const link = row.first().locator(".scrollback-link").first();
   await expect(link).toHaveAttribute("href", url);
 });
+
+test("UX-6-B — privacy modal Cancel does NOT trigger upload (folded from i2 2026-05-26)", async ({
+  page,
+}) => {
+  // Counter pattern — embedded path is same-origin, so a page.route()
+  // stub would block cic bootstrap too. Count requests instead.
+  let uploadHits = 0;
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().endsWith("/api/uploads")) {
+      uploadHits += 1;
+    }
+  });
+
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  const picker = page.locator("input[data-image-picker]");
+  await picker.setInputFiles({
+    name: "ux-6-b-cancel.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(TINY_PNG_HEX, "hex"),
+  });
+
+  const modal = page.getByRole("dialog", { name: /Upload to .+grappa/i });
+  await expect(modal).toBeVisible({ timeout: 5_000 });
+  await modal.locator("button", { hasText: /cancel/i }).click();
+  await expect(modal).toBeHidden({ timeout: 5_000 });
+
+  // Give the orchestrator a moment to (not) fire the POST.
+  await page.waitForTimeout(500);
+  expect(uploadHits).toBe(0);
+});
