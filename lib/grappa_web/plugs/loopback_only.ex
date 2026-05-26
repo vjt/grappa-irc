@@ -18,6 +18,19 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   hardening adds an admin auth surface (Phoenix.LiveDashboard with
   basic-auth or session-cookie), this plug stays as the inner gate;
   the auth layer is the outer one.
+
+  ## Interaction with `RemoteIp` plug
+
+  `GrappaWeb.Endpoint`'s `RemoteIp` plug rewrites `conn.remote_ip`
+  from the `X-Forwarded-For` chain BEFORE this plug fires. The
+  endpoint configures `clients: ["127.0.0.0/8", "::1/128"]` so
+  loopback peers are treated as terminal clients — X-F-F headers
+  arriving from loopback are IGNORED, keeping this gate honest.
+  Without that `clients:` override, an attacker with container
+  shell could spoof `curl -H "X-Forwarded-For: 1.2.3.4"
+  http://localhost:4000/admin/reload` and `conn.remote_ip` would
+  become `{1, 2, 3, 4}`, bypassing the gate. See `endpoint.ex` for
+  the security-critical config.
   """
   @behaviour Plug
 

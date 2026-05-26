@@ -43,6 +43,28 @@ defmodule GrappaWeb.Endpoint do
     longpoll: false
 
   plug Plug.RequestId
+
+  # Honor X-Forwarded-For / X-Real-IP from nginx so `conn.remote_ip`
+  # resolves to the real client (not the docker-bridge nginx IP).
+  # Placed AFTER RequestId so the request-id log prefix is set first,
+  # BEFORE Telemetry so every telemetry event already sees the
+  # rewritten IP. The wrapper plug overwrites `conn.remote_ip`
+  # in-place; downstream code (Logger metadata, captcha verify,
+  # visitor.ip audit) needs no changes.
+  #
+  # `RemoteIpFromProxy` is a thin wrapper that conditionally bypasses
+  # the underlying `RemoteIp` plug when the TCP peer is loopback.
+  # SECURITY-CRITICAL: without the bypass, `docker exec grappa curl
+  # -H "X-Forwarded-For: 1.2.3.4" http://localhost:4000/admin/reload`
+  # would rewrite `conn.remote_ip` to `{1, 2, 3, 4}` and BYPASS
+  # `Plugs.LoopbackOnly` (which gates `/admin/reload` +
+  # `/admin/cic-bundle-changed`). The wrapper inspects the TCP peer
+  # FIRST and leaves loopback peers alone — RemoteIp itself never
+  # consults the peer IP (only the X-F-F chain), so the gate has to
+  # live at the wrapper layer.
+  plug GrappaWeb.Plugs.RemoteIpFromProxy,
+    headers: ~w[x-forwarded-for x-real-ip]
+
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,

@@ -116,6 +116,16 @@ defmodule Grappa.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       {:recon, "~> 2.5"},
+      # Honor X-Forwarded-For / X-Real-IP from the nginx reverse proxy
+      # so `conn.remote_ip` resolves to the real client and not the
+      # docker-bridge nginx IP. The package's default proxy allowlist
+      # already covers the private docker bridge ranges (127/8, 10/8,
+      # 172.16/12, 192.168/16, ::1/128, fc00::/7) — no explicit CIDR
+      # config needed for the single-hop nginx→Phoenix topology.
+      # Wired in `lib/grappa_web/endpoint.ex` between RequestId and
+      # Telemetry so every downstream log + telemetry event sees the
+      # rewritten IP.
+      {:remote_ip, "~> 1.2"},
 
       # ── Tooling (compile-time / dev-only)
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

@@ -46,6 +46,54 @@ defmodule GrappaWeb.AdminControllerTest do
       conn = post(%{conn | remote_ip: {0xFE80, 0, 0, 0, 0, 0, 0, 1}}, "/admin/reload")
       assert response(conn, 403) =~ "loopback_only"
     end
+
+    # SECURITY: end-to-end proof that the `RemoteIpFromProxy` wrapper
+    # protects the LoopbackOnly gate from container-shell spoofing.
+    # The attack: `docker exec grappa curl -H "X-Forwarded-For: <ip>"
+    # http://localhost:4000/admin/reload`. Bare `RemoteIp` would
+    # rewrite `conn.remote_ip` from the header and (when the spoofed
+    # value is loopback) silently grant access. The wrapper bypasses
+    # the rewrite when the TCP peer is loopback, so the gate sees the
+    # genuine loopback peer (allow) and the spoofed value is ignored.
+    #
+    # Tested at controller level (not unit) because the integration
+    # of wrapper + LoopbackOnly + admin pipeline is the contract that
+    # actually defends the surface — a wrapper-only unit test would
+    # pass even if a future refactor removed the wrapper from the
+    # endpoint.
+    test "spoofed X-Forwarded-For from loopback peer is ignored, gate still passes (200)",
+         %{conn: conn} do
+      # Peer = 127.0.0.1 (ConnCase default), X-F-F spoofs a LAN IP.
+      # Without the wrapper: bare RemoteIp rewrites to {192,168,1,100},
+      # LoopbackOnly returns 403 (by coincidence the spoof self-DoSes).
+      # WITH the wrapper: peer is loopback → wrapper bypasses → gate
+      # sees {127,0,0,1} → 200.
+      conn =
+        conn
+        |> Plug.Conn.put_req_header("x-forwarded-for", "192.168.1.100")
+        |> post("/admin/reload")
+
+      assert response(conn, 200) == "ok"
+    end
+
+    test "spoofed X-Forwarded-For: 127.0.0.1 from non-loopback peer is denied (403)",
+         %{conn: conn} do
+      # The malicious case the wrapper exists to prevent: peer is a
+      # LAN IP, attacker sets `X-Forwarded-For: 127.0.0.1` hoping to
+      # masquerade as loopback. Wrapper bypass applies only to
+      # loopback PEERS — a LAN peer still hits bare RemoteIp, which
+      # walks the X-F-F chain and finds {127,0,0,1} as a reserved-
+      # range hit. `RemoteIp` skips reserved entries during the walk,
+      # so the rewrite falls back to... nothing in the chain, leaving
+      # conn.remote_ip as the original peer {192,168,1,100}. The gate
+      # sees a LAN IP and returns 403. (The attacker can't elevate.)
+      conn =
+        %{conn | remote_ip: {192, 168, 1, 100}}
+        |> Plug.Conn.put_req_header("x-forwarded-for", "127.0.0.1")
+        |> post("/admin/reload")
+
+      assert response(conn, 403) =~ "loopback_only"
+    end
   end
 
   describe "POST /admin/cic-bundle-changed" do

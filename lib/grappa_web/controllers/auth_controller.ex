@@ -14,9 +14,11 @@ defmodule GrappaWeb.AuthController do
       token via the `:authn` pipeline. Idempotent.
 
   Login records the requesting `ip` + `user-agent` on the session row
-  for audit (`Accounts.create_session/4`). The IP is read directly from
-  `conn.remote_ip` — Phase 5 will add a configurable trusted-proxy
-  list before honoring `x-forwarded-for`.
+  for audit (`Accounts.create_session/4`). The IP is read from
+  `conn.remote_ip` AFTER the `GrappaWeb.Plugs.RemoteIpFromProxy` plug
+  (wired in `GrappaWeb.Endpoint`) has resolved X-Forwarded-For /
+  X-Real-IP from the nginx reverse proxy — so the persisted IP is
+  the real client, not the docker-bridge nginx IP.
 
   Visitor case-3 (anon collision token reuse, W13) consumes the inbound
   `Authorization: Bearer <uuid>` header to rotate the holder's token

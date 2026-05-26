@@ -172,6 +172,11 @@ config :logger, :console,
     :affected,
     :authn_failure,
     :socket_id,
+    # Client IP, post-RemoteIp plug rewrite (so what you see is the
+    # real client, not the docker-bridge nginx IP). Useful for grep-
+    # correlating an authn failure or captcha rejection back to the
+    # originating address.
+    :remote_ip,
     # Visitor identity (Phase 4 — Task 15): visitor_id rides the
     # +r-observed → commit_password log lines so operator can grep
     # the visitor lifecycle across login + first-IDENTIFY.
