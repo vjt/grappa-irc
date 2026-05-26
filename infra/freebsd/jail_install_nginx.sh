@@ -11,11 +11,10 @@ set -eu
 REPO_ROOT="/home/grappa/grappa"
 NGINX_ETC="/usr/local/etc/nginx"
 CIC_DIST="${REPO_ROOT}/cicchetto/dist"
-# The shared snippet `infra/snippets/locations-api.conf` hard-codes
-# `root /usr/share/nginx/html` (the Docker path). Symlinking that
-# path into the cic build dir keeps the snippet single-source-of-
-# truth + lets the jail nginx serve the same dist.
-SPA_LINK="/usr/share/nginx/html"
+# Jail-writable path — bastille thin-jail mounts /usr/share read-only,
+# so the Docker side's /usr/share/nginx/html convention is off-limits.
+# nginx.conf's `root` directive points here.
+SPA_LINK="/usr/local/www/cic"
 
 echo "[install_nginx] copying config + snippets"
 install -o root -g wheel -m 0644 "${REPO_ROOT}/infra/freebsd/nginx.conf" "${NGINX_ETC}/nginx.conf"
