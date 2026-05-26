@@ -1,6 +1,6 @@
 // CP13 S10 — peer's bold-formatted PRIVMSG renders with mIRC bold span.
 //
-// Split out from cp13-server-window.spec.ts 2026-05-26 (spec-audit-r5):
+// Split out from cp13-server-window-cluster-ux.spec.ts 2026-05-26 (spec-audit-r5):
 // S10 exercises the mIRC formatter (\x02 toggle → run-split → span
 // render) which is its own contract — separate failure surface from
 // the rest of the CP13 server-window cluster. Isolated file for

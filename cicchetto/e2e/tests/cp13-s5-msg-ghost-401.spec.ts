@@ -1,6 +1,6 @@
 // CP13 S5 — /msg to nonexistent nick: 401 lands in the query window live.
 //
-// Split out from cp13-server-window.spec.ts 2026-05-26 (spec-audit-r5):
+// Split out from cp13-server-window-cluster-ux.spec.ts 2026-05-26 (spec-audit-r5):
 // the parent CP13 cluster spec was bundling 5 unrelated tests in 218
 // lines. S5 is a substantive multi-system trip (compose → upstream →
 // 401 → NumericRouter → EventRouter → query-window WS pipeline) that

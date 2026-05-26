@@ -119,7 +119,7 @@ async function fetchChannelMembers(
 // Test timeout bumped to 90s — afterEach restores the network to
 // :connected via patchNetworkConnectionState which polls up to 30s
 // for autojoin completion. Body itself runs in ~5-10s. Matches the
-// cp15-b6-parked.spec.ts budget for parked-flow specs.
+// cp15-b6-parked-disconnect-reconnect.spec.ts budget for parked-flow specs.
 test.setTimeout(90_000);
 
 test.afterEach(async () => {

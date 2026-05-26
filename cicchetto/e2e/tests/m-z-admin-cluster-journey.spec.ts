@@ -7,7 +7,7 @@
 // real time).
 //
 // Per `feedback_e2e_user_class_parity_matrix`: admin-gated EXEMPT —
-// only the admin user class reaches the pane; m7-admin-gate.spec.ts
+// only the admin user class reaches the pane; m7-admin-gate-settings-drawer.spec.ts
 // covers the three-class reachability matrix.
 //
 // Per `feedback_cicchetto_browser_smoke`: this spec IS the cluster
@@ -177,7 +177,7 @@ test("M-Z admin operator journey: drawer → 4 tabs → cap-saturation event lan
     });
   }
 
-  // STEP 7 — Non-admin gate: covered by m7-admin-gate.spec.ts (the
+  // STEP 7 — Non-admin gate: covered by m7-admin-gate-settings-drawer.spec.ts (the
   // dedicated three-class parity gate). Re-asserting here would
   // duplicate the per-bucket spec's coverage without adding new
   // signal — M-Z is the cross-bucket compositional spec, not a

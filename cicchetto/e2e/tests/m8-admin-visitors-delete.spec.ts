@@ -3,7 +3,7 @@
 //
 // Per `feedback_e2e_user_class_parity_matrix`: AdminVisitorsTab is
 // admin-gated EXEMPT — only the admin user class reaches the tab.
-// M-7's spec (`m7-admin-gate.spec.ts`) covers reachability for all
+// M-7's spec (`m7-admin-gate-settings-drawer.spec.ts`) covers reachability for all
 // three classes (admin / non-admin / visitor); M-8's spec covers
 // only the admin case since the gate is the same.
 //

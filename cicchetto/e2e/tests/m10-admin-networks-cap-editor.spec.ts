@@ -4,7 +4,7 @@
 //
 // Per `feedback_e2e_user_class_parity_matrix`: admin-gated EXEMPT —
 // only the admin user class reaches the tab; gate spec at
-// m7-admin-gate.spec.ts.
+// m7-admin-gate-settings-drawer.spec.ts.
 //
 // Per `feedback_cicchetto_browser_smoke`: this Playwright spec IS
 // the browser smoke for M-10 — chromium renders the inline number

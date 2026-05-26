@@ -85,7 +85,7 @@ async function tryConnect(token: string, slug: string): Promise<Response> {
 }
 
 // Restore vjt to :connected at afterEach in case the test left the
-// credential :parked. Same pattern as cp15-b6-parked.spec.ts: best
+// credential :parked. Same pattern as cp15-b6-parked-disconnect-reconnect.spec.ts: best
 // effort, fail open if already connected, then poll until #bofh shows
 // up as joined so the next spec sees a healthy autojoin baseline.
 async function restoreNetwork(token: string): Promise<void> {

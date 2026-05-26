@@ -78,7 +78,7 @@ test("CP15 B6 — /join transitions pending → failed for invite-only channel; 
   // window — the count assertion would race with the synchronous
   // `setPending` while the `join_failed` typed event was still in
   // flight, occasionally landing the row's first render BEFORE the
-  // greyed class was applied. Sibling `cp15-b6-kicked.spec.ts`
+  // greyed class was applied. Sibling `cp15-b6-kicked-greyed-state.spec.ts`
   // exercises the same render path reliably because the kick happens
   // post-:joined (no sub-second pending overlap).
   //

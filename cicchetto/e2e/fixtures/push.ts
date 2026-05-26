@@ -371,7 +371,7 @@ export async function enablePushFromSettings(
   await page.locator('[aria-label="open settings"]').click();
   const toggle = page.locator('[data-testid="push-master-toggle"]');
   await expect(toggle).toBeVisible();
-  // click() not check() — see push-install.spec.ts moduledoc for
+  // click() not check() — see push-install-toggle-subscribe.spec.ts moduledoc for
   // why .check() is unsafe under cic's signal-controlled toggle.
   await toggle.click();
   // The drawer's onMasterToggle awaits enablePush which awaits the
