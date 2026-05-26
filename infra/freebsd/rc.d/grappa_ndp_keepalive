@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# PROVIDE: grappa_ndp_keepalive
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# Background NDP keepalive — pings the default v6 gateway from every
+# source address in GRAPPA_OUTBOUND_V6_POOL every N seconds so the
+# upstream router's NDP table never expires a pool entry.
+#
+# Adds to /etc/rc.conf (or /etc/rc.conf.d/grappa_ndp_keepalive):
+#   grappa_ndp_keepalive_enable="YES"
+#   grappa_ndp_keepalive_env_file="/usr/local/etc/grappa/grappa.env"  # optional
+#   grappa_ndp_keepalive_interval="30"                                # optional, seconds
+#
+# Wraps daemon(8) for pid + stop semantics; the actual loop lives in
+# /home/grappa/grappa/infra/freebsd/ndp_keepalive.sh.
+
+. /etc/rc.subr
+
+name="grappa_ndp_keepalive"
+rcvar="grappa_ndp_keepalive_enable"
+
+load_rc_config "$name"
+
+: ${grappa_ndp_keepalive_enable:="NO"}
+: ${grappa_ndp_keepalive_env_file:="/usr/local/etc/grappa/grappa.env"}
+: ${grappa_ndp_keepalive_interval:="30"}
+: ${grappa_ndp_keepalive_script:="/home/grappa/grappa/infra/freebsd/ndp_keepalive.sh"}
+
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+command_args="-P ${pidfile} -r -f -- /bin/sh ${grappa_ndp_keepalive_script}"
+
+start_precmd="grappa_ndp_keepalive_precmd"
+
+grappa_ndp_keepalive_precmd() {
+	if [ ! -r "${grappa_ndp_keepalive_env_file}" ]; then
+		warn "env file ${grappa_ndp_keepalive_env_file} not readable — refusing to start"
+		return 1
+	fi
+	if [ ! -x "${grappa_ndp_keepalive_script}" ]; then
+		warn "loop script ${grappa_ndp_keepalive_script} not executable — refusing to start"
+		return 1
+	fi
+	export GRAPPA_ENV_FILE="${grappa_ndp_keepalive_env_file}"
+	export GRAPPA_NDP_KEEPALIVE_INTERVAL="${grappa_ndp_keepalive_interval}"
+}
+
+run_rc_command "$1"
