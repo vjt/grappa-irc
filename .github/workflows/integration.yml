@@ -68,6 +68,14 @@ jobs:
     name: cicchetto + grappa + azzurra-testnet
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # `packages: read` so `docker login ghcr.io` can pull the
+    # prebuilt bahamut + services images from `ghcr.io/vjt/*` (see
+    # cicchetto/e2e/compose.ghcr-vjt.yaml). Default GITHUB_TOKEN has
+    # this scope on the same-owner package, but only when permissions
+    # are declared at the job level.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -102,10 +110,35 @@ jobs:
           chmod +x ~/.docker/cli-plugins/docker-compose
           docker compose version
 
+      - name: Log in to GHCR
+        # The bahamut + services images live at
+        # `ghcr.io/vjt/{bahamut,services}` — published by the
+        # `images.yml` workflow in the cicchetto/e2e/infra submodule
+        # repo (vjt/azzurra-testnet). `secrets.GITHUB_TOKEN` is the
+        # ephemeral per-run token; it has `packages: read` scope (see
+        # job-level permissions above) and can pull same-owner
+        # packages.
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run integration suite
         # `bash scripts/integration.sh` boots the stack, runs the
         # Playwright suite, tears the stack down on EXIT trap. Exit
         # code is the runner's exit code (test result), propagated.
+        #
+        # `COMPOSE_FILE` chains the base compose.yaml with our
+        # CI-only override compose.ghcr-vjt.yaml that swaps the
+        # bahamut + services `build:` blocks for prebuilt
+        # `ghcr.io/vjt/*:main` image pulls. Saves ~37s per run (the
+        # full hub + leaves + services compile cycle from source).
+        # Paths are RELATIVE to the CWD that scripts/{integration,
+        # testnet}.sh cd into (cicchetto/e2e/), which is where both
+        # compose files live.
+        env:
+          COMPOSE_FILE: compose.yaml:compose.ghcr-vjt.yaml
         run: bash scripts/integration.sh
 
       - name: Upload Playwright traces (on failure)

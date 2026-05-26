@@ -1,0 +1,50 @@
+# cicchetto/e2e/compose.ghcr-vjt.yaml
+#
+# CI-only override that swaps `build:` → `image:` for the ircd stack
+# (bahamut hub + leaves + Anope services), pulling prebuilt images
+# from vjt's GHCR fork instead of compiling from source on every CI
+# run. Activated via `COMPOSE_FILE=compose.yaml:compose.ghcr-vjt.yaml`
+# in .github/workflows/integration.yml.
+#
+# Why a grappa-local override (not the submodule's compose.ghcr.yaml):
+#   The submodule's compose.ghcr.yaml hardcodes `ghcr.io/azzurra/...`
+#   (upstream namespace). vjt's azzurra-testnet fork publishes its own
+#   images.yml workflow output to `ghcr.io/vjt/{bahamut,services}:main`.
+#   Editing the submodule's override would require a submodule PR; a
+#   grappa-side file is self-contained and explicit about the source
+#   we're pulling from.
+#
+# Auth: ghcr.io packages owned by `vjt` require either (a) the package
+# to be marked public OR (b) authentication. The CI workflow uses
+# `docker/login-action@v3` with `secrets.GITHUB_TOKEN` — GITHUB_TOKEN
+# from `vjt/grappa-irc` has read access to packages owned by the same
+# user `vjt` when the package is linked to the source repo
+# `vjt/azzurra-testnet` AND the package's "Inherit access from
+# source repository" toggle is enabled (default for newly-published
+# packages). If pulls 403, flip the package to public via GHCR UI
+# (Settings → Packages → bahamut → Change visibility) — no source
+# changes needed.
+#
+# Drift risk: the `:main` tag floats. If the pinned submodule SHA in
+# cicchetto/e2e/infra differs from the SHA that produced the `:main`
+# image, the CI run uses a newer ircd than the source tree
+# represents. Mitigation when needed: pin to `:sha-<7chars>` via
+# `BAHAMUT_TAG=sha-XXXXXXX SERVICES_TAG=sha-XXXXXXX` env override
+# (the submodule's images.yml workflow also publishes that tag).
+
+services:
+  hub:
+    build: !reset null
+    image: ghcr.io/vjt/bahamut:${BAHAMUT_TAG:-main}
+
+  leaf-v4:
+    build: !reset null
+    image: ghcr.io/vjt/bahamut:${BAHAMUT_TAG:-main}
+
+  leaf-v6:
+    build: !reset null
+    image: ghcr.io/vjt/bahamut:${BAHAMUT_TAG:-main}
+
+  services:
+    build: !reset null
+    image: ghcr.io/vjt/services:${SERVICES_TAG:-main}
