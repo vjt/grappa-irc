@@ -392,6 +392,26 @@ defmodule Grappa.Visitors do
   def get(visitor_id) when is_binary(visitor_id), do: Repo.get(Visitor, visitor_id)
 
   @doc """
+  Batched lookup: `[visitor_id]` → `%{visitor_id => %Visitor{}}`. One
+  query regardless of input size — used by admin endpoints that need
+  to resolve N visitor_ids to display labels (nick) without N+1
+  round-trips. Mirror of `Grappa.Accounts.get_users_by_ids/1`.
+
+  Empty input returns `%{}` without a query. Missing ids are absent
+  from the result map; callers translate to the "DB row missing"
+  honesty signal at their boundary.
+  """
+  @spec get_by_ids([Ecto.UUID.t()]) :: %{Ecto.UUID.t() => Visitor.t()}
+  def get_by_ids([]), do: %{}
+
+  def get_by_ids(ids) when is_list(ids) do
+    Visitor
+    |> where([v], v.id in ^ids)
+    |> Repo.all()
+    |> Map.new(fn visitor -> {visitor.id, visitor} end)
+  end
+
+  @doc """
   Bulk-delete every visitor row pinned to `network_slug`. Returns
   `{:ok, count}` with the deleted-row count. Operator path —
   surfaces through `mix grappa.reap_visitors --network=<slug>` to

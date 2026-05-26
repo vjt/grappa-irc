@@ -2,13 +2,13 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
   @moduledoc """
   Wire-shape contract for the operator-facing `GET /admin/sessions`
   endpoint (M-cluster M-4). Converts a `Grappa.LiveIntrospection.SessionEntry`
-  to a JSON-encodable map.
+  + a resolved subject_label to a JSON-encodable map.
   """
   use ExUnit.Case, async: true
 
   alias Grappa.LiveIntrospection.{AdminWire, SessionEntry}
 
-  test "session_to_admin_json/1 stringifies subject_kind + projects live_state subfields" do
+  test "session_to_admin_json/2 stringifies subject_kind + projects live_state subfields + subject_label" do
     uuid = Ecto.UUID.generate()
 
     entry = %SessionEntry{
@@ -22,10 +22,11 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       introspection_degraded: []
     }
 
-    json = AdminWire.session_to_admin_json(entry)
+    json = AdminWire.session_to_admin_json(entry, "M\\Grappa")
 
     assert json.subject_kind == "visitor"
     assert json.subject_id == uuid
+    assert json.subject_label == "M\\Grappa"
     assert json.network_id == 42
     assert is_map(json.live_state)
     assert json.live_state.alive == true
@@ -36,7 +37,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     assert is_binary(json.live_state.pid_inspect)
   end
 
-  test "session_to_admin_json/1 user-subject shape" do
+  test "session_to_admin_json/2 user-subject shape" do
     uuid = Ecto.UUID.generate()
 
     entry = %SessionEntry{
@@ -50,11 +51,56 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       introspection_degraded: [:joined_channels]
     }
 
-    json = AdminWire.session_to_admin_json(entry)
+    json = AdminWire.session_to_admin_json(entry, "vjt")
 
     assert json.subject_kind == "user"
     assert json.subject_id == uuid
+    assert json.subject_label == "vjt"
     assert json.live_state.joined_channels == nil
     assert json.live_state.introspection_degraded == [:joined_channels]
+  end
+
+  test "subject_label: nil surfaces the orphan-pid honesty signal" do
+    # DB row gone (visitor reaped / user deleted), pid still
+    # registered. The controller passes `nil` when the batched
+    # lookup didn't find the id; the wire faithfully carries it so
+    # the operator console can render "no DB row" instead of an
+    # opaque UUID.
+    uuid = Ecto.UUID.generate()
+
+    entry = %SessionEntry{
+      subject: {:visitor, uuid},
+      network_id: 1,
+      pid: self(),
+      alive: true,
+      mailbox_len: 0,
+      memory_bytes: 512,
+      joined_channels: [],
+      introspection_degraded: []
+    }
+
+    json = AdminWire.session_to_admin_json(entry, nil)
+
+    assert json.subject_label == nil
+    assert json.subject_id == uuid
+  end
+
+  test "session_to_admin_json/2 rejects non-string non-nil labels at the guard" do
+    entry = %SessionEntry{
+      subject: {:user, Ecto.UUID.generate()},
+      network_id: 1,
+      pid: self(),
+      alive: true,
+      mailbox_len: 0,
+      memory_bytes: 0,
+      joined_channels: [],
+      introspection_degraded: []
+    }
+
+    # Guard `is_binary(label) or is_nil(label)` — anything else is a
+    # contract violation that surfaces as FunctionClauseError.
+    assert_raise FunctionClauseError, fn ->
+      AdminWire.session_to_admin_json(entry, :atom_label)
+    end
   end
 end

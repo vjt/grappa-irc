@@ -120,12 +120,50 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       row = Enum.find(body["sessions"], &(&1["subject_id"] == visitor.id))
       assert row != nil
       assert row["subject_kind"] == "visitor"
+      assert row["subject_label"] == visitor.nick
       assert row["network_id"] == network.id
       assert is_map(row["live_state"])
       assert row["live_state"]["alive"] == true
       assert is_binary(row["live_state"]["pid_inspect"])
       assert is_integer(row["live_state"]["mailbox_len"])
       assert is_integer(row["live_state"]["memory_bytes"])
+    end
+
+    test "subject_label: null surfaces orphan pid when DB row is gone", %{conn: conn} do
+      # Bucket B/C honesty signal: a Session.Server registered for a
+      # visitor whose DB row was deleted (raw SQL, terminate race, or
+      # the Bucket C ghost-session class we discovered in vjt's live
+      # state). The controller's batched DB lookup returns no row →
+      # `subject_label: nil` surfaces on the wire so the operator can
+      # see "orphan pid, no DB row" without remsh-ing into the BEAM.
+      {_, port} = start_irc_server()
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+      on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
+
+      assert Process.alive?(pid)
+
+      # Delete the visitor row directly — Repo.delete bypasses the
+      # Operator.delete_visitor path that would also stop the pid, so
+      # the orphan state is exactly what we want to assert against.
+      Grappa.Repo.delete!(visitor)
+
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/sessions")
+
+      body = json_response(conn, 200)
+
+      row = Enum.find(body["sessions"], &(&1["subject_id"] == visitor.id))
+      assert row != nil, "orphan pid must still appear on the registry-driven list"
+      assert row["subject_label"] == nil
+      assert row["subject_kind"] == "visitor"
+      # The live_state side stays intact — the orphan is alive, just
+      # without a DB anchor.
+      assert row["live_state"]["alive"] == true
     end
   end
 

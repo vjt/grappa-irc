@@ -137,6 +137,25 @@ defmodule Grappa.Accounts do
   def get_user(id) when is_binary(id), do: Repo.get(User, id)
 
   @doc """
+  Batched lookup: `[user_id]` → `%{user_id => %User{}}`. One query
+  regardless of input size — used by admin endpoints that need to
+  resolve N user_ids to display labels without N+1 round-trips.
+
+  Returns an empty map when the input is empty (no query issued).
+  Missing ids are absent from the result map; callers translate to
+  the "DB row missing" honesty signal at their boundary.
+  """
+  @spec get_users_by_ids([Ecto.UUID.t()]) :: %{Ecto.UUID.t() => User.t()}
+  def get_users_by_ids([]), do: %{}
+
+  def get_users_by_ids(ids) when is_list(ids) do
+    User
+    |> where([u], u.id in ^ids)
+    |> Repo.all()
+    |> Map.new(fn user -> {user.id, user} end)
+  end
+
+  @doc """
   Every user row, ordered by `name` ascending. Operator-facing —
   the M-6 admin console (`GET /admin/users`) materializes the full
   table. Users are operator-curated (low cardinality); full

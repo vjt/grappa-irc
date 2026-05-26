@@ -1102,10 +1102,11 @@ export async function adminDeleteVisitor(token: string, id: string): Promise<voi
 // (lib/grappa/live_introspection/admin_wire.ex).
 //
 // Registry-driven: every row in the response represents a live
-// `Session.Server` pid. The U-0 honesty signal (DB intent "active"
-// but BEAM has no pid) lives on `/admin/visitors` +
-// `/admin/credentials`, NOT here — that's why `live_state` is a flat
-// non-null struct (vs Visitor's `live_state | null`).
+// `Session.Server` pid. `subject_label: null` IS the gemello of the
+// U-0 honesty signal on /admin/visitors — DB row missing for a live
+// pid (orphan pid: deleted via raw SQL / terminate race / etc.).
+// Operator console renders "no DB row" instead of an opaque UUID
+// so the divergence is loud.
 //
 // Mutations key on the composite `"<subject_kind>:<subject_id>:<network_id>"`
 // string per the M-9a controller contract; cic constructs it
@@ -1116,6 +1117,7 @@ export type AdminSessionLiveState = AdminLiveState;
 export type AdminSession = {
   subject_kind: "user" | "visitor";
   subject_id: string;
+  subject_label: string | null;
   network_id: number;
   live_state: AdminSessionLiveState;
 };

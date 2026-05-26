@@ -34,6 +34,7 @@ import AdminSessionsTab from "../AdminSessionsTab";
 const USER_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "11111111-1111-1111-1111-111111111111",
+  subject_label: "vjt",
   network_id: 1,
   live_state: {
     alive: true,
@@ -48,6 +49,7 @@ const USER_SESSION: AdminSession = {
 const VISITOR_SESSION: AdminSession = {
   subject_kind: "visitor",
   subject_id: "22222222-2222-2222-2222-222222222222",
+  subject_label: "M\\Grappa",
   network_id: 1,
   live_state: {
     alive: true,
@@ -62,6 +64,7 @@ const VISITOR_SESSION: AdminSession = {
 const DEGRADED_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "33333333-3333-3333-3333-333333333333",
+  subject_label: "degraded-user",
   network_id: 2,
   live_state: {
     alive: true,
@@ -76,6 +79,7 @@ const DEGRADED_SESSION: AdminSession = {
 const DEAD_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "44444444-4444-4444-4444-444444444444",
+  subject_label: "dead-user",
   network_id: 1,
   live_state: {
     alive: false,
@@ -94,6 +98,7 @@ const DEAD_SESSION: AdminSession = {
 const ALIVE_UNKNOWN_SESSION: AdminSession = {
   subject_kind: "user",
   subject_id: "55555555-5555-5555-5555-555555555555",
+  subject_label: "alive-unknown-user",
   network_id: 1,
   live_state: {
     alive: false,
@@ -104,6 +109,24 @@ const ALIVE_UNKNOWN_SESSION: AdminSession = {
     // `alive` IS in degraded — boolean value unreliable; render
     // "alive unknown" rather than trusting the half-truth (M4).
     introspection_degraded: ["alive", "mailbox_len", "memory_bytes", "joined_channels"],
+  },
+};
+
+// Bucket B/C orphan-pid sentinel — DB row gone, pid still registered.
+// `subject_label: null` is the honesty signal cic must surface as
+// "no DB row" so the operator sees the orphan class.
+const ORPHAN_SESSION: AdminSession = {
+  subject_kind: "visitor",
+  subject_id: "66666666-6666-6666-6666-666666666666",
+  subject_label: null,
+  network_id: 1,
+  live_state: {
+    alive: true,
+    pid_inspect: "#PID<0.777.0>",
+    mailbox_len: 0,
+    memory_bytes: 80_000,
+    joined_channels: [],
+    introspection_degraded: [],
   },
 };
 
@@ -170,6 +193,39 @@ describe("AdminSessionsTab", () => {
     });
     expect(screen.getByTestId(`admin-session-row-${rowId(VISITOR_SESSION)}`)).toBeInTheDocument();
     expect(api.adminListSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders subject_label (user.name / visitor.nick) in the 'who' column", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([USER_SESSION, VISITOR_SESSION]);
+
+    render(() => <AdminSessionsTab />);
+
+    const userRow = await screen.findByTestId(`admin-session-row-${rowId(USER_SESSION)}`);
+    const visitorRow = screen.getByTestId(`admin-session-row-${rowId(VISITOR_SESSION)}`);
+
+    // The label is the pre-joined name, not a UUID slice. Bucket B
+    // fix; pre-fix the column rendered `user:11111111` etc.
+    expect(userRow.textContent).toContain("user: vjt");
+    expect(visitorRow.textContent).toContain("visitor: M\\Grappa");
+    expect(userRow.textContent).not.toContain("11111111");
+    expect(visitorRow.textContent).not.toContain("22222222");
+  });
+
+  it("renders 'no DB row' for orphan-pid sessions (subject_label === null)", async () => {
+    // Bucket B/C honesty signal — DB row deleted while pid alive.
+    // Operator must see the orphan class without remsh-ing.
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessions).mockResolvedValue([ORPHAN_SESSION]);
+
+    render(() => <AdminSessionsTab />);
+
+    const row = await screen.findByTestId(`admin-session-row-${rowId(ORPHAN_SESSION)}`);
+    // Fallback shape carries the UUID prefix so the operator can
+    // grep / identify which orphan it is, plus the "(no DB row)"
+    // suffix as the explicit honesty signal.
+    expect(row.textContent).toContain("66666666");
+    expect(row.textContent).toContain("(no DB row)");
   });
 
   it("renders the alive badge with joined channel count for live sessions", async () => {

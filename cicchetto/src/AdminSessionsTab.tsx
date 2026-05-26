@@ -319,11 +319,15 @@ const LiveBadge: Component<{ live: AdminSession["live_state"] }> = (props) => {
 };
 
 function renderWho(s: AdminSession): string {
-  // Pre-M-11 the wire shape doesn't pre-join to user.name / visitor.nick
-  // — show subject_kind + the first 8 chars of the UUID for visual
-  // identification. The full UUID is still in the row's testid for
-  // operator + spec disambiguation.
-  return `${s.subject_kind}:${s.subject_id.slice(0, 8)}`;
+  // `subject_label` is the pre-joined display name (user.name /
+  // visitor.nick), or `null` when the DB row is gone for a live pid
+  // — the gemello of the U-0 honesty signal on /admin/visitors.
+  // Render "no DB row" prominently so the operator can see the
+  // orphan-pid class without paging through the registry directly.
+  if (s.subject_label === null) {
+    return `${s.subject_kind} ${s.subject_id.slice(0, 8)} (no DB row)`;
+  }
+  return `${s.subject_kind}: ${s.subject_label}`;
 }
 
 function renderKb(bytes: number): string {

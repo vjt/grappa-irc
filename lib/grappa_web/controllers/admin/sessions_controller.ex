@@ -52,7 +52,7 @@ defmodule GrappaWeb.Admin.SessionsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{LiveIntrospection, Operator, Session}
+  alias Grappa.{Accounts, LiveIntrospection, Operator, Session, Visitors}
   alias Grappa.LiveIntrospection.AdminWire
   alias GrappaWeb.Admin.AuthPlug
 
@@ -61,11 +61,59 @@ defmodule GrappaWeb.Admin.SessionsController do
   Registry-driven (one row = one live pid); the U-0 honesty signal
   for `:connected`-but-no-pid lives on `/admin/visitors` and
   `/admin/credentials`, not here.
+
+  Pre-joins `subject_label` per row via two batched DB lookups
+  (`Accounts.get_users_by_ids/1` + `Visitors.get_by_ids/1`) — one
+  query per subject_kind regardless of session count. The composition
+  lives here, not in `LiveIntrospection`, because that boundary
+  excludes `Accounts` / `Visitors` deps (pure live-state module).
+  `subject_label: nil` IS the gemello honesty signal: BEAM has a
+  pid but the DB row is gone (orphan pid — operator can spot from
+  the table without paging through the registry directly).
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _) do
-    rows = Enum.map(LiveIntrospection.list_sessions(), &AdminWire.session_to_admin_json/1)
+    entries = LiveIntrospection.list_sessions()
+    {user_ids, visitor_ids} = partition_subject_ids(entries)
+    users = Accounts.get_users_by_ids(user_ids)
+    visitors = Visitors.get_by_ids(visitor_ids)
+
+    rows =
+      Enum.map(entries, fn entry ->
+        AdminWire.session_to_admin_json(entry, resolve_label(entry, users, visitors))
+      end)
+
     json(conn, %{sessions: rows})
+  end
+
+  # Split the registry-scan into `(user_ids, visitor_ids)` so each
+  # context's batched lookup gets the relevant ids only. No `Enum.uniq`
+  # needed: the registry key shape `{:session, subject, network_id}` is
+  # unique per `(subject, network_id)` pair, so a single `user_id` can
+  # appear N times (one per joined network) — passing the dups to the
+  # `id IN ^ids` query is harmless (the DB returns one row per id) and
+  # the dedup-via-Map.new at the resolve site collapses them.
+  defp partition_subject_ids(entries) do
+    Enum.reduce(entries, {[], []}, fn entry, {users, visitors} ->
+      case entry.subject do
+        {:user, id} -> {[id | users], visitors}
+        {:visitor, id} -> {users, [id | visitors]}
+      end
+    end)
+  end
+
+  defp resolve_label(%{subject: {:user, id}}, users, _) do
+    case Map.get(users, id) do
+      %Accounts.User{name: name} -> name
+      nil -> nil
+    end
+  end
+
+  defp resolve_label(%{subject: {:visitor, id}}, _, visitors) do
+    case Map.get(visitors, id) do
+      %Visitors.Visitor{nick: nick} -> nick
+      nil -> nil
+    end
   end
 
   @doc """
