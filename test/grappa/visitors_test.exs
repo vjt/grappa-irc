@@ -33,6 +33,38 @@ defmodule Grappa.VisitorsTest do
       {:ok, v2} = Visitors.find_or_provision_anon("vjt", @network, "5.6.7.8")
       assert v1.id == v2.id
     end
+
+    test "refreshes :ip on subsequent login when client address changed" do
+      # Pre-fix: ip was set ONLY at row creation; long-lived NickServ-
+      # identified visitors surfaced their birth IP indefinitely. Now
+      # an existing-row hit with a different :ip refreshes the column
+      # so the admin audit value tracks the holder's current address.
+      {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipa", @network, "1.2.3.4")
+      assert v1.ip == "1.2.3.4"
+
+      {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipa", @network, "5.6.7.8")
+      assert v2.id == v1.id
+      assert v2.ip == "5.6.7.8"
+    end
+
+    test "leaves :ip unchanged when same address re-logs in (no-op write)" do
+      # Hot path — same client polling: avoid an UPDATE per login.
+      {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipb", @network, "1.2.3.4")
+      {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipb", @network, "1.2.3.4")
+      assert v2.id == v1.id
+      assert v2.ip == "1.2.3.4"
+      assert v2.updated_at == v1.updated_at
+    end
+
+    test "supplying nil :ip does NOT clobber a row that already has a real IP" do
+      # Refresh semantics: "I have a fresher value," not "forget what
+      # you knew." A future internal/mix-task path with no remote_ip
+      # mustn't blank out the audit column.
+      {:ok, v1} = Visitors.find_or_provision_anon("vjt-ipc", @network, "1.2.3.4")
+      {:ok, v2} = Visitors.find_or_provision_anon("vjt-ipc", @network, nil)
+      assert v2.id == v1.id
+      assert v2.ip == "1.2.3.4"
+    end
   end
 
   describe "commit_password/2" do

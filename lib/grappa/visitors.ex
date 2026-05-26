@@ -79,15 +79,34 @@ defmodule Grappa.Visitors do
   `ip` is recorded on creation for the per-IP cap (W3) and for
   operator audit. `nil` is acceptable when the caller has no IP
   (mix-task driven provisioning, future internal flows).
+
+  When an existing row is found and the supplied `ip` differs from
+  what's persisted, the row's `:ip` is refreshed via
+  `ip_changeset/2` so the admin audit value tracks the holder's
+  current address. Pre-fix a long-lived NickServ-identified visitor
+  surfaced the row's birth IP indefinitely (often the nginx docker-
+  bridge address baked in before the `RemoteIpFromProxy` plug
+  landed). `nil` supplied with a row carrying a real IP does NOT
+  overwrite — refresh is "I have a fresher value," not "forget what
+  you knew."
   """
   @spec find_or_provision_anon(String.t(), String.t(), String.t() | nil) ::
           {:ok, Visitor.t()} | {:error, Ecto.Changeset.t()}
   def find_or_provision_anon(nick, network_slug, ip)
       when is_binary(nick) and is_binary(network_slug) do
     case Repo.get_by(Visitor, nick: nick, network_slug: network_slug) do
-      %Visitor{} = existing -> {:ok, existing}
+      %Visitor{} = existing -> maybe_refresh_ip(existing, ip)
       nil -> create_anon(nick, network_slug, ip)
     end
+  end
+
+  defp maybe_refresh_ip(%Visitor{ip: same} = visitor, same), do: {:ok, visitor}
+  defp maybe_refresh_ip(%Visitor{} = visitor, nil), do: {:ok, visitor}
+
+  defp maybe_refresh_ip(%Visitor{} = visitor, new_ip) when is_binary(new_ip) do
+    visitor
+    |> Visitor.ip_changeset(new_ip)
+    |> Repo.update()
   end
 
   defp create_anon(nick, network_slug, ip) do

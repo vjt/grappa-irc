@@ -114,6 +114,30 @@ defmodule Grappa.Visitors.VisitorTest do
     end
   end
 
+  describe "ip_changeset/2" do
+    setup do
+      {:ok, visitor: %Visitor{id: Ecto.UUID.generate(), ip: "10.0.0.1"}}
+    end
+
+    test "accepts a fresh String IP", %{visitor: visitor} do
+      cs = Visitor.ip_changeset(visitor, "203.0.113.42")
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :ip) == "203.0.113.42"
+    end
+
+    test "accepts nil (no remote_ip on the conn — mix-task path)", %{visitor: visitor} do
+      cs = Visitor.ip_changeset(visitor, nil)
+      assert cs.valid?
+      assert Ecto.Changeset.get_change(cs, :ip) == nil
+    end
+
+    test "rejects non-string non-nil via the guard", %{visitor: visitor} do
+      assert_raise FunctionClauseError, fn ->
+        Visitor.ip_changeset(visitor, {1, 2, 3, 4})
+      end
+    end
+  end
+
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
       Regex.replace(~r"%{(\w+)}", message, fn _, key ->

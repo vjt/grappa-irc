@@ -175,6 +175,30 @@ defmodule Grappa.Visitors.Visitor do
     |> unique_constraint([:nick, :network_slug])
   end
 
+  @doc """
+  Refreshes `:ip` to the current client address observed at login.
+  Schema-only changeset (mirror of `nick_changeset/2`).
+
+  Pre-fix the `:ip` column was set ONLY at row creation
+  (`create_changeset/1` via `find_or_provision_anon/3`). For a
+  long-lived NickServ-identified visitor (V7 — `expires_at: nil`),
+  the audit value froze at the row's birth IP regardless of how
+  many times the holder logged in from a different network. Cic's
+  admin Visitors tab consequently showed stale (often nginx-bridge)
+  addresses indefinitely.
+
+  Wire-validated as `String.t() | nil`: callers (the controller
+  boundary that already saw `conn.remote_ip` post-`RemoteIpFromProxy`)
+  pass either the formatted client IP or `nil` (logged-in via a path
+  with no remote_ip). No format validation here — the wire shape is
+  whatever `GrappaWeb.RemoteIP.format/1` produces.
+  """
+  @spec ip_changeset(t(), String.t() | nil) :: Ecto.Changeset.t()
+  def ip_changeset(%__MODULE__{} = visitor, new_ip)
+      when is_binary(new_ip) or is_nil(new_ip) do
+    change(visitor, %{ip: new_ip})
+  end
+
   defp validate_nick(field, value) when is_binary(value) do
     if Identifier.valid_nick?(value),
       do: [],
