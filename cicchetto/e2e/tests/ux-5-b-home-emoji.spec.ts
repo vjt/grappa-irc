@@ -37,6 +37,18 @@ test("ux-5-b — home sidebar row renders the 🏠 emoji icon", async ({ page })
   await expect(homeEmoji).toHaveCount(1);
   await expect(homeEmoji).toHaveText("🏠");
 
+  // Strengthen vs the prior text-only assertion (audit 2026-05-26):
+  // toHaveText("🏠") would pass even with `display:none` or
+  // `visibility:hidden`. Pin that the emoji actually paints by
+  // asserting toBeVisible() AND that the bounding box has non-zero
+  // width (a 0-width box catches `visibility:hidden`, which slips
+  // past Playwright's toBeVisible heuristic in some cases).
+  await expect(homeEmoji).toBeVisible();
+  const box = await homeEmoji.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeGreaterThan(0);
+  expect(box!.height).toBeGreaterThan(0);
+
   // Belt-and-suspenders: the emoji span lives INSIDE the home button
   // (sibling of the "Home" label span), not as a stray standalone
   // element. Catches a regression that moves the emoji outside the

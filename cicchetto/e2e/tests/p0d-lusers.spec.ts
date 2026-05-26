@@ -43,14 +43,21 @@ test("P-0d — /lusers surfaces LusersCard pinned in the $server window", async 
   // the 7-numeric sequence; 266 RPL_GLOBALUSERS flushes the bundle.
   await composeSend(page, "/lusers");
 
-  // The LUSERS card mounts pinned at the top of the scrollback for the
-  // $server window. Welcome-time auto-emit may have already populated
-  // the store, but issuing /lusers explicitly guarantees a fresh
-  // last-write-wins broadcast.
   const card = page.locator("[data-testid='lusers-card']");
   await expect(card).toBeVisible({ timeout: 5_000 });
-  // Contains at least one numeric (any of the bundle fields rendered).
-  // Bahamut testnet has at least the operator's own session as a user,
-  // so total_users >= 1.
-  await expect(card).toContainText(/\d+/);
+
+  // Bahamut testnet has at least the operator's own session as a user
+  // and the seed-joined channels — so total_users ≥ 1 and channels ≥ 1
+  // must render. Assert the named-field shape (dt + numeric dd) so a
+  // regression to e.g. "card visible but bundle dispatch dropped" is
+  // caught (the prior /\d+/ assertion would have passed on any digit
+  // anywhere in the card chrome).
+  const dt = (label: string) => card.locator("dt", { hasText: new RegExp(`^${label}$`) });
+  const ddFor = (label: string) =>
+    dt(label).locator("xpath=following-sibling::dd[1]");
+
+  await expect(dt("users")).toHaveCount(1);
+  await expect(ddFor("users")).toContainText(/\d+/);
+  await expect(dt("channels")).toHaveCount(1);
+  await expect(ddFor("channels")).toContainText(/\d+/);
 });

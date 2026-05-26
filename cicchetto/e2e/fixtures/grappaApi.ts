@@ -15,7 +15,7 @@
 // operator's prod ritual byte-for-byte (a regression in the mix tasks
 // surfaces in this stack first).
 
-const GRAPPA_BASE_URL = "http://grappa-test:4000";
+export const GRAPPA_BASE_URL = "http://grappa-test:4000";
 
 export type LoginResult = {
   token: string;

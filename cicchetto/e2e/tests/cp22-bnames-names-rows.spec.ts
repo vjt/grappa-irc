@@ -57,11 +57,20 @@ test("CP22 B-names — /names #unjoined-chan renders nick-list + EOF rows in $se
     // The 353 nick-list row arrives in $server scrollback. Body shape:
     // "*** [#chan] @op +voice plain ..." per format_names_row/2 — or
     // "*** [#chan] (no names)" if the server returned an empty list.
-    // Match by kind=notice + body contains the channel marker; the
-    // exact membership is server-policy-determined and not the
-    // pipeline behavior this spec validates.
+    // Match by kind=notice + body contains the channel marker.
     const listRow = scrollbackLine(page, "notice", `[${NON_JOINED_CHANNEL}]`);
     await expect(listRow.first()).toBeVisible({ timeout: 5_000 });
+
+    // Strengthen the assertion (audit 2026-05-26): pin one of the two
+    // legitimate server-policy branches. Either the peer is enumerated
+    // (server returned non-empty list) or the marker "(no names)" is
+    // present. Anything else (e.g. format_names_row/2 emitting an
+    // empty bracket pair, or the row dropping the marker) is a
+    // regression. The `toContainText(/regex|other/)` form matches a
+    // single regex; assert both branches via OR-shaped match.
+    await expect(listRow.first()).toHaveText(
+      new RegExp(`\\[${NON_JOINED_CHANNEL}\\].*(${PEER_NICK}|\\(no names\\))`),
+    );
 
     // The 366 RPL_ENDOFNAMES terminator row also lands in $server.
     const eofRow = scrollbackLine(page, "notice", "End of /NAMES list").filter({

@@ -27,26 +27,61 @@ import { test, expect } from "../fixtures/test";
 import {
   composeTextarea,
   loginAs,
-  scrollbackLines,
+  scrollbackLine,
 } from "../fixtures/cicchettoPage";
-import { assertMessagePersisted } from "../fixtures/grappaApi";
+import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 import { getSeededVjt, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SERVER_CHANNEL = "$server";
+
+// Match the testnet's leaf hostnames — leaf4.azzurra.chat | leaf6.azzurra.chat
+// (per cicchetto/e2e/infra/compose.yaml). Hub itself doesn't send MOTD to
+// remote-server-bound clients; the leaf the bouncer attached to does.
+const LEAF_SENDER_PATTERN = /^leaf[46]\.azzurra\.chat$/;
+
+type WireMessage = {
+  id: number;
+  channel: string;
+  kind: string;
+  sender: string;
+  body: string | null;
+};
+
+// Inline fetch-poll variant of assertMessagePersisted (audit 2026-05-26):
+// the upstream fixture requires an exact `sender` string; we need to
+// accept either leaf hostname so the spec doesn't depend on bahamut's
+// autoconnect order. Same retry shape (100ms × 5s deadline).
+async function assertMotdPersisted(token: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(NETWORK_SLUG)}/channels/${encodeURIComponent(SERVER_CHANNEL)}/messages`;
+  const headers = { Authorization: `Bearer ${token}` };
+  let lastSeen: string[] = [];
+  while (Date.now() < deadline) {
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      const messages = (await res.json()) as WireMessage[];
+      const matched = messages.find(
+        (m) => m.kind === "notice" && LEAF_SENDER_PATTERN.test(m.sender),
+      );
+      if (matched) return;
+      lastSeen = messages.map((m) => `${m.kind}/${m.sender}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(
+    `assertMotdPersisted: no kind=notice from leaf[46].azzurra.chat in $server scrollback within 5s; last seen: ${JSON.stringify(lastSeen)}`,
+  );
+}
 
 test("M12 — MOTD persists into $server channel + cicchetto Server window renders with compose box", async ({ page }) => {
   const vjt = getSeededVjt();
 
   // Server-side first door: at least one :notice row exists for the
-  // synthetic $server channel. Bahamut sends MOTD as part of the
-  // post-registration handshake, so this is deterministic.
-  await assertMessagePersisted({
-    token: vjt.token,
-    networkSlug: NETWORK_SLUG,
-    channel: SERVER_CHANNEL,
-    sender: "leaf4.azzurra.chat",
-    kind: "notice",
-  });
+  // synthetic $server channel, sent by one of the testnet's leaves.
+  // Bahamut sends MOTD as part of the post-registration handshake, so
+  // this is deterministic; the leaf name (leaf4 vs leaf6) depends on
+  // bahamut's autoconnect order at boot and must not be hardcoded.
+  await assertMotdPersisted(vjt.token);
 
   // Client-side: log in + click the network-header row (UX-4 bucket C
   // collapsed the per-network `<h3>` + separate "Server" `<li>` into a
@@ -62,9 +97,13 @@ test("M12 — MOTD persists into $server channel + cicchetto Server window rende
   await expect(serverEntry).toHaveCount(1);
   await serverEntry.locator(".sidebar-window-btn").click();
 
-  // Scrollback has at least one rendered row (MOTD lines route via
-  // :notice — count gives a kind-agnostic "any traffic" check).
-  await expect(scrollbackLines(page).first()).toBeVisible({ timeout: 5_000 });
+  // Scrollback has at least one :notice row (MOTD lines route as
+  // notice). Strengthen vs the prior kind-agnostic first-line check
+  // (audit 2026-05-26): pin kind=notice so a regression that routes
+  // MOTD as e.g. :privmsg or drops the row entirely still fails the
+  // spec, even if other unrelated $server traffic is present.
+  const motdRow = scrollbackLine(page, "notice");
+  await expect(motdRow.first()).toBeVisible({ timeout: 5_000 });
 
   // CP13 S9: ComposeBox now renders on the Server window — slash-only
   // enforced inside compose.ts, no read-only DOM-suppression.
