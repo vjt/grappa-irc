@@ -77,7 +77,17 @@ defmodule Grappa.MixProject do
           # boot: `mix deps.get --only prod`, `mix compile`,
           # `mix release --overwrite`, then `_build/prod/rel/grappa/bin/grappa
           # daemon` under an rc.d wrapper.
-          applications: [runtime_tools: :permanent]
+          applications: [runtime_tools: :permanent],
+          # `config/runtime.exs` flips `code_reloader: true` on Phoenix's
+          # Endpoint (CP23 cluster B2 — hot-reload story for Docker).
+          # Phoenix marks that key as compile_env, so the release boot
+          # check refuses to start when the runtime value doesn't match
+          # the compile-time one (unset). Disabling the check is the
+          # release-doc-recommended escape hatch for genuinely-meant
+          # compile_env overrides. The Docker path doesn't hit this
+          # because it boots via `mix phx.server`, not via the release
+          # boot script.
+          validate_compile_env: false
         ]
       ]
     ]
