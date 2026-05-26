@@ -135,8 +135,8 @@ if Mix.env() in [:dev, :test] do
         :connected ->
           :ok = Session.stop_session({:user, user.id}, network_id)
 
-          with :ok <- spawn_and_await(user, cred, slug),
-               :ok <- await_autojoin(user, cred, slug) do
+          with {:ok, autojoin} <- spawn_and_await(user, cred, slug),
+               :ok <- await_autojoin(user, cred, slug, autojoin) do
             respawn_each(user, rest)
           else
             {:error, _} = err -> err
@@ -151,25 +151,32 @@ if Mix.env() in [:dev, :test] do
 
     defp spawn_and_await(user, cred, slug) do
       case Networks.SessionPlan.resolve(cred) do
-        {:ok, plan} ->
-          ref = make_ref()
-          plan_with_notify = Map.merge(plan, %{notify_pid: self(), notify_ref: ref})
+        {:ok, plan} -> do_spawn_and_await(user, cred, slug, plan)
+        {:error, reason} -> {:error, {:reconnect_failed, slug, reason}}
+      end
+    end
 
-          capacity_input = %{
-            network_id: cred.network_id,
-            client_id: nil,
-            flow: :bootstrap_user,
-            requesting_subject: nil
-          }
+    defp do_spawn_and_await(user, cred, slug, plan) do
+      ref = make_ref()
+      plan_with_notify = Map.merge(plan, %{notify_pid: self(), notify_ref: ref})
 
-          case Grappa.SpawnOrchestrator.spawn(
-                 {:user, user.id},
-                 cred.network_id,
-                 plan_with_notify,
-                 capacity_input
-               ) do
-            {:ok, _, pid} -> await_ready(pid, ref, slug)
-            {:error, reason} -> {:error, {:reconnect_failed, slug, reason}}
+      capacity_input = %{
+        network_id: cred.network_id,
+        client_id: nil,
+        flow: :bootstrap_user,
+        requesting_subject: nil
+      }
+
+      case Grappa.SpawnOrchestrator.spawn(
+             {:user, user.id},
+             cred.network_id,
+             plan_with_notify,
+             capacity_input
+           ) do
+        {:ok, _, pid} ->
+          case await_ready(pid, ref, slug) do
+            :ok -> {:ok, Map.get(plan, :autojoin_channels, [])}
+            {:error, _} = err -> err
           end
 
         {:error, reason} ->
@@ -203,13 +210,21 @@ if Mix.env() in [:dev, :test] do
     # "JOIN-in-flight" and "channel was never autojoin'd" so we
     # cannot distinguish them from the outside; the shared timeout
     # is the disambiguator.
-    defp await_autojoin(_, %{autojoin_channels: []}, _), do: :ok
+    #
+    # `autojoin` here is the RESOLVED Session.Plan list, NOT
+    # `cred.autojoin_channels` — `Networks.SessionPlan.resolve/1`
+    # merges operator-config + `last_joined_channels`, and the
+    # Session.Server JOINs the merged set on RPL_WELCOME. Polling
+    # only `cred.autojoin_channels` would let `#bofh` slip through
+    # whenever an earlier spec PARTed it (DELETE /channels strips
+    # operator-config autojoin but leaves it in `last_joined`).
+    defp await_autojoin(_, _, _, []), do: :ok
 
-    defp await_autojoin(user, cred, slug) do
+    defp await_autojoin(user, cred, slug, autojoin) do
       deadline = System.monotonic_time(:millisecond) + @autojoin_timeout_ms
 
       pending =
-        cred.autojoin_channels
+        autojoin
         |> Enum.map(&Grappa.IRC.Identifier.canonical_channel/1)
         |> MapSet.new()
 

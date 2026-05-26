@@ -38,6 +38,15 @@ if Mix.env() in [:dev, :test] do
           conn
           |> put_status(:internal_server_error)
           |> json(%{error: "session_reconnect_failed", network_slug: slug, reason: inspect(reason)})
+
+        {:error, {:autojoin_timeout, slug, channels}} ->
+          conn
+          |> put_status(:gateway_timeout)
+          |> json(%{
+            error: "autojoin_timeout",
+            network_slug: slug,
+            missing_channels: channels
+          })
       end
     end
 
