@@ -32,6 +32,19 @@ if Mix.env() in [:dev, :test] do
     credentials get their Backoff + NetworkCircuit reset but no respawn
     attempt — they're already not-running and shouldn't be started by
     a test cleanup verb.
+
+    After `:session_ready` (001 RPL_WELCOME) lands, additionally waits
+    for every `autojoin_channels` entry to reach `:joined` window-state
+    via `Session.get_window_state/3`. Autojoin fires AFTER 001 (see
+    `Session.Server.handle_info({:irc, %Message{command: {:numeric, 1}}}, …)`),
+    so without this gate the reset returns into a window where the
+    next spec's REST `/networks/<slug>/channels` query races the
+    upstream JOIN ack and observes an empty sidebar — root cause of
+    the chromium suite cascade observed in T14 (~25 victims, all
+    `selectChannel(#bofh)` 30s timeouts). Shared 5s budget across all
+    autojoin channels for a credential; same loud-failure rationale
+    as the welcome wait — local-loopback Bahamut joins should ack in
+    <1s, multi-second misses signal upstream sickness.
     """
 
     use Boundary,
@@ -39,6 +52,7 @@ if Mix.env() in [:dev, :test] do
       deps: [
         Grappa.Accounts,
         Grappa.Admission,
+        Grappa.IRC,
         Grappa.Networks,
         Grappa.Push,
         Grappa.QueryWindows,
@@ -66,11 +80,14 @@ if Mix.env() in [:dev, :test] do
     }
 
     @reset_timeout_ms 5_000
+    @autojoin_timeout_ms 5_000
+    @autojoin_poll_interval_ms 50
 
     @type reset_error ::
             :user_not_found
             | {:reconnect_timeout, String.t()}
             | {:reconnect_failed, String.t(), term()}
+            | {:autojoin_timeout, String.t(), [String.t()]}
 
     @doc """
     Drain every mutable surface for the user identified by `user_name`.
@@ -80,7 +97,10 @@ if Mix.env() in [:dev, :test] do
     network_slug}}` if a `Session.Server` restart didn't reach
     `:session_ready` within #{@reset_timeout_ms}ms. Returns `{:error,
     {:reconnect_failed, network_slug, reason}}` for any other
-    `SpawnOrchestrator` / `SessionPlan` failure.
+    `SpawnOrchestrator` / `SessionPlan` failure. Returns `{:error,
+    {:autojoin_timeout, network_slug, missing_channels}}` if any
+    `autojoin_channels` entry has not reached `:joined` state within
+    #{@autojoin_timeout_ms}ms after `:session_ready`.
     """
     @spec reset!(String.t()) :: :ok | {:error, reset_error()}
     def reset!(user_name) when is_binary(user_name) do
@@ -115,8 +135,10 @@ if Mix.env() in [:dev, :test] do
         :connected ->
           :ok = Session.stop_session({:user, user.id}, network_id)
 
-          case spawn_and_await(user, cred, slug) do
-            :ok -> respawn_each(user, rest)
+          with :ok <- spawn_and_await(user, cred, slug),
+               :ok <- await_autojoin(user, cred, slug) do
+            respawn_each(user, rest)
+          else
             {:error, _} = err -> err
           end
 
@@ -169,6 +191,50 @@ if Mix.env() in [:dev, :test] do
         @reset_timeout_ms ->
           Process.demonitor(monitor_ref, [:flush])
           {:error, {:reconnect_timeout, slug}}
+      end
+    end
+
+    # Poll Session.Server's window_state for every autojoin channel
+    # until all observe `:joined`, or the shared budget elapses.
+    # `Session.get_window_state/3` returns `{:ok, %{state: "joined"}}`
+    # once `Session.WindowState.set_joined/2` has fired (366
+    # RPL_ENDOFNAMES path) and `{:error, :not_tracked}` for pending /
+    # parked / unknown — the same `:not_tracked` covers both
+    # "JOIN-in-flight" and "channel was never autojoin'd" so we
+    # cannot distinguish them from the outside; the shared timeout
+    # is the disambiguator.
+    defp await_autojoin(_, %{autojoin_channels: []}, _), do: :ok
+
+    defp await_autojoin(user, cred, slug) do
+      deadline = System.monotonic_time(:millisecond) + @autojoin_timeout_ms
+
+      pending =
+        cred.autojoin_channels
+        |> Enum.map(&Grappa.IRC.Identifier.canonical_channel/1)
+        |> MapSet.new()
+
+      poll_autojoin({:user, user.id}, cred.network_id, slug, pending, deadline)
+    end
+
+    defp poll_autojoin(subject, network_id, slug, pending, deadline) do
+      remaining =
+        Enum.reduce(pending, pending, fn channel, acc ->
+          case Session.get_window_state(subject, network_id, channel) do
+            {:ok, %{state: "joined"}} -> MapSet.delete(acc, channel)
+            _ -> acc
+          end
+        end)
+
+      cond do
+        MapSet.size(remaining) == 0 ->
+          :ok
+
+        System.monotonic_time(:millisecond) >= deadline ->
+          {:error, {:autojoin_timeout, slug, Enum.sort(MapSet.to_list(remaining))}}
+
+        true ->
+          Process.sleep(@autojoin_poll_interval_ms)
+          poll_autojoin(subject, network_id, slug, remaining, deadline)
       end
     end
   end
