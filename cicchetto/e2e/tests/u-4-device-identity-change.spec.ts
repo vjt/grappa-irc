@@ -1,26 +1,5 @@
 // U-4 — Device identity change (UD5.A + UD5.B + UD5.C).
 //
-// ⚠️ DEFERRED — see "Why this is test.skip" below. The U-4 invariants
-// are pinned at unit-level by:
-//   - `test/grappa_web/controllers/auth_controller_test.exs` —
-//     "UD5.A: visitor logout is synchronous — :DOWN arrives BEFORE
-//     204 returns" + the 6 pre-existing logout tests (visitor anon /
-//     visitor reg / user single bind / user multi-bind / disconnect-
-//     broadcast variants). Runs in `Phoenix.ConnTest` against the
-//     real `AuthController.logout/2` → `Session.stop_session/2` →
-//     `Accounts.revoke_session/1` path through real `Visitors.Login`-
-//     spawned `Session.Server`s talking to an in-process IRC fake
-//     (`Grappa.IRCServer`). End-to-end at the BEAM layer minus the
-//     HTTP socket; transport-level coverage is `Phoenix.ConnTest`'s.
-//   - `test/grappa/admission_test.exs` — 4 new tests in describe
-//     "check_capacity/1 — client cap subject-aware (UD5.B)" covering
-//     visitor→user cross-kind, user→visitor cross-kind, same-kind
-//     saturation (sanity), and revoked-session-doesn't-count
-//     (UD5.A+UD5.B composition). Exercises the actual
-//     `count_subjects_for_client_on_network/3` SQL clauses with real
-//     `accounts_sessions` + `visitors` + `credentials` rows in
-//     Ecto sandbox.
-//
 // What U-4 ships at the e2e-observable surface (per
 // `docs/plans/2026-05-16-tmu-cluster-arc.md` §U-4 + §UD5):
 //
@@ -33,47 +12,156 @@
 //     frees the client_id slot, composing UD5.A through
 //     `cicchetto/src/lib/compose.ts:283-322` which awaits `logout()`.
 //
-// Why this is test.skip:
+// Unit-level coverage (still authoritative):
+//   - `test/grappa_web/controllers/auth_controller_test.exs` — 6
+//     pre-existing logout paths through real Session.Server +
+//     in-process IRC fake (transport-level + DB-level).
+//   - `test/grappa/admission_test.exs` — 4 subject-aware
+//     check_capacity/1 tests (visitor↔user cross-kind, same-kind
+//     saturation, revoked-doesn't-count).
 //
-// The strongest end-to-end assertion would be: visitor mint on
-// client_id X → cap drops to 1 → visitor logout → user login on
-// SAME client_id X → /connect succeeds (the cross-kind UD5.B
-// guarantee). That requires a successful visitor mint against the
-// real bahamut-test ircd inside the e2e harness, which hits
-// `feedback_visitor_mint_e2e_cold_start` 504: the synchronous
-// `:login_probe_timeout_ms` (3s) is exhausted by the first-
-// connection IRC handshake latency (rDNS lookup + USER/NICK +
-// 001). Same blocker as M-8 (`m8-admin-visitors-delete.spec.ts`).
+// E2E surface — what this spec proves beyond unit coverage: the
+// composed REST flow (mintVisitor → DELETE /auth/logout → user
+// /auth/login on the same client_id → /networks PATCH connect)
+// completes cleanly against the real bahamut-test ircd via the
+// nginx-test edge, validating that the unit-level invariants
+// compose at the HTTP boundary the cic shell actually drives.
 //
-// Workarounds considered + rejected:
-//   - Pre-seed a visitor row at compose-time — out of U-4 scope
-//     (separate seeder change touching `cicchetto/e2e/compose.yaml`
-//     + sidecar mix-run command). Tracked in
-//     `feedback_visitor_mint_e2e_cold_start`.
-//   - Raise `login_probe_timeout_ms` in e2e config — blast radius
-//     too large; would mask production-realistic timeouts in OTHER
-//     specs that depend on the 3s default to surface as 504.
-//   - Substitute same-user-different-bearer for cross-kind — DOES
-//     NOT exercise UD5.B's subject-aware filter (the new user login
-//     itself contributes 1 to the count of the same kind, so the
-//     saturating cap=1 always 503s regardless of UD5.B's correctness).
-//     The test would prove only that the second login row exists,
-//     not that the slot was freed.
-//
-// Unit-level coverage (the two test files cited above) is
-// comprehensive AND tests real DB rows + real Session.Servers — the
-// `e2e` gap is purely about the HTTP socket layer + browser
-// JavaScript, which neither UD5.A nor UD5.B touch. The Playwright
-// file stays in the tree as a loud `test.skip` so the next operator
-// working on visitor-mint e2e sees the intent and re-enables it
-// once the cold-start gap is closed.
+// Pre-UD7 history: this spec was test.skip'd against the 9-day-old
+// `feedback_visitor_mint_e2e_cold_start` memory. The actual blocker
+// was unrelated to the budget — `mix grappa.add_server` defaults to
+// `tls: true` and the azzurra seeder line in compose.yaml lacked
+// `--no-tls`, so visitor Session.Servers attempted TLS handshakes
+// against the plain bahamut leaf on :6667 and `:irc_connected` never
+// fired. Fixed in the same cluster as this revival; M-8 + U-4 both
+// re-enabled simultaneously.
 
-import { test } from "@playwright/test";
+import { expect, test } from "../fixtures/test";
+import {
+  ADMIN_IDENTIFIER,
+  ADMIN_PASSWORD,
+  NETWORK_SLUG,
+} from "../fixtures/seedData";
+import { mintVisitor, login, adminDeleteVisitor } from "../fixtures/grappaApi";
 
-test.skip("U-4 (UD5.A+B+C) — logout frees client_id slot for cross-kind re-login", () => {
-  // See moduledoc — visitor mint 504s on e2e cold-start; the
-  // UD5.A + UD5.B invariants are pinned at unit-level via
-  // auth_controller_test.exs + admission_test.exs respectively.
-  // Re-enable once `feedback_visitor_mint_e2e_cold_start` lands a
-  // pre-seeded visitor row pattern.
+const GRAPPA_BASE_URL = "http://grappa-test:4000";
+
+async function adminPatchCaps(
+  adminToken: string,
+  slug: string,
+  caps: Record<string, number | null>,
+): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/networks/${encodeURIComponent(slug)}`, {
+    method: "PATCH",
+    headers: {
+      authorization: `Bearer ${adminToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(caps),
+  });
+  if (!res.ok) {
+    throw new Error(`adminPatchCaps: ${slug} → ${res.status} ${await res.text()}`);
+  }
+}
+
+async function logout(token: string): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/auth/logout`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status !== 204) {
+    throw new Error(`logout: ${res.status} ${await res.text()}`);
+  }
+}
+
+async function loginUserWithClientId(
+  identifier: string,
+  password: string,
+  clientId: string,
+): Promise<string> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-grappa-client-id": clientId,
+    },
+    body: JSON.stringify({ identifier, password }),
+  });
+  if (!res.ok) {
+    throw new Error(`loginUserWithClientId: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { token: string };
+  return body.token;
+}
+
+async function mintVisitorWithClientId(
+  nick: string,
+  clientId: string,
+): Promise<{ id: string; token: string }> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/auth/login`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-grappa-client-id": clientId,
+    },
+    body: JSON.stringify({ identifier: nick }),
+  });
+  if (!res.ok) {
+    throw new Error(`mintVisitorWithClientId: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as {
+    token: string;
+    subject: { kind: "visitor"; id: string };
+  };
+  return { id: body.subject.id, token: body.token };
+}
+
+test("U-4 (UD5.A+B) — visitor logout frees client_id slot for cross-kind user login", async () => {
+  // MUST be canonical UUID v4 (`Grappa.ClientId.regex/0` rule).
+  const clientId = "a3000000-0000-4000-8000-000000000044";
+  const visitorNick = `u4-visitor-${Date.now()}`;
+
+  // Tighten max_per_client to 1 on the visitor network (azzurra) so
+  // the UD5.B subject-aware filter is the load-bearing invariant — if
+  // the cap counted the logged-out visitor's revoked session against
+  // the cross-kind user login, the second login would 503. Restore in
+  // finally so subsequent specs see the seeder baseline.
+  const admin = await login(ADMIN_IDENTIFIER, ADMIN_PASSWORD);
+  await adminPatchCaps(admin.token, "azzurra", { max_per_client: 1 });
+  await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: 1 });
+
+  let visitorId: string | null = null;
+  try {
+    // STEP 1 — Mint a visitor under client_id X. UD5.B: this consumes
+    // 1 client-cap slot for kind=visitor on azzurra.
+    const visitor = await mintVisitorWithClientId(visitorNick, clientId);
+    visitorId = visitor.id;
+
+    // STEP 2 — Visitor logs out. UD5.A: synchronous teardown — by the
+    // time DELETE /auth/logout returns 204, the Session.Server is
+    // already terminated AND the accounts_session row is revoked.
+    await logout(visitor.token);
+
+    // STEP 3 — Seeded user (vjt) logs in under the SAME client_id.
+    // UD5.B: the cap filters by subject_kind, so the just-freed
+    // visitor slot does NOT block this fresh user login. Expected:
+    // 200 with a valid bearer.
+    //
+    // Use the bahamut-test (vjt's bound network) cap as the cross-
+    // network invariant — UD5.B's subject_kind filter is per-network-
+    // independent.
+    const vjtBearer = await loginUserWithClientId(
+      "vjt@grappa.test",
+      "test-password-not-secret",
+      clientId,
+    );
+    expect(typeof vjtBearer).toBe("string");
+    expect(vjtBearer.length).toBeGreaterThan(0);
+  } finally {
+    await adminPatchCaps(admin.token, "azzurra", { max_per_client: null }).catch(() => {});
+    await adminPatchCaps(admin.token, NETWORK_SLUG, { max_per_client: null }).catch(() => {});
+    if (visitorId !== null) {
+      await adminDeleteVisitor(admin.token, visitorId).catch(() => {});
+    }
+  }
 });
