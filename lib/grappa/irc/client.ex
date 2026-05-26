@@ -704,33 +704,52 @@ defmodule Grappa.IRC.Client do
   @connect_timeout_ms 30_000
 
   defp do_connect(host, port, false) do
-    :gen_tcp.connect(host, port, [:binary, packet: :line, active: :once] ++ ifaddr_opt(), @connect_timeout_ms)
+    {opts, fam} = resolve_and_ifaddr(host)
+    :gen_tcp.connect(host, port, [:binary, fam, packet: :line, active: :once] ++ opts, @connect_timeout_ms)
   end
 
   defp do_connect(host, port, true) do
+    {opts, fam} = resolve_and_ifaddr(host)
+
     :ssl.connect(
       host,
       port,
-      [:binary, packet: :line, active: :once, verify: :verify_none] ++ ifaddr_opt(),
+      [:binary, fam, packet: :line, active: :once, verify: :verify_none] ++ opts,
       @connect_timeout_ms
     )
   end
 
-  # Outbound v6 source-address selection. Reads from
-  # `Grappa.OutboundV6Pool` (boot-pinned in `:persistent_term`,
-  # configured via `GRAPPA_OUTBOUND_V6_POOL` CSV) and returns a
-  # one-shot `[ifaddr: ip6]` keyword for the connect call. Empty
-  # pool returns `[]` so the kernel's RFC 6724 source selection
-  # stands (no behavior change for single-IP deployments). Pick
-  # happens per-connect so each retry rolls a fresh address.
+  # Outbound v6 source-address selection.
+  #
+  # If `GRAPPA_OUTBOUND_V6_POOL` is configured + the upstream host
+  # has an AAAA record, pick a random pool entry and bind it as
+  # `ifaddr` on a v6 socket. Otherwise fall through to v4 with
+  # kernel-default source selection.
+  #
+  # Pre-resolving + selecting the address family BEFORE the connect
+  # call is mandatory: passing a v6 `ifaddr` to `:gen_tcp.connect/4`
+  # forces the lookup into AAAA-only territory, and a v4-only
+  # upstream (e.g. `irc.example.org` with only A records) surfaces
+  # as `:nxdomain` rather than the more accurate "destination has
+  # no v6 address" error. Resolving here lets us downgrade to v4
+  # gracefully when the host can't be reached over v6 at all.
+  #
+  # Pick happens per-connect so each retry rolls a fresh source.
   #
   # `ifaddr` works for both `:gen_tcp.connect/4` and
   # `:ssl.connect/4` — ssl forwards inet options to its underlying
   # gen_tcp socket at handshake setup.
-  defp ifaddr_opt do
+  @spec resolve_and_ifaddr(charlist()) :: {keyword(), :inet | :inet6}
+  defp resolve_and_ifaddr(host) do
     case Grappa.OutboundV6Pool.pick() do
-      {:ok, ip} -> [ifaddr: ip]
-      :none -> []
+      {:ok, ip6} ->
+        case :inet_res.lookup(host, :in, :aaaa) do
+          [_ | _] -> {[ifaddr: ip6], :inet6}
+          [] -> {[], :inet}
+        end
+
+      :none ->
+        {[], :inet}
     end
   end
 
