@@ -37,6 +37,26 @@ MIX_ENV=prod mix compile --warnings-as-errors
 echo "[deploy] mix release --overwrite"
 MIX_ENV=prod mix release --overwrite
 
+# cicchetto bundle — vite build via npm. Required after a fresh
+# `git clone` (cicchetto/dist/ is gitignored), and on every deploy
+# that touched cicchetto/src/. The nginx symlink
+# /usr/local/www/cic → cicchetto/dist/ is set up once by
+# jail_install_nginx.sh; an empty dist/ here makes nginx loop on
+# `try_files $uri /index.html` because neither resolves on disk
+# (the "rewrite or internal redirection cycle" 500). Belt-and-
+# braces: even when nothing in cicchetto/src/ changed, `npm run
+# build` is fast (~40ms incremental), so we don't try to skip.
+echo "[deploy] npm ci + vite build (cicchetto bundle)"
+(
+	cd "${REPO_ROOT}/cicchetto"
+	if [ -f package-lock.json ]; then
+		npm ci 2>&1 | tail -10
+	else
+		npm install 2>&1 | tail -10
+	fi
+	npm run build 2>&1 | tail -10
+)
+
 echo "[deploy] Grappa.Release.migrate()"
 "${RELEASE_PATH}/bin/grappa" eval 'Grappa.Release.migrate()'
 
