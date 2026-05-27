@@ -3219,3 +3219,71 @@ is not the contract; observable code propagation is. A reload
 endpoint should return positive evidence — module names that
 loaded, or a clear empty signal for "nothing to do." `{"reloaded":
 []}` is a useful answer; `ok` is a lie waiting to happen.*
+
+## S55 — 2026-05-27 — A WebAPK we didn't mint, blocking installs we wanted
+
+vjt pinged: an Android user trying to install cic was getting "developed
+for an earlier version of Android and lacks the latest privacy
+protections" at install time. The user had never opened cic before.
+First instinct was stale WebAPK on the user's device — Chrome generates
+a WebAPK wrapping the PWA, and Play Protect now blocks WebAPKs with
+old targetSdkVersion. Tell the user to reinstall, done.
+
+Wrong. Never-opened means there's nothing to reinstall.
+
+The real story is that Google's WebAPK Minting Server is the one
+holding stale APKs, not the user's device. The minter hashes the
+manifest, mints an APK, caches it. Every subsequent installer with the
+same manifest hash gets the same cached APK. Cic's manifest hadn't
+changed since the day it shipped — so every new Android install was
+getting an APK minted months ago, with a targetSdkVersion that Play
+Protect's 2024 policy now refuses. The blocked install wasn't this
+user's bug; it was the bug of whoever installed cic *first*, propagated
+forward forever via Google's cache.
+
+The fix is one field: `id: "/cic"` in the manifest. The W3C spec says
+`id` is a same-origin URL that the browser never fetches — pure
+primary key for "is this the same app?". Adding it shifts the manifest
+hash, so the minter caches miss, and the next install request gets a
+fresh APK with current targetSdkVersion. Existing installs are
+unaffected because Chrome reconciles via `start_url` ↔ `id`. The
+comment in `vite.config.ts` spells out the never-change-after-first-
+install rule because mutating `id` later orphans every existing
+install and creates a parallel WebAPK on Android — a footgun the next
+person editing the manifest needs to see.
+
+But vjt was clear: **restarting the bouncer for a PWA change is
+unacceptable.** This was the first real cic-only deploy on the bastille
+jail post-Docker migration. The Docker side has `scripts/deploy-cic.sh`;
+the jail had nothing equivalent — `infra/freebsd/deploy.sh:166` even
+had a comment saying "add one when the cicchetto/src/ edits start
+happening between server deploys." That happening was now. So:
+`infra/freebsd/jail_deploy_cic.sh` — git pull + vite build + POST
+/admin/cic-bundle-changed, no BEAM touch.
+
+First run was clean but the broadcast endpoint returned 204 "no bundle
+on disk." `Grappa.Cic.Bundle.@bundle_path` reads
+`runtime/cicchetto-dist/index.html`, which on Docker is where
+compose.yaml bind-mounts the container's `/app/dist`. On the jail there
+was no bind-mount magic; vite emitted to `cicchetto/dist/` and the
+server reader found nothing. The expedient temptation was a symlink.
+The right move was to align the substrates: pass
+`--outDir ../runtime/cicchetto-dist` to vite on the jail, repoint
+nginx's `/usr/local/www/cic` symlink at the shared path. One
+server-side anchor for both substrates; future @bundle_path tweaks
+land in one place. Bonus: `deploy.sh`'s cold-path inline npm+vite
+shell collapsed into a call to `jail_cic_build.sh` — outDir + npm
+logic in one place instead of two.
+
+Two commits, zero BEAM restart, sessions intact. The refresh banner
+broadcast on the second deploy attempt — hash `BydkWNJw` to all live
+user-topics. The manifest fix is live; the next Android installer gets
+a fresh WebAPK. Whether that installer is *vjt's* user or someone
+several weeks later who would have hit the same wall doesn't matter —
+we've broken the cache for everyone.
+
+*Law: when a third party caches your artifact by hash, the only
+control surface you have is the input bytes. Adding a no-op field to
+bust the hash is a legitimate fix, but mark it as load-bearing in a
+comment — the next person to "clean up" the manifest will delete the
+field that's holding the entire install path together.*
